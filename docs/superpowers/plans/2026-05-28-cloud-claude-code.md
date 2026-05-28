@@ -2452,11 +2452,20 @@ def write_audit(
     action: str,
     details: dict[str, Any],
 ) -> None:
-    """Best-effort insert into audit_log; failure is logged, not raised."""
+    """Best-effort insert into audit_log; failure is logged, not raised.
+
+    Task 5.1 confirmed the actual `audit_log` schema in src/db.py uses
+    `user_id` and `params` columns (not `user_email` / `details`); the
+    keyword args above keep the chat-side API stable while the SQL
+    INSERT maps to the real columns.
+    """
+    import secrets
+    audit_id = f"audit_{secrets.token_hex(6)}"
     try:
         conn.execute(
-            "INSERT INTO audit_log (timestamp, user_email, action, details) VALUES (?, ?, ?, ?)",
-            [datetime.now(timezone.utc), user_email, action, json.dumps(details)],
+            "INSERT INTO audit_log (id, timestamp, user_id, action, params)"
+            " VALUES (?, ?, ?, ?, ?)",
+            [audit_id, datetime.now(timezone.utc), user_email, action, json.dumps(details)],
         )
     except Exception:
         logger.exception("audit_log write failed: action=%s", action)
