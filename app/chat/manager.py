@@ -215,7 +215,14 @@ class ChatManager:
             # pass-through.
             "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
             "PATH": "/usr/local/bin:/usr/bin:/bin",
-            "HOME": str(session_dir),
+            # ``session_dir`` is an Agnes-host-side path; it doesn't exist
+            # inside the E2B sandbox. claude-agent-sdk's inner ``claude``
+            # CLI needs a writable HOME for ``~/.claude/`` config — using
+            # the host path here makes the CLI hang on first config write,
+            # which surfaces as ``Control request timeout: initialize``.
+            # ``/home/user`` is created by the e2b template's base image
+            # and is writable by the in-sandbox ``user`` account.
+            "HOME": "/home/user",
             "TERM": "dumb",
             "LANG": "C.UTF-8",
             "PYTHONUNBUFFERED": "1",
