@@ -18,6 +18,7 @@ import json
 
 from src.marketplace_listing import list_inner_agents, list_inner_skills
 from src.marketplace_metadata import (
+    MARKETPLACE_METADATA_REL,
     resolve_inner_metadata,
     resolve_plugin_metadata,
 )
@@ -233,6 +234,39 @@ def test_untouched_generated_field_regenerates_on_source_change(tmp_path):
     assert ("plugins/dept-howto", "tagline", "regenerated") in report.actions
 
 
+def test_generated_field_removed_when_source_disappears(tmp_path):
+    """A generated DRAFT field (tagline) whose upstream source is deleted is
+    cleaned up — not left to masquerade as human content on the next run."""
+    pdir = _make_dept_howto(tmp_path)
+    doc1, _ = scaffold_metadata(tmp_path, existing={}, generated_at=FIXED_TS)
+    assert doc1["plugins"]["dept-howto"]["tagline"]  # was generated
+
+    # Description removed upstream; the curator never touched the tagline.
+    _write_plugin_json(pdir, "dept-howto", "")
+    doc2, report = scaffold_metadata(tmp_path, existing=doc1, generated_at=FIXED_TS)
+    assert "tagline" not in doc2["plugins"]["dept-howto"]
+    assert ("plugins/dept-howto", "tagline", "removed") in report.actions
+    # Regression: --check used to silently pass here; now it sees the drift.
+    assert comparable_view(doc1) != comparable_view(doc2)
+
+    # If the source returns with a new value, the field regenerates (not frozen).
+    _write_plugin_json(pdir, "dept-howto", "A fresh tagline.")
+    doc3, _ = scaffold_metadata(tmp_path, existing=doc2, generated_at=FIXED_TS)
+    assert doc3["plugins"]["dept-howto"]["tagline"] == "A fresh tagline."
+
+
+def test_human_edit_survives_source_removal(tmp_path):
+    """A human-edited field whose upstream source later disappears is kept —
+    only untouched machine values are cleaned up."""
+    pdir = _make_dept_howto(tmp_path)
+    doc1, _ = scaffold_metadata(tmp_path, existing={}, generated_at=FIXED_TS)
+    doc1["plugins"]["dept-howto"]["tagline"] = "Hand-polished tagline."
+    _write_plugin_json(pdir, "dept-howto", "")  # source gone
+    doc2, report = scaffold_metadata(tmp_path, existing=doc1, generated_at=FIXED_TS)
+    assert doc2["plugins"]["dept-howto"]["tagline"] == "Hand-polished tagline."
+    assert ("plugins/dept-howto", "tagline", "kept-edited") in report.actions
+
+
 def test_rename_skill_regenerates_invocation(tmp_path):
     pdir = _make_dept_howto(tmp_path)
     doc1, _ = scaffold_metadata(tmp_path, existing={}, generated_at=FIXED_TS)
@@ -277,6 +311,23 @@ def test_orphan_plugin_in_file_is_kept_and_reported(tmp_path):
     assert "plugins/removed-plugin" in report.orphans
 
 
+def test_all_inners_removed_are_reported_as_orphans(tmp_path):
+    """Deleting every skill of a plugin keeps the metadata but reports each as
+    an orphan — consistent with removing only some of them."""
+    import shutil
+
+    pdir = _make_dept_howto(tmp_path)
+    doc1, _ = scaffold_metadata(tmp_path, existing={}, generated_at=FIXED_TS)
+    shutil.rmtree(pdir / "skills")
+    doc2, report = scaffold_metadata(tmp_path, existing=doc1, generated_at=FIXED_TS)
+    skills = doc2["plugins"]["dept-howto"]["skills"]
+    # Data preserved (never deleted)...
+    assert set(skills) == {"gws-onboarding", "asana-setup"}
+    # ...and surfaced as orphans.
+    assert "plugins/dept-howto/skills/gws-onboarding" in report.orphans
+    assert "plugins/dept-howto/skills/asana-setup" in report.orphans
+
+
 def test_remote_source_skips_enumeration_but_keeps_plugin_fields(tmp_path):
     cp = tmp_path / ".claude-plugin"
     cp.mkdir(parents=True)
@@ -301,6 +352,48 @@ def test_remote_source_skips_enumeration_but_keeps_plugin_fields(tmp_path):
     assert plugin["tagline"] == "A plugin sourced from a git URL."
     assert "skills" not in plugin and "agents" not in plugin
     assert any("remote source" in w for w in report.warnings)
+
+
+def test_traversal_source_is_rejected_not_mangled(tmp_path):
+    """A `source` that escapes the repo via `..` is skipped with a warning —
+    not silently rewritten into an in-repo sibling lookup."""
+    cp = tmp_path / ".claude-plugin"
+    cp.mkdir(parents=True)
+    (cp / "marketplace.json").write_text(
+        json.dumps(
+            {
+                "name": "m",
+                "plugins": [
+                    {
+                        "name": "escapee",
+                        "description": "Tries to escape the repo root.",
+                        "source": "../outside",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    doc, report = scaffold_metadata(tmp_path, existing={}, generated_at=FIXED_TS)
+    plugin = doc["plugins"]["escapee"]
+    # Plugin-level fields still come from the manifest entry.
+    assert plugin["display_name"] == "Escapee"
+    assert plugin["tagline"] == "Tries to escape the repo root."
+    # No enumeration, and the unsafe source is flagged.
+    assert "skills" not in plugin and "agents" not in plugin
+    assert any("unsafe" in w or "escape" in w for w in report.warnings)
+
+
+def test_malformed_plugin_json_warns_and_falls_back(tmp_path):
+    """A present-but-broken plugin.json is flagged (not silently swallowed);
+    plugin-level fields fall back to the manifest entry."""
+    _write_manifest(tmp_path, ["broken"])
+    cp = tmp_path / "plugins" / "broken" / ".claude-plugin"
+    cp.mkdir(parents=True)
+    (cp / "plugin.json").write_text("{ not valid json", encoding="utf-8")
+    doc, report = scaffold_metadata(tmp_path, existing={}, generated_at=FIXED_TS)
+    assert doc["plugins"]["broken"]["display_name"] == "Broken"
+    assert any("plugin.json" in w for w in report.warnings)
 
 
 def test_missing_manifest_raises(tmp_path):
@@ -380,3 +473,50 @@ def test_comparable_view_detects_out_of_sync_then_in_sync(tmp_path):
     # Scaffolded file re-scaffolds to the same view → in sync (timestamp ignored).
     doc2, _ = scaffold_metadata(tmp_path, existing=doc, generated_at="2099-01-01T00:00:00Z")
     assert comparable_view(doc) == comparable_view(doc2)
+
+
+# --------------------------------------------------------------------------- #
+# CLI command — agnes marketplace scaffold-metadata
+# --------------------------------------------------------------------------- #
+
+
+def test_cli_dry_run_json_prints_document_and_writes_nothing(tmp_path):
+    from typer.testing import CliRunner
+
+    from cli.commands.marketplace import marketplace_app
+
+    _make_dept_howto(tmp_path)
+    result = CliRunner().invoke(
+        marketplace_app,
+        ["scaffold-metadata", str(tmp_path), "--dry-run", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["plugins"]["dept-howto"]["display_name"] == "Dept Howto"
+    # --dry-run must not touch the disk.
+    assert not (tmp_path / MARKETPLACE_METADATA_REL).exists()
+
+
+def test_cli_write_then_check_roundtrip(tmp_path):
+    from typer.testing import CliRunner
+
+    from cli.commands.marketplace import marketplace_app
+
+    runner = CliRunner()
+    _make_dept_howto(tmp_path)
+
+    # Before writing, --check reports drift and exits non-zero (CI gate).
+    pre = runner.invoke(marketplace_app, ["scaffold-metadata", str(tmp_path), "--check"])
+    assert pre.exit_code == 1, pre.output
+
+    # The write path produces the on-disk file.
+    wrote = runner.invoke(marketplace_app, ["scaffold-metadata", str(tmp_path)])
+    assert wrote.exit_code == 0, wrote.output
+    target = tmp_path / MARKETPLACE_METADATA_REL
+    assert target.is_file()
+    on_disk = json.loads(target.read_text(encoding="utf-8"))
+    assert on_disk["plugins"]["dept-howto"]["display_name"] == "Dept Howto"
+
+    # A freshly-written file is in sync → --check exits 0 (timestamp ignored).
+    post = runner.invoke(marketplace_app, ["scaffold-metadata", str(tmp_path), "--check"])
+    assert post.exit_code == 0, post.output
