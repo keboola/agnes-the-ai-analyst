@@ -300,39 +300,151 @@ function handleFrame(frame) {
   }
 }
 
+// ---------- Bubble + avatar + actions ------------------------------------
+// Each turn renders as a <article class="msg msg-<role>"> with an
+// avatar, a bubble (body + optional tool details + hover actions row).
+// Streaming uses the same shell — appendToken appends to the body,
+// finalize re-renders it through marked.parse and attaches the
+// actions row (timestamp + copy button) once the content is stable.
+
+function userInitial() {
+  const email = document.body.dataset.userEmail || "";
+  return (email[0] || "?").toUpperCase();
+}
+
+function formatTime(d) {
+  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Build the empty bubble shell — avatar + bubble + body, no content
+ *  yet. ``createdAt`` accepts an ISO string or a Date; falls back to
+ *  ``new Date()`` for live turns. The article is NOT yet attached to
+ *  the DOM. */
+function createMessageShell({ role, createdAt }) {
+  const article = document.createElement("article");
+  article.className = `msg msg-${role}`;
+  const ts = createdAt
+    ? (createdAt instanceof Date ? createdAt : new Date(createdAt))
+    : new Date();
+  article.dataset.createdAt = ts.toISOString();
+
+  const avatar = document.createElement("div");
+  avatar.className = "msg-avatar";
+  avatar.setAttribute("aria-hidden", "true");
+  avatar.textContent = role === "user" ? userInitial() : "A";
+  article.appendChild(avatar);
+
+  const bubble = document.createElement("div");
+  bubble.className = "msg-bubble";
+  const body = document.createElement("div");
+  body.className = "msg-body";
+  bubble.appendChild(body);
+  article.appendChild(bubble);
+  return article;
+}
+
+const _COPY_ICON_SVG =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">' +
+  '<rect x="4.25" y="4.25" width="9" height="9" rx="1.5"/>' +
+  '<path d="M2.75 11V3.25C2.75 2.7 3.2 2.25 3.75 2.25H10"/>' +
+  "</svg>";
+
+/** Attach (or replace) the actions row on an existing message
+ *  article. ``copyText`` is the raw text the copy button writes to
+ *  the clipboard — usually the same markdown that built the body. */
+function attachMessageActions(article, copyText) {
+  const bubble = article.querySelector(".msg-bubble");
+  if (!bubble) return;
+  const existing = bubble.querySelector(".msg-actions");
+  if (existing) existing.remove();
+
+  const wrap = document.createElement("div");
+  wrap.className = "msg-actions";
+
+  const ts = article.dataset.createdAt
+    ? new Date(article.dataset.createdAt)
+    : new Date();
+  const time = document.createElement("time");
+  time.className = "msg-time";
+  time.dateTime = ts.toISOString();
+  time.textContent = formatTime(ts);
+  time.title = ts.toLocaleString();
+  wrap.appendChild(time);
+
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "msg-copy";
+  copy.title = "Copy message";
+  copy.setAttribute("aria-label", "Copy message");
+  copy.innerHTML = _COPY_ICON_SVG;
+  copy.onclick = async (e) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(copyText || "");
+      copy.classList.add("is-copied");
+      setTimeout(() => copy.classList.remove("is-copied"), 1400);
+    } catch (err) {
+      console.warn("clipboard write failed", err);
+    }
+  };
+  wrap.appendChild(copy);
+  bubble.appendChild(wrap);
+}
+
 function renderMessage(m) {
-  const div = document.createElement("div");
-  div.className = `msg msg-${m.role}`;
-  div.innerHTML = marked.parse(m.content || "");
+  const article = createMessageShell({ role: m.role, createdAt: m.created_at });
+  const bubble = article.querySelector(".msg-bubble");
+  const body = bubble.querySelector(".msg-body");
+  body.innerHTML = marked.parse(m.content || "");
+
   if (m.tool_calls && m.tool_calls.length) {
     for (const tc of m.tool_calls) {
       const det = document.createElement("details");
       det.innerHTML = `<summary>tool: ${tc.tool}</summary>
         <pre><code>${JSON.stringify(tc.args, null, 2)}</code></pre>`;
-      div.appendChild(det);
+      bubble.appendChild(det);
     }
   }
-  $("chat-messages").appendChild(div);
+
+  attachMessageActions(article, m.content || "");
+  $("chat-messages").appendChild(article);
 }
 
-let currentAssistantDiv = null;
+// Streaming state — captured per turn so finalize knows what to
+// re-render and what raw text to hand the copy button.
+let currentAssistantArticle = null;
+let currentAssistantBody = null;
+let currentAssistantText = "";
+
 function appendToken(text) {
-  if (!currentAssistantDiv) {
-    currentAssistantDiv = document.createElement("div");
-    currentAssistantDiv.className = "msg msg-assistant streaming";
-    $("chat-messages").appendChild(currentAssistantDiv);
+  if (!currentAssistantArticle) {
+    currentAssistantArticle = createMessageShell({ role: "assistant" });
+    currentAssistantArticle.classList.add("is-streaming");
+    currentAssistantBody = currentAssistantArticle.querySelector(".msg-body");
+    currentAssistantText = "";
+    $("chat-messages").appendChild(currentAssistantArticle);
   }
-  currentAssistantDiv.textContent += text;
-  currentAssistantDiv.scrollIntoView({ block: "end" });
+  currentAssistantText += text;
+  currentAssistantBody.textContent = currentAssistantText;
+  currentAssistantArticle.scrollIntoView({ block: "end" });
 }
 
 function finalizeAssistantMessage(frame) {
-  if (currentAssistantDiv) {
-    currentAssistantDiv.classList.remove("streaming");
-    currentAssistantDiv.innerHTML = marked.parse(frame.content || currentAssistantDiv.textContent);
-    currentAssistantDiv = null;
+  const content = (frame && frame.content) || currentAssistantText;
+  if (currentAssistantArticle && currentAssistantBody) {
+    currentAssistantArticle.classList.remove("is-streaming");
+    currentAssistantBody.innerHTML = marked.parse(content);
+    attachMessageActions(currentAssistantArticle, content);
+    currentAssistantArticle = null;
+    currentAssistantBody = null;
+    currentAssistantText = "";
   } else {
-    renderMessage({ role: "assistant", content: frame.content, tool_calls: frame.tool_calls });
+    renderMessage({
+      role: "assistant",
+      content,
+      tool_calls: frame && frame.tool_calls,
+      created_at: new Date().toISOString(),
+    });
   }
 }
 

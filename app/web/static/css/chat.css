@@ -229,35 +229,136 @@ body.chat-page-body main { margin: 0; padding: 0; }
   margin-right: auto;
 }
 
-/* message bubbles — mirror Agnes design tokens */
+/* ---------- Message bubbles ----------
+   Each turn is a row of [avatar | bubble]. User turns flip to
+   [bubble | avatar] via flex-direction: row-reverse. The bubble is
+   sized to its content (up to 80% of the row) so short answers don't
+   stretch into giant rectangles, and the row centers in the 880px
+   reading column owned by .cloud-chat-messages > *.
+
+   Tool-call <details> blocks live inside the bubble between body
+   and actions; their generic .cloud-chat-messages details styling
+   above still applies. */
+
 .msg {
-  padding: .65rem 1rem;
-  border-radius: var(--ds-radius-lg, 10px);
-  max-width: 80ch;
-  line-height: 1.5;
-  word-wrap: break-word;
+  display: flex;
+  gap: .75rem;
+  align-items: flex-start;
 }
-.msg-user {
+.msg-user { flex-direction: row-reverse; }
+
+/* Avatar — initials for user, "A" for agent. Color tone follows the
+   bubble palette so each turn reads as a unit at a glance. */
+.msg-avatar {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: .8rem;
+  font-weight: 600;
+  user-select: none;
+  background: var(--ds-surface-dim, #f3f4f6);
+  color: var(--ds-text-secondary, #6b7280);
+}
+.msg-user .msg-avatar {
   background: var(--ds-accent-info-bg, #eff6ff);
-  color: var(--ds-accent-info-ink, #1e3a8a);
-  align-self: flex-end;
-  border: 1px solid var(--ds-accent-info-border, #bfdbfe);
+  color: var(--ds-accent-info-ink, #1e40af);
 }
-.msg-assistant {
+.msg-assistant .msg-avatar {
+  background: var(--ds-primary, #10a37f);
+  color: var(--ds-primary-ink, #fff);
+}
+
+.msg-bubble {
+  /* ``flex: 0 1 auto`` keeps the bubble at its content size and only
+     shrinks if content overflows the row. ``max-width: 80%`` caps
+     long answers so they don't run edge-to-edge — leaves the
+     opposite side visually open for the role hint. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 80%;
+  padding: .55rem .85rem;
+  border-radius: var(--ds-radius-lg, 10px);
+  border: 1px solid var(--ds-border, #e5e7eb);
   background: var(--ds-surface, #fff);
   color: var(--ds-text, #111827);
-  align-self: flex-start;
-  border: 1px solid var(--ds-border, #e5e7eb);
+  line-height: 1.55;
+  word-wrap: break-word;
 }
-.msg-assistant.streaming::after {
+.msg-user .msg-bubble {
+  background: var(--ds-accent-info-bg, #eff6ff);
+  border-color: var(--ds-accent-info-border, #bfdbfe);
+  color: var(--ds-accent-info-ink, #1e3a8a);
+}
+
+.msg-body :first-child { margin-top: 0; }
+.msg-body :last-child  { margin-bottom: 0; }
+.msg-body p { margin: .35rem 0; }
+
+/* Streaming caret — replaces the previous ::after on the whole bubble
+   with one anchored at the cursor position of the body so it actually
+   sits where new tokens land. */
+.msg.is-streaming .msg-body::after {
   content: "▮";
   margin-left: 2px;
   color: var(--ds-primary, #10a37f);
   animation: cloudchat-blink 1s infinite;
 }
-@keyframes cloudchat-blink {
-  50% { opacity: 0; }
+@keyframes cloudchat-blink { 50% { opacity: 0; } }
+
+/* ---------- Actions row (timestamp + copy) ----------
+   Lives inside the bubble at the bottom; revealed on hover or when
+   the copy button receives keyboard focus. Color stays muted so it
+   doesn't compete with the message body — copy button accents on
+   hover. */
+.msg-actions {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  margin-top: .35rem;
+  font-size: .7rem;
+  color: var(--ds-text-muted, #9ca3af);
+  opacity: 0;
+  transition: opacity .12s;
 }
+.msg-user .msg-actions { justify-content: flex-end; }
+.msg:hover .msg-actions,
+.msg-actions:focus-within { opacity: 1; }
+/* While the model is streaming, keep the actions hidden — a half-
+   written turn has no stable content to copy. */
+.msg.is-streaming .msg-actions { display: none; }
+
+.msg-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background .12s, color .12s, transform .04s;
+}
+.msg-copy:hover {
+  background: var(--ds-surface-dim, #f3f4f6);
+  color: var(--ds-text, #111827);
+}
+.msg-copy:active { transform: translateY(1px); }
+.msg-copy.is-copied {
+  color: var(--ds-accent-success-ink, #166534);
+  background: var(--ds-accent-success-bg, #f0fdf4);
+}
+.msg-copy svg { width: 13px; height: 13px; }
 
 /* tool-call collapsible blocks */
 .cloud-chat-messages details {

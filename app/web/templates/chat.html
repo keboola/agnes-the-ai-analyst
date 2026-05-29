@@ -14,7 +14,7 @@
 
 {% block title %}Chat — {{ config.INSTANCE_NAME or 'Agnes' }}{% endblock %}
 
-{% block body_attrs %}class="chat-page-body"{% endblock %}
+{% block body_attrs %}class="chat-page-body" data-user-email="{{ current_user.email }}"{% endblock %}
 
 {% block head_extra %}
   <link rel="stylesheet" href="{{ static_url('css/chat.css') }}" />
