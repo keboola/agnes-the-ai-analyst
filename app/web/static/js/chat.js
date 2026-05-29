@@ -134,44 +134,95 @@ async function api(path, init = {}) {
   return r.json();
 }
 
+// In-memory cache of the last sidebar fetch so the Cmd+K palette can
+// filter without a round-trip and openSession can resolve titles.
+let _sessionsCache = [];
+
 async function loadSidebar() {
   const list = await api("/api/chat/sessions");
+  _sessionsCache = list;
   const ul = $("chat-list");
   ul.innerHTML = "";
-  for (const s of list) {
-    const li = document.createElement("li");
-    if (s.id === currentChatId) li.classList.add("is-active");
-    li.dataset.id = s.id;
-    li.title = s.title || `Untitled · ${s.id}`;
-    li.onclick = () => openSession(s.id);
-
-    // Title label — separate span so the delete button doesn't share
-    // the click target. Raw ``chat_<hex>`` ids are noise — fall back
-    // to "Untitled chat" when the backend hasn't titled the session
-    // yet (typical for a session that's empty or where the first
-    // user turn didn't seed an auto-title).
-    const label = document.createElement("span");
-    label.className = "cloud-chat-list-label";
-    label.textContent = s.title || "Untitled chat";
-    li.appendChild(label);
-
-    // Hover-revealed delete button — stopPropagation so clicking the
-    // button doesn't also open the conversation in the main panel.
-    const del = document.createElement("button");
-    del.type = "button";
-    del.className = "cloud-chat-list-del";
-    del.setAttribute("aria-label", `Delete ${s.title || "this conversation"}`);
-    del.innerHTML = "&times;";
-    del.onclick = async (e) => {
-      e.stopPropagation();
-      await deleteSession(s.id);
-    };
-    li.appendChild(del);
-
-    ul.appendChild(li);
+  // Group by recency before rendering — see _groupSessionsByDate. The
+  // groups come back in display order with a label per non-empty
+  // bucket; we inject a small section header above each.
+  for (const group of _groupSessionsByDate(list)) {
+    const header = document.createElement("li");
+    header.className = "cloud-chat-list-group-header";
+    header.setAttribute("role", "presentation");
+    header.textContent = group.label;
+    ul.appendChild(header);
+    for (const s of group.items) ul.appendChild(_makeSidebarItem(s));
   }
   const empty = $("cloud-chat-empty-state");
   if (empty) empty.hidden = list.length > 0;
+}
+
+/** Single sidebar <li> for a session. Pulled out so the date-group
+ *  loop above stays readable. */
+function _makeSidebarItem(s) {
+  const li = document.createElement("li");
+  if (s.id === currentChatId) li.classList.add("is-active");
+  li.dataset.id = s.id;
+  li.title = s.title || `Untitled · ${s.id}`;
+  li.onclick = () => openSession(s.id);
+
+  const label = document.createElement("span");
+  label.className = "cloud-chat-list-label";
+  label.textContent = s.title || "Untitled chat";
+  li.appendChild(label);
+
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "cloud-chat-list-del";
+  del.setAttribute("aria-label", `Delete ${s.title || "this conversation"}`);
+  del.innerHTML = "&times;";
+  del.onclick = async (e) => {
+    e.stopPropagation();
+    await deleteSession(s.id);
+  };
+  li.appendChild(del);
+  return li;
+}
+
+/** Group a flat sessions list into [{label, items}, …] buckets
+ *  ordered most-recent-first. Bucket boundaries are local-time
+ *  midnight (Today / Yesterday), the current ISO week's Monday
+ *  ("Earlier this week"), 30 days ago ("Earlier this month"), and
+ *  anything older ("Older").
+ *
+ *  Buckets with no items are dropped so the sidebar doesn't render
+ *  an empty header. Sort within each bucket is by last_message_at
+ *  (server-side already sorts most-recent-first across the whole
+ *  list; we just preserve that order). */
+function _groupSessionsByDate(sessions) {
+  const now = new Date();
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  const startOfYesterday = new Date(startOfToday);
+  startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+  const startOfWeek = new Date(startOfToday);
+  // ISO week — Monday is day 1; getDay() returns 0=Sun … 6=Sat.
+  const dow = (startOfWeek.getDay() + 6) % 7;
+  startOfWeek.setDate(startOfWeek.getDate() - dow);
+  const startOfMonth = new Date(startOfToday);
+  startOfMonth.setDate(startOfMonth.getDate() - 30);
+
+  const groups = [
+    { label: "Today",              items: [], threshold: startOfToday },
+    { label: "Yesterday",          items: [], threshold: startOfYesterday },
+    { label: "Earlier this week",  items: [], threshold: startOfWeek },
+    { label: "Earlier this month", items: [], threshold: startOfMonth },
+    { label: "Older",              items: [], threshold: new Date(0) },
+  ];
+  for (const s of sessions) {
+    const ts = s.last_message_at || s.started_at;
+    const d = ts ? new Date(ts) : new Date(0);
+    for (const g of groups) {
+      if (d >= g.threshold) { g.items.push(s); break; }
+    }
+  }
+  return groups.filter(g => g.items.length > 0);
 }
 
 /** Soft-archive a session via DELETE /api/chat/sessions/{id}. If the
@@ -676,6 +727,158 @@ function applyTheme(theme) {
   btn.setAttribute("aria-pressed", isDarkTheme() ? "true" : "false");
   btn.addEventListener("click", () => {
     applyTheme(isDarkTheme() ? "light" : "dark");
+  });
+})();
+
+// ---------- Cmd+K command palette ----------------------------------------
+// Fuzzy search over the in-memory sessions cache (_sessionsCache),
+// keyboard-driven. Cmd/Ctrl+K toggles open. Type to filter by title,
+// arrow keys move the selection, Enter opens, Esc closes. The input
+// is empty on each open so the user starts fresh.
+
+const _palette = {
+  open: false,
+  selected: 0,
+  filtered: [],
+};
+
+function _renderPaletteResults(q) {
+  const ul = $("chat-palette-results");
+  if (!ul) return;
+  ul.innerHTML = "";
+  const needle = q.trim().toLowerCase();
+  const matches = _sessionsCache.filter(s => {
+    if (!needle) return true;
+    const t = (s.title || "Untitled chat").toLowerCase();
+    return t.includes(needle) || s.id.toLowerCase().includes(needle);
+  });
+  _palette.filtered = matches;
+  if (matches.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "cloud-chat-palette-empty";
+    empty.textContent = needle
+      ? `No conversation matches "${q}"`
+      : "No conversations yet. Hit \"+ New chat\" to start.";
+    ul.appendChild(empty);
+    return;
+  }
+  if (_palette.selected >= matches.length) _palette.selected = 0;
+  for (let i = 0; i < matches.length; i++) {
+    const s = matches[i];
+    const li = document.createElement("li");
+    if (i === _palette.selected) li.classList.add("is-selected");
+    li.dataset.id = s.id;
+    li.setAttribute("role", "option");
+    li.setAttribute("aria-selected", i === _palette.selected ? "true" : "false");
+
+    const title = document.createElement("span");
+    title.className = "cloud-chat-palette-title";
+    title.textContent = s.title || "Untitled chat";
+    li.appendChild(title);
+
+    const meta = document.createElement("span");
+    meta.className = "cloud-chat-palette-meta";
+    meta.textContent = _palette_relativeTime(s.last_message_at || s.started_at);
+    li.appendChild(meta);
+
+    li.onmouseenter = () => {
+      _palette.selected = i;
+      _refreshPaletteSelection();
+    };
+    li.onclick = () => _palette_openCurrent();
+    ul.appendChild(li);
+  }
+}
+
+function _refreshPaletteSelection() {
+  const ul = $("chat-palette-results");
+  if (!ul) return;
+  const items = ul.querySelectorAll("li:not(.cloud-chat-palette-empty)");
+  items.forEach((li, i) => {
+    const on = i === _palette.selected;
+    li.classList.toggle("is-selected", on);
+    li.setAttribute("aria-selected", on ? "true" : "false");
+    if (on) li.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function _palette_relativeTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.round(diff / 60)} min ago`;
+  if (diff < 86400) return `${Math.round(diff / 3600)} h ago`;
+  if (diff < 7 * 86400) return `${Math.round(diff / 86400)} d ago`;
+  return d.toLocaleDateString();
+}
+
+function _palette_openCurrent() {
+  const s = _palette.filtered[_palette.selected];
+  closePalette();
+  if (s) openSession(s.id);
+}
+
+async function openPalette() {
+  if (_palette.open) return;
+  // Refresh the sidebar cache lazily — if the user opened Cmd+K very
+  // soon after the page loaded, the cache may still be []. We don't
+  // block the open, we just kick off a background refresh.
+  if (_sessionsCache.length === 0) loadSidebar().catch(() => {});
+  _palette.open = true;
+  _palette.selected = 0;
+  const wrap = $("chat-palette");
+  if (wrap) wrap.hidden = false;
+  const input = $("chat-palette-input");
+  if (input) { input.value = ""; input.focus(); }
+  _renderPaletteResults("");
+}
+
+function closePalette() {
+  if (!_palette.open) return;
+  _palette.open = false;
+  const wrap = $("chat-palette");
+  if (wrap) wrap.hidden = true;
+  // Return focus to the composer so the user lands somewhere
+  // expected after dismissing.
+  const ta = $("chat-input");
+  if (ta) ta.focus();
+}
+
+(function wirePalette() {
+  document.addEventListener("keydown", (e) => {
+    const isMod = e.metaKey || e.ctrlKey;
+    if (isMod && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      if (_palette.open) closePalette(); else openPalette();
+      return;
+    }
+    if (!_palette.open) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closePalette();
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      _palette.selected = Math.min(_palette.selected + 1, _palette.filtered.length - 1);
+      _refreshPaletteSelection();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      _palette.selected = Math.max(_palette.selected - 1, 0);
+      _refreshPaletteSelection();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      _palette_openCurrent();
+    }
+  });
+  const input = $("chat-palette-input");
+  if (input) {
+    input.addEventListener("input", () => {
+      _palette.selected = 0;
+      _renderPaletteResults(input.value);
+    });
+  }
+  document.querySelectorAll("[data-palette-close]").forEach(el => {
+    el.addEventListener("click", closePalette);
   });
 })();
 

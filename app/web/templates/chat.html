@@ -46,6 +46,37 @@
 {% block container_modifier %}container--full{% endblock %}
 
 {% block content %}
+{# Cmd+K command palette — opens via Cmd/Ctrl+K from anywhere on the
+   page. Lives outside the chat shell so its overlay z-index can sit
+   above everything else without fighting the shell's overflow rules. #}
+<div id="chat-palette" class="cloud-chat-palette" hidden
+     role="dialog" aria-modal="true" aria-label="Switch conversation">
+  <div class="cloud-chat-palette-backdrop" data-palette-close></div>
+  <div class="cloud-chat-palette-panel" role="document">
+    <header class="cloud-chat-palette-head">
+      <svg class="cloud-chat-palette-search-icon" viewBox="0 0 16 16"
+           aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6"
+           stroke-linecap="round">
+        <circle cx="7" cy="7" r="4.5"/>
+        <path d="M10.5 10.5L14 14"/>
+      </svg>
+      <input type="text" id="chat-palette-input"
+             class="cloud-chat-palette-input"
+             placeholder="Search conversations…"
+             aria-label="Search conversations"
+             autocomplete="off" spellcheck="false" />
+      <kbd class="cloud-chat-palette-hint">esc</kbd>
+    </header>
+    <ul id="chat-palette-results" class="cloud-chat-palette-results"
+        role="listbox" aria-label="Conversations"></ul>
+    <footer class="cloud-chat-palette-foot">
+      <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+      <span><kbd>↵</kbd> open</span>
+      <span><kbd>esc</kbd> close</span>
+    </footer>
+  </div>
+</div>
+
 <div class="cloud-chat-shell">
   <aside class="cloud-chat-sidebar" aria-label="Conversations">
     <header class="cloud-chat-sidebar-header">
