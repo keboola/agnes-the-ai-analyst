@@ -213,35 +213,46 @@ status. The endpoint requires admin auth (the sidecar's
 
 ## Cloud-chat host requirements
 
-Agnes can serve a zero-install web chat and Slack DM bot at `/chat`. This
-feature is opt-in (`chat.enabled: false` by default) and has additional
-infrastructure requirements beyond the base Agnes server.
+Agnes can serve a zero-install web chat and Slack DM bot at `/chat`. The
+sandboxed runner lives in an E2B ephemeral microVM; the Agnes host only
+needs RAM/CPU for the FastAPI app, ChatManager state, DuckDB, and any
+open WebSockets.
 
 **Full operator guide:** [`cloud-chat.md`](cloud-chat.md)
 
-**Minimum host size for N=10 active users** (default 3 sessions/user cap,
-1 GB RAM × 1 vCPU per session under nsjail rlimits):
+### Agnes server floor
 
-- 16 GB RAM
-- 12 vCPU
+Per-sandbox compute is billed by E2B (not by the Agnes host). The Agnes
+server itself needs only:
 
-Reduce `chat.concurrency_per_user` in `/admin/server-config` before
-enabling on smaller hosts.
+- 2 GB RAM (FastAPI + ChatManager + chat_repo + WS connections)
+- 1 vCPU for small teams; bump if you regularly host 50+ concurrent WS
+  clients
 
-**Single-worker constraint.** ChatManager state is in-memory. Agnes
-refuses to enable chat when `UVICORN_WORKERS > 1` — ensure your Docker
-Compose / systemd / Terraform unit launches a single uvicorn worker when
-`chat.enabled: true`. HA support is a future spec.
+There is no per-session RAM/CPU floor for the host any more — that
+moved to the E2B template (`e2b.toml`).
 
-**nsjail (Linux only).** The subprocess sandbox requires nsjail installed
-on the host. For macOS local dev, set `chat.require_isolation: false` in
-`instance.yaml`; on production Linux hosts leave it at the default `true`.
+### E2B account
 
-**Network egress allowlist.** nsjail does not enforce network egress on its
-own. Configure iptables `OWNER` match rules to restrict sandbox-process
-outbound traffic to `127.0.0.1` (agnes loopback), `api.anthropic.com:443`,
-and `api.github.com:443`. See [`cloud-chat.md`](cloud-chat.md) for the
-exact iptables snippet and rationale.
+1. Create an E2B account at https://e2b.dev and copy the API key from
+   the dashboard.
+2. Build the chat sandbox template: `e2b auth login` followed by
+   `e2b template build` inside
+   `app/initial_workspace_default/e2b-template/` (see that directory's
+   README for the full walkthrough).
+3. Set `E2B_API_KEY` in the Agnes server environment.
+4. Put the returned template id into `chat.e2b_template_id` in
+   `instance.yaml`.
+
+Sandbox billing is visible in the operator's E2B dashboard. Agnes does
+not yet surface per-session E2B cost in its own admin UI.
+
+### Single-worker constraint
+
+ChatManager state is in-memory. Agnes refuses to enable chat when
+`UVICORN_WORKERS > 1` — ensure your Docker Compose / systemd /
+Terraform unit launches a single uvicorn worker when `chat.enabled:
+true`. HA support is a future spec.
 
 ## Related documentation
 
