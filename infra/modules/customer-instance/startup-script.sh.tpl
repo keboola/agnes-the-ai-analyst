@@ -137,6 +137,15 @@ if [ -z "$${OAUTH_SECRET_NAME}" ]; then OAUTH_SECRET_NAME="google-oauth-client-s
 GOOGLE_CLIENT_ID=$(gcloud secrets versions access latest --secret="$${OAUTH_ID_SECRET_NAME}" 2>/dev/null || echo "")
 GOOGLE_CLIENT_SECRET=$(gcloud secrets versions access latest --secret="$${OAUTH_SECRET_NAME}" 2>/dev/null || echo "")
 
+# Optional app-level secrets injected via the caller's `runtime_secret_env` map
+# (e.g. E2B_API_KEY, ANTHROPIC_API_KEY, SLACK_BOT_TOKEN). Module auto-grants
+# secretAccessor for each map key. Missing / 403 / empty -> silent fallback to ""
+# so the operator can wire a secret name before the value exists; the app
+# surfaces its own missing-key error at startup (e.g. _chat_e2b_api_key_ok).
+%{ for secret_name, env_name in runtime_secret_env ~}
+${env_name}=$(gcloud secrets versions access latest --secret=${secret_name} 2>/dev/null || echo "")
+%{ endfor ~}
+
 # AGNES_VERSION, RELEASE_CHANNEL, AGNES_COMMIT_SHA are baked into the image
 # itself as ENV (see Dockerfile ARG/ENV + release.yml build-args). We do NOT
 # set them here — doing so would override the image-level values with the
@@ -205,6 +214,9 @@ AGNES_TAG=$EFFECTIVE_AGNES_TAG
 ACME_EMAIL=$ACME_EMAIL
 GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
+%{ for secret_name, env_name in runtime_secret_env ~}
+${env_name}=$${${env_name}}
+%{ endfor ~}
 $CADDY_TLS_LINE
 $AGNES_TEMP_DIR_LINE
 ENVEOF
