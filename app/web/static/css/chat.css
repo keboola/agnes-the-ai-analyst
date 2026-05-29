@@ -538,6 +538,159 @@ body.chat-page-body main { margin: 0; padding: 0; }
 }
 .code-block-copy svg { width: 13px; height: 13px; }
 
+/* ---------- Markdown result tables ----------
+   Tables emitted by marked.parse() get wrapped + decorated by
+   enhanceTables() in chat.js. The wrapper owns the horizontal scroll
+   on narrow viewports; the table itself gets the canonical
+   sticky-header + zebra treatment per system.md's .ds-table family.
+   Click-to-sort indicators (↑ / ↓) ride on the th's aria-sort
+   attribute so screen readers stay in sync. */
+.cloud-chat-table-wrap {
+  margin: var(--space-2) 0;
+  overflow-x: auto;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--radius-md);
+  background: var(--ds-surface);
+}
+.cloud-chat-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+.cloud-chat-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  background: var(--ds-surface-dim);
+  color: var(--ds-text-secondary);
+  font-weight: var(--font-semibold);
+  padding: 7px var(--space-3);
+  border-bottom: 1px solid var(--ds-border);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.cloud-chat-table thead th:hover {
+  background: var(--ds-border-light);
+  color: var(--ds-text-primary);
+}
+.cloud-chat-table thead th:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: -2px;
+}
+.cloud-chat-th-label { flex: 1 1 auto; }
+.cloud-chat-th-arrow {
+  display: inline-block;
+  margin-left: 6px;
+  width: 10px;
+  opacity: 0.5;
+  font-variant-numeric: tabular-nums;
+}
+.cloud-chat-table thead th[aria-sort="ascending"]  .cloud-chat-th-arrow::before { content: "↑"; }
+.cloud-chat-table thead th[aria-sort="descending"] .cloud-chat-th-arrow::before { content: "↓"; }
+.cloud-chat-table thead th[aria-sort="none"]       .cloud-chat-th-arrow::before { content: ""; }
+.cloud-chat-table thead th[aria-sort="ascending"],
+.cloud-chat-table thead th[aria-sort="descending"] {
+  color: var(--ds-text-primary);
+}
+.cloud-chat-table thead th[aria-sort="ascending"] .cloud-chat-th-arrow,
+.cloud-chat-table thead th[aria-sort="descending"] .cloud-chat-th-arrow {
+  opacity: 1;
+}
+.cloud-chat-table tbody td {
+  padding: 6px var(--space-3);
+  border-bottom: 1px solid var(--ds-border-light);
+  vertical-align: top;
+}
+.cloud-chat-table tbody tr:last-child td { border-bottom: none; }
+.cloud-chat-table tbody tr:hover td { background: var(--ds-surface-dim); }
+/* Make every cell tabular-nums by default; harmless on text. Keeps
+   numeric columns visually aligned without a per-column class. */
+.cloud-chat-table tbody td,
+.cloud-chat-table thead th { font-variant-numeric: tabular-nums; }
+
+/* ---------- Collapsible long messages ----------
+   When a turn's content exceeds COLLAPSE_THRESHOLD_PX (480 by
+   default, set in chat.js), the JS sets .is-collapsible on the
+   bubble. CSS clamps the body height + paints a fade-out gradient
+   over the bottom so the cut feels intentional, and the inserted
+   .msg-toggle-collapse button flips .is-expanded. */
+.msg-bubble.is-collapsible .msg-body {
+  max-height: 480px;
+  overflow: hidden;
+  position: relative;
+}
+.msg-bubble.is-collapsible .msg-body::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 60px;
+  background: linear-gradient(transparent, var(--ds-surface));
+  pointer-events: none;
+}
+.msg-user.is-collapsible .msg-body::after {
+  background: linear-gradient(transparent, var(--ds-accent-info-bg));
+}
+.msg-bubble.is-collapsible.is-expanded .msg-body {
+  max-height: none;
+  overflow: visible;
+}
+.msg-bubble.is-collapsible.is-expanded .msg-body::after { display: none; }
+.msg-toggle-collapse {
+  margin-top: var(--space-2);
+  padding: 4px var(--space-3);
+  background: transparent;
+  border: 1px solid var(--ds-border);
+  color: var(--ds-text-secondary);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.msg-toggle-collapse:hover {
+  background: var(--ds-surface-dim);
+  color: var(--ds-text-primary);
+}
+.msg-toggle-collapse:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* ---------- "↻ Ask again" ---------- */
+/* Hidden by default — only the latest assistant turn (article with
+   .is-latest-assistant) reveals it. Sits in the actions row next to
+   the timestamp + copy. Same hover-reveal pattern as the rest of
+   the actions row so it doesn't compete with the answer body. */
+.msg-regenerate { display: none; }
+.msg.is-latest-assistant .msg-regenerate {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.msg.is-latest-assistant .msg-regenerate:hover {
+  background: var(--ds-surface-dim);
+  color: var(--ds-text-primary);
+}
+.msg.is-latest-assistant .msg-regenerate:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+.msg-regenerate svg { width: 12px; height: 12px; }
+
 /* Inline code (single backticks) stays mint-chip per system.md. */
 .msg-body :not(pre) > code,
 .cloud-chat-messages details :not(pre) > code {

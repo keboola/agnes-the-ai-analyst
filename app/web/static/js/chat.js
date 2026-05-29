@@ -342,7 +342,12 @@ async function openSession(chatId, wsUrlOverride) {
     showCapabilities();
   } else {
     hideCapabilities();
-    for (const m of history) renderMessage(m);
+    lastAssistantArticle = null;
+    lastUserText = "";
+    for (const m of history) {
+      renderMessage(m);
+      if (m.role === "user") lastUserText = m.content || "";
+    }
   }
 
   // Mint a fresh WS ticket for THIS chat_id (unless caller already has one).
@@ -448,6 +453,26 @@ const _COPY_ICON_SVG =
   '<path d="M2.75 11V3.25C2.75 2.7 3.2 2.25 3.75 2.25H10"/>' +
   "</svg>";
 
+// Tracks the most recent user message text so the "↻ Ask again"
+// button on the latest assistant turn can re-fire it. Updated by
+// submitUserMessage() on every send.
+let lastUserText = "";
+
+// Tracks the most recent assistant message so the "Ask again"
+// affordance + any other "latest only" UI can be moved as the
+// conversation progresses. _markLatestAssistant clears the prior
+// .is-latest-assistant marker before applying the new one — CSS
+// hides ".msg-regenerate" outside the latest article so we don't
+// have to scrub the button from old turns.
+let lastAssistantArticle = null;
+function _markLatestAssistant(article) {
+  if (lastAssistantArticle && lastAssistantArticle !== article) {
+    lastAssistantArticle.classList.remove("is-latest-assistant");
+  }
+  lastAssistantArticle = article;
+  if (article) article.classList.add("is-latest-assistant");
+}
+
 /** Attach (or replace) the actions row on an existing message
  *  article. ``copyText`` is the raw text the copy button writes to
  *  the clipboard — usually the same markdown that built the body. */
@@ -489,6 +514,33 @@ function attachMessageActions(article, copyText) {
     }
   };
   wrap.appendChild(copy);
+
+  // "↻ Ask again" — only meaningful on assistant turns; CSS keeps
+  // it hidden on every assistant message except .is-latest-assistant
+  // so the user sees one button at a time at the bottom of the
+  // thread (ChatGPT pattern). Re-fires lastUserText via the same
+  // submitUserMessage path so streaming, status, and toast logic
+  // all run identically.
+  if (article.classList.contains("msg-assistant")) {
+    const regen = document.createElement("button");
+    regen.type = "button";
+    regen.className = "msg-regenerate";
+    regen.title = "Ask the same question again";
+    regen.setAttribute("aria-label", "Ask the same question again");
+    regen.innerHTML =
+      '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M2 8a6 6 0 1 1 1.76 4.24"/>' +
+      '<path d="M2 12V8h4"/>' +
+      "</svg>" +
+      '<span>Ask again</span>';
+    regen.onclick = (e) => {
+      e.stopPropagation();
+      if (!lastUserText) return;
+      submitUserMessage(lastUserText);
+    };
+    wrap.appendChild(regen);
+  }
+
   bubble.appendChild(wrap);
 }
 
@@ -498,6 +550,7 @@ function renderMessage(m) {
   const body = bubble.querySelector(".msg-body");
   body.innerHTML = marked.parse(m.content || "");
   enhanceCodeBlocks(body);
+  enhanceTables(body);
 
   if (m.tool_calls && m.tool_calls.length) {
     for (const tc of m.tool_calls) {
@@ -511,7 +564,141 @@ function renderMessage(m) {
 
   attachMessageActions(article, m.content || "");
   $("chat-messages").appendChild(article);
+  if (m.role === "assistant") _markLatestAssistant(article);
+  maybeMakeCollapsible(article);
   maybeScrollToBottom();
+}
+
+// ---------- Result table enhancement -------------------------------------
+// marked.parse() produces a vanilla <table> for every markdown table
+// the agent writes. We post-process: wrap in a horizontal-scroll
+// container so wide tables don't blow up the bubble width, mark the
+// table so chat.css applies the sticky-header styling, and add a
+// click-to-sort handler on each <th>.
+//
+// Sort is column-local: clicking cycles between asc / desc, with the
+// other <th>s reset. Numeric columns are sorted as numbers (parsed
+// from the cell's text); everything else falls back to a
+// localeCompare so accented strings sort correctly. aria-sort + a
+// visual indicator (↑/↓) mirror the state so screen readers and
+// sighted users agree on what's sorted.
+
+function enhanceTables(root) {
+  if (!root) return;
+  for (const table of root.querySelectorAll("table")) {
+    if (table.dataset.tblEnhanced === "1") continue;
+    table.dataset.tblEnhanced = "1";
+    table.classList.add("cloud-chat-table");
+
+    // Wrap for horizontal scroll on narrow viewports.
+    if (!table.parentElement.classList.contains("cloud-chat-table-wrap")) {
+      const wrap = document.createElement("div");
+      wrap.className = "cloud-chat-table-wrap";
+      table.parentNode.insertBefore(wrap, table);
+      wrap.appendChild(table);
+    }
+
+    const thead = table.querySelector("thead");
+    const tbody = table.querySelector("tbody");
+    if (!thead || !tbody) continue;
+
+    const headers = [...thead.querySelectorAll("th")];
+    headers.forEach((th, idx) => {
+      th.setAttribute("role", "button");
+      th.setAttribute("tabindex", "0");
+      th.setAttribute("aria-sort", "none");
+      const label = th.textContent;
+      // Wrap the text + indicator so the indicator stays anchored
+      // right while the label can ellipsis if a column is narrow.
+      th.innerHTML = `<span class="cloud-chat-th-label">${label}</span>
+        <span class="cloud-chat-th-arrow" aria-hidden="true"></span>`;
+      const sortRows = () => _sortTableByColumn(table, headers, idx);
+      th.addEventListener("click", sortRows);
+      th.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          sortRows();
+        }
+      });
+    });
+  }
+}
+
+function _sortTableByColumn(table, headers, columnIdx) {
+  const tbody = table.querySelector("tbody");
+  if (!tbody) return;
+  const th = headers[columnIdx];
+  const currentDir = th.getAttribute("aria-sort");
+  const nextDir = currentDir === "ascending" ? "descending" : "ascending";
+  // Reset every other column's state, set this column's.
+  headers.forEach(h => h.setAttribute("aria-sort", "none"));
+  th.setAttribute("aria-sort", nextDir);
+
+  const rows = [...tbody.querySelectorAll("tr")];
+  // Detect numeric column — if every non-empty cell parses as a
+  // finite number, sort numerically.
+  const cells = rows.map(r => (r.children[columnIdx]?.textContent ?? "").trim());
+  const numericVals = cells.map(s => parseFloat(s.replace(/,/g, "")));
+  const isNumeric = cells.length > 0 &&
+    cells.every((s, i) => s === "" || Number.isFinite(numericVals[i]));
+  const cmp = (a, b) => {
+    if (isNumeric) {
+      const av = parseFloat((a.cellText || "").replace(/,/g, ""));
+      const bv = parseFloat((b.cellText || "").replace(/,/g, ""));
+      const ax = Number.isFinite(av) ? av : Infinity;
+      const bx = Number.isFinite(bv) ? bv : Infinity;
+      return ax - bx;
+    }
+    return (a.cellText || "").localeCompare(b.cellText || "", undefined, { sensitivity: "base" });
+  };
+  const tagged = rows.map(row => ({
+    row,
+    cellText: (row.children[columnIdx]?.textContent ?? "").trim(),
+  }));
+  tagged.sort(cmp);
+  if (nextDir === "descending") tagged.reverse();
+  // Re-attach in new order — DOM appendChild moves existing nodes.
+  for (const { row } of tagged) tbody.appendChild(row);
+}
+
+// ---------- Collapsible long messages ------------------------------------
+// When an assistant turn renders content taller than COLLAPSE_THRESHOLD
+// pixels (typically a long code block or a wide table), we cap the
+// body height with a fade-out gradient and surface a "Show more"
+// toggle. Keeps the scroll feed scannable; expanded state is per-
+// message-element so it doesn't bleed across re-renders.
+
+const COLLAPSE_THRESHOLD_PX = 480;
+
+function maybeMakeCollapsible(article) {
+  if (!article) return;
+  const body = article.querySelector(".msg-body");
+  if (!body) return;
+  const bubble = article.querySelector(".msg-bubble");
+  if (!bubble) return;
+  // Run AFTER the next paint so scrollHeight reflects the rendered
+  // content. requestAnimationFrame is enough for marked-rendered
+  // markdown which doesn't paint async.
+  requestAnimationFrame(() => {
+    if (body.scrollHeight <= COLLAPSE_THRESHOLD_PX) return;
+    bubble.classList.add("is-collapsible");
+    if (bubble.querySelector(".msg-toggle-collapse")) return;
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "msg-toggle-collapse";
+    toggle.textContent = "Show more";
+    toggle.onclick = (e) => {
+      e.stopPropagation();
+      const expanded = bubble.classList.toggle("is-expanded");
+      toggle.textContent = expanded ? "Show less" : "Show more";
+    };
+    // Insert the toggle before the actions row so the actions sit
+    // beneath it visually.
+    const actions = bubble.querySelector(".msg-actions");
+    if (actions) bubble.insertBefore(toggle, actions);
+    else bubble.appendChild(toggle);
+  });
 }
 
 // ---------- Code-block enhancement ---------------------------------------
@@ -643,7 +830,10 @@ function finalizeAssistantMessage(frame) {
     currentAssistantArticle.classList.remove("is-streaming");
     currentAssistantBody.innerHTML = marked.parse(content);
     enhanceCodeBlocks(currentAssistantBody);
+    enhanceTables(currentAssistantBody);
     attachMessageActions(currentAssistantArticle, content);
+    _markLatestAssistant(currentAssistantArticle);
+    maybeMakeCollapsible(currentAssistantArticle);
     currentAssistantArticle = null;
     currentAssistantBody = null;
     currentAssistantText = "";
@@ -719,6 +909,7 @@ async function submitUserMessage(text) {
     return;
   }
   renderMessage({ role: "user", content: text });
+  lastUserText = text;
   ws.send(JSON.stringify({ type: "user_msg", text }));
   const ta = $("chat-input");
   if (ta) {
