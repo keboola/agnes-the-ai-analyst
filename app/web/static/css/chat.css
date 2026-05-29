@@ -1238,6 +1238,20 @@ body.chat-page-body main { margin: 0; padding: 0; }
   }
 }
 
+/* Reduced-motion: drop the press transform on the primary buttons
+   so users with prefers-reduced-motion: reduce don't get the 1px
+   sink either. Pairs with the existing reduced-motion blocks that
+   already disable the thinking-dot bounce, palette in-animation,
+   and toast in-animation. */
+@media (prefers-reduced-motion: reduce) {
+  .cloud-chat-new-btn:active,
+  .cloud-chat-send-btn:active,
+  .code-block-copy:active,
+  .msg-copy:active {
+    transform: none;
+  }
+}
+
 /* ============================================================ responsive */
 
 @media (max-width: 900px) {
