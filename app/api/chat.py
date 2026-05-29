@@ -104,6 +104,34 @@ async def list_sessions(
     ]
 
 
+@router.post("/sessions/{chat_id}/ticket", status_code=201)
+async def reissue_ticket(
+    chat_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Mint a fresh WS ticket for an EXISTING session.
+
+    POST /api/chat/sessions creates a new session every time. When the user
+    clicks an old conversation in the sidebar after their WS dropped, the
+    frontend needs a way to re-attach to the SAME chat_id (so history
+    context continues, message threading is preserved) rather than start
+    a new one. This endpoint is that path: 404 if the session doesn't
+    exist or belongs to someone else, otherwise the same ticket+url shape
+    that ``create_session`` returns.
+    """
+    repo = _get_repo(request)
+    s = repo.get_session(chat_id)
+    if s is None or s.user_email != user["email"]:
+        raise HTTPException(404)
+    ticket = _issue_ticket(chat_id, user["email"])
+    return {
+        "id": chat_id,
+        "ws_ticket": ticket,
+        "ws_url": f"/api/chat/sessions/{chat_id}/stream?ticket={ticket}",
+    }
+
+
 @router.get("/sessions/{chat_id}/messages")
 async def list_messages(
     chat_id: str,

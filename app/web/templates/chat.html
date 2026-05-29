@@ -114,5 +114,14 @@
 {% endblock %}
 
 {% block scripts %}
+  {# Server-side RBAC-filtered capability snapshot. The previous shape
+     fetched /api/catalog + /api/marketplaces from JS, but the catalog
+     URL was wrong (real endpoint is /api/catalog/tables) and
+     /api/marketplaces is admin-only — non-admin users always saw
+     "unavailable" / "no plugins". Embedding here makes the panel
+     render synchronously with the page, no auth races. #}
+  <script id="chat-capabilities-data" type="application/json">
+    {{ chat_capabilities | tojson }}
+  </script>
   <script type="module" src="/static/js/chat.js"></script>
 {% endblock %}

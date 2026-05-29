@@ -6,9 +6,16 @@ let currentChatId = null;
 let inFlightToolCalls = new Map();
 
 // --- capability empty-state panel ---------------------------------
-// Shown when no chat is open; hides as soon as a session is created
-// or opened from the sidebar. Counts (tables, plugins) are loaded
-// asynchronously via the existing REST API so we don't block render.
+// Populated from a server-embedded JSON blob
+// (``<script type="application/json" id="chat-capabilities-data">``).
+// The previous shape fetched ``/api/catalog`` + ``/api/marketplaces``
+// from JS, but those URLs were wrong / admin-only, so the panel always
+// rendered "Catalog unavailable" / "No plugins" regardless of what the
+// caller actually had access to. The server now resolves the RBAC-
+// filtered view via ``_chat_capability_snapshot`` in
+// ``app/web/router.py``, embeds the result here, and we render
+// synchronously — no round-trip, no auth races.
+
 function hideCapabilities() {
   const panel = $("chat-capabilities");
   if (panel) panel.hidden = true;
@@ -30,65 +37,69 @@ function setStatus(text, kind = "info") {
   if (text) el.classList.add(`is-${kind}`);
 }
 
-async function loadCapabilityCounts() {
-  // Catalog: count tables the caller can see (RBAC pre-filtered server-side).
+function readCapabilitySnapshot() {
+  const blob = document.getElementById("chat-capabilities-data");
+  if (!blob) return null;
   try {
-    const cat = await api("/api/catalog?json=1").catch(() => null) || await api("/api/catalog");
-    const tables = Array.isArray(cat) ? cat : (cat?.tables || cat?.items || []);
-    const total = tables.length;
-    const bySource = {};
-    for (const t of tables) {
-      const src = t.source_name || t.source_type || t.source || "unknown";
-      bySource[src] = (bySource[src] || 0) + 1;
-    }
-    const summary = $("cap-data-summary");
-    if (summary) {
-      summary.textContent = total > 0
-        ? `You can query ${total} table${total === 1 ? "" : "s"} across ${Object.keys(bySource).length} data source${Object.keys(bySource).length === 1 ? "" : "s"}.`
-        : "No tables in your catalog yet — an admin grants access via /admin/access.";
-    }
-    const ul = $("cap-data-sources");
-    if (ul && total > 0) {
-      ul.innerHTML = "";
-      for (const [src, n] of Object.entries(bySource)) {
-        const li = document.createElement("li");
-        li.innerHTML = `<code>${src}</code> — ${n} table${n === 1 ? "" : "s"}`;
-        ul.appendChild(li);
-      }
-    }
+    return JSON.parse(blob.textContent);
   } catch (err) {
-    const summary = $("cap-data-summary");
-    if (summary) summary.textContent = "Catalog unavailable — try `agnes catalog` once a chat is open.";
+    console.warn("chat-capabilities-data parse failed", err);
+    return null;
+  }
+}
+
+function renderCapabilities() {
+  const snap = readCapabilitySnapshot();
+  if (!snap) return;
+
+  // --- Data card ---
+  const total = snap.tables_total || 0;
+  const bySource = snap.tables_by_source || {};
+  const sourceCount = Object.keys(bySource).length;
+  const dataSummary = $("cap-data-summary");
+  if (dataSummary) {
+    dataSummary.textContent = total > 0
+      ? `You can query ${total} table${total === 1 ? "" : "s"} across ${sourceCount} data source${sourceCount === 1 ? "" : "s"}.`
+      : "No tables in your catalog yet — an admin grants access via /admin/access.";
+  }
+  const dataUl = $("cap-data-sources");
+  if (dataUl && total > 0) {
+    dataUl.innerHTML = "";
+    for (const [src, n] of Object.entries(bySource)) {
+      const li = document.createElement("li");
+      const code = document.createElement("code");
+      code.textContent = src;
+      li.appendChild(code);
+      li.appendChild(document.createTextNode(` — ${n} table${n === 1 ? "" : "s"}`));
+      dataUl.appendChild(li);
+    }
   }
 
-  // Marketplace plugins.
-  try {
-    const mp = await api("/api/marketplaces").catch(() => []);
-    const items = Array.isArray(mp) ? mp : (mp?.marketplaces || []);
-    const plugins = items.flatMap(m => m.plugins || []);
-    const summary = $("cap-marketplace-summary");
-    if (summary) {
-      summary.textContent = plugins.length > 0
-        ? `${plugins.length} plugin${plugins.length === 1 ? "" : "s"} installed across ${items.length} marketplace${items.length === 1 ? "" : "s"}.`
-        : "No marketplace plugins installed yet.";
+  // --- Marketplace card ---
+  const plugins = snap.plugins || [];
+  const mpCount = snap.marketplace_count || 0;
+  const mpSummary = $("cap-marketplace-summary");
+  if (mpSummary) {
+    mpSummary.textContent = plugins.length > 0
+      ? `${plugins.length} plugin${plugins.length === 1 ? "" : "s"} installed across ${mpCount} marketplace${mpCount === 1 ? "" : "s"}.`
+      : "No marketplace plugins installed yet.";
+  }
+  const mpUl = $("cap-marketplace-list");
+  if (mpUl && plugins.length > 0) {
+    mpUl.innerHTML = "";
+    for (const p of plugins.slice(0, 5)) {
+      const li = document.createElement("li");
+      const code = document.createElement("code");
+      code.textContent = p.name || "?";
+      li.appendChild(code);
+      if (p.tagline) li.appendChild(document.createTextNode(" — " + p.tagline));
+      mpUl.appendChild(li);
     }
-    const ul = $("cap-marketplace-list");
-    if (ul && plugins.length > 0) {
-      ul.innerHTML = "";
-      for (const p of plugins.slice(0, 5)) {
-        const li = document.createElement("li");
-        li.innerHTML = `<code>${p.name || p.id}</code>${p.tagline ? " — " + p.tagline : ""}`;
-        ul.appendChild(li);
-      }
-      if (plugins.length > 5) {
-        const li = document.createElement("li");
-        li.textContent = `… and ${plugins.length - 5} more`;
-        ul.appendChild(li);
-      }
+    if (plugins.length > 5) {
+      const li = document.createElement("li");
+      li.textContent = `… and ${plugins.length - 5} more`;
+      mpUl.appendChild(li);
     }
-  } catch (err) {
-    const summary = $("cap-marketplace-summary");
-    if (summary) summary.textContent = "Marketplace info unavailable.";
   }
 }
 
@@ -125,10 +136,10 @@ async function loadSidebar() {
   ul.innerHTML = "";
   for (const s of list) {
     const li = document.createElement("li");
-    // Raw chat_<hex> ids are noise to a human — fall back to "Untitled
-    // chat" when the backend hasn't titled the session yet (typical for
-    // a session that's empty or where the first user turn didn't seed
-    // an auto-title). Real titles still render verbatim.
+    // Raw ``chat_<hex>`` ids are noise to a human — fall back to
+    // "Untitled chat" when the backend hasn't titled the session yet
+    // (typical for a session that's empty or where the first user turn
+    // didn't seed an auto-title). Real titles still render verbatim.
     li.textContent = s.title || "Untitled chat";
     li.title = s.title || `Untitled · ${s.id}`;
     li.dataset.id = s.id;
@@ -136,6 +147,8 @@ async function loadSidebar() {
     li.onclick = () => openSession(s.id);
     ul.appendChild(li);
   }
+  const empty = $("cloud-chat-empty-state");
+  if (empty) empty.hidden = list.length > 0;
 }
 
 /** Toggle the `.is-active` class on the sidebar item matching ``chatId``.
@@ -159,6 +172,15 @@ async function newChat() {
   openSession(created.id, created.ws_url);
 }
 
+/** Open (or resume) a chat session.
+ *
+ * For an existing ``chatId`` we POST ``/sessions/{id}/ticket`` to mint a
+ * fresh WS ticket against the SAME session — preserves ``chat_id``,
+ * history context, message threading. (``POST /sessions`` creates a NEW
+ * session each time, which used to be the path here and caused "click
+ * on old chat shows old history but routes new messages to a brand-new
+ * session" confusion.)
+ */
 async function openSession(chatId, wsUrlOverride) {
   if (ws) { ws.close(); ws = null; }
   currentChatId = chatId;
@@ -170,7 +192,12 @@ async function openSession(chatId, wsUrlOverride) {
   // session has no messages yet — otherwise the chat-main area is a
   // blank rectangle and the user has no visual guidance about what
   // they can ask.
-  const history = await api(`/api/chat/sessions/${chatId}/messages`);
+  let history = [];
+  try {
+    history = await api(`/api/chat/sessions/${chatId}/messages`);
+  } catch (err) {
+    setStatus(`Could not load history: ${err.message}`, "warn");
+  }
   if (history.length === 0) {
     showCapabilities();
   } else {
@@ -178,24 +205,24 @@ async function openSession(chatId, wsUrlOverride) {
     for (const m of history) renderMessage(m);
   }
 
-  // Open WS; if no override, mint a fresh ticket via POST
+  // Mint a fresh WS ticket for THIS chat_id (unless caller already has one).
   let wsUrl = wsUrlOverride;
   if (!wsUrl) {
-    const created = await api("/api/chat/sessions", {
-      method: "POST",
-      body: JSON.stringify({ surface: "web", title: null }),
-    });
-    if (created.id !== chatId) {
-      // server returned a deduped session — re-open that one
-      currentChatId = created.id;
+    try {
+      const t = await api(`/api/chat/sessions/${chatId}/ticket`, { method: "POST" });
+      wsUrl = t.ws_url;
+    } catch (err) {
+      setStatus(`Could not resume chat: ${err.message}`, "error");
+      return;
     }
-    wsUrl = created.ws_url;
   }
 
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}${wsUrl}`);
   ws.onmessage = (ev) => handleFrame(JSON.parse(ev.data));
-  ws.onclose = () => { setStatus("Disconnected.", "warn"); };
+  ws.onclose = () => {
+    setStatus("Disconnected — click the conversation again to resume.", "warn");
+  };
 }
 
 function handleFrame(frame) {
@@ -286,13 +313,22 @@ function renderToolCallEnd(frame) {
   }
 }
 
-// Wait until the WebSocket is ready (auto-create chat if none open).
+/** Make sure a WebSocket is live, or open one.
+ *
+ *  - Already open → no-op.
+ *  - Have a ``currentChatId`` but no live WS → call ``openSession`` to
+ *    re-mint a ticket against the SAME chat (resume after disconnect).
+ *  - No current chat at all → create a brand-new one.
+ *
+ *  After whichever path runs, poll briefly for ``ws.readyState === 1``
+ *  before resolving so callers can ``ws.send`` immediately. */
 async function ensureWsReady() {
   if (ws && ws.readyState === 1) return;
-  // No active WS — create a new chat session. newChat() opens the WS
-  // and resolves when openSession completes, but openSession doesn't
-  // currently return a "WS open" promise, so we poll briefly.
-  if (!currentChatId) await newChat();
+  if (currentChatId) {
+    await openSession(currentChatId);
+  } else {
+    await newChat();
+  }
   for (let i = 0; i < 60; i++) {
     if (ws && ws.readyState === 1) return;
     await new Promise(r => setTimeout(r, 100));
@@ -326,12 +362,22 @@ $("chat-form").onsubmit = async (e) => {
   await submitUserMessage(text);
 };
 
+// Enter sends, Shift+Enter inserts a newline. IME composition is left
+// alone (``isComposing`` is true while a CJK candidate is open —
+// submitting then would eat the user's in-progress input). The textarea
+// retains its native newline behavior for Shift+Enter so multi-line
+// prompts stay possible.
+$("chat-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    $("chat-form").dispatchEvent(new SubmitEvent("submit", { cancelable: true }));
+  }
+});
+
 $("cancel-btn").onclick = () => ws?.send(JSON.stringify({ type: "cancel" }));
 
 (async () => {
-  await loadSidebar();
-  // Capability empty-state visible until first chat starts. Loading
-  // counts async — page renders immediately, panel fills in.
+  renderCapabilities();
   wireSuggestionButtons();
-  loadCapabilityCounts();
+  await loadSidebar();
 })();

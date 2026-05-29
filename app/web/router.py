@@ -3026,7 +3026,67 @@ async def chat_page(
     if not request.app.state.chat_config.enabled:
         return RedirectResponse("/")
     ctx = _build_context(request, user=user, conn=conn, current_user=user)
+    ctx["chat_capabilities"] = _chat_capability_snapshot(conn, user)
     return templates.TemplateResponse(request, "chat.html", ctx)
+
+
+def _chat_capability_snapshot(
+    conn: duckdb.DuckDBPyConnection, user: dict
+) -> dict:
+    """Compute the empty-state capability panel data server-side.
+
+    The previous shape called ``/api/catalog`` + ``/api/marketplaces`` from
+    JS. Those URLs were wrong (``/api/catalog`` 404s — the real endpoint is
+    ``/api/catalog/tables``; ``/api/marketplaces`` is admin-only and 403s
+    for normal users), so the panel always rendered "unavailable" /
+    "no plugins". Resolving here side-steps both: we already have ``user``
+    + ``conn`` from the route's Depends, both RBAC-filter helpers are
+    sync, and rendering becomes a single round-trip with no client-side
+    fetch races. JSON gets embedded by the template via ``| tojson``.
+    """
+    from src.rbac import can_access_table
+    from src.repositories.table_registry import TableRegistryRepository
+    from src.marketplace_filter import resolve_allowed_plugins
+
+    by_source: dict[str, int] = {}
+    try:
+        all_tables = TableRegistryRepository(conn).list_all()
+        for t in all_tables:
+            if not can_access_table(user, t["id"], conn):
+                continue
+            src = t.get("source_type") or "unknown"
+            by_source[src] = by_source.get(src, 0) + 1
+        tables_total = sum(by_source.values())
+    except Exception:
+        logger.exception("chat capability snapshot: tables query failed")
+        tables_total = 0
+        by_source = {}
+
+    try:
+        plugins = resolve_allowed_plugins(conn, user)
+        # Keep only the fields the template renders to keep the embedded
+        # JSON small; ``plugin_dir`` is a Path which doesn't survive
+        # ``tojson``, ``raw`` is upstream marketplace.json and can be MB.
+        plugin_summaries = [
+            {
+                "name": p.get("manifest_name") or p.get("original_name"),
+                "marketplace": p.get("marketplace_slug"),
+                "tagline": (p.get("raw") or {}).get("description"),
+            }
+            for p in plugins
+        ]
+        marketplace_count = len({p["marketplace"] for p in plugin_summaries})
+    except Exception:
+        logger.exception("chat capability snapshot: plugins query failed")
+        plugin_summaries = []
+        marketplace_count = 0
+
+    return {
+        "tables_total": tables_total,
+        "tables_by_source": by_source,
+        "plugins": plugin_summaries,
+        "marketplace_count": marketplace_count,
+    }
 
 
 @router.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)

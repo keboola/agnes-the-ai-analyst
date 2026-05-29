@@ -10,6 +10,34 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **`POST /api/chat/sessions/{chat_id}/ticket`** mints a fresh WS ticket
+  for an EXISTING chat session. The web UI now uses this when the user
+  clicks an old conversation in the sidebar — re-attaching to the same
+  `chat_id` preserves message history threading. Previously the sidebar
+  click went through `POST /sessions` which creates a brand-new session
+  each time, so the panel showed old history but routed new messages to
+  a different session id. 404 for unknown / other-users' chats (same
+  shape as the messages endpoint, no existence disclosure).
+
+### Changed
+- **Cloud-chat empty-state capability panel reads from a server-side
+  RBAC snapshot.** Previously chat.js called `/api/catalog` (wrong URL —
+  the real endpoint is `/api/catalog/tables`) and `/api/marketplaces`
+  (admin-only — non-admin users get 403). Both errors collapsed into
+  "Catalog unavailable" + "No plugins" regardless of what the caller
+  actually had access to. The `/chat` route now resolves the user's
+  table list (via `can_access_table`) and plugin list (via
+  `resolve_allowed_plugins`) and embeds a `<script type="application/json"
+  id="chat-capabilities-data">` blob the page reads synchronously —
+  no fetch, no auth races.
+- **Chat composer: Enter sends, Shift+Enter inserts a newline.** The
+  composer is a `<textarea>`, so native Enter behavior is "insert a
+  newline" and the form never submitted via keyboard. Added a `keydown`
+  handler that intercepts `Enter` (without Shift, not during IME
+  composition) and dispatches the form submit; Shift+Enter retains the
+  native newline so multi-line prompts still work.
+
 ### Fixed
 - **Cloud-chat: SDK `initialize` timeout caused by HOME pointing at a host-only path.**
   `ChatManager._spawn_runner` was setting `HOME=<session_dir>` on the

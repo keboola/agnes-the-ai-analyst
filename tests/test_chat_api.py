@@ -133,3 +133,49 @@ def test_create_when_disabled(api_client_chat_disabled: TestClient, logged_in_us
     r = api_client_chat_disabled.post("/api/chat/sessions", json={"surface": "web"})
     assert r.status_code == 503
     assert r.json()["detail"]["kind"] == "chat_disabled"
+
+
+def test_reissue_ticket_for_existing_session(api_client: TestClient, logged_in_user):
+    """``POST /sessions/{id}/ticket`` mints a fresh WS ticket against the
+    SAME chat_id — used by the frontend when the user clicks an old
+    conversation in the sidebar after their WS dropped. Resuming via
+    the existing session preserves message history threading. Without
+    this endpoint the frontend can only ``POST /sessions`` which creates
+    a brand-new session each time, defeating the point of the sidebar."""
+    created = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()
+    chat_id = created["id"]
+    original_ticket = created["ws_ticket"]
+
+    r = api_client.post(f"/api/chat/sessions/{chat_id}/ticket")
+    assert r.status_code == 201
+    body = r.json()
+    assert body["id"] == chat_id
+    assert body["ws_ticket"]
+    assert body["ws_ticket"] != original_ticket  # fresh
+    assert body["ws_url"].startswith(f"/api/chat/sessions/{chat_id}/stream?ticket=")
+
+
+def test_reissue_ticket_404_for_unknown_session(api_client: TestClient, logged_in_user):
+    r = api_client.post("/api/chat/sessions/chat_nonexistent/ticket")
+    assert r.status_code == 404
+
+
+def test_reissue_ticket_404_for_other_users_session(api_client: TestClient, logged_in_user):
+    """Ticket re-issue is auth-scoped — Alice cannot mint a ticket for Bob's
+    chat. The session_email check inside the handler matches ``get_session``
+    against ``user["email"]`` and 404s on mismatch (same shape as the
+    messages endpoint, so we don't disclose existence)."""
+    created = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()
+    chat_id = created["id"]
+
+    # Re-override auth as a DIFFERENT user; ticket endpoint must refuse.
+    app = api_client.app
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": "user2", "email": "bob@test.com", "is_admin": False,
+    }
+    try:
+        r = api_client.post(f"/api/chat/sessions/{chat_id}/ticket")
+        assert r.status_code == 404
+    finally:
+        # Restore Alice for any subsequent tests sharing the fixture.
+        app.dependency_overrides[get_current_user] = lambda: TEST_USER
