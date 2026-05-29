@@ -196,7 +196,7 @@ variable "runtime_secrets" {
 }
 
 variable "runtime_secret_env" {
-  description = "Map of Secret Manager secret name to env var name to inject into /opt/agnes/.env. Module auto-grants secretAccessor and the startup script fetches each via `gcloud secrets versions access latest --secret=<key>` and writes a line `<value>=<fetched>` to .env. Missing/403 -> empty string (silent), so production deploys can roll out a secret name before the value lands. Example: { "e2b-api-key" = "E2B_API_KEY", "anthropic-api-key" = "ANTHROPIC_API_KEY" }."
+  description = "Map of Secret Manager secret name to env var name to inject into /opt/agnes/.env. Module auto-grants secretAccessor and the startup script fetches each via gcloud secrets versions access latest --secret=<key> and writes a line <env_var>=<fetched> to .env. Missing/403 -> empty string (silent), so production deploys can roll out a secret name before the value lands. Example map: e2b-api-key -> E2B_API_KEY, anthropic-api-key -> ANTHROPIC_API_KEY."
   type        = map(string)
   default     = {}
 }
