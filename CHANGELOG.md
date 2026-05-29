@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.25] — 2026-05-29
+
 ### Changed
 - **BREAKING (cloud-chat operator surface): chat sandbox provider reversed to E2B.**
   The v1 default chat sandbox provider changed from a host-side
