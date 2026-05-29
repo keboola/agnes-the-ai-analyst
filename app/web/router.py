@@ -762,6 +762,61 @@ async def home_page(
     return templates.TemplateResponse(request, "home_not_onboarded.html", ctx)
 
 
+@router.get("/me/mcp", response_class=HTMLResponse)
+async def me_mcp_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """User-facing view of available MCP tools and marketplace skills."""
+    from app.api.mcp_passthrough import _visible_passthrough_tools
+    from app.api.v2_marketplace import _accessible_plugins, _skills_for_plugin
+    from src.repositories.mcp_sources import MCPSourceRepository
+
+    # Passthrough tools the caller can see
+    source_names = {
+        s["id"]: s["name"]
+        for s in MCPSourceRepository(conn).list_all(enabled_only=True)
+    }
+    raw_tools = _visible_passthrough_tools(user, conn)
+    passthrough_tools = []
+    for t in raw_tools:
+        sname = source_names.get(t["source_id"])
+        if sname:
+            passthrough_tools.append({
+                "exposed_name": t["exposed_name"],
+                "description": t.get("description"),
+                "source_name": sname,
+            })
+
+    # Marketplace skills the caller can access
+    skills = []
+    for plugin in _accessible_plugins(conn, user):
+        skills.extend(_skills_for_plugin(plugin["marketplace_id"], plugin["name"]))
+
+    static_tools = [
+        {"name": "server_info",  "description": "Check Agnes connectivity and your account email."},
+        {"name": "catalog",      "description": "List all tables available to you — name, query_mode, row count."},
+        {"name": "schema",       "description": "Show column names and types for a table."},
+        {"name": "describe",     "description": "Schema + sample rows for a table in one call."},
+        {"name": "query",        "description": "Execute SQL against Agnes data (DuckDB or BigQuery dialect)."},
+        {"name": "skills",       "description": "List marketplace skills you can access — includes full SKILL.md body."},
+    ]
+
+    server_url = str(request.base_url).rstrip("/")
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=is_user_admin(user["id"], conn),
+        static_tools=static_tools,
+        passthrough_tools=passthrough_tools,
+        skills=skills,
+        server_url=server_url,
+    )
+    return templates.TemplateResponse(request, "me_mcp.html", ctx)
+
+
 @router.get("/me/activity", response_class=HTMLResponse)
 async def me_activity_page(
     request: Request,
