@@ -243,11 +243,15 @@ body.chat-page-body main { margin: 0; padding: 0; }
    textarea border vanishes inside it. */
 .cloud-chat-form {
   flex: 0 0 auto;        /* never shrink — the composer must stay visible */
+  /* ``margin-top: auto`` absorbs any leftover space in the chat-main
+     flex column and pushes the composer to the bottom of the
+     viewport. Without this it sits flush under the capability panel
+     and leaves a chunk of empty whitespace below it on tall screens. */
+  margin: auto auto 1rem;
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: end;
   gap: .5rem;
-  margin: .75rem auto 1rem;
   padding: .5rem .5rem .5rem .75rem;
   max-width: 880px;
   width: calc(100% - 3rem);
@@ -325,14 +329,15 @@ body.chat-page-body main { margin: 0; padding: 0; }
 }
 
 /* --- capability empty-state panel ---
-   ``flex: 1 1 auto`` + ``min-height: 0`` together let the panel claim
-   the room left over by the messages area BUT also shrink + scroll
-   internally if the cards are taller than that room. Without
-   ``min-height: 0`` the cards' intrinsic height becomes a hard floor
-   inside the flex parent — pushing the form below ``overflow:
-   hidden`` so the input disappears. (#0de0ea82 regression.) */
+   ``flex: 0 1 auto`` keeps the panel at its natural content height
+   on tall screens (no false scrollbar) BUT lets it shrink with
+   ``min-height: 0`` + ``overflow-y: auto`` when the viewport is
+   short. The composer takes ``margin-top: auto`` so it gets pinned
+   to the bottom of the chat-main flex column — the leftover space
+   sits between the cards and the composer instead of inflating the
+   panel. */
 .cloud-chat-capabilities {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-height: 0;
   padding: 2rem 1.75rem 1.5rem;
   margin: 0 auto;
