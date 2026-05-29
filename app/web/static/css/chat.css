@@ -152,7 +152,8 @@ body.chat-page-body main { margin: 0; padding: 0; }
 }
 
 .cloud-chat-messages {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;          /* shrink below content height when needed */
   overflow-y: auto;
   padding: 1.5rem 1.5rem .75rem;
   display: flex;
@@ -160,6 +161,11 @@ body.chat-page-body main { margin: 0; padding: 0; }
   gap: .75rem;
   align-items: stretch;
 }
+/* Collapse the messages area when it has no children — otherwise its
+   ``flex: 1`` grabs space from the visible capabilities panel and
+   pushes the composer below the overflow boundary. JS toggles this
+   implicitly by appending message rows; CSS handles the empty case. */
+.cloud-chat-messages:empty { display: none; }
 /* Constrain message-list content to a readable column even on wide
    viewports — the chat shell itself stretches edge-to-edge for the
    chrome, but the conversation reads best at ~880px like the form. */
@@ -228,6 +234,7 @@ body.chat-page-body main { margin: 0; padding: 0; }
    textarea + the send button. The wrapper does the focus ring so the
    textarea border vanishes inside it. */
 .cloud-chat-form {
+  flex: 0 0 auto;        /* never shrink — the composer must stay visible */
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: end;
@@ -309,8 +316,16 @@ body.chat-page-body main { margin: 0; padding: 0; }
   color: var(--ds-text-muted, #9ca3af);
 }
 
-/* --- capability empty-state panel --- */
+/* --- capability empty-state panel ---
+   ``flex: 1 1 auto`` + ``min-height: 0`` together let the panel claim
+   the room left over by the messages area BUT also shrink + scroll
+   internally if the cards are taller than that room. Without
+   ``min-height: 0`` the cards' intrinsic height becomes a hard floor
+   inside the flex parent — pushing the form below ``overflow:
+   hidden`` so the input disappears. (#0de0ea82 regression.) */
 .cloud-chat-capabilities {
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 2rem 1.75rem 1.5rem;
   margin: 0 auto;
   max-width: 880px;
