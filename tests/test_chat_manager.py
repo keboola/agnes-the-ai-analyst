@@ -47,7 +47,7 @@ def manager(tmp_path: Path) -> ChatManager:
         provider=provider,
         workdir_mgr=workdir_mgr,
         repo=repo,
-        config=ChatConfig(enabled=True, require_isolation=False, concurrency_per_user=2),
+        config=ChatConfig(enabled=True, concurrency_per_user=2),
     )
 
 
@@ -276,7 +276,7 @@ def test_send_user_message_rejects_when_rate_limit_exceeded(tmp_path):
     provider = MagicMock()
     provider.spawn = AsyncMock()
     cfg = ChatConfig(
-        enabled=True, require_isolation=False, concurrency_per_user=5,
+        enabled=True, concurrency_per_user=5,
         rate_messages_per_hour=3,
         daily_anthropic_spend_usd=10**6,
         max_session_tokens=10**9,
@@ -325,7 +325,7 @@ def test_send_user_message_rejects_when_session_tokens_exhausted(tmp_path):
     provider = MagicMock()
     provider.spawn = AsyncMock()
     cfg = ChatConfig(
-        enabled=True, require_isolation=False, concurrency_per_user=5,
+        enabled=True, concurrency_per_user=5,
         max_session_tokens=100,
         daily_anthropic_spend_usd=10**6,  # disable daily cap
     )
@@ -379,7 +379,7 @@ def test_idle_reaper_kills_sessions_older_than_max_session_seconds(tmp_path):
     provider = MagicMock()
     provider.spawn = AsyncMock()
     cfg = ChatConfig(
-        enabled=True, require_isolation=False, concurrency_per_user=5,
+        enabled=True, concurrency_per_user=5,
         # Pin a tiny wallclock cap so the test is fast and deterministic.
         max_session_seconds=1,
         idle_ttl_seconds=10**9,  # disable idle path
@@ -492,7 +492,6 @@ def test_daily_tokens_cached_per_user(tmp_path):
     provider.spawn = AsyncMock()
     cfg = ChatConfig(
         enabled=True,
-        require_isolation=False,
         concurrency_per_user=5,
         daily_anthropic_spend_usd=10**6,  # effectively unlimited
         max_session_tokens=10**9,

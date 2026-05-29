@@ -11,7 +11,10 @@ import yaml
 @dataclass(frozen=True)
 class ChatConfig:
     enabled: bool = False
-    require_isolation: bool = True
+    # Sandbox provider id. ``e2b`` is the only production-supported
+    # value; future variants (mock_e2b for tests, sandbox-as-a-service
+    # alternatives) would extend the gate in ``app/main.py``.
+    provider: str = "e2b"
     concurrency_per_user: int = 3
     idle_ttl_seconds: int = 30 * 60
     per_tool_call_seconds: int = 90
@@ -22,12 +25,18 @@ class ChatConfig:
     rate_messages_per_hour: int = 100
     tool_calls_per_turn_budget: int = 50
     marketplace_sha_debounce_seconds: int = 5 * 60
-    # Host UID the nsjail subprocess runs as.  Default ``None`` =
-    # ``os.getuid()`` (the Agnes server's own uid — fine for single-tenant
-    # dev). Production deployments should set this to a dedicated
-    # ``agnes-sandbox`` host user so iptables OWNER rules can be filtered
-    # to that uid and Agnes itself does not need to run as root.
-    sandbox_uid: Optional[int] = None
+    # E2B template id (``agnes-chat`` for the default operator build per
+    # Q2 — single mutable ``:latest`` tag). Required when
+    # ``chat.enabled=true`` and ``provider=e2b``; startup gate refuses
+    # otherwise. Operator obtains this from ``e2b template build``.
+    e2b_template_id: Optional[str] = None
+    # Per-spawn workspace push cap (Q1, 100 MB default). Files past this
+    # cap → WorkspaceTooLarge → user-facing error frame.
+    e2b_workspace_max_bytes: int = 100 * 1024 * 1024
+    # Q3 (additional gate alongside idle_ttl_seconds): kill the sandbox
+    # the moment the WS disconnects rather than letting the idle reaper
+    # close it later. Cuts billable sandbox-minutes on UI close.
+    e2b_kill_on_ws_disconnect: bool = True
 
 
 def load_chat_config(instance_yaml: Path) -> ChatConfig:
@@ -37,7 +46,7 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
     raw = data.get("chat", {}) or {}
     return ChatConfig(
         enabled=bool(raw.get("enabled", False)),
-        require_isolation=bool(raw.get("require_isolation", True)),
+        provider=str(raw.get("provider", "e2b")),
         concurrency_per_user=int(raw.get("concurrency_per_user", 3)),
         idle_ttl_seconds=int(raw.get("idle_ttl_seconds", 30 * 60)),
         per_tool_call_seconds=int(raw.get("per_tool_call_seconds", 90)),
@@ -48,5 +57,7 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         rate_messages_per_hour=int(raw.get("rate_messages_per_hour", 100)),
         tool_calls_per_turn_budget=int(raw.get("tool_calls_per_turn_budget", 50)),
         marketplace_sha_debounce_seconds=int(raw.get("marketplace_sha_debounce_seconds", 5 * 60)),
-        sandbox_uid=raw.get("sandbox_uid") if raw.get("sandbox_uid") is not None else None,
+        e2b_template_id=raw.get("e2b_template_id") or None,
+        e2b_workspace_max_bytes=int(raw.get("e2b_workspace_max_bytes", 100 * 1024 * 1024)),
+        e2b_kill_on_ws_disconnect=bool(raw.get("e2b_kill_on_ws_disconnect", True)),
     )

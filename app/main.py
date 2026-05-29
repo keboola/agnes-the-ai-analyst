@@ -95,11 +95,11 @@ def _chat_jwt_secret_ok(chat_config) -> bool:
 def _chat_anthropic_key_ok(chat_config) -> bool:
     """Refuse ``chat.enabled=true`` deployments that lack ``ANTHROPIC_API_KEY``.
 
-    The chat runner subprocess calls the Anthropic API on behalf of each
-    user.  If the key is absent the runner silently fails on its first API
-    call.  Refuse to enable chat and surface a fatal log so the operator
-    finds the cause immediately rather than after users start reporting
-    mysterious errors.
+    The chat runner inside the E2B sandbox calls the Anthropic API on
+    behalf of each user.  If the key is absent the runner silently fails
+    on its first API call.  Refuse to enable chat and surface a fatal
+    log so the operator finds the cause immediately rather than after
+    users start reporting mysterious errors.
 
     Returns True when chat is disabled (irrelevant) or when
     ``ANTHROPIC_API_KEY`` is set to a non-empty value; False otherwise.
@@ -114,6 +114,56 @@ def _chat_anthropic_key_ok(chat_config) -> bool:
     logging.getLogger("app.main").error(
         "chat.enabled=true requires ANTHROPIC_API_KEY env to be set; "
         "refusing to spawn ChatManager",
+    )
+    return False
+
+
+def _chat_e2b_api_key_ok(chat_config) -> bool:
+    """Refuse ``chat.enabled=true`` deployments that lack ``E2B_API_KEY``.
+
+    Mirrors ``_chat_anthropic_key_ok``: the E2B SDK requires an API key
+    to spawn sandboxes; without it ``AsyncSandbox.create`` would 401 on
+    every session start. Refuse the manager rather than letting users
+    hit the failure.
+
+    Returns True when chat is disabled or provider is not ``e2b``, or
+    when the key is present; False otherwise.
+    """
+    if not chat_config.enabled:
+        return True
+    if chat_config.provider != "e2b":
+        return True
+    if os.environ.get("TESTING", "").lower() in ("1", "true"):
+        return True
+    if os.environ.get("E2B_API_KEY", ""):
+        return True
+    logging.getLogger("app.main").error(
+        "chat.enabled=true with provider=e2b requires E2B_API_KEY env; "
+        "refusing to spawn ChatManager",
+    )
+    return False
+
+
+def _chat_e2b_template_id_ok(chat_config) -> bool:
+    """Refuse ``chat.enabled=true`` without a ``chat.e2b_template_id``.
+
+    The provider can't pick a default template — every operator builds
+    their own ``agnes-chat`` template against their E2B account. Without
+    the id, the provider would 404 at spawn time. Refuse at boot.
+    """
+    if not chat_config.enabled:
+        return True
+    if chat_config.provider != "e2b":
+        return True
+    if os.environ.get("TESTING", "").lower() in ("1", "true"):
+        return True
+    if getattr(chat_config, "e2b_template_id", None):
+        return True
+    logging.getLogger("app.main").error(
+        "chat.enabled=true with provider=e2b requires chat.e2b_template_id "
+        "to be set in instance.yaml; refusing to spawn ChatManager. "
+        "Run `e2b template build` against app/initial_workspace_default/e2b-template "
+        "and copy the returned id into instance.yaml.",
     )
     return False
 
@@ -438,7 +488,6 @@ async def lifespan(app):
     # the admin_chat and chat API routers (which use app.state.chat_repo) work
     # even when chat is disabled — they degrade gracefully via _get_manager().
     try:
-        import shutil
         from src.db import get_system_db as _get_system_db_chat, _get_data_dir as _get_data_dir_chat
         from app.chat.config import load_chat_config
         from app.chat.persistence import ChatRepository
@@ -495,7 +544,16 @@ async def lifespan(app):
                 return b""
 
         if app.state.chat_config.enabled:
-            if int(os.environ.get("UVICORN_WORKERS", "1")) > 1:
+            if app.state.chat_config.provider != "e2b":
+                logger.error(
+                    "chat.provider=%r is not supported — only 'e2b' is "
+                    "accepted in production (per Q7 owner decision, "
+                    "MockE2BProvider was dropped). Set chat.provider: e2b "
+                    "in instance.yaml or flip chat.enabled: false.",
+                    app.state.chat_config.provider,
+                )
+                app.state.chat_manager = None
+            elif int(os.environ.get("UVICORN_WORKERS", "1")) > 1:
                 logger.error(
                     "chat.enabled=true but UVICORN_WORKERS > 1 — "
                     "cloud chat requires a single-worker deployment; "
@@ -512,9 +570,15 @@ async def lifespan(app):
                     "ANTHROPIC_API_KEY missing; disabling chat",
                 )
                 app.state.chat_manager = None
+            elif not _chat_e2b_api_key_ok(app.state.chat_config):
+                # Fatal already logged inside the helper.
+                app.state.chat_manager = None
+            elif not _chat_e2b_template_id_ok(app.state.chat_config):
+                # Fatal already logged inside the helper.
+                app.state.chat_manager = None
             else:
                 from app.chat.workdir import WorkdirManager
-                from app.chat.subprocess_provider import SubprocessProvider
+                from app.chat.e2b_provider import E2BProvider
                 from app.chat.manager import ChatManager
                 from app.version import APP_VERSION as _APP_VERSION_CHAT
 
@@ -530,11 +594,10 @@ async def lifespan(app):
                     fetch_template_zip=_fetch_local_template_zip,
                     marketplace_sha_debounce_seconds=app.state.chat_config.marketplace_sha_debounce_seconds,
                 )
-                provider = SubprocessProvider(
-                    nsjail_path=shutil.which("nsjail"),
-                    nsjail_config_template=Path("config/nsjail/chat-session.cfg.template"),
-                    require_isolation=app.state.chat_config.require_isolation,
-                    host_uid=app.state.chat_config.sandbox_uid,
+                provider = E2BProvider(
+                    api_key=os.environ.get("E2B_API_KEY", ""),
+                    template_id=app.state.chat_config.e2b_template_id or "",
+                    sandbox_timeout_seconds=app.state.chat_config.max_session_seconds,
                 )
                 mgr = ChatManager(
                     provider=provider,
@@ -545,7 +608,9 @@ async def lifespan(app):
                 mgr.start_idle_reaper()
                 app.state.chat_manager = mgr
                 logger.info(
-                    "chat.enabled: ChatManager started (idle_ttl=%ds, concurrency_per_user=%d)",
+                    "chat.enabled: ChatManager started (provider=e2b, "
+                    "template=%s, idle_ttl=%ds, concurrency_per_user=%d)",
+                    app.state.chat_config.e2b_template_id,
                     app.state.chat_config.idle_ttl_seconds,
                     app.state.chat_config.concurrency_per_user,
                 )

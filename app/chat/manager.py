@@ -211,8 +211,38 @@ class ChatManager:
             "LANG": "C.UTF-8",
             "PYTHONUNBUFFERED": "1",
         }
-        argv = [sys.executable, "-m", "app.chat.runner", "--session-id", session.id]
-        return await self._provider.spawn(workdir=session_dir, env=env, argv=argv)
+        # Under E2B the in-sandbox runner is uploaded as a single file
+        # (provider does ``files.write("/work/runner.py", ...)`` at spawn
+        # time per the agnes-chat template tradeoff), so we invoke it
+        # directly as a script. The legacy ``python -m app.chat.runner``
+        # form relied on the host's installed package — there is no
+        # ``app.chat.runner`` module inside the sandbox.
+        argv = ["python3", "/work/runner.py", "--session-id", session.id]
+        handle = await self._provider.spawn(workdir=session_dir, env=env, argv=argv)
+        # The provider may declare ``syncs_workspace = True`` (workspace
+        # is mounted, no sync needed). For E2B we hold the workspace
+        # locally and push it after spawn — Q1's full-push strategy.
+        if not getattr(self._provider, "syncs_workspace", False):
+            from app.chat.e2b_workspace_sync import (
+                WorkspaceTooLarge,
+                upload_workspace,
+            )
+            max_bytes = getattr(self._config, "e2b_workspace_max_bytes", 100 * 1024 * 1024)
+            sandbox = getattr(handle, "_sandbox", None)
+            if sandbox is not None:
+                try:
+                    await upload_workspace(sandbox, session_dir, max_bytes=max_bytes)
+                except WorkspaceTooLarge as e:
+                    logger.error("workspace upload refused: %s", e)
+                    # Tear down the sandbox; surfacing the failure to the
+                    # caller lets attach() emit a user-facing error
+                    # frame.
+                    try:
+                        await handle.kill(grace_sec=1.0)
+                    except Exception:
+                        logger.exception("kill after upload-refusal failed")
+                    raise
+        return handle
 
     async def _pump_subprocess_to_ws(self, live: LiveSession) -> None:
         assert live.handle is not None

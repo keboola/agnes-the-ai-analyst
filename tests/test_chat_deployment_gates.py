@@ -174,3 +174,82 @@ def test_chat_anthropic_key_skipped_when_disabled(monkeypatch):
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     assert _chat_anthropic_key_ok(ChatConfig(enabled=False)) is True
+
+
+# ---------------------------------------------------------------------------
+# E2B-specific gates (Task H.6 — provider reversal)
+# ---------------------------------------------------------------------------
+
+
+def test_chat_refuses_without_e2b_api_key(monkeypatch):
+    """chat.enabled=true with provider=e2b but no E2B_API_KEY → refused."""
+    from app.chat.config import ChatConfig
+    from app.main import _chat_e2b_api_key_ok
+
+    monkeypatch.delenv("E2B_API_KEY", raising=False)
+    monkeypatch.delenv("TESTING", raising=False)
+    cfg = ChatConfig(enabled=True, provider="e2b", e2b_template_id="agnes-chat")
+    assert _chat_e2b_api_key_ok(cfg) is False
+
+
+def test_chat_accepts_with_e2b_api_key(monkeypatch):
+    """chat.enabled=true with E2B_API_KEY set → accepted."""
+    from app.chat.config import ChatConfig
+    from app.main import _chat_e2b_api_key_ok
+
+    monkeypatch.setenv("E2B_API_KEY", "sk-e2b-test")
+    monkeypatch.delenv("TESTING", raising=False)
+    cfg = ChatConfig(enabled=True, provider="e2b", e2b_template_id="agnes-chat")
+    assert _chat_e2b_api_key_ok(cfg) is True
+
+
+def test_chat_e2b_key_skipped_when_disabled(monkeypatch):
+    """chat.enabled=false → E2B key check bypassed."""
+    from app.chat.config import ChatConfig
+    from app.main import _chat_e2b_api_key_ok
+
+    monkeypatch.delenv("E2B_API_KEY", raising=False)
+    assert _chat_e2b_api_key_ok(ChatConfig(enabled=False)) is True
+
+
+def test_chat_refuses_without_e2b_template_id(monkeypatch):
+    """chat.enabled=true, provider=e2b, but no e2b_template_id → refused."""
+    from app.chat.config import ChatConfig
+    from app.main import _chat_e2b_template_id_ok
+
+    monkeypatch.delenv("TESTING", raising=False)
+    cfg = ChatConfig(enabled=True, provider="e2b", e2b_template_id=None)
+    assert _chat_e2b_template_id_ok(cfg) is False
+
+
+def test_chat_accepts_with_e2b_template_id(monkeypatch):
+    """A non-empty e2b_template_id passes the gate."""
+    from app.chat.config import ChatConfig
+    from app.main import _chat_e2b_template_id_ok
+
+    monkeypatch.delenv("TESTING", raising=False)
+    cfg = ChatConfig(enabled=True, provider="e2b", e2b_template_id="agnes-chat")
+    assert _chat_e2b_template_id_ok(cfg) is True
+
+
+def test_chat_e2b_template_skipped_when_disabled(monkeypatch):
+    """chat.enabled=false → template gate bypassed."""
+    from app.chat.config import ChatConfig
+    from app.main import _chat_e2b_template_id_ok
+
+    cfg = ChatConfig(enabled=False, provider="e2b")
+    assert _chat_e2b_template_id_ok(cfg) is True
+
+
+def test_chat_e2b_gates_bypassed_for_non_e2b_provider(monkeypatch):
+    """If provider != 'e2b', the e2b-specific gates short-circuit to True
+    so the operator's misconfiguration is caught by the provider-allowlist
+    branch, not by these gates."""
+    from app.chat.config import ChatConfig
+    from app.main import _chat_e2b_api_key_ok, _chat_e2b_template_id_ok
+
+    monkeypatch.delenv("E2B_API_KEY", raising=False)
+    monkeypatch.delenv("TESTING", raising=False)
+    cfg = ChatConfig(enabled=True, provider="something_else")
+    assert _chat_e2b_api_key_ok(cfg) is True
+    assert _chat_e2b_template_id_ok(cfg) is True

@@ -3,7 +3,7 @@
 assistant_message back over the WS.
 
 Reuses the fixture pattern from test_chat_api.py but wires a REAL
-SubprocessProvider(require_isolation=False) and a real WorkdirManager
+SubprocessProvider() and a real WorkdirManager
 backed by tmp_path so subprocess actually spawns.
 """
 from __future__ import annotations
@@ -37,7 +37,7 @@ _BUNDLED_TEMPLATE = (
 
 def _make_real_manager(repo: ChatRepository, data_dir: Path) -> ChatManager:
     """Return a ChatManager wired with a real SubprocessProvider and WorkdirManager."""
-    provider = SubprocessProvider(nsjail_path=None, require_isolation=False)
+    provider = SubprocessProvider(nsjail_path=None)
     workdir_mgr = WorkdirManager(
         data_dir=data_dir,
         repo=repo,

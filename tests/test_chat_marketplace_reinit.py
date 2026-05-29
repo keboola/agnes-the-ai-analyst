@@ -144,7 +144,7 @@ def _make_manager(
         provider=provider,
         workdir_mgr=workdir_mgr,
         repo=repo,
-        config=ChatConfig(enabled=True, require_isolation=False, concurrency_per_user=3),
+        config=ChatConfig(enabled=True, concurrency_per_user=3),
     ), workdir_mgr
 
 
