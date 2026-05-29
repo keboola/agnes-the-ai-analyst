@@ -193,13 +193,28 @@ async function loadSidebar() {
 }
 
 /** Single sidebar <li> for a session. Pulled out so the date-group
- *  loop above stays readable. */
+ *  loop above stays readable.
+ *
+ *  Keyboard-accessible: ``role="button"`` + ``tabindex="0"`` + Enter
+ *  and Space handlers. Without these, Tab skips every conversation
+ *  (the `<li onclick>` pattern doesn't put the element in the focus
+ *  ring) — a hard a11y bug that left screen-reader and
+ *  keyboard-only users unable to open a session. */
 function _makeSidebarItem(s) {
   const li = document.createElement("li");
   if (s.id === currentChatId) li.classList.add("is-active");
   li.dataset.id = s.id;
   li.title = s.title || `Untitled · ${s.id}`;
+  li.setAttribute("role", "button");
+  li.tabIndex = 0;
+  li.setAttribute("aria-label", `Open ${s.title || "untitled conversation"}`);
   li.onclick = () => openSession(s.id);
+  li.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openSession(s.id);
+    }
+  });
 
   const label = document.createElement("span");
   label.className = "cloud-chat-list-label";

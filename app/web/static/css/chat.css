@@ -154,6 +154,10 @@ body.chat-page-body main { margin: 0; padding: 0; }
   color: var(--ds-accent-info-ink);
   font-weight: var(--font-medium);
 }
+.cloud-chat-list li:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
 
 /* Title span — takes remaining width, truncates with ellipsis so the
    delete button stays anchored to the right edge. */
