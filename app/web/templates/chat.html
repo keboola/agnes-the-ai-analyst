@@ -1,34 +1,45 @@
-{# app/web/templates/chat.html #}
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>Agnes — Chat</title>
-  <link rel="stylesheet" href="/static/css/admin.css" />
+{% extends 'base_ds.html' %}
+
+{# Cloud chat page. Extends the canonical Agnes design-system base so
+   the Agnes top nav, footer, and shared design tokens (colors, type,
+   spacing) all render around the chat shell. The chat-specific layout
+   (sidebar + main panel) lives inside `block content`, scoped by
+   `.cloud-chat-shell` so its CSS doesn't bleed into other pages. #}
+
+{% block title %}Chat — {{ config.INSTANCE_NAME or 'Agnes' }}{% endblock %}
+
+{% block head_extra %}
+  <link rel="stylesheet" href="/static/vendor/highlight.min.css" />
   <link rel="stylesheet" href="/static/css/chat.css" />
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/highlight.min.js"></script>
-</head>
-<body class="chat-body">
-  <header class="topbar">
-    <a href="/" class="brand">Agnes</a>
-    <span class="user">{{ current_user.email }}</span>
-  </header>
-  <main class="chat-shell">
-    <aside class="chat-sidebar">
-      <button id="new-chat">+ New chat</button>
-      <ul id="chat-list"></ul>
-    </aside>
-    <section class="chat-main">
-      <div id="chat-status"></div>
-      <div id="chat-messages" aria-live="polite"></div>
-      <form id="chat-form">
-        <textarea id="chat-input" placeholder="Ask Agnes…" rows="2"></textarea>
-        <button type="submit">Send</button>
-        <button type="button" id="cancel-btn" hidden>Stop</button>
-      </form>
-    </section>
-  </main>
+{% endblock %}
+
+{# Use wide container so the chat shell gets enough horizontal room
+   for sidebar + main panel without hitting the standard reading width. #}
+{% set container_modifier = 'container--wide' %}
+
+{% block content %}
+<div class="cloud-chat-shell">
+  <aside class="cloud-chat-sidebar">
+    <button type="button" id="new-chat" class="cloud-chat-new-btn">+ New chat</button>
+    <ul id="chat-list" class="cloud-chat-list"></ul>
+  </aside>
+
+  <section class="cloud-chat-main">
+    <div id="chat-status" class="cloud-chat-status" aria-live="polite"></div>
+    <div id="chat-messages" class="cloud-chat-messages" aria-live="polite"></div>
+    <form id="chat-form" class="cloud-chat-form">
+      <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes…" rows="2"></textarea>
+      <div class="cloud-chat-form-actions">
+        <button type="button" id="cancel-btn" class="cloud-chat-stop-btn" hidden>Stop</button>
+        <button type="submit" class="cloud-chat-send-btn">Send</button>
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
   <script type="module" src="/static/js/chat.js"></script>
-</body>
-</html>
+{% endblock %}

@@ -594,10 +594,19 @@ async def lifespan(app):
                     fetch_template_zip=_fetch_local_template_zip,
                     marketplace_sha_debounce_seconds=app.state.chat_config.marketplace_sha_debounce_seconds,
                 )
+                # E2B sandboxes are capped at 1 hour (3600 s) by the platform.
+                # If chat.max_session_seconds is higher (default 4 h), clamp here
+                # so AsyncSandbox.create() doesn't 400. The idle reaper / per-tool
+                # caps still enforce shorter limits as configured; this just
+                # prevents the spawn call from failing fast on the upper bound.
+                E2B_SANDBOX_MAX_SECONDS = 3600
                 provider = E2BProvider(
                     api_key=os.environ.get("E2B_API_KEY", ""),
                     template_id=app.state.chat_config.e2b_template_id or "",
-                    sandbox_timeout_seconds=app.state.chat_config.max_session_seconds,
+                    sandbox_timeout_seconds=min(
+                        app.state.chat_config.max_session_seconds,
+                        E2B_SANDBOX_MAX_SECONDS,
+                    ),
                 )
                 mgr = ChatManager(
                     provider=provider,
