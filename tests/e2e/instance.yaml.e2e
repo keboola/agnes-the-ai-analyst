@@ -1,9 +1,9 @@
 # instance.yaml.e2e — config used inside the docker-compose E2E env.
 #
-# Mirrors instance.yaml.example but with cloud-chat enabled and the
-# sandbox uid pinned to 1001 (the `agnes-sandbox` user created in
-# Dockerfile.e2e). Everything else is minimal: a local DuckDB warehouse,
-# no real data source connectors, no Slack credentials.
+# Mirrors instance.yaml.example but with cloud-chat enabled and pointed
+# at an E2B-backed sandbox. The real E2B smoke (which actually spawns
+# microVMs) is gated separately by AGNES_E2E_E2B=1 on the host so the
+# default e2e run doesn't burn billable sandbox minutes.
 
 config_version: 1
 
@@ -18,8 +18,12 @@ data_source:
 
 chat:
   enabled: true
-  require_isolation: true
-  sandbox_uid: 1001
+  provider: e2b
+  # Operator builds this against their own E2B account via
+  # `e2b template build` in app/initial_workspace_default/e2b-template/.
+  e2b_template_id: "agnes-chat"
+  e2b_workspace_max_bytes: 104857600  # 100 MB
+  e2b_kill_on_ws_disconnect: true
   concurrency_per_user: 3
   idle_ttl_seconds: 1800
   per_tool_call_seconds: 90

@@ -2,18 +2,15 @@
 # start.sh — entrypoint for the E2E Agnes container.
 #
 # Sequence:
-#   1. Apply iptables OWNER egress rules so the sandboxed user (uid 1001)
-#      can only reach 127.0.0.1 + api.anthropic.com + api.github.com.
-#      Requires `--cap-add NET_ADMIN` on the docker-compose service.
-#   2. Drop the test instance.yaml into /data/state so config/loader.py
+#   1. Drop the test instance.yaml into /data/state so config/loader.py
 #      picks it up.
-#   3. Seed the analytics DuckDB with the SQL fixtures under sample-data/.
-#   4. Boot uvicorn.
+#   2. Seed the analytics DuckDB with the SQL fixtures under sample-data/.
+#   3. Boot uvicorn.
+#
+# Under the E2B-provider model there is no iptables / nsjail step — chat
+# sandboxes run in E2B microVMs, not on this host.
 
 set -euo pipefail
-
-echo "[start.sh] applying iptables OWNER rules"
-/app/tests/e2e/iptables-setup.sh
 
 echo "[start.sh] staging instance.yaml"
 mkdir -p /data/state /data/marketplaces /data/analytics

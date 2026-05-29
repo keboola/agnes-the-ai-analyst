@@ -1,67 +1,32 @@
-# Dockerfile.e2e — production-like Linux env for the cloud-chat E2E suite.
+# Dockerfile.e2e — Linux Agnes server for the cloud-chat E2E suite.
 #
-# Includes nsjail (chat sandbox), Python 3.11 (matches `requires-python`
-# in pyproject.toml), iptables (for the OWNER egress rules driven by
-# tests/e2e/iptables-setup.sh), and an unprivileged `agnes-sandbox` user
-# whose uid is referenced from instance.yaml.e2e (`chat.sandbox_uid`).
+# Under the E2B-provider model the in-container isolation stack (nsjail,
+# iptables, dedicated sandbox uid) is gone — chat sandboxes run in E2B's
+# cloud microVMs, not on this host. All this image needs is the FastAPI
+# app + sample data; no NET_ADMIN, no host uid mapping, no nsjail build.
 #
-# The image expects to be run with `--cap-add NET_ADMIN` so the
-# iptables rules can be applied at container start; without it the
-# entrypoint will fail before uvicorn starts.
+# The container still exists rather than running uvicorn naked from the
+# tests because the sample-data loader and DuckDB init need a stable
+# /data layout and the conftest fixture spins it up via docker-compose
+# for parity with production startup ordering.
 
-FROM ubuntu:22.04
+FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-# nsjail isn't packaged in Ubuntu jammy main; install build deps + clone
-# upstream, then strip the build chain to keep the image small. We pin a
-# tag rather than `master` so the image is reproducible.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3.11 \
-        python3.11-venv \
-        python3-pip \
         git \
         curl \
-        iptables \
-        sudo \
         ca-certificates \
-        # nsjail build deps
-        autoconf \
-        bison \
-        flex \
-        gcc \
-        g++ \
-        libprotobuf-dev \
-        libnl-route-3-dev \
-        libtool \
-        make \
-        pkg-config \
-        protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
-
-# Build nsjail 3.4 (latest tagged release as of 2026-05).
-RUN git clone --depth 1 --branch 3.4 https://github.com/google/nsjail.git /tmp/nsjail \
-    && make -C /tmp/nsjail \
-    && install -m 0755 /tmp/nsjail/nsjail /usr/local/bin/nsjail \
-    && rm -rf /tmp/nsjail
-
-# Strip the build toolchain now that nsjail is installed.
-RUN apt-get purge -y --auto-remove \
-        autoconf bison flex gcc g++ libtool make pkg-config protobuf-compiler \
-    && rm -rf /var/lib/apt/lists/*
-
-# uid 1001 mirrors `chat.sandbox_uid` in instance.yaml.e2e. The chat
-# manager renders nsjail configs that switch to this uid, and the
-# iptables OWNER rules pin egress filtering to it.
-RUN useradd -m -u 1001 -s /usr/sbin/nologin agnes-sandbox
 
 WORKDIR /app
 
 # Provision the venv first so the layer caches across source edits.
 COPY pyproject.toml ./
-RUN python3.11 -m venv /opt/venv \
+RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
     && /opt/venv/bin/pip install -e ".[dev,server]"
 
@@ -69,10 +34,9 @@ RUN python3.11 -m venv /opt/venv \
 # .git out — the compose file uses repo root as the build context.
 COPY . .
 
-# /data is the runtime data dir referenced by ChatRepository, WorkdirManager,
-# the analytics warehouse, and the sample-data loader.
-RUN mkdir -p /data/state /data/analytics /data/marketplaces /data/users \
-    && chown -R agnes-sandbox:agnes-sandbox /data
+# /data is the runtime data dir referenced by ChatRepository,
+# WorkdirManager, the analytics warehouse, and the sample-data loader.
+RUN mkdir -p /data/state /data/analytics /data/marketplaces /data/users
 
 EXPOSE 8000
 
