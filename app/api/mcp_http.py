@@ -48,11 +48,9 @@ mcp = FastMCP(
         "understand columns, `describe` for sample rows, and `query` to run SQL. "
         "Run `server_info` to check connectivity at the start of a session."
     ),
-    # DNS rebinding protection is redundant here — Agnes's _AuthMiddleware
-    # already validates every request with a PAT before reaching FastMCP.
-    transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=False,
-    ),
+    # DNS rebinding protection is redundant — _AuthMiddleware validates PAT
+    # before any request reaches FastMCP, so the protection is already in place.
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
 
@@ -268,6 +266,8 @@ def _register_dynamic_tools() -> None:
             logger.info("MCP HTTP: registered %d passthrough tools", len(names))
     except Exception:
         logger.exception("Universal MCP passthrough registration failed")
+    finally:
+        conn.close()
 
 
 # ── factory ────────────────────────────────────────────────────────────────────
