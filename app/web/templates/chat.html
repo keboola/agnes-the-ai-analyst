@@ -46,6 +46,12 @@
 {% block container_modifier %}container--full{% endblock %}
 
 {% block content %}
+{# Toast notification stack — non-blocking feedback for copy /
+   delete / etc. Lives outside the chat shell so its z-index can
+   reach over everything else. JS appends nodes here and removes
+   them after a brief timeout (or earlier on dismiss click). #}
+<div id="chat-toasts" class="cloud-chat-toasts" aria-live="polite" aria-atomic="false"></div>
+
 {# Cmd+K command palette — opens via Cmd/Ctrl+K from anywhere on the
    page. Lives outside the chat shell so its overlay z-index can sit
    above everything else without fighting the shell's overflow rules. #}
@@ -115,6 +121,15 @@
   </aside>
 
   <section class="cloud-chat-main">
+    {# Active conversation header. JS toggles ``hidden`` based on
+       whether we're in an empty-state shell (no current chat) or
+       inside a thread. Title text is updated from openSession() and
+       newChat() so the user can always see which conversation they're
+       in even when scrolled mid-thread. #}
+    <header id="chat-thread-header" class="cloud-chat-thread-header" hidden>
+      <h2 id="chat-thread-title" class="cloud-chat-thread-title">Untitled chat</h2>
+    </header>
+
     <div id="chat-status" class="cloud-chat-status" aria-live="polite"></div>
 
     {# Empty-state capability panel. JS hides this as soon as the first

@@ -264,6 +264,31 @@ body.chat-page-body main { margin: 0; padding: 0; }
   min-height: 0;
 }
 
+/* Active conversation header — sticky strip above the messages area
+   showing the current chat's title. Hidden in empty-state so it
+   doesn't add a "Untitled chat" line on top of the capability panel. */
+.cloud-chat-thread-header {
+  flex: 0 0 auto;
+  padding: var(--space-3) var(--space-6);
+  border-bottom: 1px solid var(--ds-border);
+  background: var(--ds-surface);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.cloud-chat-thread-header[hidden] { display: none; }
+.cloud-chat-thread-title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--font-semibold);
+  color: var(--ds-text-primary);
+  line-height: 1.2;
+  /* Truncate long titles so they never bleed into the layout. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Status banner. Tone reflects the kind set by setStatus() in
    chat.js: ok = success palette, warn = amber, error = danger, info
    = neutral. ``:empty`` hides the bar entirely so the chat area
@@ -813,6 +838,71 @@ body.chat-page-body main { margin: 0; padding: 0; }
   border-radius: var(--radius-sm);
   font-size: 0.85em;
   font-family: var(--font-mono);
+}
+
+/* ============================================================ toast stack
+   Stack of ephemeral, non-blocking status messages anchored to the
+   bottom-right. Each toast fades + slides in, auto-dismisses after a
+   couple of seconds, and can be dismissed early with a click.
+
+   The container is always in the DOM (so JS can append without
+   layout thrash) but pointer-events are off until a child lands —
+   toasts can stack but never block the chat surface beneath them. */
+.cloud-chat-toasts {
+  position: fixed;
+  bottom: var(--space-4);
+  right: var(--space-4);
+  z-index: 950;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-end;
+  gap: var(--space-2);
+  pointer-events: none;
+}
+.cloud-chat-toast {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 7px var(--space-3);
+  background: var(--ds-surface);
+  color: var(--ds-text-primary);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  font-size: var(--text-sm);
+  max-width: 360px;
+  cursor: pointer;
+  animation: cloudchat-toast-in 140ms ease-out;
+}
+.cloud-chat-toast.is-ok {
+  background: var(--ds-accent-success-bg);
+  border-color: var(--ds-accent-success-line);
+  color: var(--ds-accent-success-ink);
+}
+.cloud-chat-toast.is-warn {
+  background: var(--ds-accent-warn-bg);
+  border-color: var(--ds-accent-warn-line);
+  color: var(--ds-accent-warn-ink);
+}
+.cloud-chat-toast.is-error {
+  background: var(--ds-accent-danger-bg);
+  border-color: var(--ds-accent-danger-line);
+  color: var(--ds-accent-danger-ink);
+}
+.cloud-chat-toast.is-leaving {
+  animation: cloudchat-toast-out 120ms ease-in forwards;
+}
+@keyframes cloudchat-toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes cloudchat-toast-out {
+  to { opacity: 0; transform: translateY(8px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cloud-chat-toast,
+  .cloud-chat-toast.is-leaving { animation: none; }
 }
 
 /* ============================================================ command palette

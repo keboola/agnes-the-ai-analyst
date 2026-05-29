@@ -37,6 +37,40 @@ function setStatus(text, kind = "info") {
   if (text) el.classList.add(`is-${kind}`);
 }
 
+/** Show an ephemeral toast at the bottom-right. ``kind`` of "ok" /
+ *  "warn" / "error" tints the chip. Auto-dismisses after 2.4s; can
+ *  be dismissed early with a click. Multiple toasts stack. */
+function showToast(text, kind = "ok", { durationMs = 2400 } = {}) {
+  const stack = $("chat-toasts");
+  if (!stack) return;
+  const toast = document.createElement("div");
+  toast.className = `cloud-chat-toast is-${kind}`;
+  toast.setAttribute("role", "status");
+  toast.textContent = text;
+  const dismiss = () => {
+    toast.classList.add("is-leaving");
+    setTimeout(() => toast.remove(), 160);
+  };
+  toast.onclick = dismiss;
+  stack.appendChild(toast);
+  setTimeout(dismiss, durationMs);
+}
+
+/** Set the title strip above the messages area. Pass ``null`` to
+ *  hide it (empty-state / new-chat shell), pass a string to show it.
+ *  Long titles ellipsis via CSS. */
+function setThreadTitle(title) {
+  const header = $("chat-thread-header");
+  const node = $("chat-thread-title");
+  if (!header || !node) return;
+  if (title) {
+    node.textContent = title;
+    header.hidden = false;
+  } else {
+    header.hidden = true;
+  }
+}
+
 function readCapabilitySnapshot() {
   const blob = document.getElementById("chat-capabilities-data");
   if (!blob) return null;
@@ -233,7 +267,7 @@ async function deleteSession(chatId) {
   try {
     await api(`/api/chat/sessions/${chatId}`, { method: "DELETE" });
   } catch (err) {
-    setStatus(`Could not delete: ${err.message}`, "error");
+    showToast(`Could not delete: ${err.message}`, "error");
     return;
   }
   await loadSidebar();
@@ -243,8 +277,10 @@ async function deleteSession(chatId) {
     if (ws) { ws.close(); ws = null; }
     $("chat-messages").innerHTML = "";
     setStatus("");
+    setThreadTitle(null);
     showCapabilities();
   }
+  showToast("Conversation deleted", "ok");
 }
 
 /** Toggle the `.is-active` class on the sidebar item matching ``chatId``.
@@ -264,6 +300,10 @@ async function newChat() {
     method: "POST",
     body: JSON.stringify({ surface: "web" }),
   });
+  // Reset the thread title — a brand-new session has no real title
+  // yet, so the empty-state should show the capability panel and not
+  // a stale label from the previous conversation.
+  setThreadTitle(null);
   await loadSidebar();
   openSession(created.id, created.ws_url);
 }
@@ -281,6 +321,10 @@ async function openSession(chatId, wsUrlOverride) {
   if (ws) { ws.close(); ws = null; }
   currentChatId = chatId;
   markActiveSidebar(chatId);
+  // Sidebar cache holds the title — look it up so the header reads
+  // correctly the moment the session opens, before history hydrates.
+  const meta = _sessionsCache.find(s => s.id === chatId);
+  setThreadTitle(meta && meta.title ? meta.title : "Untitled chat");
   $("chat-messages").innerHTML = "";
   setStatus("");
 
@@ -341,9 +385,13 @@ function handleFrame(frame) {
       break;
     case "cancelled":
       setStatus(`Cancelled tool: ${frame.tool || ""}`, "warn");
+      $("cancel-btn").hidden = true;
+      clearThinkingPlaceholder();
       break;
     case "error":
       setStatus(`Error: ${frame.kind} (${frame.message || ""})`, "error");
+      $("cancel-btn").hidden = true;
+      clearThinkingPlaceholder();
       break;
     case "done":
       $("cancel-btn").hidden = true;
@@ -434,8 +482,10 @@ function attachMessageActions(article, copyText) {
       await navigator.clipboard.writeText(copyText || "");
       copy.classList.add("is-copied");
       setTimeout(() => copy.classList.remove("is-copied"), 1400);
+      showToast("Message copied", "ok");
     } catch (err) {
       console.warn("clipboard write failed", err);
+      showToast("Couldn't copy to clipboard", "error");
     }
   };
   wrap.appendChild(copy);
@@ -504,8 +554,10 @@ function enhanceCodeBlocks(root) {
         await navigator.clipboard.writeText(code.innerText);
         btn.classList.add("is-copied");
         setTimeout(() => btn.classList.remove("is-copied"), 1400);
+        showToast("Code copied", "ok");
       } catch (err) {
         console.warn("clipboard write failed", err);
+        showToast("Couldn't copy code", "error");
       }
     };
     pre.appendChild(btn);
@@ -668,12 +720,27 @@ async function submitUserMessage(text) {
   }
   renderMessage({ role: "user", content: text });
   ws.send(JSON.stringify({ type: "user_msg", text }));
-  $("chat-input").value = "";
-  // Show the thinking placeholder immediately so the user sees
-  // *something* between Send and the first token. appendToken /
-  // renderToolCallStart / finalizeAssistantMessage all clear it as
-  // soon as the first server frame lands.
+  const ta = $("chat-input");
+  if (ta) {
+    ta.value = "";
+    autosizeComposer();
+  }
+  // Show the thinking placeholder + Stop button immediately so the
+  // user sees *something* and can cancel between Send and the first
+  // server frame. The "done" / "cancelled" / "error" frames hide
+  // the Stop button again.
   showThinkingPlaceholder();
+  $("cancel-btn").hidden = false;
+}
+
+/** Resize the composer textarea to fit its content, capped at 220px
+ *  (matches max-height in chat.css). Reset to ``auto`` first so the
+ *  scrollHeight calculation isn't dragged down by the last value. */
+function autosizeComposer() {
+  const ta = $("chat-input");
+  if (!ta) return;
+  ta.style.height = "auto";
+  ta.style.height = Math.min(ta.scrollHeight, 220) + "px";
 }
 
 $("new-chat").onclick = async () => {
@@ -696,6 +763,36 @@ $("chat-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     $("chat-form").dispatchEvent(new SubmitEvent("submit", { cancelable: true }));
+  } else if (e.key === "Escape") {
+    // Esc inside the composer drops focus so the global N hotkey
+    // becomes available without yanking the cursor mid-thought.
+    e.target.blur();
+  }
+});
+$("chat-input").addEventListener("input", autosizeComposer);
+
+// Global keyboard shortcuts. ``targetIsTypeable`` keeps shortcuts
+// inert while the user is typing in any input / textarea /
+// contenteditable so a sentence like "no good" doesn't fire 'N'.
+function _targetIsTypeable(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
+}
+document.addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (_targetIsTypeable(e.target)) return;
+  if (e.key === "n" || e.key === "N") {
+    e.preventDefault();
+    hideCapabilities();
+    newChat();
+  } else if (e.key === "/") {
+    // Slash focuses the composer — matches Twitter/Discord muscle
+    // memory for "start typing". Pre-existing Cmd+K still opens
+    // the palette for switching conversations.
+    e.preventDefault();
+    const ta = $("chat-input");
+    if (ta) ta.focus();
   }
 });
 
@@ -885,5 +982,6 @@ function closePalette() {
 (async () => {
   renderCapabilities();
   wireSuggestionButtons();
+  autosizeComposer();
   await loadSidebar();
 })();
