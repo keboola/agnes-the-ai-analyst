@@ -533,6 +533,35 @@ $("chat-input").addEventListener("keydown", (e) => {
 
 $("cancel-btn").onclick = () => ws?.send(JSON.stringify({ type: "cancel" }));
 
+/** Theme toggle — flips ``data-theme`` on <html> between unset (light)
+ *  and "dark", and mirrors the choice into localStorage so refreshes
+ *  + the anti-FOUC head script keep the same state. Updates the
+ *  ``aria-pressed`` flag on the button so screen readers report the
+ *  current state correctly. */
+function isDarkTheme() {
+  return document.documentElement.getAttribute("data-theme") === "dark";
+}
+function applyTheme(theme) {
+  if (theme === "dark") {
+    document.documentElement.setAttribute("data-theme", "dark");
+  } else {
+    document.documentElement.removeAttribute("data-theme");
+  }
+  try { localStorage.setItem("agnes-theme", theme); }
+  catch (_) { /* storage disabled — anti-FOUC just won't fire next time */ }
+  const btn = $("chat-theme-toggle");
+  if (btn) btn.setAttribute("aria-pressed", theme === "dark" ? "true" : "false");
+}
+(function wireThemeToggle() {
+  const btn = $("chat-theme-toggle");
+  if (!btn) return;
+  // Sync aria-pressed with whatever the head pre-paint script applied.
+  btn.setAttribute("aria-pressed", isDarkTheme() ? "true" : "false");
+  btn.addEventListener("click", () => {
+    applyTheme(isDarkTheme() ? "light" : "dark");
+  });
+})();
+
 (async () => {
   renderCapabilities();
   wireSuggestionButtons();
