@@ -104,10 +104,10 @@ class TestAuthMiddleware:
 # ── tool registration ────────────────────────────────────────────────────────────
 
 class TestToolRegistration:
-    def test_exactly_five_server_side_tools(self):
+    def test_exactly_six_server_side_tools(self):
         mod = _import_mod()
         tools = {t.name for t in mod.mcp._tool_manager.list_tools()}
-        assert tools == {"server_info", "catalog", "schema", "describe", "query"}
+        assert tools == {"server_info", "catalog", "schema", "describe", "query", "skills"}
 
     def test_no_client_only_tools(self):
         """query_local and pull require a local analyst filesystem — excluded here."""
