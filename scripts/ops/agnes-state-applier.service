@@ -1,30 +1,18 @@
 [Unit]
 Description=Agnes DB backend state applier — apply target compose lifecycle
-After=docker.service
+After=docker.service agnes-state-applier-bootstrap.service
 Wants=docker.service
+Requires=agnes-state-applier-bootstrap.service
 
 [Service]
 Type=oneshot
 User=agnes-applier
 Group=docker
 
-# Self-bootstrap: create the agnes-applier user + chown the state
-# directory on first run. Idempotent — re-runs are no-ops. The `+`
-# prefix runs each line as root regardless of User=agnes-applier so
-# we can create the user we're about to drop into.
-#
-# This means OSS-only customer instances do NOT need to ship matching
-# user-creation logic in their provisioning scripts; the unit itself
-# bootstraps. The OSS customer-instance startup-script.sh.tpl still
-# carries the same useradd + chown block (eager, runs before any
-# state-machine work) but is now belt-and-braces, not a hard
-# prerequisite. Customer infras that maintain their own startup
-# scripts (e.g. forks that don't consume the OSS module) get the
-# bootstrap for free.
-ExecStartPre=+/bin/bash -c 'id -u agnes-applier >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin --user-group agnes-applier'
-ExecStartPre=+/usr/sbin/usermod -aG docker agnes-applier
-ExecStartPre=+/bin/mkdir -p /data/state /data/postgres
-ExecStartPre=+/bin/chown -R agnes-applier:agnes-applier /data/state
-ExecStartPre=+/bin/bash -c 'chown 70:70 /data/postgres && chmod 700 /data/postgres'
+# The companion agnes-state-applier-bootstrap.service (root, oneshot,
+# RemainAfterExit) creates the agnes-applier user + chowns /data/state
+# before this unit's User= directive is resolved. See that unit for
+# the rationale — systemd validates User= at unit LOAD time, so we
+# can't self-bootstrap inside this unit's own ExecStartPre.
 
 ExecStart=/usr/local/bin/agnes-state-applier.sh

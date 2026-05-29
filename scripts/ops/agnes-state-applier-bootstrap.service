@@ -1,0 +1,29 @@
+[Unit]
+Description=Bootstrap state for agnes-state-applier — create user, prep /data/state
+Before=agnes-state-applier.service agnes-state-applier.timer
+After=local-fs.target
+
+# Runs as root (no User=) so we can actually create the agnes-applier
+# user. The companion agnes-state-applier.service is ordered After=
+# this one (via Before= here) so by the time systemd loads the User=
+# directive there, the user definitely exists.
+#
+# Phase 8.1 follow-up #2: an earlier attempt put the user-creation in
+# ExecStartPre=+ of the main unit. systemd validates User= at unit
+# LOAD time, not at ExecStartPre run time, so the unit refused to
+# even start with "Failed to determine user credentials" before any
+# ExecStartPre had a chance to fire. Splitting into a dedicated
+# root-running bootstrap unit is the canonical systemd pattern for
+# self-bootstrapping user accounts.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c 'id -u agnes-applier >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin --user-group agnes-applier'
+ExecStart=/usr/sbin/usermod -aG docker agnes-applier
+ExecStart=/bin/mkdir -p /data/state /data/postgres
+ExecStart=/bin/chown -R agnes-applier:agnes-applier /data/state
+ExecStart=/bin/bash -c 'chown 70:70 /data/postgres && chmod 700 /data/postgres'
+
+[Install]
+WantedBy=multi-user.target

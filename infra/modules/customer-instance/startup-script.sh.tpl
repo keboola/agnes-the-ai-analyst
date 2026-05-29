@@ -120,7 +120,16 @@ chmod 700 /data/postgres
 install -m 0755 "$APP_DIR/agnes-state-applier.sh" /usr/local/bin/agnes-state-applier.sh
 install -m 0644 "$APP_DIR/agnes-state-applier.service" /etc/systemd/system/agnes-state-applier.service
 install -m 0644 "$APP_DIR/agnes-state-applier.timer" /etc/systemd/system/agnes-state-applier.timer
+# Bootstrap unit (Phase 8.1 follow-up #2). Runs as root, creates the
+# agnes-applier user + chowns /data/state on first boot. The main
+# applier unit ``Requires=`` it so by the time systemd resolves
+# ``User=agnes-applier`` for the applier, the user definitely exists.
+# The eager useradd block above (lines ~108-117) is now belt-and-
+# braces; customer infras that don't ship matching provisioning logic
+# get the bootstrap for free via this unit.
+install -m 0644 "$APP_DIR/agnes-state-applier-bootstrap.service" /etc/systemd/system/agnes-state-applier-bootstrap.service
 systemctl daemon-reload
+systemctl enable --now agnes-state-applier-bootstrap.service
 systemctl enable --now agnes-state-applier.timer
 
 # docker-compose.tls.yml + Caddyfile land regardless of TLS_MODE. agnes-auto-upgrade.sh
