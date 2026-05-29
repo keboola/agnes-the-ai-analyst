@@ -3011,13 +3011,22 @@ def _is_debug() -> bool:
 async def chat_page(
     request: Request,
     user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Web chat UI — streams Claude Code sessions over WebSocket."""
+    """Web chat UI — streams Claude Code sessions over WebSocket.
+
+    Goes through ``_build_context`` so the page inherits the standard
+    Agnes chrome from ``base_ds.html``: ``_app_header.html`` (nav),
+    ``static_url(...)``-resolved CSS, ``config.INSTANCE_NAME``,
+    ``session.user.is_admin`` for the admin dropdown, footer copyright.
+    Without this, the head's four ``<link rel="stylesheet" href="">``
+    tags render with empty href and the nav block short-circuits on
+    ``{% if session.user %}``.
+    """
     if not request.app.state.chat_config.enabled:
         return RedirectResponse("/")
-    return templates.TemplateResponse(
-        request, "chat.html", {"request": request, "current_user": user}
-    )
+    ctx = _build_context(request, user=user, conn=conn, current_user=user)
+    return templates.TemplateResponse(request, "chat.html", ctx)
 
 
 @router.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)

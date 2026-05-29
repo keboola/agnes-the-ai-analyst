@@ -62,7 +62,17 @@ def test_chat_route_html(api_client: TestClient, logged_in_user):
     r = api_client.get("/chat")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
-    assert "<title>Agnes — Chat</title>" in r.text
+    # Template renders `Chat — {{ config.INSTANCE_NAME or 'Agnes' }}` — the
+    # 'or Agnes' fallback fires here because the test env has no
+    # instance.yaml. Substring assertion so a real INSTANCE_NAME (e.g.
+    # "Agnes Dev") in a deployed env also passes.
+    assert "<title>Chat — " in r.text
+    # Page must go through _build_context so the Agnes chrome renders —
+    # otherwise the four base stylesheets get empty href= and the nav
+    # block short-circuits on `{% if session.user %}`. Pin both.
+    assert 'class="app-header"' in r.text
+    assert "/static/style-custom.css" in r.text
+    assert 'class="chat-page-body"' in r.text
 
 
 def test_chat_route_redirects_when_disabled(api_client_chat_disabled: TestClient, logged_in_user):

@@ -4,26 +4,47 @@
    the Agnes top nav, footer, and shared design tokens (colors, type,
    spacing) all render around the chat shell. The chat-specific layout
    (sidebar + main panel) lives inside `block content`, scoped by
-   `.cloud-chat-shell` so its CSS doesn't bleed into other pages. #}
+   `.cloud-chat-shell` so its CSS doesn't bleed into other pages.
+
+   ``body_attrs`` adds ``.chat-page-body`` so chat.css can collapse the
+   container's vertical padding + the footer's height. Without that, the
+   chat-shell's ``height: calc(100dvh - …)`` always overshoots and the
+   page scrolls a few pixels — annoying because the chat-thread already
+   owns the inner scroll. See chat.css for the offset math. #}
 
 {% block title %}Chat — {{ config.INSTANCE_NAME or 'Agnes' }}{% endblock %}
 
+{% block body_attrs %}class="chat-page-body"{% endblock %}
+
 {% block head_extra %}
+  <link rel="stylesheet" href="{{ static_url('css/chat.css') }}" />
   <link rel="stylesheet" href="/static/vendor/highlight.min.css" />
-  <link rel="stylesheet" href="/static/css/chat.css" />
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/highlight.min.js"></script>
 {% endblock %}
 
-{# Use wide container so the chat shell gets enough horizontal room
-   for sidebar + main panel without hitting the standard reading width. #}
-{% set container_modifier = 'container--wide' %}
+{# Use full container so the chat shell can stretch edge-to-edge —
+   chat is an "app surface" not a content page, so the 1400px ceiling
+   that other admin pages get would just leave wasted gutters around
+   the sidebar. ``container_modifier`` is a block (not a var) in
+   base_ds.html, so ``{% set %}`` would silently no-op — must be a
+   ``{% block %}`` override. #}
+{% block container_modifier %}container--full{% endblock %}
 
 {% block content %}
 <div class="cloud-chat-shell">
-  <aside class="cloud-chat-sidebar">
-    <button type="button" id="new-chat" class="cloud-chat-new-btn">+ New chat</button>
-    <ul id="chat-list" class="cloud-chat-list"></ul>
+  <aside class="cloud-chat-sidebar" aria-label="Conversations">
+    <header class="cloud-chat-sidebar-header">
+      <span class="cloud-chat-sidebar-title">Conversations</span>
+      <button type="button" id="new-chat" class="cloud-chat-new-btn" aria-label="Start a new chat">
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+        New chat
+      </button>
+    </header>
+    <ul id="chat-list" class="cloud-chat-list" role="list"></ul>
+    <p id="cloud-chat-empty-state" class="cloud-chat-sidebar-empty">No conversations yet.</p>
   </aside>
 
   <section class="cloud-chat-main">

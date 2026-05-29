@@ -96,16 +96,29 @@ def test_admin_css_present():
 # ---------------------------------------------------------------------------
 
 def test_chat_html_references_resolve(api_client: TestClient, logged_in_user):
-    """Every /static/... href in /chat must exist on disk."""
+    """Every /static/... href in /chat must exist on disk.
+
+    Updated after the chat page migrated to ``base_ds.html``: the page now
+    inherits the four base stylesheets (style-custom, design-tokens,
+    components, stack_card) instead of bringing in ``admin.css`` directly.
+    Chat-specific styles live in ``chat.css`` next to the vendored
+    marked.js / highlight.js bundles.
+    """
     html = api_client.get("/chat").text
     web_root = _REPO_ROOT / "app" / "web"
     for href in (
         "/static/vendor/marked.min.js",
         "/static/vendor/highlight.min.js",
-        "/static/css/admin.css",
+        "/static/vendor/highlight.min.css",
+        "/static/css/chat.css",
+        # Base chrome — emitted by base_ds.html. If any of these has an
+        # empty href the route silently broke ``_build_context``.
+        "/static/style-custom.css",
+        "/static/css/design-tokens.css",
+        "/static/css/components.css",
     ):
         assert href in html, f"chat.html should reference {href}"
-        # `static_url` adds a `?v=…` query string; the path on disk is the
-        # bare href.  Map `/static/...` → `app/web/static/...`.
+        # ``static_url`` adds a ``?v=…`` query string; the path on disk is
+        # the bare href.  Map ``/static/...`` → ``app/web/static/...``.
         on_disk = web_root / href.lstrip("/")
         assert on_disk.exists(), f"{href} referenced but not on disk at {on_disk}"

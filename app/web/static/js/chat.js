@@ -115,8 +115,21 @@ async function loadSidebar() {
     const li = document.createElement("li");
     li.textContent = s.title || s.id;
     li.dataset.id = s.id;
+    if (s.id === currentChatId) li.classList.add("is-active");
     li.onclick = () => openSession(s.id);
     ul.appendChild(li);
+  }
+}
+
+/** Toggle the `.is-active` class on the sidebar item matching ``chatId``.
+ *  Called from openSession + newChat so the sidebar always reflects the
+ *  conversation currently visible in the main panel. Safe to call when
+ *  ``chatId`` is null — clears every highlight. */
+function markActiveSidebar(chatId) {
+  const ul = document.getElementById("chat-list");
+  if (!ul) return;
+  for (const li of ul.querySelectorAll("li")) {
+    li.classList.toggle("is-active", li.dataset.id === chatId);
   }
 }
 
@@ -133,6 +146,7 @@ async function openSession(chatId, wsUrlOverride) {
   hideCapabilities();
   if (ws) { ws.close(); ws = null; }
   currentChatId = chatId;
+  markActiveSidebar(chatId);
   $("chat-messages").innerHTML = "";
   $("chat-status").textContent = "";
 
