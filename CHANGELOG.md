@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Cloud-chat: SDK `initialize` timeout caused by HOME pointing at a host-only path.**
+  `ChatManager._spawn_runner` was setting `HOME=<session_dir>` on the
+  sandbox subprocess. `session_dir` is an Agnes-host-side path that does
+  not exist inside the E2B sandbox; the inner `claude` CLI subprocess
+  spawned by `claude-agent-sdk` writes to `$HOME/.claude/` during the
+  MCP `initialize` handshake and hung when HOME pointed nowhere. The
+  symptom was: WS handshake completes, runner emits `runner_ready`,
+  client sends `user_msg`, then ~60 s of silence followed by
+  `Control request timeout: initialize`. HOME is now hard-pinned to
+  `/home/user` (writable in the sandbox template's base image), so the
+  initialize handshake completes and the full user_msg → token →
+  assistant_message cycle works.
+
 ## [0.55.25] — 2026-05-29
 
 ### Changed
