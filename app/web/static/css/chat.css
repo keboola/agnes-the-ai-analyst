@@ -422,6 +422,118 @@ body.chat-page-body main { margin: 0; padding: 0; }
 }
 .msg-copy svg { width: 13px; height: 13px; }
 
+/* ---------- Code-block copy + syntax highlighting ----------
+   highlight.js drops `.hljs` on each <code> and a per-language
+   token-colour family. Its stylesheet is loaded by chat.html so we
+   only need to layout the per-block copy button here.
+
+   .code-block-wrap is added by chat.js to every <pre> that owns a
+   highlighted <code>; the relative positioning anchors the copy
+   button to the pre's top-right. The button stays hidden by default
+   and reveals on pre-hover or its own focus — same pattern as the
+   sidebar delete button. */
+.msg-body pre.code-block-wrap,
+.cloud-chat-messages details pre.code-block-wrap {
+  position: relative;
+  margin: var(--space-2) 0;
+  padding: var(--space-3);
+  background: var(--ds-code-bg);
+  color: var(--ds-code-ink);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  overflow-x: auto;
+}
+.msg-body pre.code-block-wrap code,
+.cloud-chat-messages details pre.code-block-wrap code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+.code-block-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ds-code-ink);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+.msg-body pre.code-block-wrap:hover .code-block-copy,
+.cloud-chat-messages details pre.code-block-wrap:hover .code-block-copy,
+.code-block-copy:focus-visible {
+  opacity: 1;
+}
+.code-block-copy:hover { background: rgba(255, 255, 255, 0.18); }
+.code-block-copy:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+.code-block-copy.is-copied {
+  background: var(--ds-accent-success-bg);
+  color: var(--ds-accent-success-ink);
+  opacity: 1;
+}
+.code-block-copy svg { width: 13px; height: 13px; }
+
+/* Inline code (single backticks) stays mint-chip per system.md. */
+.msg-body :not(pre) > code,
+.cloud-chat-messages details :not(pre) > code {
+  background: var(--ds-primary-light);
+  color: var(--ds-primary-dark);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+/* ---------- "Agnes is thinking…" placeholder ----------
+   Three dots that fade in/out in sequence — a calm signal that the
+   agent has accepted the prompt but no token has arrived yet. */
+.msg.is-thinking .msg-body {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 20px;
+}
+.msg-thinking-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--ds-text-muted);
+  opacity: 0.4;
+  animation: cloudchat-thinking 1.2s infinite ease-in-out both;
+}
+.msg-thinking-dot:nth-child(1) { animation-delay: -0.32s; }
+.msg-thinking-dot:nth-child(2) { animation-delay: -0.16s; }
+.msg-thinking-dot:nth-child(3) { animation-delay: 0s; }
+@keyframes cloudchat-thinking {
+  0%, 80%, 100% { transform: scale(0.7); opacity: 0.35; }
+  40%           { transform: scale(1);   opacity: 1;    }
+}
+/* Hide hover actions on the thinking placeholder — nothing to copy yet. */
+.msg.is-thinking .msg-actions { display: none; }
+
+/* Respect reduced motion — drop the bounce, just dim. */
+@media (prefers-reduced-motion: reduce) {
+  .msg-thinking-dot { animation: none; opacity: 0.6; }
+  .msg.is-streaming .msg-body::after { animation: none; }
+}
+
 /* tool-call collapsible blocks */
 .cloud-chat-messages details {
   margin: var(--space-1) 0;

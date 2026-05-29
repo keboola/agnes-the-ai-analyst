@@ -396,6 +396,7 @@ function renderMessage(m) {
   const bubble = article.querySelector(".msg-bubble");
   const body = bubble.querySelector(".msg-body");
   body.innerHTML = marked.parse(m.content || "");
+  enhanceCodeBlocks(body);
 
   if (m.tool_calls && m.tool_calls.length) {
     for (const tc of m.tool_calls) {
@@ -403,11 +404,113 @@ function renderMessage(m) {
       det.innerHTML = `<summary>tool: ${tc.tool}</summary>
         <pre><code>${JSON.stringify(tc.args, null, 2)}</code></pre>`;
       bubble.appendChild(det);
+      enhanceCodeBlocks(det);
     }
   }
 
   attachMessageActions(article, m.content || "");
   $("chat-messages").appendChild(article);
+  maybeScrollToBottom();
+}
+
+// ---------- Code-block enhancement ---------------------------------------
+// Two improvements baked into the same pass over `<pre><code>` blocks:
+//
+//   1. syntax highlighting via the already-vendored highlight.js — the
+//      <link rel="stylesheet" href="/static/vendor/highlight.min.css">
+//      in chat.html ships its CSS, and the bundled JS attaches `hljs`
+//      on window. We just call `highlightElement` per block after
+//      marked.parse() drops the raw HTML in.
+//   2. per-block copy buttons — a tiny `.code-block-copy` ghost
+//      button absolutely positioned in the top-right of each <pre>,
+//      with hover-reveal so it doesn't compete with the code itself.
+//
+// Safe to call repeatedly: bails out if the block has already been
+// processed (data-cb-enhanced attribute).
+
+function enhanceCodeBlocks(root) {
+  if (!root) return;
+  for (const code of root.querySelectorAll("pre > code")) {
+    const pre = code.parentElement;
+    if (!pre || pre.dataset.cbEnhanced === "1") continue;
+    pre.dataset.cbEnhanced = "1";
+    pre.classList.add("code-block-wrap");
+
+    if (window.hljs) {
+      try { window.hljs.highlightElement(code); }
+      catch (_) { /* unknown language / corrupted markup — fall through */ }
+    }
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "code-block-copy";
+    btn.title = "Copy code";
+    btn.setAttribute("aria-label", "Copy code block");
+    btn.innerHTML = _COPY_ICON_SVG;
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      try {
+        await navigator.clipboard.writeText(code.innerText);
+        btn.classList.add("is-copied");
+        setTimeout(() => btn.classList.remove("is-copied"), 1400);
+      } catch (err) {
+        console.warn("clipboard write failed", err);
+      }
+    };
+    pre.appendChild(btn);
+  }
+}
+
+// ---------- Smart auto-scroll --------------------------------------------
+// We only scroll the chat-messages container down on a new token / new
+// turn if the user was already near the bottom — otherwise scrolling
+// would yank them away from a paragraph they're actively reading
+// further up. `SCROLL_STICK_PX` is the slack zone counted as "near
+// bottom" (8 lines or so).
+
+const SCROLL_STICK_PX = 120;
+
+function isNearBottom(el) {
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_STICK_PX;
+}
+
+function maybeScrollToBottom() {
+  const el = $("chat-messages");
+  if (!el) return;
+  // Capture stickiness BEFORE the next paint. The caller has already
+  // appended the new node so scrollHeight has grown; we approximate
+  // "was near bottom" by comparing post-append minus the typical
+  // bubble height (~80px). Conservative: if uncertain, scroll.
+  if (el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_STICK_PX + 200) {
+    el.scrollTop = el.scrollHeight;
+  }
+}
+
+// ---------- "Agnes is thinking…" placeholder -----------------------------
+// Rendered the moment the user submits, removed as soon as the first
+// server frame (token / tool_call / assistant_message) arrives. Bridges
+// the gap between "I sent a message" and "the agent has started".
+
+let thinkingEl = null;
+
+function showThinkingPlaceholder() {
+  if (thinkingEl) return;
+  thinkingEl = createMessageShell({ role: "assistant" });
+  thinkingEl.classList.add("is-thinking");
+  const body = thinkingEl.querySelector(".msg-body");
+  body.innerHTML =
+    '<span class="msg-thinking-dot"></span>' +
+    '<span class="msg-thinking-dot"></span>' +
+    '<span class="msg-thinking-dot"></span>';
+  $("chat-messages").appendChild(thinkingEl);
+  maybeScrollToBottom();
+}
+
+function clearThinkingPlaceholder() {
+  if (!thinkingEl) return;
+  thinkingEl.remove();
+  thinkingEl = null;
 }
 
 // Streaming state — captured per turn so finalize knows what to
@@ -417,6 +520,7 @@ let currentAssistantBody = null;
 let currentAssistantText = "";
 
 function appendToken(text) {
+  clearThinkingPlaceholder();
   if (!currentAssistantArticle) {
     currentAssistantArticle = createMessageShell({ role: "assistant" });
     currentAssistantArticle.classList.add("is-streaming");
@@ -426,18 +530,21 @@ function appendToken(text) {
   }
   currentAssistantText += text;
   currentAssistantBody.textContent = currentAssistantText;
-  currentAssistantArticle.scrollIntoView({ block: "end" });
+  maybeScrollToBottom();
 }
 
 function finalizeAssistantMessage(frame) {
+  clearThinkingPlaceholder();
   const content = (frame && frame.content) || currentAssistantText;
   if (currentAssistantArticle && currentAssistantBody) {
     currentAssistantArticle.classList.remove("is-streaming");
     currentAssistantBody.innerHTML = marked.parse(content);
+    enhanceCodeBlocks(currentAssistantBody);
     attachMessageActions(currentAssistantArticle, content);
     currentAssistantArticle = null;
     currentAssistantBody = null;
     currentAssistantText = "";
+    maybeScrollToBottom();
   } else {
     renderMessage({
       role: "assistant",
@@ -449,13 +556,16 @@ function finalizeAssistantMessage(frame) {
 }
 
 function renderToolCallStart(frame) {
+  clearThinkingPlaceholder();
   const det = document.createElement("details");
   det.open = false;
   det.dataset.tool = frame.tool;
   det.innerHTML = `<summary>⏳ tool: ${frame.tool}</summary>
     <pre><code>${JSON.stringify(frame.args, null, 2)}</code></pre>`;
   $("chat-messages").appendChild(det);
+  enhanceCodeBlocks(det);
   inFlightToolCalls.set(frame.tool, det);
+  maybeScrollToBottom();
   $("cancel-btn").hidden = false;
 }
 
@@ -466,7 +576,9 @@ function renderToolCallEnd(frame) {
     const pre = document.createElement("pre");
     pre.innerHTML = `<code>${JSON.stringify(frame.result, null, 2).slice(0, 4000)}</code>`;
     det.appendChild(pre);
+    enhanceCodeBlocks(det);
     inFlightToolCalls.delete(frame.tool);
+    maybeScrollToBottom();
   }
 }
 
@@ -506,6 +618,11 @@ async function submitUserMessage(text) {
   renderMessage({ role: "user", content: text });
   ws.send(JSON.stringify({ type: "user_msg", text }));
   $("chat-input").value = "";
+  // Show the thinking placeholder immediately so the user sees
+  // *something* between Send and the first token. appendToken /
+  // renderToolCallStart / finalizeAssistantMessage all clear it as
+  // soon as the first server frame lands.
+  showThinkingPlaceholder();
 }
 
 $("new-chat").onclick = async () => {
