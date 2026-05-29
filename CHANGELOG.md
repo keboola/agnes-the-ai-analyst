@@ -10,7 +10,66 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING (cloud-chat operator surface): chat sandbox provider reversed to E2B.**
+  The v1 default chat sandbox provider changed from a host-side
+  nsjail-isolated subprocess to an E2B ephemeral microVM. The Agnes
+  server no longer needs nsjail, iptables OWNER rules, or a dedicated
+  `agnes-sandbox` host user. Instead it needs an E2B account, an
+  `E2B_API_KEY`, and a template id obtained from `e2b template build`
+  against `app/initial_workspace_default/e2b-template/`. The
+  `chat.require_isolation` and `chat.sandbox_uid` knobs are removed —
+  startup gates now require `chat.provider: e2b` (the only accepted
+  value), `chat.e2b_template_id`, `E2B_API_KEY`, and `ANTHROPIC_API_KEY`.
+  Operators who flip `chat.enabled: true` without an E2B account will
+  hit a fatal log and chat endpoints return 503. See `docs/cloud-chat.md`
+  for the full operator setup; see `docs/superpowers/plans/2026-05-28-e2b-refactor.md`
+  for the seven owner-signed design decisions.
+
 ### Added
+- **`E2BProvider`** (`app/chat/e2b_provider.py`) implements the
+  `SandboxProvider` Protocol against the E2B Python SDK 1.x. Adapts
+  the SDK's callback-driven `commands.run(background=True, on_stdout=…)`
+  and string-based `commands.send_stdin(pid, str)` shape to the
+  asyncio `StreamReader`/`StreamWriter` interface the rest of the chat
+  stack expects.
+- **Workspace ↔ sandbox sync layer** (`app/chat/e2b_workspace_sync.py`).
+  `upload_workspace` pushes the per-user workspace tree into `/work/`
+  inside the sandbox at spawn time (Q1 — full-push, 100 MB cap,
+  refuses on overshoot rather than half-syncing). `download_workspace`
+  pulls changes back on session end. Symlinks are dereferenced so the
+  sandbox sees real file content.
+- **E2B sandbox template** (`app/initial_workspace_default/e2b-template/`):
+  `Dockerfile` + `e2b.toml` + operator README documenting `e2b auth
+  login` → `e2b template build` → drop the returned id into
+  `instance.yaml`. Per Q4 no firewall rules are baked into the template
+  — the egress allowlist lives only in the PreToolUse hook.
+- **`GET /admin/chat/{id}/debug`** — admin-only introspection of
+  process-local counters (per-session BQ scan bytes, live session
+  state). Replaces the pre-E2B `docker exec python -c "..."` pattern
+  the E2E suite used, which no longer applies under the remote-microVM
+  model.
+- **`tests/e2e/test_e2b_smoke.py`** — opt-in real-sandbox smoke gated
+  on `AGNES_E2E_E2B=1` + `E2B_API_KEY`.
+- **`.github/workflows/e2e-e2b.yml`** — opt-in CI workflow that runs
+  the E2B smoke + the broader F.* scenarios against real E2B. Replaces
+  the deleted `e2e-nsjail.yml`.
+- **`chat.e2b_workspace_max_bytes`** (default 100 MB) and
+  **`chat.e2b_kill_on_ws_disconnect`** (default true, Q3) knobs in
+  `instance.yaml`.
+
+### Removed
+- **`app/chat/subprocess_provider.py`** and its host-side isolation
+  knobs. The pluggable provider Protocol survives; the subprocess
+  implementation does not.
+- **`config/nsjail/chat-session.cfg.template`** + `tests/security/`
+  package + `tests/e2e/iptables-setup.sh` + `tests/test_chat_subprocess_provider.py`
+  + `tests/test_chat_api_ws.py` + `.github/workflows/e2e-nsjail.yml`.
+- **`chat.require_isolation` and `chat.sandbox_uid`**. Silently
+  ignored by the loader (old YAMLs continue to load) but no longer
+  surfaced on the ChatConfig dataclass.
+
+### Added (pre-Phase H, cumulative)
 - **Slack DM assistant-back pump (`SlackSinkBridge`).** Previously
   `services/slack_bot/events.py::_handle_dm` accepted a user message
   and returned — nothing consumed the runner subprocess's stdout and

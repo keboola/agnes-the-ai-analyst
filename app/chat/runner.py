@@ -4,7 +4,8 @@ Stdin: JSON lines, one per frame. Inbound types: user_msg, cancel.
 Stdout: JSON lines. Outbound types: runner_ready, token, tool_call,
         tool_result, assistant_message, error, done.
 
-Env (set by ChatManager via SubprocessProvider):
+Env (set by ChatManager via the sandbox provider — under v1 the
+E2BProvider passes these through ``AsyncSandbox.create(envs=...)``):
 - AGNES_SESSION_ID, AGNES_USER_EMAIL, AGNES_API, AGNES_TOKEN
 - AGNES_DAILY_BUDGET_USD, AGNES_PER_TOOL_CALL_SECONDS
 """
