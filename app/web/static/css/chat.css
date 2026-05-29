@@ -19,6 +19,14 @@ body.chat-page-body main { margin: 0; padding: 0; }
 .cloud-chat-shell {
   display: grid;
   grid-template-columns: 280px 1fr;
+  /* grid-template-rows: 100% is load-bearing — without it the implicit
+     row is auto-sized to content, so the sidebar + main fill their
+     natural heights. That makes ``min-height: 0`` inside .cloud-chat-
+     main useless (there's nothing to shrink against) and the composer
+     gets clipped below the shell's overflow boundary on short
+     viewports. Pinning the row to 100% gives the inner flex columns
+     a bounded parent to shrink within. */
+  grid-template-rows: 100%;
   /* 100dvh accounts for mobile address-bar collapse; the 72px offset
      matches `.app-header { height: 72px; }` in style-custom.css. We
      leave the chat shell flush with the nav (no rounded corners on
@@ -452,8 +460,11 @@ body.chat-page-body main { margin: 0; padding: 0; }
 @media (max-width: 768px) {
   .cloud-chat-shell {
     grid-template-columns: 1fr;
+    /* Clear the 100% row pin so the shell can grow with content and the
+       page scrolls naturally on small screens. */
+    grid-template-rows: auto;
     height: auto;
-    min-height: calc(100vh - 120px);
+    min-height: calc(100dvh - 72px);
   }
   .cloud-chat-sidebar {
     border-right: none;
