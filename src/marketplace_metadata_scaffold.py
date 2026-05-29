@@ -34,6 +34,14 @@ content hash in a top-level ``_generated`` block):
   present, hash == last generated          -> write derived   (regenerate)
   present, hash != last generated          -> keep existing   (human edit wins)
 
+When a field we generated last run is no longer derivable (its upstream source
+was deleted), it never appears in ``derived``, so a final cleanup pass handles
+it — otherwise a stale machine value would linger and, having lost its
+provenance, masquerade as human content on the next run:
+
+  was ours, on-disk hash == last generated -> remove          (source gone)
+  was ours, on-disk hash != last generated -> keep existing   (human edit wins)
+
 ``_generated`` is ignored by the runtime parser (it reads only ``plugins``),
 so shipping it in the committed file is safe. It is what turns the old "keep
 the enrichment file in sync with the plugins by hand" chore into "re-run the
@@ -224,15 +232,32 @@ def _read_manifest(marketplace_root: Path) -> Dict[str, Any]:
     return data
 
 
-def _read_plugin_json(plugin_root: Path) -> Dict[str, Any]:
+def _read_plugin_json(
+    plugin_root: Path,
+    name: Optional[str] = None,
+    report: Optional["ScaffoldReport"] = None,
+) -> Dict[str, Any]:
     p = plugin_root / PLUGIN_JSON_REL
     if not p.is_file():
+        # A missing plugin.json is normal — plugin-level fields then fall back
+        # to the manifest entry. Only a *present but broken* file is worth a warning.
         return {}
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError) as e:
+        if report is not None:
+            report.warnings.append(
+                f"plugin {name!r}: cannot read {PLUGIN_JSON_REL} ({e}) — "
+                "plugin-level fields fall back to the manifest"
+            )
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        if report is not None:
+            report.warnings.append(
+                f"plugin {name!r}: {PLUGIN_JSON_REL} is not a JSON object — ignored"
+            )
+        return {}
+    return data
 
 
 def _resolve_plugin_root(
@@ -255,7 +280,7 @@ def _resolve_plugin_root(
             f"plugin {name!r}: remote source {s!r} — skills/agents not enumerated"
         )
         return None
-    rel = PurePosixPath(s.lstrip("./"))
+    rel = PurePosixPath(s.removeprefix("./"))
     if rel.is_absolute() or ".." in rel.parts:
         report.warnings.append(f"plugin {name!r}: unsafe source path {s!r} — skipped")
         return None
@@ -403,9 +428,9 @@ class ScaffoldReport:
         return counts
 
     def wrote_changes(self) -> bool:
-        """True when the merge produced any new or refreshed machine value."""
+        """True when the merge wrote, refreshed, or removed a machine value."""
         return any(
-            status in ("generated", "regenerated")
+            status in ("generated", "regenerated", "removed")
             for _section, _field, status in self.actions
         )
 
@@ -430,6 +455,17 @@ def _apply_section(
             new_gen.setdefault(section_key, {})[field_name] = _field_hash(
                 section[field_name]
             )
+    # Fields we generated last run but no longer derive (the upstream source
+    # text was removed). Clean them up so a stale value can't linger and then,
+    # provenance lost, get mistaken for human content on the next run.
+    for field_name, prior_hash in prior.items():
+        if field_name in derived or field_name not in section:
+            continue
+        if _field_hash(section[field_name]) == prior_hash:
+            del section[field_name]
+            report.actions.append((section_key, field_name, "removed"))
+        else:
+            report.actions.append((section_key, field_name, "kept-edited"))
 
 
 def scaffold_metadata(
@@ -478,7 +514,9 @@ def scaffold_metadata(
         discovered.append(pname)
 
         plugin_root = _resolve_plugin_root(marketplace_root, entry, report)
-        plugin_json = _read_plugin_json(plugin_root) if plugin_root else {}
+        plugin_json = (
+            _read_plugin_json(plugin_root, pname, report) if plugin_root else {}
+        )
 
         section = out_plugins.get(pname)
         if not isinstance(section, dict):
@@ -524,12 +562,16 @@ def _merge_inner(
     new_gen: Dict[str, Dict[str, str]],
     report: ScaffoldReport,
 ) -> None:
-    if not inners:
-        # Nothing discovered — leave any existing map untouched.
-        return
     existing_map = plugin_section.get(kind)
     if not isinstance(existing_map, dict):
         existing_map = {}
+    if not inners:
+        # Nothing discovered on disk. Anything still in the file means the whole
+        # skills/agents set was removed upstream — report each as an orphan
+        # (consistent with partial removal) but leave the data untouched.
+        for inner_name in existing_map:
+            report.orphans.append(f"plugins/{plugin_name}/{kind}/{inner_name}")
+        return
     out_map: Dict[str, Any] = {}
     for inner in inners:
         inner_section = existing_map.get(inner.name)
