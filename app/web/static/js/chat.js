@@ -45,7 +45,10 @@ function showToast(text, kind = "ok", { durationMs = 2400 } = {}) {
   if (!stack) return;
   const toast = document.createElement("div");
   toast.className = `cloud-chat-toast is-${kind}`;
-  toast.setAttribute("role", "status");
+  // No per-toast role="status" — the parent #chat-toasts already
+  // carries aria-live="polite" which announces any appended child.
+  // Stacking both was belt-and-suspenders that caused some screen
+  // readers to double-announce.
   toast.textContent = text;
   const dismiss = () => {
     toast.classList.add("is-leaving");
