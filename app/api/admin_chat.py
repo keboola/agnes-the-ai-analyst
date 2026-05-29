@@ -87,6 +87,52 @@ async def admin_kill(chat_id: str, request: Request, _admin: dict = Depends(requ
     await mgr.kill(chat_id, reason="admin_kill")
 
 
+@router.get("/{chat_id}/debug")
+async def admin_debug(
+    chat_id: str,
+    request: Request,
+    _admin: dict = Depends(require_admin),
+) -> dict:
+    """Admin-only introspection of per-session in-process counters.
+
+    Used by the E2E suite (notably ``tests/e2e/test_bq_budget.py``) to
+    read counters that previously had to be poked via ``docker exec
+    python -c ...`` against module globals. Under the E2B-provider
+    model there is no ``docker exec`` into the runner — the runner is
+    a remote E2B microVM — so the test reads from this endpoint
+    instead. The shape is intentionally narrow: just the counters the
+    suite needs to assert on.
+    """
+    # bq_bytes — process-local accumulator inside app/api/query.py.
+    try:
+        from app.api.query import _per_session_bq_bytes
+        bq_bytes = int(_per_session_bq_bytes.get(chat_id, 0))
+    except Exception:
+        bq_bytes = 0
+    # session_state — live-manager view, if attached
+    mgr = getattr(request.app.state, "chat_manager", None)
+    live = None
+    if mgr is not None:
+        live = next(
+            (s for s in mgr.list_live() if s.chat_id == chat_id),
+            None,
+        )
+    return {
+        "chat_id": chat_id,
+        "bq_bytes": bq_bytes,
+        "live": (
+            {
+                "state": live.state.value,
+                "crash_count": live.crash_count,
+                "started_at": live.started_at.isoformat(),
+                "last_activity": live.last_activity.isoformat(),
+            }
+            if live is not None
+            else None
+        ),
+    }
+
+
 @router.get("/{chat_id}/tail-ticket")
 async def tail_ticket(
     chat_id: str,

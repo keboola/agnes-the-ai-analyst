@@ -259,3 +259,48 @@ def test_admin_chat_html_route_forbidden_for_non_admin(
         "/admin/chat", headers={"Accept": "text/html"}, follow_redirects=False,
     )
     assert r.status_code in (302, 307, 403)
+
+
+# ---------------------------------------------------------------------------
+# /admin/chat/{id}/debug — process-local counter introspection
+# (replaces the pre-E2B docker-exec poke; see tests/e2e/test_bq_budget.py)
+# ---------------------------------------------------------------------------
+
+
+def test_admin_debug_returns_bq_bytes_zero_for_fresh_session(
+    api_client: TestClient, logged_in_admin,
+):
+    """A freshly-created session has no BQ scan attributed yet → bq_bytes == 0."""
+    c = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()
+    r = api_client.get(f"/admin/chat/{c['id']}/debug")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["chat_id"] == c["id"]
+    assert body["bq_bytes"] == 0
+    # `live` is None until the session is attached.
+    assert body["live"] is None
+
+
+def test_admin_debug_reflects_charged_bq_bytes(
+    api_client: TestClient, logged_in_admin,
+):
+    """After accumulate_session_bq_bytes runs, the endpoint reports the total."""
+    from app.api.query import _per_session_bq_bytes
+
+    c = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()
+    _per_session_bq_bytes[c["id"]] = 1_234_567
+
+    try:
+        r = api_client.get(f"/admin/chat/{c['id']}/debug")
+        assert r.status_code == 200
+        assert r.json()["bq_bytes"] == 1_234_567
+    finally:
+        _per_session_bq_bytes.pop(c["id"], None)
+
+
+def test_admin_debug_forbidden_for_non_admin(
+    api_client_non_admin: TestClient, logged_in_user,
+):
+    """Debug endpoint is admin-only (guards counter introspection)."""
+    r = api_client_non_admin.get("/admin/chat/some-id/debug")
+    assert r.status_code in (401, 403)

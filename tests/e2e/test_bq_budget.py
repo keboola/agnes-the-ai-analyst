@@ -41,7 +41,6 @@ from tests.e2e._helpers import (
     E2E_USER_EMAIL,
     E2E_USER_PASSWORD,
     bootstrap_admin,
-    docker_exec,
     pump_until,
 )
 
@@ -85,35 +84,22 @@ def admin_client(docker_e2e_agnes: str):
     )
 
 
-def _read_session_bq_bytes(session_id: str) -> int:
-    """Query the running uvicorn process's in-memory budget map.
+def _read_session_bq_bytes(admin_client, session_id: str) -> int:
+    """Read the per-session BQ-bytes counter via the admin debug endpoint.
 
-    The counter lives in ``app.api.query._per_session_bq_bytes`` — a
-    process-local dict that resets on restart. We poke it from inside
-    the container via ``docker exec python -c ...`` rather than
-    standing up a debug endpoint (matches Task D.1's pattern but keeps
-    the production surface unchanged).
-
-    Returns 0 if the session isn't tracked yet (a real F.6 run will
-    populate it as soon as the assistant fires the first remote query).
+    Pre-E2B this test used ``docker exec`` to read
+    ``app.api.query._per_session_bq_bytes`` from inside the running
+    container, but under the E2B-provider model the runner lives in a
+    remote E2B microVM and there is no host-side subprocess to exec
+    into. ``GET /admin/chat/{id}/debug`` (admin-only) returns the same
+    process-local counter without coupling the test to docker-exec
+    machinery. Returns 0 when the session has not yet been charged.
     """
-    snippet = (
-        "import sys, importlib, json;"
-        # Importing app.main isn't safe (it boots the world). We only
-        # need the module that owns the counter.
-        "m=importlib.import_module('app.api.query');"
-        f"print(json.dumps(m._per_session_bq_bytes.get({session_id!r}, 0)))"
+    status, payload = admin_client.get(f"/admin/chat/{session_id}/debug")
+    assert status == 200, (
+        f"admin debug endpoint should return 200; got {status} {payload!r}"
     )
-    proc = docker_exec(
-        ["/opt/venv/bin/python", "-c", snippet],
-        timeout=20.0,
-    )
-    if proc.returncode != 0:
-        raise AssertionError(
-            "failed to read BQ budget from container: "
-            f"stderr={proc.stderr.decode('utf-8', 'replace')!r}"
-        )
-    return int(json.loads(proc.stdout.decode("utf-8", "replace").strip() or "0"))
+    return int(payload.get("bq_bytes", 0))
 
 
 def test_f6_remote_bq_count_increments_per_session_budget(
@@ -126,7 +112,7 @@ def test_f6_remote_bq_count_increments_per_session_budget(
     table_id = _bq_table_id()
     session = admin_client.create_chat_session(surface="web")
 
-    before = _read_session_bq_bytes(session["id"])
+    before = _read_session_bq_bytes(admin_client, session["id"])
     assert before == 0, (
         f"fresh session {session['id']} should have zero BQ bytes; got {before}"
     )
@@ -171,7 +157,7 @@ def test_f6_remote_bq_count_increments_per_session_budget(
     )
     assert asst_texts, "never saw an assistant_message before the WS closed"
 
-    after = _read_session_bq_bytes(session["id"])
+    after = _read_session_bq_bytes(admin_client, session["id"])
     assert after > before, (
         f"per-session BQ bytes should have advanced past {before}; got {after}. "
         "Either the remote query never fired (regression in the chat-JWT → "
