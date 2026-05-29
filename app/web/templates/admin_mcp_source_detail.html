@@ -1,0 +1,738 @@
+{% extends "base.html" %}
+{% block title %}MCP source detail — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+{% import "_components.html" as ds %}
+<style>
+  .src-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 12px; margin-bottom: 18px; flex-wrap: wrap;
+  }
+  .src-back { font-size: 12px; color: var(--text-secondary, #6b7280); text-decoration: none; }
+  .src-back:hover { color: var(--primary, #4338ca); }
+
+  .src-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    margin-bottom: 18px;
+    overflow: hidden;
+  }
+  .src-card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    background: var(--border-light, #f9fafb);
+  }
+  .src-card-head h3 { margin: 0; font-size: 14px; font-weight: 600; }
+  .src-card-body { padding: 18px; }
+
+  /* Config summary table */
+  .cfg-table { width: 100%; font-size: 13px; border-collapse: collapse; }
+  .cfg-table th {
+    text-align: left; padding: 8px 12px;
+    font-weight: 500; color: var(--text-secondary, #6b7280);
+    font-size: 12px; width: 180px; vertical-align: top;
+  }
+  .cfg-table td {
+    padding: 8px 12px;
+    color: var(--text-primary, #111827);
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12px;
+    word-break: break-all;
+  }
+  .cfg-table tr + tr th, .cfg-table tr + tr td {
+    border-top: 1px solid var(--border-light, #f3f4f6);
+  }
+
+  .transport-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .transport-stdio { background: #e0e7ff; color: #3730a3; }
+  .transport-http  { background: #dcfce7; color: #166534; }
+  .transport-sse   { background: #fef3c7; color: #92400e; }
+
+  .mode-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .mode-materialize { background: #dcfce7; color: #166534; }
+  .mode-passthrough { background: #e0e7ff; color: #3730a3; }
+  .mode-skip { background: #f3f4f6; color: #6b7280; }
+
+  /* Edit form */
+  .edit-form { display: none; }
+  .edit-form.is-active { display: block; }
+  .edit-form label { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary, #6b7280); margin: 10px 0 4px; }
+  .edit-form input[type="text"], .edit-form input[type="url"], .edit-form select, .edit-form textarea {
+    width: 100%; padding: 8px 11px; border: 1px solid var(--border, #e5e7eb);
+    border-radius: 6px; font-size: 13px; box-sizing: border-box;
+    background: var(--surface, #fff); color: var(--text-primary, #111827);
+    font-family: inherit;
+  }
+  .edit-form textarea { min-height: 56px; resize: vertical; font-family: var(--font-mono, ui-monospace, monospace); }
+  .edit-form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+  .transport-fields { display: none; }
+  .transport-fields.is-active { display: block; }
+
+  /* Tools tables */
+  .tools-table { width: 100%; font-size: 13px; border-collapse: collapse; }
+  .tools-table thead th {
+    text-align: left; padding: 10px 12px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600; color: var(--text-secondary, #6b7280);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .tools-table tbody td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    vertical-align: top;
+  }
+  .tools-table tbody tr:last-child td { border-bottom: none; }
+  .tool-name {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12px; font-weight: 600;
+    color: var(--text-primary, #111827);
+  }
+  .tool-desc {
+    margin-top: 4px; font-size: 12px; color: var(--text-secondary, #6b7280);
+    line-height: 1.4;
+  }
+  .tool-reason {
+    margin-top: 4px; font-size: 11px; color: var(--text-secondary, #9ca3af);
+    font-style: italic;
+  }
+
+  .mode-radio-group {
+    display: flex; gap: 12px; flex-wrap: wrap;
+  }
+  .mode-radio-group label {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 12px; cursor: pointer;
+    color: var(--text-secondary, #6b7280);
+  }
+  .mode-radio-group input[type="radio"] { margin: 0; cursor: pointer; }
+
+  .exposed-name-input {
+    width: 180px; padding: 4px 8px; font-size: 12px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    border: 1px solid var(--border, #e5e7eb); border-radius: 4px;
+  }
+  .schedule-input {
+    width: 140px; padding: 4px 8px; font-size: 12px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    border: 1px solid var(--border, #e5e7eb); border-radius: 4px;
+  }
+
+  .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .icon-btn {
+    background: transparent; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    padding: 5px 10px; font-size: 12px; cursor: pointer;
+    color: var(--text-secondary, #6b7280); transition: all 0.15s;
+    text-decoration: none; line-height: 1.4; white-space: nowrap;
+  }
+  .icon-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb; }
+  .icon-btn.primary { color: var(--primary, #6366f1); border-color: #c7d2fe; }
+  .icon-btn.primary:hover { background: #eef2ff; }
+  .icon-btn.danger:hover { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
+  .icon-btn[disabled] { opacity: 0.5; cursor: wait; }
+
+  .empty-row {
+    text-align: center; padding: 32px 12px;
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+  }
+
+  .test-result {
+    margin-top: 10px; padding: 10px 12px; border-radius: 8px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12px; display: none;
+  }
+  .test-result.ok { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; display: block; }
+  .test-result.err { background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; display: block; }
+
+  /* Toast */
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .toast {
+    background: #111827; color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; max-width: 380px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error { background: #b91c1c; }
+</style>
+
+<div class="mcp-detail-page">
+  <a class="src-back" href="/admin/mcp-sources">&larr; All MCP sources</a>
+
+  {% set page_hero_eyebrow = "Agent Experience" %}
+  {% set page_hero_title %}MCP source &middot; <span id="hero-source-name">…</span>{% endset %}
+  {% set page_hero_subtitle = "Configure the connection, introspect to discover tools, and curate which ones become materialized tables or passthrough lookups." %}
+  {% include "_page_hero.html" %}
+
+  <!-- Configuration card -->
+  <div class="src-card">
+    <div class="src-card-head">
+      <h3>Configuration</h3>
+      <div style="display:flex; gap:8px;">
+        {{ ds.button('Test connection', variant='secondary', id='test-btn') }}
+        {{ ds.button('Edit', variant='secondary', id='edit-toggle-btn') }}
+      </div>
+    </div>
+    <div class="src-card-body">
+      <!-- Read-only summary -->
+      <div id="cfg-summary">
+        <table class="cfg-table">
+          <tr><th>ID</th><td id="cfg-id">…</td></tr>
+          <tr><th>Name</th><td id="cfg-name">…</td></tr>
+          <tr><th>Transport</th><td id="cfg-transport">…</td></tr>
+          <tr><th>Endpoint</th><td id="cfg-endpoint">…</td></tr>
+          <tr><th>Auth method</th><td id="cfg-auth-method">…</td></tr>
+          <tr><th>Auth secret env</th><td id="cfg-auth-secret-env">…</td></tr>
+          <tr><th>Enabled</th><td id="cfg-enabled">…</td></tr>
+        </table>
+      </div>
+
+      <!-- Edit form -->
+      <div id="cfg-edit" class="edit-form">
+        <label for="edit-name">Display name</label>
+        <input id="edit-name" type="text" autocomplete="off">
+
+        <label for="edit-transport">Transport</label>
+        <select id="edit-transport">
+          <option value="stdio">stdio (subprocess)</option>
+          <option value="http">http (streamable)</option>
+          <option value="sse">sse (server-sent events)</option>
+        </select>
+
+        <div class="transport-fields" data-transport="stdio">
+          <label for="edit-command">Command</label>
+          <input id="edit-command" type="text" autocomplete="off">
+
+          <label for="edit-args">Arguments (one per line)</label>
+          <textarea id="edit-args" autocomplete="off"></textarea>
+        </div>
+
+        <div class="transport-fields" data-transport="http">
+          <label for="edit-url-http">Endpoint URL</label>
+          <input id="edit-url-http" type="url" autocomplete="off">
+        </div>
+
+        <div class="transport-fields" data-transport="sse">
+          <label for="edit-url-sse">SSE URL</label>
+          <input id="edit-url-sse" type="url" autocomplete="off">
+        </div>
+
+        <label for="edit-auth-method">Auth method</label>
+        <select id="edit-auth-method">
+          <option value="">none</option>
+          <option value="bearer">bearer (env var)</option>
+          <option value="header">custom header</option>
+        </select>
+
+        <label for="edit-auth-secret-env">Auth secret env var</label>
+        <input id="edit-auth-secret-env" type="text" autocomplete="off">
+
+        <label style="display:inline-flex; align-items:center; gap:6px; margin-top:14px; font-weight:500; color: var(--text-primary, #111827);">
+          <input id="edit-enabled" type="checkbox"> Enabled
+        </label>
+
+        <div class="edit-form-actions">
+          {{ ds.button('Cancel', variant='secondary', id='edit-cancel-btn') }}
+          {{ ds.button('Save config', variant='primary', id='edit-save-btn') }}
+        </div>
+      </div>
+
+      <div id="test-result" class="test-result"></div>
+    </div>
+  </div>
+
+  <!-- Discover / introspect card -->
+  <div class="src-card">
+    <div class="src-card-head">
+      <h3>Discover tools</h3>
+      <div style="display:flex; gap:8px;">
+        {{ ds.button('Introspect now', variant='primary', id='introspect-btn') }}
+      </div>
+    </div>
+    <div class="src-card-body">
+      <p style="margin: 0 0 12px; font-size: 13px; color: var(--text-secondary, #6b7280);">
+        Connect to the upstream MCP server, list its tools, and run the heuristic classifier.
+        Pick a mode per tool, optionally override the exposed name, and click <strong>Save selected tools</strong>.
+      </p>
+      <div id="discover-status" style="font-size: 12px; color: var(--text-secondary, #6b7280); margin-bottom: 10px;"></div>
+      <div id="discover-body">
+        <div class="empty-row">No tools discovered yet — click <strong>Introspect now</strong> to fetch them from the upstream server.</div>
+      </div>
+      <div id="discover-actions" style="display:none; margin-top: 14px; display:flex; gap:8px; justify-content:flex-end;">
+        {{ ds.button('Save selected tools', variant='primary', id='save-tools-btn') }}
+      </div>
+    </div>
+  </div>
+
+  <!-- Registered tools card -->
+  <div class="src-card">
+    <div class="src-card-head">
+      <h3>Registered tools for this source</h3>
+      <span id="registered-count" style="font-size: 12px; color: var(--text-secondary, #6b7280);"></span>
+    </div>
+    <div class="src-card-body" style="padding:0;">
+      <table class="tools-table" id="registered-table">
+        <thead>
+          <tr>
+            <th>Original</th>
+            <th>Exposed name</th>
+            <th>Mode</th>
+            <th>Schedule</th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="registered-tbody"></tbody>
+      </table>
+      <div id="registered-empty" class="empty-row">No tools registered for this source yet.</div>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+const SOURCE_ID = {{ source_id | tojson }};
+const SOURCE_API = `/api/admin/mcp-sources/${encodeURIComponent(SOURCE_ID)}`;
+const TOOLS_API = `/api/admin/mcp-tools`;
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
+}
+
+let source = null;
+let proposals = [];    // discovered tools from POST /classify
+let registered = [];   // already-registered tools for this source
+
+// ── Config load + render ───────────────────────────────────────────────
+async function loadSource() {
+  try {
+    const r = await fetch(SOURCE_API, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    source = await r.json();
+    renderConfigSummary();
+  } catch (e) {
+    toast("Failed to load source: " + e.message, "error");
+  }
+}
+
+function renderConfigSummary() {
+  if (!source) return;
+  document.getElementById("hero-source-name").textContent = source.name || source.id;
+  document.getElementById("cfg-id").textContent = source.id || "—";
+  document.getElementById("cfg-name").textContent = source.name || "—";
+  const tEl = document.getElementById("cfg-transport");
+  tEl.innerHTML = `<span class="transport-pill transport-${esc(source.transport || "stdio")}">${esc(source.transport || "stdio")}</span>`;
+  let endpoint = "—";
+  if (source.transport === "stdio") {
+    endpoint = source.command
+      ? `${esc(source.command)}${source.args && source.args.length ? " " + source.args.map(esc).join(" ") : ""}`
+      : "—";
+  } else if (source.url) {
+    endpoint = esc(source.url);
+  }
+  document.getElementById("cfg-endpoint").innerHTML = endpoint;
+  document.getElementById("cfg-auth-method").textContent = source.auth_method || "none";
+  document.getElementById("cfg-auth-secret-env").textContent = source.auth_secret_env || "—";
+  document.getElementById("cfg-enabled").textContent = (source.enabled === false) ? "no" : "yes";
+}
+
+// ── Edit toggle ────────────────────────────────────────────────────────
+function syncTransportFields(prefix) {
+  const t = document.getElementById(`${prefix}-transport`).value;
+  document.querySelectorAll("#cfg-edit .transport-fields").forEach(el => {
+    el.classList.toggle("is-active", el.dataset.transport === t);
+  });
+}
+
+document.getElementById("edit-toggle-btn").addEventListener("click", () => {
+  if (!source) return;
+  document.getElementById("edit-name").value = source.name || "";
+  document.getElementById("edit-transport").value = source.transport || "stdio";
+  document.getElementById("edit-command").value = source.command || "";
+  document.getElementById("edit-args").value = (source.args || []).join("\n");
+  document.getElementById("edit-url-http").value = source.transport === "http" ? (source.url || "") : "";
+  document.getElementById("edit-url-sse").value = source.transport === "sse" ? (source.url || "") : "";
+  document.getElementById("edit-auth-method").value = source.auth_method || "";
+  document.getElementById("edit-auth-secret-env").value = source.auth_secret_env || "";
+  document.getElementById("edit-enabled").checked = source.enabled !== false;
+  syncTransportFields("edit");
+  document.getElementById("cfg-summary").style.display = "none";
+  document.getElementById("cfg-edit").classList.add("is-active");
+});
+
+document.getElementById("edit-transport").addEventListener("change", () => syncTransportFields("edit"));
+
+document.getElementById("edit-cancel-btn").addEventListener("click", () => {
+  document.getElementById("cfg-edit").classList.remove("is-active");
+  document.getElementById("cfg-summary").style.display = "block";
+});
+
+document.getElementById("edit-save-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("edit-save-btn");
+  const transport = document.getElementById("edit-transport").value;
+  const body = {
+    name: document.getElementById("edit-name").value.trim(),
+    transport,
+    auth_method: document.getElementById("edit-auth-method").value || null,
+    auth_secret_env: document.getElementById("edit-auth-secret-env").value.trim() || null,
+    enabled: document.getElementById("edit-enabled").checked,
+  };
+  if (transport === "stdio") {
+    body.command = document.getElementById("edit-command").value.trim();
+    body.args = document.getElementById("edit-args").value.split("\n").map(s => s.trim()).filter(Boolean);
+    body.url = null;
+  } else if (transport === "http") {
+    body.url = document.getElementById("edit-url-http").value.trim();
+    body.command = null;
+    body.args = null;
+  } else if (transport === "sse") {
+    body.url = document.getElementById("edit-url-sse").value.trim();
+    body.command = null;
+    body.args = null;
+  }
+
+  btn.disabled = true;
+  try {
+    const r = await fetch(SOURCE_API, {
+      method: "PUT", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (r.ok) {
+      toast("Config saved", "success");
+      document.getElementById("cfg-edit").classList.remove("is-active");
+      document.getElementById("cfg-summary").style.display = "block";
+      await loadSource();
+    } else {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      toast("Save failed: " + detail, "error");
+    }
+  } catch (e) {
+    toast("Save failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ── Test connection ────────────────────────────────────────────────────
+document.getElementById("test-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("test-btn");
+  const out = document.getElementById("test-result");
+  out.className = "test-result";
+  out.textContent = "";
+  btn.disabled = true;
+  try {
+    const r = await fetch(`${SOURCE_API}/test`, { method: "POST", credentials: "include" });
+    const data = await r.json().catch(() => ({}));
+    if (r.ok && data.ok) {
+      out.className = "test-result ok";
+      out.textContent = `OK — discovered ${data.tool_count} tool(s).`;
+    } else {
+      out.className = "test-result err";
+      out.textContent = "Failed: " + (data.error || data.detail || r.statusText);
+    }
+  } catch (e) {
+    out.className = "test-result err";
+    out.textContent = "Failed: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ── Introspect → classify ──────────────────────────────────────────────
+function suggestExposedName(originalName, sourceName) {
+  // Prefix with the source's short slug-ish name so collisions across
+  // sources are unlikely. Admin can override per row.
+  const slug = (sourceName || "src").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  return `${slug}_${originalName}`;
+}
+
+function renderProposals() {
+  const body = document.getElementById("discover-body");
+  const actions = document.getElementById("discover-actions");
+  if (!proposals.length) {
+    body.innerHTML = `<div class="empty-row">No tools returned by the upstream server.</div>`;
+    actions.style.display = "none";
+    return;
+  }
+  // Build a set of already-registered original names so the radio defaults
+  // to "skip" for tools that are already curated.
+  const registeredOriginals = new Set(registered.map(t => t.original_name));
+
+  let html = `<table class="tools-table">
+    <thead>
+      <tr>
+        <th>Tool</th>
+        <th>Mode</th>
+        <th>Exposed name</th>
+        <th>Schedule</th>
+      </tr>
+    </thead>
+    <tbody>`;
+  for (const p of proposals) {
+    const alreadyRegistered = registeredOriginals.has(p.name);
+    const defaultMode = alreadyRegistered ? "skip" : (p.suggested_mode || "passthrough");
+    const exposedDefault = suggestExposedName(p.name, source && source.name);
+    html += `
+      <tr data-tool-name="${esc(p.name)}">
+        <td>
+          <div class="tool-name">${esc(p.name)}</div>
+          ${p.description ? `<div class="tool-desc">${esc(p.description)}</div>` : ""}
+          ${p.reason ? `<div class="tool-reason">Classifier: ${esc(p.reason)}</div>` : ""}
+          ${alreadyRegistered ? `<div class="tool-reason" style="color:#92400e">Already registered — choose a mode to re-overwrite.</div>` : ""}
+        </td>
+        <td>
+          <div class="mode-radio-group">
+            <label><input type="radio" name="mode-${esc(p.name)}" value="materialize" ${defaultMode === "materialize" ? "checked" : ""}> materialize</label>
+            <label><input type="radio" name="mode-${esc(p.name)}" value="passthrough" ${defaultMode === "passthrough" ? "checked" : ""}> passthrough</label>
+            <label><input type="radio" name="mode-${esc(p.name)}" value="skip" ${defaultMode === "skip" ? "checked" : ""}> skip</label>
+          </div>
+        </td>
+        <td>
+          <input type="text" class="exposed-name-input" data-field="exposed_name" value="${esc(exposedDefault)}" placeholder="exposed_name">
+        </td>
+        <td>
+          <input type="text" class="schedule-input" data-field="schedule" placeholder="0 */6 * * *" title="Cron schedule (materialize mode only)">
+        </td>
+      </tr>`;
+  }
+  html += `</tbody></table>`;
+  body.innerHTML = html;
+  actions.style.display = "flex";
+}
+
+document.getElementById("introspect-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("introspect-btn");
+  const status = document.getElementById("discover-status");
+  btn.disabled = true;
+  status.textContent = "Connecting and classifying…";
+  try {
+    const r = await fetch(`${SOURCE_API}/classify`, { method: "POST", credentials: "include" });
+    if (!r.ok) {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    const data = await r.json();
+    proposals = Array.isArray(data.proposals) ? data.proposals : [];
+    status.textContent = `Found ${proposals.length} tool(s) on the upstream server.`;
+    renderProposals();
+  } catch (e) {
+    status.textContent = "Failed: " + e.message;
+    toast("Introspect failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("save-tools-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("save-tools-btn");
+  const rows = document.querySelectorAll("#discover-body tr[data-tool-name]");
+  // Collect selections + run client-side validation. Materialize without
+  // a schedule used to silently 400 — we now block the save up-front and
+  // tell the user exactly which row is missing data.
+  const selections = [];
+  const validationErrors = [];
+  rows.forEach(row => {
+    const name = row.dataset.toolName;
+    const mode = row.querySelector(`input[type="radio"][name="mode-${name}"]:checked`).value;
+    if (mode === "skip") return;
+    const exposedName = row.querySelector('[data-field="exposed_name"]').value.trim();
+    const schedule = row.querySelector('[data-field="schedule"]').value.trim();
+    if (mode === "materialize" && !schedule) {
+      validationErrors.push(name);
+      return;
+    }
+    const proposal = proposals.find(p => p.name === name) || {};
+    selections.push({
+      __row_name: name,
+      source_id: SOURCE_ID,
+      original_name: name,
+      exposed_name: exposedName || name,
+      mode,
+      description: proposal.description || null,
+      input_schema: proposal.input_schema || null,
+      schedule: (mode === "materialize" && schedule) ? schedule : null,
+      enabled: true,
+    });
+  });
+  if (validationErrors.length) {
+    toast(
+      `Schedule is required for materialize mode. Add one for: ${validationErrors.join(", ")}.`,
+      "error",
+    );
+    return;
+  }
+  if (!selections.length) {
+    toast("Nothing to save — every tool is set to skip.", "error");
+    return;
+  }
+  btn.disabled = true;
+  let ok = 0;
+  const failures = [];
+  for (const sel of selections) {
+    const rowName = sel.__row_name;
+    delete sel.__row_name;
+    // tool_id is server-generated; the contract expects it but we pass a deterministic
+    // composite so the server can de-dupe (a re-save on the same original_name overwrites).
+    sel.tool_id = `${SOURCE_ID}__${sel.original_name}`;
+    try {
+      const r = await fetch(TOOLS_API, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sel),
+      });
+      if (r.ok) {
+        ok++;
+      } else {
+        // Surface the server's detail string in the per-row error toast.
+        let detail = `HTTP ${r.status}`;
+        try {
+          const body = await r.json();
+          if (body && body.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+        } catch (_) { /* not JSON */ }
+        failures.push({ row: rowName, detail });
+      }
+    } catch (err) {
+      failures.push({ row: rowName, detail: err.message || String(err) });
+    }
+  }
+  btn.disabled = false;
+  if (!failures.length) {
+    toast(`Saved ${ok} tool(s).`, "success");
+  } else {
+    const head = failures.length === 1 ? "1 tool failed:" : `${failures.length} tools failed:`;
+    const summary = failures.map(f => `${f.row} — ${f.detail}`).join("; ");
+    toast(`${head} ${summary}`, "error");
+  }
+  await loadRegistered();
+});
+
+// ── Registered tools (already-curated for this source) ────────────────
+async function loadRegistered() {
+  try {
+    const r = await fetch(`${TOOLS_API}?source_id=${encodeURIComponent(SOURCE_ID)}`, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    registered = Array.isArray(data.tools) ? data.tools : (Array.isArray(data) ? data : []);
+    renderRegistered();
+    // If proposals are already shown, re-render so the "already registered" hint stays in sync.
+    if (proposals.length) renderProposals();
+  } catch (e) {
+    toast("Failed to load registered tools: " + e.message, "error");
+  }
+}
+
+function renderRegistered() {
+  const tbody = document.getElementById("registered-tbody");
+  const empty = document.getElementById("registered-empty");
+  const count = document.getElementById("registered-count");
+  count.textContent = `${registered.length} tool(s)`;
+  if (!registered.length) {
+    tbody.innerHTML = "";
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+  tbody.innerHTML = "";
+  for (const t of registered) {
+    const tr = document.createElement("tr");
+    const grantsLink = t.mode === "passthrough"
+      ? `<a class="icon-btn" href="/admin/mcp-tools/${encodeURIComponent(t.tool_id)}/grants" title="Manage which groups can call this passthrough tool">Grants</a>`
+      : "";
+    tr.innerHTML = `
+      <td><span class="tool-name">${esc(t.original_name)}</span></td>
+      <td><span class="tool-name">${esc(t.exposed_name)}</span></td>
+      <td><span class="mode-pill mode-${esc(t.mode)}">${esc(t.mode)}</span></td>
+      <td>${t.schedule ? `<span class="tool-name">${esc(t.schedule)}</span>` : `<span style="color:#9ca3af">—</span>`}</td>
+      <td>
+        <div class="row-actions">
+          ${grantsLink}
+          <button class="icon-btn" data-act="materialize" data-id="${esc(t.tool_id)}" ${t.mode === "materialize" ? "" : "disabled"}>Materialize now</button>
+          <button class="icon-btn danger" data-act="delete-tool" data-id="${esc(t.tool_id)}" data-name="${esc(t.exposed_name)}">Delete</button>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+document.getElementById("registered-tbody").addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-act]");
+  if (!btn) return;
+  const act = btn.dataset.act;
+  const id = btn.dataset.id;
+  if (act === "delete-tool") {
+    if (!confirm(`Delete "${btn.dataset.name}"? The tool will be removed from the registry.`)) return;
+    btn.disabled = true;
+    try {
+      const r = await fetch(`${TOOLS_API}/${encodeURIComponent(id)}`, { method: "DELETE", credentials: "include" });
+      if (r.ok) {
+        toast("Tool deleted", "success");
+        await loadRegistered();
+      } else {
+        let detail = r.statusText;
+        try { detail = (await r.json()).detail || detail; } catch (_) {}
+        toast("Delete failed: " + detail, "error");
+      }
+    } catch (err) {
+      toast("Delete failed: " + err.message, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  } else if (act === "materialize") {
+    btn.disabled = true;
+    try {
+      const r = await fetch(`${SOURCE_API}/materialize`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tool_id: id }),
+      });
+      if (r.ok) {
+        toast("Materialize triggered", "success");
+      } else {
+        let detail = r.statusText;
+        try { detail = (await r.json()).detail || detail; } catch (_) {}
+        toast("Materialize failed: " + detail, "error");
+      }
+    } catch (err) {
+      toast("Materialize failed: " + err.message, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+});
+
+// Initial load
+(async () => {
+  await loadSource();
+  await loadRegistered();
+})();
+</script>
+{% endblock %}

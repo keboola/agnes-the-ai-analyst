@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 60
+SCHEMA_VERSION = 64
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -4153,6 +4153,146 @@ def _v59_to_v60(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 60")
 
 
+def _v60_to_v61(conn: duckdb.DuckDBPyConnection) -> None:
+    """v61: Universal MCP — ``mcp_sources``, ``tool_registry``, ``tool_grants``.
+
+    Tables for the inbound MCP connector (RFC #461). A row in ``mcp_sources``
+    describes an external MCP server we ingest from (stdio command or
+    HTTP/SSE URL). Each curated tool from that source becomes one row in
+    ``tool_registry`` with a ``mode`` of ``materialize`` (scheduled extract
+    into a parquet → analytics.duckdb table) or ``passthrough`` (live call
+    forwarded to the upstream MCP at query time). ``tool_grants`` is the
+    per-group ACL for passthrough tools, parallel to ``resource_grants``.
+
+    CREATE TABLE IF NOT EXISTS is idempotent — safe on fresh installs.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_sources (
+            id            VARCHAR PRIMARY KEY,
+            name          VARCHAR NOT NULL UNIQUE,
+            transport     VARCHAR NOT NULL,       -- stdio | http | sse
+            command       VARCHAR,                -- stdio: executable path
+            args          JSON,                   -- stdio: arg array
+            url           VARCHAR,                -- http/sse: endpoint URL
+            auth_method   VARCHAR,                -- none | bearer | basic
+            auth_secret_env VARCHAR,              -- name of env var holding the secret (POC: no vault yet)
+            enabled       BOOLEAN NOT NULL DEFAULT true,
+            created_at    TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            updated_at    TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tool_registry (
+            tool_id          VARCHAR PRIMARY KEY,        -- "<source_name>.<exposed_name>"
+            source_id        VARCHAR NOT NULL,
+            original_name    VARCHAR NOT NULL,
+            exposed_name     VARCHAR NOT NULL,
+            mode             VARCHAR NOT NULL,           -- materialize | passthrough
+            table_id         VARCHAR,                    -- FK to table_registry (materialize mode only)
+            input_schema     JSON,                       -- MCP inputSchema
+            description      VARCHAR,
+            mutating         BOOLEAN NOT NULL DEFAULT false,
+            pii_fields       JSON,                       -- array of column names to redact on output
+            rate_limit_pm    INTEGER,                    -- per-minute, per-user (NULL = unlimited)
+            schedule         VARCHAR,                    -- materialize only, e.g. 'every 6h'
+            enabled          BOOLEAN NOT NULL DEFAULT true,
+            created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            updated_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tool_grants (
+            tool_id   VARCHAR NOT NULL,
+            group_id  VARCHAR NOT NULL,
+            PRIMARY KEY (tool_id, group_id)
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 61")
+
+
+def _v61_to_v62(conn: duckdb.DuckDBPyConnection) -> None:
+    """v62: ``mcp_secrets`` table — server-wide vault for MCP source auth.
+
+    RFC #461 §4. One row per ``mcp_sources.id`` holds the Fernet-
+    ciphertext of the upstream auth token. Replaces the legacy
+    ``mcp_sources.auth_secret_env`` env-var pattern for HTTP/SSE
+    sources — connectors/mcp/client.py first consults this table, then
+    falls back to the env-var path so old registrations keep working.
+
+    Per-user secrets (analyst-scoped OAuth tokens for upstream MCP) land
+    in a follow-up v63 migration as ``mcp_user_secrets``.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_secrets (
+            source_id        VARCHAR PRIMARY KEY,
+            secret_value_enc BLOB NOT NULL,
+            created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            updated_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 62")
+
+
+def _v62_to_v63(conn: duckdb.DuckDBPyConnection) -> None:
+    """v63: per-user MCP source secrets + ``scope`` column on ``mcp_sources``.
+
+    RFC #461 §4 phase B. ``mcp_user_secrets(source_id, user_id, ...)``
+    holds each analyst's own credential (their Notion/Slack/Linear OAuth
+    token) for upstream MCP servers that authenticate per-caller. The
+    new ``mcp_sources.scope`` column selects which lookup path
+    ``connectors/mcp/client._lookup_secret_for_source`` follows:
+
+      ``shared``    — default; use mcp_secrets (or auth_secret_env env var).
+                      Materialize scheduled jobs always use this scope —
+                      they don't have a calling user.
+      ``per_user``  — REST invoke endpoint threads the caller's id;
+                      look up mcp_user_secrets(source_id, user_id).
+                      Falls through to shared if the analyst hasn't
+                      stored their own credential yet (so the path stays
+                      forgiving while operators bootstrap).
+
+    ``CREATE TABLE IF NOT EXISTS`` + ``ADD COLUMN IF NOT EXISTS`` keep
+    the migration idempotent on fresh and upgrade paths.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_user_secrets (
+            source_id        VARCHAR NOT NULL,
+            user_id          VARCHAR NOT NULL,
+            secret_value_enc BLOB NOT NULL,
+            created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            updated_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            PRIMARY KEY (source_id, user_id)
+        )
+    """)
+    conn.execute(
+        "ALTER TABLE mcp_sources ADD COLUMN IF NOT EXISTS scope VARCHAR DEFAULT 'shared'"
+    )
+    conn.execute("UPDATE schema_version SET version = 63")
+
+
+def _v63_to_v64(conn: duckdb.DuckDBPyConnection) -> None:
+    """v64: ``data_package_tools`` — junction linking data packages to MCP tools.
+
+    RFC #461 §6. Mirrors ``data_package_tables`` so a package can surface
+    both its analytical tables AND the MCP tools that fit its workflow
+    (e.g. a "Customer Lifecycle" package lists the orders/sessions tables
+    AND a passthrough ``crm.searchAccounts`` tool). The package detail
+    response gains a ``related_tools`` array populated via this junction.
+
+    ``CREATE TABLE IF NOT EXISTS`` for idempotency on both fresh and
+    upgrade paths.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS data_package_tools (
+            package_id  VARCHAR NOT NULL,
+            tool_id     VARCHAR NOT NULL,
+            added_at    TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            PRIMARY KEY (package_id, tool_id)
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 64")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -4442,6 +4582,14 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v58_to_v59(conn)
             # v60: setup_tokens table for Agnes Cowork one-click setup.
             _v59_to_v60(conn)
+            # v61: Universal MCP — mcp_sources, tool_registry, tool_grants.
+            _v60_to_v61(conn)
+            # v62: mcp_secrets — shared vault for MCP source auth.
+            _v61_to_v62(conn)
+            # v63: mcp_user_secrets + mcp_sources.scope (per-user creds).
+            _v62_to_v63(conn)
+            # v64: data_package_tools junction — links packages to MCP tools.
+            _v63_to_v64(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4615,6 +4763,14 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v58_to_v59(conn)
             if current < 60:
                 _v59_to_v60(conn)
+            if current < 61:
+                _v60_to_v61(conn)
+            if current < 62:
+                _v61_to_v62(conn)
+            if current < 63:
+                _v62_to_v63(conn)
+            if current < 64:
+                _v63_to_v64(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

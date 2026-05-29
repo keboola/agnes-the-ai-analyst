@@ -170,7 +170,15 @@ def test_schema_version_is_60():
     #            the /catalog/p/<slug> rewrite per the extended-
     #            descriptions admin spec. All additive + NULLABLE.
     # v59 → v60: ``setup_tokens`` table for Agnes Cowork one-click setup.
-    assert SCHEMA_VERSION == 60
+    # v60 → v61: ``mcp_sources``, ``tool_registry``, ``tool_grants`` for the
+    #            Universal MCP inbound connector (RFC #461).
+    # v61 → v62: ``mcp_secrets`` server-wide vault for MCP source auth
+    #            (RFC #461 §4 — Fernet-encrypted bearer/basic tokens).
+    # v62 → v63: ``mcp_user_secrets`` + ``mcp_sources.scope`` — per-user
+    #            credential passthrough (RFC #461 §4 phase B).
+    # v63 → v64: ``data_package_tools`` — junction linking packages to
+    #            MCP tools (RFC #461 §6 related_tools).
+    assert SCHEMA_VERSION == 64
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

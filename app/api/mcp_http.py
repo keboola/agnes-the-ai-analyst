@@ -242,8 +242,39 @@ async def _send_401(scope: Scope, send: Send) -> None:
     })
 
 
+# ── dynamic tool registration (Universal MCP — RFC #461 §7) ───────────────────
+
+def _register_dynamic_tools() -> None:
+    """Add passthrough tools from ``tool_registry`` to the module-level ``mcp``.
+
+    Called once from ``make_sse_app`` at app startup. Best-effort — if the
+    DB is unreachable or the v61 tables are missing, log and skip so the
+    cowork MCP server still comes up with the static tools.
+    """
+    try:
+        from app.api.mcp.tools_generator import register_passthrough_tools
+        from src.db import get_system_db
+    except Exception:  # pragma: no cover - import-time defensive
+        logger.exception("Universal MCP imports unavailable; skipping dynamic tool registration")
+        return
+    try:
+        conn = get_system_db()
+    except Exception:
+        logger.warning("system DB not ready; skipping dynamic passthrough tool registration")
+        return
+    try:
+        names = register_passthrough_tools(mcp, conn)
+        if names:
+            logger.info("MCP HTTP: registered %d passthrough tools", len(names))
+    except Exception:
+        logger.exception("Universal MCP passthrough registration failed")
+    finally:
+        conn.close()
+
+
 # ── factory ────────────────────────────────────────────────────────────────────
 
 def make_sse_app() -> ASGIApp:
     """Return the Agnes SSE MCP app wrapped with PAT authentication."""
+    _register_dynamic_tools()
     return _AuthMiddleware(mcp.sse_app())

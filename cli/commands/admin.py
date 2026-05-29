@@ -8,6 +8,7 @@ from cli.client import api_get, api_post, api_delete, api_patch, api_put
 from cli.commands.admin_activity import activity_app
 from cli.commands.admin_ask import app as admin_ask_app
 from cli.commands.admin_data_package import admin_data_package_app
+from cli.commands.admin_mcp import mcp_app as admin_mcp_app
 from cli.commands.admin_memory_domain import admin_memory_domain_app
 from cli.commands.admin_metrics import admin_metrics_app
 from cli.commands.admin_news import admin_news_app
@@ -32,6 +33,7 @@ admin_app.add_typer(admin_usage_app, name="telemetry", help="Telemetry export an
 admin_app.add_typer(admin_usage_app, name="usage", help="(deprecated alias of `telemetry`)")
 admin_app.add_typer(admin_data_package_app, name="data-package", help="Data Package CRUD (v49)")
 admin_app.add_typer(admin_memory_domain_app, name="memory-domain", help="Memory Domain CRUD (v49)")
+admin_app.add_typer(admin_mcp_app, name="mcp", help="Universal MCP source + tool admin")
 
 
 @admin_app.command("add-user")
