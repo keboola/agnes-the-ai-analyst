@@ -3,9 +3,9 @@
 The fixtures here are intentionally heavyweight (real docker-compose +
 real Chromium) and gated behind env vars so they never run in the
 default `pytest` invocation. Without `AGNES_E2E=1` every test that
-depends on `docker_e2e_agnes` skips cleanly; without
-`AGNES_E2E_ANTHROPIC=1` every test marked `real_llm` skips on top of
-that.
+depends on `e2e_agnes` skips cleanly; without `AGNES_E2E_ANTHROPIC=1`
+every test marked `real_llm` skips on top of that; without
+`AGNES_E2E_E2B=1` tests that need a real E2B sandbox spawn skip too.
 """
 
 from __future__ import annotations
@@ -109,15 +109,16 @@ def _wait_for_health(base_url: str, timeout: float) -> None:
 
 
 @pytest.fixture(scope="session")
-def docker_e2e_agnes() -> str:
+def e2e_agnes() -> str:
     """Bring up docker-compose.e2e.yml, yield the base URL, tear down.
 
     Skips unless `AGNES_E2E=1`. Requires docker compose v2 + an
     ANTHROPIC_API_KEY on the host so the compose file's
     `${ANTHROPIC_API_KEY:?...}` resolves.
 
-    The fixture is session-scoped so multiple E2E tests can share one
-    stack — building the image is the expensive step (nsjail compile).
+    The fixture is session-scoped so multiple E2E tests share one
+    stack — image build is the expensive step (pip install of all the
+    Agnes deps + ~250 MB sample data layer cache).
     """
     if not os.environ.get("AGNES_E2E"):
         pytest.skip("E2E env disabled — set AGNES_E2E=1 to run docker-compose suite")
@@ -145,3 +146,11 @@ def docker_e2e_agnes() -> str:
             [*compose_args, "down", "-v"],
             check=False,
         )
+
+
+# Back-compat alias — F.* tests reference docker_e2e_agnes; keep the
+# old name pointed at the new fixture so we don't have to chase every
+# call site in the same diff that renames it.
+@pytest.fixture(scope="session")
+def docker_e2e_agnes(e2e_agnes) -> str:
+    return e2e_agnes
