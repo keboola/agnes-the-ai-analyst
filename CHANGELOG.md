@@ -16,6 +16,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Cowork bundle now includes `mcp_server.py` launcher.** Bundled pure-Python script bootstraps credentials from `agnes-bundle.json` on first open (before `setup.py` runs), auto-installs `agnes-the-ai-analyst` via pip if the package is absent, then starts the MCP server by direct import — no Agnes binary required.
 - **`setup.py` writes global Claude Desktop MCP config on first run.** On macOS, Windows, and Linux, `setup.py` now writes `mcpServers.agnes` with an absolute path to `mcp_server.py` into `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) / `%APPDATA%\Claude\claude_desktop_config.json` (Windows) / `~/.config/Claude/claude_desktop_config.json` (Linux) so the MCP server is picked up by Claude Desktop as well as Claude Code.
 - **`CLAUDE.md` in bundle rewrites agent guidance** — documents MCP tools in a table, instructs Claude to use MCP for all data queries and never ask the user to install anything or run terminal commands.
+- **Universal MCP — inbound connector + outbound passthrough (RFC #461).** `connectors/mcp/` materializes upstream MCP tools (stdio/http/sse transport) into `extract.duckdb + data/*.parquet` via the standard connector contract. Passthrough-mode tools are registered on the HTTP MCP SSE server at startup via `app/api/mcp/tools_generator.py`. Admin REST (16 routes), UI (3 templates), CLI (12 commands) for managing sources, tool grants, and the shared/per-user Fernet secrets vault. Analysts' stdio MCP server (`agnes mcp`) dynamically fetches visible passthrough tools at subprocess start.
+
+### Internal
+- Schema v61: `mcp_sources`, `tool_registry`, `tool_grants` — Universal MCP source registry and RBAC tool grants.
+- Schema v62: `mcp_secrets` — shared Fernet vault for MCP source auth tokens.
+- Schema v63: `mcp_user_secrets`, `mcp_sources.scope` — per-user credential vault for `scope='per_user'` sources.
+- Schema v64: `data_package_tools` — junction table linking data packages to MCP tools (RFC #461 §6).
 
 ## [0.56.0] — 2026-06-01
 
