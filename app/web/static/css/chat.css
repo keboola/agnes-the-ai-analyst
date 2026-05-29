@@ -511,37 +511,32 @@ body.chat-page-body main { margin: 0; padding: 0; }
 .code-block-copy svg { width: 13px; height: 13px; }
 
 /* ---------- Markdown result tables ----------
-   Tables emitted by marked.parse() get wrapped + decorated by
-   enhanceTables() in chat.js. The wrapper owns the horizontal scroll
-   on narrow viewports; the table itself gets the canonical
-   sticky-header + zebra treatment per system.md's .ds-table family.
-   Click-to-sort indicators (↑ / ↓) ride on the th's aria-sort
-   attribute so screen readers stay in sync. */
+   Tables emitted by marked.parse() compose ``.ds-table`` from
+   style-custom.css for the canonical sticky-header + row-hover +
+   uppercase-eyebrow header treatment per system.md. The page-local
+   ``.cloud-chat-table`` rules only forward the wrap-for-horizontal-
+   scroll container + the click-to-sort cursor/hover/aria-sort
+   indicator. */
 .cloud-chat-table-wrap {
   margin: var(--space-2) 0;
   overflow-x: auto;
+  /* The wrap owns the rounded corner + border so the inner table's
+     overflow: hidden cooperates with the scroll. Avoids the
+     well-known "rounded corners disappear when sticky thead
+     scrolls" bug. */
   border: 1px solid var(--ds-border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--ds-surface);
 }
-.cloud-chat-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
+.cloud-chat-table-wrap > .ds-table {
+  /* Wrap already paints the outline; drop the duplicate border so a
+     1px halo doesn't sit between the wrap and the header. */
+  border: none;
+  border-radius: 0;
 }
 .cloud-chat-table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  text-align: left;
-  background: var(--ds-surface-dim);
-  color: var(--ds-text-secondary);
-  font-weight: var(--font-semibold);
-  padding: 7px var(--space-3);
-  border-bottom: 1px solid var(--ds-border);
   cursor: pointer;
   user-select: none;
-  white-space: nowrap;
 }
 .cloud-chat-table thead th:hover {
   background: var(--ds-border-light);
@@ -570,17 +565,6 @@ body.chat-page-body main { margin: 0; padding: 0; }
 .cloud-chat-table thead th[aria-sort="descending"] .cloud-chat-th-arrow {
   opacity: 1;
 }
-.cloud-chat-table tbody td {
-  padding: 6px var(--space-3);
-  border-bottom: 1px solid var(--ds-border-light);
-  vertical-align: top;
-}
-.cloud-chat-table tbody tr:last-child td { border-bottom: none; }
-.cloud-chat-table tbody tr:hover td { background: var(--ds-surface-dim); }
-/* Make every cell tabular-nums by default; harmless on text. Keeps
-   numeric columns visually aligned without a per-column class. */
-.cloud-chat-table tbody td,
-.cloud-chat-table thead th { font-variant-numeric: tabular-nums; }
 
 /* ---------- Collapsible long messages ----------
    When a turn's content exceeds COLLAPSE_THRESHOLD_PX (480 by

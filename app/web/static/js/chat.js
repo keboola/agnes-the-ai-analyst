@@ -603,7 +603,11 @@ function enhanceTables(root) {
   for (const table of root.querySelectorAll("table")) {
     if (table.dataset.tblEnhanced === "1") continue;
     table.dataset.tblEnhanced = "1";
-    table.classList.add("cloud-chat-table");
+    // ``.ds-table`` is the canonical Agnes table family (sticky header,
+    // surface-dim row hover, tabular-nums, --text-xs UPPERCASE header
+    // type per system.md). The ``.cloud-chat-table`` class only
+    // forwards the sort-arrow + click-to-sort styling on top.
+    table.classList.add("ds-table", "cloud-chat-table");
 
     // Wrap for horizontal scroll on narrow viewports.
     if (!table.parentElement.classList.contains("cloud-chat-table-wrap")) {
