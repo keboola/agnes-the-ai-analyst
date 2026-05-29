@@ -1219,6 +1219,25 @@ body.chat-page-body main { margin: 0; padding: 0; }
   .cloud-chat-palette { animation: none; }
 }
 
+/* ---------- Touch-device hover fallback ----------
+   Four affordances use opacity: 0 with a hover-to-1 transition: the
+   sidebar delete X, the message-bubble actions row (timestamp +
+   copy + regenerate), and the code-block copy button. That's fine
+   for mouse but invisible on touchscreens (no hover event fires).
+   ``@media (hover: none)`` matches touchscreens / pens / coarse
+   pointers and pins those affordances to opacity: 1 so the inputs
+   are reachable.
+
+   Pairs with the existing :focus-visible rules to give every input
+   mode (mouse / keyboard / touch) a working path. */
+@media (hover: none) {
+  .cloud-chat-list-del,
+  .msg-actions,
+  .code-block-copy {
+    opacity: 1;
+  }
+}
+
 /* ============================================================ responsive */
 
 @media (max-width: 900px) {
