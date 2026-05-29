@@ -10,12 +10,24 @@
 # workspace template (`.claude/hooks/pre_tool_use.py`). This is fail-open
 # at the network layer; a prompt injection that rewrites the hook can
 # bypass it. Tradeoff accepted for operator-setup simplicity.
-FROM e2bdev/python:latest
+FROM e2bdev/base:latest
+
+# Python 3 + curl + Node.js (the latter for `@anthropic-ai/claude-code` CLI
+# binary that claude-agent-sdk spawns under the hood for its MCP handshake).
+# Without claude code installed, the SDK errors out with
+# "Control request timeout: initialize" on first message.
+RUN apt-get update && apt-get install -y python3 python3-pip curl gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Anthropic's Claude Code CLI — required by claude-agent-sdk's MCP loop.
+RUN npm install -g @anthropic-ai/claude-code
 
 # claude-agent-sdk + agnes CLI runtime deps. Pin the SDK to the same range
 # the Agnes server depends on so a template rebuild stays in lockstep with
 # the runner version.
-RUN pip install --no-cache-dir \
+RUN pip install --no-cache-dir --break-system-packages \
     "claude-agent-sdk>=0.2.87,<0.3.0" \
     "duckdb>=1.5.2" \
     "httpx>=0.27.0" \

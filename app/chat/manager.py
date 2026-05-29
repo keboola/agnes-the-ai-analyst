@@ -205,7 +205,16 @@ class ChatManager:
             "AGNES_DAILY_BUDGET_USD": str(self._config.daily_anthropic_spend_usd),
             "AGNES_PER_TOOL_CALL_SECONDS": str(self._config.per_tool_call_seconds),
             "AGNES_TOOL_CALLS_PER_TURN": str(self._config.tool_calls_per_turn_budget),
-            "PATH": "/usr/bin:/bin",
+            # claude-agent-sdk inside the sandbox spawns the `claude` CLI
+            # binary, which authenticates against Anthropic via this env.
+            # Without it the MCP initialize handshake hangs and the runner
+            # fires "Control request timeout: initialize" within ~60 s.
+            # We forward the host-process key (already startup-gated via
+            # _chat_anthropic_key_ok in app/main.py) — if it's empty here
+            # the gate would have blocked startup, so this is just a
+            # pass-through.
+            "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
             "HOME": str(session_dir),
             "TERM": "dumb",
             "LANG": "C.UTF-8",
