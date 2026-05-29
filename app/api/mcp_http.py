@@ -13,7 +13,7 @@ Cowork bundle settings.json points to:
 
 with header  Authorization: Bearer <PAT>  set by Claude Code.
 
-Tools available: server_info, catalog, schema, describe, query.
+Tools available: server_info, catalog, schema, describe, query, skills.
 (query_local and pull require a local analyst filesystem — not available
  in the server context.)
 """
@@ -171,6 +171,32 @@ async def query(sql: str, limit: int = 1000) -> dict:
             json={"sql": sql, "limit": limit},
             headers=_headers(),
             timeout=60,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
+async def skills() -> dict:
+    """List all skills from marketplace plugins you are authorised to access.
+
+    Returns a ``skills`` list.  Each entry has:
+    - ``marketplace_id`` — marketplace slug
+    - ``plugin_name``    — plugin directory name
+    - ``skill_name``     — skill directory name (unique invocation key)
+    - ``name``           — human-readable label
+    - ``description``    — short description (may be null)
+    - ``invocation``     — slash-command or invocation hint (may be null)
+    - ``body``           — full SKILL.md text with frontmatter stripped
+
+    Load a ``body`` into your context when you need to follow that skill's
+    instructions.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.get(
+            f"{_BASE}/api/v2/marketplace/skills",
+            headers=_headers(),
+            timeout=30,
         )
         r.raise_for_status()
         return r.json()
