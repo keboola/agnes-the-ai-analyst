@@ -18,6 +18,18 @@ function showCapabilities() {
   if (panel) panel.hidden = false;
 }
 
+/** Set the chat-status banner with a visual tone.
+ *  ``kind`` is one of "info" | "ok" | "warn" | "error". CSS maps each
+ *  to a colored variant so a "Disconnected." line stands out from a
+ *  "Connected." one. Clears any prior class when ``text`` is empty. */
+function setStatus(text, kind = "info") {
+  const el = $("chat-status");
+  if (!el) return;
+  el.textContent = text;
+  el.classList.remove("is-info", "is-ok", "is-warn", "is-error");
+  if (text) el.classList.add(`is-${kind}`);
+}
+
 async function loadCapabilityCounts() {
   // Catalog: count tables the caller can see (RBAC pre-filtered server-side).
   try {
@@ -113,7 +125,12 @@ async function loadSidebar() {
   ul.innerHTML = "";
   for (const s of list) {
     const li = document.createElement("li");
-    li.textContent = s.title || s.id;
+    // Raw chat_<hex> ids are noise to a human — fall back to "Untitled
+    // chat" when the backend hasn't titled the session yet (typical for
+    // a session that's empty or where the first user turn didn't seed
+    // an auto-title). Real titles still render verbatim.
+    li.textContent = s.title || "Untitled chat";
+    li.title = s.title || `Untitled · ${s.id}`;
     li.dataset.id = s.id;
     if (s.id === currentChatId) li.classList.add("is-active");
     li.onclick = () => openSession(s.id);
@@ -143,16 +160,23 @@ async function newChat() {
 }
 
 async function openSession(chatId, wsUrlOverride) {
-  hideCapabilities();
   if (ws) { ws.close(); ws = null; }
   currentChatId = chatId;
   markActiveSidebar(chatId);
   $("chat-messages").innerHTML = "";
-  $("chat-status").textContent = "";
+  setStatus("");
 
-  // Hydrate history
+  // Hydrate history. Show the capability/intro panel only when this
+  // session has no messages yet — otherwise the chat-main area is a
+  // blank rectangle and the user has no visual guidance about what
+  // they can ask.
   const history = await api(`/api/chat/sessions/${chatId}/messages`);
-  for (const m of history) renderMessage(m);
+  if (history.length === 0) {
+    showCapabilities();
+  } else {
+    hideCapabilities();
+    for (const m of history) renderMessage(m);
+  }
 
   // Open WS; if no override, mint a fresh ticket via POST
   let wsUrl = wsUrlOverride;
@@ -171,14 +195,14 @@ async function openSession(chatId, wsUrlOverride) {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}${wsUrl}`);
   ws.onmessage = (ev) => handleFrame(JSON.parse(ev.data));
-  ws.onclose = () => { $("chat-status").textContent = "Disconnected."; };
+  ws.onclose = () => { setStatus("Disconnected.", "warn"); };
 }
 
 function handleFrame(frame) {
   switch (frame.type) {
     case "ready":
     case "runner_ready":
-      $("chat-status").textContent = "Connected.";
+      setStatus("Connected.", "ok");
       break;
     case "token":
       appendToken(frame.text);
@@ -193,10 +217,10 @@ function handleFrame(frame) {
       finalizeAssistantMessage(frame);
       break;
     case "cancelled":
-      $("chat-status").textContent = `Cancelled tool: ${frame.tool || ""}`;
+      setStatus(`Cancelled tool: ${frame.tool || ""}`, "warn");
       break;
     case "error":
-      $("chat-status").textContent = `Error: ${frame.kind} (${frame.message || ""})`;
+      setStatus(`Error: ${frame.kind} (${frame.message || ""})`, "error");
       break;
     case "done":
       $("cancel-btn").hidden = true;
@@ -282,7 +306,7 @@ async function submitUserMessage(text) {
   try {
     await ensureWsReady();
   } catch (err) {
-    $("chat-status").textContent = `Could not start chat: ${err.message}`;
+    setStatus(`Could not start chat: ${err.message}`, "error");
     showCapabilities();
     return;
   }

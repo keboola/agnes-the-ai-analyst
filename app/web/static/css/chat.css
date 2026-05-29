@@ -120,13 +120,32 @@ body.chat-page-body main { margin: 0; padding: 0; }
   min-width: 0;
 }
 
+/* Status banner. Color tone reflects the kind set by setStatus() in
+   chat.js: ok = green tint, warn = amber, error = red, info =
+   neutral. ``:empty`` hides the bar entirely so the chat area
+   doesn't carry a 24px gap when there's nothing to report. */
 .cloud-chat-status {
-  padding: .25rem 1rem;
+  padding: .35rem 1rem;
   font-size: .8rem;
   color: var(--ds-text-secondary, #6b7280);
   border-bottom: 1px solid var(--ds-border, #e5e7eb);
   background: var(--ds-surface-dim, #f9fafb);
   min-height: 1.5rem;
+}
+.cloud-chat-status.is-ok {
+  color: var(--ds-accent-success-ink, #166534);
+  background: var(--ds-accent-success-bg, #f0fdf4);
+  border-bottom-color: var(--ds-accent-success-border, #bbf7d0);
+}
+.cloud-chat-status.is-warn {
+  color: var(--ds-accent-warn-ink, #92400e);
+  background: var(--ds-accent-warn-bg, #fffbeb);
+  border-bottom-color: var(--ds-accent-warn-border, #fde68a);
+}
+.cloud-chat-status.is-error {
+  color: var(--ds-accent-error-ink, #991b1b);
+  background: var(--ds-accent-error-bg, #fef2f2);
+  border-bottom-color: var(--ds-accent-error-border, #fecaca);
 }
 .cloud-chat-status:empty {
   display: none;
