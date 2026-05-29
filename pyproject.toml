@@ -62,6 +62,12 @@ dependencies = [
     "cachetools>=5.3.0",
     # Claude agent SDK for in-process chat sessions
     "claude-agent-sdk>=0.2.87,<0.3.0",
+    # E2B Python SDK — cloud sandbox provider for chat runner. The chat
+    # runner (`app/chat/runner.py`) executes inside an E2B ephemeral
+    # microVM (`AsyncSandbox`); `app/chat/e2b_provider.py` adapts the SDK's
+    # background-command + filesystem APIs to our `SandboxProvider`
+    # Protocol. See `docs/cloud-chat.md` for operator setup.
+    "e2b>=1.0.0,<2.0.0",
     # Per-IP rate limiting on auth endpoints (#45). In-process counters by
     # default — fine for single-replica deploys. Multi-replica rollouts can
     # swap the storage backend via slowapi's `storage_uri` (Redis, Memcached).
