@@ -64,6 +64,54 @@ def test_create_session_persists(manager: ChatManager):
     asyncio.run(_run())
 
 
+def test_create_session_web_archives_prior_empty(manager: ChatManager):
+    """Clicking '+ New chat' repeatedly should never accumulate orphan
+    Untitled-chat rows. create_session on the WEB surface soft-archives
+    every empty session this user has, except the just-created one."""
+
+    async def _run():
+        a = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        b = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        # `a` has zero messages → should be archived by `b`'s create.
+        ar = manager._repo.get_session(a.id)
+        br = manager._repo.get_session(b.id)
+        assert ar is not None and ar.archived is True
+        assert br is not None and br.archived is False
+
+    asyncio.run(_run())
+
+
+def test_create_session_web_does_not_archive_sessions_with_messages(
+    manager: ChatManager,
+):
+    async def _run():
+        a = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        manager._repo.append_message(session_id=a.id, role="user", content="hi")
+        _ = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ar = manager._repo.get_session(a.id)
+        assert ar is not None and ar.archived is False
+
+    asyncio.run(_run())
+
+
+def test_create_session_slack_dm_does_not_run_empty_gc(manager: ChatManager):
+    """The empty-session GC is web-only — Slack DM/thread surfaces
+    de-dupe via channel/thread id at the manager layer and their
+    "empty" sessions are intentionally kept for re-attach."""
+
+    async def _run():
+        # First Slack DM session, no messages.
+        a = await manager.create_session(
+            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1",
+        )
+        # Create a WEB session for the same user — must not touch `a`.
+        _ = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ar = manager._repo.get_session(a.id)
+        assert ar is not None and ar.archived is False
+
+    asyncio.run(_run())
+
+
 def test_create_session_disabled_raises(manager: ChatManager):
     """create_session raises RuntimeError when chat.enabled is False."""
     disabled_mgr = ChatManager(

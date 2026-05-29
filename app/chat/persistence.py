@@ -138,6 +138,67 @@ class ChatRepository:
             "UPDATE chat_sessions SET archived = TRUE WHERE id = ?", [chat_id]
         )
 
+    def archive_empty_user_sessions(
+        self,
+        user_email: str,
+        *,
+        surface: Optional[Surface] = None,
+        exclude_id: Optional[str] = None,
+    ) -> int:
+        """Soft-archive every empty (zero-message) session owned by
+        ``user_email``. Returns the number of rows archived.
+
+        Called from ``POST /api/chat/sessions`` so clicking "+ New
+        chat" repeatedly never accumulates Untitled-chat orphans in
+        the sidebar.
+
+        ``surface`` scopes the GC — pass ``Surface.WEB`` so a web
+        click doesn't also nuke the user's empty Slack DM/thread
+        placeholders, which the manager intentionally keeps around
+        keyed by channel/thread id for re-attach. ``None`` (default)
+        archives across every surface.
+
+        ``exclude_id`` lets the caller protect the session it just
+        created — otherwise we'd race-archive the brand-new one.
+
+        Implementation: a single UPDATE filtered by the same LEFT JOIN
+        used in ``_SESSION_SELECT`` so we only touch sessions with
+        zero messages. ``archived = FALSE`` in the WHERE keeps the
+        count accurate (don't re-archive what's already archived).
+        """
+        params: list = [user_email]
+        surface_clause = ""
+        if surface is not None:
+            surface_clause = " AND s.surface = ?"
+        sql = (
+            "UPDATE chat_sessions SET archived = TRUE "
+            "WHERE user_email = ? "
+            "  AND archived = FALSE "
+            "  AND id IN ("
+            "    SELECT s.id FROM chat_sessions s "
+            "    LEFT JOIN chat_messages m ON m.session_id = s.id "
+            "    WHERE s.user_email = ? AND s.archived = FALSE"
+            f"{surface_clause}"
+            "    GROUP BY s.id HAVING COUNT(m.id) = 0"
+            "  )"
+        )
+        params.append(user_email)
+        if surface is not None:
+            params.append(surface.value)
+        if exclude_id is not None:
+            sql += " AND id != ?"
+            params.append(exclude_id)
+        before = self._conn.execute(
+            "SELECT COUNT(*) FROM chat_sessions WHERE user_email = ? AND archived = FALSE",
+            [user_email],
+        ).fetchone()[0]
+        self._conn.execute(sql, params)
+        after = self._conn.execute(
+            "SELECT COUNT(*) FROM chat_sessions WHERE user_email = ? AND archived = FALSE",
+            [user_email],
+        ).fetchone()[0]
+        return before - after
+
     def hard_delete_user_sessions(self, user_email: str) -> int:
         n = self._conn.execute(
             "SELECT COUNT(*) FROM chat_sessions WHERE user_email = ?", [user_email]

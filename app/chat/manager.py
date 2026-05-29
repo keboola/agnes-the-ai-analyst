@@ -124,13 +124,31 @@ class ChatManager:
             existing = self._repo.get_slack_thread_session(slack_channel_id, slack_thread_ts)
             if existing is not None:
                 return existing
-        return self._repo.create_session(
+        created = self._repo.create_session(
             user_email=user_email,
             surface=surface,
             slack_channel_id=slack_channel_id,
             slack_thread_ts=slack_thread_ts,
             title=title,
         )
+        # Garbage-collect orphan empty sessions for this user on every
+        # web-surface create. Clicking "+ New chat" repeatedly was
+        # accumulating ten-plus 'Untitled chat' rows in the sidebar
+        # because each click POSTs a new session but the previous
+        # empty one was never archived. Soft-archive prior empties
+        # only — never touch sessions with real messages. Slack
+        # surfaces de-dupe upstream, so only run this on WEB.
+        if surface == Surface.WEB:
+            try:
+                self._repo.archive_empty_user_sessions(
+                    user_email, surface=Surface.WEB, exclude_id=created.id,
+                )
+            except Exception:
+                logger.exception(
+                    "archive_empty_user_sessions failed for %s; not fatal",
+                    user_email,
+                )
+        return created
 
     def _active_count_for_user(self, user_email: str) -> int:
         return sum(

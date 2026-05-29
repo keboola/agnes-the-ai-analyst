@@ -136,19 +136,60 @@ async function loadSidebar() {
   ul.innerHTML = "";
   for (const s of list) {
     const li = document.createElement("li");
-    // Raw ``chat_<hex>`` ids are noise to a human — fall back to
-    // "Untitled chat" when the backend hasn't titled the session yet
-    // (typical for a session that's empty or where the first user turn
-    // didn't seed an auto-title). Real titles still render verbatim.
-    li.textContent = s.title || "Untitled chat";
-    li.title = s.title || `Untitled · ${s.id}`;
-    li.dataset.id = s.id;
     if (s.id === currentChatId) li.classList.add("is-active");
+    li.dataset.id = s.id;
+    li.title = s.title || `Untitled · ${s.id}`;
     li.onclick = () => openSession(s.id);
+
+    // Title label — separate span so the delete button doesn't share
+    // the click target. Raw ``chat_<hex>`` ids are noise — fall back
+    // to "Untitled chat" when the backend hasn't titled the session
+    // yet (typical for a session that's empty or where the first
+    // user turn didn't seed an auto-title).
+    const label = document.createElement("span");
+    label.className = "cloud-chat-list-label";
+    label.textContent = s.title || "Untitled chat";
+    li.appendChild(label);
+
+    // Hover-revealed delete button — stopPropagation so clicking the
+    // button doesn't also open the conversation in the main panel.
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "cloud-chat-list-del";
+    del.setAttribute("aria-label", `Delete ${s.title || "this conversation"}`);
+    del.innerHTML = "&times;";
+    del.onclick = async (e) => {
+      e.stopPropagation();
+      await deleteSession(s.id);
+    };
+    li.appendChild(del);
+
     ul.appendChild(li);
   }
   const empty = $("cloud-chat-empty-state");
   if (empty) empty.hidden = list.length > 0;
+}
+
+/** Soft-archive a session via DELETE /api/chat/sessions/{id}. If the
+ *  caller is currently viewing the session they're deleting, swap them
+ *  out to the empty-state shell so the main panel doesn't keep
+ *  showing a dead conversation. */
+async function deleteSession(chatId) {
+  try {
+    await api(`/api/chat/sessions/${chatId}`, { method: "DELETE" });
+  } catch (err) {
+    setStatus(`Could not delete: ${err.message}`, "error");
+    return;
+  }
+  await loadSidebar();
+  if (currentChatId === chatId) {
+    currentChatId = null;
+    markActiveSidebar(null);
+    if (ws) { ws.close(); ws = null; }
+    $("chat-messages").innerHTML = "";
+    setStatus("");
+    showCapabilities();
+  }
 }
 
 /** Toggle the `.is-active` class on the sidebar item matching ``chatId``.

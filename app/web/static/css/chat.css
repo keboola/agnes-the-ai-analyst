@@ -89,14 +89,14 @@ body.chat-page-body main { margin: 0; padding: 0; }
   flex: 1;
 }
 .cloud-chat-list li {
-  padding: .55rem .75rem;
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  padding: .45rem .35rem .45rem .75rem;
   border-radius: var(--ds-radius, 6px);
   cursor: pointer;
   font-size: .88rem;
   color: var(--ds-text-secondary, #4b5563);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   border: 1px solid transparent;
 }
 .cloud-chat-list li + li { margin-top: 2px; }
@@ -112,6 +112,45 @@ body.chat-page-body main { margin: 0; padding: 0; }
   font-weight: 500;
 }
 
+/* Title span — takes remaining width, truncates with ellipsis so the
+   delete button stays anchored to the right edge. */
+.cloud-chat-list-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Per-item delete button — invisible until the row is hovered or the
+   button itself receives focus (keyboard nav). Soft red tint on
+   hover so it reads as a destructive control without being loud. */
+.cloud-chat-list-del {
+  flex: 0 0 auto;
+  width: 1.3rem;
+  height: 1.3rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--ds-text-muted, #9ca3af);
+  font-size: 1.05rem;
+  line-height: 1;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .12s, background .12s, color .12s;
+}
+.cloud-chat-list li:hover .cloud-chat-list-del,
+.cloud-chat-list-del:focus-visible {
+  opacity: 1;
+}
+.cloud-chat-list-del:hover {
+  background: var(--ds-accent-error-bg, #fef2f2);
+  color: var(--ds-accent-error-ink, #991b1b);
+}
+
 .cloud-chat-sidebar-empty {
   padding: .75rem 1rem;
   margin: 0;
@@ -125,7 +164,13 @@ body.chat-page-body main { margin: 0; padding: 0; }
 .cloud-chat-main {
   display: flex;
   flex-direction: column;
+  /* ``min-width: 0`` + ``min-height: 0`` both override the default
+     grid-item ``min-*: auto`` which would otherwise force the cell
+     to expand to its content's max size. Without ``min-height: 0``
+     the flex column inside refuses to shrink and ``margin-top:
+     auto`` on the composer has no leftover space to absorb. */
   min-width: 0;
+  min-height: 0;
 }
 
 /* Status banner. Color tone reflects the kind set by setStatus() in

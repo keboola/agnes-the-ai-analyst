@@ -77,6 +77,42 @@ def test_archive_session(repo: ChatRepository):
     assert refreshed is not None and refreshed.archived is True
 
 
+def test_archive_empty_user_sessions_archives_only_empties(repo: ChatRepository):
+    """Soft-archive every empty session for a user, leaving sessions
+    with messages and other users' sessions untouched."""
+    empty_a = repo.create_session(user_email="u@x", surface=Surface.WEB)
+    empty_b = repo.create_session(user_email="u@x", surface=Surface.WEB)
+    with_msg = repo.create_session(user_email="u@x", surface=Surface.WEB)
+    repo.append_message(session_id=with_msg.id, role="user", content="hi")
+    other_empty = repo.create_session(user_email="v@x", surface=Surface.WEB)
+
+    n = repo.archive_empty_user_sessions("u@x")
+    assert n == 2
+    assert repo.get_session(empty_a.id).archived is True
+    assert repo.get_session(empty_b.id).archived is True
+    assert repo.get_session(with_msg.id).archived is False
+    assert repo.get_session(other_empty.id).archived is False
+
+
+def test_archive_empty_user_sessions_respects_exclude_id(repo: ChatRepository):
+    """When called from POST /sessions after a brand-new session is
+    created, the new id is passed as ``exclude_id`` so it isn't
+    immediately re-archived."""
+    just_created = repo.create_session(user_email="u@x", surface=Surface.WEB)
+    earlier_empty = repo.create_session(user_email="u@x", surface=Surface.WEB)
+
+    n = repo.archive_empty_user_sessions("u@x", exclude_id=just_created.id)
+    assert n == 1
+    assert repo.get_session(just_created.id).archived is False
+    assert repo.get_session(earlier_empty.id).archived is True
+
+
+def test_archive_empty_user_sessions_zero_when_nothing_to_do(repo: ChatRepository):
+    s = repo.create_session(user_email="u@x", surface=Surface.WEB)
+    repo.append_message(session_id=s.id, role="user", content="hi")
+    assert repo.archive_empty_user_sessions("u@x") == 0
+
+
 def test_archived_slack_dm_does_not_block_new_one(repo: ChatRepository):
     a = repo.create_session(user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1")
     repo.archive_session(a.id)
