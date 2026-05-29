@@ -852,21 +852,17 @@ body.chat-page-body main { margin: 0; padding: 0; }
   gap: var(--space-4);
 }
 
-.cloud-chat-cap-card {
-  padding: var(--space-4);
-  border: 1px solid var(--ds-border);
-  border-radius: var(--radius-lg);
-  background: var(--ds-surface);
-}
+/* Capability cards compose ``.ds-card`` from style-custom.css; the
+   chat-local rules only tighten the default ``--space-6`` padding
+   for the four-card grid (where the canonical 24px feels loose) and
+   shrink the heading + body type to fit the dense info layout. */
+.cloud-chat-cap-card { padding: var(--space-4); }
 .cloud-chat-cap-card h3 {
   margin: 0 0 var(--space-2);
   font-size: var(--text-base);
-  font-weight: var(--font-semibold);
-  color: var(--ds-text-primary);
 }
 .cloud-chat-cap-card p {
   margin: 0 0 var(--space-2);
-  color: var(--ds-text-secondary);
   font-size: var(--text-sm);
   line-height: 1.5;
 }
@@ -893,28 +889,16 @@ body.chat-page-body main { margin: 0; padding: 0; }
 }
 .cloud-chat-cap-examples li { margin-bottom: 6px; }
 
+/* Suggest pills compose ``.btn .btn-secondary .btn-sm`` from
+   style-custom.css. The page-local rule only forces the full-width
+   block layout so the four prompts line up tidily in the card, and
+   left-aligns the text since the canonical .btn centres it. */
 .cloud-chat-cap-suggest {
   display: block;
   width: 100%;
   text-align: left;
-  padding: 7px var(--space-3);
-  background: var(--ds-surface-dim);
-  color: var(--ds-text-primary);
-  border: 1px solid var(--ds-border);
-  border-radius: var(--radius-md);
-  font: inherit;
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition:
-    background var(--transition-fast),
-    border-color var(--transition-fast),
-    color var(--transition-fast);
 }
-.cloud-chat-cap-suggest:hover {
-  background: var(--ds-surface);
-  border-color: var(--ds-primary);
-  color: var(--ds-primary-dark);
-}
+.cloud-chat-cap-suggest:hover { border-color: var(--ds-primary); }
 .cloud-chat-cap-suggest:focus-visible {
   outline: var(--ds-focus-outline);
   outline-offset: var(--ds-focus-outline-offset);

@@ -146,13 +146,13 @@
         <p>I'm the Agnes data agent. I run inside an isolated sandbox with the full <code>agnes</code> CLI and your per-user workspace. Ask me anything about your data.</p>
       </header>
       <div class="cloud-chat-capabilities-grid">
-        <div class="cloud-chat-cap-card" data-card="data">
+        <div class="ds-card cloud-chat-cap-card" data-card="data">
           <h3>📊 Your data</h3>
           <p id="cap-data-summary">Loading catalog…</p>
           <ul id="cap-data-sources"></ul>
         </div>
 
-        <div class="cloud-chat-cap-card" data-card="tools">
+        <div class="ds-card cloud-chat-cap-card" data-card="tools">
           <h3>🧰 Built-in tools</h3>
           <ul>
             <li><code>agnes catalog</code> — list tables you can query</li>
@@ -164,19 +164,19 @@
           </ul>
         </div>
 
-        <div class="cloud-chat-cap-card" data-card="marketplace">
+        <div class="ds-card cloud-chat-cap-card" data-card="marketplace">
           <h3>🧩 Marketplace &amp; skills</h3>
           <p id="cap-marketplace-summary">Loading plugins…</p>
           <ul id="cap-marketplace-list"></ul>
         </div>
 
-        <div class="cloud-chat-cap-card" data-card="examples">
+        <div class="ds-card cloud-chat-cap-card" data-card="examples">
           <h3>💡 Try asking</h3>
           <ul class="cloud-chat-cap-examples">
-            <li><button type="button" class="cloud-chat-cap-suggest" data-prompt="What tables do I have access to in Agnes?">What tables do I have access to?</button></li>
-            <li><button type="button" class="cloud-chat-cap-suggest" data-prompt="Show me 5 example rows from the largest table I have access to.">Show me example rows</button></li>
-            <li><button type="button" class="cloud-chat-cap-suggest" data-prompt="Count rows per region in the sales table (or whichever table has a region column).">Count rows per region</button></li>
-            <li><button type="button" class="cloud-chat-cap-suggest" data-prompt="What's our revenue trend over the last 6 months? Use whatever sales-related tables you find in the catalog.">Revenue trend, 6 months</button></li>
+            <li><button type="button" class="btn btn-secondary btn-sm cloud-chat-cap-suggest" data-prompt="What tables do I have access to in Agnes?">What tables do I have access to?</button></li>
+            <li><button type="button" class="btn btn-secondary btn-sm cloud-chat-cap-suggest" data-prompt="Show me 5 example rows from the largest table I have access to.">Show me example rows</button></li>
+            <li><button type="button" class="btn btn-secondary btn-sm cloud-chat-cap-suggest" data-prompt="Count rows per region in the sales table (or whichever table has a region column).">Count rows per region</button></li>
+            <li><button type="button" class="btn btn-secondary btn-sm cloud-chat-cap-suggest" data-prompt="What's our revenue trend over the last 6 months? Use whatever sales-related tables you find in the catalog.">Revenue trend, 6 months</button></li>
           </ul>
         </div>
       </div>
