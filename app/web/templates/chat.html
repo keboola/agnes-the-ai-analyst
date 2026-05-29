@@ -87,7 +87,9 @@
   <aside class="cloud-chat-sidebar" aria-label="Conversations">
     <header class="cloud-chat-sidebar-header">
       <span class="cloud-chat-sidebar-title">Conversations</span>
-      <button type="button" id="new-chat" class="cloud-chat-new-btn" aria-label="Start a new chat">
+      <button type="button" id="new-chat"
+              class="btn btn-primary btn-sm cloud-chat-new-btn"
+              aria-label="Start a new chat">
         <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
           <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
         </svg>
@@ -103,7 +105,8 @@
        localStorage["agnes-theme"] before first render to avoid the
        flash-of-light-content on dark-mode reloads. #}
     <footer class="cloud-chat-sidebar-footer">
-      <button type="button" id="chat-theme-toggle" class="cloud-chat-theme-toggle"
+      <button type="button" id="chat-theme-toggle"
+              class="btn btn-ghost btn-sm cloud-chat-theme-toggle"
               aria-label="Toggle dark mode" aria-pressed="false">
         <svg class="cloud-chat-theme-icon-moon" viewBox="0 0 16 16" aria-hidden="true"
              fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
@@ -187,8 +190,10 @@
     <form id="chat-form" class="cloud-chat-form">
       <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes…" rows="2"></textarea>
       <div class="cloud-chat-form-actions">
-        <button type="button" id="cancel-btn" class="cloud-chat-stop-btn" hidden>Stop</button>
-        <button type="submit" class="cloud-chat-send-btn">Send</button>
+        <button type="button" id="cancel-btn"
+                class="btn btn-danger cloud-chat-stop-btn" hidden>Stop</button>
+        <button type="submit"
+                class="btn btn-primary cloud-chat-send-btn">Send</button>
       </div>
     </form>
   </section>
