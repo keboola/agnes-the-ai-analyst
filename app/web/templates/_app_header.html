@@ -31,6 +31,7 @@
            authenticated users. The admin review queue is separate:
            /admin/corporate-memory, in the Admin dropdown below. #}
         <a class="app-nav-link {% if _path == '/corporate-memory' %}is-active{% endif %}" href="/corporate-memory">Memory</a>
+        <a class="app-nav-link {% if _path.startswith('/me/mcp') %}is-active{% endif %}" href="/me/mcp">AI Tools</a>
 
         {# Admin menu: admin-only. Backend gates the routes via
            require_admin (see app/web/router.py for /admin/*, including
