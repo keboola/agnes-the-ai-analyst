@@ -127,6 +127,10 @@ async function api(path, init = {}) {
     ...init,
   });
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  // 204 No Content (and any empty 2xx) — DELETE /sessions/{id} returns
+  // this. Calling .json() on an empty body throws "unexpected end of
+  // data", which is what surfaced as `Could not delete: JSON.parse: …`.
+  if (r.status === 204 || r.headers.get("content-length") === "0") return null;
   return r.json();
 }
 
