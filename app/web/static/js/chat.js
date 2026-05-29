@@ -1,9 +1,101 @@
-// app/static/js/chat.js
+// app/web/static/js/chat.js
 const $ = (id) => document.getElementById(id);
 
 let ws = null;
 let currentChatId = null;
 let inFlightToolCalls = new Map();
+
+// --- capability empty-state panel ---------------------------------
+// Shown when no chat is open; hides as soon as a session is created
+// or opened from the sidebar. Counts (tables, plugins) are loaded
+// asynchronously via the existing REST API so we don't block render.
+function hideCapabilities() {
+  const panel = $("chat-capabilities");
+  if (panel) panel.hidden = true;
+}
+function showCapabilities() {
+  const panel = $("chat-capabilities");
+  if (panel) panel.hidden = false;
+}
+
+async function loadCapabilityCounts() {
+  // Catalog: count tables the caller can see (RBAC pre-filtered server-side).
+  try {
+    const cat = await api("/api/catalog?json=1").catch(() => null) || await api("/api/catalog");
+    const tables = Array.isArray(cat) ? cat : (cat?.tables || cat?.items || []);
+    const total = tables.length;
+    const bySource = {};
+    for (const t of tables) {
+      const src = t.source_name || t.source_type || t.source || "unknown";
+      bySource[src] = (bySource[src] || 0) + 1;
+    }
+    const summary = $("cap-data-summary");
+    if (summary) {
+      summary.textContent = total > 0
+        ? `You can query ${total} table${total === 1 ? "" : "s"} across ${Object.keys(bySource).length} data source${Object.keys(bySource).length === 1 ? "" : "s"}.`
+        : "No tables in your catalog yet — an admin grants access via /admin/access.";
+    }
+    const ul = $("cap-data-sources");
+    if (ul && total > 0) {
+      ul.innerHTML = "";
+      for (const [src, n] of Object.entries(bySource)) {
+        const li = document.createElement("li");
+        li.innerHTML = `<code>${src}</code> — ${n} table${n === 1 ? "" : "s"}`;
+        ul.appendChild(li);
+      }
+    }
+  } catch (err) {
+    const summary = $("cap-data-summary");
+    if (summary) summary.textContent = "Catalog unavailable — try `agnes catalog` once a chat is open.";
+  }
+
+  // Marketplace plugins.
+  try {
+    const mp = await api("/api/marketplaces").catch(() => []);
+    const items = Array.isArray(mp) ? mp : (mp?.marketplaces || []);
+    const plugins = items.flatMap(m => m.plugins || []);
+    const summary = $("cap-marketplace-summary");
+    if (summary) {
+      summary.textContent = plugins.length > 0
+        ? `${plugins.length} plugin${plugins.length === 1 ? "" : "s"} installed across ${items.length} marketplace${items.length === 1 ? "" : "s"}.`
+        : "No marketplace plugins installed yet.";
+    }
+    const ul = $("cap-marketplace-list");
+    if (ul && plugins.length > 0) {
+      ul.innerHTML = "";
+      for (const p of plugins.slice(0, 5)) {
+        const li = document.createElement("li");
+        li.innerHTML = `<code>${p.name || p.id}</code>${p.tagline ? " — " + p.tagline : ""}`;
+        ul.appendChild(li);
+      }
+      if (plugins.length > 5) {
+        const li = document.createElement("li");
+        li.textContent = `… and ${plugins.length - 5} more`;
+        ul.appendChild(li);
+      }
+    }
+  } catch (err) {
+    const summary = $("cap-marketplace-summary");
+    if (summary) summary.textContent = "Marketplace info unavailable.";
+  }
+}
+
+// Suggested-prompt clicks pre-fill the textarea + submit.
+function wireSuggestionButtons() {
+  document.querySelectorAll(".cloud-chat-cap-suggest").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const text = btn.dataset.prompt;
+      if (!text) return;
+      const ta = $("chat-input");
+      if (!ta) return;
+      ta.value = text;
+      ta.focus();
+      // Auto-submit on click to keep the empty-state flow fast.
+      const form = $("chat-form");
+      if (form) form.dispatchEvent(new SubmitEvent("submit", { cancelable: true }));
+    });
+  });
+}
 
 async function api(path, init = {}) {
   const r = await fetch(path, {
@@ -38,6 +130,7 @@ async function newChat() {
 }
 
 async function openSession(chatId, wsUrlOverride) {
+  hideCapabilities();
   if (ws) { ws.close(); ws = null; }
   currentChatId = chatId;
   $("chat-messages").innerHTML = "";
@@ -155,18 +248,52 @@ function renderToolCallEnd(frame) {
   }
 }
 
-$("new-chat").onclick = newChat;
-$("chat-form").onsubmit = (e) => {
-  e.preventDefault();
-  if (!ws || ws.readyState !== 1) return;
-  const text = $("chat-input").value.trim();
+// Wait until the WebSocket is ready (auto-create chat if none open).
+async function ensureWsReady() {
+  if (ws && ws.readyState === 1) return;
+  // No active WS — create a new chat session. newChat() opens the WS
+  // and resolves when openSession completes, but openSession doesn't
+  // currently return a "WS open" promise, so we poll briefly.
+  if (!currentChatId) await newChat();
+  for (let i = 0; i < 60; i++) {
+    if (ws && ws.readyState === 1) return;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  throw new Error("WebSocket did not open within 6 s");
+}
+
+async function submitUserMessage(text) {
   if (!text) return;
+  hideCapabilities();
+  try {
+    await ensureWsReady();
+  } catch (err) {
+    $("chat-status").textContent = `Could not start chat: ${err.message}`;
+    showCapabilities();
+    return;
+  }
   renderMessage({ role: "user", content: text });
   ws.send(JSON.stringify({ type: "user_msg", text }));
   $("chat-input").value = "";
+}
+
+$("new-chat").onclick = async () => {
+  hideCapabilities();
+  await newChat();
 };
+
+$("chat-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const text = $("chat-input").value.trim();
+  await submitUserMessage(text);
+};
+
 $("cancel-btn").onclick = () => ws?.send(JSON.stringify({ type: "cancel" }));
 
 (async () => {
   await loadSidebar();
+  // Capability empty-state visible until first chat starts. Loading
+  // counts async — page renders immediately, panel fills in.
+  wireSuggestionButtons();
+  loadCapabilityCounts();
 })();

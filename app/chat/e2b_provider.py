@@ -296,6 +296,12 @@ class E2BProvider:
         # survive untouched.
         cmd = " ".join(shlex.quote(a) for a in argv)
 
+        # ``timeout=0`` disables the SDK's per-command lifetime cap (default
+        # 60 s). The runner runs until we explicitly kill it (idle reaper,
+        # WS disconnect, max_session_seconds) or the sandbox itself is
+        # torn down. Without this, a long-lived chat session would crash
+        # after 60 s with ``TimeoutException: context deadline exceeded``
+        # and the manager would respawn-loop until rate-limited.
         cmd_handle = await sandbox.commands.run(
             cmd,
             background=True,
@@ -304,6 +310,7 @@ class E2BProvider:
             envs=dict(env),
             on_stdout=_on_stdout,
             on_stderr=_on_stderr,
+            timeout=0,
         )
 
         stdin_adapter = _StreamWriterAdapter(sandbox, cmd_handle.pid)
