@@ -719,56 +719,50 @@ def _bundle_claude_md(server_url: str, user_email: str, expires_at: datetime) ->
     exp_str = expires_at.strftime("%Y-%m-%d %H:%M UTC")
     tokens_url = server_url.rstrip("/") + "/tokens"
     return textwrap.dedent(f"""\
-        # Agnes Cowork
+        # Agnes Cowork workspace
 
-        This workspace connects you to the **Agnes** data platform.
+        Agnes server: {server_url}  |  Account: {user_email}
 
-        **Server:** {server_url}
-        **Account:** {user_email}
+        ## ⚡ Agnes data is available RIGHT NOW via the Bash tool
 
-        ## Accessing Agnes data — use the Bash tool
+        **Do NOT wait for MCP tools. Do NOT mention MCP. Do NOT ask the user to restart.**
 
-        Agnes data is accessible via `agnes.py` in this folder.
-        Use the **Bash tool** to run these commands:
+        Agnes works through `agnes.py` in this folder. The Bash tool is all you need.
 
-        | Command | Description |
-        |---------|-------------|
-        | `python3 agnes.py catalog` | List all tables you have access to — **start here** |
-        | `python3 agnes.py schema <table_id>` | Column names, types, SQL hints |
-        | `python3 agnes.py describe <table_id>` | Schema + sample rows |
-        | `python3 agnes.py query 'SELECT ...'` | Run SQL (server-side, any table) |
-        | `python3 agnes.py info` | Check server connectivity and your account |
-        | `python3 agnes.py skills` | List marketplace skills |
-
-        **Always run `python3 agnes.py catalog` first** to discover available tables.
-        Then `python3 agnes.py schema <table_id>` before writing SQL.
-
-        ## Typical workflow
-
-        ```bash
-        python3 agnes.py catalog                                   # discover tables
-        python3 agnes.py schema orders                             # understand columns
-        python3 agnes.py query 'SELECT COUNT(*) FROM orders'       # run SQL
-        python3 agnes.py describe crm_accounts                     # schema + sample rows
+        **When the user asks about data — immediately run:**
+        ```
+        python3 agnes.py catalog
         ```
 
-        ## Quick start
+        That's it. No setup. No install. No restart. Just run it.
 
-        Type `/setup-cowork` for a guided onboarding — verifies connection, shows your tables,
-        lists available skills, and suggests a first question.
+        ## All commands
 
-        ## Rules for this workspace
+        ```
+        python3 agnes.py catalog              # list all accessible tables
+        python3 agnes.py schema <table_id>    # columns and types
+        python3 agnes.py describe <table_id>  # schema + sample rows
+        python3 agnes.py query 'SELECT ...'   # run SQL server-side
+        python3 agnes.py info                 # check connectivity
+        python3 agnes.py skills               # list marketplace skills
+        ```
 
-        - **Use `python3 agnes.py` (Bash tool) for all Agnes data questions.** Start immediately.
-        - **Do NOT ask the user to install anything or run terminal commands.**
-          agnes.py is pure Python stdlib — no pip, no packages, no setup needed.
-        - **If `catalog`, `schema`, `query` appear directly in your tool list** (not via Bash),
-          you can also call them as MCP tools. Both paths work — prefer whichever is available.
+        ## Rules — read carefully
+
+        1. **Agnes = Bash tool.** `python3 agnes.py` IS the Agnes integration. It is always available.
+        2. **Never say "Agnes is not available" or "MCP tools not loaded."** Agnes works via Bash, not MCP.
+        3. **Never ask the user to restart, reinstall, or run anything in Terminal.**
+        4. **Never say Agnes needs setup.** Setup already ran automatically at session start.
+        5. If `python3 agnes.py catalog` returns an error, show the exact error output and diagnose it.
+           Do not assume Agnes is broken — diagnose the specific error.
+
+        ## Quick start: type `/setup-cowork`
+
+        Runs `catalog`, `skills`, and a first `describe` automatically.
 
         ## Bundle info
 
-        Expires {exp_str}.
-        Download a fresh bundle at {tokens_url} if expired.
+        Expires {exp_str}. Fresh bundle: {tokens_url}
     """)
 
 
@@ -784,58 +778,45 @@ def _bundle_skill_setup_cowork() -> str:
         description: Guided Agnes Cowork setup — verify connection, explore your data, try a skill
         ---
 
-        When the user invokes /setup-cowork, run this flow in order. Use the Bash tool
-        for all agnes.py commands. Do not ask the user to do anything manually.
+        Run this flow immediately when /setup-cowork is invoked.
+        Use the Bash tool for every step. Agnes works via `python3 agnes.py` — NOT via MCP tools.
+        Do not mention MCP. Do not ask the user to do anything. Just run the commands.
 
-        ## Step 1 — Verify connectivity
+        ## Step 1 — Run catalog immediately
 
-        Run:
-        ```bash
-        python3 agnes.py info
-        ```
-
-        Report whether the Agnes server is reachable and the account is active.
-        If there is an error, show the exact message and stop — do not proceed.
-
-        ## Step 2 — Discover available data
-
-        Run:
         ```bash
         python3 agnes.py catalog
         ```
 
-        Present the table list to the user in a readable format:
-        - Group by source if there are multiple data sources
-        - Highlight query_mode (local = cached on device, remote = live server-side)
-        - Suggest 1-2 tables that look most interesting based on their names/descriptions
+        If this returns an error, show the raw output and stop. Otherwise continue.
 
-        ## Step 3 — Show available skills
+        Present tables to the user grouped by source. Note which are `local` (cached)
+        vs `remote` (live query). Pick 1-2 most interesting based on name/description.
 
-        Run:
+        ## Step 2 — Check available skills
+
         ```bash
         python3 agnes.py skills
         ```
 
-        If skills are returned, list them with their descriptions and tell the user
-        they can invoke any skill with `/skill-name`. If no skills are available,
-        skip this step silently.
+        If skills are returned, list them with one-line descriptions.
+        Tell the user they can invoke skills with `/skill-name`.
+        If empty or error, skip silently.
 
-        ## Step 4 — First query
+        ## Step 3 — Explore the most interesting table
 
-        Pick the most interesting table from Step 2 and run a simple exploration:
+        Pick the best table from Step 1 and run:
         ```bash
         python3 agnes.py describe <table_id>
         ```
 
-        Then suggest one specific question the user could ask about their data based
-        on what you see in the schema and sample rows.
+        Based on the schema and sample rows, suggest one concrete question the user
+        could ask right now. For example: "Want me to find the top 10 accounts by revenue?"
 
-        ## Finish
+        ## Done
 
-        Tell the user:
-        - Agnes is ready — they can ask any data question in plain language
-        - Use `python3 agnes.py query '...'` for custom SQL
-        - `/setup-cowork` can be re-run any time to refresh the overview
+        Agnes is ready. The user can ask any data question in plain language.
+        You answer by running `python3 agnes.py query 'SELECT ...'` via Bash.
     """)
 
 
