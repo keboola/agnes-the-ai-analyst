@@ -75,18 +75,15 @@ class TestGenerateBundle:
             f"SessionStart hook missing setup.py; got: {commands}"
         )
 
-        # settings.json must wire the MCP server via SSE transport
+        # settings.json must wire the MCP server via stdio (mcp_server.py proxy)
         mcp_servers = settings.get("mcpServers", {})
         assert "agnes" in mcp_servers, f"mcpServers missing 'agnes'; got: {mcp_servers}"
         agnes_mcp = mcp_servers["agnes"]
-        assert agnes_mcp.get("type") == "sse", (
-            f"MCP type should be 'sse', got: {agnes_mcp.get('type')}"
+        assert "command" in agnes_mcp, (
+            f"MCP entry should have 'command' (stdio), got: {agnes_mcp}"
         )
-        assert "/api/mcp/sse" in agnes_mcp.get("url", ""), (
-            f"MCP url should contain '/api/mcp/sse'; got: {agnes_mcp.get('url')}"
-        )
-        assert "Authorization" in agnes_mcp.get("headers", {}), (
-            f"MCP headers should contain Authorization; got: {agnes_mcp.get('headers')}"
+        assert "mcp_server.py" in str(agnes_mcp.get("args", [])), (
+            f"MCP args should reference mcp_server.py; got: {agnes_mcp.get('args')}"
         )
 
     def test_requires_authentication(self, seeded_app):
