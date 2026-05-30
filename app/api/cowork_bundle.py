@@ -752,6 +752,11 @@ def _bundle_claude_md(server_url: str, user_email: str, expires_at: datetime) ->
         python3 agnes.py describe crm_accounts                     # schema + sample rows
         ```
 
+        ## Quick start
+
+        Type `/setup-cowork` for a guided onboarding — verifies connection, shows your tables,
+        lists available skills, and suggests a first question.
+
         ## Rules for this workspace
 
         - **Use `python3 agnes.py` (Bash tool) for all Agnes data questions.** Start immediately.
@@ -764,6 +769,73 @@ def _bundle_claude_md(server_url: str, user_email: str, expires_at: datetime) ->
 
         Expires {exp_str}.
         Download a fresh bundle at {tokens_url} if expired.
+    """)
+
+
+def _bundle_skill_setup_cowork() -> str:
+    """Return .claude/skills/setup-cowork.md for the bundle.
+
+    Invoked by the user as /setup-cowork inside the cowork workspace.
+    Guides Claude through: verify connectivity → show available tables →
+    list marketplace skills → run a first query.
+    """
+    return textwrap.dedent("""\
+        ---
+        description: Guided Agnes Cowork setup — verify connection, explore your data, try a skill
+        ---
+
+        When the user invokes /setup-cowork, run this flow in order. Use the Bash tool
+        for all agnes.py commands. Do not ask the user to do anything manually.
+
+        ## Step 1 — Verify connectivity
+
+        Run:
+        ```bash
+        python3 agnes.py info
+        ```
+
+        Report whether the Agnes server is reachable and the account is active.
+        If there is an error, show the exact message and stop — do not proceed.
+
+        ## Step 2 — Discover available data
+
+        Run:
+        ```bash
+        python3 agnes.py catalog
+        ```
+
+        Present the table list to the user in a readable format:
+        - Group by source if there are multiple data sources
+        - Highlight query_mode (local = cached on device, remote = live server-side)
+        - Suggest 1-2 tables that look most interesting based on their names/descriptions
+
+        ## Step 3 — Show available skills
+
+        Run:
+        ```bash
+        python3 agnes.py skills
+        ```
+
+        If skills are returned, list them with their descriptions and tell the user
+        they can invoke any skill with `/skill-name`. If no skills are available,
+        skip this step silently.
+
+        ## Step 4 — First query
+
+        Pick the most interesting table from Step 2 and run a simple exploration:
+        ```bash
+        python3 agnes.py describe <table_id>
+        ```
+
+        Then suggest one specific question the user could ask about their data based
+        on what you see in the schema and sample rows.
+
+        ## Finish
+
+        Tell the user:
+        - Agnes is ready — they can ask any data question in plain language
+        - Use `python3 agnes.py query '...'` for custom SQL
+        - `/setup-cowork` can be re-run any time to refresh the overview
     """)
 
 
@@ -789,7 +861,9 @@ def _build_bundle_zip(
         ├── agnes.py                  ← pure-stdlib CLI; Claude calls via Bash tool
         ├── mcp_server.py             ← stdio MCP proxy (if cowork VM loads it)
         ├── .claude/
-        │   └── settings.json         ← SessionStart hook + mcpServers config
+        │   ├── settings.json         ← SessionStart hook + mcpServers config
+        │   └── skills/
+        │       └── setup-cowork.md   ← /setup-cowork guided onboarding skill
         └── CLAUDE.md                 ← user + agent guidance (Bash-first)
 
     The ``access_token`` field in ``agnes-bundle.json`` is a short-lived PAT
@@ -814,6 +888,7 @@ def _build_bundle_zip(
         zf.writestr(f"{folder_name}/mcp_server.py", _bundle_mcp_server_py())
         zf.writestr(f"{folder_name}/agnes.py", _bundle_agnes_py())
         zf.writestr(f"{folder_name}/.claude/settings.json", _bundle_settings_json(server_url, access_token))
+        zf.writestr(f"{folder_name}/.claude/skills/setup-cowork.md", _bundle_skill_setup_cowork())
         zf.writestr(
             f"{folder_name}/CLAUDE.md",
             _bundle_claude_md(server_url, user_email, expires_at),
