@@ -101,17 +101,17 @@ def _generate_setup_token() -> str:
 
 # ── bundle generation helpers ─────────────────────────────────────────────────
 
-def _bundle_settings_json(server_url: str, access_token: str) -> str:
+def _bundle_settings_json(server_url: str, access_token: str) -> str:  # noqa: ARG001
     """Return .claude/settings.json content for the setup bundle.
 
-    Uses SSE transport so the MCP server works from Claude Desktop's cowork
-    VM — which cannot reach localhost but CAN reach the Agnes public URL.
+    Uses stdio transport (python3 mcp_server.py) — the bundled mcp_server.py
+    is a pure-stdlib REST proxy that requires no Agnes installation and works
+    inside the cowork VM on the very first session open.
 
-    The hook on first session open:
-      1. Runs setup.py which exchanges the setup token for a 90-day PAT and
-         updates settings.json with the long-lived token.
-      2. Registers the stdio MCP server in Claude Desktop's global config for
-         users who open the workspace directly in Claude Desktop (not cowork).
+    The SessionStart hook runs setup.py once to exchange the short-lived bundle
+    token for a 90-day PAT and write credentials to ~/.config/agnes/.
+    After that run setup.py deletes itself from the hook and replaces it with
+    ``agnes pull``.
     """
     _init_cmd = (
         "python3 setup.py 2>/dev/null || python setup.py 2>/dev/null || true"
@@ -133,15 +133,13 @@ def _bundle_settings_json(server_url: str, access_token: str) -> str:
                 }
             ]
         },
-        # SSE transport: works from cowork VM (public Agnes URL) and from
-        # CLI mode. setup.py replaces the short-lived token with a 90-day PAT.
+        # stdio transport: mcp_server.py is a pure-stdlib REST proxy bundled
+        # in the ZIP root. No Agnes package install needed — works on first
+        # session open. Uses relative path so it resolves from the project root.
         "mcpServers": {
             "agnes": {
-                "type": "sse",
-                "url": f"{server_url}/api/mcp/sse",
-                "headers": {
-                    "Authorization": f"Bearer {access_token}",
-                },
+                "command": "python3",
+                "args": ["mcp_server.py"],
             }
         },
     }
@@ -149,155 +147,173 @@ def _bundle_settings_json(server_url: str, access_token: str) -> str:
 
 
 def _bundle_mcp_server_py() -> str:
-    """Return mcp_server.py — a bundled MCP launcher, pure stdlib + pip.
+    """Return mcp_server.py — pure-stdlib stdio MCP proxy.
 
-    Placed in the ZIP root so .claude/settings.json can reference it as
-    ``python3 mcp_server.py`` without any absolute paths.  After setup.py
-    runs, settings.json is updated to use the absolute path.
+    No Agnes package install required. Reads credentials from agnes-bundle.json
+    (pre-baked on first open, before setup.py fires) or ~/.config/agnes/token.json
+    (after setup.py runs). Proxies every tool call to the Agnes REST API over
+    HTTP — works inside the cowork VM as long as the Agnes server is reachable.
 
-    On startup (called by Claude Code when the project is opened) it:
-
-    1. **Bootstraps credentials** — if ``agnes-bundle.json`` is still present
-       (setup.py hasn't run yet) it reads the pre-baked PAT and writes
-       ``~/.config/agnes/config.yaml`` + ``token.json`` so the MCP tools
-       can authenticate on first launch, before the SessionStart hook fires.
-
-    2. **Installs the agnes package** if not already importable — runs
-       ``pip install --user agnes-the-ai-analyst`` silently, then restarts
-       itself so the new packages are on ``sys.path``.  No binary needed.
-
-    3. **Runs the MCP server** by importing ``cli.mcp.server`` and calling
-       ``run()`` — no binary search, no hard-coded paths.
-
-    This solves the chicken-and-egg problem: MCP is live on the FIRST session
-    open even before setup.py has run, so the analyst can ask
-    "What data do I have access to?" immediately.
+    Tools: server_info, catalog, schema, describe, query, skills.
     """
     return textwrap.dedent("""\
         #!/usr/bin/env python3
-        \"\"\"Agnes MCP launcher — bundled in the Cowork ZIP.
+        \"\"\"Agnes MCP stdio proxy — pure stdlib, no install needed.
 
-        Called by Claude Code on project open via .claude/settings.json:
-            mcpServers.agnes.command = python3 (absolute after setup)
-            mcpServers.agnes.args    = [<absolute path to this file>]
-
-        Bootstraps credentials from agnes-bundle.json if needed, installs
-        the agnes package if not present, then runs the MCP server so
-        Claude has Agnes tools from the very first session — no Terminal needed.
+        Reads credentials from agnes-bundle.json or ~/.config/agnes/token.json,
+        then implements the MCP protocol over stdio, forwarding each tool call
+        to the Agnes REST API.
         \"\"\"
         from __future__ import annotations
-        import json, pathlib, site, subprocess as _sp, sys, threading
+        import json, pathlib, re, sys, urllib.error, urllib.request
 
-        HERE = pathlib.Path(__file__).resolve().parent
-        BUNDLE_FILE = HERE / "agnes-bundle.json"
-        CONFIG_DIR  = pathlib.Path.home() / ".config" / "agnes"
+        HERE       = pathlib.Path(__file__).resolve().parent
+        CONFIG_DIR = pathlib.Path.home() / ".config" / "agnes"
 
-        # ── 1. Bootstrap credentials from bundle if not already configured ──
-        # MCP starts BEFORE the SessionStart hook fires, so we seed
-        # ~/.config/agnes/ here to make tools usable on the very first open.
-        token_file = CONFIG_DIR / "token.json"
-        if BUNDLE_FILE.exists() and not token_file.exists():
+        # ── credentials ──────────────────────────────────────────────────────
+
+        def _load_creds():
+            \"\"\"Return (server_url, pat) or ('', '') if not found.\"\"\"
+            bf = HERE / "agnes-bundle.json"
+            if bf.exists():
+                try:
+                    b = json.loads(bf.read_text())
+                    u, p = b.get("server_url", "").rstrip("/"), b.get("access_token", "")
+                    if u and p:
+                        return u, p
+                except Exception:
+                    pass
+            cfg = CONFIG_DIR / "config.yaml"
+            tok = CONFIG_DIR / "token.json"
+            if cfg.exists() and tok.exists():
+                try:
+                    m = re.search(r"server:\\s*(.+)", cfg.read_text())
+                    u = m.group(1).strip() if m else ""
+                    p = json.loads(tok.read_text()).get("access_token", "")
+                    if u and p:
+                        return u, p
+                except Exception:
+                    pass
+            return "", ""
+
+        # ── HTTP helper ───────────────────────────────────────────────────────
+
+        def _api(method, path, server_url, pat, body=None, timeout=30):
+            url = server_url.rstrip("/") + path
+            hdrs = {"Authorization": f"Bearer {pat}", "Content-Type": "application/json"}
+            data = json.dumps(body).encode() if body is not None else None
+            req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
             try:
-                bundle = json.loads(BUNDLE_FILE.read_text())
-                server_url = bundle.get("server_url", "").rstrip("/")
-                pat = bundle.get("access_token", "")
-                if server_url and pat:
-                    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-                    (CONFIG_DIR / "config.yaml").write_text(f"server: {server_url}\\n")
-                    (CONFIG_DIR / "config.json").write_text(
-                        json.dumps({"server": server_url}, indent=2)
-                    )
-                    token_file.write_text(json.dumps({"access_token": pat}, indent=2))
-            except Exception:
-                pass  # best-effort; setup.py will fix it on next hook run
-
-        # ── 2. Fast path: Agnes already installed → start full MCP server ─────
-        try:
-            from cli.mcp.server import run as _run_mcp
-            _run_mcp()   # blocking; process stays here
-            sys.exit(0)
-        except ImportError:
-            pass
-
-        # ── 3. Agnes not installed — placeholder MCP + background pip install ──
-        # Claude Code has a short MCP-init timeout; we must respond to
-        # `initialize` immediately.  Start a minimal pure-stdlib server now,
-        # install agnes-the-ai-analyst in a background thread, then tell the
-        # user to restart Claude Code once the install is done.
-        _done  = threading.Event()
-        _err: list[str] = []
-
-        def _bg() -> None:
-            try:
-                _sp.run(
-                    [sys.executable, "-m", "pip", "install",
-                     "--quiet", "--user", "agnes-the-ai-analyst"],
-                    check=True, stdout=_sp.DEVNULL,
-                )
-                _user = site.getusersitepackages()
-                if _user not in sys.path:
-                    sys.path.insert(0, _user)
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    return json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                try:
+                    return {"error": json.loads(e.read()).get("detail", str(e))}
+                except Exception:
+                    return {"error": str(e)}
             except Exception as e:
-                _err.append(str(e))
-            finally:
-                _done.set()
+                return {"error": str(e)}
 
-        threading.Thread(target=_bg, daemon=True).start()
+        # ── MCP tool definitions ──────────────────────────────────────────────
 
-        def _send(obj: dict) -> None:
+        _TOOLS = [
+            {"name": "server_info",
+             "description": "Return Agnes server health and your account email. Run at session start to verify connectivity.",
+             "inputSchema": {"type": "object", "properties": {}}},
+            {"name": "catalog",
+             "description": "List all tables available to you (RBAC-filtered). Always call this first.",
+             "inputSchema": {"type": "object", "properties": {}}},
+            {"name": "schema",
+             "description": "Show column names, types, and SQL hints for a table.",
+             "inputSchema": {"type": "object", "required": ["table_id"],
+                             "properties": {"table_id": {"type": "string"}}}},
+            {"name": "describe",
+             "description": "Show schema plus sample rows for a table.",
+             "inputSchema": {"type": "object", "required": ["table_id"],
+                             "properties": {"table_id": {"type": "string"},
+                                            "rows": {"type": "integer", "default": 5}}}},
+            {"name": "query",
+             "description": "Run SQL against Agnes data (server-side, all query_mode tables).",
+             "inputSchema": {"type": "object", "required": ["sql"],
+                             "properties": {"sql": {"type": "string"},
+                                            "limit": {"type": "integer", "default": 1000}}}},
+            {"name": "skills",
+             "description": "List marketplace skills you can access, with full SKILL.md content.",
+             "inputSchema": {"type": "object", "properties": {}}},
+        ]
+
+        # ── tool dispatch ─────────────────────────────────────────────────────
+
+        def _call(name, args, server_url, pat):
+            if name == "server_info":
+                health = _api("GET", "/api/health", server_url, pat, timeout=5)
+                me     = _api("GET", "/api/me",     server_url, pat, timeout=5)
+                return json.dumps({"server": health, "user": me}, indent=2)
+            elif name == "catalog":
+                return json.dumps(_api("GET", "/api/v2/catalog", server_url, pat), indent=2)
+            elif name == "schema":
+                tid = args.get("table_id", "")
+                return json.dumps(_api("GET", f"/api/v2/schema/{tid}", server_url, pat), indent=2)
+            elif name == "describe":
+                tid  = args.get("table_id", "")
+                rows = int(args.get("rows", 5))
+                sc = _api("GET", f"/api/v2/schema/{tid}", server_url, pat)
+                sm = _api("GET", f"/api/v2/sample/{tid}?n={rows}", server_url, pat)
+                return json.dumps({"schema": sc, "sample": sm}, indent=2)
+            elif name == "query":
+                sql   = args.get("sql", "")
+                limit = int(args.get("limit", 1000))
+                return json.dumps(_api("POST", "/api/query", server_url, pat,
+                                       body={"sql": sql, "limit": limit}, timeout=60), indent=2)
+            elif name == "skills":
+                return json.dumps(_api("GET", "/api/v2/marketplace/skills", server_url, pat), indent=2)
+            return json.dumps({"error": f"unknown tool: {name}"})
+
+        # ── MCP stdio loop ────────────────────────────────────────────────────
+
+        def _send(obj):
             sys.stdout.write(json.dumps(obj) + "\\n")
             sys.stdout.flush()
 
-        _TOOL = {
-            "name": "status",
-            "description": (
-                "Check Agnes setup status. Agnes is installing in the background. "
-                "Call this to see if the install is done, then restart Claude Code."
-            ),
-            "inputSchema": {"type": "object", "properties": {}},
-        }
+        server_url, pat = _load_creds()
 
         for _raw in sys.stdin:
             _raw = _raw.strip()
             if not _raw:
                 continue
             try:
-                _msg = json.loads(_raw)
+                msg = json.loads(_raw)
             except ValueError:
                 continue
-            _m  = _msg.get("method", "")
-            _id = _msg.get("id")
-            if _m == "initialize":
-                _send({"jsonrpc": "2.0", "id": _id, "result": {
-                    "protocolVersion": _msg.get("params", {}).get(
-                        "protocolVersion", "2024-11-05"
-                    ),
+            m   = msg.get("method", "")
+            mid = msg.get("id")
+            if m == "initialize":
+                _send({"jsonrpc": "2.0", "id": mid, "result": {
+                    "protocolVersion": msg.get("params", {}).get("protocolVersion", "2024-11-05"),
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "Agnes", "version": "installing"},
+                    "serverInfo": {"name": "Agnes", "version": "1.0"},
                 }})
-            elif _m == "tools/list":
-                _send({"jsonrpc": "2.0", "id": _id, "result": {"tools": [_TOOL]}})
-            elif _m == "tools/call":
-                if _err:
-                    _text = (
-                        f"Agnes install failed: {_err[0]}\\n"
-                        "Open Terminal and run: pip install agnes-the-ai-analyst"
-                    )
-                elif _done.is_set():
-                    _text = (
-                        "Agnes installed! Restart Claude Code to load all Agnes tools."
-                    )
+            elif m == "initialized":
+                pass
+            elif m == "ping":
+                _send({"jsonrpc": "2.0", "id": mid, "result": {}})
+            elif m == "tools/list":
+                _send({"jsonrpc": "2.0", "id": mid, "result": {"tools": _TOOLS}})
+            elif m == "tools/call":
+                p    = msg.get("params", {})
+                name = p.get("name", "")
+                args = p.get("arguments", {})
+                if not server_url or not pat:
+                    _send({"jsonrpc": "2.0", "id": mid,
+                           "error": {"code": -32000,
+                                     "message": "Agnes credentials not found — run setup.py"}})
                 else:
-                    _text = (
-                        "Agnes is installing in the background (first run takes ~60s). "
-                        "Restart Claude Code when done."
-                    )
-                _send({"jsonrpc": "2.0", "id": _id, "result": {
-                    "content": [{"type": "text", "text": _text}]
-                }})
-            elif _id is not None:
-                _send({"jsonrpc": "2.0", "id": _id,
-                       "error": {"code": -32601, "message": "Method not found"}})
+                    text = _call(name, args, server_url, pat)
+                    _send({"jsonrpc": "2.0", "id": mid,
+                           "result": {"content": [{"type": "text", "text": text}]}})
+            elif mid is not None:
+                _send({"jsonrpc": "2.0", "id": mid,
+                       "error": {"code": -32601, "message": f"Method not found: {m}"}})
     """)
 
 
@@ -393,8 +409,8 @@ def _bundle_setup_py(server_url: str) -> str:
         print("Credentials saved.")
 
         # 3. Replace the one-time setup hook with a permanent pull hook.
-        #    Switch mcpServers to SSE transport with the long-lived 90-day PAT
-        #    so MCP keeps working after the short-lived bundle token expires.
+        #    Keep stdio MCP (mcp_server.py) but switch to absolute path and
+        #    ensure credentials are in place so it works after bundle cleanup.
         settings_path = HERE / ".claude" / "settings.json"
         if settings_path.exists():
             cfg = json.loads(settings_path.read_text())
@@ -407,9 +423,8 @@ def _bundle_setup_py(server_url: str) -> str:
             cfg["hooks"].pop("SessionEnd", None)
             cfg["mcpServers"] = {{
                 "agnes": {{
-                    "type": "sse",
-                    "url": f"{{server_url}}/api/mcp/sse",
-                    "headers": {{"Authorization": f"Bearer {{pat}}"}},
+                    "command": sys.executable,
+                    "args": [str(HERE / "mcp_server.py")],
                 }}
             }}
             settings_path.write_text(json.dumps(cfg, indent=2) + "\\n")
