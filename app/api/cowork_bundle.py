@@ -174,11 +174,25 @@ def _bundle_mcp_server_py() -> str:
 
         def _load_creds():
             \"\"\"Return (server_url, pat) or ('', '') if not found.\"\"\"
+            # Pre-setup: pre-baked PAT in the bundle JSON
             bf = HERE / "agnes-bundle.json"
             if bf.exists():
                 try:
                     b = json.loads(bf.read_text())
                     u, p = b.get("server_url", "").rstrip("/"), b.get("access_token", "")
+                    if u and p:
+                        return u, p
+                except Exception:
+                    pass
+            # Post-setup: persistent credentials file in the project folder.
+            # setup.py writes this to the Mac filesystem so it survives
+            # cowork VM restarts even when ~/.config/agnes/ is on the VM.
+            cf = HERE / ".agnes-creds.json"
+            if cf.exists():
+                try:
+                    b = json.loads(cf.read_text())
+                    u = b.get("server_url", "").rstrip("/")
+                    p = b.get("access_token", "")
                     if u and p:
                         return u, p
                 except Exception:
@@ -247,8 +261,8 @@ def _bundle_mcp_server_py() -> str:
         def _call(name, args, server_url, pat):
             if name == "server_info":
                 health = _api("GET", "/api/health", server_url, pat, timeout=5)
-                me     = _api("GET", "/api/me",     server_url, pat, timeout=5)
-                return json.dumps({"server": health, "user": me}, indent=2)
+                access = _api("GET", "/api/me/effective-access", server_url, pat, timeout=5)
+                return json.dumps({"server": health, "access": access, "server_url": server_url}, indent=2)
             elif name == "catalog":
                 return json.dumps(_api("GET", "/api/v2/catalog", server_url, pat), indent=2)
             elif name == "schema":
@@ -314,6 +328,155 @@ def _bundle_mcp_server_py() -> str:
             elif mid is not None:
                 _send({"jsonrpc": "2.0", "id": mid,
                        "error": {"code": -32601, "message": f"Method not found: {m}"}})
+    """)
+
+
+def _bundle_agnes_py() -> str:
+    """Return agnes.py — pure-stdlib CLI for Agnes data access via Bash tool.
+
+    Reads credentials from .agnes-creds.json (project folder, written by
+    setup.py) or ~/.config/agnes/. Provides catalog/schema/describe/query
+    commands that Claude can call via the Bash tool in the cowork session.
+
+    This is the reliable fallback for cowork environments where the cowork
+    VM does not load mcpServers from the project-level settings.json.
+    """
+    return textwrap.dedent("""\
+        #!/usr/bin/env python3
+        \"\"\"Agnes CLI — pure stdlib, no install needed.
+
+        Usage:
+          python3 agnes.py catalog
+          python3 agnes.py schema <table_id>
+          python3 agnes.py describe <table_id> [rows]
+          python3 agnes.py query '<sql>'
+          python3 agnes.py info
+          python3 agnes.py skills
+        \"\"\"
+        from __future__ import annotations
+        import json, pathlib, re, sys, urllib.error, urllib.request
+
+        HERE       = pathlib.Path(__file__).resolve().parent
+        CONFIG_DIR = pathlib.Path.home() / ".config" / "agnes"
+
+        def _load_creds():
+            \"\"\"Return (server_url, pat) or raise SystemExit.\"\"\"
+            # Persistent creds file written by setup.py — survives VM restarts
+            cf = HERE / ".agnes-creds.json"
+            if cf.exists():
+                try:
+                    b = json.loads(cf.read_text())
+                    u = b.get("server_url", "").rstrip("/")
+                    p = b.get("access_token", "")
+                    if u and p:
+                        return u, p
+                except Exception:
+                    pass
+            # Pre-setup: pre-baked PAT in bundle JSON (before setup.py runs)
+            bf = HERE / "agnes-bundle.json"
+            if bf.exists():
+                try:
+                    b = json.loads(bf.read_text())
+                    u = b.get("server_url", "").rstrip("/")
+                    p = b.get("access_token", "")
+                    if u and p:
+                        return u, p
+                except Exception:
+                    pass
+            # Fallback: ~/.config/agnes/ (may not persist in cowork VM)
+            cfg = CONFIG_DIR / "config.yaml"
+            tok = CONFIG_DIR / "token.json"
+            if cfg.exists() and tok.exists():
+                try:
+                    m = re.search(r"server:\\s*(.+)", cfg.read_text())
+                    u = m.group(1).strip() if m else ""
+                    p = json.loads(tok.read_text()).get("access_token", "")
+                    if u and p:
+                        return u, p
+                except Exception:
+                    pass
+            print("ERROR: Agnes credentials not found. Run setup.py first.")
+            sys.exit(2)
+
+        def _api(method, path, server_url, pat, body=None, timeout=30):
+            url = server_url.rstrip("/") + path
+            hdrs = {"Authorization": f"Bearer {pat}", "Content-Type": "application/json"}
+            data = json.dumps(body).encode() if body is not None else None
+            req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    return json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                try:
+                    return {"error": json.loads(e.read()).get("detail", str(e))}
+                except Exception:
+                    return {"error": str(e)}
+            except Exception as e:
+                return {"error": str(e)}
+
+        def main():
+            args = sys.argv[1:]
+            if not args or args[0] in ("-h", "--help"):
+                print("Usage: python3 agnes.py <command> [args]")
+                print("Commands:")
+                print("  catalog                  List all accessible tables")
+                print("  schema <table_id>        Show columns and types")
+                print("  describe <table_id> [n]  Schema + sample rows (default 5)")
+                print("  query '<sql>'            Run SQL (server-side)")
+                print("  info                     Check server connectivity")
+                print("  skills                   List marketplace skills")
+                return
+
+            server_url, pat = _load_creds()
+            cmd = args[0]
+
+            if cmd in ("info", "server_info"):
+                health = _api("GET", "/api/health", server_url, pat, timeout=5)
+                access = _api("GET", "/api/me/effective-access", server_url, pat, timeout=5)
+                print(json.dumps({"server": health, "access": access, "server_url": server_url}, indent=2))
+
+            elif cmd == "catalog":
+                print(json.dumps(_api("GET", "/api/v2/catalog", server_url, pat), indent=2))
+
+            elif cmd == "schema":
+                if len(args) < 2:
+                    print("Usage: python3 agnes.py schema <table_id>")
+                    sys.exit(1)
+                print(json.dumps(
+                    _api("GET", f"/api/v2/schema/{args[1]}", server_url, pat), indent=2
+                ))
+
+            elif cmd == "describe":
+                if len(args) < 2:
+                    print("Usage: python3 agnes.py describe <table_id> [rows]")
+                    sys.exit(1)
+                tid  = args[1]
+                rows = int(args[2]) if len(args) > 2 else 5
+                sc = _api("GET", f"/api/v2/schema/{tid}", server_url, pat)
+                sm = _api("GET", f"/api/v2/sample/{tid}?n={rows}", server_url, pat)
+                print(json.dumps({"schema": sc, "sample": sm}, indent=2))
+
+            elif cmd == "query":
+                if len(args) < 2:
+                    print("Usage: python3 agnes.py query '<sql>'")
+                    sys.exit(1)
+                sql = " ".join(args[1:])
+                print(json.dumps(
+                    _api("POST", "/api/query", server_url, pat,
+                         body={"sql": sql, "limit": 1000}, timeout=60), indent=2
+                ))
+
+            elif cmd == "skills":
+                print(json.dumps(
+                    _api("GET", "/api/v2/marketplace/skills", server_url, pat), indent=2
+                ))
+
+            else:
+                print(f"Unknown command: {cmd}")
+                print("Run `python3 agnes.py --help` for usage.")
+                sys.exit(1)
+
+        main()
     """)
 
 
@@ -406,6 +569,12 @@ def _bundle_setup_py(server_url: str) -> str:
         (config_dir / "token.json").write_text(
             json.dumps({{"access_token": pat}}, indent=2)
         )
+        # Also write to the project folder — this file is on the Mac filesystem,
+        # so it persists across cowork VM restarts (unlike ~/.config/agnes/ which
+        # lives in the VM's home directory and may be ephemeral).
+        (HERE / ".agnes-creds.json").write_text(
+            json.dumps({{"server_url": server_url, "access_token": pat}}, indent=2)
+        )
         print("Credentials saved.")
 
         # 3. Replace the one-time setup hook with a permanent pull hook.
@@ -467,6 +636,32 @@ def _bundle_setup_py(server_url: str) -> str:
             except Exception:
                 pass  # best-effort; project-level settings.json is the fallback
 
+        # 3c. Write MCP config to user-level ~/.claude/settings.json so the
+        #     cowork VM's claude-code binary picks it up on the next session
+        #     open — without requiring a full Claude Desktop restart.
+        #     Project-level .claude/settings.json is also updated (step 3) but
+        #     the cowork VM may not load project-level mcpServers; user-level
+        #     settings are loaded regardless of which project is open.
+        _user_claude_dir = pathlib.Path.home() / ".claude"
+        _user_claude_dir.mkdir(parents=True, exist_ok=True)
+        _user_settings_path = _user_claude_dir / "settings.json"
+        try:
+            _user_cfg = {{}}
+            if _user_settings_path.exists():
+                try:
+                    _user_cfg = json.loads(_user_settings_path.read_text())
+                except Exception:
+                    _user_cfg = {{}}
+            _user_cfg.setdefault("mcpServers", {{}})
+            _user_cfg["mcpServers"]["agnes"] = {{
+                "command": sys.executable,
+                "args": [str(HERE / "mcp_server.py")],
+            }}
+            _user_settings_path.write_text(json.dumps(_user_cfg, indent=2) + "\\n")
+            print("Agnes MCP registered in ~/.claude/settings.json (user-level).")
+        except Exception:
+            pass  # best-effort; project-level settings.json is the fallback
+
         # 4. Delete bundle file — credentials are now in ~/.config/agnes/
         try:
             BUNDLE_FILE.unlink()
@@ -516,62 +711,54 @@ def _bundle_setup_py(server_url: str) -> str:
 def _bundle_claude_md(server_url: str, user_email: str, expires_at: datetime) -> str:
     """Return CLAUDE.md content for the setup bundle.
 
-    Instructs Claude to use MCP tools directly and not ask the user
-    to install anything or run terminal commands.
+    Primary path: Bash tool with `python3 agnes.py` — works immediately,
+    no restart needed, works inside the cowork VM.
+    Bonus path: MCP tools — may become available after Claude Desktop restart
+    once setup.py has registered them in claude_desktop_config.json.
     """
     exp_str = expires_at.strftime("%Y-%m-%d %H:%M UTC")
     tokens_url = server_url.rstrip("/") + "/tokens"
     return textwrap.dedent(f"""\
         # Agnes Cowork
 
-        This workspace connects you directly to the **Agnes** data platform.
+        This workspace connects you to the **Agnes** data platform.
 
         **Server:** {server_url}
         **Account:** {user_email}
 
-        ## Agnes MCP tools (use these — no CLI needed)
+        ## Accessing Agnes data — use the Bash tool
 
-        Agnes is connected as an MCP server. Call these tools directly:
+        Agnes data is accessible via `agnes.py` in this folder.
+        Use the **Bash tool** to run these commands:
 
-        | Tool | Description |
-        |------|-------------|
-        | `catalog()` | List all tables you have access to — **start here** |
-        | `schema(table_id)` | Column names, types, and SQL hints |
-        | `describe(table_id)` | Schema + sample rows |
-        | `query(sql)` | Run SQL against Agnes data (server-side, any query_mode) |
-        | `query_local(sql)` | Query local parquet cache offline (after `pull()`) |
-        | `pull()` | Sync fresh data from the server to local cache |
-        | `server_info()` | Check connectivity and your account |
+        | Command | Description |
+        |---------|-------------|
+        | `python3 agnes.py catalog` | List all tables you have access to — **start here** |
+        | `python3 agnes.py schema <table_id>` | Column names, types, SQL hints |
+        | `python3 agnes.py describe <table_id>` | Schema + sample rows |
+        | `python3 agnes.py query 'SELECT ...'` | Run SQL (server-side, any table) |
+        | `python3 agnes.py info` | Check server connectivity and your account |
+        | `python3 agnes.py skills` | List marketplace skills |
 
-        **Always call `catalog()` first** to discover what tables exist.
-        Then `schema(table_id)` before writing any SQL.
-
-        ## Rules for this workspace
-
-        - **Use MCP tools for all Agnes data queries.** Do NOT use the Bash tool
-          for data access — Agnes tools have direct server access, Bash does not.
-        - **Do NOT ask the user to install anything or run terminal commands.**
-          The Agnes package installs itself automatically in the background.
-        - **Do NOT ask about the Agnes CLI.** Everything works through MCP.
-
-        ### If only a `status` tool is available (first-time setup)
-
-        Agnes is still installing its packages. Call `status()` to check progress,
-        then tell the user:
-
-        > "Agnes is installing in the background (first run ~60s). I'll let you know
-        > when it's ready — just restart Claude Code once the install is done and
-        > all Agnes tools will be available."
-
-        Do NOT try to use Bash for data access. Do NOT ask for Terminal commands.
+        **Always run `python3 agnes.py catalog` first** to discover available tables.
+        Then `python3 agnes.py schema <table_id>` before writing SQL.
 
         ## Typical workflow
 
+        ```bash
+        python3 agnes.py catalog                                   # discover tables
+        python3 agnes.py schema orders                             # understand columns
+        python3 agnes.py query 'SELECT COUNT(*) FROM orders'       # run SQL
+        python3 agnes.py describe crm_accounts                     # schema + sample rows
         ```
-        catalog()                        # discover tables
-        schema("crm_accounts")           # understand columns
-        query("SELECT COUNT(*) FROM crm_accounts")  # run SQL
-        ```
+
+        ## Rules for this workspace
+
+        - **Use `python3 agnes.py` (Bash tool) for all Agnes data questions.** Start immediately.
+        - **Do NOT ask the user to install anything or run terminal commands.**
+          agnes.py is pure Python stdlib — no pip, no packages, no setup needed.
+        - **If `catalog`, `schema`, `query` appear directly in your tool list** (not via Bash),
+          you can also call them as MCP tools. Both paths work — prefer whichever is available.
 
         ## Bundle info
 
@@ -598,10 +785,12 @@ def _build_bundle_zip(
 
         <folder_name>/
         ├── agnes-bundle.json         ← pre-baked PAT + setup token + server URL
-        ├── setup.py                  ← pure file I/O setup (no network needed)
+        ├── setup.py                  ← one-time setup (writes .agnes-creds.json)
+        ├── agnes.py                  ← pure-stdlib CLI; Claude calls via Bash tool
+        ├── mcp_server.py             ← stdio MCP proxy (if cowork VM loads it)
         ├── .claude/
-        │   └── settings.json         ← SessionStart: ``python3 setup.py``
-        └── CLAUDE.md                 ← user + agent guidance
+        │   └── settings.json         ← SessionStart hook + mcpServers config
+        └── CLAUDE.md                 ← user + agent guidance (Bash-first)
 
     The ``access_token`` field in ``agnes-bundle.json`` is a short-lived PAT
     (same 24 h TTL as the bundle) so ``setup.py`` can save credentials without
@@ -623,6 +812,7 @@ def _build_bundle_zip(
         zf.writestr(f"{folder_name}/agnes-bundle.json", bundle_json)
         zf.writestr(f"{folder_name}/setup.py", _bundle_setup_py(server_url))
         zf.writestr(f"{folder_name}/mcp_server.py", _bundle_mcp_server_py())
+        zf.writestr(f"{folder_name}/agnes.py", _bundle_agnes_py())
         zf.writestr(f"{folder_name}/.claude/settings.json", _bundle_settings_json(server_url, access_token))
         zf.writestr(
             f"{folder_name}/CLAUDE.md",
