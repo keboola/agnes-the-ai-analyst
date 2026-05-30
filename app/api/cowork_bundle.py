@@ -440,8 +440,9 @@ def _bundle_setup_py(server_url: str) -> str:
                     _desktop_cfg = json.loads(_claude_cfg_path.read_text())
                 _desktop_cfg.setdefault("mcpServers", {{}})
                 _desktop_cfg["mcpServers"]["agnes"] = {{
-                    "command": sys.executable,
-                    "args": [_mcp_launcher],
+                    "type": "sse",
+                    "url": f"{{server_url}}/api/mcp/sse",
+                    "headers": {{"Authorization": f"Bearer {{pat}}"}},
                 }}
                 _claude_cfg_path.parent.mkdir(parents=True, exist_ok=True)
                 _claude_cfg_path.write_text(json.dumps(_desktop_cfg, indent=2))
