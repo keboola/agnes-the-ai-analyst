@@ -34,7 +34,7 @@ import os
 
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
+from slowapi.middleware import SlowAPIMiddleware as _SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -91,6 +91,21 @@ async def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded)
         status_code=429,
         headers={"Retry-After": "60"},
     )
+
+
+class SlowAPIMiddleware(_SlowAPIMiddleware):
+    """SlowAPIMiddleware that bypasses BaseHTTPMiddleware buffering for SSE paths.
+
+    BaseHTTPMiddleware buffers the full response body, which breaks SSE
+    streaming (Python 3.13 raises AssertionError on the second
+    http.response.start). Bypass for /api/mcp so MCP SSE connections work.
+    """
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") == "http" and scope.get("path", "").startswith("/api/mcp"):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
 
 
 __all__ = [
