@@ -43,6 +43,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import secrets
 import textwrap
 import uuid
@@ -671,7 +672,9 @@ async def generate_bundle(
     token_hash = _hash_token(raw_token)
     token_id = str(uuid.uuid4())
     expires_at = datetime.now(timezone.utc) + _SETUP_TOKEN_TTL
-    server_url = str(request.base_url).rstrip("/")
+    server_url = (
+        os.environ.get("AGNES_BASE_URL") or str(request.base_url)
+    ).rstrip("/")
 
     repo.create(
         id=token_id,
@@ -830,7 +833,9 @@ async def exchange_setup_token(
     _audit(conn, user_row["id"], "cowork_bundle.exchange", row["id"],
            {"pat_id": token_id})
 
-    server_url = str(request.base_url).rstrip("/")
+    server_url = (
+        os.environ.get("AGNES_BASE_URL") or str(request.base_url)
+    ).rstrip("/")
     return ExchangeResponse(
         access_token=jwt_token,
         server_url=server_url,
