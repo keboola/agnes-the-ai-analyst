@@ -46,8 +46,9 @@ class TestGenerateBundle:
 
         # Required workspace files
         assert f"{folder}/agnes-bundle.json" in names   # no leading dot — visible to Claude tools
-        assert f"{folder}/setup.py" in names             # pure stdlib fallback setup script
-        assert f"{folder}/mcp_server.py" in names        # MCP launcher — bootstraps creds + execs agnes mcp
+        assert f"{folder}/setup.py" in names             # pure stdlib one-time setup
+        assert f"{folder}/mcp_server.py" in names        # stdio MCP proxy
+        assert f"{folder}/agnes.py" in names             # Bash-tool CLI fallback
         assert f"{folder}/.claude/settings.json" in names
         assert f"{folder}/CLAUDE.md" in names
 
