@@ -7,16 +7,38 @@ strings so that a review diff catches any accidental regression.
 """
 
 
-def test_applier_unit_runs_as_non_root():
+def test_applier_unit_runs_as_non_root_with_docker_as_supplementary():
     """Phase 8.1 — agnes-state-applier.service must run as
-    User=agnes-applier in Group=docker, not as root."""
+    User=agnes-applier with docker as a SUPPLEMENTARY group, not as
+    the primary Group=docker.
+
+    ``Group=docker`` (the original Phase 8.1 wiring) replaces the
+    process's primary group entirely, leaving the applier with
+    egid=docker only. systemd does NOT add the user's other groups
+    from /etc/group as supplementary unless explicitly listed.
+    Verified live on foundryai-dev-zsrotyr 2026-06-01: that wiring
+    blocked the applier from reading /opt/agnes/.env
+    (group=agnes-applier, mode 0640).
+
+    ``SupplementaryGroups=docker`` keeps primary group as
+    agnes-applier and adds docker on top, so both file accesses
+    (.env, /data/state) and docker socket access work.
+    """
     from pathlib import Path
 
     unit = Path("scripts/ops/agnes-state-applier.service").read_text()
     assert "User=agnes-applier" in unit, \
         "unit must specify User=agnes-applier (Phase 8.1)"
-    assert "Group=docker" in unit, \
-        "unit must specify Group=docker (Phase 8.1)"
+    assert "SupplementaryGroups=docker" in unit, \
+        "unit must use SupplementaryGroups=docker (not Group=docker) " \
+        "to preserve agnes-applier as primary group (Phase 8.1 follow-up #3)"
+    # Hard guard against regression: no ``Group=docker`` directive
+    # (matching the directive form, not the doc-string mention).
+    directives = [line for line in unit.splitlines()
+                  if line.strip() and not line.strip().startswith("#")]
+    group_directives = [line for line in directives if line.startswith("Group=")]
+    assert not group_directives, \
+        f"unit must NOT specify Group= as a directive; got {group_directives}"
 
 
 def test_applier_unit_ordered_after_bootstrap():
@@ -66,6 +88,9 @@ def test_bootstrap_unit_creates_user_and_state_dir():
         "bootstrap unit must add agnes-applier to docker group"
     assert "chown -R agnes-applier:agnes-applier /data/state" in unit, \
         "bootstrap unit must chown /data/state to agnes-applier"
+    assert "chgrp agnes-applier /opt/agnes/.env" in unit, \
+        "bootstrap unit must chgrp /opt/agnes/.env to agnes-applier so " \
+        "the applier can source it (Phase 8.1 follow-up #3)"
     assert "Before=" in unit and "agnes-state-applier.service" in unit, \
         "bootstrap unit must order Before=agnes-state-applier.service"
 

@@ -24,6 +24,15 @@ ExecStart=/usr/sbin/usermod -aG docker agnes-applier
 ExecStart=/bin/mkdir -p /data/state /data/postgres
 ExecStart=/bin/chown -R agnes-applier:agnes-applier /data/state
 ExecStart=/bin/bash -c 'chown 70:70 /data/postgres && chmod 700 /data/postgres'
+# Make /opt/agnes/.env group-readable by agnes-applier. The applier
+# script's first action is to source this file (IMAGE_REPO, IMAGE_TAG,
+# POSTGRES_PASSWORD, ...). Without this chgrp/chmod the applier — now
+# running as agnes-applier — would fail at line 1 with "Permission
+# denied" (the file is created mode 0600 owner root by the customer
+# infra startup script and contains secrets, so we keep it group-only
+# readable, not world-readable). Bootstrap unit runs as root, has
+# the privileges to flip ownership.
+ExecStart=/bin/bash -c 'if [ -f /opt/agnes/.env ]; then chgrp agnes-applier /opt/agnes/.env && chmod 0640 /opt/agnes/.env; fi'
 
 [Install]
 WantedBy=multi-user.target

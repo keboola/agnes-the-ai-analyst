@@ -7,12 +7,33 @@ Requires=agnes-state-applier-bootstrap.service
 [Service]
 Type=oneshot
 User=agnes-applier
-Group=docker
+SupplementaryGroups=docker
 
+# Why SupplementaryGroups=docker (not Group=docker):
+# ``Group=docker`` overrides the process's PRIMARY group from
+# ``agnes-applier`` to ``docker`` — and systemd does NOT add the user's
+# normal supplementary groups from /etc/group. The applier process
+# would then run with egid=docker(988) and supplementary=[988] only,
+# losing access to anything group-readable by ``agnes-applier``.
+# Verified live on foundryai-dev-zsrotyr 2026-06-01: reads of
+# /opt/agnes/.env (group=agnes-applier mode=0640) failed with
+# ``Permission denied`` because the applier's effective group set
+# didn't include agnes-applier(986).
+# ``SupplementaryGroups=docker`` keeps the primary group at
+# agnes-applier (986) and adds docker (988) on top — both file
+# accesses (.env, /data/state) and docker socket access work.
+#
 # The companion agnes-state-applier-bootstrap.service (root, oneshot,
 # RemainAfterExit) creates the agnes-applier user + chowns /data/state
 # before this unit's User= directive is resolved. See that unit for
 # the rationale — systemd validates User= at unit LOAD time, so we
 # can't self-bootstrap inside this unit's own ExecStartPre.
+#
+# ExecStartPre=+ below re-asserts .env ownership every time the
+# applier runs (the bootstrap unit only runs at boot via
+# RemainAfterExit=yes). If an operator or agnes-auto-upgrade
+# rewrites /opt/agnes/.env later, this catches the regression
+# before the applier drops to its non-root identity.
+ExecStartPre=+/bin/bash -c 'if [ -f /opt/agnes/.env ]; then chgrp agnes-applier /opt/agnes/.env; chmod 0640 /opt/agnes/.env; fi'
 
 ExecStart=/usr/local/bin/agnes-state-applier.sh
