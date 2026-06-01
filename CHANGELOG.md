@@ -31,6 +31,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Cowork `setup.py` now prints why MCP registration failed** instead of silently swallowing the error. When all `_claude_cfg_candidates()` paths fail, setup prints each path and its exception so the user (or the Cowork Claude) knows what went wrong. Previously `except Exception: continue` left `_registered=False` with no explanation, and neither the restart dialog nor a useful error appeared.
 - **Keboola `materialized` tables with DuckDB SQL as `source_query` crashed sync** with `JSONDecodeError`. `materialize_query` in the Keboola extractor expects a JSON filter spec or null — not SQL. Added an explicit check that surfaces a clear error message directing admins to use `query_mode='local'` or clear `source_query` for full-table export.
 - **Admin API now rejects Keboola `materialized` rows with SQL `source_query` at registration time.** Both `RegisterTableRequest` and the `PUT /api/admin/registry/{id}` handler validate that Keboola materialized `source_query` is a JSON filter spec (or absent), not a SQL statement — preventing the mismatch from reaching sync runtime.
+- **`agnes admin mcp source list` and `tool list` crashed with `AttributeError`** when sources/tools were registered. `GET /api/admin/mcp-sources` and `GET /api/admin/mcp-tools` return bare JSON arrays; the CLI was calling `.get("sources", [])` / `.get("tools", [])` on the array, raising `AttributeError`. Callers now normalise the response shape before iterating.
+- **`GET /api/admin/data-packages/{id}` bypassed Postgres backend routing.** The handler was calling `DataPackagesRepository(conn)` directly (DuckDB-only) instead of `data_packages_repo()`, silently returning wrong results on PG deployments and raising `NameError` in unit tests. Reverted to the factory.
 
 ### Internal
 - Schema v63: `setup_tokens` — short-lived one-use tokens for the Cowork setup exchange flow.
@@ -38,6 +40,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Schema v65: `mcp_secrets` — shared Fernet vault for MCP source auth tokens.
 - Schema v66: `mcp_user_secrets`, `mcp_sources.scope` — per-user credential vault for `scope='per_user'` sources.
 - Schema v67: `data_package_tools` — junction table linking data packages to MCP tools (RFC #461 §6).
+- Dual-backend: `mcp_sources_pg.py`, `tool_registry_pg.py`, `setup_tokens_pg.py` — Postgres counterparts for all three new v63-v67 repositories; factory functions registered in `src/repositories/__init__.py`. `DataPackagesPgRepository` extended with `add_tool`, `remove_tool`, `list_tools` to match the DuckDB sibling.
 
 ## [0.57.2] — 2026-06-01
 

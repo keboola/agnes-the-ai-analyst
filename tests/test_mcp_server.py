@@ -31,8 +31,6 @@ def _import_server():
 class TestMCPProtocol:
     def test_server_starts_and_lists_tools(self):
         """Send initialize + tools/list over stdin, verify 6 tools are registered."""
-        import time
-
         proc = subprocess.Popen(
             [sys.executable, "-u", "-m", "cli.mcp.server"],
             stdin=subprocess.PIPE,
@@ -50,7 +48,7 @@ class TestMCPProtocol:
                 "clientInfo": {"name": "pytest", "version": "0"},
             },
         }) + "\n"
-        # MCP protocol requires an `initialized` notification after the
+        # MCP protocol requires `notifications/initialized` after the
         # initialize response before the client can issue requests.
         initialized_notif = json.dumps({
             "jsonrpc": "2.0", "method": "notifications/initialized", "params": {}
@@ -59,17 +57,31 @@ class TestMCPProtocol:
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
         ) + "\n"
 
+        # Send initialize and wait for the response before sending the
+        # next messages — avoids a race on Python 3.13 where writing all
+        # messages at once + closing stdin can cause the server to exit
+        # before flushing the tools/list response.
         proc.stdin.write(init_msg)
+        proc.stdin.flush()
+        try:
+            init_line = proc.stdout.readline()
+        except Exception:
+            proc.kill()
+            proc.wait()
+            pytest.fail("MCP server closed stdout before sending initialize response")
+
+        # Now send the rest and read until the server exits.
         proc.stdin.write(initialized_notif)
         proc.stdin.write(list_msg)
         proc.stdin.flush()
 
         try:
-            out, _ = proc.communicate(timeout=10)
+            remaining, _ = proc.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
-            out, _ = proc.communicate()
+            remaining, _ = proc.communicate()
 
+        out = init_line + remaining
         lines = [l.strip() for l in out.splitlines() if l.strip()]
         assert lines, "MCP server produced no output"
 

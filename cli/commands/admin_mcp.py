@@ -70,8 +70,8 @@ def _resolve_source_id(ref: str) -> str:
     resp = api_get("/api/admin/mcp-sources")
     if resp.status_code != 200:
         _fail(resp)
-    payload = resp.json() or {}
-    for row in payload.get("sources", []):
+    payload = resp.json()
+    for row in (payload if isinstance(payload, list) else payload.get("sources", [])):
         if row.get("name") == ref or row.get("id") == ref:
             return row["id"]
     typer.echo(f"MCP source not found: {ref}", err=True)
@@ -280,8 +280,8 @@ def source_list(
     resp = api_get("/api/admin/mcp-sources")
     if resp.status_code != 200:
         _fail(resp)
-    payload = resp.json() or {}
-    rows = payload.get("sources", [])
+    payload = resp.json()
+    rows = payload if isinstance(payload, list) else payload.get("sources", [])
     if as_json:
         typer.echo(json.dumps(payload, indent=2))
         return
@@ -635,8 +635,8 @@ def tool_list(
     resp = api_get("/api/admin/mcp-tools", params=params or None)
     if resp.status_code != 200:
         _fail(resp)
-    payload = resp.json() or {}
-    rows = payload.get("tools", [])
+    payload = resp.json()
+    rows = payload if isinstance(payload, list) else payload.get("tools", [])
     if as_json:
         typer.echo(json.dumps(payload, indent=2))
         return

@@ -456,7 +456,7 @@ async def get_data_package(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Detail view including the list of tables AND related MCP tools."""
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     pkg = repo.get(pkg_id)
     if not pkg:
         raise HTTPException(status_code=404, detail="data_package_not_found")
