@@ -27,6 +27,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 - **Keboola `materialized` tables with DuckDB SQL as `source_query` crashed sync** with `JSONDecodeError`. `materialize_query` in the Keboola extractor expects a JSON filter spec or null — not SQL. Added an explicit check that surfaces a clear error message directing admins to use `query_mode='local'` or clear `source_query` for full-table export.
+- **Admin API now rejects Keboola `materialized` rows with SQL `source_query` at registration time.** Both `RegisterTableRequest` and the `PUT /api/admin/registry/{id}` handler validate that Keboola materialized `source_query` is a JSON filter spec (or absent), not a SQL statement — preventing the mismatch from reaching sync runtime.
 
 ### Internal
 - Schema v61: `mcp_sources`, `tool_registry`, `tool_grants` — Universal MCP source registry and RBAC tool grants.
