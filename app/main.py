@@ -394,6 +394,7 @@ def _toolbar_show_callback(request, settings) -> bool:
 
 
 def create_app() -> FastAPI:
+    from app.serialization import AgnesJSONResponse
     app = FastAPI(
         title="AI Data Analyst",
         description="Data distribution platform for AI analytical systems",
@@ -405,6 +406,9 @@ def create_app() -> FastAPI:
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        # All JSON responses label datetime fields with an explicit UTC
+        # offset — see app/serialization.py for the why.
+        default_response_class=AgnesJSONResponse,
         # Intentionally NOT debug=DEBUG: FastAPI's debug=True installs
         # Starlette's ServerErrorMiddleware which intercepts unhandled
         # Exceptions and renders a plain-HTML traceback BEFORE our
