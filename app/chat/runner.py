@@ -13,15 +13,65 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import glob
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
+
+# Directory the agnes CLI wheel is staged in by ChatManager at spawn
+# (e2b_workspace_sync.upload_agnes_wheel keeps the wheel's PEP 427 filename).
+# Module-level so tests can point it at a temp dir.
+_SANDBOX_WHEEL_DIR = "/tmp/agnes-cli"
 
 
 def _emit(frame: dict) -> None:
     sys.stdout.write(json.dumps(frame) + "\n")
     sys.stdout.flush()
+
+
+def _install_agnes_cli() -> None:
+    """Install the agnes CLI from the spawn-uploaded wheel so the agent's
+    ``agnes catalog/query/describe/snapshot`` tool calls resolve on PATH.
+
+    Without this the sandbox has the CLI's *dependencies* (baked into the
+    template image) but not the ``agnes`` console script itself, so half the
+    cloud-chat data-analysis rails ("Querying Agnes data" in CLAUDE.md) fail
+    with "command not found".
+
+    - ``--no-deps``: every runtime dep is already in the template image;
+      reinstalling the tree would add seconds to every spawn.
+    - ``--user`` + ``--break-system-packages``: the runner runs as the
+      non-root sandbox ``user``, so the console script must go to
+      ``~/.local/bin`` (placed on PATH by ChatManager._spawn_runner). The
+      ``--break-system-packages`` flag clears the PEP 668 externally-managed
+      guard the Debian/Ubuntu base image sets.
+
+    Best-effort and silent on stdout: pip's chatter is routed to stderr so it
+    never corrupts the stdout JSON-frame protocol, and a failure here leaves
+    ``agnes`` absent but the chat session otherwise functional — so we log to
+    stderr rather than emit a user-facing error frame.
+    """
+    # The wheel keeps its PEP 427 name (pip rejects a renamed wheel), so glob
+    # the staging dir rather than assuming a fixed filename.
+    wheels = sorted(glob.glob(f"{_SANDBOX_WHEEL_DIR}/*.whl"))
+    if not wheels:
+        return
+    try:
+        subprocess.run(
+            [
+                sys.executable, "-m", "pip", "install",
+                "--no-deps", "--user", "--break-system-packages",
+                wheels[-1],
+            ],
+            stdout=sys.stderr.fileno(),
+            stderr=sys.stderr.fileno(),
+            check=True,
+            timeout=120,
+        )
+    except Exception as exc:  # noqa: BLE001 — non-fatal; agent still runs
+        print(f"agnes CLI install failed: {exc}", file=sys.stderr, flush=True)
 
 
 async def _stdin_lines() -> "asyncio.Queue[dict]":
@@ -279,6 +329,11 @@ async def amain() -> None:
             tool_calls_per_turn=tool_calls_per_turn,
         )
     else:
+        # Install the agnes CLI before the agent starts so its first tool call
+        # can already reach `agnes`. Runs in a worker thread so the stdin
+        # reader keeps buffering any user_msg the client sent ahead of time;
+        # the real loop only begins once the install returns.
+        await asyncio.to_thread(_install_agnes_cli)
         try:
             await _real_agent_loop(
                 queue, workdir, tool_calls_per_turn=tool_calls_per_turn,
