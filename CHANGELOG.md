@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.28] — 2026-06-01
+
 ### Added
 - Browser-based `agnes auth login` (gh-style loopback). Instead of
   prompting for a plaintext password, the CLI opens the browser to
