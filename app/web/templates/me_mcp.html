@@ -59,7 +59,7 @@
 }
 .mcp-tool-card .tool-name {
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 13px; font-weight: 600; color: var(--primary, #4338ca);
+  font-size: 13px; font-weight: 600; color: var(--ds-primary);
   margin-bottom: 5px;
 }
 .mcp-tool-card .tool-desc {
@@ -117,12 +117,12 @@
 .mcp-download-btn {
   display: inline-flex; align-items: center; gap: 8px;
   height: 34px; padding: 0 14px;
-  border-radius: 8px; background: var(--primary, #2563eb);
+  border-radius: 8px; background: var(--ds-primary);
   color: #fff; font-size: 13px; font-weight: 600;
   border: none; cursor: pointer; transition: background 0.15s;
   text-decoration: none; white-space: nowrap;
 }
-.mcp-download-btn:hover:not(:disabled) { background: var(--primary-hover, #1d4ed8); }
+.mcp-download-btn:hover:not(:disabled) { background: var(--ds-primary-dark); }
 .mcp-download-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .mcp-bundle-status { font-size: 12px; color: var(--text-secondary, #6b7280); }
 .mcp-bundle-status.is-error { color: var(--danger, #dc2626); }
