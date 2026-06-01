@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Cowork `setup.py` now prints why MCP registration failed** instead of silently swallowing the error. When all `_claude_cfg_candidates()` paths fail, setup prints each path and its exception so the user (or the Cowork Claude) knows what went wrong. Previously `except Exception: continue` left `_registered=False` with no explanation, and neither the restart dialog nor a useful error appeared.
+
 ### Added
 - **Cowork `setup.py` shows macOS restart dialog after MCP registration.** After writing Agnes into Claude Desktop's config, `setup.py` shows a native macOS dialog ("Agnes MCP tools registered. Restart Claude Desktop now to activate them?" / "Later" / "Restart Now"). Choosing "Restart Now" quits Claude Desktop and reopens it automatically. Best-effort — silently skipped if `osascript` is unavailable.
 - **Cowork `setup.py` uses stable `mcp_server.py` path in `~/.claude/settings.json`.** Previously wrote the bundle folder path (`HERE/mcp_server.py`) to the user-level Claude settings, which broke when the bundle folder was deleted. Now writes `~/.config/agnes/mcp_server.py` (the stable copy created by setup) so the entry survives bundle cleanup and new-bundle downloads.
