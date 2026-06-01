@@ -1315,27 +1315,31 @@ async function submitUserMessage(text) {
     ta.value = "";
     autosizeComposer();
   }
-  renderMessage({ role: "user", content: text });
-  lastUserText = text;
-  // 2. Show the thinking placeholder + Stop button immediately so the
-  //    user sees *something* moving while we wait for the runner.
-  showThinkingPlaceholder();
-  $("cancel-btn").hidden = false;
 
-  // 3. Make sure we have an open WS. For a brand-new chat this calls
-  //    newChat() -> openSession(), and openSession used to flip the
-  //    dashboard back on when the (fresh, empty) session had no
-  //    history. We re-hide it after ensureWsReady so that side effect
-  //    doesn't undo what the user just dismissed by submitting.
+  // 2. Make sure we have an open WS. For a brand-new chat this calls
+  //    newChat() -> openSession(), and openSession wipes
+  //    ``#chat-messages`` ``innerHTML`` on entry — so we deliberately
+  //    DO NOT render the user bubble or the thinking placeholder yet,
+  //    or they'd be gone in 50 ms. openSession also re-shows the
+  //    dashboard when the (fresh, empty) session has no history; we
+  //    hide it again after ensureWsReady so that side effect doesn't
+  //    undo step 1.
   try {
     await ensureWsReady();
     hideCapabilities();
   } catch (err) {
     setStatus(`Could not start chat: ${err.message}`, "error");
-    clearThinkingPlaceholder();
     showCapabilities();
     return;
   }
+  // 3. Now ``#chat-messages`` is stable — render the user bubble and
+  //    the thinking placeholder so the user sees their submit landed
+  //    and the agent is working on it.
+  renderMessage({ role: "user", content: text });
+  lastUserText = text;
+  showThinkingPlaceholder();
+  $("cancel-btn").hidden = false;
+
   // 4. Wait for the server's ``ready`` frame before sending the first
   //    ``user_msg`` — see ``serverReadyPromise`` definition for why.
   //    After the first ready of a session this promise is already
