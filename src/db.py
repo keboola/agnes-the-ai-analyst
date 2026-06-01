@@ -1325,7 +1325,11 @@ def _salvage_discard_wal(
             )
             return None
     try:
-        conn = duckdb.connect(db_path)
+        # Route through `_open_duckdb` so the salvage reopen inherits the
+        # same `SET GLOBAL TimeZone='UTC'` pin every other connection gets
+        # (frontend timezone fix, #473) — otherwise the WAL-salvage path
+        # would silently drop back to the host's local zone.
+        conn = _open_duckdb(db_path)
     except duckdb.Error as reopen_err:
         logger.warning(
             "WAL salvage reopen failed (%s); falling back to pre-migrate snapshot",
