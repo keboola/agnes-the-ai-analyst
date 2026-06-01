@@ -142,7 +142,6 @@
     <li>Unzip the downloaded file</li>
     <li>Open <strong>Claude Desktop</strong> → <strong>Cowork</strong> → <strong>New project</strong> → <strong>Use an existing folder</strong> → select the unzipped folder</li>
     <li>Agnes configures automatically at session start</li>
-    <li>Restart Claude Desktop once, then ask: <strong>"What data do I have access to?"</strong></li>
   </ol>
 
   <div class="cowork-action-row">
@@ -170,9 +169,23 @@
     </details>
   </div>
 
-  <div style="margin-top: 20px; padding: 12px 14px; background: var(--surface-secondary, #f3f4f6); border-radius: 8px; font-size: 12.5px; color: var(--text-secondary, #4b5563);">
-    Agnes MCP tools become available after restarting Claude Desktop. If tools are not visible yet,
-    Claude can still access your data via the Bash tool immediately — just ask.
+  <div style="margin-top: 20px; padding: 12px 14px; background: var(--surface-secondary, #f3f4f6); border-radius: 8px;">
+    <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-secondary, #6b7280); margin-bottom: 8px;">
+      Your first message in Cowork
+    </div>
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <code id="cowork-first-prompt" style="flex: 1; font-size: 13px; color: var(--text-primary, #1A253C); background: var(--surface, #fff); border: 1px solid var(--border, #e5e7eb); border-radius: 6px; padding: 8px 10px; display: block;">
+        Run setup.py and show me what data I have access to
+      </code>
+      <button id="cowork-copy-prompt-btn" type="button"
+        style="flex-shrink: 0; font-size: 11px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff); color: var(--text-secondary, #6b7280); cursor: pointer; white-space: nowrap;"
+        title="Copy to clipboard">
+        Copy
+      </button>
+    </div>
+    <div style="margin-top: 6px; font-size: 11.5px; color: var(--text-secondary, #6b7280);">
+      After the first session, restart Claude Desktop once to activate MCP tools.
+    </div>
   </div>
 </section>
 
@@ -187,6 +200,17 @@
   function setStatus(msg, type) {
     status.textContent = msg;
     status.className = "cowork-status" + (type ? " is-" + type : "");
+  }
+
+  const copyPromptBtn = document.getElementById("cowork-copy-prompt-btn");
+  const firstPrompt   = document.getElementById("cowork-first-prompt");
+  if (copyPromptBtn && firstPrompt) {
+    copyPromptBtn.addEventListener("click", function () {
+      navigator.clipboard.writeText(firstPrompt.textContent.trim()).then(function () {
+        copyPromptBtn.textContent = "Copied!";
+        setTimeout(function () { copyPromptBtn.textContent = "Copy"; }, 1800);
+      });
+    });
   }
 
   function renderTokens(tokens) {
