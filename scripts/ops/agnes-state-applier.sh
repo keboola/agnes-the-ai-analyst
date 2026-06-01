@@ -211,7 +211,16 @@ PY
         echo "database:"
         echo "  backend: ${backend}"
         if [ -n "$url" ]; then
-            echo "  url: ${url}"
+            # B2-NEW: emit the URL as a YAML double-quoted scalar so
+            # values containing :, #, [, ], {, }, ?, &, etc. parse as
+            # a single string. Escape \ and " (the only chars that need
+            # escaping inside a YAML double-quoted scalar). Escape \ first
+            # to avoid double-escaping the backslash just inserted for ".
+            # Pre-fix the bare interpolation produced malformed YAML that
+            # read_backend_state silently swallowed (B2-NEW).
+            local url_escaped
+            url_escaped=$(printf '%s' "$url" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+            printf '  url: "%s"\n' "$url_escaped"
         fi
     } > "$tmp"
     chmod 0600 "$tmp"

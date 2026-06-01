@@ -31,12 +31,15 @@ Spec: docs/superpowers/specs/2026-05-27-db-backend-state-machine-design.md
 """
 from __future__ import annotations
 import fcntl
+import logging
 import os
 from enum import StrEnum
 from pathlib import Path
 from typing import Self
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 class BackendState(StrEnum):
@@ -173,8 +176,19 @@ def read_backend_state() -> tuple[BackendState, str | None]:
         return BackendState.DUCKDB, None
     try:
         data = yaml.safe_load(_OVERLAY_PATH.read_text()) or {}
-    except yaml.YAMLError:
-        # Corrupt overlay; treat as duckdb to fail safe.
+    except yaml.YAMLError as e:
+        # B2-NEW: pre-fix this silently returned DUCKDB. The bash fallback
+        # writer could leave a malformed overlay (URL with YAML-special
+        # chars interpolated unquoted) and the API would serve
+        # `backend=duckdb` while data was actually on PG. Log at WARNING
+        # so the operator + log-shipper notice. The safe-fallback behaviour
+        # is preserved — refusing to boot the app is worse than a warning.
+        logger.warning(
+            "instance.yaml YAML parse failed (path=%s, err=%s); "
+            "failing safe to (DUCKDB, None) — investigate the overlay",
+            _OVERLAY_PATH,
+            e,
+        )
         return BackendState.DUCKDB, None
     db = data.get("database") or {}
     backend_str = db.get("backend", "duckdb")
