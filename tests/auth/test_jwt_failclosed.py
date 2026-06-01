@@ -35,6 +35,14 @@ def test_production_strong_key_ok(monkeypatch):
     assert jwtmod._get_cached_secret_key() == "x" * 32
 
 
-def test_local_dev_missing_key_allowed(monkeypatch):
+def test_local_dev_missing_key_allowed(monkeypatch, tmp_path):
+    # `validate_jwt_secret_or_raise()` under local-dev triggers
+    # `app.secrets._load_or_generate()`, which writes the freshly minted
+    # key to ``${DATA_DIR}/state/.jwt_secret`` for reuse. Point DATA_DIR
+    # at this test's tmp_path so the auto-generated file is per-test
+    # isolated — otherwise pytest-xdist workers can race on the shared
+    # conftest tempdir and a later test reads a stale or mid-write file
+    # (Devin Review on #483).
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
     jwtmod = _fresh_jwt(monkeypatch, local_dev=True)
     jwtmod.validate_jwt_secret_or_raise()  # auto-generate path, no raise

@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.56.0] — 2026-06-01
+
 ### Added
 - `AGNES_REBUILD_ON_BOOT=1` builds master views from baked extracts at startup (for images that ship data without a scheduler).
 - `scripts/build_demo_extract.py` + `Dockerfile.demo` produce an image variant with a self-contained synthetic demo dataset.
