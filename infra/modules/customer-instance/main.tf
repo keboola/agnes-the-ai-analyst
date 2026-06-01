@@ -295,6 +295,8 @@ resource "google_compute_instance" "vm" {
     customer_name                   = var.customer_name
     image_repo                      = var.image_repo
     image_tag                       = each.value.image_tag
+    app_mem_limit                   = each.value.app_mem_limit
+    scheduler_mem_limit             = each.value.scheduler_mem_limit
     upgrade_mode                    = each.value.upgrade_mode
     tls_mode                        = each.value.tls_mode
     domain                          = each.value.domain
