@@ -18,7 +18,7 @@ def fresh_conn(tmp_path):
 def test_fresh_install_lands_at_v63_with_per_user_secrets(fresh_conn):
     _ensure_schema(fresh_conn)
     version = fresh_conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == SCHEMA_VERSION == 64
+    assert version == SCHEMA_VERSION
 
     cols = {r[1] for r in fresh_conn.execute("PRAGMA table_info(mcp_user_secrets)").fetchall()}
     assert {"source_id", "user_id", "secret_value_enc"}.issubset(cols)
