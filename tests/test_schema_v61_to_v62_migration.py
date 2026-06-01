@@ -26,7 +26,7 @@ def fresh_conn(tmp_path):
 def test_fresh_install_lands_at_v62_with_mcp_secrets(fresh_conn):
     _ensure_schema(fresh_conn)
     version = fresh_conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == SCHEMA_VERSION == 64
+    assert version == SCHEMA_VERSION
 
     cols = {
         r[1]: r[2]
