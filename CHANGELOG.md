@@ -32,6 +32,35 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Stuck-running recovery restores `database.backend` from the `*_in_progress` placeholder.** Round-2 review H5-NEW — B5's heartbeat-based recovery marked the failed job but left `instance.yaml` at `side_car_in_progress` (or `cloud_in_progress`). The next migration retry then read the in-progress label as the current backend, the migrator's CLI rejected `source_backend='side_car_in_progress'`, and the state machine wedged until an operator manually edited the file. Recovery now symmetrically calls `write_backend_state(source_backend, url=source_url)`, mirroring the cancel path. The inline recovery block is extracted into `_recover_stuck_jobs()` for testability.
 - **`/data/postgres` ownership is set at provision time, not at applier runtime.** Round-2 review B4-NEW (BLOCKER) tightening — the previous mitigation was an idempotent stat-then-chown in the applier's `ExecStart`, but that ran as the unprivileged `agnes-applier` user under `set -e` and aborted the whole tick on every fresh VM where the directory was still root-owned. Provisioning (`startup-script.sh.tpl`) now creates `/data/postgres` owned `70:70` via `install -d`, the bootstrap unit (root-running) re-asserts the chown on every boot, and the applier merely STATs the directory and warns if it's wrong — no chown attempts, no `set -e` abort.
 
+### Round-2 review fixes — verification matrix
+
+Adversarial walk against the round-2 review (cvrysanek, 2026-06-01) confirms every finding has a fix commit + regression test on `zs/db-state-machine`. Full suite at Phase H checkpoint: **5903 passed / 36 skipped / 0 failed**.
+
+| Finding | Status | Commit |
+| --- | --- | --- |
+| B1-NEW concurrent `/migrate` race | FIXED | `dd9516e7` |
+| B2-NEW `_urls_alias` DNS bypass | FIXED + applier guard | `9ea5d433` |
+| B3-NEW applier `.env` permission | FIXED + provisioning chown | `6b145bbc` |
+| B4-NEW `/data/postgres` chown | FIXED + provisioning | `551fca78` |
+| B5-NEW alembic 0013 ordering | FIXED | `b2fb61e1` |
+| H1-NEW cancel-during-verify race | FIXED | `d066ffdf` |
+| H2-NEW heredoc 0600 mode | FIXED | `c5cd5b53` |
+| H3-NEW `error.message` redaction | FIXED + migrator raise site | `59933f10` |
+| H4-NEW PyYAML missing fallback | FIXED + apt-install | `96d7dc2f` |
+| H5-NEW stuck recovery backend restore | FIXED | `2bf20321` |
+| H6-NEW `_JSON_COLUMNS` dynamic derivation | FIXED (caught 7 drifted JSONB cols) | `bcaf40b2` |
+| H7-NEW `POST /migrate target=duckdb` 501 | FIXED | `96b7a382` |
+| H8-NEW `__rollback` + failed-branch URL drop | FIXED (both sites) | `0c9b343c` |
+| MED-1 `--json` bypass `--yes` confirm | FIXED | `e6569c59` |
+| MED-2 `cloud_url` SSRF reserved ranges | FIXED | `46334442` |
+| MED-3 redact query-string password | FIXED | `a4a57a48` |
+| MED-4 cancel revert drops PG url for duckdb | FIXED | `5001fab9` |
+| LOW-1 PII scrub walks JSON keys | FIXED | `ed580574` |
+| LOW-2 compose drops `POSTGRES_PASSWORD:-agnes` | FIXED | `e1da2980` |
+| NEW-X DuckDB→PG users `ON CONFLICT DO NOTHING` | FIXED (live-discovered 2026-06-01) | `2169a106` |
+
+All 20 findings shipped with TDD discipline: failing regression test → minimal fix → green. Sub-agent-driven execution (`superpowers:subagent-driven-development`) per task; spec-compliance + code-quality reviews after each.
+
 ## [0.56.0] — 2026-05-28
 
 ### Added
