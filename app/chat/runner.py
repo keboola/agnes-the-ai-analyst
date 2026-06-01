@@ -6,22 +6,78 @@ Stdout: JSON lines. Outbound types: runner_ready, token, tool_call,
 
 Env (set by ChatManager via the sandbox provider — under v1 the
 E2BProvider passes these through ``AsyncSandbox.create(envs=...)``):
-- AGNES_SESSION_ID, AGNES_USER_EMAIL, AGNES_API, AGNES_TOKEN
+- AGNES_SESSION_ID, AGNES_USER_EMAIL, AGNES_SERVER, AGNES_TOKEN
 - AGNES_DAILY_BUDGET_USD, AGNES_PER_TOOL_CALL_SECONDS
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import glob
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
+
+# Directory the agnes CLI wheel is staged in by ChatManager at spawn
+# (e2b_workspace_sync.upload_agnes_wheel keeps the wheel's PEP 427 filename).
+# Module-level so tests can point it at a temp dir.
+_SANDBOX_WHEEL_DIR = "/tmp/agnes-cli"
 
 
 def _emit(frame: dict) -> None:
     sys.stdout.write(json.dumps(frame) + "\n")
     sys.stdout.flush()
+
+
+def _install_agnes_cli() -> None:
+    """Install the agnes CLI from the spawn-uploaded wheel so the agent's
+    ``agnes catalog/query/describe/snapshot`` tool calls resolve on PATH.
+
+    Without this the sandbox has the CLI's *dependencies* (baked into the
+    template image) but not the ``agnes`` console script itself, so half the
+    cloud-chat data-analysis rails ("Querying Agnes data" in CLAUDE.md) fail
+    with "command not found".
+
+    - ``--no-deps``: every runtime dep is already in the template image;
+      reinstalling the tree would add seconds to every spawn.
+    - ``--user`` + ``--break-system-packages``: the runner runs as the
+      non-root sandbox ``user``, so the console script must go to
+      ``~/.local/bin`` (placed on PATH by ChatManager._spawn_runner). The
+      ``--break-system-packages`` flag clears the PEP 668 externally-managed
+      guard the Debian/Ubuntu base image sets.
+
+    Best-effort and silent on stdout: pip's chatter is routed to stderr so it
+    never corrupts the stdout JSON-frame protocol, and a failure here leaves
+    ``agnes`` absent but the chat session otherwise functional — so we log to
+    stderr rather than emit a user-facing error frame.
+    """
+    # The wheel keeps its PEP 427 name (pip rejects a renamed wheel), so glob
+    # the staging dir rather than assuming a fixed filename.
+    wheels = sorted(glob.glob(f"{_SANDBOX_WHEEL_DIR}/*.whl"))
+    if not wheels:
+        return
+    try:
+        subprocess.run(
+            [
+                sys.executable, "-m", "pip", "install",
+                "--no-deps", "--user", "--break-system-packages",
+                wheels[-1],
+            ],
+            # stdin MUST be isolated from the parent's fd 0: the runner's
+            # asyncio stdin reader has connect_read_pipe'd fd 0 into
+            # non-blocking mode, and a child inheriting that same fd corrupts
+            # the reader (user_msg frames then never arrive — the agent hangs
+            # with no response). DEVNULL gives pip its own stdin.
+            stdin=subprocess.DEVNULL,
+            stdout=sys.stderr.fileno(),
+            stderr=sys.stderr.fileno(),
+            check=True,
+            timeout=120,
+        )
+    except Exception as exc:  # noqa: BLE001 — non-fatal; agent still runs
+        print(f"agnes CLI install failed: {exc}", file=sys.stderr, flush=True)
 
 
 async def _stdin_lines() -> "asyncio.Queue[dict]":
@@ -268,12 +324,25 @@ async def amain() -> None:
 
     workdir = Path(os.environ.get("AGNES_WORKDIR", os.getcwd()))
 
+    fake_agent = os.environ.get("AGNES_RUNNER_FAKE_AGENT") == "1"
+
+    # Install the agnes CLI BEFORE handing fd 0 to asyncio (_stdin_lines calls
+    # connect_read_pipe, which puts stdin in non-blocking mode). Running the
+    # pip subprocess after that wedges the asyncio stdin reader — user_msg
+    # frames then never arrive and the agent hangs with no response. Doing it
+    # here, before the reader is attached, keeps fd 0 a plain blocking pipe for
+    # the duration of the install; the client's first user_msg simply buffers
+    # in the OS pipe until _stdin_lines() starts reading. Skipped in fake-agent
+    # mode (tests) — there is no wheel to install.
+    if not fake_agent:
+        _install_agnes_cli()
+
     _emit({"type": "runner_ready"})
     queue = await _stdin_lines()
 
     per_tool = float(os.environ.get("AGNES_PER_TOOL_CALL_SECONDS", "90"))
     tool_calls_per_turn = int(os.environ.get("AGNES_TOOL_CALLS_PER_TURN", "50"))
-    if os.environ.get("AGNES_RUNNER_FAKE_AGENT") == "1":
+    if fake_agent:
         await _fake_agent_loop(
             queue, per_tool_seconds=per_tool,
             tool_calls_per_turn=tool_calls_per_turn,

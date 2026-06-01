@@ -222,7 +222,20 @@ class ChatManager:
             token = os.environ.get("AGNES_SESSION_JWT_SEED", "")
         env = {
             "AGNES_TOKEN": token,
-            "AGNES_API": os.environ.get("AGNES_INTERNAL_URL", "http://127.0.0.1:8000"),
+            # The agnes CLI inside the sandbox reads its server URL from
+            # AGNES_SERVER (cli/config.py) — the previous AGNES_API had no
+            # consumer, so `agnes catalog`/`query`/… silently fell back to
+            # http://localhost:8000 and could never reach the server. The
+            # sandbox is a remote microVM, so this MUST be a publicly
+            # reachable URL: prefer SERVER_URL (the deployment's public URL,
+            # same value WorkdirManager seeds into the workspace), falling
+            # back to AGNES_INTERNAL_URL then loopback. Operators running
+            # cloud chat must set SERVER_URL for the data rails to work.
+            "AGNES_SERVER": (
+                os.environ.get("SERVER_URL")
+                or os.environ.get("AGNES_INTERNAL_URL")
+                or "http://127.0.0.1:8000"
+            ),
             "AGNES_SESSION_ID": session.id,
             "AGNES_USER_EMAIL": session.user_email,
             "AGNES_DAILY_BUDGET_USD": str(self._config.daily_anthropic_spend_usd),
@@ -237,7 +250,13 @@ class ChatManager:
             # the gate would have blocked startup, so this is just a
             # pass-through.
             "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
-            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            # ``/home/user/.local/bin`` first so the spawn-installed agnes CLI
+            # console script resolves: the runner pip-installs the uploaded
+            # wheel ``--user`` (it runs as the non-root sandbox ``user``), which
+            # lands ``agnes`` under ``$HOME/.local/bin``. Without this on PATH,
+            # the agent's ``agnes catalog``/``query``/… tool calls would
+            # "command not found". See runner.py::_install_agnes_cli.
+            "PATH": "/home/user/.local/bin:/usr/local/bin:/usr/bin:/bin",
             # ``session_dir`` is an Agnes-host-side path; it doesn't exist
             # inside the E2B sandbox. claude-agent-sdk's inner ``claude``
             # CLI needs a writable HOME for ``~/.claude/`` config — using
@@ -264,6 +283,7 @@ class ChatManager:
         if not getattr(self._provider, "syncs_workspace", False):
             from app.chat.e2b_workspace_sync import (
                 WorkspaceTooLarge,
+                upload_agnes_wheel,
                 upload_workspace,
             )
             max_bytes = getattr(self._config, "e2b_workspace_max_bytes", 100 * 1024 * 1024)
@@ -281,6 +301,18 @@ class ChatManager:
                     except Exception:
                         logger.exception("kill after upload-refusal failed")
                     raise
+                # Ship the agnes CLI wheel so the runner can pip-install it at
+                # boot — this is what makes `agnes catalog/query/...` resolve
+                # inside the sandbox. Best-effort: a missing/oversized wheel
+                # leaves the CLI absent but never blocks the session, so unlike
+                # the workspace push it does not tear the sandbox down.
+                try:
+                    await upload_agnes_wheel(sandbox)
+                except Exception:
+                    logger.exception(
+                        "agnes wheel upload failed; `agnes` CLI will be absent "
+                        "in sandbox for session %s", session.id,
+                    )
         return handle
 
     async def _pump_subprocess_to_ws(self, live: LiveSession) -> None:
