@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.56.0"
+version = "0.57.1"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -114,6 +114,14 @@ dependencies = [
     # who install only the CLI (`uv tool install <wheel>`) get no kbcstorage
     # and no conflict.
     "urllib3>=2.7.0",
+    # Postgres-backed app state. SQLAlchemy 2.0 for `Mapped[]` typing, psycopg
+    # 3 (the `psycopg[binary]` package) as the modern sync+async driver, and
+    # Alembic for versioned schema migrations with first-class up/down
+    # support. Replaces the in-place v1..vN ladder in src/db.py for the
+    # state half of system.duckdb. DuckDB stays for analytics only.
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.1",
+    "alembic>=1.13",
 ]
 
 [project.optional-dependencies]
@@ -150,6 +158,19 @@ dev = [
     # Provides per-request panels (headers, routes, timer, profiling, etc.)
     # for local development. Never loaded in production (no DEBUG=1 there).
     "fastapi-debug-toolbar>=0.6.3",
+    # Postgres test infrastructure. `testcontainers` spins a real PG container
+    # in CI (highest fidelity, no system PG binary required). `pytest-postgresql`
+    # boots a local PG process via system binary for fast dev iteration. The
+    # `pg_engine` fixture in tests/db_pg/conftest.py picks one via
+    # AGNES_TEST_PG_BACKEND (container | embedded).
+    "testcontainers[postgres]>=4",
+    "pytest-postgresql>=6",
+    # Userland-bundled Postgres binary (no system-level install, no Docker)
+    # — the default test backend, picked automatically when neither a
+    # system `postgres` binary nor a working Docker socket is available.
+    # Ideal for laptop/sandbox dev environments where installing PG
+    # system-wide is not an option.
+    "pixeltable-pgserver>=0.5.1",
 ]
 
 [project.scripts]
@@ -176,6 +197,9 @@ dev-dependencies = [
     "anthropic>=0.30.0",
     "openai>=1.30.0",
     "fastapi-debug-toolbar>=0.6.3",
+    "testcontainers[postgres]>=4",
+    "pytest-postgresql>=6",
+    "pixeltable-pgserver>=0.5.1",
 ]
 # Override the urllib3<2.0.0 ceiling kbcstorage 0.9.5 declares (upstream
 # hasn't relaxed it as of 2026-05-12 but the SDK works fine against

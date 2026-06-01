@@ -17,6 +17,11 @@ from app.auth.jwt import create_access_token
 from app.auth._common import safe_next_path
 from app.instance_config import get_allowed_domains
 
+from src.repositories import (
+    user_group_members_repo,
+    user_groups_repo,
+    users_repo,
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth/google", tags=["auth"])
@@ -96,9 +101,6 @@ async def google_callback(request: Request):
             SYSTEM_ADMIN_GROUP,
             SYSTEM_EVERYONE_GROUP,
         )
-        from src.repositories.users import UserRepository
-        from src.repositories.user_groups import UserGroupsRepository
-        from src.repositories.user_group_members import UserGroupMembersRepository
         from app.auth.group_sync import fetch_user_groups
         import uuid
 
@@ -117,7 +119,7 @@ async def google_callback(request: Request):
 
         conn = get_system_db()
         try:
-            repo = UserRepository(conn)
+            repo = users_repo()
             user = repo.get_by_email(email)
             if not user:
                 user_id = str(uuid.uuid4())
@@ -129,12 +131,8 @@ async def google_callback(request: Request):
                 # above, so a transient marketplace_plugins read failure
                 # doesn't block sign-in.
                 try:
-                    from src.repositories.user_curated_subscriptions import (
-                        UserCuratedSubscriptionsRepository,
-                    )
-                    UserCuratedSubscriptionsRepository(
-                        conn
-                    ).fanout_system_for_user(user_id)
+                    from src.repositories import user_curated_subscriptions_repo
+                    user_curated_subscriptions_repo().fanout_system_for_user(user_id)
                 except Exception:
                     logger.exception(
                         "system-plugin fanout failed for new user %s",
@@ -147,7 +145,7 @@ async def google_callback(request: Request):
             # Sync Workspace groups → user_group_members (source='google_sync').
             # Fail-soft: any error leaves the previous membership snapshot in
             # place; admin-added rows survive regardless.
-            members_repo = UserGroupMembersRepository(conn)
+            members_repo = user_group_members_repo()
             try:
                 group_names = fetch_user_groups(email)
                 # `fetch_user_groups` is fail-soft and returns [] for both
@@ -190,7 +188,7 @@ async def google_callback(request: Request):
                             url="/login?error=not_in_allowed_group"
                         )
 
-                    ug_repo = UserGroupsRepository(conn)
+                    ug_repo = user_groups_repo()
                     group_ids: list[str] = []
                     for email_addr in relevant:
                         if admin_email and email_addr == admin_email:

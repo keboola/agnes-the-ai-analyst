@@ -13,9 +13,13 @@ import duckdb
 from app.auth.dependencies import get_current_user, _get_db
 from app.auth.access import require_admin, is_user_admin, can_access
 from src.repositories.knowledge import KnowledgeRepository
-from src.repositories.memory_domains import MemoryDomainsRepository
 from src.repositories.audit import AuditRepository
 
+from src.repositories import (
+    audit_repo,
+    knowledge_repo,
+    memory_domains_repo,
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
@@ -38,7 +42,7 @@ def _validate_domain_slug(slug: Optional[str], conn: duckdb.DuckDBPyConnection) 
     """Raise 400 if ``slug`` is truthy but doesn't resolve to a memory_domains row."""
     if not slug:
         return
-    if not MemoryDomainsRepository(conn).exists_by_slug(slug):
+    if not memory_domains_repo().exists_by_slug(slug):
         raise HTTPException(
             status_code=400,
             detail=f"Unknown memory domain slug: {slug!r}",
@@ -252,7 +256,7 @@ async def list_memory_domains(
     endpoint. Authenticated users only — domain catalog is non-sensitive
     metadata that powers the item-edit UI.
     """
-    domains = MemoryDomainsRepository(conn).list()
+    domains = memory_domains_repo().list()
     return {
         "domains": [
             {
@@ -293,7 +297,7 @@ async def list_knowledge(
     "My Upvotes" filter on /corporate-memory — replaces the old dead
     "My Rules" category sentinel).
     """
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     page = max(page, 1)
     offset = (page - 1) * per_page
     # Privacy: non-privileged viewers can never opt out of the personal filter.
@@ -486,7 +490,7 @@ async def get_stats(
     # by_tag + by_audience extend stats for the chip-filter UI (issue #62).
     # The repo helpers honor the same audience + personal-item filters this
     # endpoint applies above.
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     exclude_personal_for_caller = not is_priv
     by_tag = repo.count_by_tag(
         exclude_personal=exclude_personal_for_caller,
@@ -521,7 +525,7 @@ async def create_knowledge(
     # missing domain is fine — only reject non-empty values outside the allowlist.
     # See PR #126 review.
     _validate_domain_slug(request.domain_slug, conn)
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     item_id = str(uuid.uuid4())
 
     # Best-effort auto-tagging — runs only when an LLM extractor is configured.
@@ -574,7 +578,7 @@ async def vote_knowledge(
 ):
     if request.vote not in (1, -1, 0):
         raise HTTPException(status_code=400, detail="Vote must be 1, -1, or 0 (retract)")
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     item = repo.get_by_id(item_id)
     if not item or not _can_view_item(user, item, _is_privileged_viewer(user, conn)):
         raise HTTPException(status_code=404, detail="Knowledge item not found")
@@ -603,7 +607,7 @@ async def get_my_contributions(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get knowledge items contributed by the current user."""
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     email = user.get("email", "")
     items = repo.get_user_contributions(email)
     for item in items:
@@ -622,7 +626,7 @@ async def toggle_personal_flag(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Toggle personal/excluded flag on a knowledge item (only by the contributor)."""
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     item = repo.get_by_id(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Knowledge item not found")
@@ -644,7 +648,7 @@ async def dismiss_item(
     Mandatory items can never be dismissed — the governance hard rule —
     so a POST against one returns 400 with a clear detail message.
     """
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     item = repo.get_by_id(item_id)
     if not item or not _can_view_item(user, item, _is_privileged_viewer(user, conn)):
         raise HTTPException(status_code=404, detail="Knowledge item not found")
@@ -656,10 +660,9 @@ async def dismiss_item(
     # membership so /admin/telemetry can correlate dismissals with the
     # domain they came from.
     try:
-        from src.repositories.memory_domains import MemoryDomainsRepository
         from src.repositories.usage import UsageRepository
         domain_ids = [
-            d["id"] for d in MemoryDomainsRepository(conn).list_domains_of_item(item_id)
+            d["id"] for d in memory_domains_repo().list_domains_of_item(item_id)
         ]
         UsageRepository(conn).emit_server_event(
             event_type="memory.dismiss",
@@ -684,7 +687,7 @@ async def undismiss_item(
     of the per-item endpoints); the dismissal row's existence is not
     consulted because absence is the success state.
     """
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     item = repo.get_by_id(item_id)
     if not item or not _can_view_item(user, item, _is_privileged_viewer(user, conn)):
         raise HTTPException(status_code=404, detail="Knowledge item not found")
@@ -712,7 +715,7 @@ async def get_provenance(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get source provenance for a knowledge item."""
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     item = repo.get_by_id(item_id)
     if not item or not _can_view_item(user, item, _is_privileged_viewer(user, conn)):
         raise HTTPException(status_code=404, detail="Knowledge item not found")
@@ -733,7 +736,7 @@ async def get_provenance(
 
 # ---- Admin governance endpoints ----
 
-def _get_item_or_404(repo: KnowledgeRepository, item_id: str) -> dict:
+def _get_item_or_404(repo, item_id: str) -> dict:
     item = repo.get_by_id(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Knowledge item not found")
@@ -748,7 +751,7 @@ def _audit_action(conn, admin_email: str, action: str, item_id: str, details: di
     audit-tab filter (see ``admin_audit`` below) accepts both prefixes so
     historical rows still surface.
     """
-    audit = AuditRepository(conn)
+    audit = audit_repo()
     audit.log(
         user_id=admin_email,
         action=f"corporate_memory.{action}",
@@ -763,7 +766,7 @@ async def admin_approve(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     repo.update_status(item_id, "approved")
     _audit_action(conn, user["email"], "approve", item_id)
@@ -777,7 +780,7 @@ async def admin_reject(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     repo.update_status(item_id, "rejected")
     _audit_action(conn, user["email"], "reject", item_id, {"reason": request.reason})
@@ -796,7 +799,7 @@ async def admin_mandate(
     expired). This endpoint keeps the path stable for back-compat; response
     shape now surfaces ``is_required: True`` instead of ``status: 'mandatory'``.
     """
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     repo.set_is_required(item_id, True)
     if request.audience is not None:
@@ -875,7 +878,7 @@ async def admin_revoke(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     repo.update_status(item_id, "revoked")
     _audit_action(conn, user["email"], "revoke", item_id, {"reason": request.reason})
@@ -889,7 +892,7 @@ async def admin_edit(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
     updates = {}
     if request.title is not None:
@@ -913,7 +916,7 @@ async def admin_batch(
     v49: ``mandate`` flips the new ``is_required`` boolean to TRUE (was
     ``status='mandatory'`` overload). Other actions still drive ``status``.
     """
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     # mandate is special — it writes is_required, not status. All other
     # actions stay on the status lifecycle column.
     status_actions = {
@@ -953,7 +956,7 @@ async def admin_pending(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get pending items queue for admin review."""
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     page = max(page, 1)
     offset = (page - 1) * per_page
     items = repo.list_items(statuses=["pending"], category=category, limit=per_page, offset=offset)
@@ -1020,7 +1023,7 @@ async def admin_contradictions(
     governance but personal content is not exposed. Pass exclude_personal=false
     to opt in to full content (KM_ADMIN only — see ADR Decision 1).
     """
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     contradictions = repo.list_contradictions(resolved=resolved)
     # Collect all distinct item IDs and fetch in one query (M5 batch optimisation).
     all_item_ids = list({
@@ -1048,7 +1051,7 @@ async def admin_create_contradiction(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Admin endpoint for manually recording a contradiction between two knowledge items."""
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     if not repo.get_by_id(request.item_a_id):
         raise HTTPException(status_code=404, detail=f"Item A not found: {request.item_a_id}")
     if not repo.get_by_id(request.item_b_id):
@@ -1072,7 +1075,7 @@ async def admin_resolve_contradiction(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Resolve a knowledge contradiction."""
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     contradiction = repo.get_contradiction(contradiction_id)
     if not contradiction:
         raise HTTPException(status_code=404, detail="Contradiction not found")
@@ -1129,7 +1132,7 @@ async def admin_duplicate_candidates(
     so admins can resolve it, but content stays inside the personal-item
     privacy boundary (ADR Decision 1 precedent).
     """
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     relations = repo.list_relations(
         relation_type=DUPLICATE_RELATION_TYPE,
         resolved=resolved,
@@ -1167,7 +1170,7 @@ async def admin_resolve_duplicate_candidate(
             status_code=400,
             detail=f"resolution must be one of: {VALID_DUPLICATE_RESOLUTIONS}",
         )
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     existing = repo.get_relation(item_a_id, item_b_id, DUPLICATE_RELATION_TYPE)
     if not existing:
         raise HTTPException(status_code=404, detail="Duplicate-candidate relation not found")
@@ -1238,7 +1241,7 @@ async def admin_patch_item(
     a thin alias). Audit row tagged ``corporate_memory.update_item`` records
     which fields changed (not the full diff — keep audit rows compact).
     """
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     _get_item_or_404(repo, item_id)
 
     # ``exclude_unset=True`` preserves explicit ``null`` values from the request
@@ -1280,8 +1283,7 @@ async def admin_patch_item(
     # /api/admin/memory-domains so a missing id means a race or an
     # already-deleted domain).
     if domain_ids is not None:
-        from src.repositories.memory_domains import MemoryDomainsRepository
-        dom_repo = MemoryDomainsRepository(conn)
+        dom_repo = memory_domains_repo()
         if domain_ids:
             placeholders = ",".join(["?"] * len(domain_ids))
             rows = conn.execute(
@@ -1326,7 +1328,7 @@ async def admin_bulk_update(
     Returns a per-id status map plus rolled-up convenience lists (200 even on
     partial failure — the body distinguishes successes from misses).
     """
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     updates = dict(request.updates or {})
     # Reject governance-sensitive fields BEFORE hitting the repo. _UPDATABLE_FIELDS
     # in the repo is broad on purpose; this endpoint is the narrow path. Callers
@@ -1463,7 +1465,7 @@ async def get_tree(
             status_code=400,
             detail=f"axis must be one of: {list(_TREE_AXES)}",
         )
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     is_priv = _is_privileged_viewer(user, conn)
     effective_groups = _effective_groups(user, conn)
     # Privacy parity with ``GET /api/memory``: non-admin can never opt out.
@@ -1591,7 +1593,7 @@ def _build_per_domain_markdown(
     via ``can_access``'s admin short-circuit. Anonymous or grantless
     callers get 403.
     """
-    repo = MemoryDomainsRepository(conn)
+    repo = memory_domains_repo()
     dom = repo.get_by_slug(slug)
     if not dom:
         raise HTTPException(status_code=404, detail="memory_domain_not_found")
@@ -1677,7 +1679,7 @@ async def get_bundle(
     if domain:
         return _build_per_domain_markdown(domain, user, conn)
 
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     effective_groups = _effective_groups(user, conn)
     granted_domains = _caller_granted_memory_domains(user, conn)
 

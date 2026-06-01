@@ -9,6 +9,10 @@ from pathlib import Path
 
 import typer
 
+from src.repositories import (
+    metric_repo,
+    table_registry_repo,
+)
 admin_metrics_app = typer.Typer(help="Admin: metric definition management")
 
 
@@ -18,7 +22,6 @@ def import_metrics(
 ):
     """Import metric definitions from YAML into DuckDB (direct, no API)."""
     from src.db import get_system_db
-    from src.repositories.metrics import MetricRepository
 
     import_path = Path(path)
     if not import_path.exists():
@@ -27,7 +30,7 @@ def import_metrics(
 
     conn = get_system_db()
     try:
-        repo = MetricRepository(conn)
+        repo = metric_repo()
         count = repo.import_from_yaml(import_path)
         typer.echo(f"Imported {count} metric(s) from {path}")
     finally:
@@ -40,11 +43,10 @@ def export_metrics(
 ):
     """Export metric definitions from DuckDB to YAML files (direct, no API)."""
     from src.db import get_system_db
-    from src.repositories.metrics import MetricRepository
 
     conn = get_system_db()
     try:
-        repo = MetricRepository(conn)
+        repo = metric_repo()
         count = repo.export_to_yaml(output_dir)
         typer.echo(f"Exported {count} metric(s) to {output_dir}")
     finally:
@@ -55,15 +57,13 @@ def export_metrics(
 def validate_metrics():
     """Check each metric's table reference against registered tables (direct, no API)."""
     from src.db import get_system_db
-    from src.repositories.metrics import MetricRepository
-    from src.repositories.table_registry import TableRegistryRepository
 
     conn = get_system_db()
     try:
-        metric_repo = MetricRepository(conn)
-        registry_repo = TableRegistryRepository(conn)
+        metrics_r = metric_repo()
+        registry_repo = table_registry_repo()
 
-        metrics = metric_repo.list()
+        metrics = metrics_r.list()
         registered_tables = {t["name"] for t in registry_repo.list_all()}
 
         ok_count = 0

@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 61
+SCHEMA_VERSION = 62
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -523,6 +523,15 @@ CREATE TABLE IF NOT EXISTS resource_grants (
     requirement   VARCHAR DEFAULT 'available',
     assigned_at   TIMESTAMP DEFAULT current_timestamp,
     assigned_by   VARCHAR,
+    -- v60: per-type FK columns (E.3). One of these is non-NULL for each
+    -- of the 5 typed ResourceTypes; all NULL for marketplace_plugin.
+    -- DuckDB has no FK/CHECK enforcement — application-layer validates.
+    -- PG carries the real FKs + CHECK via migration 0013.
+    resource_id_table          VARCHAR,
+    resource_id_data_package   VARCHAR,
+    resource_id_memory_domain  VARCHAR,
+    resource_id_memory_item    VARCHAR,
+    resource_id_recipe         VARCHAR,
     UNIQUE (group_id, resource_type, resource_id)
 );
 
@@ -1481,6 +1490,37 @@ def get_analytics_db() -> duckdb.DuckDBPyConnection:
             )
             _analytics_db_path = db_path
         return _maybe_instrument(_analytics_db_conn.cursor(), "analytics")
+
+
+def close_singleton_connections() -> None:
+    """Close both shared DuckDB connections so a subprocess can take the lock.
+
+    Called from the DB-backend state-machine migrator-spawn path
+    (`app.api.db_state.start_migration`) right before launching the migrator
+    subprocess. DuckDB ≥1.5 holds an exclusive per-process file lock on each
+    open database file; without releasing it here the subprocess raises
+    ``IOException: Conflicting lock is held in /usr/local/bin/python3.13``.
+
+    Idempotent. The next call to ``get_system_db()`` / ``get_analytics_db()``
+    will lazily re-open if the file is still on disk; if the migration
+    flipped the backend to Postgres, the app process will be recreated by
+    the host applier and these globals never need to re-open.
+    """
+    global _system_db_conn, _analytics_db_conn
+    with _system_db_lock:
+        if _system_db_conn is not None:
+            try:
+                _system_db_conn.close()
+            except Exception:
+                pass
+            _system_db_conn = None
+    with _analytics_db_lock:
+        if _analytics_db_conn is not None:
+            try:
+                _analytics_db_conn.close()
+            except Exception:
+                pass
+            _analytics_db_conn = None
 
 
 def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: Path) -> None:
@@ -4335,6 +4375,54 @@ def _v59_to_v60(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 60")
 
 
+def _v61_to_v62(conn: duckdb.DuckDBPyConnection) -> None:
+    """v62: per-type FK columns on ``resource_grants`` (E.3).
+
+    Adds five NULLable columns to mirror the PG per-type FK design
+    (alembic migration 0013):
+
+      resource_id_table          — set when resource_type='table'
+      resource_id_data_package   — set when resource_type='data_package'
+      resource_id_memory_domain  — set when resource_type='memory_domain'
+      resource_id_memory_item    — set when resource_type='memory_item'
+      resource_id_recipe         — set when resource_type='recipe'
+
+    DuckDB has limited FK and CHECK constraint support, so neither is
+    enforced at the DB layer here — application code is the source of
+    truth for both backends. The PG migration (0013) carries the real
+    FK + CHECK; this step merely keeps the column set in sync so the
+    DB-state migrator can copy every column when moving DuckDB → PG.
+
+    All ALTERs use ADD COLUMN IF NOT EXISTS — idempotent.
+
+    Renumbered from v61 to v62 on the second merge with main (which
+    shipped ``cli_auth_codes`` as v61 via PR #475). The first renumber
+    (v60→v61) was for main's telemetry username collapse (PR #458).
+    """
+    for col_sql in (
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_table VARCHAR",
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_data_package VARCHAR",
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_memory_domain VARCHAR",
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_memory_item VARCHAR",
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_recipe VARCHAR",
+    ):
+        conn.execute(col_sql)
+    # Backfill: copy resource_id into the per-type column for existing rows.
+    # marketplace_plugin rows are left with all per-type columns NULL.
+    for rtype, col in (
+        ("table", "resource_id_table"),
+        ("data_package", "resource_id_data_package"),
+        ("memory_domain", "resource_id_memory_domain"),
+        ("memory_item", "resource_id_memory_item"),
+        ("recipe", "resource_id_recipe"),
+    ):
+        conn.execute(
+            f"UPDATE resource_grants SET {col} = resource_id WHERE resource_type = ?",
+            [rtype],
+        )
+    conn.execute("UPDATE schema_version SET version = 62")
+
+
 def _v58_to_v59(conn: duckdb.DuckDBPyConnection) -> None:
     """v56: extended-content columns on ``data_packages`` + structured
     per-table doc columns on ``table_registry``.
@@ -4678,11 +4766,16 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # usage_session_summary from users.email. Fresh installs
             # have empty usage_* tables, so the UPDATE is a no-op.
             _v59_to_v60(conn)
-            # v60→v61 creates the ``cli_auth_codes`` table (browser-
-            # loopback login exchange codes). Last call in the fresh-
-            # install ladder, leaves schema_version at 61 to match
-            # SCHEMA_VERSION.
+            # v60→v61 creates the ``cli_auth_codes`` table (main PR
+            # #475 — browser-loopback login exchange codes).
             _v60_to_v61(conn)
+            # v61→v62 adds per-type FK columns on resource_grants (E.3,
+            # this PR). _SYSTEM_SCHEMA already declares the columns on
+            # fresh installs (no-op ALTERs); the backfill UPDATE is a
+            # no-op on empty rows. Last call in the fresh-install
+            # ladder, leaves schema_version at 62 to match
+            # SCHEMA_VERSION.
+            _v61_to_v62(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4858,6 +4951,25 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v59_to_v60(conn)
             if current < 61:
                 _v60_to_v61(conn)
+            if current < 62:
+                _v61_to_v62(conn)
+            # NOTE: a DB that ran branch's pre-merge ``_v60_to_v61``
+            # (the E.3 per-type-FK migration, before it was renumbered
+            # to v62) sits at ``current = 61`` with the E.3 columns but
+            # without ``cli_auth_codes``. Both ``if`` blocks above
+            # skip on such a DB. The ``cli_auth_codes`` table gets
+            # created out-of-band by ``_SYSTEM_SCHEMA`` running at the
+            # top of ``_ensure_schema`` (line ~4681), which has
+            # ``CREATE TABLE IF NOT EXISTS cli_auth_codes (...)``. So
+            # the ladder is "healed" via the schema declaration rather
+            # than via the migration step. If a future maintainer
+            # extends ``_v60_to_v61`` to do more than the idempotent
+            # CREATE TABLE (e.g. seed a row, add a missing index,
+            # backfill data), those steps will silently skip for any
+            # DuckDB that came through the branch's pre-merge code
+            # path — make sure such changes are also reflected in
+            # ``_SYSTEM_SCHEMA`` or guarded with their own ladder
+            # entry.
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

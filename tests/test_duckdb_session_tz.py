@@ -70,7 +70,18 @@ def test_no_bare_duckdb_connect_in_production_code():
     See `docs/superpowers/specs/2026-05-26-frontend-timezone-fix-design.md`.
     """
     repo_root = Path(__file__).resolve().parents[1]
-    trees = ["src", "app", "connectors", "cli", "scripts", "services"]
+    # Scan production trees + the PG-contract test directory. tests/db_pg/
+    # is high-risk: it builds DuckDB fixtures, runs production migrators
+    # against them, then asserts on rows written/read across both sides.
+    # A bare duckdb.connect() on the test side stores host-local-naive
+    # timestamps; the production-side _open_duckdb read sees them as
+    # UTC-naive; on a non-UTC dev host (CET = UTC+1/+2) timestamps drift
+    # by the host's offset and tests get flaky. Wider tests/ tree is NOT
+    # included — most non-db_pg fixtures use :memory: and don't write
+    # tz-sensitive values; pinning them globally would cost ~20+ allow-
+    # list entries with little payoff. See the devil's-advocate review
+    # of the merge resolution for the cost analysis.
+    trees = ["src", "app", "connectors", "cli", "scripts", "services", "tests/db_pg"]
 
     # Allow-list: substring matches anywhere on the offending line that
     # mean "this is OK / already routed through the helper / standalone
@@ -94,6 +105,24 @@ def test_no_bare_duckdb_connect_in_production_code():
         # `connectors.bigquery.extractor.duckdb`. See the inline pin
         # helper in connectors/bigquery/extractor.py.
         "connectors/bigquery/extractor.py",
+        # tests/db_pg/ existing fixtures predate the _open_duckdb rollout
+        # and intentionally use bare connect for fixture isolation. Each
+        # is listed by file path so any NEW bare connect in tests/db_pg/
+        # gets caught.
+        "tests/db_pg/test_audit_contract.py",
+        "tests/db_pg/test_data_migration.py",
+        "tests/db_pg/test_data_packages_contract.py",
+        "tests/db_pg/test_db_state_e2e.py",
+        "tests/db_pg/test_db_state_migrator.py",
+        "tests/db_pg/test_memory_domain_suggestions_contract.py",
+        "tests/db_pg/test_memory_domains_contract.py",
+        "tests/db_pg/test_migrate_users_idempotent.py",
+        "tests/db_pg/test_rbac_contract.py",
+        "tests/db_pg/test_recipes_contract.py",
+        "tests/db_pg/test_schema_parity.py",
+        "tests/db_pg/test_store_contract.py",
+        "tests/db_pg/test_user_stack_subscriptions_contract.py",
+        "tests/db_pg/test_users_contract.py",
     )
 
     pat = re.compile(r"duckdb\.connect\(")
