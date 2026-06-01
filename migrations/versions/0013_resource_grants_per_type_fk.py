@@ -52,7 +52,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # --- Add the five per-type nullable FK columns ---
+    # Step 1: Add the five per-type nullable FK columns.
+    # They are nullable so existing rows don't violate NOT NULL during the
+    # transition; the CHECK constraint (Step 3) enforces the polymorphic
+    # invariant once backfill (Step 2) has populated the right column per row.
     op.add_column(
         "resource_grants",
         sa.Column("resource_id_table", sa.String(), nullable=True),
@@ -74,49 +77,56 @@ def upgrade() -> None:
         sa.Column("resource_id_recipe", sa.String(), nullable=True),
     )
 
-    # --- Foreign key constraints (ON DELETE CASCADE) ---
-    op.create_foreign_key(
-        "fk_resource_grants_table",
-        "resource_grants",
-        "table_registry",
-        ["resource_id_table"],
-        ["id"],
-        ondelete="CASCADE",
+    # Step 2: Backfill existing rows BEFORE creating the CHECK constraint.
+    # B5-NEW: the original migration created the CHECK first, then backfilled.
+    # Any row with resource_type='table' (and resource_id_table still NULL)
+    # immediately violated the constraint, aborting alembic on every prod
+    # instance with typed grants.  By running the UPDATE here — while all
+    # per-type columns are still unconstrained — every existing row is in
+    # the valid state the CHECK requires before the constraint is installed.
+    #
+    # marketplace_plugin rows are intentionally skipped: they use the legacy
+    # composite resource_id path and match the "all typed columns NULL" branch
+    # of the CHECK below.
+    op.execute(
+        sa.text(
+            "UPDATE resource_grants "
+            "SET resource_id_table = resource_id "
+            "WHERE resource_type = 'table'"
+        )
     )
-    op.create_foreign_key(
-        "fk_resource_grants_data_package",
-        "resource_grants",
-        "data_packages",
-        ["resource_id_data_package"],
-        ["id"],
-        ondelete="CASCADE",
+    op.execute(
+        sa.text(
+            "UPDATE resource_grants "
+            "SET resource_id_data_package = resource_id "
+            "WHERE resource_type = 'data_package'"
+        )
     )
-    op.create_foreign_key(
-        "fk_resource_grants_memory_domain",
-        "resource_grants",
-        "memory_domains",
-        ["resource_id_memory_domain"],
-        ["id"],
-        ondelete="CASCADE",
+    op.execute(
+        sa.text(
+            "UPDATE resource_grants "
+            "SET resource_id_memory_domain = resource_id "
+            "WHERE resource_type = 'memory_domain'"
+        )
     )
-    op.create_foreign_key(
-        "fk_resource_grants_memory_item",
-        "resource_grants",
-        "knowledge_items",
-        ["resource_id_memory_item"],
-        ["id"],
-        ondelete="CASCADE",
+    op.execute(
+        sa.text(
+            "UPDATE resource_grants "
+            "SET resource_id_memory_item = resource_id "
+            "WHERE resource_type = 'memory_item'"
+        )
     )
-    op.create_foreign_key(
-        "fk_resource_grants_recipe",
-        "resource_grants",
-        "recipes",
-        ["resource_id_recipe"],
-        ["id"],
-        ondelete="CASCADE",
+    op.execute(
+        sa.text(
+            "UPDATE resource_grants "
+            "SET resource_id_recipe = resource_id "
+            "WHERE resource_type = 'recipe'"
+        )
     )
 
-    # --- CHECK constraint: polymorphic invariant ---
+    # Step 3: CHECK constraint — polymorphic invariant.
+    # Safe to add now: every existing row has been backfilled in Step 2, so
+    # each typed row has exactly one per-type column populated.
     # For the 5 FK-typed ResourceTypes: exactly the matching per-type column
     # must be non-NULL; all other per-type columns must be NULL.
     # For marketplace_plugin and any future / unknown resource_type: all five
@@ -169,54 +179,48 @@ def upgrade() -> None:
         """,
     )
 
-    # --- Backfill existing rows ---
-    # Copy resource_id into the appropriate per-type column based on
-    # resource_type. marketplace_plugin rows are left with all per-type
-    # columns NULL (they stay application-validated).
-    op.execute(
-        sa.text(
-            """
-            UPDATE resource_grants
-            SET resource_id_table = resource_id
-            WHERE resource_type = 'table'
-            """
-        )
+    # Step 4: Foreign key constraints (ON DELETE CASCADE).
+    # Added after backfill + CHECK so that every per-type column already carries
+    # a valid resource_id value (or NULL for untouched typed ResourceTypes).
+    op.create_foreign_key(
+        "fk_resource_grants_table",
+        "resource_grants",
+        "table_registry",
+        ["resource_id_table"],
+        ["id"],
+        ondelete="CASCADE",
     )
-    op.execute(
-        sa.text(
-            """
-            UPDATE resource_grants
-            SET resource_id_data_package = resource_id
-            WHERE resource_type = 'data_package'
-            """
-        )
+    op.create_foreign_key(
+        "fk_resource_grants_data_package",
+        "resource_grants",
+        "data_packages",
+        ["resource_id_data_package"],
+        ["id"],
+        ondelete="CASCADE",
     )
-    op.execute(
-        sa.text(
-            """
-            UPDATE resource_grants
-            SET resource_id_memory_domain = resource_id
-            WHERE resource_type = 'memory_domain'
-            """
-        )
+    op.create_foreign_key(
+        "fk_resource_grants_memory_domain",
+        "resource_grants",
+        "memory_domains",
+        ["resource_id_memory_domain"],
+        ["id"],
+        ondelete="CASCADE",
     )
-    op.execute(
-        sa.text(
-            """
-            UPDATE resource_grants
-            SET resource_id_memory_item = resource_id
-            WHERE resource_type = 'memory_item'
-            """
-        )
+    op.create_foreign_key(
+        "fk_resource_grants_memory_item",
+        "resource_grants",
+        "knowledge_items",
+        ["resource_id_memory_item"],
+        ["id"],
+        ondelete="CASCADE",
     )
-    op.execute(
-        sa.text(
-            """
-            UPDATE resource_grants
-            SET resource_id_recipe = resource_id
-            WHERE resource_type = 'recipe'
-            """
-        )
+    op.create_foreign_key(
+        "fk_resource_grants_recipe",
+        "resource_grants",
+        "recipes",
+        ["resource_id_recipe"],
+        ["id"],
+        ondelete="CASCADE",
     )
 
 
