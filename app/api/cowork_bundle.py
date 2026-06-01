@@ -695,6 +695,29 @@ def _bundle_setup_py(server_url: str) -> str:
                 continue
         if _registered:
             print("Restart Claude Desktop once to activate Agnes MCP tools.")
+            if platform.system() == "Darwin":
+                try:
+                    _dlg = subprocess.run(
+                        ["osascript", "-e",
+                         "button returned of (display dialog "
+                         "\\"Agnes MCP tools registered. "
+                         "Restart Claude Desktop now to activate them?\\" "
+                         "buttons {{\\"Later\\", \\"Restart Now\\"}} "
+                         "default button \\"Restart Now\\" "
+                         "with title \\"Agnes Cowork Setup\\")"],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    if _dlg.stdout.strip() == "Restart Now":
+                        subprocess.run(
+                            ["osascript", "-e",
+                             "tell application \\"Claude\\" to quit"],
+                            capture_output=True,
+                        )
+                        import time as _t; _t.sleep(2)
+                        subprocess.run(["open", "-a", "Claude"],
+                                       capture_output=True)
+                except Exception:
+                    pass
 
         # 3c. Write MCP config to user-level ~/.claude/settings.json so the
         #     cowork VM's claude-code binary picks it up on the next session
@@ -702,6 +725,8 @@ def _bundle_setup_py(server_url: str) -> str:
         #     Project-level .claude/settings.json is also updated (step 3) but
         #     the cowork VM may not load project-level mcpServers; user-level
         #     settings are loaded regardless of which project is open.
+        #     Use the stable ~/.config/agnes/mcp_server.py path when the MCP
+        #     registration succeeded — outlasts any bundle folder deletion.
         _user_claude_dir = pathlib.Path.home() / ".claude"
         _user_claude_dir.mkdir(parents=True, exist_ok=True)
         _user_settings_path = _user_claude_dir / "settings.json"
@@ -713,9 +738,13 @@ def _bundle_setup_py(server_url: str) -> str:
                 except Exception:
                     _user_cfg = {{}}
             _user_cfg.setdefault("mcpServers", {{}})
+            _mcp_path = (
+                str(_stable_mcp) if _registered
+                else str(HERE / "mcp_server.py")
+            )
             _user_cfg["mcpServers"]["agnes"] = {{
                 "command": sys.executable,
-                "args": [str(HERE / "mcp_server.py")],
+                "args": [_mcp_path],
             }}
             _user_settings_path.write_text(json.dumps(_user_cfg, indent=2) + "\\n")
             print("Agnes MCP registered in ~/.claude/settings.json (user-level).")
