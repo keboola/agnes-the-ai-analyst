@@ -38,30 +38,11 @@ def _maybe_instrument(con, db_tag: str):
     return InstrumentedConnection(con, db_tag)
 
 
-def _open_duckdb(path, **kwargs):
-    """Open a DuckDB connection with session timezone pinned to UTC.
-
-    All `duckdb.connect(...)` call sites in the codebase should funnel
-    through this helper. DuckDB's TIMESTAMP type stores naive values, and
-    the ICU extension's default session timezone is the host's local zone
-    (not UTC). Without pinning, a `datetime.now(timezone.utc)` write gets
-    shifted into the host zone before tzinfo is stripped, leading to
-    naive-but-local-tz values on disk. Pinning the session to UTC keeps
-    naive reads aligned with the wire / display contract documented in
-    `docs/superpowers/specs/2026-05-26-frontend-timezone-fix-design.md`.
-    """
-    conn = duckdb.connect(path, **kwargs)
-    try:
-        # SET GLOBAL (not session-only) so cursors created via conn.cursor()
-        # inherit the UTC pin. DuckDB cursors otherwise start with the
-        # ICU-derived host default, which defeats the pin everywhere we
-        # interact through `.cursor()` (every repository, every reader).
-        conn.execute("SET GLOBAL TimeZone='UTC'")
-    except duckdb.Error:
-        # Older DuckDB builds without the ICU extension already behave as
-        # naive-UTC; nothing to pin.
-        pass
-    return conn
+# Re-export the lightweight helper. The implementation lives in
+# `src.duckdb_conn` so connectors / CLI / scripts can import it without
+# pulling the heavy `connectors.bigquery.auth` dep that this module
+# imports above.
+from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
