@@ -19,6 +19,7 @@ Spec: docs/superpowers/specs/2026-05-27-db-backend-state-machine-design.md
 from __future__ import annotations
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -250,24 +251,53 @@ def alembic_upgrade_head(target_url: str) -> None:
         )
 
 
-#: Regex matching audit-log keys whose values are likely to carry
-#: credentials. Matched on JSON keys (case-insensitive). Any row whose
-#: ``params`` / ``params_before`` JSON object contains a matching key
-#: is rewritten in place to the redaction sentinel by
-#: :func:`scrub_audit_log_pii` (H7). Word-boundary anchors keep the
-#: regex from matching innocent substrings like ``"keynote"`` or
-#: ``"secretary"``.
-_AUDIT_PII_KEY_REGEX = (
-    r"(?i)\b(password|passwd|token|secret|api[-_ ]?key|bearer|"
+#: Compiled regex for sensitive audit-log KEY names (case-insensitive).
+#: Applied to JSON object keys only — never to values — by
+#: :func:`_redact_sensitive_keys`. Word-boundary anchors prevent
+#: innocent substrings like ``"keynote"`` or ``"secretary"`` from
+#: matching.
+_SENSITIVE_KEY_RE = re.compile(
+    r"\b(password|passwd|token|secret|api[-_ ]?key|bearer|"
     r"client[-_ ]?secret|access[-_ ]?token|refresh[-_ ]?token|"
-    r"private[-_ ]?key|signing[-_ ]?key)\b"
+    r"private[-_ ]?key|signing[-_ ]?key)\b",
+    re.IGNORECASE,
 )
 
-#: Sentinel payload written in place of the original JSON when any
-#: PII key is detected. Recognisable post-migration so operators can
-#: tell the row was redacted at migration time (vs scrubbed at write
-#: time by the runtime sanitiser).
-_AUDIT_REDACTION_PAYLOAD = '{"_redacted_at_migration": true}'
+#: Sentinel value substituted for a redacted key's original value.
+#: Recognisable post-migration so operators can tell the row was
+#: redacted at migration time (vs scrubbed at write time by the
+#: runtime sanitiser).
+_REDACTED_SENTINEL = "<redacted-at-migration>"
+
+
+def _redact_sensitive_keys(obj: Any) -> tuple[Any, bool]:
+    """Walk ``obj``, replacing values under sensitive KEYS with
+    ``_REDACTED_SENTINEL``. Returns ``(obj, changed_bool)``.
+
+    LOW-1: pre-fix, the regex ran against ``str(obj)`` — values like
+    ``"/reset-password"`` triggered wholesale row rewrite. Now only
+    keys matched by :data:`_SENSITIVE_KEY_RE` have their values
+    replaced; non-sensitive siblings and value-only matches are
+    preserved.
+    """
+    if isinstance(obj, dict):
+        changed = False
+        for k, v in list(obj.items()):
+            if isinstance(k, str) and _SENSITIVE_KEY_RE.search(k):
+                if obj[k] not in (None, "", _REDACTED_SENTINEL):
+                    obj[k] = _REDACTED_SENTINEL
+                    changed = True
+            else:
+                _, sub_changed = _redact_sensitive_keys(v)
+                changed = changed or sub_changed
+        return obj, changed
+    if isinstance(obj, list):
+        changed = False
+        for item in obj:
+            _, sub_changed = _redact_sensitive_keys(item)
+            changed = changed or sub_changed
+        return obj, changed
+    return obj, False
 
 
 def scrub_audit_log_pii(duckdb_path: Path) -> dict[str, int]:
@@ -285,19 +315,22 @@ def scrub_audit_log_pii(duckdb_path: Path) -> dict[str, int]:
     * The PG target receives the redacted form via the normal
       copy loop with no extra transform pass.
 
+    LOW-1 fix: walks JSON KEYS only via :func:`_redact_sensitive_keys`.
+    Rows whose params is NULL, not valid JSON, or whose JSON contains
+    no sensitive key are left unchanged. Non-sensitive sibling keys
+    survive; only the value under the matching key is replaced with
+    :data:`_REDACTED_SENTINEL`.
+
     Idempotent — re-running finds zero matches because previously
-    scrubbed rows no longer contain any PII keys. Schema-tolerant —
+    scrubbed rows already carry the sentinel value. Schema-tolerant —
     silently no-ops on DBs that don't have an ``audit_log`` table
     (e.g. fresh installs migrated immediately after first boot).
 
     Returns ``{"rows_scanned", "rows_redacted"}`` for the JobWriter
     summary.
     """
-    import re
-
     import duckdb
 
-    pattern = re.compile(_AUDIT_PII_KEY_REGEX)
     conn = duckdb.connect(str(duckdb_path))
     rows_redacted = 0
     rows_scanned = 0
@@ -318,27 +351,40 @@ def scrub_audit_log_pii(duckdb_path: Path) -> dict[str, int]:
             "SELECT id, params, params_before FROM audit_log"
         ).fetchall()
         for rid, params, params_before in rows:
-            new_params = (
-                _AUDIT_REDACTION_PAYLOAD
-                if params is not None and pattern.search(str(params))
-                else None
-            )
-            new_params_before = (
-                _AUDIT_REDACTION_PAYLOAD
-                if params_before is not None
-                and pattern.search(str(params_before))
-                else None
-            )
-            if new_params is None and new_params_before is None:
+            new_params = params
+            new_params_before = params_before
+            changed_any = False
+
+            for src_val, col_name in (
+                (params, "params"),
+                (params_before, "params_before"),
+            ):
+                if src_val is None:
+                    continue
+                try:
+                    parsed = json.loads(src_val)
+                except (ValueError, TypeError):
+                    # Not JSON — leave as-is.
+                    continue
+                _, changed = _redact_sensitive_keys(parsed)
+                if changed:
+                    if col_name == "params":
+                        new_params = json.dumps(parsed)
+                    else:
+                        new_params_before = json.dumps(parsed)
+                    changed_any = True
+
+            if not changed_any:
                 continue
+
             # Build the UPDATE SET dynamically — only overwrite the
-            # column(s) we matched on.
+            # column(s) we actually changed.
             set_parts: list[str] = []
             bind: list[object] = []
-            if new_params is not None:
+            if new_params != params:
                 set_parts.append("params = ?")
                 bind.append(new_params)
-            if new_params_before is not None:
+            if new_params_before != params_before:
                 set_parts.append("params_before = ?")
                 bind.append(new_params_before)
             bind.append(rid)
