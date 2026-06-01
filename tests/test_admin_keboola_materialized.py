@@ -28,7 +28,8 @@ def _keboola_instance(monkeypatch):
     reset_cache()
 
 
-def test_register_keboola_materialized_accepts_source_query(seeded_app):
+def test_register_keboola_materialized_accepts_json_filter_spec(seeded_app):
+    """Keboola materialized source_query must be a JSON filter spec, not SQL."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     auth = {"Authorization": f"Bearer {token}"}
@@ -39,7 +40,7 @@ def test_register_keboola_materialized_accepts_source_query(seeded_app):
             "name": "orders_recent",
             "source_type": "keboola",
             "query_mode": "materialized",
-            "source_query": "SELECT * FROM kbc.\"in.c-sales\".\"orders\" WHERE date > '2026-01-01'",
+            "source_query": '{"columns": ["order_id", "date"], "changedSince": "-7 days"}',
             "sync_schedule": "daily 03:00",
         },
     )
@@ -73,8 +74,7 @@ def test_register_keboola_materialized_accepts_missing_source_query(seeded_app):
 
 
 def test_register_keboola_materialized_skips_bucket_check(seeded_app):
-    """Materialized rows don't need bucket/source_table — the SELECT inlines
-    the references. Mirror of BQ materialized validator behavior."""
+    """Materialized rows don't need bucket/source_table. Mirror of BQ materialized validator behavior."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     auth = {"Authorization": f"Bearer {token}"}
@@ -85,8 +85,7 @@ def test_register_keboola_materialized_skips_bucket_check(seeded_app):
             "name": "x",
             "source_type": "keboola",
             "query_mode": "materialized",
-            "source_query": "SELECT 1",
-            # No bucket / source_table — must still succeed.
+            # No bucket / source_table / source_query — full-table export.
         },
     )
     assert r.status_code == 201, r.text
@@ -97,7 +96,7 @@ def test_update_keboola_materialized_clears_stale_source_query_on_mode_switch(se
     token = seeded_app["admin_token"]
     auth = {"Authorization": f"Bearer {token}"}
 
-    # Register materialized.
+    # Register materialized (no source_query = full-table export).
     r = c.post(
         "/api/admin/register-table",
         headers=auth,
@@ -105,7 +104,6 @@ def test_update_keboola_materialized_clears_stale_source_query_on_mode_switch(se
             "name": "x",
             "source_type": "keboola",
             "query_mode": "materialized",
-            "source_query": "SELECT 1",
         },
     )
     assert r.status_code == 201
