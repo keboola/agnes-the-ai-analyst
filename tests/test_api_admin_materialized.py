@@ -347,11 +347,9 @@ def test_update_materialized_accepts_backtick_source_query(
     assert row["source_query"] == "SELECT * FROM `prj.ds.t`"
 
 
-def test_register_materialized_keboola_accepts_backtick_source_query(seeded_app):
-    """Keboola materialized rows also accept backtick source_query at register
-    time — the backtick guard now only applies to remote/local rows. If the
-    SQL is invalid at runtime (DuckDB parse error), that surfaces as a sync
-    error, not a registration error."""
+def test_register_materialized_keboola_rejects_sql_source_query(seeded_app):
+    """Keboola materialized source_query must be a JSON filter spec, not SQL.
+    SQL (including backtick forms) is rejected at registration time."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     r = c.post(
@@ -364,7 +362,7 @@ def test_register_materialized_keboola_accepts_backtick_source_query(seeded_app)
         },
         headers=_auth(token),
     )
-    assert r.status_code == 201, r.json()
+    assert r.status_code == 422, r.json()
 
 
 # --- Surface materialize errors per-row ---------------------------------------
