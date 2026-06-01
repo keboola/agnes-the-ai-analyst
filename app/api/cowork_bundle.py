@@ -651,6 +651,7 @@ def _bundle_setup_py(server_url: str) -> str:
                     if not (str(c) in seen or seen.add(str(c)))]
 
         _registered = False
+        _reg_errors = []
         for _home, _cfg_path in _claude_cfg_candidates():
             try:
                 import shutil as _shutil
@@ -691,8 +692,14 @@ def _bundle_setup_py(server_url: str) -> str:
                 print(f"Agnes MCP registered: {{_cfg_path}}")
                 _registered = True
                 break
-            except Exception:
+            except Exception as _e:
+                _reg_errors.append(f"  {{_cfg_path}}: {{_e}}")
                 continue
+        if not _registered and _reg_errors:
+            print("WARNING: Agnes MCP registration failed for all candidates:")
+            for _err in _reg_errors:
+                print(_err)
+            print("MCP tools won't load automatically — restart Claude Desktop manually after fixing the path.")
         if _registered:
             print("Restart Claude Desktop once to activate Agnes MCP tools.")
             if platform.system() == "Darwin":
