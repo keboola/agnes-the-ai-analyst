@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.56.1] — 2026-06-01
+
+### Added
+- **Container memory caps are now overridable via `.env`.** `docker-compose.yml` reads `AGNES_APP_MEM_LIMIT` (default `4g`) and `AGNES_SCHEDULER_MEM_LIMIT` (default `2g`), so a deployment on a larger host can raise the cap without forking compose — small deploys keep the previous defaults. Sizing note: DuckDB enforces `memory_limit` per-connection and (1.5+) defaults a fresh connection to ~80% of the cgroup limit, so on a big VM leaving the container at `4g` both wastes host RAM and lets the per-connection budgets sum past the cap, at which point the cgroup OOM-killer SIGKILLs uvicorn mid-WAL-write (the corruption guarded against by the `stop_grace_period` note in compose and the per-connection caps in `src/db.py`). Raise this cap together with those per-connection budgets.
+
 ## [0.56.0] — 2026-06-01
 
 ### Added
