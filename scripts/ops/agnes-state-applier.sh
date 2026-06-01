@@ -167,15 +167,18 @@ write_instance_yaml() {
     # The previous bash heredoc approach rewrote the file from scratch and
     # silently destroyed them (B6 — review finding).
     #
-    # We use python3 + PyYAML — both are guaranteed present on every
-    # customer-instance VM (the applier already shells out to python3
-    # elsewhere; agnes-the-ai-analyst's dependency tree pulls PyYAML so
-    # it is installed system-wide).
+    # H4-NEW: graceful fallback when PyYAML is unavailable on the host.
+    # Provisioning installs python3-yaml so this fallback is defensive-only,
+    # but old or stripped VMs should not wedge the state machine on a
+    # missing dependency.
     local backend=$1 url=${2:-}
-    python3 - "$backend" "$url" <<'PY'
+    local path="/data/state/instance.yaml"
+    # Try PyYAML route first — preserves any non-database top-level keys
+    # the operator set (logging, auth providers, feature flags).
+    if python3 -c 'import yaml' 2>/dev/null; then
+        python3 - "$path" "$backend" "$url" <<'PY'
 import os, sys, yaml
-backend, url = sys.argv[1], sys.argv[2]
-path = "/data/state/instance.yaml"
+path, backend, url = sys.argv[1], sys.argv[2], sys.argv[3]
 existing = {}
 if os.path.exists(path):
     try:
@@ -195,7 +198,25 @@ with open(tmp, "w") as f:
 os.replace(tmp, path)
 os.chmod(path, 0o600)
 PY
-    chown 999:999 /data/state/instance.yaml || true
+        chown agnes-applier:agnes-applier "$path" 2>/dev/null || true
+        return
+    fi
+    # Pure-bash fallback. H4-NEW — preserves the database section only;
+    # any non-database top-level keys are LOST. Provisioning should
+    # install python3-yaml so this path is rarely hit; we keep it alive
+    # so a missing dependency never wedges the state machine.
+    echo "WARN: write_instance_yaml using bash fallback (PyYAML not installed); non-database top-level keys will be dropped" >&2
+    local tmp="${path}.tmp"
+    {
+        echo "database:"
+        echo "  backend: ${backend}"
+        if [ -n "$url" ]; then
+            echo "  url: ${url}"
+        fi
+    } > "$tmp"
+    chmod 0600 "$tmp"
+    mv -f "$tmp" "$path"
+    chown agnes-applier:agnes-applier "$path" 2>/dev/null || true
 }
 
 # --- Stuck-running recovery (B5) -----------------------------------------

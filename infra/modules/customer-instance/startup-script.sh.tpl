@@ -28,6 +28,11 @@ fi
 if ! docker compose version &>/dev/null; then
     apt-get update && apt-get install -y docker-compose-plugin
 fi
+# H4-NEW: required by agnes-state-applier.sh's write_instance_yaml PyYAML path.
+# The applier has a pure-bash fallback so a missing package does not wedge the
+# state machine, but installing it here ensures all freshly-provisioned VMs
+# take the full-fidelity PyYAML path (which preserves non-database YAML keys).
+apt-get install -y --no-install-recommends python3-yaml
 
 # --- 2. Persistent data disk mount ---
 DATA_DEV="/dev/disk/by-id/google-data"
