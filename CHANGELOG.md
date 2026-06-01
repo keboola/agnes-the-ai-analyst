@@ -98,6 +98,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   content — an empty placeholder plugin contributes nothing.
 
 ### Fixed
+- **Cloud-chat: the status banner ("Connected.") was indented out of line.**
+  The `.cloud-chat-status` strip used `--space-4` horizontal padding while the
+  thread header and message list use `--space-6`, so its text sat 8px to the
+  left of the rest of the column. Matched it to `--space-6`.
 - **Cloud-chat: the agent ignored the `agnes` CLI and claimed "no data".** The
   sandbox runner opened the SDK client with no filesystem settings loaded
   (`setting_sources=None`), so — unlike a local Agnes install where the

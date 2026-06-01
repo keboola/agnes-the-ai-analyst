@@ -350,7 +350,10 @@ body.chat-page-body main { margin: 0; padding: 0; }
    = neutral. ``:empty`` hides the bar entirely so the chat area
    doesn't carry a gap when there's nothing to report. */
 .cloud-chat-status {
-  padding: 6px var(--space-4);
+  /* Match the thread header's horizontal padding (--space-6) so the status
+     text lines up with the title above and the messages below — at --space-4
+     it sat 8px to the left of the rest of the column and read as misaligned. */
+  padding: 6px var(--space-6);
   font-size: var(--text-sm);
   color: var(--ds-text-secondary);
   border-bottom: 1px solid var(--ds-border);
