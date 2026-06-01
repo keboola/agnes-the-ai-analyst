@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.26] — 2026-06-01
+
 ### Fixed
 - **Data Package card: the lifecycle status pill (POC / Coming soon / Draft) overlapped the curated/new badges.** Both the status pill (`.stack-card__status-pill`) and the derived-badge row (`.stack-card__badges`) were absolute-positioned at the same `top:8px; left:8px` corner of the card cover, so a package that had a non-default status *and* a derived badge rendered the two stacked on top of each other. The badge row now drops just below the status pill when one is present; placement is unchanged (top-left) when there's no pill. Macro: `app/web/templates/macros/_stack_card.html`.
 
