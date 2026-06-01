@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **`_validate_cloud_url` resolves hostnames and runs every returned IP through the reserved-range ladder.** Round-3 review MED-1-PARTIAL — the round-2 fix (commit `46334442`) rejected IP literals in the loopback / GCE metadata / RFC1918 / link-local / CGNAT / IPv6-ULA ranges, but `except ValueError: return` short-circuited validation for any non-literal hostname. Attacker-controlled DNS entries pointing `metadata.google.internal` (or similar) at `169.254.169.254` then bypassed the guard and reopened the SSRF / port-probe primitive. `_resolve_host` now feeds `socket.getaddrinfo` results through the same classification ladder (extracted into `_classify_reserved_ip`); if *any* resolved IP is reserved the URL is refused. DNS failures conservatively allow (the migrator's connect attempt will fail cleanly).
+
 ## [0.57.0] — 2026-06-01
 
 ### Added

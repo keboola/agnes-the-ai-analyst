@@ -105,9 +105,33 @@ def _urls_alias(a: str, b: str) -> bool:
     return False
 
 
+def _classify_reserved_ip(ip: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> "str | None":
+    """Return a short human-readable category if ``ip`` falls in a
+    reserved range that the API must refuse to dial, else None.
+
+    Extracted from the pre-fix inline ladder in ``_validate_cloud_url``
+    so Task 2 (B1-NEW pinned-IP propagation) can reuse the same
+    classification. MED-1-PARTIAL extends usage from IP-literal-only
+    to DNS-resolved hosts.
+    """
+    import ipaddress
+
+    if ip.is_loopback:
+        return "loopback"
+    if ip.is_link_local:
+        return "link-local (covers GCE/AWS metadata service)"
+    if ip.is_private:
+        return "private (RFC1918 / IPv6 ULA)"
+    if isinstance(ip, ipaddress.IPv4Address) and ip in ipaddress.ip_network("100.64.0.0/10"):
+        return "CGNAT (RFC6598)"
+    if ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+        return "reserved/multicast/unspecified"
+    return None
+
+
 def _validate_cloud_url(url: str) -> None:
     """Reject obviously-wrong cloud URLs early (H3) and reserved/private
-    addresses (MED-2).
+    addresses (MED-2, MED-1-PARTIAL).
 
     H3 — Required: scheme starts with ``postgresql``, host non-empty,
     database non-empty. Catches misclicks (sqlite://, file://, http://)
@@ -121,6 +145,15 @@ def _validate_cloud_url(url: str) -> None:
     metadata server — the server-fingerprint error in the job's
     ``error.message`` then leaks service liveness. SSRF / port-probe
     primitive from any admin path.
+
+    MED-1-PARTIAL — The round-2 fix (commit 46334442) rejected IP
+    literals but ``except ValueError: return`` short-circuited
+    validation for any non-literal hostname. An attacker-controlled DNS
+    entry pointing ``metadata.google.internal`` (or similar) at
+    ``169.254.169.254`` then bypassed the guard. ``_resolve_host`` now
+    feeds ``socket.getaddrinfo`` results through the same classification
+    ladder via ``_classify_reserved_ip``; if *any* resolved IP is
+    reserved the URL is refused.
 
     Opt-in test override: ``AGNES_ALLOW_RESERVED_CLOUD_URL=1`` skips
     the reserved-range check (used by the test harness for fixtures
@@ -143,7 +176,7 @@ def _validate_cloud_url(url: str) -> None:
     if not parsed.database:
         raise HTTPException(400, detail="cloud_url must include a database name")
 
-    # === MED-2: reserved-range rejection ===
+    # === MED-2 + MED-1-PARTIAL: reserved-range rejection ===
     if os.environ.get("AGNES_ALLOW_RESERVED_CLOUD_URL") == "1":
         return  # explicit test/dev opt-in
 
@@ -157,39 +190,38 @@ def _validate_cloud_url(url: str) -> None:
                 "set AGNES_ALLOW_RESERVED_CLOUD_URL=1 for tests/dev"
             ),
         )
-    # IP literal?
+
+    # Build the IP set to classify: either the single literal, or every
+    # address ``host`` resolves to.  MED-1-PARTIAL — pre-fix the function
+    # returned early on a non-literal hostname, so an attacker-controlled
+    # DNS entry pointing at e.g. 169.254.169.254 bypassed the guard.
     try:
-        ip = ipaddress.ip_address(host)
+        literal = ipaddress.ip_address(host)
+        ips_to_check = [literal]
     except ValueError:
-        return  # hostname → DNS resolution happens later in psycopg; pre-class can't classify
-    if ip.is_loopback:
-        raise HTTPException(
-            400,
-            detail=f"cloud_url host is loopback ({ip}); reserved",
-        )
-    if ip.is_link_local:
-        # Includes 169.254.169.254 (GCE/AWS IMDS).
-        raise HTTPException(
-            400,
-            detail=(
-                f"cloud_url host is link-local ({ip}) — covers GCE/AWS metadata service; reserved"
-            ),
-        )
-    if ip.is_private:
-        raise HTTPException(
-            400,
-            detail=f"cloud_url host is private ({ip}); reserved (RFC1918 / IPv6 ULA)",
-        )
-    if isinstance(ip, ipaddress.IPv4Address) and ip in ipaddress.ip_network("100.64.0.0/10"):
-        raise HTTPException(
-            400,
-            detail=f"cloud_url host is CGNAT ({ip}); reserved (RFC6598)",
-        )
-    if ip.is_reserved or ip.is_multicast or ip.is_unspecified:
-        raise HTTPException(
-            400,
-            detail=f"cloud_url host is reserved/multicast/unspecified ({ip})",
-        )
+        resolved = _resolve_host(host)
+        if not resolved:
+            # DNS failure: conservative allow — the migrator's TCP
+            # connect attempt will fail cleanly downstream, and we
+            # don't want to break operators behind broken or slow DNS.
+            return
+        ips_to_check = []
+        for raw in resolved:
+            try:
+                ips_to_check.append(ipaddress.ip_address(raw))
+            except ValueError:
+                continue
+
+    for ip in ips_to_check:
+        category = _classify_reserved_ip(ip)
+        if category is not None:
+            raise HTTPException(
+                400,
+                detail=(
+                    f"cloud_url host {host!r} resolves to {ip} which is "
+                    f"{category}; reserved"
+                ),
+            )
 
 
 def _redact_url(url: str | None) -> str | None:
