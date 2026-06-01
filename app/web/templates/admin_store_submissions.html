@@ -1,14 +1,12 @@
-{% extends "base.html" %}
+{% extends "base_page.html" %}
 {% block title %}Store submissions — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{# Design-system component macros — form Apply/Reset buttons render via
-   `ds.button`. Status filter chips, status badges, .subs-table stay
-   page-local. #}
-{% import "_components.html" as ds %}
+{% set page_hero_eyebrow = "Agent Experience" %}
+{% set page_hero_title = "Flea Submissions" %}
+{% set page_hero_subtitle = "Plugin / skill / agent submissions awaiting review." %}
+
+{% block head_extra %}
 <style>
-  /* Width + padding come from .page-shell (style-custom.css) — same
-     1280px container as /dashboard, /marketplace, /admin/* peers. */
 
   .subs-form {
     display: grid;
@@ -123,7 +121,12 @@
     color: var(--text-secondary, #6b7280); font-size: 13px;
   }
 </style>
+{% endblock %}
 
+{% block page %}
+{# Design-system component macros — form Apply/Reset buttons render via
+   `ds.button` (auto-imported by base_ds). Status filter chips, status
+   badges, .subs-table stay page-local. #}
 {% set base_qs %}
 {%- if status_filter %}status={{ status_filter }}&{% endif -%}
 {%- if submitter_filter %}submitter={{ submitter_filter }}&{% endif -%}
@@ -160,11 +163,7 @@
   {%- if b is none -%}—{%- elif b < 1024 -%}{{ b }} B{%- elif b < 1048576 -%}{{ "%.1f"|format(b / 1024) }} KB{%- else -%}{{ "%.1f"|format(b / 1048576) }} MB{%- endif -%}
 {%- endmacro %}
 
-<div class="subs-page page-shell">
-  {% set page_hero_eyebrow = "Agent Experience" %}
-  {% set page_hero_title = "Flea Submissions" %}
-  {% set page_hero_subtitle = "Plugin / skill / agent submissions awaiting review." %}
-  {% include "_page_hero.html" %}
+<div class="subs-page">
   <form class="subs-form" method="get" action="/admin/store/submissions">
     {# Preserve status filter when submitting other filters. #}
     {% if status_filter %}<input type="hidden" name="status" value="{{ status_filter }}">{% endif %}
