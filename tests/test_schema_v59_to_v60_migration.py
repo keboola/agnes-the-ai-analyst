@@ -27,13 +27,19 @@ from src.db import SCHEMA_VERSION, _ensure_schema, _v59_to_v60, get_schema_versi
 
 
 def test_schema_version_is_60():
-    assert SCHEMA_VERSION == 60
+    # Forward-compatible (matches test_schema_v58_to_v59_migration.py pattern):
+    # this file pins the v59→v60 migration's contract, which still holds
+    # after subsequent bumps — only requires the schema is AT LEAST v60.
+    assert SCHEMA_VERSION >= 60
 
 
 def test_fresh_install_lands_at_v60(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
-    assert get_schema_version(conn) == 60
+    # >=  rather than ==: fresh install lands at the latest schema, which
+    # may have moved past v60 (this test only pins that the v59→v60 step
+    # ran as part of that climb).
+    assert get_schema_version(conn) >= 60
 
 
 def test_uuid_username_rewritten_to_email(tmp_path):

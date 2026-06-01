@@ -105,6 +105,7 @@ from app.api.metrics import router as metrics_router
 from app.api.metadata import router as metadata_router
 from app.api.query_hybrid import router as query_hybrid_router
 from app.api.cli_artifacts import router as cli_artifacts_router
+from app.api.cli_auth import router as cli_auth_router
 from app.api.tokens import router as tokens_router, admin_router as tokens_admin_router
 from app.api.v2_catalog import router as v2_catalog_router
 from app.api.v2_schema import router as v2_schema_router
@@ -728,6 +729,7 @@ def create_app() -> FastAPI:
     app.include_router(metadata_router)
     app.include_router(query_hybrid_router)
     app.include_router(cli_artifacts_router)
+    app.include_router(cli_auth_router)
     app.include_router(tokens_router)
     app.include_router(tokens_admin_router)
     app.include_router(v2_catalog_router)
