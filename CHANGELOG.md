@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **`agnes admin db migrate --json` no longer bypasses the `--yes` confirmation gate.** Round-2 review MED-1 — CI/cron callers must opt into the destructive cutover explicitly with `--yes`; the predicate `not yes and not as_json` was the bypass.
+
 ## [0.56.0] — 2026-05-28
 
 ### Added

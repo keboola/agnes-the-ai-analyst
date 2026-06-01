@@ -265,9 +265,10 @@ class TestDbMigrateConfirmGate:
             )
         assert result.exit_code == 0, result.output
 
-    def test_json_skips_confirmation(self):
-        """--json is machine-readable mode; no interactive prompt expected.
-        Treats --json like --yes for the confirm-gate purpose."""
+    def test_json_without_yes_refuses(self):
+        """MED-1: --json alone does NOT bypass the confirmation gate.
+        CI/cron callers must pass --yes explicitly; --json is output format,
+        not operator intent."""
         with (
             self._patches()["post"],
             self._patches()["get"],
@@ -277,7 +278,8 @@ class TestDbMigrateConfirmGate:
             result = runner.invoke(
                 app, ["admin", "db", "migrate", "side_car", "--json"]
             )
-        assert result.exit_code == 0, result.output
+        assert result.exit_code != 0, result.output
+        assert "--yes" in result.output
 
     def test_interactive_yes_proceeds(self):
         """When stdin is a TTY and the user answers 'y', migrate proceeds."""

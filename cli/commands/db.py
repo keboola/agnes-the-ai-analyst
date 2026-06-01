@@ -96,7 +96,11 @@ def migrate(
     if target == "cloud" and not cloud_url:
         cloud_url = typer.prompt("Cloud PG connection string")
 
-    needs_confirm = not yes and not as_json
+    # MED-1: ``--json`` does NOT bypass the confirmation gate. CI/cron
+    # callers must opt in explicitly with ``--yes``. The earlier
+    # ``and not as_json`` clause meant a ``--json`` invocation skipped
+    # the destructive-cutover confirm and auto-fired the migration.
+    needs_confirm = not yes
     if needs_confirm:
         if not sys.stdin.isatty():
             typer.echo(
