@@ -35,7 +35,15 @@ services:
       timeout: 5s
       retries: 3
     restart: unless-stopped
-    mem_limit: 4g
+    # Container memory cap. Default 4g suits a small / single-VM deploy.
+    # DuckDB enforces memory_limit per-connection and (1.5+) defaults a
+    # fresh connection to ~80% of the cgroup limit, so on a larger host
+    # the right move is to raise BOTH this cap and the app's per-connection
+    # budgets — leaving this at 4g on a 16 GiB VM starves the app while the
+    # host sits idle, and the cgroup OOM-killer SIGKILLs uvicorn mid-WAL-write
+    # (see stop_grace_period note below). Override per deployment via the
+    # env_file, e.g. AGNES_APP_MEM_LIMIT=10g in .env.
+    mem_limit: ${AGNES_APP_MEM_LIMIT:-4g}
     mem_reservation: 1g
     cpus: 2.0
     # Default 10s is too short for graceful uvicorn shutdown — under load,
@@ -86,7 +94,9 @@ services:
       app:
         condition: service_healthy
     restart: unless-stopped
-    mem_limit: 2g
+    # Default 2g; override via AGNES_SCHEDULER_MEM_LIMIT in .env. See the
+    # app service's mem_limit note for the cgroup / per-connection rationale.
+    mem_limit: ${AGNES_SCHEDULER_MEM_LIMIT:-2g}
     cpus: 1.0
     # Match app service — scheduler holds DuckDB connections too; same
     # WAL-corruption risk on SIGKILL during recreate.
