@@ -2942,19 +2942,17 @@ async def update_table(
         if merged.get("query_mode") != "materialized":
             merged["source_query"] = None
 
-        # Cross-source coherence: query_mode='materialized' requires a
-        # non-empty source_query for ALL source types, not just BigQuery.
-        # BQ rows without source_query can be server-generated from
-        # bucket+source_table (handled by _validate_bigquery_register_payload
-        # via the synthetic RegisterTableRequest below). Non-BQ rows (e.g.
-        # Keboola) still require an explicit source_query at PUT time.
+        # Cross-source coherence: query_mode='materialized' + source_query rules:
+        # - bigquery: null OK — server-generates source_query from bucket+source_table.
+        # - keboola:  null OK — null means full-table export (valid at registration too;
+        #             see RegisterTableRequest validator which guards only non-empty sq).
+        # - all others: require an explicit non-empty source_query.
         if merged.get("query_mode") == "materialized":
             sq = merged.get("source_query")
             if not sq or not str(sq).strip():
-                # BQ rows: let _validate_bigquery_register_payload generate
-                # source_query from bucket+source_table (falls through below).
-                # Non-BQ rows: no server-generate fallback; raise 422.
-                if merged.get("source_type") != "bigquery":
+                # BQ and Keboola both allow null/empty source_query — fall through.
+                # All other source types require an explicit source_query; raise 422.
+                if merged.get("source_type") not in ("bigquery", "keboola"):
                     raise HTTPException(
                         status_code=422,
                         detail=(
