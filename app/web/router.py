@@ -2334,6 +2334,16 @@ async def admin_tables(
     return templates.TemplateResponse(request, "admin_tables.html", ctx)
 
 
+@router.get("/admin/sync", response_class=HTMLResponse)
+async def admin_sync_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Sync status dashboard — per-table extraction state + manual trigger."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_sync.html", ctx)
+
+
 @router.get("/admin/server-config", response_class=HTMLResponse)
 async def admin_server_config_page(
     request: Request,
