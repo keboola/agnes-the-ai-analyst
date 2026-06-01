@@ -129,6 +129,7 @@ for f in os.listdir(d):
         with open(tmp, "w") as fh:
             json.dump(data, fh, indent=2)
         os.replace(tmp, p)
+        os.chmod(p, 0o600)  # H2-NEW: tmp inherited umask 0644; restore 0600.
         continue
     candidates.append((os.path.getmtime(p), p))
 candidates.sort()
@@ -156,6 +157,7 @@ tmp = p + ".tmp"
 with open(tmp, "w") as fh:
     json.dump(data, fh, indent=2)
 os.replace(tmp, p)
+os.chmod(p, 0o600)  # H2-NEW: tmp inherited umask 0644; restore 0600.
 PY
 }
 
