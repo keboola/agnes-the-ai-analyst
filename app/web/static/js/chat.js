@@ -5,6 +5,21 @@ let ws = null;
 let currentChatId = null;
 let inFlightToolCalls = new Map();
 
+// Promise that resolves on the first ``ready`` / ``runner_ready`` frame from
+// the server after we open a WebSocket. ``ws.readyState === 1`` (the TCP/HTTP
+// handshake) does NOT mean the server-side ``ChatManager.attach`` has finished
+// spawning the runner and populated ``live[chat_id]`` — that takes ~5 s for
+// E2B sandbox creation. If we send ``user_msg`` during that window the server
+// raises ``SessionNotFound``, closes the WS with 4404, and the user sees
+// "Disconnected — click the conversation again to resume." with no idea why.
+// All ``user_msg`` sends now ``await`` this promise first.
+let serverReadyPromise = null;
+let resolveServerReady = null;
+function resetServerReady() {
+  serverReadyPromise = new Promise((r) => { resolveServerReady = r; });
+}
+resetServerReady();
+
 // --- capability empty-state panel ---------------------------------
 // Populated from a server-embedded JSON blob
 // (``<script type="application/json" id="chat-capabilities-data">``).
@@ -389,10 +404,14 @@ async function openSession(chatId, wsUrlOverride) {
   }
 
   const proto = location.protocol === "https:" ? "wss" : "ws";
+  resetServerReady();
   ws = new WebSocket(`${proto}://${location.host}${wsUrl}`);
   ws.onmessage = (ev) => handleFrame(JSON.parse(ev.data));
   ws.onclose = () => {
     setStatus("Disconnected — click the conversation again to resume.", "warn");
+    // Re-arm so the next openSession starts with an unresolved promise;
+    // resolveServerReady is replaced fresh in resetServerReady().
+    resetServerReady();
   };
 }
 
@@ -401,6 +420,12 @@ function handleFrame(frame) {
     case "ready":
     case "runner_ready":
       setStatus("Connected.", "ok");
+      // Unblock any in-flight ``submitUserMessage`` that's awaiting the
+      // server's confirmation that the runner is alive. Two frames fire
+      // (``ready`` once after WS open, ``runner_ready`` after subprocess
+      // boot) but the first one is enough — manager.attach has populated
+      // self._live by the time ``ready`` goes out.
+      if (resolveServerReady) resolveServerReady();
       break;
     case "token":
       appendToken(frame.text);
@@ -1289,6 +1314,25 @@ async function submitUserMessage(text) {
   }
   renderMessage({ role: "user", content: text });
   lastUserText = text;
+  // Wait for the server's ``ready`` frame before sending the first
+  // ``user_msg`` — see ``serverReadyPromise`` definition for why. After
+  // the first ready of a session this promise is already resolved, so
+  // subsequent messages flow through with zero added latency.
+  try {
+    await Promise.race([
+      serverReadyPromise,
+      new Promise((_, rej) => setTimeout(() => rej(new Error("server-ready timeout 30 s")), 30000)),
+    ]);
+  } catch (err) {
+    setStatus(`Runner did not become ready: ${err.message}`, "error");
+    clearThinkingPlaceholder();
+    return;
+  }
+  if (!ws || ws.readyState !== 1) {
+    setStatus("WebSocket dropped before runner became ready.", "error");
+    clearThinkingPlaceholder();
+    return;
+  }
   ws.send(JSON.stringify({ type: "user_msg", text }));
   const ta = $("chat-input");
   if (ta) {

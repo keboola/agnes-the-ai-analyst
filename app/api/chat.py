@@ -1,6 +1,7 @@
 """FastAPI chat REST + WebSocket endpoints."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 import time
@@ -191,14 +192,33 @@ async def ws_stream(ws: WebSocket, chat_id: str, ticket: str):
                 frame = await ws.receive_json()
                 kind = frame.get("type")
                 if kind == "user_msg":
-                    await mgr.send_user_message(chat_id_v, frame.get("text", ""))
+                    # The client may send ``user_msg`` as soon as the WS is
+                    # TCP-open, but ``attach()`` hasn't necessarily finished
+                    # ``_spawn_runner`` (E2B sandbox creation can take ~5 s),
+                    # so ``live[chat_id]`` may not exist yet. Wait briefly
+                    # for ``attach`` to populate it before raising — without
+                    # this, an early ``user_msg`` triggers SessionNotFound,
+                    # ws_stream closes the WS with 4404, and the user sees
+                    # "Disconnected" before the runner has a chance to boot.
+                    text = frame.get("text", "")
+                    for _ in range(60):  # up to 30 s total at 0.5 s ticks
+                        try:
+                            await mgr.send_user_message(chat_id_v, text)
+                            break
+                        except SessionNotFound:
+                            await asyncio.sleep(0.5)
+                    else:
+                        await ws.send_json({
+                            "type": "error",
+                            "kind": "runner_not_ready",
+                            "message": "Runner did not become ready within 30 s.",
+                        })
                 elif kind == "cancel":
                     await mgr.cancel(chat_id_v)
         except WebSocketDisconnect:
             return
 
     try:
-        import asyncio
         attach_task = asyncio.create_task(mgr.attach(chat_id_v, ws))
         await reader_loop()
         attach_task.cancel()
