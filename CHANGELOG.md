@@ -86,6 +86,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   native newline so multi-line prompts still work.
 
 ### Fixed
+- **Cloud-chat: inline tool blocks stuck on "running…" and the composer
+  never re-enabled.** The runner scanned only `AssistantMessage` content for
+  `ToolResultBlock`, but the SDK delivers tool results in a `UserMessage`, so
+  no `tool_result` frame was emitted (the inline block never flipped to done)
+  and no `done` frame was emitted (the Stop button never cleared). The runner
+  now emits `tool_result` from `UserMessage` blocks and a `done` frame at each
+  turn's end.
+- **`agnes query`: point at `--remote` when there's no local data.** A bare
+  `agnes query` with no local DuckDB used to say only "Run: agnes pull" — which
+  in the cloud-chat sandbox drags down every granted table (multi-GB). The
+  hint now leads with `agnes query --remote "<SQL>"`, which runs server-side
+  against the same RBAC-filtered views with no download; `agnes pull` remains
+  the offline-friendly option for laptop analysts.
 - **Cloud-chat: ordered-list markers overflowed the message bubble.** The
   global CSS reset zeroes list padding, so markdown lists in assistant
   replies rendered their `list-style-position: outside` markers in the
