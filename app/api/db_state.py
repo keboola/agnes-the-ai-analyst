@@ -61,13 +61,28 @@ def _urls_alias(a: str, b: str) -> bool:
 
 
 def _validate_cloud_url(url: str) -> None:
-    """Reject obviously-wrong cloud URLs early (H3).
+    """Reject obviously-wrong cloud URLs early (H3) and reserved/private
+    addresses (MED-2).
 
-    Required: scheme starts with ``postgresql``, host non-empty,
+    H3 — Required: scheme starts with ``postgresql``, host non-empty,
     database non-empty. Catches misclicks (sqlite://, file://, http://)
     and incomplete URLs (missing host or DB name) before any
     state-machine writes happen.
+
+    MED-2 — Reject loopback / GCE metadata (169.254.169.254) /
+    RFC1918 private / link-local / CGNAT (RFC6598) / IPv6 ULA. Without
+    this, an admin posting ``cloud_url=postgresql://x:y@169.254.169.254:5432/db``
+    triggers ``alembic upgrade head`` opening a TCP socket to the GCE
+    metadata server — the server-fingerprint error in the job's
+    ``error.message`` then leaks service liveness. SSRF / port-probe
+    primitive from any admin path.
+
+    Opt-in test override: ``AGNES_ALLOW_RESERVED_CLOUD_URL=1`` skips
+    the reserved-range check (used by the test harness for fixtures
+    pointing at 127.0.0.1).
     """
+    import ipaddress
+
     try:
         parsed = make_url(url)
     except (ArgumentError, ValueError) as e:
@@ -82,6 +97,54 @@ def _validate_cloud_url(url: str) -> None:
         raise HTTPException(400, detail="cloud_url must include a host")
     if not parsed.database:
         raise HTTPException(400, detail="cloud_url must include a database name")
+
+    # === MED-2: reserved-range rejection ===
+    if os.environ.get("AGNES_ALLOW_RESERVED_CLOUD_URL") == "1":
+        return  # explicit test/dev opt-in
+
+    host = parsed.host
+    # ``localhost`` — reject without DNS resolution.
+    if host.lower() == "localhost":
+        raise HTTPException(
+            400,
+            detail=(
+                "cloud_url host is loopback (localhost) — reserved; "
+                "set AGNES_ALLOW_RESERVED_CLOUD_URL=1 for tests/dev"
+            ),
+        )
+    # IP literal?
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return  # hostname → DNS resolution happens later in psycopg; pre-class can't classify
+    if ip.is_loopback:
+        raise HTTPException(
+            400,
+            detail=f"cloud_url host is loopback ({ip}); reserved",
+        )
+    if ip.is_link_local:
+        # Includes 169.254.169.254 (GCE/AWS IMDS).
+        raise HTTPException(
+            400,
+            detail=(
+                f"cloud_url host is link-local ({ip}) — covers GCE/AWS metadata service; reserved"
+            ),
+        )
+    if ip.is_private:
+        raise HTTPException(
+            400,
+            detail=f"cloud_url host is private ({ip}); reserved (RFC1918 / IPv6 ULA)",
+        )
+    if isinstance(ip, ipaddress.IPv4Address) and ip in ipaddress.ip_network("100.64.0.0/10"):
+        raise HTTPException(
+            400,
+            detail=f"cloud_url host is CGNAT ({ip}); reserved (RFC6598)",
+        )
+    if ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+        raise HTTPException(
+            400,
+            detail=f"cloud_url host is reserved/multicast/unspecified ({ip})",
+        )
 
 
 def _redact_url(url: str | None) -> str | None:
