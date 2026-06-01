@@ -22,6 +22,10 @@ def build_demo_extract(out_dir: str) -> str:
         db_path.unlink()
 
     gen = duckdb.connect()
+    # Standalone script: pin the session timezone to UTC so the `now()`
+    # written into _meta.extracted_at is stored UTC-naive (matches the
+    # server's pinned DB). See src/duckdb_conn._open_duckdb.
+    gen.execute("SET GLOBAL TimeZone='UTC'")
     gen.execute(
         "CREATE TABLE orders_demo AS "
         "SELECT i AS order_id, (i % 500) AS customer_id, "
@@ -37,6 +41,7 @@ def build_demo_extract(out_dir: str) -> str:
     )
 
     ext = duckdb.connect(str(db_path))
+    ext.execute("SET GLOBAL TimeZone='UTC'")
     ext.execute(
         "CREATE TABLE _meta(table_name VARCHAR, description VARCHAR, rows BIGINT, "
         "size_bytes BIGINT, extracted_at TIMESTAMP, query_mode VARCHAR)"
