@@ -36,33 +36,32 @@ log = logging.getLogger(__name__)
 # JSON/JSONB column registry
 # ---------------------------------------------------------------------------
 
-# (table_name, column_name) pairs that must be CAST(... AS JSONB) in PG.
-# DuckDB returns these as Python dict/list; psycopg needs them serialised
-# to text before the cast.
-_JSON_COLUMNS: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("audit_log", "params"),
-        ("audit_log", "params_before"),
-        ("metric_definitions", "sql_variants"),
-        ("metric_definitions", "validation"),
-        ("bq_metadata_cache", "clustered_by"),
-        ("bq_metadata_cache", "known_columns"),
-        ("user_sync_settings", "tables"),
-        ("table_profiles", "profile"),
-        ("user_observability_views", "query_json"),
-        ("usage_events", "friction_tags"),
-        ("marketplace_plugins", "source_spec"),
-        ("marketplace_plugins", "raw"),
-        ("marketplace_plugins", "doc_links"),
-        ("store_entities", "doc_paths"),
-        ("store_entities", "version_history"),
-        ("store_submissions", "inline_checks"),
-        ("store_submissions", "llm_findings"),
-        ("knowledge_items", "tags"),
-        ("knowledge_items", "contributors"),
-        ("knowledge_items", "entities"),
-    }
-)
+def _build_json_columns() -> frozenset[tuple[str, str]]:
+    """Derive the set of ``(table, column)`` JSONB pairs from the PG
+    Base.metadata. H6-NEW: pre-fix the set was hand-maintained and
+    drifted (``data_packages.tags`` declared JSONB in
+    ``src/models/data_packages.py:55`` but absent here, along with
+    ``data_packages.when_to_use``, ``when_not_to_use``,
+    ``example_questions``, ``recipes.related_table_ids``,
+    ``table_registry.sample_questions``, and
+    ``table_registry.pairs_well_with``). Deriving dynamically guarantees
+    every model-declared JSONB column gets the ``CAST(:col AS JSONB)``
+    treatment in ``_build_insert`` + the ``json.dumps`` wrapper in the
+    copy loop.
+    """
+    import src.models  # noqa: F401 — registers all models on Base
+    from sqlalchemy.dialects.postgresql import JSONB
+    from src.db_pg import Base
+
+    out: set[tuple[str, str]] = set()
+    for table in Base.metadata.sorted_tables:
+        for col in table.columns:
+            if isinstance(col.type, JSONB):
+                out.add((table.name, col.name))
+    return frozenset(out)
+
+
+_JSON_COLUMNS: frozenset[tuple[str, str]] = _build_json_columns()
 
 
 # ---------------------------------------------------------------------------
