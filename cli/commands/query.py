@@ -67,7 +67,7 @@ def query_command(
 
 def _query_local(sql: str, fmt: str, limit: int):
     """Run query against local DuckDB."""
-    import duckdb
+    from src.duckdb_conn import _open_duckdb
 
     local_dir = Path(os.environ.get("AGNES_LOCAL_DIR", "."))
     db_path = local_dir / "user" / "duckdb" / "analytics.duckdb"
@@ -75,7 +75,7 @@ def _query_local(sql: str, fmt: str, limit: int):
         typer.echo("Local DuckDB not found. Run: agnes pull", err=True)
         raise typer.Exit(1)
 
-    conn = duckdb.connect(str(db_path), read_only=True)
+    conn = _open_duckdb(str(db_path), read_only=True)
     try:
         result = conn.execute(sql).fetchmany(limit)
         columns = [desc[0] for desc in conn.description] if conn.description else []

@@ -288,6 +288,10 @@ class JiraConsistencyChecker:
 
         try:
             con = duckdb.connect()
+            try:
+                con.execute("SET GLOBAL TimeZone='UTC'")
+            except duckdb.Error:
+                pass
             result = con.execute(f"""
                 SELECT DISTINCT issue_key
                 FROM read_parquet('{pattern}')

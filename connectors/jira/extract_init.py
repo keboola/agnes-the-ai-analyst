@@ -11,6 +11,8 @@ from pathlib import Path
 
 import duckdb
 
+from src.duckdb_conn import _open_duckdb
+
 logger = logging.getLogger(__name__)
 
 JIRA_TABLES = ["issues", "comments", "attachments", "changelog", "issuelinks", "remote_links"]
@@ -27,7 +29,7 @@ def init_extract(output_dir: str | Path) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
 
     db_path = output_path / "extract.duckdb"
-    conn = duckdb.connect(str(db_path))
+    conn = _open_duckdb(str(db_path))
 
     try:
         # Create _meta table
@@ -84,7 +86,7 @@ def update_meta(output_dir: str | Path, table_name: str) -> None:
         init_extract(output_dir)
         return
 
-    conn = duckdb.connect(str(db_path))
+    conn = _open_duckdb(str(db_path))
     try:
         table_dir = output_path / "data" / table_name
         parquets = list(table_dir.glob("*.parquet"))

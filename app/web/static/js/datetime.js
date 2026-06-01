@@ -12,11 +12,22 @@
   "use strict";
 
   function parseIso(s) {
-    if (!s) return null;
+    if (s === null || s === undefined || s === "") return null;
+    // Non-string inputs (numbers, booleans, Date, etc.) are caller bugs
+    // — reject rather than silently producing a 1970 epoch from a stray
+    // 0 or a "2009 from milliseconds" from a numeric timestamp.
+    if (typeof s !== "string") return null;
+    // Date-only strings ('YYYY-MM-DD'): ECMAScript spec parses these as
+    // UTC midnight, which is the right anchor for a server-emitted
+    // calendar date. No tz fixup needed.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      var dOnly = new Date(s + "T00:00:00Z");
+      return isNaN(dOnly.getTime()) ? null : dOnly;
+    }
     // Defensive: a caller omitting the offset gets treated as UTC. The
     // server serializer (`app/serialization.py`) should make this branch
     // unreachable for API-emitted values.
-    if (typeof s === "string" && /T\d{2}:\d{2}/.test(s) && !/(Z|[+\-]\d{2}:?\d{2})$/.test(s)) {
+    if (/T\d{2}:\d{2}/.test(s) && !/(Z|[+\-]\d{2}:?\d{2})$/.test(s)) {
       s = s + "Z";
     }
     var d = new Date(s);
