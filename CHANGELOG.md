@@ -25,6 +25,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`/me/mcp` — AI Tools page.** New user-facing page in the primary nav ("AI Tools") listing all MCP tools available to the caller: the six static Agnes tools (`server_info`, `catalog`, `schema`, `describe`, `query`, `skills`), Universal MCP passthrough tools visible via RBAC grants, and marketplace skills with invocation key and description. Includes a "Download Setup Bundle" button so users can set up Cowork directly from the page.
 - **`skills` MCP tool + `GET /api/v2/marketplace/skills` endpoint.** HTTP MCP server now exposes a `skills` tool that returns all marketplace skills the authenticated user has RBAC access to — each entry includes the full SKILL.md body (frontmatter stripped) so Claude can load skill instructions directly into its context without a follow-up request. Backed by the new lightweight `app/api/v2_marketplace.py` router; RBAC filtering mirrors the existing `marketplace_plugins` resource-grant model.
 
+### Fixed
+- **Keboola `materialized` tables with DuckDB SQL as `source_query` crashed sync** with `JSONDecodeError`. `materialize_query` in the Keboola extractor expects a JSON filter spec or null — not SQL. Added an explicit check that surfaces a clear error message directing admins to use `query_mode='local'` or clear `source_query` for full-table export.
+
 ### Internal
 - Schema v61: `mcp_sources`, `tool_registry`, `tool_grants` — Universal MCP source registry and RBAC tool grants.
 - Schema v62: `mcp_secrets` — shared Fernet vault for MCP source auth tokens.
