@@ -280,6 +280,7 @@ def start_migration(payload: MigrateRequest) -> dict:
     import json as _json
     from src.db_state_machine import (
         BackendState,
+        BackendNotYetSupportedError,
         InvalidTransitionError,
         MigrationInProgressError,
         MigrationLock,
@@ -297,6 +298,25 @@ def start_migration(payload: MigrateRequest) -> dict:
         validate_transition(current_state, target_state)
     except InvalidTransitionError as e:
         raise HTTPException(400, detail=str(e))
+    except BackendNotYetSupportedError as e:
+        raise HTTPException(501, detail=str(e))
+
+    # H7-NEW: reverse migrations to DuckDB are reserved in
+    # _ALLOWED_TRANSITIONS but the migrator does not yet wire
+    # ``target='duckdb'`` / ``'duckdb_quack'``. Reject at the endpoint
+    # with 501 so the API contract is honest — versus silently
+    # mis-routing to CLOUD because the branch logic was
+    # ``payload.target == 'side_car' else cloud``.
+    if payload.target in ("duckdb", "duckdb_quack"):
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                f"target={payload.target!r} is reserved in the state-machine "
+                "matrix but the migrator does not yet support reverse "
+                "migrations to DuckDB. Not yet supported — tracked for a "
+                "follow-up release."
+            ),
+        )
 
     if payload.target == "cloud":
         if not payload.cloud_url:
