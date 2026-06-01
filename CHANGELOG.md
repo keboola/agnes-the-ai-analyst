@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.29] — 2026-06-01
+
+### Added
+- **`agnes admin autodoc-tables` — LLM-generate descriptions for undescribed tables (#399).** Most registered tables ship with no `description`, weakening `agnes catalog` for AI agents. The command reads each undescribed table's stored profile (columns + sample rows) and asks the configured LLM (Haiku by default, via `connectors.llm`) for a short factual description, then saves it via `TableRegistryRepository.set_description`. Only empty descriptions are filled — an existing one is never overwritten — and only already-profiled tables are touched. `--table` to target one, `--dry-run` to preview, `--limit N` to cap. Pure prompt/parse core in `src/table_autodoc.py` (no `app.`/DB/network deps). Uses `ANTHROPIC_API_KEY` / `LLM_API_KEY` (or the instance `ai:` block).
+
 ## [0.55.28] — 2026-06-01
 
 ### Added
