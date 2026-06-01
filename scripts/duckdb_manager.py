@@ -13,6 +13,8 @@ Usage:
 """
 
 import duckdb
+
+from src.duckdb_conn import _open_duckdb
 import logging
 import os
 import sys
@@ -410,7 +412,7 @@ def init_duckdb(
                   f"{len(remote_tables)} remote, {hybrid_count} hybrid")
 
         # Connect to database (creates if doesn't exist)
-        conn = duckdb.connect(db_path)
+        conn = _open_duckdb(db_path)
 
         if verbose:
             print("\n   Creating views from parquet files...")
