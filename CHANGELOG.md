@@ -16,6 +16,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 - **Removed the four remaining `.container:has(.X-page) { max-width: none }` per-page container opt-outs** (`admin_user_detail`, `admin_group_detail`, `admin_server_config`, `store_upload`). Each inner wrapper is ≤ the canonical 1280px container (`.ud-page`/`.gd-page` 1100px, `.cfg-page` 1260px) or the override was redundant (`store_upload`'s `> main` reset already lives on the canonical `.container`), so rendered width is unchanged — pages now ride the canonical `.container`. This + the guards close the structural-enforcement half of #367; the remaining per-page `<style>` migration onto `base_page.html` is tracked as a follow-up.
+- **Migrated `admin_session_detail`, `admin_store_submissions`, `admin_groups` onto `base_page.html` (#482, batch 1).** Each page declares its hero via top-level `page_hero_*` vars (auto-included by `base_page`) and keeps only component CSS in `{% block head_extra %}`; the redundant `.page-shell` opt-in marker, explicit `_page_hero.html` include, and per-page `_components.html` import are dropped (`base_ds` auto-imports `ds`). Rendered output is unchanged — pages ride the canonical `.container`. First batch of the `base.html` → `base_page.html` migration tail.
 
 ## [0.55.28] — 2026-06-01
 
