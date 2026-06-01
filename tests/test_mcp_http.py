@@ -21,7 +21,7 @@ import pytest
 
 def _run(coro):
     """Run a coroutine synchronously (no pytest-asyncio dependency)."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def _auth(token):
@@ -75,7 +75,7 @@ class TestAuthMiddleware:
             "query_string": b"",
             "headers": [(b"authorization", f"Bearer {tok}".encode())],
         }
-        asyncio.get_event_loop().run_until_complete(middleware(scope, None, None))
+        asyncio.run(middleware(scope, None, None))
         assert reached, "Middleware did not call inner app with valid token"
 
     def test_query_param_token_passes_through(self, seeded_app):
@@ -97,7 +97,7 @@ class TestAuthMiddleware:
             "query_string": f"token={tok}".encode(),
             "headers": [],
         }
-        asyncio.get_event_loop().run_until_complete(middleware(scope, None, None))
+        asyncio.run(middleware(scope, None, None))
         assert reached, "?token= param did not reach inner app"
 
 
