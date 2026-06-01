@@ -104,3 +104,29 @@ def test_startup_script_provisions_agnes_applier_user():
     assert "useradd --system" in tpl and "agnes-applier" in tpl
     assert "usermod -aG docker agnes-applier" in tpl
     assert "chown -R agnes-applier:agnes-applier /data/state" in tpl
+
+
+def test_startup_script_chowns_env_to_agnes_applier():
+    """B3-NEW + reviewer's recommendation: startup-script.sh.tpl must
+    chown /opt/agnes/.env to agnes-applier:agnes-applier IMMEDIATELY
+    after writing it. The bootstrap unit's ExecStart re-asserts this
+    on every boot, but the first boot has a window between .env
+    landing and the unit firing — during which a same-host attacker
+    or a misconfigured cloud-init step could observe root-owned
+    plaintext creds (mode 0600 root is fine for confidentiality but
+    breaks the non-root applier's first run before the bootstrap
+    unit runs)."""
+    from pathlib import Path
+
+    tpl = Path("infra/modules/customer-instance/startup-script.sh.tpl").read_text()
+    # Look for the post-write chown. Accepts either form:
+    #   chown agnes-applier:agnes-applier /opt/agnes/.env
+    #   install -o agnes-applier -g agnes-applier ... /opt/agnes/.env
+    assert ("chown agnes-applier:agnes-applier /opt/agnes/.env" in tpl
+            or "install -o agnes-applier" in tpl
+                and "/opt/agnes/.env" in tpl), (
+        "startup-script.sh.tpl must chown /opt/agnes/.env to "
+        "agnes-applier IMMEDIATELY after writing it (B3-NEW + "
+        "reviewer's recommendation — don't rely on the bootstrap "
+        "unit's later run to fix ownership)."
+    )

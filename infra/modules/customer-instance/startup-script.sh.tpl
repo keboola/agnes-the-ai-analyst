@@ -286,6 +286,17 @@ $CADDY_TLS_LINE
 $AGNES_TEMP_DIR_LINE
 ENVEOF
 chmod 600 "$APP_DIR/.env"
+# B3-NEW: chown .env to agnes-applier IMMEDIATELY so the non-root
+# applier's very first run (before the bootstrap unit fires) can
+# already source the file. The bootstrap unit's ExecStart re-asserts
+# this every boot in case an operator (or agnes-auto-upgrade) rewrites
+# .env later.
+if ! id -u agnes-applier >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin \
+            --user-group agnes-applier
+fi
+chown agnes-applier:agnes-applier /opt/agnes/.env
+chmod 0600 /opt/agnes/.env
 
 # --- 5. Start Agnes ---
 COMPOSE_PROFILES_ARG=""
