@@ -48,6 +48,8 @@ def build_demo_extract(out_dir: str) -> str:
     )
     for tname, desc in _TABLES.items():
         pq = data / f"{tname}.parquet"
+        # Emit the parquet for distribution (agnes pull) + sync_state hashing,
+        # exactly like a real connector's local-mode output.
         gen.execute(f"COPY {tname} TO '{pq}' (FORMAT parquet)")
         rows = gen.execute(f"SELECT count(*) FROM {tname}").fetchone()[0]
         size = os.path.getsize(pq)
@@ -55,7 +57,24 @@ def build_demo_extract(out_dir: str) -> str:
             "INSERT INTO _meta VALUES (?, ?, ?, ?, now(), 'local')",
             [tname, desc, rows, size],
         )
-        ext.execute(f"CREATE VIEW \"{tname}\" AS SELECT * FROM read_parquet('{pq}')")
+        # The orchestrator exposes a master view as `SELECT * FROM <source>."<tname>"`,
+        # i.e. it queries this inner object — it never re-reads the parquet path
+        # baked here. Real connectors back the inner object with
+        # `read_parquet('<abs path>')`, which is fine for them because the parquet
+        # lives under the same live DATA_DIR they query from. The demo extract is
+        # different: it is baked into the image at *build* time (DEMO_EXTRACT_DIR,
+        # /data/extracts/demo) and ATTACHed at *boot*, so any baked absolute (or
+        # CWD-relative) parquet path breaks the moment the runtime /data mount or
+        # DATA_DIR differs from build time (DuckDB resolves a view's relative
+        # read_parquet against the process CWD, not the extract.duckdb location).
+        # Embed the data as a real table inside extract.duckdb instead: the inner
+        # object is then self-contained and mount-independent, while the parquet
+        # on disk still serves distribution. Read back from the parquet so the
+        # embedded table is byte-for-byte the distributed data.
+        safe_pq = str(pq).replace("'", "''")
+        ext.execute(
+            f'CREATE TABLE "{tname}" AS SELECT * FROM read_parquet(\'{safe_pq}\')'
+        )
     ext.close()
     gen.close()
     return str(db_path)
