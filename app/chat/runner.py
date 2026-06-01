@@ -215,8 +215,16 @@ async def _real_agent_loop(
                                 })
                                 budget_hit = True
                                 break
+                            # ``id`` is the per-call ``tool_use_id`` —
+                            # echoed back verbatim by ``ToolResultBlock``
+                            # so the frontend can pair a tool_call with
+                            # its result even when several calls to the
+                            # same tool are in flight. ``tool`` carries
+                            # the human-readable name for the inline
+                            # block header.
                             _emit({
                                 "type": "tool_call",
+                                "id": block.id,
                                 "tool": block.name,
                                 "args": block.input,
                             })
@@ -230,6 +238,7 @@ async def _real_agent_loop(
                                 )
                             _emit({
                                 "type": "tool_result",
+                                "id": block.tool_use_id,
                                 "tool": block.tool_use_id,
                                 "result": result,
                             })

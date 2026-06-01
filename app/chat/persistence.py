@@ -138,6 +138,35 @@ class ChatRepository:
             "UPDATE chat_sessions SET archived = TRUE WHERE id = ?", [chat_id]
         )
 
+    def set_title(self, chat_id: str, title: str) -> None:
+        """Persist a new title for a session. Safe to call after
+        ``chat_messages`` rows exist — ``title`` is not part of any
+        secondary index on ``chat_sessions``, so it's not subject to the
+        DuckDB 1.5.3 FK+index bug that prevents UPDATE of
+        ``last_message_at`` / ``message_count``.
+
+        Used by the auto-title path (Haiku-generated title after the
+        first assistant turn) and would also be the home for any future
+        inline-rename UI."""
+        self._conn.execute(
+            "UPDATE chat_sessions SET title = ? WHERE id = ?", [title, chat_id]
+        )
+
+    def get_first_user_message(self, chat_id: str) -> Optional[str]:
+        """First user-role message content in a session (oldest by
+        ``created_at``), or ``None`` if the session has no user turns yet.
+
+        Used as the auto-title prompt: the first user message captures
+        the topic better than any later turn (which is usually a
+        follow-up / refinement)."""
+        row = self._conn.execute(
+            "SELECT content FROM chat_messages "
+            "WHERE session_id = ? AND role = 'user' "
+            "ORDER BY created_at ASC LIMIT 1",
+            [chat_id],
+        ).fetchone()
+        return row[0] if row else None
+
     def archive_empty_user_sessions(
         self,
         user_email: str,

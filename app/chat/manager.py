@@ -56,6 +56,11 @@ class LiveSession:
     # (and removes the previous one from `tasks`) so the per-session task
     # list does not grow unboundedly across crashes.
     current_pump: Optional[asyncio.Task] = None
+    # Set to True once an auto-title task has been scheduled for this
+    # session — guarantees we only fire Haiku once per live session
+    # even if the user sends a second turn while the first one is
+    # still in-flight.
+    auto_title_started: bool = False
 
 
 class ChatManager:
@@ -304,6 +309,13 @@ class ChatManager:
                     tokens_out=frame.get("tokens_out"),
                     model=frame.get("model"),
                 )
+                # Auto-title: the first assistant_message in a session
+                # is the trigger to ask Haiku for a short title. We
+                # check the per-session flag (not just the persisted
+                # title) so two rapid-fire assistant frames during
+                # crash-respawn replay don't both fire the call.
+                if not live.auto_title_started:
+                    self._maybe_start_auto_title(live)
             elif frame.get("type") == "tool_call":
                 write_audit(
                     self._repo._conn,
@@ -468,6 +480,67 @@ class ChatManager:
             action="chat.session_killed",
             details={"session_id": chat_id, "reason": reason},
         )
+
+    # --- auto-title ---------------------------------------------------------
+
+    def _maybe_start_auto_title(self, live: LiveSession) -> None:
+        """Schedule a Haiku call to generate a session title if it
+        doesn't have one yet. Idempotent per live session — sets
+        ``auto_title_started`` before returning so a second
+        ``assistant_message`` for the same session is a no-op.
+
+        Best-effort: any failure is swallowed inside the task so the
+        chat session never breaks because Haiku is down or
+        ``ANTHROPIC_API_KEY`` is missing. The task itself is appended
+        to ``live.tasks`` so :meth:`kill` cancels it on shutdown.
+        """
+        session = self._repo.get_session(live.chat_id)
+        if session is None or session.title:
+            # Either it already has a title (user-supplied at create
+            # time, or a previous auto-title already landed and the
+            # flag was reset by a respawn) or the session vanished.
+            live.auto_title_started = True
+            return
+        live.auto_title_started = True
+        task = asyncio.create_task(self._run_auto_title(live))
+        live.tasks.append(task)
+
+    async def _run_auto_title(self, live: LiveSession) -> None:
+        """Task body: fetch the first user message, call Haiku, persist
+        the title, broadcast a ``session_renamed`` frame.
+
+        All errors are caught and logged — title generation is a
+        cosmetic enhancement, not a load-bearing piece of the chat
+        pipeline."""
+        from app.chat.auto_title import generate_title
+        try:
+            first_user = self._repo.get_first_user_message(live.chat_id)
+            if not first_user:
+                # The runner emitted an assistant_message before any
+                # user_msg was persisted — shouldn't happen in normal
+                # flow, but bail cleanly if it does.
+                return
+            title = await generate_title(first_user)
+            if not title:
+                return
+            self._repo.set_title(live.chat_id, title)
+            # Push the new title to the live WS so the sidebar +
+            # thread header update without a refresh. ws.send_json may
+            # raise if the socket has dropped — swallow it; the
+            # persisted title will surface on the next sidebar load.
+            try:
+                await live.ws.send_json({
+                    "type": "session_renamed",
+                    "chat_id": live.chat_id,
+                    "title": title,
+                })
+            except Exception:
+                logger.debug(
+                    "auto-title: ws.send_json failed for %s; title still persisted",
+                    live.chat_id,
+                )
+        except Exception:
+            logger.exception("auto-title task crashed for %s", live.chat_id)
 
     # --- idle reaper --------------------------------------------------------
 

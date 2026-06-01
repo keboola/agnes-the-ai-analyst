@@ -193,6 +193,14 @@ async function loadSidebar() {
   }
   const empty = $("cloud-chat-empty-state");
   if (empty) empty.hidden = list.length > 0;
+  // If the user collapsed the sidebar earlier, re-swap each newly
+  // rendered label for its initial. ``applySidebarCollapse`` is a
+  // no-op when the persisted state is "expanded", so safe to always
+  // call here. Defined later in the file but hoisted by ``function``
+  // declaration so the call works at load time.
+  if (typeof applySidebarCollapse === "function") {
+    applySidebarCollapse(isSidebarCollapsed());
+  }
 }
 
 /** Single sidebar <li> for a session. Pulled out so the date-group
@@ -406,6 +414,9 @@ function handleFrame(frame) {
     case "assistant_message":
       finalizeAssistantMessage(frame);
       break;
+    case "session_renamed":
+      applySessionRename(frame);
+      break;
     case "cancelled":
       setStatus(`Cancelled tool: ${frame.tool || ""}`, "warn");
       $("cancel-btn").hidden = true;
@@ -420,6 +431,46 @@ function handleFrame(frame) {
       $("cancel-btn").hidden = true;
       break;
   }
+}
+
+/** Apply a server-pushed title update for a session — fires when the
+ *  Haiku auto-title (or any future inline rename) lands. We update:
+ *
+ *  - the in-memory sidebar cache so Cmd+K picks up the new title;
+ *  - the sidebar <li>'s visible label + aria/title attributes;
+ *  - the main-panel thread header, if the renamed session is active.
+ *
+ *  No-op if the frame is malformed or for a session we don't know
+ *  about (e.g. the user already deleted it). */
+function applySessionRename(frame) {
+  const { chat_id: id, title } = frame || {};
+  if (!id || !title) return;
+  // Cache update — Cmd+K palette reads from here.
+  const cached = _sessionsCache.find(s => s.id === id);
+  if (cached) cached.title = title;
+  // Live sidebar item.
+  const li = document.querySelector(`#chat-list li[data-id="${id}"]`);
+  if (li) {
+    const label = li.querySelector(".cloud-chat-list-label");
+    if (label) {
+      // When the sidebar is collapsed, the visible content is the
+      // initial — store the new full title in data-full-title so the
+      // expand-back round-trip is lossless. Otherwise just paint the
+      // new title in directly.
+      if (typeof isSidebarCollapsed === "function" && isSidebarCollapsed()) {
+        label.dataset.fullTitle = title;
+        label.textContent = _firstInitial({ title });
+      } else {
+        label.textContent = title;
+      }
+    }
+    li.title = title;
+    li.setAttribute("aria-label", `Open ${title}`);
+    const del = li.querySelector(".cloud-chat-list-del");
+    if (del) del.setAttribute("aria-label", `Delete ${title}`);
+  }
+  // Main-panel header.
+  if (id === currentChatId) setThreadTitle(title);
 }
 
 // ---------- Bubble + avatar + actions ------------------------------------
@@ -870,31 +921,337 @@ function finalizeAssistantMessage(frame) {
   }
 }
 
+// ---------- Inline tool-call blocks --------------------------------------
+// Each tool call renders as a self-contained block in the message stream:
+//
+//   ┌─ ⏳ run_query ························ args ─┐    while running
+//   ├─ ✓ run_query · 1.2s ······························┤    once result arrives
+//   │   <result preview — first N rows as a table, or  │
+//   │    a short text snippet, or a JSON code block>    │
+//   └────────────────────────────────────────────────────┘
+//
+// Args + full result are always reachable behind "Show args" / "Show
+// full result" toggles so power users can dig in. Tabular results
+// (the most common — `agnes catalog`, `agnes query`, `agnes describe`)
+// get a real <table> preview so the user sees what came back without
+// having to expand.
+//
+// Status icons: ⏳ = running, ✓ = done, ⚠ = error, ⊘ = cancelled. The
+// status class on the wrapper tints the left border accordingly so a
+// failed tool call is unmistakable at a glance.
+
+const _TOOL_RESULT_PREVIEW_ROWS = 5;
+const _TOOL_RESULT_TEXT_PREVIEW_CHARS = 280;
+
+function _toolCallId(frame) {
+  // Prefer a unique id (e.g. tool_use_id) so two concurrent calls to
+  // the same tool don't share a DOM node; fall back to the tool name.
+  return frame.id || frame.tool_use_id || frame.tool;
+}
+
+function _summarizeArgs(args) {
+  if (args == null) return "";
+  if (typeof args === "string") return args.length > 80 ? args.slice(0, 78) + "…" : args;
+  if (typeof args !== "object") return String(args);
+  const keys = Object.keys(args);
+  if (keys.length === 0) return "";
+  // Heuristic: prefer the SQL arg if present (run_query, agnes query)
+  // — that's what the user actually wants to see. Otherwise show the
+  // first scalar value or a "k=v, k=v" sketch.
+  if (typeof args.sql === "string") {
+    const sql = args.sql.replace(/\s+/g, " ").trim();
+    return sql.length > 100 ? sql.slice(0, 98) + "…" : sql;
+  }
+  if (typeof args.table === "string") return args.table;
+  if (typeof args.name === "string") return args.name;
+  const parts = [];
+  for (const k of keys.slice(0, 3)) {
+    const v = args[k];
+    if (v == null) continue;
+    const text = typeof v === "object" ? JSON.stringify(v) : String(v);
+    parts.push(`${k}=${text.length > 30 ? text.slice(0, 28) + "…" : text}`);
+  }
+  return parts.join(", ");
+}
+
 function renderToolCallStart(frame) {
   clearThinkingPlaceholder();
-  const det = document.createElement("details");
-  det.open = false;
-  det.dataset.tool = frame.tool;
-  det.innerHTML = `<summary>⏳ tool: ${frame.tool}</summary>
-    <pre><code>${JSON.stringify(frame.args, null, 2)}</code></pre>`;
-  $("chat-messages").appendChild(det);
-  enhanceCodeBlocks(det);
-  inFlightToolCalls.set(frame.tool, det);
+  const wrap = document.createElement("section");
+  wrap.className = "cloud-chat-tool is-running";
+  wrap.dataset.tool = frame.tool;
+  wrap.dataset.startedAt = String(performance.now());
+
+  // Header line — icon + tool name + args summary. Always visible.
+  const head = document.createElement("div");
+  head.className = "cloud-chat-tool-head";
+  const icon = document.createElement("span");
+  icon.className = "cloud-chat-tool-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "⏳";
+  head.appendChild(icon);
+
+  const name = document.createElement("span");
+  name.className = "cloud-chat-tool-name";
+  name.textContent = frame.tool || "tool";
+  head.appendChild(name);
+
+  const summary = document.createElement("span");
+  summary.className = "cloud-chat-tool-summary";
+  summary.textContent = _summarizeArgs(frame.args);
+  head.appendChild(summary);
+
+  const meta = document.createElement("span");
+  meta.className = "cloud-chat-tool-meta";
+  meta.textContent = "running…";
+  head.appendChild(meta);
+
+  wrap.appendChild(head);
+
+  // Args panel — collapsed by default. Surfaced as a small <details>
+  // so the noise is one click away when needed.
+  if (frame.args && Object.keys(frame.args).length > 0) {
+    const argsDet = document.createElement("details");
+    argsDet.className = "cloud-chat-tool-args";
+    const argsSum = document.createElement("summary");
+    argsSum.textContent = "Show args";
+    argsDet.appendChild(argsSum);
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    code.textContent = JSON.stringify(frame.args, null, 2);
+    pre.appendChild(code);
+    argsDet.appendChild(pre);
+    wrap.appendChild(argsDet);
+    enhanceCodeBlocks(argsDet);
+  }
+
+  $("chat-messages").appendChild(wrap);
+  inFlightToolCalls.set(_toolCallId(frame), wrap);
   maybeScrollToBottom();
   $("cancel-btn").hidden = false;
 }
 
 function renderToolCallEnd(frame) {
-  const det = inFlightToolCalls.get(frame.tool);
-  if (det) {
-    det.querySelector("summary").textContent = `✓ tool: ${frame.tool}`;
-    const pre = document.createElement("pre");
-    pre.innerHTML = `<code>${JSON.stringify(frame.result, null, 2).slice(0, 4000)}</code>`;
-    det.appendChild(pre);
-    enhanceCodeBlocks(det);
-    inFlightToolCalls.delete(frame.tool);
-    maybeScrollToBottom();
+  const id = _toolCallId(frame);
+  const wrap = inFlightToolCalls.get(id);
+  if (!wrap) return;
+  inFlightToolCalls.delete(id);
+
+  // Status update — error/cancel surfaced; otherwise success.
+  const result = frame.result;
+  const isError = _looksLikeToolError(result);
+  wrap.classList.remove("is-running");
+  wrap.classList.add(isError ? "is-error" : "is-done");
+  const icon = wrap.querySelector(".cloud-chat-tool-icon");
+  if (icon) icon.textContent = isError ? "⚠" : "✓";
+
+  // Timing meta — "running…" → "1.2s" if we tracked startedAt.
+  const meta = wrap.querySelector(".cloud-chat-tool-meta");
+  if (meta) {
+    const startedAt = parseFloat(wrap.dataset.startedAt || "");
+    if (Number.isFinite(startedAt)) {
+      const elapsedMs = performance.now() - startedAt;
+      meta.textContent = elapsedMs > 1000
+        ? `${(elapsedMs / 1000).toFixed(1)}s`
+        : `${Math.round(elapsedMs)}ms`;
+    } else {
+      meta.textContent = isError ? "failed" : "done";
+    }
   }
+
+  // Result body — the new bit. Picks a preview shape based on the
+  // payload: tabular → mini-table; string → snippet; everything else
+  // → JSON code block. Full payload is always reachable via the
+  // "Show full result" toggle even if the preview is truncated.
+  const body = _renderToolResultPreview(result);
+  if (body) wrap.appendChild(body);
+
+  maybeScrollToBottom();
+}
+
+/** Heuristic: a stringified tool error coming back from the agent SDK
+ *  often starts with "error:" / "Error:" or contains "is_error":true
+ *  when it's a JSON object. Best-effort — we just need a signal to
+ *  switch the icon. */
+function _looksLikeToolError(result) {
+  if (result == null) return false;
+  if (typeof result === "string") {
+    const head = result.trim().slice(0, 12).toLowerCase();
+    return head.startsWith("error") || head.startsWith("traceback");
+  }
+  if (typeof result === "object") {
+    if (result.is_error === true) return true;
+    if (typeof result.error === "string" && result.error.length > 0) return true;
+  }
+  return false;
+}
+
+/** Build the preview block for a tool result. The CLI tools route
+ *  most JSON / table output via agnes which speaks Markdown — so
+ *  result strings often contain `|---|---|` table markup that
+ *  marked.parse() can render natively. We:
+ *
+ *  1. attempt to extract a tabular preview from a parsed JSON result
+ *     (array of objects, or a {columns, rows} shape);
+ *  2. fall back to running ``marked.parse`` over a string result so
+ *     embedded Markdown tables get rendered as real <table>s with the
+ *     `.ds-table` sort+sticky-header enhancement; and
+ *  3. fall back to a JSON code block for everything else.
+ *
+ *  Returns a DOM element ready to append, or null if the result is
+ *  empty.
+ */
+function _renderToolResultPreview(result) {
+  if (result == null || result === "") return null;
+
+  // Already-tabular JSON shapes — render a real <table> preview.
+  const table = _coerceToTablePreview(result);
+  if (table) return table;
+
+  // String result. Most agnes CLI tool output is Markdown-ish; let
+  // marked.parse() try to render it.
+  if (typeof result === "string") {
+    const wrap = document.createElement("div");
+    wrap.className = "cloud-chat-tool-result is-text";
+
+    const preview = result.length > _TOOL_RESULT_TEXT_PREVIEW_CHARS
+      ? result.slice(0, _TOOL_RESULT_TEXT_PREVIEW_CHARS) + "…"
+      : result;
+
+    const previewBody = document.createElement("div");
+    previewBody.className = "cloud-chat-tool-result-preview";
+    try {
+      previewBody.innerHTML = marked.parse(preview);
+      enhanceCodeBlocks(previewBody);
+      enhanceTables(previewBody);
+    } catch (_) {
+      previewBody.textContent = preview;
+    }
+    wrap.appendChild(previewBody);
+
+    if (result.length > _TOOL_RESULT_TEXT_PREVIEW_CHARS) {
+      const det = document.createElement("details");
+      det.className = "cloud-chat-tool-result-full";
+      const sum = document.createElement("summary");
+      sum.textContent = "Show full result";
+      det.appendChild(sum);
+      const full = document.createElement("div");
+      full.className = "cloud-chat-tool-result-full-body";
+      try {
+        full.innerHTML = marked.parse(result);
+        enhanceCodeBlocks(full);
+        enhanceTables(full);
+      } catch (_) {
+        const pre = document.createElement("pre");
+        pre.textContent = result;
+        full.appendChild(pre);
+      }
+      det.appendChild(full);
+      wrap.appendChild(det);
+    }
+    return wrap;
+  }
+
+  // Everything else — pretty-printed JSON inside a <pre>.
+  const wrap = document.createElement("div");
+  wrap.className = "cloud-chat-tool-result is-json";
+  const pre = document.createElement("pre");
+  const code = document.createElement("code");
+  code.textContent = JSON.stringify(result, null, 2).slice(0, 4000);
+  pre.appendChild(code);
+  wrap.appendChild(pre);
+  enhanceCodeBlocks(wrap);
+  return wrap;
+}
+
+/** Try to coerce a tool result into a [{col: val}…] shape and render
+ *  the first N rows as a real <table>. Returns null if the result
+ *  doesn't look tabular. Recognised shapes:
+ *
+ *    - ``[{a: 1, b: 2}, {a: 3, b: 4}]``  — array of homogeneous objects
+ *    - ``{columns: ["a","b"], rows: [[1,2],[3,4]]}`` — DuckDB-ish
+ *    - ``{data: [{...}, {...}]}`` — wrapping envelope used by some tools
+ */
+function _coerceToTablePreview(result) {
+  let rows = null;
+  let columns = null;
+
+  if (Array.isArray(result) && result.length > 0 && typeof result[0] === "object" && result[0] !== null) {
+    rows = result.map(r => ({ ...r }));
+    columns = Object.keys(result[0]);
+  } else if (result && typeof result === "object") {
+    if (Array.isArray(result.rows) && Array.isArray(result.columns)) {
+      columns = result.columns.map(String);
+      rows = result.rows.map(r => {
+        const obj = {};
+        for (let i = 0; i < columns.length; i++) obj[columns[i]] = r[i];
+        return obj;
+      });
+    } else if (Array.isArray(result.data) && result.data.length > 0
+               && typeof result.data[0] === "object") {
+      rows = result.data.map(r => ({ ...r }));
+      columns = Object.keys(result.data[0]);
+    }
+  }
+
+  if (!rows || !columns || rows.length === 0) return null;
+
+  const total = rows.length;
+  const preview = rows.slice(0, _TOOL_RESULT_PREVIEW_ROWS);
+
+  const wrap = document.createElement("div");
+  wrap.className = "cloud-chat-tool-result is-table";
+
+  const table = document.createElement("table");
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const c of columns) {
+    const th = document.createElement("th");
+    th.textContent = c;
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const r of preview) {
+    const tr = document.createElement("tr");
+    for (const c of columns) {
+      const td = document.createElement("td");
+      const v = r[c];
+      td.textContent = v == null ? "" : (typeof v === "object" ? JSON.stringify(v) : String(v));
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "cloud-chat-table-wrap";
+  tableWrap.appendChild(table);
+  wrap.appendChild(tableWrap);
+
+  // "Show full result" reveals the entire JSON below.
+  if (total > preview.length) {
+    const meta = document.createElement("p");
+    meta.className = "cloud-chat-tool-result-meta";
+    meta.textContent = `Showing ${preview.length} of ${total} rows.`;
+    wrap.appendChild(meta);
+    const det = document.createElement("details");
+    det.className = "cloud-chat-tool-result-full";
+    const sum = document.createElement("summary");
+    sum.textContent = "Show all rows (JSON)";
+    det.appendChild(sum);
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    code.textContent = JSON.stringify(rows, null, 2);
+    pre.appendChild(code);
+    det.appendChild(pre);
+    wrap.appendChild(det);
+    enhanceCodeBlocks(det);
+  }
+
+  enhanceTables(wrap);
+  return wrap;
 }
 
 /** Make sure a WebSocket is live, or open one.
@@ -1037,6 +1394,89 @@ function applyTheme(theme) {
   btn.setAttribute("aria-pressed", isDarkTheme() ? "true" : "false");
   btn.addEventListener("click", () => {
     applyTheme(isDarkTheme() ? "light" : "dark");
+  });
+})();
+
+// ---------- Sidebar mini-mode --------------------------------------------
+// Collapse the sidebar to a 56px rail showing only icons + per-row
+// initials. State persists via localStorage["agnes-chat-sidebar-
+// collapsed"]; the head pre-paint script primes <html data-chat-
+// sidebar="mini"> to avoid a flash on reload. On boot we promote that
+// transitional signal to a .is-mini class on the shell, and swap each
+// sidebar item's label text for the conversation's first character so
+// the rail reads as a column of initials.
+
+const _SIDEBAR_KEY = "agnes-chat-sidebar-collapsed";
+
+function _firstInitial(s) {
+  const t = (s && (s.title || "")).trim();
+  if (t) return t[0].toUpperCase();
+  // Fall back to a glyph rather than empty — Untitled chats still
+  // need a tap target in the rail.
+  return "•";
+}
+
+/** Apply mini-mode to the DOM. Idempotent. ``collapsed=true`` swaps
+ *  every sidebar item's label for an initial; ``false`` restores the
+ *  full title text from ``_sessionsCache`` (or the data-id lookup). */
+function applySidebarCollapse(collapsed) {
+  const shell = document.querySelector(".cloud-chat-shell");
+  if (shell) shell.classList.toggle("is-mini", collapsed);
+  document.documentElement.removeAttribute("data-chat-sidebar");
+
+  const toggle = $("chat-sidebar-toggle");
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    toggle.setAttribute(
+      "aria-label",
+      collapsed ? "Expand sidebar" : "Collapse sidebar",
+    );
+    toggle.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+  }
+
+  // Swap labels for initials (or back). Done in JS rather than CSS
+  // because no pure-CSS rule can extract the first character of an
+  // arbitrary string. Cached titles are preserved in data-full-title
+  // so we can restore them losslessly without re-reading the API.
+  const items = document.querySelectorAll("#chat-list li[data-id]");
+  for (const li of items) {
+    const label = li.querySelector(".cloud-chat-list-label");
+    if (!label) continue;
+    if (collapsed) {
+      if (!label.dataset.fullTitle) label.dataset.fullTitle = label.textContent;
+      const cached = _sessionsCache.find(s => s.id === li.dataset.id);
+      label.textContent = _firstInitial(cached || { title: label.dataset.fullTitle });
+    } else {
+      if (label.dataset.fullTitle) {
+        label.textContent = label.dataset.fullTitle;
+        delete label.dataset.fullTitle;
+      }
+    }
+  }
+}
+
+function isSidebarCollapsed() {
+  try { return localStorage.getItem(_SIDEBAR_KEY) === "1"; }
+  catch (_) { return false; }
+}
+
+function setSidebarCollapsed(collapsed) {
+  try {
+    if (collapsed) localStorage.setItem(_SIDEBAR_KEY, "1");
+    else localStorage.removeItem(_SIDEBAR_KEY);
+  } catch (_) { /* storage disabled — state survives until reload */ }
+  applySidebarCollapse(collapsed);
+}
+
+(function wireSidebarToggle() {
+  const btn = $("chat-sidebar-toggle");
+  if (!btn) return;
+  // Apply whatever the pre-paint script primed. The sidebar items
+  // aren't in the DOM yet (loadSidebar runs after) — we re-apply
+  // there so initials show on first render.
+  applySidebarCollapse(isSidebarCollapsed());
+  btn.addEventListener("click", () => {
+    setSidebarCollapsed(!isSidebarCollapsed());
   });
 })();
 

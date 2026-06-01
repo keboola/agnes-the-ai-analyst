@@ -32,6 +32,16 @@
         if (t === "dark" || t === "blue") {
           document.documentElement.setAttribute("data-theme", t);
         }
+        // Pre-paint sidebar-collapsed state. The chat shell isn't in
+        // the DOM yet, so we stamp <html data-chat-sidebar="mini">
+        // and let chat.css's selectors target either the shell
+        // (after parse) or the html attribute as a transitional
+        // signal. chat.js promotes this to a class on the shell once
+        // the page is interactive.
+        var c = localStorage.getItem("agnes-chat-sidebar-collapsed");
+        if (c === "1") {
+          document.documentElement.setAttribute("data-chat-sidebar", "mini");
+        }
       } catch (_) { /* private mode / storage disabled — no-op */ }
     })();
   </script>
@@ -86,6 +96,23 @@
 <div class="cloud-chat-shell">
   <aside class="cloud-chat-sidebar" aria-label="Conversations">
     <header class="cloud-chat-sidebar-header">
+      {# Collapse toggle — the sidebar can shrink to a ~56px rail that
+         shows just the +New chat icon, conversation initials, and the
+         theme toggle. State persists in ``localStorage["agnes-chat-
+         sidebar-collapsed"]`` so the user's preference survives
+         reloads. The aria-expanded flag mirrors the visible state so
+         screen readers report it correctly. #}
+      <button type="button" id="chat-sidebar-toggle"
+              class="btn btn-ghost btn-sm cloud-chat-sidebar-toggle"
+              aria-label="Collapse sidebar"
+              aria-expanded="true">
+        <svg class="cloud-chat-sidebar-toggle-icon" viewBox="0 0 16 16"
+             width="14" height="14" aria-hidden="true"
+             fill="none" stroke="currentColor" stroke-width="1.6"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h11"/>
+        </svg>
+      </button>
       <span class="cloud-chat-sidebar-title">Conversations</span>
       <button type="button" id="new-chat"
               class="btn btn-primary btn-sm cloud-chat-new-btn"
@@ -93,7 +120,7 @@
         <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
           <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
         </svg>
-        New chat
+        <span class="cloud-chat-new-btn-label">New chat</span>
       </button>
     </header>
     <ul id="chat-list" class="cloud-chat-list" role="list"></ul>

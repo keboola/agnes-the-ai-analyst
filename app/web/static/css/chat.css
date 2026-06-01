@@ -19,7 +19,16 @@
    too narrow). */
 .cloud-chat-shell {
   --chat-sidebar-width: 280px;
+  --chat-sidebar-width-mini: 56px;
   --chat-reading-width: 880px;
+}
+/* When the sidebar is collapsed, ``.is-mini`` on the shell — or the
+   transitional ``data-chat-sidebar="mini"`` on <html>, set by the
+   anti-FOUC head script so the rail width applies before chat.js
+   boots — swaps the grid track to the rail width. */
+.cloud-chat-shell.is-mini,
+:root[data-chat-sidebar="mini"] .cloud-chat-shell {
+  --chat-sidebar-width: var(--chat-sidebar-width-mini);
 }
 
 /* App-surface body class — chat is meant to fill the viewport like
@@ -76,6 +85,20 @@ body.chat-page-body main { margin: 0; padding: 0; }
   text-transform: uppercase;
   letter-spacing: 1.2px;            /* matches the --tracking-eyebrow spec in system.md */
   color: var(--ds-text-secondary);
+}
+
+/* Collapse-toggle icon button. Composes ``.btn .btn-ghost .btn-sm``;
+   page-local rule keeps the icon sized + the focus ring per system.md
+   non-negotiables. The chevron points right (expand) when collapsed,
+   left (collapse) when open — flipped via the mini-mode selector. */
+.cloud-chat-sidebar-toggle {
+  flex: 0 0 auto;
+  padding: 6px;
+}
+.cloud-chat-sidebar-toggle svg { width: 14px; height: 14px; }
+.cloud-chat-sidebar-toggle:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
 }
 
 /* Composes ``.btn .btn-primary .btn-sm`` from style-custom.css. The
@@ -221,6 +244,67 @@ body.chat-page-body main { margin: 0; padding: 0; }
    show the sun when dark (i.e. "click for light"), moon when light. */
 :root[data-theme="dark"] .cloud-chat-theme-icon-moon { display: none; }
 :root:not([data-theme="dark"]) .cloud-chat-theme-icon-sun { display: none; }
+
+/* ===== Sidebar mini-mode =====
+   When ``.is-mini`` is on the shell, the sidebar collapses to a
+   ~56px rail. Labels disappear; only icons + first-letter avatars
+   for each conversation remain so the user can still click their
+   way around. The toggle button stays full-width-visible (it's the
+   user's escape hatch back to the expanded view). */
+.cloud-chat-shell.is-mini .cloud-chat-sidebar-header {
+  padding: var(--space-3) 6px;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
+}
+.cloud-chat-shell.is-mini .cloud-chat-sidebar-title { display: none; }
+.cloud-chat-shell.is-mini .cloud-chat-new-btn { padding: 6px; gap: 0; }
+.cloud-chat-shell.is-mini .cloud-chat-new-btn-label { display: none; }
+
+.cloud-chat-shell.is-mini .cloud-chat-list { padding: var(--space-2) 6px; }
+.cloud-chat-shell.is-mini .cloud-chat-list li {
+  padding: 8px 0;
+  justify-content: center;
+}
+.cloud-chat-shell.is-mini .cloud-chat-list-label {
+  /* Replace the full title with a circular initial badge — sized via
+     padding rather than fixed width so the focus ring still hugs the
+     content. Title text becomes the badge's tooltip via the native
+     ``title`` attribute already on the <li>. */
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  font-size: var(--text-xs);
+  font-weight: var(--font-bold);
+  color: var(--ds-text-secondary);
+  overflow: hidden;
+  /* Strip the original text to the first character via a clever
+     trick: clip-path + scale would be fragile. Instead JS swaps the
+     label content for the initial when entering mini-mode and
+     restores it on expand. The base ellipsis rules still apply if
+     JS hasn't run yet — that's fine for the FOUC window. */
+}
+.cloud-chat-shell.is-mini .cloud-chat-list li.is-active .cloud-chat-list-label {
+  background: var(--ds-accent-info-bg);
+  border-color: var(--ds-accent-info-line);
+  color: var(--ds-accent-info-ink);
+}
+.cloud-chat-shell.is-mini .cloud-chat-list-del { display: none; }
+.cloud-chat-shell.is-mini .cloud-chat-list-group-header { display: none; }
+.cloud-chat-shell.is-mini .cloud-chat-sidebar-empty { display: none; }
+
+.cloud-chat-shell.is-mini .cloud-chat-sidebar-footer {
+  padding: var(--space-2) 6px var(--space-3);
+  justify-content: center;
+}
+.cloud-chat-shell.is-mini .cloud-chat-theme-toggle { padding: 6px; gap: 0; }
+.cloud-chat-shell.is-mini .cloud-chat-theme-label { display: none; }
 
 /* ============================================================ main panel */
 
@@ -692,7 +776,10 @@ body.chat-page-body main { margin: 0; padding: 0; }
   .msg.is-streaming .msg-body::after { animation: none; }
 }
 
-/* tool-call collapsible blocks */
+/* tool-call collapsible blocks — legacy <details> rendering for
+   tool_calls embedded inside the persisted assistant message
+   (renderMessage path). The live in-stream renderer uses the richer
+   .cloud-chat-tool family below. */
 .cloud-chat-messages details {
   margin: var(--space-1) 0;
   padding: var(--space-2) var(--space-3);
@@ -713,6 +800,117 @@ body.chat-page-body main { margin: 0; padding: 0; }
   border-radius: var(--radius-sm);
   font-size: var(--text-sm);
   overflow-x: auto;
+}
+
+/* ===== Inline tool-call blocks ===== */
+/* Renders each live tool_call as a self-contained block in the
+   message stream. Three visual states keyed on a status class:
+     .is-running  — pending, accent-info border, ⏳ icon
+     .is-done     — success, accent-success border, ✓ icon
+     .is-error    — failure,  accent-danger border, ⚠ icon
+
+   The block layout: small "card" sitting inline in the messages
+   feed, capped at the reading column so wide previews share the
+   same gutter as message bubbles. Args + full-result are tucked
+   inside collapsed <details> below the header. */
+.cloud-chat-tool {
+  margin: var(--space-2) auto;
+  padding: var(--space-3) var(--space-4);
+  max-width: var(--chat-reading-width);
+  border: 1px solid var(--ds-border);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--ds-surface-dim);
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm);
+}
+.cloud-chat-tool.is-running { border-left-color: var(--ds-accent-info-line); }
+.cloud-chat-tool.is-done    { border-left-color: var(--ds-accent-success-line); }
+.cloud-chat-tool.is-error   { border-left-color: var(--ds-accent-danger-line); }
+
+.cloud-chat-tool-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.cloud-chat-tool-icon {
+  flex: 0 0 auto;
+  font-size: var(--text-md);
+  line-height: 1;
+}
+.cloud-chat-tool-name {
+  flex: 0 0 auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: var(--font-medium);
+  color: var(--ds-text-primary);
+}
+.cloud-chat-tool-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--ds-text-muted);
+}
+.cloud-chat-tool-meta {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  color: var(--ds-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.cloud-chat-tool-args,
+.cloud-chat-tool-result-full {
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--radius-sm);
+}
+.cloud-chat-tool-args > summary,
+.cloud-chat-tool-result-full > summary {
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--ds-text-muted);
+}
+.cloud-chat-tool-args pre,
+.cloud-chat-tool-result-full pre {
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  background: transparent;
+  font-size: var(--text-xs);
+  overflow-x: auto;
+}
+
+.cloud-chat-tool-result {
+  margin-top: var(--space-3);
+}
+.cloud-chat-tool-result.is-table .cloud-chat-table-wrap {
+  margin: 0;
+  max-height: 280px;
+  overflow: auto;
+}
+.cloud-chat-tool-result-meta {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--ds-text-muted);
+}
+.cloud-chat-tool-result-preview > :first-child { margin-top: 0; }
+.cloud-chat-tool-result-preview > :last-child  { margin-bottom: 0; }
+.cloud-chat-tool-result.is-json pre {
+  margin: 0;
+  padding: var(--space-2);
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  max-height: 280px;
+  overflow: auto;
 }
 
 /* ============================================================ composer

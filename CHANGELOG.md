@@ -23,6 +23,34 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   cloud-chat feature so the same release ships the surface that
   consumes RBAC-filtered marketplace plugins and the tool that makes
   authoring those plugins cheap.
+- **Cloud-chat: auto-generated session titles.** After the first
+  assistant turn lands, `ChatManager` calls Haiku 4.5 with the first
+  user message and writes a 2–6 word title back to
+  `chat_sessions.title`. A new `session_renamed` WS frame pushes the
+  title to the open browser tab so the sidebar entry + the thread
+  header update without a refresh. Best-effort: any Haiku failure (no
+  API key, timeout, refusal) leaves the title NULL — chats never break
+  because the title call is down. Lives in `app/chat/auto_title.py`;
+  `ChatRepository.set_title` is the new persistence helper (safe to
+  UPDATE because `title` is not part of any secondary index, sidestepping
+  the DuckDB 1.5.3 FK+index bug).
+- **Cloud-chat: inline streaming tool blocks.** Each `tool_call` now
+  renders as a self-contained block in the message stream with status
+  (⏳ → ✓ / ⚠), wall-clock timing, the tool name + a one-line args
+  summary, and a result preview as soon as the `tool_result` lands.
+  Tabular results (array of objects, `{columns, rows}` shape, or
+  `{data: [...]}`) render as a real `<table>` preview (first 5 rows)
+  composing the `.ds-table` family; string results route through
+  `marked.parse` so embedded Markdown tables get the same treatment.
+  Full args / full result are always reachable behind small `<details>`
+  toggles for power users.
+- **Cloud-chat: collapsible sidebar (mini-mode).** A new toggle in the
+  sidebar header collapses the 280px sidebar to a 56px icon-rail
+  showing per-conversation initials, +New chat as an icon, and the
+  theme toggle. State persists in
+  `localStorage["agnes-chat-sidebar-collapsed"]`; an anti-FOUC pre-paint
+  script primes the rail width before chat.js boots so reloads don't
+  flash the full sidebar.
 - **`POST /api/chat/sessions/{chat_id}/ticket`** mints a fresh WS ticket
   for an EXISTING chat session. The web UI now uses this when the user
   clicks an old conversation in the sidebar — re-attaching to the same
@@ -33,6 +61,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   shape as the messages endpoint, no existence disclosure).
 
 ### Changed
+- **Cloud-chat runner now emits `id` on `tool_call` + `tool_result` frames.**
+  The previous shape used `tool: <name>` on the call and
+  `tool: <tool_use_id>` on the result, so the frontend couldn't pair a
+  call with its result when two calls to the same tool were in flight.
+  Both frames now carry the same `id` (the SDK `tool_use_id`); `tool`
+  still carries the human-readable name on the call. The inline tool-
+  block renderer keys on `id` and matches reliably.
 - **Cloud-chat empty-state capability panel reads from a server-side
   RBAC snapshot.** Previously chat.js called `/api/catalog` (wrong URL —
   the real endpoint is `/api/catalog/tables`) and `/api/marketplaces`
