@@ -46,10 +46,9 @@ def _validate_color(value: Optional[str]) -> Optional[str]:
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.repositories import data_packages_repo
+from src.repositories import data_packages_repo, tool_registry_repo
 from src.repositories.audit import AuditRepository
 from src.repositories.table_registry import TableRegistryRepository
-from src.repositories.tool_registry import ToolRegistryRepository
 
 logger = logging.getLogger(__name__)
 
@@ -657,10 +656,10 @@ async def add_tool_to_package(
 ):
     """Attach an MCP tool to the package. 404 if either side is missing,
     200 + ``{added: True/False}`` to mirror /tables — idempotent."""
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     if not repo.get(pkg_id):
         raise HTTPException(status_code=404, detail="data_package_not_found")
-    tool_repo = ToolRegistryRepository(conn)
+    tool_repo = tool_registry_repo()
     tool = tool_repo.get(payload.tool_id)
     if not tool:
         raise HTTPException(status_code=404, detail="tool_not_found")
@@ -684,7 +683,7 @@ async def remove_tool_from_package(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Detach an MCP tool from the package. Idempotent on missing row."""
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     if not repo.get(pkg_id):
         raise HTTPException(status_code=404, detail="data_package_not_found")
     removed = repo.remove_tool(pkg_id, tool_id)

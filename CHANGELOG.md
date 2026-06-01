@@ -33,6 +33,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Admin API now rejects Keboola `materialized` rows with SQL `source_query` at registration time.** Both `RegisterTableRequest` and the `PUT /api/admin/registry/{id}` handler validate that Keboola materialized `source_query` is a JSON filter spec (or absent), not a SQL statement — preventing the mismatch from reaching sync runtime.
 - **`agnes admin mcp source list` and `tool list` crashed with `AttributeError`** when sources/tools were registered. `GET /api/admin/mcp-sources` and `GET /api/admin/mcp-tools` return bare JSON arrays; the CLI was calling `.get("sources", [])` / `.get("tools", [])` on the array, raising `AttributeError`. Callers now normalise the response shape before iterating.
 - **`GET /api/admin/data-packages/{id}` bypassed Postgres backend routing.** The handler was calling `DataPackagesRepository(conn)` directly (DuckDB-only) instead of `data_packages_repo()`, silently returning wrong results on PG deployments and raising `NameError` in unit tests. Reverted to the factory.
+- **`POST/DELETE /api/admin/data-packages/{id}/tools` endpoints bypassed backend routing.** Both handlers used `DataPackagesRepository(conn)` and `ToolRegistryRepository(conn)` directly (neither imported); raised `NameError` in tests and silently used the wrong backend on PG. Fixed to use `data_packages_repo()` and `tool_registry_repo()` factories.
+- **`connectors/mcp/extractor.py` and `cli/mcp/server.py` bypassed `_open_duckdb`.** Both files called `duckdb.connect()` directly, skipping the UTC timezone pin. Routed through `_open_duckdb` so TIMESTAMP writes are host-timezone-safe.
 
 ### Internal
 - Schema v63: `setup_tokens` — short-lived one-use tokens for the Cowork setup exchange flow.
@@ -41,6 +43,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Schema v66: `mcp_user_secrets`, `mcp_sources.scope` — per-user credential vault for `scope='per_user'` sources.
 - Schema v67: `data_package_tools` — junction table linking data packages to MCP tools (RFC #461 §6).
 - Dual-backend: `mcp_sources_pg.py`, `tool_registry_pg.py`, `setup_tokens_pg.py` — Postgres counterparts for all three new v63-v67 repositories; factory functions registered in `src/repositories/__init__.py`. `DataPackagesPgRepository` extended with `add_tool`, `remove_tool`, `list_tools` to match the DuckDB sibling.
+- SQLAlchemy models (`src/models/mcp.py`) and Alembic migration `0014_cowork_mcp_v63_v67` covering all v63–v67 tables: `setup_tokens`, `mcp_sources`, `tool_registry`, `tool_grants`, `mcp_secrets`, `mcp_user_secrets`, `data_package_tools`.
 
 ## [0.57.2] — 2026-06-01
 

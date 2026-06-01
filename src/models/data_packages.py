@@ -101,3 +101,29 @@ class DataPackageTable(Base):
         PrimaryKeyConstraint("package_id", "table_id"),
         Index("idx_data_package_tables_table", "table_id"),
     )
+
+
+class DataPackageTool(Base):
+    """Bridge between data_packages and tool_registry (M:N, v67).
+
+    Mirrors ``data_package_tables`` for MCP tools: a package can surface
+    both its analytical tables and the MCP tools that fit its workflow.
+    """
+    __tablename__ = "data_package_tools"
+
+    package_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("data_packages.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tool_id: Mapped[str] = mapped_column(String, nullable=False)
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        PrimaryKeyConstraint("package_id", "tool_id"),
+        Index("idx_data_package_tools_tool", "tool_id"),
+    )

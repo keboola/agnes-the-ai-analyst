@@ -28,6 +28,7 @@ import duckdb
 import pandas as pd
 
 from connectors.mcp.client import call_tool
+from src.duckdb_conn import _open_duckdb
 from src.repositories.mcp_sources import MCPSourceRepository
 from src.repositories.tool_registry import MATERIALIZE, ToolRegistryRepository
 
@@ -209,7 +210,7 @@ async def extract_source_async(
     summary_tables: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
 
-    out_conn = duckdb.connect(str(tmp_db_path))
+    out_conn = _open_duckdb(str(tmp_db_path))
     try:
         _create_meta(out_conn)
         for tool in tools:
@@ -297,7 +298,7 @@ def extract_source(
     summary_tables: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
 
-    out_conn = duckdb.connect(str(tmp_db_path))
+    out_conn = _open_duckdb(str(tmp_db_path))
     try:
         _create_meta(out_conn)
         for tool in tools:

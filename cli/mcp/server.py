@@ -37,6 +37,7 @@ from cli.client import api_get
 from cli.config import get_server_url, get_token
 from cli.lib.pull import run_pull
 from cli.v2_client import V2ClientError, api_get_json, api_post_json
+from src.duckdb_conn import _open_duckdb
 
 mcp = FastMCP(
     "Agnes",
@@ -196,7 +197,7 @@ def query_local(sql: str, limit: int = 1000) -> dict:
             f"Local DuckDB not found at {db_path}. Run pull() first to sync data."
         )
 
-    with duckdb.connect(str(db_path), read_only=True) as conn:
+    with _open_duckdb(str(db_path), read_only=True) as conn:
         # Apply LIMIT at the DuckDB level to protect against accidental
         # full-table scans on large cached parquets.
         wrapped = f"SELECT * FROM ({sql}) AS _q LIMIT {limit}"
