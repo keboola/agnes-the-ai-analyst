@@ -83,7 +83,7 @@ async def query_table(
 
     Pure SELECT — no aggregation, no projection control. AI clients
     that need richer queries should use the generic ``query(sql)``
-    surface from Monika's cowork foundation; this endpoint is the
+    surface from the Agnes MCP foundation; this endpoint is the
     "fast path" for the common per-table lookup.
     """
     if body.limit <= 0:
