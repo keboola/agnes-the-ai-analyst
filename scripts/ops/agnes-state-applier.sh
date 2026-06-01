@@ -269,23 +269,20 @@ _recover_stuck_jobs
 # --- Lifecycle: ensure postgres container matches the flag ----------------
 case "$TARGET" in
     side-car-enabled)
-        mkdir -p /data/postgres
-        # /data/postgres must be owned 70:70 (the Postgres image uid) so
-        # the side-car container can write to its volume. The bootstrap
-        # unit (root) already does this at boot; the guard below avoids
-        # re-running chown when the applier itself runs as non-root
-        # (User=agnes-applier) — non-root chown to a different uid
-        # requires CAP_CHOWN and would fail with "Operation not
-        # permitted" even when the directory is already correctly
-        # owned. Only attempt the chown when ownership is wrong AND
-        # we have the privilege; on success the next applier tick
-        # finds the dir already in shape and skips silently.
-        if [ "$(stat -c '%u:%g' /data/postgres 2>/dev/null || echo '')" != "70:70" ]; then
-            chown 70:70 /data/postgres 2>/dev/null || {
-                echo "WARN: chown 70:70 /data/postgres failed (insufficient privileges); bootstrap unit should have set this at boot" >&2
-            }
+        # B4-NEW tightening: bootstrap unit (root) is responsible for
+        # `mkdir -p /data/postgres && chown 70:70 /data/postgres`.
+        # startup-script.sh.tpl also pre-creates it via `install -d` at
+        # provision time. The applier (non-root, agnes-applier) must NOT
+        # attempt chown here — it would fail under set -e and abort the
+        # tick on any fresh VM where the directory is still root-owned.
+        # We only STAT and warn; actual chown belongs to the bootstrap unit.
+        if [ ! -d /data/postgres ]; then
+            echo "ERR: /data/postgres missing — bootstrap unit failed?" >&2
+            exit 1
         fi
-        chmod 700 /data/postgres 2>/dev/null || true  # owner-set only; non-root chmod is a no-op when already 700
+        if [ "$(stat -c '%u:%g' /data/postgres 2>/dev/null || echo '')" != "70:70" ]; then
+            echo "WARN: /data/postgres ownership not 70:70; bootstrap unit may have failed; postgres container may refuse to start" >&2
+        fi
         if ! docker ps --format '{{.Names}}' | grep -q '^agnes-postgres-1$'; then
             dc up -d postgres
             # Wait for postgres to accept connections — the migrator

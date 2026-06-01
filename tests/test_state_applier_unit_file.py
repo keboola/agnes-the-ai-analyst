@@ -106,6 +106,59 @@ def test_startup_script_provisions_agnes_applier_user():
     assert "chown -R agnes-applier:agnes-applier /data/state" in tpl
 
 
+def test_bootstrap_unit_chowns_data_postgres_to_70_70():
+    """B4-NEW tightening — chown 70:70 /data/postgres belongs in the
+    root-running bootstrap unit, not in the agnes-applier's ExecStart
+    (where it failed under set -e on every fresh VM)."""
+    from pathlib import Path
+
+    unit = Path("scripts/ops/agnes-state-applier-bootstrap.service").read_text()
+    assert "chown 70:70 /data/postgres" in unit or \
+           "chown -R 70:70 /data/postgres" in unit, (
+        "bootstrap unit must chown 70:70 /data/postgres (the Postgres "
+        "Alpine image uid). Pre-B4-NEW tightening the chown was in "
+        "the applier's main unit and failed as agnes-applier."
+    )
+
+
+def test_startup_script_creates_data_postgres_owned_70_70():
+    """Defence in depth: the customer-instance startup-script also
+    creates /data/postgres with the right ownership at provision time."""
+    from pathlib import Path
+
+    tpl = Path("infra/modules/customer-instance/startup-script.sh.tpl").read_text()
+    # Accepts either chown 70:70 or install -o 70 -g 70 -d.
+    assert ("chown 70:70 /data/postgres" in tpl
+            or "install -d -o 70 -g 70" in tpl and "/data/postgres" in tpl), (
+        "startup-script.sh.tpl must create /data/postgres owned 70:70"
+    )
+
+
+def test_applier_does_not_chown_data_postgres_in_exec():
+    """The applier's main ExecStart (non-root) must NOT attempt
+    chown 70:70 /data/postgres — that's the bootstrap unit's job.
+    Pre-B4-NEW tightening, the chown burned a noisy log line every
+    tick even when ownership was already correct."""
+    from pathlib import Path
+
+    script = Path("scripts/ops/agnes-state-applier.sh").read_text()
+    # The script may still STAT the dir, but it must not call chown.
+    # Allow a comment mentioning chown for context.
+    code_lines = [
+        line for line in script.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    chown_lines = [
+        line for line in code_lines
+        if "chown" in line and "/data/postgres" in line
+    ]
+    assert not chown_lines, (
+        f"applier script must not invoke `chown` on /data/postgres "
+        f"(bootstrap unit does it as root); found:\n  "
+        + "\n  ".join(chown_lines)
+    )
+
+
 def test_startup_script_chowns_env_to_agnes_applier():
     """B3-NEW + reviewer's recommendation: startup-script.sh.tpl must
     chown /opt/agnes/.env to agnes-applier:agnes-applier IMMEDIATELY
