@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import duckdb
 
-from src.db import SCHEMA_VERSION, _ensure_schema, _v60_to_v61, get_schema_version
+from src.db import SCHEMA_VERSION, _ensure_schema, _v59_to_v60, get_schema_version
 
 
 def _tables(conn) -> set[str]:
@@ -55,7 +55,7 @@ def test_schema_version_is_at_least_60():
 def test_fresh_install_lands_at_v60(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
-assert "setup_tokens" in _tables(conn)
+    assert "setup_tokens" in _tables(conn)
 
 
 def test_fresh_install_setup_tokens_columns(tmp_path):
@@ -65,12 +65,12 @@ def test_fresh_install_setup_tokens_columns(tmp_path):
     assert {"id", "user_id", "token_hash", "expires_at", "used_at", "created_at"}.issubset(cols)
 
 
-def test_v60_to_v61_is_idempotent(tmp_path):
+def test_ensure_schema_is_idempotent(tmp_path):
     """Running _ensure_schema twice must not raise."""
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
     _ensure_schema(conn)
-    assert get_schema_version(conn) == 64
+    assert get_schema_version(conn) == SCHEMA_VERSION
 
 def test_uuid_username_rewritten_to_email(tmp_path):
     """The motivating case: a session uploaded via /api/upload/sessions
@@ -94,7 +94,7 @@ def test_uuid_username_rewritten_to_email(tmp_path):
         )
         """
     )
-    _v60_to_v61(conn)
+    _v59_to_v60(conn)
     assert conn.execute(
         "SELECT username FROM usage_events WHERE id = 'evt1'"
     ).fetchone()[0] == "alice@example.com"
@@ -121,7 +121,7 @@ def test_local_part_username_rewritten_to_email(tmp_path):
         )
         """
     )
-    _v60_to_v61(conn)
+    _v59_to_v60(conn)
     assert conn.execute(
         "SELECT username FROM usage_session_summary WHERE session_file = 'bob/sess1.jsonl'"
     ).fetchone()[0] == "bob@example.com"
@@ -146,14 +146,14 @@ def test_orphan_row_left_intact(tmp_path):
         )
         """
     )
-    _v60_to_v61(conn)
+    _v59_to_v60(conn)
     assert conn.execute(
         "SELECT username FROM usage_events WHERE id = 'evt2'"
     ).fetchone()[0] == "orphan"
 
 
-def test_v60_to_v61_is_idempotent(tmp_path):
-    """Re-running _ensure_schema must not raise or double-update."""
+def test_v59_to_v60_is_idempotent(tmp_path):
+    """Re-running _v59_to_v60 must not raise or double-update."""
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
     conn.execute(
@@ -172,9 +172,8 @@ def test_v60_to_v61_is_idempotent(tmp_path):
         )
         """
     )
-    _v60_to_v61(conn)
-    _v60_to_v61(conn)  # second pass — no-op
+    _v59_to_v60(conn)
+    _v59_to_v60(conn)  # second pass — no-op
     assert conn.execute(
         "SELECT username FROM usage_events WHERE id = 'evt1'"
     ).fetchone()[0] == "alice@example.com"
-    assert get_schema_version(conn) == 60
