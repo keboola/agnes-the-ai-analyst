@@ -235,7 +235,7 @@ document.addEventListener('DOMContentLoaded', function () {
     {% if news_current %}
     <div class="meta">
         Version {{ news_current.version }} ·
-        published {{ news_current.published_at.strftime('%Y-%m-%d %H:%M UTC') if news_current.published_at else '' }}
+        published {% if news_current.published_at %}<time datetime="{{ news_current.published_at.isoformat() }}">{{ news_current.published_at.strftime('%Y-%m-%d %H:%M') }} UTC</time>{% endif %}
         {% if news_current.published_by %} by {{ news_current.published_by }}{% endif %}
     </div>
     <p style="margin:0">View live at <a href="/news">/news</a>.</p>
@@ -309,9 +309,9 @@ document.addEventListener('DOMContentLoaded', function () {
             <tr>
                 <td><strong>{{ v.version }}</strong></td>
                 <td><span class="badge badge-{{ v.status }}">{{ v.status }}</span></td>
-                <td>{{ v.created_at.strftime('%Y-%m-%d %H:%M') if v.created_at else '' }}</td>
+                <td>{% if v.created_at %}<time datetime="{{ v.created_at.isoformat() }}">{{ v.created_at.strftime('%Y-%m-%d %H:%M') }} UTC</time>{% endif %}</td>
                 <td>{{ v.created_by or '' }}</td>
-                <td>{{ v.published_at.strftime('%Y-%m-%d %H:%M') if v.published_at else '' }}</td>
+                <td>{% if v.published_at %}<time datetime="{{ v.published_at.isoformat() }}">{{ v.published_at.strftime('%Y-%m-%d %H:%M') }} UTC</time>{% endif %}</td>
                 <td>{{ v.intro_preview }}</td>
                 <td>
                     {% if v.published %}
