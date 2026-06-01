@@ -5,6 +5,7 @@ which checks Admin user_group membership for both OAuth session and PAT
 callers via the same ``_user_group_ids`` lookup.
 """
 
+import json
 import logging
 import os
 import threading
@@ -1532,6 +1533,23 @@ class RegisterTableRequest(BaseModel):
         # backticks for dashed identifiers (e.g. `prj-org.dataset.table`).
         if self.query_mode != "materialized" and sq and "`" in sq:
             raise ValueError(_BACKTICK_REJECTION_MESSAGE)
+        # Keboola materialized source_query must be a JSON filter spec, not SQL.
+        # The extractor uses the Storage API with structured filters (columns,
+        # whereFilters, changedSince) — DuckDB SQL belongs on BigQuery rows.
+        if self.query_mode == "materialized" and self.source_type == "keboola" and sq:
+            if sq.upper().startswith(("SELECT", "WITH")):
+                raise ValueError(
+                    "Keboola materialized source_query must be a JSON filter spec "
+                    "(columns/whereFilters/changedSince), not SQL. "
+                    "Use null for full-table export, or set query_mode='local' "
+                    "for DuckDB-based Keboola pulls."
+                )
+            try:
+                json.loads(sq)
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"Keboola materialized source_query must be valid JSON: {e}"
+                ) from e
         # Normalise: stash the trimmed-or-None form so the persisted column
         # never carries surrounding whitespace or empty-string sentinels.
         self.source_query = sq
@@ -2952,6 +2970,30 @@ async def update_table(
             # admin SQL through the BQ jobs API using BQ-native syntax, which
             # requires backticks for dashed project/dataset identifiers.
             # Non-materialized rows still reject backticks in the model validator.
+
+            # Keboola materialized: source_query must be a JSON filter spec,
+            # not SQL. Validate after the non-empty check above so we know sq
+            # is a non-empty string here.
+            if merged.get("source_type") == "keboola":
+                _sq = str(merged.get("source_query", "") or "").strip()
+                if _sq.upper().startswith(("SELECT", "WITH")):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            "Keboola materialized source_query must be a JSON "
+                            "filter spec (columns/whereFilters/changedSince), "
+                            "not SQL. Use null for full-table export, or set "
+                            "query_mode='local' for DuckDB-based Keboola pulls."
+                        ),
+                    )
+                if _sq:
+                    try:
+                        json.loads(_sq)
+                    except json.JSONDecodeError as _e:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"Keboola materialized source_query must be valid JSON: {_e}",
+                        ) from _e
 
         if merged.get("source_type") == "bigquery":
             # Reuse the register-time validator. It mutates the request to
