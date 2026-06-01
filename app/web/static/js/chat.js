@@ -1304,20 +1304,43 @@ async function ensureWsReady() {
 
 async function submitUserMessage(text) {
   if (!text) return;
+  // 1. Clear the composer + hide the dashboard SYNCHRONOUSLY so the user
+  //    gets immediate visual feedback that their submit was accepted.
+  //    Without this they sit watching their typed "ahoj" + the
+  //    capability cards for the ~5 s it takes the runner to boot, then
+  //    everything flips at once — feels like the page is frozen.
   hideCapabilities();
-  try {
-    await ensureWsReady();
-  } catch (err) {
-    setStatus(`Could not start chat: ${err.message}`, "error");
-    showCapabilities();
-    return;
+  const ta = $("chat-input");
+  if (ta) {
+    ta.value = "";
+    autosizeComposer();
   }
   renderMessage({ role: "user", content: text });
   lastUserText = text;
-  // Wait for the server's ``ready`` frame before sending the first
-  // ``user_msg`` — see ``serverReadyPromise`` definition for why. After
-  // the first ready of a session this promise is already resolved, so
-  // subsequent messages flow through with zero added latency.
+  // 2. Show the thinking placeholder + Stop button immediately so the
+  //    user sees *something* moving while we wait for the runner.
+  showThinkingPlaceholder();
+  $("cancel-btn").hidden = false;
+
+  // 3. Make sure we have an open WS. For a brand-new chat this calls
+  //    newChat() -> openSession(), and openSession used to flip the
+  //    dashboard back on when the (fresh, empty) session had no
+  //    history. We re-hide it after ensureWsReady so that side effect
+  //    doesn't undo what the user just dismissed by submitting.
+  try {
+    await ensureWsReady();
+    hideCapabilities();
+  } catch (err) {
+    setStatus(`Could not start chat: ${err.message}`, "error");
+    clearThinkingPlaceholder();
+    showCapabilities();
+    return;
+  }
+  // 4. Wait for the server's ``ready`` frame before sending the first
+  //    ``user_msg`` — see ``serverReadyPromise`` definition for why.
+  //    After the first ready of a session this promise is already
+  //    resolved, so subsequent messages flow through with zero added
+  //    latency.
   try {
     await Promise.race([
       serverReadyPromise,
@@ -1334,17 +1357,6 @@ async function submitUserMessage(text) {
     return;
   }
   ws.send(JSON.stringify({ type: "user_msg", text }));
-  const ta = $("chat-input");
-  if (ta) {
-    ta.value = "";
-    autosizeComposer();
-  }
-  // Show the thinking placeholder + Stop button immediately so the
-  // user sees *something* and can cancel between Send and the first
-  // server frame. The "done" / "cancelled" / "error" frames hide
-  // the Stop button again.
-  showThinkingPlaceholder();
-  $("cancel-btn").hidden = false;
 }
 
 /** Resize the composer textarea to fit its content, capped at 220px
