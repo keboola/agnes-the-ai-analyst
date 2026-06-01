@@ -295,16 +295,23 @@ async def _real_agent_loop(
     # PreToolUse hook's job and is documented as best-effort/fail-open. The
     # SDK-native in-process gate (``can_use_tool``) needs streaming-input mode
     # — a larger runner refactor tracked separately.
+    # Only load filesystem settings when the marketplace bootstrap ran — then
+    # the agent needs them to resolve the installed plugins. Both scopes
+    # matter: `refresh-marketplace` registers the marketplace in USER settings
+    # (~/.claude) but enables the plugin at PROJECT scope (cwd/.claude), so
+    # loading only one leaves the plugin unresolvable. When bootstrap is off we
+    # leave setting_sources at the SDK default (None = load nothing), keeping
+    # the lean default path.
+    _setting_sources = (
+        ["user", "project", "local"]
+        if os.environ.get("AGNES_BOOTSTRAP_MARKETPLACE") == "1"
+        else None
+    )
     async with ClaudeSDKClient(
         options=ClaudeAgentOptions(
             permission_mode="bypassPermissions",
             cwd=str(workdir),
-            # Load the project's filesystem config (.claude/) so the agent picks
-            # up the Agnes marketplace plugins/skills that _bootstrap_marketplace
-            # enabled in this cwd. The SDK loads NO filesystem settings by
-            # default (setting_sources=None) — which is why the synced
-            # marketplace was previously invisible.
-            setting_sources=["project"],
+            setting_sources=_setting_sources,
         )
     ) as client:
         # Flag to track whether we've called connect() yet
@@ -433,11 +440,12 @@ async def amain() -> None:
     # mode (tests) — there is no wheel to install.
     if not fake_agent:
         _install_agnes_cli()
-        # Install the user's marketplace plugins (skills) into this project so
-        # setting_sources=["project"] surfaces them to the agent. After the CLI
-        # install (needs the `agnes` binary); before the reader attaches for the
-        # same fd-0 reason as the install.
-        _bootstrap_marketplace(str(workdir))
+        # Opt-in (AGNES_BOOTSTRAP_MARKETPLACE=1): install the user's marketplace
+        # plugins into this project so setting_sources surfaces them. After the
+        # CLI install (needs the `agnes` binary); before the reader attaches for
+        # the same fd-0 reason as the install.
+        if os.environ.get("AGNES_BOOTSTRAP_MARKETPLACE") == "1":
+            _bootstrap_marketplace(str(workdir))
 
     _emit({"type": "runner_ready"})
     queue = await _stdin_lines()

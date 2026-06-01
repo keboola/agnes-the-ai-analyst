@@ -241,6 +241,11 @@ class ChatManager:
             "AGNES_DAILY_BUDGET_USD": str(self._config.daily_anthropic_spend_usd),
             "AGNES_PER_TOOL_CALL_SECONDS": str(self._config.per_tool_call_seconds),
             "AGNES_TOOL_CALLS_PER_TURN": str(self._config.tool_calls_per_turn_budget),
+            # Opt-in: bootstrap the user's marketplace plugins into the sandbox
+            # at spawn and load them via setting_sources. Off by default (adds
+            # per-spawn latency; only useful once the marketplace ships real
+            # skill content). See ChatConfig.bootstrap_marketplace.
+            "AGNES_BOOTSTRAP_MARKETPLACE": "1" if self._config.bootstrap_marketplace else "",
             # claude-agent-sdk inside the sandbox spawns the `claude` CLI
             # binary, which authenticates against Anthropic via this env.
             # Without it the MCP initialize handshake hangs and the runner

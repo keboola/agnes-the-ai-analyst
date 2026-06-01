@@ -37,6 +37,14 @@ class ChatConfig:
     # the moment the WS disconnects rather than letting the idle reaper
     # close it later. Cuts billable sandbox-minutes on UI close.
     e2b_kill_on_ws_disconnect: bool = True
+    # When true, the runner bootstraps the user's RBAC-filtered marketplace
+    # plugins into each sandbox at spawn (clone + `claude plugin install` +
+    # load via setting_sources) so the agent can use marketplace skills.
+    # Off by default: it adds ~10-15 s of per-spawn latency, only worthwhile
+    # once the operator's marketplace actually ships skill/agent content
+    # (an empty placeholder plugin contributes nothing). Independent of the
+    # always-on plugin.json sanitization in the marketplace packager.
+    bootstrap_marketplace: bool = False
 
 
 def load_chat_config(instance_yaml: Path) -> ChatConfig:
@@ -60,4 +68,5 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         e2b_template_id=raw.get("e2b_template_id") or None,
         e2b_workspace_max_bytes=int(raw.get("e2b_workspace_max_bytes", 100 * 1024 * 1024)),
         e2b_kill_on_ws_disconnect=bool(raw.get("e2b_kill_on_ws_disconnect", True)),
+        bootstrap_marketplace=bool(raw.get("bootstrap_marketplace", False)),
     )

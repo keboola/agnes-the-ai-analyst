@@ -86,13 +86,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   native newline so multi-line prompts still work.
 
 ### Added
-- **Cloud-chat: the agent now loads the user's marketplace skills.** At spawn
-  the runner runs `agnes refresh-marketplace --bootstrap` (clones the
-  RBAC-filtered per-user marketplace, registers it with the in-sandbox
-  `claude` CLI, enables its plugins in the session project) and the SDK client
-  is opened with `setting_sources=["project"]` so those plugins/skills (e.g.
-  `keboola-howto`) are visible to the agent — previously only Claude Code's
-  built-in skills were available.
+- **Cloud-chat: optional marketplace-skill bootstrap for the sandbox agent**
+  (`chat.bootstrap_marketplace`, default off). When enabled, the runner runs
+  `agnes refresh-marketplace --bootstrap` at spawn (clones the RBAC-filtered
+  per-user marketplace, registers it with the in-sandbox `claude` CLI, enables
+  its plugins in the session project) and opens the SDK client with
+  `setting_sources=["user","project","local"]` so the marketplace plugins
+  resolve (the marketplace is registered in user settings, the plugin enabled
+  at project scope). Off by default because it adds ~10–15 s of per-spawn
+  latency and only pays off once the marketplace ships real skill/agent
+  content — an empty placeholder plugin contributes nothing.
 
 ### Fixed
 - **Marketplace: served `plugin.json` referencing an empty component dir made
