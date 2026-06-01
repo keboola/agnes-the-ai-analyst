@@ -52,7 +52,11 @@ def _open_duckdb(path, **kwargs):
     """
     conn = duckdb.connect(path, **kwargs)
     try:
-        conn.execute("SET TimeZone='UTC'")
+        # SET GLOBAL (not session-only) so cursors created via conn.cursor()
+        # inherit the UTC pin. DuckDB cursors otherwise start with the
+        # ICU-derived host default, which defeats the pin everywhere we
+        # interact through `.cursor()` (every repository, every reader).
+        conn.execute("SET GLOBAL TimeZone='UTC'")
     except duckdb.Error:
         # Older DuckDB builds without the ICU extension already behave as
         # naive-UTC; nothing to pin.
