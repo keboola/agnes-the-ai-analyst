@@ -86,6 +86,33 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   native newline so multi-line prompts still work.
 
 ### Fixed
+- **Cloud-chat: `agnes` CLI was missing inside the sandbox.** The E2B
+  template image baked the CLI's *runtime dependencies* (typer, rich,
+  httpx, duckdb, …) but never installed the `agnes-the-ai-analyst`
+  package itself, so `which agnes` returned nothing and every data rail
+  in the "Querying Agnes data" playbook (`agnes catalog`, `query`,
+  `describe`, `snapshot create`) failed with "command not found" — even
+  though the bundled hooks and `init-complete` reported a CLI version.
+  Fixed by staging the server's own pre-built wheel (the `/app/dist`
+  artifact already served at `/cli/download`, under its original PEP 427
+  filename — pip rejects a renamed wheel — in `/tmp/agnes-cli/`, outside
+  the synced `/work` so it isn't persisted back to the workspace) at
+  spawn (`e2b_workspace_sync.upload_agnes_wheel`) and having the runner
+  `pip install --no-deps --user --break-system-packages` it before the
+  agent starts (`runner.py::_install_agnes_cli`); `/home/user/.local/bin`
+  is now on the runner's PATH so the console script resolves. Reusing the
+  server wheel keeps the in-sandbox CLI version in lockstep with the
+  server (hooks + RBAC). Best-effort: a dev image without a built wheel
+  logs a warning and the agent still runs, only the `agnes` verbs are
+  unavailable.
+- **Cloud-chat: sandbox CLI pointed at the wrong server URL.** The runner
+  env set `AGNES_API`, but the CLI reads its server URL from `AGNES_SERVER`
+  (`cli/config.py`) — `AGNES_API` had no consumer, so once the CLI was
+  installed it still fell back to `http://localhost:8000`, unreachable from
+  the remote sandbox. Now set `AGNES_SERVER` from `SERVER_URL` (the
+  deployment's public URL), falling back to `AGNES_INTERNAL_URL` then
+  loopback. Operators running cloud chat must set `SERVER_URL` to a URL the
+  sandbox can reach for the data rails to resolve.
 - **Cloud-chat: SDK `initialize` timeout caused by HOME pointing at a host-only path.**
   `ChatManager._spawn_runner` was setting `HOME=<session_dir>` on the
   sandbox subprocess. `session_dir` is an Agnes-host-side path that does
