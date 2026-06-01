@@ -791,31 +791,37 @@ def _bundle_claude_md(server_url: str, user_email: str, expires_at: datetime) ->
         **If tools are not yet in your list:** setup.py registered them at session start.
         Restart Claude Desktop once to load them. After that they persist in every session.
 
-        ## Agnes MCP tools
+        ## At session start — do this immediately
 
-        | Tool | What it does |
-        |------|-------------|
-        | `catalog` | List all tables you have access to — **always start here** |
-        | `schema(table_id)` | Column names, types, SQL hints |
-        | `describe(table_id)` | Schema + sample rows |
-        | `query(sql)` | Run SQL against Agnes data (server-side) |
-        | `server_info` | Check connectivity and your account |
-
-        Always call `catalog` first, then `schema` before writing SQL.
-
-        ## Quick start
-
-        Type `/setup-cowork` to run guided onboarding automatically.
-
-        ## If Agnes tools are missing after restart
-
-        Open Terminal on Mac, navigate to this folder, and run:
+        When this workspace opens, run this command via the Bash tool and show the results:
 
         ```
-        python3 setup.py
+        python3 agnes.py catalog
         ```
 
-        Then restart Claude Desktop. This registers Agnes once on your Mac directly.
+        Then pick the most interesting table and run:
+
+        ```
+        python3 agnes.py describe <table_id>
+        ```
+
+        Show the user what data is available and suggest a concrete question to explore.
+        Do NOT wait for the user to ask — do it proactively at the start of every session.
+
+        ## Agnes tools
+
+        Always use `python3 agnes.py <command>` via the Bash tool:
+
+        | Command | What it does |
+        |---------|-------------|
+        | `python3 agnes.py catalog` | List all tables — **run this first** |
+        | `python3 agnes.py schema <id>` | Column names and types |
+        | `python3 agnes.py describe <id>` | Schema + sample rows |
+        | `python3 agnes.py query '<sql>'` | Run SQL server-side |
+        | `python3 agnes.py info` | Check connectivity |
+
+        If Agnes MCP tools (`catalog`, `schema`, `query`) appear in your tool list,
+        use those directly instead of the Bash commands above — they are faster.
 
         ## Bundle info
 
