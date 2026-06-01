@@ -468,7 +468,14 @@ def cancel_job(job_id: str) -> dict:
     # Revert state machine to the source backend captured when the
     # migration kicked off.  The URL was preserved across the *_in_progress
     # write (B4), so a no-url write here keeps the live source URL.
+    #
+    # MED-4: when reverting cancel to duckdb, the target's postgres URL
+    # must NOT survive in the overlay. write_backend_state with url=None
+    # drops the key (vs the Ellipsis sentinel which would PRESERVE the
+    # current key — that's the B4 fix in round 1).
     from src.db_state_machine import BackendState, write_backend_state
-    write_backend_state(BackendState(data["source_backend"]))
+    source_backend = data["source_backend"]
+    revert_url = None if source_backend == "duckdb" else ...
+    write_backend_state(BackendState(source_backend), url=revert_url)
 
     return {"cancelled": True}
