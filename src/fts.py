@@ -69,6 +69,23 @@ def ensure_knowledge_fts_index(conn: duckdb.DuckDBPyConnection) -> bool:
             "'main.knowledge_items', 'id', 'title', 'content', "
             "strip_accents=1, lower=1, overwrite=1)"
         )
+        # Flush the FTS DDL into the main DB file immediately. create_fts_index
+        # DROPs + CREATEs the multi-table ``fts_main_knowledge_items`` schema,
+        # and those ops sit in ``system.duckdb.wal`` until the next checkpoint.
+        # If the process is killed (OOM, short deploy grace) before then, the
+        # WAL persists and DuckDB's replay fails on the FTS-schema drop
+        # ordering ("Cannot drop entry fts_main_knowledge_items ... depends on
+        # it"), forcing a destructive recovery. Checkpointing here keeps that
+        # DDL out of the WAL. Best-effort: a concurrent write txn or read-only
+        # handle can make CHECKPOINT raise — that must not break search (the
+        # WAL-discard recovery in src/db.py is the safety net).
+        try:
+            conn.execute("CHECKPOINT")
+        except duckdb.Error as ckpt_err:
+            logger.debug(
+                "FTS index created but CHECKPOINT failed (%s); WAL flush deferred",
+                ckpt_err,
+            )
         return True
     except duckdb.Error as e:
         logger.warning(

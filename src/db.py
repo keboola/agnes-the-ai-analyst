@@ -1097,6 +1097,36 @@ _analytics_db_lock = threading.Lock()
 _analytics_db_conn: duckdb.DuckDBPyConnection | None = None
 _analytics_db_path: str | None = None
 
+# DuckDB per-connection memory budgets.
+#
+# DuckDB enforces ``memory_limit`` PER CONNECTION, not per process. In a
+# memory-constrained container (e.g. a 4 GiB cgroup) the live connections
+# must sum under the cap or the kernel OOM-kills the whole process. DuckDB
+# 1.5 is cgroup-aware — a fresh connection defaults to ~80% of the cgroup
+# limit — so a single *uncapped* connection can exceed the cap on its own.
+# We give each connection an explicit conservative budget:
+#
+#   system (singleton)             1 GiB    metadata + telemetry aggregations
+#   analytics (singleton)          1.5 GiB  working set over parquet views
+#   analytics readonly (per req)   1 GiB    one analyst's heavy query
+#
+# Steady state — the two singletons plus one in-flight readonly query —
+# is 3.5 GiB, under a 4 GiB cap with host headroom. The readonly path is
+# per-request and unbounded in count (FastAPI threadpool), so a burst of
+# concurrent analyst queries can momentarily exceed the cap; the
+# ``temp_directory`` disk spill below is the backstop — an over-budget
+# query spills to disk (or raises a clean DuckDB OOM) instead of growing
+# process RSS. For very memory-constrained, high-concurrency deployments,
+# tune AGNES_THREADPOOL_SIZE down too. (Bounding readonly connection
+# concurrency directly is a possible follow-up — out of scope here.)
+#
+# See docs/superpowers/specs/2026-06-01-system-duckdb-resilience-design.md.
+_SYSTEM_DB_MEMORY_LIMIT = "1GB"
+_ANALYTICS_DB_MEMORY_LIMIT = "1500MB"
+_ANALYTICS_RO_MEMORY_LIMIT = "1GB"
+_DUCKDB_THREADS = 2
+_DUCKDB_MAX_TEMP_DIR_SIZE = "10GB"
+
 
 def _get_data_dir() -> Path:
     return Path(os.environ.get("DATA_DIR", "./data"))
@@ -1169,14 +1199,34 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
         )
         if not is_wal_replay:
             raise
+        wal_path = Path(db_path + ".wal")
+
+        # STEP A — salvage the live file. Its last checkpoint is almost
+        # always newer than any pre-migrate snapshot (checkpoints run
+        # continuously; the snapshot is captured only at migrations).
+        # Discard ONLY the unreplayable WAL — DuckDB couldn't apply it
+        # anyway — and reopen the file at its last checkpoint. This loses
+        # at most the transactions written since that checkpoint, never
+        # the days of admin state a stale-snapshot rollback would drop.
+        # It also subsumes the mid-migration case: an uncommitted ALTER
+        # lives in the discarded WAL, so the file is at the pre-migration
+        # version and the idempotent ladder re-runs forward on this start.
+        salvaged = _salvage_discard_wal(db_path, wal_path, original_error=e)
+        if salvaged is not None:
+            return salvaged
+
+        # STEP B — the live file itself won't open. Fall back to the
+        # pre-migrate snapshot (with the #379 version guard below). The
+        # WAL was already moved aside by Step A, so _move_to_broken here
+        # just relocates the unreadable DB file.
         snapshot = Path(db_path).parent / "system.duckdb.pre-migrate"
         if not snapshot.exists():
             logger.error(
-                "WAL replay failed and no pre-migrate snapshot at %s — manual recovery required.",
+                "WAL replay failed, live file unreadable, and no pre-migrate "
+                "snapshot at %s — manual recovery required.",
                 snapshot,
             )
             raise
-        wal_path = Path(db_path + ".wal")
 
         # #379: refuse auto-recovery if the snapshot version doesn't
         # match SCHEMA_VERSION exactly. The migration ladder is
@@ -1241,6 +1291,49 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
         return duckdb.connect(db_path)
 
 
+def _salvage_discard_wal(
+    db_path: str, wal_path: Path, *, original_error: Exception
+) -> duckdb.DuckDBPyConnection | None:
+    """Discard an unreplayable WAL and reopen the DB at its last checkpoint.
+
+    Returns the open connection on success, or ``None`` if the database
+    file itself won't open (the caller then falls back to the pre-migrate
+    snapshot). The discarded WAL is moved to ``<db>.wal.discarded.<ts>``
+    (chmod ``0o600`` — it can hold uncommitted password/PAT writes) and
+    preserved for forensics: its content is exactly what DuckDB failed to
+    replay.
+    """
+    if wal_path.exists():
+        discarded = Path(str(db_path) + f".wal.discarded.{int(time.time())}")
+        try:
+            shutil.move(str(wal_path), str(discarded))
+            try:
+                os.chmod(discarded, 0o600)
+            except OSError:
+                pass  # best-effort; preservation matters more than mode
+        except OSError as move_err:
+            logger.error(
+                "WAL salvage: could not move WAL aside (%s); cannot reopen",
+                move_err,
+            )
+            return None
+    try:
+        conn = duckdb.connect(db_path)
+    except duckdb.Error as reopen_err:
+        logger.warning(
+            "WAL salvage reopen failed (%s); falling back to pre-migrate snapshot",
+            reopen_err,
+        )
+        return None
+    logger.warning(
+        "WAL replay failed (%s) — discarded the unreplayable WAL and reopened "
+        "system.duckdb at its last checkpoint. Transactions written since that "
+        "checkpoint are lost; admin state up to the checkpoint is intact.",
+        str(original_error).split("\n", 1)[0][:200],
+    )
+    return conn
+
+
 def _move_to_broken(db_path: str, wal_path: Path) -> Path:
     """Move the broken DB (+ WAL if present) aside to ``.broken.<ts>``.
 
@@ -1270,6 +1363,38 @@ def _move_to_broken(db_path: str, wal_path: Path) -> Path:
     return broken
 
 
+def _apply_memory_caps(
+    conn: duckdb.DuckDBPyConnection, memory_limit: str, *, label: str
+) -> None:
+    """Apply defensive memory caps + disk-spill settings to *conn*.
+
+    DuckDB ``memory_limit`` is per-connection; this keeps any single
+    connection from growing the process past the container cgroup cap
+    (see the ``_*_MEMORY_LIMIT`` constants). Best-effort: a failing PRAGMA
+    (read-only DB, in-memory DB, older DuckDB) is logged and skipped so
+    the connection stays usable on defaults. The essential caps
+    (memory_limit/threads) are applied in their own try so an optional
+    temp-spill failure can't undo them.
+    """
+    try:
+        conn.execute(f"SET memory_limit='{memory_limit}'")
+        conn.execute(f"SET threads={_DUCKDB_THREADS}")
+        conn.execute("SET preserve_insertion_order=false")
+    except Exception as e:
+        logger.warning(
+            "%s: SET memory/threads failed (%s); defaults remain", label, e
+        )
+    # Disk spill: a query that exceeds its memory budget spills to disk
+    # (or raises a clean DuckDB error) instead of OOM-killing the process.
+    try:
+        tmp = _get_state_dir() / "duckdb-tmp"
+        tmp.mkdir(parents=True, exist_ok=True)
+        conn.execute(f"SET temp_directory='{tmp}'")
+        conn.execute(f"SET max_temp_directory_size='{_DUCKDB_MAX_TEMP_DIR_SIZE}'")
+    except Exception as e:
+        logger.debug("%s: temp_directory spill setup failed (%s)", label, e)
+
+
 def get_system_db() -> duckdb.DuckDBPyConnection:
     """Get a connection to the system state database.
 
@@ -1290,6 +1415,14 @@ def get_system_db() -> duckdb.DuckDBPyConnection:
                     pass
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
             _system_db_conn = _try_open_system_db(db_path)
+            # Cap BEFORE _ensure_schema so migrations + the on-demand FTS
+            # index rebuild (src/fts.py) run under the budget too. The
+            # system DB was missed by the analytics-only cap in PR #434 —
+            # an uncapped singleton was the dominant allocator behind the
+            # 4 GiB-cgroup OOM loop.
+            _apply_memory_caps(
+                _system_db_conn, _SYSTEM_DB_MEMORY_LIMIT, label="get_system_db"
+            )
             _system_db_path = db_path
             _ensure_schema(_system_db_conn)
         return _maybe_instrument(_system_db_conn.cursor(), "system")
@@ -1322,27 +1455,16 @@ def get_analytics_db() -> duckdb.DuckDBPyConnection:
                     pass
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
             _analytics_db_conn = duckdb.connect(db_path)
-            # Defensive memory cap. Default ``memory_limit`` is 80% of
-            # system RAM, which on a 4 GiB cgroup container resolves to
-            # ~3.2 GiB — leaves no headroom for the host process + the
-            # short-lived consolidation / profiler connections that
-            # share the container. 2 GiB matches the cap applied in
-            # ``connectors/{keboola,bigquery}/extractor.py`` and
-            # ``src/profiler.py``. Analyst-facing queries that hit
-            # the cap surface a clear DuckDB OOM exception which
-            # the caller can present (vs. a silent process-wide
-            # OOM-kill). preserve_insertion_order=false matches the
-            # other capped paths.
-            try:
-                _analytics_db_conn.execute("SET memory_limit='2GB'")
-                _analytics_db_conn.execute("SET threads=2")
-                _analytics_db_conn.execute("SET preserve_insertion_order=false")
-            except Exception as e:
-                logger.warning(
-                    "get_analytics_db: SET memory/threads failed (%s); "
-                    "extension defaults remain in place",
-                    e,
-                )
+            # Defensive memory cap (budgeted with the system + readonly
+            # connections to sum under a 4 GiB cgroup — see the
+            # ``_*_MEMORY_LIMIT`` constants). Analyst-facing queries that
+            # hit the cap spill to disk or surface a clear DuckDB OOM
+            # exception, rather than a silent process-wide OOM-kill.
+            _apply_memory_caps(
+                _analytics_db_conn,
+                _ANALYTICS_DB_MEMORY_LIMIT,
+                label="get_analytics_db",
+            )
             _analytics_db_path = db_path
         return _maybe_instrument(_analytics_db_conn.cursor(), "analytics")
 
@@ -1511,13 +1633,8 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
             conn.execute("SET enable_external_access = false")
         except Exception:
             pass
-        # Memory cap — see get_analytics_db above for rationale.
-        try:
-            conn.execute("SET memory_limit='2GB'")
-            conn.execute("SET threads=2")
-            conn.execute("SET preserve_insertion_order=false")
-        except Exception:
-            pass
+        # Memory cap — see get_analytics_db / the _*_MEMORY_LIMIT constants.
+        _apply_memory_caps(conn, _ANALYTICS_RO_MEMORY_LIMIT, label="analytics_ro")
         return _maybe_instrument(conn, "analytics_ro")
     conn = duckdb.connect(str(db_path), read_only=True)
     # Memory cap (see get_analytics_db rationale). Read-only conns can
@@ -1525,12 +1642,7 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
     # ``CREATE TEMP TABLE`` over read_parquet — capping keeps a single
     # analyst's heavy query from process-wide OOM-killing all other
     # in-flight requests.
-    try:
-        conn.execute("SET memory_limit='2GB'")
-        conn.execute("SET threads=2")
-        conn.execute("SET preserve_insertion_order=false")
-    except Exception:
-        pass
+    _apply_memory_caps(conn, _ANALYTICS_RO_MEMORY_LIMIT, label="analytics_ro")
     # ATTACH extract.duckdb files FIRST so views referencing them work
     extracts_dir = _get_data_dir() / "extracts"
     if extracts_dir.exists():
