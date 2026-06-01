@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **Per-plugin Cowork export + Cowork download UI.** Plugins can now be downloaded individually as Claude Cowork-uploadable zips. New `GET /marketplace/cowork/{prefixed_name}.zip` (same PAT/cookie auth and RBAC filtering as `marketplace.zip`) repackages a single plugin into the shape Cowork's stricter validator accepts — matched against a known-good reference upload. It keeps all plugin content (`data/`, `scripts/`, `vendor/`, `global-rules/`, `CLAUDE.md`, `settings.json`, agent `tools:`) and only: puts the plugin at the zip root (no `marketplace.json` wrapper); coerces `plugin.json` to a semver `version` + required `author` + dropped `homepage`; whitelists SKILL.md frontmatter to `name`/`description`/`compatibility` (drops Claude-Code-only `argument-hint`/`user-invocable`) with `<`/`>`/`"` sanitized out of descriptions; concatenates the per-directory `.md` files under `data/` into `_all.md` (keeps every byte while staying under Cowork's 5000-file cap — a docs/Confluence dump can be tens of thousands of files); renames Next.js route path segments (`[x]`→`dyn-x`, `(y)`→`grp-y`); and strips `.DS_Store` + Agnes-only paths. The per-plugin download links surface on `/me/cowork` (with a short package guideline) and each marketplace plugin detail page gains a "Download for Cowork" button. New module `app/marketplace_server/cowork_packager.py`.
+
 ## [0.66.1] — 2026-06-05
 
 ### Internal
