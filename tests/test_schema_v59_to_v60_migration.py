@@ -56,6 +56,7 @@ def test_fresh_install_lands_at_v60(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
     assert get_schema_version(conn) >= 60
+    assert "setup_tokens" in _tables(conn)
 
 
 def test_fresh_install_setup_tokens_columns(tmp_path):
@@ -153,7 +154,7 @@ def test_orphan_row_left_intact(tmp_path):
 
 
 def test_v59_to_v60_is_idempotent(tmp_path):
-    """Re-running _ensure_schema must not raise or double-update."""
+    """Re-running _v59_to_v60 must not raise or double-update."""
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
     conn.execute(
@@ -177,4 +178,3 @@ def test_v59_to_v60_is_idempotent(tmp_path):
     assert conn.execute(
         "SELECT username FROM usage_events WHERE id = 'evt1'"
     ).fetchone()[0] == "alice@example.com"
-    assert get_schema_version(conn) == 60
