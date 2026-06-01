@@ -149,6 +149,11 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app):
+    # Fail-closed: refuse to serve with a weak/absent JWT signing key in
+    # production. Cheap, runs before any request is accepted.
+    from app.auth.jwt import validate_jwt_secret_or_raise
+    validate_jwt_secret_or_raise()
+
     # Issue #81 Group A — log the effective remote_attach allowlist at
     # startup so an operator's typo in AGNES_REMOTE_ATTACH_EXTENSIONS
     # (which REPLACES, not extends, the default) is visible.
