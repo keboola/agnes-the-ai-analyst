@@ -564,6 +564,23 @@ def start_migration(payload: MigrateRequest) -> dict:
             BackendState.SIDE_CAR, BackendState.CLOUD
         ) else None
 
+        # H1-NEW: refuse to queue a PG-source migration when
+        # instance.yaml has no URL recorded for the current backend.
+        # Pre-fix the migrator would crash later with "--source-url is
+        # required" and the rollback path would write empty url —
+        # leaving backend=<source> + no url, requiring manual YAML
+        # repair to recover.
+        if current_state in (BackendState.SIDE_CAR, BackendState.CLOUD) and not source_url:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"cannot migrate FROM {current_state.value}: source_url is None "
+                    f"because instance.yaml's database.url is missing — manually "
+                    f"set database.url in /data/state/instance.yaml first, "
+                    f"then retry"
+                ),
+            )
+
         # Reject same-DB cycles — would silently put two readers on the
         # same physical Postgres after the cutover, which is data-loss
         # destructive once the source side is wiped. The alias check
