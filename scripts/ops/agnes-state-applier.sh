@@ -244,6 +244,7 @@ _recover_stuck_jobs() {
     local now
     now=$(date +%s)
     local job_path alive_path age source_backend source_url
+    local recovered_any=0
     for job_path in "$jobs_dir"/*.json; do
         [ -f "$job_path" ] || continue
         local st
@@ -270,7 +271,24 @@ _recover_stuck_jobs() {
             write_instance_yaml "$source_backend" "$source_url" || true
         fi
         rm -f "$alive_path"
+        recovered_any=1
     done
+
+    if [ "$recovered_any" -eq 1 ]; then
+        # B3-NEW: After reverting instance.yaml to source state, restart
+        # app + scheduler. The applier had stopped them before running
+        # the migrator (line ~413 of this script). A SIGKILL/OOM/host-
+        # reboot kills the migrator without re-starting them; the next
+        # tick's recovery marks the job failed but exits at the
+        # no-pending-job path (line ~327), leaving services DOWN
+        # indefinitely. A single restart after all stuck jobs are handled
+        # (not per-job) mirrors the success path at line ~546.
+        logger -t agnes-state-applier "Recovery restart: bringing app + scheduler back up after stuck-job recovery"
+        set +e
+        dc up -d --no-deps --force-recreate app scheduler 2>&1 \
+            | logger -t agnes-state-applier || true
+        set -e
+    fi
 }
 
 _recover_stuck_jobs
