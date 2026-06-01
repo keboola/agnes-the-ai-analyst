@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **`agnes marketplace scaffold-metadata <repo>`** — curator-side tool that
+  generates / refreshes `.claude-plugin/marketplace-metadata.json` from
+  the canonical plugin sources (`marketplace.json`, each plugin's
+  `plugin.json`, and `SKILL.md` / agent frontmatter). Closes Gap 2 of
+  #469 (rolled in via PR #470). Three-way hash-based merge tracked in a
+  `_generated` block (ignored by the runtime parser): existing/never-
+  generated fields are kept as-is, machine-owned fields refresh on
+  source change, human edits always win. `--check` mode exits 1 on
+  drift (CI guard); `--dry-run` prints without writing. Pairs with the
+  cloud-chat feature so the same release ships the surface that
+  consumes RBAC-filtered marketplace plugins and the tool that makes
+  authoring those plugins cheap.
 - **`POST /api/chat/sessions/{chat_id}/ticket`** mints a fresh WS ticket
   for an EXISTING chat session. The web UI now uses this when the user
   clicks an old conversation in the sidebar — re-attaching to the same
