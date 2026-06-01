@@ -85,7 +85,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   composition) and dispatches the form submit; Shift+Enter retains the
   native newline so multi-line prompts still work.
 
+### Added
+- **Cloud-chat: the agent now loads the user's marketplace skills.** At spawn
+  the runner runs `agnes refresh-marketplace --bootstrap` (clones the
+  RBAC-filtered per-user marketplace, registers it with the in-sandbox
+  `claude` CLI, enables its plugins in the session project) and the SDK client
+  is opened with `setting_sources=["project"]` so those plugins/skills (e.g.
+  `keboola-howto`) are visible to the agent — previously only Claude Code's
+  built-in skills were available.
+
 ### Fixed
+- **Marketplace: served `plugin.json` referencing an empty component dir made
+  `claude plugin install` fail.** A scaffolded plugin that ships an unused
+  `agents/` (or `commands/`) dir holding only a `.gitkeep` produced
+  `"agents": "./agents"` in its manifest, which Claude Code rejects
+  ("agents: Invalid input") — taking down the whole plugin install. The
+  marketplace packager now drops component keys (`skills`/`agents`/`commands`/
+  `hooks`) whose target dir is empty or absent when serving the manifest.
 - **Cloud-chat: inline tool blocks stuck on "running…" and the composer
   never re-enabled.** The runner scanned only `AssistantMessage` content for
   `ToolResultBlock`, but the SDK delivers tool results in a `UserMessage`, so

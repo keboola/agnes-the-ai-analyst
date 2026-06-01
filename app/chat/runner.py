@@ -101,6 +101,40 @@ def _install_agnes_cli() -> None:
         print(f"agnes CLI install failed: {exc}", file=sys.stderr, flush=True)
 
 
+def _bootstrap_marketplace(workdir: str) -> None:
+    """Install the user's RBAC-filtered Agnes marketplace plugins (skills)
+    into this session's project so the agent can use them.
+
+    Runs the same ``agnes refresh-marketplace --bootstrap`` the analyst
+    workspace runs at first init: it clones the per-user marketplace bare repo
+    (PAT-gated, from AGNES_SERVER), registers it with the in-sandbox ``claude``
+    CLI (``claude plugin marketplace add``), and enables the plugins in the
+    project (cwd). Combined with ``setting_sources=["project"]`` on the SDK
+    client, the agent then sees the plugin skills (e.g. ``keboola-howto``).
+
+    Without this the sandbox only has Claude Code's built-in skills — the
+    synced marketplace is invisible. Best-effort and bounded: a failure (no
+    token, network, claude CLI quirk) leaves the agent on built-in skills only
+    rather than blocking the session; output is routed to stderr so it never
+    corrupts the stdout JSON-frame protocol.
+    """
+    from shutil import which
+    if which("agnes") is None:
+        return
+    try:
+        subprocess.run(
+            ["agnes", "refresh-marketplace", "--bootstrap"],
+            cwd=workdir,
+            stdin=subprocess.DEVNULL,
+            stdout=sys.stderr.fileno(),
+            stderr=sys.stderr.fileno(),
+            check=False,
+            timeout=120,
+        )
+    except Exception as exc:  # noqa: BLE001 — non-fatal; agent still runs
+        print(f"marketplace bootstrap failed: {exc}", file=sys.stderr, flush=True)
+
+
 async def _stdin_lines() -> "asyncio.Queue[dict]":
     queue: asyncio.Queue[dict] = asyncio.Queue()
 
@@ -265,6 +299,12 @@ async def _real_agent_loop(
         options=ClaudeAgentOptions(
             permission_mode="bypassPermissions",
             cwd=str(workdir),
+            # Load the project's filesystem config (.claude/) so the agent picks
+            # up the Agnes marketplace plugins/skills that _bootstrap_marketplace
+            # enabled in this cwd. The SDK loads NO filesystem settings by
+            # default (setting_sources=None) — which is why the synced
+            # marketplace was previously invisible.
+            setting_sources=["project"],
         )
     ) as client:
         # Flag to track whether we've called connect() yet
@@ -393,6 +433,11 @@ async def amain() -> None:
     # mode (tests) — there is no wheel to install.
     if not fake_agent:
         _install_agnes_cli()
+        # Install the user's marketplace plugins (skills) into this project so
+        # setting_sources=["project"] surfaces them to the agent. After the CLI
+        # install (needs the `agnes` binary); before the reader attaches for the
+        # same fd-0 reason as the install.
+        _bootstrap_marketplace(str(workdir))
 
     _emit({"type": "runner_ready"})
     queue = await _stdin_lines()
