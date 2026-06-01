@@ -219,31 +219,52 @@ PY
     chown agnes-applier:agnes-applier "$path" 2>/dev/null || true
 }
 
-# --- Stuck-running recovery (B5) -----------------------------------------
-# A job that hasn't touched its .alive sentinel in 120s is treated as
-# failed (host reboot mid-migration, OOM-kill, docker daemon crash).
-# The applier writes the failure so forward progress can resume on the
-# next tick. Without this the system would refuse to pick up new
-# pending jobs because a never-finishing 'running' entry sits there.
-NOW=$(date +%s)
-if [ -d "$JOBS_DIR" ]; then
-    for f in "$JOBS_DIR"/*.json; do
-        [ -e "$f" ] || continue
-        st=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('status',''))" "$f" 2>/dev/null || echo "")
-        if [ "$st" = "running" ]; then
-            alive="${f%.json}.alive"
-            if [ -e "$alive" ]; then
-                age=$(( NOW - $(stat -c '%Y' "$alive" 2>/dev/null || stat -f '%m' "$alive") ))
-            else
-                age=999
-            fi
-            if [ "$age" -gt 120 ]; then
-                logger -t agnes-state-applier "Stale running job $f: alive=${age}s, marking failed"
-                update_job "$f" "failed" "stuck running (no heartbeat for ${age}s, host reboot / OOM / docker crash suspected)"
-            fi
+# --- Stuck-running recovery (B5 + H5-NEW) ------------------------------------
+# Extracted into a function so it can be unit-tested and called cleanly.
+_recover_stuck_jobs() {
+    # H5-NEW + B5: jobs whose heartbeat is older than 120s are marked
+    # failed AND the overlay's database.backend is restored to
+    # source_backend. Without the restore, the next migration retry reads
+    # ``*_in_progress`` as the current backend and the migrator rejects
+    # ``source_backend='side_car_in_progress'`` → state machine wedged
+    # until an operator manually edits instance.yaml. Recovery now
+    # symmetrically calls write_instance_yaml(source_backend, source_url),
+    # mirroring the cancel path.
+    local jobs_dir="${JOBS_DIR:-/data/state/db-jobs}"
+    [ -d "$jobs_dir" ] || return 0
+    local now
+    now=$(date +%s)
+    local job_path alive_path age source_backend source_url
+    for job_path in "$jobs_dir"/*.json; do
+        [ -f "$job_path" ] || continue
+        local st
+        st=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('status',''))" "$job_path" 2>/dev/null || echo "")
+        [ "$st" = "running" ] || continue
+        alive_path="${job_path%.json}.alive"
+        if [ -f "$alive_path" ]; then
+            age=$(( now - $(stat -c '%Y' "$alive_path" 2>/dev/null || stat -f '%m' "$alive_path") ))
+        else
+            age=999
         fi
+        [ "$age" -gt 120 ] || continue
+        # Read source_backend + source_url BEFORE we rewrite the job so
+        # the values are captured from the original running record.
+        source_backend=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('source_backend','') or '')" "$job_path" 2>/dev/null || echo "")
+        source_url=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('source_url','') or '')" "$job_path" 2>/dev/null || echo "")
+        logger -t agnes-state-applier "Stale running job $job_path: alive=${age}s, marking failed"
+        update_job "$job_path" "failed" "stuck running (no heartbeat for ${age}s, host reboot / OOM / docker crash suspected)"
+        # H5-NEW: restore instance.yaml from the *_in_progress placeholder
+        # back to source_backend. Symmetric with the cancel path.
+        # Empty source_url is correct for duckdb sources — write_instance_yaml
+        # handles that by dropping the url key.
+        if [ -n "$source_backend" ]; then
+            write_instance_yaml "$source_backend" "$source_url" || true
+        fi
+        rm -f "$alive_path"
     done
-fi
+}
+
+_recover_stuck_jobs
 
 # --- Lifecycle: ensure postgres container matches the flag ----------------
 case "$TARGET" in
