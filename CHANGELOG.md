@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.56.0] — 2026-06-01
+
+### Added
+- `AGNES_REBUILD_ON_BOOT=1` builds master views from baked extracts at startup (for images that ship data without a scheduler).
+- `scripts/build_demo_extract.py` + `Dockerfile.demo` produce an image variant with a self-contained synthetic demo dataset.
+- Optional Artifact Registry image mirror in the release workflow (repo vars `AR_LOCATION`/`AR_PROJECT`/`AR_REPO` + secret `GCP_SA_KEY`).
+
+### Changed
+- **BREAKING**: in production (non-local-dev) the app now refuses to start without an explicit `JWT_SECRET_KEY` of ≥32 chars — auto-generation is limited to local dev. Set a strong `JWT_SECRET_KEY` before deploying.
+
 ## [0.55.32] — 2026-06-01
 
 ### Added

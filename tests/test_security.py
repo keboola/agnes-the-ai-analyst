@@ -367,6 +367,10 @@ class TestJwtSecretHardening:
         saved_testing = os.environ.pop("TESTING", None)
         saved_data_dir = os.environ.get("DATA_DIR")
         os.environ["DATA_DIR"] = str(tmp_path)
+        # Auto-generation now lives behind local-dev mode (fail-closed in
+        # production), so opt in explicitly to exercise that path.
+        saved_local_dev = os.environ.get("LOCAL_DEV_MODE")
+        os.environ["LOCAL_DEV_MODE"] = "1"
         # Eject cached modules so the re-import re-executes module-level code
         sys.modules.pop("app.auth.jwt", None)
         sys.modules.pop("app.secrets", None)
@@ -381,6 +385,10 @@ class TestJwtSecretHardening:
             assert len(secret) == 64, "Auto-generated secret should be 64 hex chars (32 bytes)"
         finally:
             # Restore environment before re-importing so the module loads cleanly
+            if saved_local_dev is not None:
+                os.environ["LOCAL_DEV_MODE"] = saved_local_dev
+            else:
+                os.environ.pop("LOCAL_DEV_MODE", None)
             if saved_key is not None:
                 os.environ["JWT_SECRET_KEY"] = saved_key
             if saved_testing is not None:
