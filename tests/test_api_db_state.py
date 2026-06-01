@@ -27,8 +27,11 @@ def test_get_db_state_default_duckdb(seeded_app, monkeypatch):
     body = r.json()
     assert body["backend"] == "duckdb"
     assert body["url_redacted"] is None
-    # DuckDB can cut over to either side-car PG or straight to cloud.
-    assert body["allowed_transitions"] == ["side_car", "cloud"]
+    # DuckDB can transition to any other stable backend. duckdb_quack
+    # is reserved in the API but raises BackendNotYetSupportedError on
+    # actual migrate; it's in this list so clients can show it as
+    # "available when DuckDB 2.0 lands".
+    assert set(body["allowed_transitions"]) == {"side_car", "cloud", "duckdb_quack"}
     assert body["current_job_id"] is None
 
 

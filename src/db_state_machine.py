@@ -1,8 +1,31 @@
-"""State machine for app-state DB backend (DuckDB / side-car PG / cloud PG).
+"""State machine for app-state DB backend.
 
-Forward-only transitions enforced; transient *_in_progress states track
-in-flight migrations so the API can reject concurrent attempts and the
-app can detect crashed migrations on startup.
+Four production backends + one future placeholder:
+
+  * ``DUCKDB``        — single-process DuckDB (fresh-install default, $0)
+  * ``SIDE_CAR``      — Postgres container on-VM, app+scheduler reach it
+                        over the compose network (multi-process safe today)
+  * ``CLOUD``         — managed Postgres (Cloud SQL / RDS / Supabase / …)
+                        via Auth Proxy; HA, managed backups, PITR
+  * ``DUCKDB_QUACK``  — DuckDB's multi-process Quack protocol. Placeholder
+                        state; production-ready in DuckDB 2.0 (~fall 2026).
+                        Accepted as a target only when the runtime DuckDB
+                        version supports Quack — until then transitions
+                        into this state raise ``NotImplementedError``.
+
+Transitions are **multi-destination** (not forward-only). Any stable
+backend can migrate to any other stable backend — operators move between
+them as cost, HA needs, or compliance requirements shift. The migrator
+handles both directions via the appropriate copy primitive:
+
+  * DUCKDB → SIDE_CAR / CLOUD       — ``copy_duckdb_to_pg``
+  * SIDE_CAR ↔ CLOUD                — ``copy_pg_to_pg``
+  * SIDE_CAR / CLOUD → DUCKDB       — ``copy_pg_to_duckdb`` (DuckDB UPSERT)
+  * DUCKDB ↔ DUCKDB_QUACK           — (future) Quack-aware file conversion
+
+Transient ``*_in_progress`` states track in-flight migrations so the API
+can reject concurrent attempts and the app can detect crashed migrations
+on startup. Cancel-mid-migration reverts to the source backend (B1 fix).
 
 Spec: docs/superpowers/specs/2026-05-27-db-backend-state-machine-design.md
 """
@@ -26,53 +49,113 @@ class BackendState(StrEnum):
     DUCKDB = "duckdb"
     SIDE_CAR = "side_car"
     CLOUD = "cloud"
+    # DuckDB Quack — placeholder. Production-ready in DuckDB 2.0 (~fall
+    # 2026); until then ``validate_transition`` will reject targets that
+    # equal this value with ``NotImplementedError``. Reserved here so the
+    # state machine API + persisted-state contract are stable when
+    # support lands; operators encountering this value in an old
+    # instance.yaml see a clear "not yet supported" error rather than
+    # an unknown-state crash.
+    DUCKDB_QUACK = "duckdb_quack"
     SIDE_CAR_IN_PROGRESS = "side_car_in_progress"
     CLOUD_IN_PROGRESS = "cloud_in_progress"
+    DUCKDB_QUACK_IN_PROGRESS = "duckdb_quack_in_progress"
 
 
 class InvalidTransitionError(ValueError):
     """Requested transition is not allowed from the current state."""
 
 
-# Allowed transitions.
+class BackendNotYetSupportedError(NotImplementedError):
+    """Requested target backend is reserved in the API but not yet
+    runtime-supported. Currently only ``DUCKDB_QUACK`` — production-ready
+    in DuckDB 2.0 (~fall 2026).
+    """
+
+
+# Multi-destination transition matrix.
 #
-#   DUCKDB → SIDE_CAR   (initial cutover to in-container Postgres)
-#   DUCKDB → CLOUD      (cutover directly to managed Postgres,
-#                        skipping the side-car container)
-#   SIDE_CAR → CLOUD    (graduate from container PG to managed PG)
-#   CLOUD → SIDE_CAR    (move back to container PG — DR, cost, or
-#                        when the managed instance is being retired)
+# Every stable backend can migrate to every other stable backend. The
+# migrator dispatches based on the (source, target) pair to the right
+# copy primitive (``copy_duckdb_to_pg``, ``copy_pg_to_pg``,
+# ``copy_pg_to_duckdb``, …) — see ``scripts/db_state_migrator.py``.
 #
-# DuckDB is **start-only**. No path back to DuckDB exists on purpose:
-# once an instance is on Postgres, anything written there since the
-# cutover has no DuckDB-readable form. Operators that genuinely need
-# to re-test the cutover from scratch wipe the persistent volume
-# and recreate the VM instead — re-running the state-machine on the
-# same instance is not a supported workflow.
+# Each stable backend's data is preserved on-disk after a cutover (the
+# compressed backup is the recovery artifact + a re-source if the
+# operator decides to migrate back). DuckDB → PG → DuckDB cycles are
+# supported by design; the migrator's UPSERT path makes reverse
+# migrations idempotent.
+#
+# ``DUCKDB_QUACK`` is in the transition graph but ``validate_transition``
+# raises ``BackendNotYetSupportedError`` for any transition targeting it
+# until DuckDB 2.0 ships the production-grade Quack protocol.
 #
 # In-progress states retain their old "revert to stable" reads so a
-# crashed migration can be retried; the cancel API path uses those.
+# crashed migration can be retried; the cancel API path uses those
+# (B1 fix: cancel reverts to source_backend, not target).
+_STABLE_BACKENDS: tuple[BackendState, ...] = (
+    BackendState.DUCKDB,
+    BackendState.SIDE_CAR,
+    BackendState.CLOUD,
+    BackendState.DUCKDB_QUACK,
+)
+
 _ALLOWED_TRANSITIONS: dict[BackendState, list[BackendState]] = {
-    BackendState.DUCKDB: [BackendState.SIDE_CAR, BackendState.CLOUD],
-    BackendState.SIDE_CAR: [BackendState.CLOUD],
-    BackendState.CLOUD: [BackendState.SIDE_CAR],
+    # Any stable backend → any other stable backend.
+    BackendState.DUCKDB: [b for b in _STABLE_BACKENDS if b != BackendState.DUCKDB],
+    BackendState.SIDE_CAR: [b for b in _STABLE_BACKENDS if b != BackendState.SIDE_CAR],
+    BackendState.CLOUD: [b for b in _STABLE_BACKENDS if b != BackendState.CLOUD],
+    BackendState.DUCKDB_QUACK: [b for b in _STABLE_BACKENDS if b != BackendState.DUCKDB_QUACK],
+    # In-progress states → only revert to the stable variant (retry semantic).
     BackendState.SIDE_CAR_IN_PROGRESS: [BackendState.SIDE_CAR],
     BackendState.CLOUD_IN_PROGRESS: [BackendState.CLOUD],
+    BackendState.DUCKDB_QUACK_IN_PROGRESS: [BackendState.DUCKDB_QUACK],
 }
+
+# Targets not yet runtime-implemented. Validated separately from the
+# transition graph so operators see a clear "not yet supported" error
+# instead of "invalid transition" when they hit a placeholder state.
+_NOT_YET_SUPPORTED_TARGETS: frozenset[BackendState] = frozenset({
+    BackendState.DUCKDB_QUACK,
+    BackendState.DUCKDB_QUACK_IN_PROGRESS,
+})
 
 
 def allowed_transitions(current: BackendState) -> list[BackendState]:
-    """List of allowed target states from ``current``."""
+    """List of allowed target states from ``current`` (graph-level).
+
+    Includes placeholder targets like ``DUCKDB_QUACK`` — the API surface
+    advertises them so clients (admin UI, CLI) can show "available when
+    DuckDB 2.0 ships". The actual migrate endpoint will reject them via
+    :func:`validate_transition`'s ``BackendNotYetSupportedError`` until
+    runtime support lands.
+    """
     return _ALLOWED_TRANSITIONS[current]
 
 
 def validate_transition(current: BackendState, target: BackendState) -> None:
-    """Raise InvalidTransitionError if ``target`` is not reachable from ``current``."""
+    """Raise on invalid transition.
+
+    * ``InvalidTransitionError`` — target is not reachable from current
+      in the transition graph (or current is in_progress and target is
+      not its stable variant).
+    * ``BackendNotYetSupportedError`` — target is graph-reachable but
+      not yet runtime-implemented (placeholder state, e.g.
+      ``DUCKDB_QUACK`` until DuckDB 2.0).
+    """
     if target not in _ALLOWED_TRANSITIONS[current]:
         raise InvalidTransitionError(
             f"Transition {current.value} → {target.value} not allowed. "
             f"From {current.value}, allowed targets: "
             f"{[t.value for t in _ALLOWED_TRANSITIONS[current]] or 'none (terminal state)'}"
+        )
+    if target in _NOT_YET_SUPPORTED_TARGETS:
+        raise BackendNotYetSupportedError(
+            f"Target backend {target.value!r} is reserved in the state "
+            f"machine API but not yet runtime-supported. "
+            f"``DUCKDB_QUACK`` becomes available with DuckDB 2.0 "
+            f"(currently in beta as of DuckDB 1.5.2; production-ready "
+            f"expected ~fall 2026)."
         )
 
 

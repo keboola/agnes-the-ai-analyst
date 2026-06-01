@@ -18,9 +18,18 @@ The goal of this spec is to replace ad-hoc `.env` editing with an explicit **sta
 
 ## Approach
 
-Three backend states — `duckdb`, `side_car`, `cloud` — stored in `instance.yaml::database.backend`. Transitions are admin-initiated through `/admin/server-config` or `agnes admin db migrate`, and run as asynchronous jobs (subprocess) with pollable status. Architecture splits responsibilities cleanly: the app handles all Python migration logic in-process (alembic, data copy, verify); a host-side systemd timer (`agnes-state-applier.timer`) handles Docker compose lifecycle changes (start/stop side-car container, recreate app+scheduler on backend flip) through a filesystem flag at `/data/state/db-state-target.flag`. The app needs no docker socket access.
+**Four backend states** — `duckdb`, `side_car`, `cloud`, `duckdb_quack` — stored in `instance.yaml::database.backend`. Transitions are admin-initiated through `/admin/server-config` or `agnes admin db migrate`, and run as asynchronous jobs (subprocess) with pollable status. Architecture splits responsibilities cleanly: the app handles all Python migration logic in-process (alembic, data copy, verify); a host-side systemd timer (`agnes-state-applier.timer`) handles Docker compose lifecycle changes (start/stop side-car container, recreate app+scheduler on backend flip) through a filesystem flag at `/data/state/db-state-target.flag`. The app needs no docker socket access.
 
-Migrations are forward-only (`duckdb → side_car → cloud`). DuckDB and side-car Postgres data are preserved on disk after each cutover (compressed backups in `/data/state/backups/`) so manual disaster recovery remains possible without UI rollback complexity.
+**Transitions are multi-destination, not forward-only.** Any stable backend can migrate to any other stable backend — operators move between DuckDB, side-car PG, managed cloud PG, and (future) DuckDB-Quack as cost, HA needs, compliance posture, or deployment scale change. The migrator dispatches based on the (source, target) pair to the appropriate copy primitive:
+
+| From → To | Copy primitive | Notes |
+|---|---|---|
+| `duckdb` → `side_car` / `cloud` | `copy_duckdb_to_pg` | Original cutover path |
+| `side_car` ↔ `cloud` | `copy_pg_to_pg` | Graduate to managed PG or DR-rollback to on-VM |
+| `side_car` / `cloud` → `duckdb` | `copy_pg_to_duckdb` | Cost reduction, dev snapshot, compliance re-eval. Uses DuckDB UPSERT for idempotent replay. |
+| `duckdb` ↔ `duckdb_quack` | (future) Quack-aware file conversion | Production-ready in DuckDB 2.0 (~fall 2026) |
+
+Each backend's data is preserved post-migration: DuckDB stays as a frozen file, side-car PG keeps its volume, cloud PG keeps its instance. The backup artifact under `/data/state/backups/` is the recovery point if the migrator misbehaves; reverse migrations make a UI-driven rollback equally valid.
 
 Existing `scripts/migrate_duckdb_to_pg/` (idempotent via `ON CONFLICT DO NOTHING` + SHA-256 checksums) is reused; new `db_state_migrator.py` orchestrates alembic, data copy, verification, and backup steps in a single subprocess.
 
@@ -29,26 +38,65 @@ Existing `scripts/migrate_duckdb_to_pg/` (idempotent via `ON CONFLICT DO NOTHING
 ### State machine
 
 ```
-   ┌────────────┐                                      ┌──────────────────┐
-   │  DuckDB    │── admin: "Enable side-car PG" ──────▶│  side_car        │
-   │  (default) │                                      │  postgres in     │
-   │            │                                      │  container       │
-   └────────────┘                                      └────────┬─────────┘
-                                                                │
-                                                                │ admin: "Migrate
-                                                                │  to managed PG"
-                                                                │  + connection
-                                                                │  string
-                                                                ▼
-                                                       ┌──────────────────┐
-                                                       │  cloud           │
-                                                       │  managed PG      │
-                                                       └──────────────────┘
+                        ┌─────────────────────┐
+                        │   DUCKDB            │ ← fresh-install default
+                        │   single-process    │   ($0; multi-process via
+                        │   file-locked file  │    flock — fragile under load)
+                        └──┬──────────────┬───┘
+                           │              │
+                           │              ▼
+                           │   ┌─────────────────────┐
+                           │   │  DUCKDB_QUACK       │ ← FUTURE
+                           │   │  Quack client-server│   (DuckDB 2.0,
+                           │   │  multi-process safe │    ~fall 2026)
+                           │   └─────────────────────┘
+                           │
+                           ▼
+                  ┌─────────────────────┐
+                  │   SIDE_CAR          │ ← multi-process safe today.
+                  │   postgres:16 on    │   Side-car container on VM,
+                  │   the same VM       │   ~200 MiB RAM, $0 cloud.
+                  └──┬──────────────────┘
+                     │
+                     ▼
+            ┌─────────────────────┐
+            │   CLOUD             │ ← HA, managed backups, PITR,
+            │   managed Postgres  │   compliance posture. Cloud SQL /
+            │   (Cloud SQL etc.)  │   RDS / Supabase / Neon via Auth
+            └─────────────────────┘    Proxy.
+
+All four stable states are reachable from each of the other three.
+Arrows above only show the "happy path" cutover; reverse migrations
+(cost reduction, DR rollback, dev snapshot, compliance re-evaluation)
+are equally first-class.
 ```
 
-Forward-only. No `cloud → side_car` or `side_car → duckdb` in UI. Manual disaster recovery (pg_dump custom-format files in `/data/state/backups/`) supports any rollback path that ops actually needs.
+**Multi-destination, not forward-only.** Operators frequently shift between backends as the deployment scale changes:
 
-Transient states `side_car_in_progress` and `cloud_in_progress` distinguish "transition running" from "transition completed" so concurrent migration attempts can be rejected and crashed migrations can be detected on startup.
+- Initial deploy: `DUCKDB` (zero infra)
+- Multi-process load grows: `DUCKDB → SIDE_CAR` (still on-VM, but lock-contention gone)
+- Enterprise customer: `SIDE_CAR → CLOUD` (managed HA + backups)
+- Cost re-evaluation: `CLOUD → SIDE_CAR` or `→ DUCKDB`
+- Future: `SIDE_CAR → DUCKDB_QUACK` (drop the PG dependency once Quack is production-ready)
+
+Transient `*_in_progress` states (`side_car_in_progress`, `cloud_in_progress`, `duckdb_quack_in_progress`) distinguish "transition running" from "transition completed" so concurrent migration attempts can be rejected and crashed migrations can be detected on startup.
+
+### Why DuckDB stays a first-class long-term backend
+
+The PR #388 framing of *"DuckDB only for analytics"* is **explicitly retired**. DuckDB remains valid for app-state as well — both code paths (`src/repositories/X.py` for DuckDB, `X_pg.py` for PG) are maintained in parity through cross-engine contract tests, and the dual-repo discipline applies to every new feature (one PR → both backends). The only practical limit today is multi-process write (app + scheduler containers), which `SIDE_CAR` solves and `DUCKDB_QUACK` will solve when production-ready.
+
+### DuckDB Quack — placeholder state
+
+`BackendState.DUCKDB_QUACK` is reserved in the enum + transition matrix today, but `validate_transition` raises `BackendNotYetSupportedError` (a `NotImplementedError` subclass) for any transition targeting it. This makes the API + persisted-state contract stable when runtime support lands.
+
+When DuckDB 2.0 (~fall 2026) ships production-grade Quack protocol:
+
+1. Drop `DUCKDB_QUACK` from `_NOT_YET_SUPPORTED_TARGETS` in `src/db_state_machine.py`
+2. Add a Quack server lifecycle to `scripts/ops/agnes-state-applier.sh` (start/stop Quack server container, same shape as the postgres side-car lifecycle)
+3. Add Quack-aware copy primitives (`copy_duckdb_to_quack`, `copy_pg_to_quack`, …) in `scripts/db_state_migrator.py`
+4. UI + CLI surface the new target with no API contract break
+
+Operators with old instance.yaml referencing `duckdb_quack` before runtime support lands see the clear `BackendNotYetSupportedError` message rather than crashing on an unknown state — the placeholder posture means the upgrade is graceful.
 
 ### Transition contracts
 
@@ -67,7 +115,7 @@ Transient states `side_car_in_progress` and `cloud_in_progress` distinguish "tra
 | 9. App startup verify | After restart, app reads `instance.yaml`, opens new engine against `side_car`, runs `/api/health` self-check; writes `verify_health=true` into job.json | Critical alert; backend flipped but app unhealthy. Manual ops intervention. |
 | 10. Audit | `audit_log`: `db.backend.migrate_completed`, `from=duckdb`, `to=side_car`, `job_id`, `duration_sec` | — |
 
-DuckDB `system.duckdb` stays on disk after step 6 — frozen, never updated by app again (factory routes all writes to PG). For emergency rollback, ops use the gzipped backup.
+DuckDB `system.duckdb` stays on disk after step 6 — the live writer is now PG (factory routes writes), but the DuckDB file is **not frozen forever**: a reverse `side_car → duckdb` migration via the UI replays writes from PG back into a fresh DuckDB file, leaving the previous file as the recovery point. For emergency rollback without UI access, ops use the gzipped backup.
 
 #### Transition 2: `side_car` → `cloud`
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 import pytest
 from src.db_state_machine import (
+    BackendNotYetSupportedError,
     BackendState,
     InvalidTransitionError,
     MigrationInProgressError,
@@ -14,60 +15,97 @@ from src.db_state_machine import (
 
 
 def test_backend_state_values():
-    """Five states defined; forward-only transitions enforced."""
+    """Four stable backends + three in-progress variants."""
     assert BackendState.DUCKDB.value == "duckdb"
     assert BackendState.SIDE_CAR.value == "side_car"
     assert BackendState.CLOUD.value == "cloud"
+    assert BackendState.DUCKDB_QUACK.value == "duckdb_quack"
     assert BackendState.SIDE_CAR_IN_PROGRESS.value == "side_car_in_progress"
     assert BackendState.CLOUD_IN_PROGRESS.value == "cloud_in_progress"
+    assert BackendState.DUCKDB_QUACK_IN_PROGRESS.value == "duckdb_quack_in_progress"
 
 
-def test_allowed_transitions_matrix():
-    """DuckDB is start-only; PG↔PG is bidirectional.
+def test_allowed_transitions_matrix_is_multi_destination():
+    """Every stable backend can migrate to every other stable backend.
 
-      DUCKDB    → [SIDE_CAR, CLOUD]   (first cutover, either target)
-      SIDE_CAR  → [CLOUD]              (graduate to managed)
-      CLOUD     → [SIDE_CAR]           (DR / retire managed instance)
-
-    No transition back to DuckDB once on PG.
+    Multi-destination shape (not forward-only): operators move between
+    backends as cost / HA / compliance needs shift. DuckDB is NOT
+    "start-only" — reverse migrations from PG back to DuckDB are
+    supported by ``copy_pg_to_duckdb`` (UPSERT semantics).
     """
-    assert allowed_transitions(BackendState.DUCKDB) == [
-        BackendState.SIDE_CAR, BackendState.CLOUD,
-    ]
-    assert allowed_transitions(BackendState.SIDE_CAR) == [BackendState.CLOUD]
-    assert allowed_transitions(BackendState.CLOUD) == [BackendState.SIDE_CAR]
+    # DUCKDB can target all three other stable backends.
+    assert set(allowed_transitions(BackendState.DUCKDB)) == {
+        BackendState.SIDE_CAR, BackendState.CLOUD, BackendState.DUCKDB_QUACK,
+    }
+    # SIDE_CAR can target all three others — including reverse to DUCKDB.
+    assert set(allowed_transitions(BackendState.SIDE_CAR)) == {
+        BackendState.DUCKDB, BackendState.CLOUD, BackendState.DUCKDB_QUACK,
+    }
+    # CLOUD can target all three others — including reverse to DUCKDB.
+    assert set(allowed_transitions(BackendState.CLOUD)) == {
+        BackendState.DUCKDB, BackendState.SIDE_CAR, BackendState.DUCKDB_QUACK,
+    }
+    # DUCKDB_QUACK can target all three others (when runtime support lands).
+    assert set(allowed_transitions(BackendState.DUCKDB_QUACK)) == {
+        BackendState.DUCKDB, BackendState.SIDE_CAR, BackendState.CLOUD,
+    }
 
 
 def test_allowed_transitions_from_transient():
     """In-progress states allow ONLY the next stable state (retry)."""
     assert allowed_transitions(BackendState.SIDE_CAR_IN_PROGRESS) == [BackendState.SIDE_CAR]
     assert allowed_transitions(BackendState.CLOUD_IN_PROGRESS) == [BackendState.CLOUD]
+    assert allowed_transitions(BackendState.DUCKDB_QUACK_IN_PROGRESS) == [BackendState.DUCKDB_QUACK]
 
 
 def test_validate_transition_ok():
-    """Valid transitions return None; invalid raises."""
-    validate_transition(BackendState.DUCKDB, BackendState.SIDE_CAR)   # first cutover
-    validate_transition(BackendState.DUCKDB, BackendState.CLOUD)      # skip side-car
-    validate_transition(BackendState.SIDE_CAR, BackendState.CLOUD)    # graduate
-    validate_transition(BackendState.CLOUD, BackendState.SIDE_CAR)    # DR back
+    """Valid forward transitions return None."""
+    validate_transition(BackendState.DUCKDB, BackendState.SIDE_CAR)
+    validate_transition(BackendState.DUCKDB, BackendState.CLOUD)
+    validate_transition(BackendState.SIDE_CAR, BackendState.CLOUD)
+    validate_transition(BackendState.CLOUD, BackendState.SIDE_CAR)
 
 
-def test_validate_transition_rejects_rollback_to_duckdb():
-    """No transition lands on DuckDB once a PG cutover has happened.
+def test_validate_transition_allows_reverse_to_duckdb():
+    """Reverse migrations from PG back to DuckDB are now supported.
 
-    DuckDB is treated as immutable post-cutover (the backup file is
-    the recovery artifact, not a writable target).
+    The migrator dispatches to ``copy_pg_to_duckdb`` for these paths
+    (DuckDB UPSERT for idempotent replay). Use cases: cost reduction
+    (drop the side-car after pilot), compliance re-evaluation,
+    development snapshot of a production PG.
     """
-    with pytest.raises(InvalidTransitionError):
-        validate_transition(BackendState.SIDE_CAR, BackendState.DUCKDB)
-    with pytest.raises(InvalidTransitionError):
-        validate_transition(BackendState.CLOUD, BackendState.DUCKDB)
+    # Both SIDE_CAR → DUCKDB and CLOUD → DUCKDB now legal.
+    validate_transition(BackendState.SIDE_CAR, BackendState.DUCKDB)
+    validate_transition(BackendState.CLOUD, BackendState.DUCKDB)
+
+
+def test_validate_transition_rejects_duckdb_quack_until_runtime_supported():
+    """DuckDB Quack is reserved in the API but not yet runtime-
+    implemented. Transitions TO Quack raise BackendNotYetSupportedError
+    (a NotImplementedError subclass) until DuckDB 2.0 lands."""
+    with pytest.raises(BackendNotYetSupportedError, match="DUCKDB_QUACK|duckdb_quack"):
+        validate_transition(BackendState.DUCKDB, BackendState.DUCKDB_QUACK)
+    with pytest.raises(BackendNotYetSupportedError):
+        validate_transition(BackendState.SIDE_CAR, BackendState.DUCKDB_QUACK)
+    with pytest.raises(BackendNotYetSupportedError):
+        validate_transition(BackendState.CLOUD, BackendState.DUCKDB_QUACK)
+
+
+def test_backend_not_yet_supported_is_notimplementederror():
+    """BackendNotYetSupportedError is a NotImplementedError subclass so
+    callers catching NotImplementedError can route placeholder targets
+    cleanly."""
+    assert issubclass(BackendNotYetSupportedError, NotImplementedError)
 
 
 def test_validate_transition_rejects_self():
     """No-op transition (state → same state) raises."""
     with pytest.raises(InvalidTransitionError):
         validate_transition(BackendState.SIDE_CAR, BackendState.SIDE_CAR)
+    with pytest.raises(InvalidTransitionError):
+        validate_transition(BackendState.DUCKDB, BackendState.DUCKDB)
+    with pytest.raises(InvalidTransitionError):
+        validate_transition(BackendState.CLOUD, BackendState.CLOUD)
 
 
 def test_write_then_read_backend_state(tmp_path, monkeypatch):
