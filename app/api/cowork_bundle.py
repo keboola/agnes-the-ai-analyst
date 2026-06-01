@@ -603,42 +603,74 @@ def _bundle_setup_py(server_url: str) -> str:
             settings_path.write_text(json.dumps(cfg, indent=2) + "\\n")
             print("Session hook installed (agnes pull on start).")
 
-        # 3b. Register in the global Claude Desktop config so the MCP server
-        #     is available even when opening via Claude Desktop (not Claude Code).
-        _claude_cfg_path = None
-        if platform.system() == "Darwin":
-            _claude_cfg_path = (
-                pathlib.Path.home() / "Library" / "Application Support"
-                / "Claude" / "claude_desktop_config.json"
-            )
-        elif platform.system() == "Windows":
-            _appdata = os.environ.get("APPDATA", "")
-            if _appdata:
-                _claude_cfg_path = (
-                    pathlib.Path(_appdata) / "Claude" / "claude_desktop_config.json"
+        # 3b. Register Agnes MCP (SSE) in Claude Desktop's global config.
+        #
+        # When running inside Claude Desktop's cowork VM, $HOME points to the
+        # VM's ephemeral sandbox home — NOT the real Mac home. We derive the
+        # Mac home from the project folder path (the project folder IS on the
+        # Mac filesystem, so its path leaks the real username and home dir).
+        #
+        # Example: HERE = /Users/alice/Downloads/agnes-cowork-setup-…/
+        #   → Mac home = /Users/alice
+        #   → claude_desktop_config.json = /Users/alice/Library/Application
+        #                                  Support/Claude/claude_desktop_config.json
+        #
+        # Writes are best-effort; failure falls through silently.
+        def _claude_cfg_candidates():
+            candidates = []
+            # Derive Mac home from project-folder path (cowork VM path mirrors Mac)
+            _parts = list(HERE.parts)
+            if len(_parts) >= 3 and _parts[1] == "Users":
+                _mac_home = pathlib.Path("/") / _parts[1] / _parts[2]
+                candidates.append(
+                    _mac_home / "Library" / "Application Support"
+                    / "Claude" / "claude_desktop_config.json"
                 )
-        elif platform.system() == "Linux":
-            _claude_cfg_path = (
-                pathlib.Path.home() / ".config" / "Claude"
-                / "claude_desktop_config.json"
-            )
-        if _claude_cfg_path:
+            # Standard platform path (works when running directly on Mac/Win/Linux)
+            if platform.system() == "Darwin":
+                candidates.append(
+                    pathlib.Path.home() / "Library" / "Application Support"
+                    / "Claude" / "claude_desktop_config.json"
+                )
+            elif platform.system() == "Windows":
+                _appdata = os.environ.get("APPDATA", "")
+                if _appdata:
+                    candidates.append(
+                        pathlib.Path(_appdata) / "Claude" / "claude_desktop_config.json"
+                    )
+            elif platform.system() == "Linux":
+                candidates.append(
+                    pathlib.Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
+                )
+            # Deduplicate while preserving order
+            seen = set()
+            return [c for c in candidates if not (str(c) in seen or seen.add(str(c)))]
+
+        _mcp_entry = {{
+            "type": "sse",
+            "url": f"{{server_url}}/api/mcp/sse",
+            "headers": {{"Authorization": f"Bearer {{pat}}"}},
+        }}
+        _registered = False
+        for _cfg_path in _claude_cfg_candidates():
             try:
                 _desktop_cfg = {{}}
-                if _claude_cfg_path.exists():
-                    _desktop_cfg = json.loads(_claude_cfg_path.read_text())
+                if _cfg_path.exists():
+                    try:
+                        _desktop_cfg = json.loads(_cfg_path.read_text())
+                    except Exception:
+                        _desktop_cfg = {{}}
                 _desktop_cfg.setdefault("mcpServers", {{}})
-                _desktop_cfg["mcpServers"]["agnes"] = {{
-                    "type": "sse",
-                    "url": f"{{server_url}}/api/mcp/sse",
-                    "headers": {{"Authorization": f"Bearer {{pat}}"}},
-                }}
-                _claude_cfg_path.parent.mkdir(parents=True, exist_ok=True)
-                _claude_cfg_path.write_text(json.dumps(_desktop_cfg, indent=2))
-                print("Agnes registered in Claude Desktop config.")
-                print("Restart Claude Desktop once to activate Agnes tools.")
+                _desktop_cfg["mcpServers"]["agnes"] = _mcp_entry
+                _cfg_path.parent.mkdir(parents=True, exist_ok=True)
+                _cfg_path.write_text(json.dumps(_desktop_cfg, indent=2))
+                print(f"Agnes registered in Claude Desktop config: {{_cfg_path}}")
+                _registered = True
+                break  # first successful write is enough
             except Exception:
-                pass  # best-effort; project-level settings.json is the fallback
+                continue
+        if _registered:
+            print("Restart Claude Desktop once to activate Agnes MCP tools.")
 
         # 3c. Write MCP config to user-level ~/.claude/settings.json so the
         #     cowork VM's claude-code binary picks it up on the next session
@@ -727,42 +759,39 @@ def _bundle_claude_md(server_url: str, user_email: str, expires_at: datetime) ->
 
         Agnes server: {server_url}  |  Account: {user_email}
 
-        ## ⚡ Agnes data is available RIGHT NOW via the Bash tool
+        ## How Agnes works in Cowork
 
-        **Do NOT wait for MCP tools. Do NOT mention MCP. Do NOT ask the user to restart.**
+        Agnes is registered as an MCP server in Claude Desktop. Tools (`catalog`, `schema`,
+        `query`, etc.) appear directly in your tool list — no Bash needed.
 
-        Agnes works through `agnes.py` in this folder. The Bash tool is all you need.
+        **If tools are not yet in your list:** setup.py registered them at session start.
+        Restart Claude Desktop once to load them. After that they persist in every session.
 
-        **When the user asks about data — immediately run:**
+        ## Agnes MCP tools
+
+        | Tool | What it does |
+        |------|-------------|
+        | `catalog` | List all tables you have access to — **always start here** |
+        | `schema(table_id)` | Column names, types, SQL hints |
+        | `describe(table_id)` | Schema + sample rows |
+        | `query(sql)` | Run SQL against Agnes data (server-side) |
+        | `server_info` | Check connectivity and your account |
+
+        Always call `catalog` first, then `schema` before writing SQL.
+
+        ## Quick start
+
+        Type `/setup-cowork` to run guided onboarding automatically.
+
+        ## If Agnes tools are missing after restart
+
+        Open Terminal on Mac, navigate to this folder, and run:
+
         ```
-        python3 agnes.py catalog
+        python3 setup.py
         ```
 
-        That's it. No setup. No install. No restart. Just run it.
-
-        ## All commands
-
-        ```
-        python3 agnes.py catalog              # list all accessible tables
-        python3 agnes.py schema <table_id>    # columns and types
-        python3 agnes.py describe <table_id>  # schema + sample rows
-        python3 agnes.py query 'SELECT ...'   # run SQL server-side
-        python3 agnes.py info                 # check connectivity
-        python3 agnes.py skills               # list marketplace skills
-        ```
-
-        ## Rules — read carefully
-
-        1. **Agnes = Bash tool.** `python3 agnes.py` IS the Agnes integration. It is always available.
-        2. **Never say "Agnes is not available" or "MCP tools not loaded."** Agnes works via Bash, not MCP.
-        3. **Never ask the user to restart, reinstall, or run anything in Terminal.**
-        4. **Never say Agnes needs setup.** Setup already ran automatically at session start.
-        5. If `python3 agnes.py catalog` returns an error, show the exact error output and diagnose it.
-           Do not assume Agnes is broken — diagnose the specific error.
-
-        ## Quick start: type `/setup-cowork`
-
-        Runs `catalog`, `skills`, and a first `describe` automatically.
+        Then restart Claude Desktop. This registers Agnes once on your Mac directly.
 
         ## Bundle info
 
@@ -782,45 +811,29 @@ def _bundle_skill_setup_cowork() -> str:
         description: Guided Agnes Cowork setup — verify connection, explore your data, try a skill
         ---
 
-        Run this flow immediately when /setup-cowork is invoked.
-        Use the Bash tool for every step. Agnes works via `python3 agnes.py` — NOT via MCP tools.
-        Do not mention MCP. Do not ask the user to do anything. Just run the commands.
+        Run this flow when /setup-cowork is invoked.
 
-        ## Step 1 — Run catalog immediately
+        ## Step 1 — Check if Agnes MCP tools are available
 
-        ```bash
-        python3 agnes.py catalog
-        ```
+        Look in your tool list for tools named `catalog`, `schema`, `describe`, `query`.
 
-        If this returns an error, show the raw output and stop. Otherwise continue.
+        **If Agnes MCP tools ARE in your tool list:**
+        - Call `catalog()` to list tables
+        - Call `describe(<best_table>)` on the most interesting one
+        - Suggest one concrete question the user could ask
+        - Tell the user Agnes is ready
 
-        Present tables to the user grouped by source. Note which are `local` (cached)
-        vs `remote` (live query). Pick 1-2 most interesting based on name/description.
+        **If Agnes MCP tools are NOT in your tool list:**
+        - Tell the user: "Agnes tools registered — restart Claude Desktop to activate them."
+        - Explain: setup.py already wrote Agnes into Claude Desktop's config at session start.
+          One restart loads the tools into every future session.
+        - Do NOT tell the user to run terminal commands, install packages, or re-download the bundle.
+        - Do NOT say Agnes is broken or unavailable — it just needs one restart.
 
-        ## Step 2 — Check available skills
+        ## After restart — what the user gets
 
-        ```bash
-        python3 agnes.py skills
-        ```
-
-        If skills are returned, list them with one-line descriptions.
-        Tell the user they can invoke skills with `/skill-name`.
-        If empty or error, skip silently.
-
-        ## Step 3 — Explore the most interesting table
-
-        Pick the best table from Step 1 and run:
-        ```bash
-        python3 agnes.py describe <table_id>
-        ```
-
-        Based on the schema and sample rows, suggest one concrete question the user
-        could ask right now. For example: "Want me to find the top 10 accounts by revenue?"
-
-        ## Done
-
-        Agnes is ready. The user can ask any data question in plain language.
-        You answer by running `python3 agnes.py query 'SELECT ...'` via Bash.
+        Once Claude Desktop is restarted, Agnes tools (`catalog`, `schema`, `query`, etc.)
+        are available in every session, including Cowork. No further setup needed.
     """)
 
 
