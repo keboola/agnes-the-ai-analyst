@@ -3927,7 +3927,7 @@ def run_jira_sla_poll(
         # Raised by load_config() when JIRA_SLA_* env vars are missing.
         # Scheduler-driven endpoints prefer a 200 skip over a 500 — the
         # operator sees the no-op in audit_log without alert noise.
-        AuditRepository(conn).log(
+        audit_repo(conn).log(
             user_id=user.get("id"),
             action="run_jira_sla_poll",
             resource="job:jira-sla-poll",
@@ -3954,7 +3954,7 @@ def run_jira_sla_poll(
     if job_error is not None:
         audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
 
-    AuditRepository(conn).log(
+    audit_repo(conn).log(
         user_id=user.get("id"),
         action="run_jira_sla_poll",
         resource="job:jira-sla-poll",
@@ -3992,7 +3992,7 @@ def run_jira_consistency_check(
     try:
         config = Config.from_env()
     except (ValueError, KeyError) as e:
-        AuditRepository(conn).log(
+        audit_repo(conn).log(
             user_id=user.get("id"),
             action="run_jira_consistency_check",
             resource="job:jira-consistency-check",
@@ -4026,7 +4026,7 @@ def run_jira_consistency_check(
     if job_error is not None:
         audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
 
-    AuditRepository(conn).log(
+    audit_repo(conn).log(
         user_id=user.get("id"),
         action="run_jira_consistency_check",
         resource="job:jira-consistency-check",
