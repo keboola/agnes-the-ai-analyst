@@ -147,6 +147,27 @@ from app.web.router import router as web_router
 logger = logging.getLogger(__name__)
 
 
+def _maybe_rebuild_on_boot() -> bool:
+    """When AGNES_REBUILD_ON_BOOT=1, ATTACH all baked extracts and build
+    master views before serving. For images that ship baked data and have
+    no scheduler (ephemeral/demo). Returns True if a rebuild ran.
+
+    Blocking by design: the dataset is small and baked, and views must
+    exist before the first request. Soft-fails (logs) so a corrupt extract
+    never wedges boot.
+    """
+    if os.environ.get("AGNES_REBUILD_ON_BOOT", "").lower() not in ("1", "true"):
+        return False
+    try:
+        from src.orchestrator import SyncOrchestrator
+        SyncOrchestrator().rebuild()
+        logger.info("AGNES_REBUILD_ON_BOOT: master views rebuilt from baked extracts")
+        return True
+    except Exception:
+        logger.exception("AGNES_REBUILD_ON_BOOT rebuild failed (non-fatal)")
+        return False
+
+
 @asynccontextmanager
 async def lifespan(app):
     # Fail-closed: refuse to serve with a weak/absent JWT signing key in
@@ -205,6 +226,9 @@ async def lifespan(app):
         ensure_internal_tables_registered(get_system_db())
     except Exception:
         logger.exception("internal data-source seed failed; continuing")
+
+    # Baked-data images (no scheduler) need master views built at boot.
+    _maybe_rebuild_on_boot()
 
     # Rebuild the FTS BM25 index over knowledge_items at boot (issue #121).
     # The migration to schema v47 already does this on first upgrade, but
