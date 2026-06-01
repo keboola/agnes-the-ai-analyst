@@ -8,10 +8,8 @@
    JS-generated `.✕`-remove buttons stay page-local. #}
 {% import "_components.html" as ds %}
 <style>
-  /* ── Container override ────────────────────────────────────────── */
-  /* Width + padding come from .page-shell (style-custom.css) — same
-     1280px container as /dashboard, /marketplace, /admin/* peers. */
-  .container:has(.upload-page) > main { margin: 0; padding: 0; }
+  /* Width + page-shell margins come from the canonical `.container` /
+     `.container > main` rules in style-custom.css — no per-page override. */
 
   /* Hero box + typography come from the canonical `.page-header--hero`
      rule in style-custom.css. store_upload.html only adds the `meta`

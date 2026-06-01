@@ -10,6 +10,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **`base_page.html` intermediate page-shell layout (#367 Tier 2).** A thin layer between `base_ds.html` and content pages that auto-wires the canonical chrome — hero (`page_hero_*` → `_page_hero.html`) + `{% block toolbar %}` + `{% block page %}` — so a page gets the standard shell without a per-page `<style>` block or a container opt-out. `profile.html` is migrated onto it as the first adopter (rendered width unchanged — the canonical `.container:has(.profile-page)` cap still applies).
+- **Design-system anti-drift guards in `tests/test_design_system_contract.py` (#367 Tier 1).** Leaf templates can no longer reintroduce a `.container:has()` width opt-out or a bare `:root {}` token-shadow block; the canonical bases (`base.html`, `base_ds.html`, `base_page.html`, `_theme.html`) are exempt.
+
+### Changed
+- **Removed the four remaining `.container:has(.X-page) { max-width: none }` per-page container opt-outs** (`admin_user_detail`, `admin_group_detail`, `admin_server_config`, `store_upload`). Each inner wrapper is ≤ the canonical 1280px container (`.ud-page`/`.gd-page` 1100px, `.cfg-page` 1260px) or the override was redundant (`store_upload`'s `> main` reset already lives on the canonical `.container`), so rendered width is unchanged — pages now ride the canonical `.container`. This + the guards close the structural-enforcement half of #367; the remaining per-page `<style>` migration onto `base_page.html` is tracked as a follow-up.
+
 ## [0.55.28] — 2026-06-01
 
 ### Added
