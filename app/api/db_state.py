@@ -175,6 +175,37 @@ def _redact_url(url: str | None) -> str | None:
         return "<unparseable-url>"
 
 
+def _redact_urls_in_text(text: str | None) -> str | None:
+    """Mask every URL-shaped substring in arbitrary text via
+    :func:`_redact_url`. Used to scrub ``error.message`` /
+    ``error.detail`` fields where a raised exception captured the
+    target URL verbatim. H3-NEW.
+    """
+    if not text:
+        return text
+    # Liberal URL match — anything that looks like ``scheme://...``
+    # bounded by whitespace, quotes, parens, or end-of-string.
+    pattern = re.compile(r"""[a-z][a-z0-9+.\-]*://[^\s'"()<>]+""", re.IGNORECASE)
+    return pattern.sub(lambda m: _redact_url(m.group(0)) or "<redacted>", text)
+
+
+def _redact_error_payload(err: dict | None) -> dict | None:
+    """Recursively redact URL-shaped substrings inside an ``error``
+    dict before serialisation. H3-NEW.
+    """
+    if not err or not isinstance(err, dict):
+        return err
+    out: dict = {}
+    for k, v in err.items():
+        if isinstance(v, str):
+            out[k] = _redact_urls_in_text(v)
+        elif isinstance(v, dict):
+            out[k] = _redact_error_payload(v)
+        else:
+            out[k] = v
+    return out
+
+
 def _applier_last_tick_age_s() -> int | None:
     """Seconds since the host applier touched its heartbeat file, or
     ``None`` if the file is missing.
@@ -442,6 +473,13 @@ def get_job(job_id: str) -> dict:
         data["target_url"] = _redact_url(data["target_url"])
     if "source_url" in data:
         data["source_url"] = _redact_url(data["source_url"])
+    # H3-NEW: scrub URL-shaped substrings from the entire error payload
+    # before serialisation. The alembic-timeout RuntimeError embeds the
+    # raw target URL via !r into error.message; _redact_url only masks
+    # top-level fields so without this pass plaintext creds leak into
+    # HTTP responses, browser history, and UI screenshots.
+    if "error" in data:
+        data["error"] = _redact_error_payload(data["error"])
     return data
 
 

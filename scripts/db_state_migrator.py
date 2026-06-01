@@ -206,6 +206,26 @@ ALEMBIC_UPGRADE_TIMEOUT_SEC = 300
 BACKUP_TIMEOUT_SEC = 1800
 
 
+def _format_alembic_timeout_message(target_url: str, timeout_sec: int) -> str:
+    """Format the timeout error with the URL password masked.
+
+    H3-NEW: pre-fix, the formatter embedded the bare ``target_url`` with
+    its password via ``!r``. The migrator's outer handler then
+    captured the message into ``job.error.message``. Mask here so a
+    third party reading the job JSON never sees plaintext creds.
+    """
+    try:
+        from sqlalchemy.engine import make_url
+        safe = make_url(target_url).render_as_string(hide_password=True)
+    except Exception:
+        safe = "<unparseable-url>"
+    return (
+        f"alembic upgrade head timed out after {timeout_sec}s "
+        f"(target={safe!r}). The migration target may be unreachable, "
+        f"network-partitioned, or running out of disk."
+    )
+
+
 def alembic_upgrade_head(target_url: str) -> None:
     """Run ``alembic upgrade head`` against ``target_url``.
 
@@ -240,9 +260,7 @@ def alembic_upgrade_head(target_url: str) -> None:
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
-            f"alembic upgrade head timed out after {ALEMBIC_UPGRADE_TIMEOUT_SEC}s "
-            f"(target={target_url!r}). The migration target may be unreachable, "
-            "holding a long lock, or stuck mid-handshake."
+            _format_alembic_timeout_message(target_url, ALEMBIC_UPGRADE_TIMEOUT_SEC)
         ) from exc
     if result.returncode != 0:
         raise RuntimeError(
