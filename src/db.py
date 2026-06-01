@@ -38,6 +38,13 @@ def _maybe_instrument(con, db_tag: str):
     return InstrumentedConnection(con, db_tag)
 
 
+# Re-export the lightweight helper. The implementation lives in
+# `src.duckdb_conn` so connectors / CLI / scripts can import it without
+# pulling the heavy `connectors.bigquery.auth` dep that this module
+# imports above.
+from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
+
+
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
 SCHEMA_VERSION = 61
@@ -1161,7 +1168,7 @@ def _peek_schema_version(snapshot_path: Path) -> int:
     in the refusal path. Defensive: never returns -1 / None / raises.
     """
     try:
-        conn = duckdb.connect(str(snapshot_path), read_only=True)
+        conn = _open_duckdb(str(snapshot_path), read_only=True)
         try:
             row = conn.execute(
                 "SELECT MAX(version) FROM schema_version"
@@ -1189,7 +1196,7 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
     legitimate corruption (operator-edited DB, disk failure, etc.).
     """
     try:
-        return duckdb.connect(db_path)
+        return _open_duckdb(db_path)
     except duckdb.Error as e:
         msg = str(e)
         is_wal_replay = (
@@ -1288,7 +1295,7 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
         shutil.copy2(str(snapshot), db_path)
         # Re-open. If THIS also fails, propagate — auto-recovery has
         # exhausted its options.
-        return duckdb.connect(db_path)
+        return _open_duckdb(db_path)
 
 
 def _salvage_discard_wal(
@@ -1318,7 +1325,11 @@ def _salvage_discard_wal(
             )
             return None
     try:
-        conn = duckdb.connect(db_path)
+        # Route through `_open_duckdb` so the salvage reopen inherits the
+        # same `SET GLOBAL TimeZone='UTC'` pin every other connection gets
+        # (frontend timezone fix, #473) — otherwise the WAL-salvage path
+        # would silently drop back to the host's local zone.
+        conn = _open_duckdb(db_path)
     except duckdb.Error as reopen_err:
         logger.warning(
             "WAL salvage reopen failed (%s); falling back to pre-migrate snapshot",
@@ -1454,7 +1465,10 @@ def get_analytics_db() -> duckdb.DuckDBPyConnection:
                 except Exception:
                     pass
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-            _analytics_db_conn = duckdb.connect(db_path)
+            # Route through ``_open_duckdb`` so the connection inherits the
+            # ``SET GLOBAL TimeZone='UTC'`` pin (frontend timezone fix from
+            # #473), then apply the memory cap (OOM resilience from #479).
+            _analytics_db_conn = _open_duckdb(db_path)
             # Defensive memory cap (budgeted with the system + readonly
             # connections to sum under a 4 GiB cgroup — see the
             # ``_*_MEMORY_LIMIT`` constants). Analyst-facing queries that
@@ -1628,7 +1642,7 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
     db_path = _get_data_dir() / "analytics" / "server.duckdb"
     if not db_path.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = duckdb.connect(str(db_path), read_only=False)
+        conn = _open_duckdb(str(db_path), read_only=False)
         try:
             conn.execute("SET enable_external_access = false")
         except Exception:
@@ -1636,7 +1650,7 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
         # Memory cap — see get_analytics_db / the _*_MEMORY_LIMIT constants.
         _apply_memory_caps(conn, _ANALYTICS_RO_MEMORY_LIMIT, label="analytics_ro")
         return _maybe_instrument(conn, "analytics_ro")
-    conn = duckdb.connect(str(db_path), read_only=True)
+    conn = _open_duckdb(str(db_path), read_only=True)
     # Memory cap (see get_analytics_db rationale). Read-only conns can
     # still buffer significant memory for analyst queries that hit
     # ``CREATE TEMP TABLE`` over read_parquet — capping keeps a single

@@ -18,6 +18,8 @@ from pathlib import Path
 
 import duckdb
 
+from src.duckdb_conn import _open_duckdb
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.logging_config import setup_logging
@@ -74,7 +76,7 @@ def migrate_parquets(source_name: str, dry_run: bool = False) -> dict:
     # Create extract.duckdb
     if not dry_run and tables:
         db_path = new_extract_dir / "extract.duckdb"
-        conn = duckdb.connect(str(db_path))
+        conn = _open_duckdb(str(db_path))
         try:
             conn.execute("DROP TABLE IF EXISTS _meta")
             conn.execute("""CREATE TABLE _meta (

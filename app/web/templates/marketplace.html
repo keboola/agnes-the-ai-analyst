@@ -362,7 +362,7 @@ function buildCard(it) {
   } else {
     ownerLine = `by <strong>${esc(it.owner || '')}</strong>`;
   }
-  const addedFmt = it.added ? new Date(it.added).toISOString().slice(0,10) : '';
+  const addedFmt = it.added ? (window.AgnesTime.formatDate(it.added) || '') : '';
   const verFmt = it.version ? `v${esc(it.version)}` : '';
   const catBadge = it.category ? `<span class="cat-badge">${esc(it.category)}</span>` : '';
 

@@ -22,6 +22,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import duckdb
 import yaml
 
+from src.db import _open_duckdb
+
 logger = logging.getLogger(__name__)
 
 
@@ -758,7 +760,7 @@ def profile_table(
       4. Per-column: sample values, histograms, top values (can't batch)
       5. Assemble profiles
     """
-    con = duckdb.connect()
+    con = _open_duckdb(":memory:")
 
     # Limit DuckDB memory to avoid OOM on servers with limited RAM.
     # DuckDB defaults to using all available memory; the prior 4 GiB

@@ -37,6 +37,7 @@ from typing import Dict, List, Optional
 import duckdb
 
 from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+from src.db import _open_duckdb
 from src.orchestrator_security import (
     escape_sql_string_literal,
     is_builtin_extension,
@@ -172,7 +173,7 @@ class SyncOrchestrator:
         # connection is per-call and hasn't ATTACHed extracts yet at
         # this pre-pass point, so this won't fight a file lock.
         try:
-            ro = duckdb.connect(str(bq_extract), read_only=True)
+            ro = _open_duckdb(str(bq_extract), read_only=True)
         except Exception:
             return
         try:
@@ -245,7 +246,7 @@ class SyncOrchestrator:
             if not _validate_identifier(ext_dir.name, "source_name"):
                 continue
             try:
-                ro_conn = duckdb.connect(str(db_file), read_only=True)
+                ro_conn = _open_duckdb(str(db_file), read_only=True)
                 try:
                     rows = ro_conn.execute(
                         "SELECT table_name FROM _meta"
@@ -348,7 +349,7 @@ class SyncOrchestrator:
         tmp_path = self._db_path + ".tmp"
         if Path(tmp_path).exists():
             Path(tmp_path).unlink()
-        conn = duckdb.connect(tmp_path)
+        conn = _open_duckdb(tmp_path)
         try:
             # Detach any previously attached databases (except main and temp)
             attached = [

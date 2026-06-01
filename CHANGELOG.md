@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.31] — 2026-06-01
+
+### Fixed
+- **Frontend timestamps now render in the analyst's local timezone.** Three coupled fixes: (1) every `duckdb.connect(...)` is now routed through `src.db._open_duckdb`, which pins the DuckDB session timezone to UTC via `SET GLOBAL TimeZone='UTC'` — DuckDB's `TIMESTAMP` type strips tzinfo on write after shifting the value into the session zone, and ICU's default session zone is the host's local zone, so on a non-UTC host a UTC-aware write was previously stored as local-naive. `GLOBAL` is required because DuckDB cursors do NOT inherit session-level `SET TimeZone` (they start with the ICU default), and every repository reads through `conn.cursor()`. (2) FastAPI now serializes datetime fields with an explicit UTC offset — `app.serialization.AgnesJSONResponse` set as the default response class plus an override of `fastapi.encoders.ENCODERS_BY_TYPE[datetime]` so naive datetimes get the `+00:00` suffix on the wire instead of an offset-less ISO string that `new Date()` would parse as local time. (3) A new `window.AgnesTime` helper (`app/web/static/js/datetime.js`) hydrates `<time datetime="...">` tags client-side, replaces the per-template `fmtDate` slice helpers in `admin_users.html` / `admin_groups.html` / `admin_marketplaces.html` / `admin_user_detail.html` / `admin_group_detail.html` (which used to chop the ISO string and never convert to local tz), and powers the marketplace 'added' date. Two follow-on call sites — `app/api/health.py:_check_session_pipeline` sync-lag and `src/repositories/session_processor_state.py:scan_unprocessed_for` mtime compare — now compare against UTC-naive instead of local-naive to match the pinned DB. UTC label stays as the no-JS fallback and as the tooltip. No DuckDB schema migration — deferred until the parallel Postgres migration lands.
+
 ## [0.55.30] — 2026-06-01
 
 ### Fixed
@@ -17,7 +22,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   - **Uncapped system connection → OOM loop.** DuckDB enforces `memory_limit` per-connection, not per-process. The analytics + read-only connections were capped (2 GiB each) but the long-lived `system.duckdb` singleton was left uncapped, so a telemetry/audit aggregation on it could grow the process past the cgroup cap and the kernel OOM-killed the worker. `get_system_db()` now applies an explicit budget via a shared `_apply_memory_caps` helper (system 1 GiB, analytics 1.5 GiB, read-only 1 GiB) plus a `temp_directory` so an over-budget query spills to disk instead of growing RSS.
   - **Destructive WAL-replay recovery.** On restart after an unclean kill, an unreplayable WAL (the FTS-index DDL drop-ordering failure below) made `_try_open_system_db` restore the `pre-migrate` snapshot — captured only at migrations, so potentially days stale — discarding the live file's far newer last checkpoint. Recovery now first **discards only the unreplayable WAL and reopens the live file at its last checkpoint** (`_salvage_discard_wal`), losing at most post-checkpoint transactions; the pre-migrate fallback (with the #379 version guard) fires only if the file itself won't open. The discarded WAL is preserved chmod 600 for forensics.
   - **FTS DDL lingering in the WAL.** `ensure_knowledge_fts_index` rebuilds the `fts_main_knowledge_items` schema on every search; those DROP/CREATE ops sat in the WAL until the next checkpoint and were what DuckDB's replay choked on after a kill. It now `CHECKPOINT`s immediately after (re)creating the index (best-effort) so the FTS DDL never lingers in the WAL.
-
 ## [0.55.29] — 2026-06-01
 
 ### Added

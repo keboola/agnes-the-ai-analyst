@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 
 import duckdb
 
+from src.duckdb_conn import _open_duckdb
 from src.identifier_validation import (
     is_safe_quoted_identifier,
     validate_identifier,
@@ -58,7 +59,7 @@ def _open_consolidation_conn(db_path: Optional[str] = None):
     like — preserving the read-order from the input file isn't
     something any caller depends on.
     """
-    conn = duckdb.connect(db_path) if db_path else duckdb.connect()
+    conn = _open_duckdb(db_path) if db_path else _open_duckdb(":memory:")
     conn.execute(f"SET memory_limit='{_CONSOLIDATION_MEMORY_LIMIT}'")
     conn.execute(f"SET threads={_CONSOLIDATION_THREADS}")
     conn.execute("SET preserve_insertion_order=false")
@@ -451,7 +452,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
     tmp_db_path = output_path / "extract.duckdb.tmp"
     if tmp_db_path.exists():
         tmp_db_path.unlink()
-    conn = duckdb.connect(str(tmp_db_path))
+    conn = _open_duckdb(str(tmp_db_path))
 
     stats = {"tables_extracted": 0, "tables_failed": 0, "errors": []}
     now = datetime.now(timezone.utc)
