@@ -176,16 +176,20 @@ def test_schema_version_is_61():
     #            user under multiple identities (email from REST writers,
     #            UUID from upload-API sessions, OS-username from the
     #            legacy collector).
-    # v60 → v61: per-type FK columns on ``resource_grants`` (E.3).
-    #            Five NULLable VARCHAR columns mirror the PG FK design —
-    #            resource_id_table, resource_id_data_package,
-    #            resource_id_memory_domain, resource_id_memory_item,
-    #            resource_id_recipe. Backfilled from resource_id per
-    #            resource_type. marketplace_plugin rows leave all five
-    #            NULL (application-validated). DuckDB has no FK/CHECK
+    # v60 → v61: ``cli_auth_codes`` table (main PR #475) — single-use
+    #            exchange codes for the browser-loopback
+    #            ``agnes auth login`` flow.
+    # v61 → v62: per-type FK columns on ``resource_grants`` (E.3, this
+    #            branch). Five NULLable VARCHAR columns mirror the PG
+    #            FK design — resource_id_table,
+    #            resource_id_data_package, resource_id_memory_domain,
+    #            resource_id_memory_item, resource_id_recipe.
+    #            Backfilled from resource_id per resource_type.
+    #            marketplace_plugin rows leave all five NULL
+    #            (application-validated). DuckDB has no FK/CHECK
     #            enforcement; PG migration 0013 carries the real
     #            constraints.
-    assert SCHEMA_VERSION == 61
+    assert SCHEMA_VERSION == 62
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

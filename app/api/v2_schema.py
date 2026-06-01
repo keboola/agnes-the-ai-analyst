@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
+from src.db import _open_duckdb
 from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
 from app.api.v2_cache import TTLCache
@@ -190,7 +191,7 @@ def build_schema_uncached(
         parquet = (
             get_data_dir() / "extracts" / source_type / "data" / f"{table_id}.parquet"
         )
-        local_conn = duckdb.connect(":memory:")
+        local_conn = _open_duckdb(":memory:")
         try:
             cols = local_conn.execute(
                 "DESCRIBE SELECT * FROM read_parquet(?)", [str(parquet)]

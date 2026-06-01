@@ -119,13 +119,11 @@ class SessionProcessorStateRepository:
                     # rather than us silently dropping the file here.
                     results.append((username, jsonl_file))
                     continue
-                # Compare in naive-local: DuckDB TIMESTAMP strips tz on
-                # storage and converts tz-aware writes to local time before
-                # storing (see app/api/health.py:_check_session_pipeline for
-                # the same idiom). `datetime.fromtimestamp(epoch)` without
-                # `tz=` returns naive-local, matching processed_at after
-                # the optional tz strip below.
-                mtime = datetime.fromtimestamp(mtime_epoch)
+                # Compare in naive-UTC: the DuckDB connection helper
+                # (`src.db._open_duckdb`) pins the session timezone to UTC,
+                # so `processed_at` reads as UTC-clock-naive. Convert the
+                # file's epoch mtime to UTC-naive on the same axis.
+                mtime = datetime.fromtimestamp(mtime_epoch, tz=timezone.utc).replace(tzinfo=None)
                 if processed_at.tzinfo is not None:
                     processed_at = processed_at.replace(tzinfo=None)
                 if mtime > processed_at:

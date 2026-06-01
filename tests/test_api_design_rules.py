@@ -178,6 +178,10 @@ _CREATOR_POST_ALLOWLIST = frozenset({
     "/auth/email/verify",
     "/auth/password/reset",
     "/auth/password/setup",
+    # CLI browser-loopback auth — POST confirms authorization and 303-
+    # redirects the freshly-minted exchange code to the CLI's localhost
+    # loopback. Not a JSON resource create; conventional auth-flow shape.
+    "/cli/auth/start",
     # Register/update upsert — saves config, not a pure create
     "/api/admin/initial-workspace",
     # Saved-view upsert — ON CONFLICT updates existing name rather than creating

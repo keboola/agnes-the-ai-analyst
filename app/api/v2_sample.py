@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
+from src.db import _open_duckdb
 from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
 from app.api.v2_cache import TTLCache
@@ -151,7 +152,7 @@ def build_sample(
     else:
         from app.utils import get_data_dir
         parquet = get_data_dir() / "extracts" / source_type / "data" / f"{table_id}.parquet"
-        c = duckdb.connect(":memory:")
+        c = _open_duckdb(":memory:")
         try:
             df = c.execute(
                 f"SELECT * FROM read_parquet(?) LIMIT {n}",

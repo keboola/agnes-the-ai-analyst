@@ -61,6 +61,67 @@ Adversarial walk against the round-2 review (cvrysanek, 2026-06-01) confirms eve
 
 All 20 findings shipped with TDD discipline: failing regression test → minimal fix → green. Sub-agent-driven execution (`superpowers:subagent-driven-development`) per task; spec-compliance + code-quality reviews after each.
 
+### Schema version
+
+- DuckDB system schema bumped to **v62**: main shipped `cli_auth_codes` table as v61 (PR #475 browser-based `agnes auth login`); this branch's per-type FK columns on `resource_grants` (E.3) were renumbered to v62 during the merge. Migration ladder runs `_v60_to_v61` (cli_auth_codes) → `_v61_to_v62` (resource_grants FK columns) in order.
+
+## [0.55.32] — 2026-06-01
+
+### Added
+- **`agnes admin data-semantics generate <dir>` — scaffold the workspace data-semantics pack from the catalog (#469, Gap 1).** Emits a *starter* pack so an operator hand-edits know-how instead of authoring the whole tree: `<pkg>/tables/*.yml` (id, fqn, partition/cluster keys, columns — from `table_registry` + `column_metadata` + `bq_metadata_cache`), `<pkg>/metrics/*.yml` (from `metric_definitions`), grouped by `data_packages`, plus seed-if-absent `_brief.md` / `_overview.md` skeletons. Provenance + 3-way merge ride the pack's native `sync:` block (`method: generated` vs `hand-authored`): re-runs refresh machine-owned fields, keep human edits, preserve human-added keys, and drop a field whose source disappears. `--check` makes drift CI-enforceable; `--dry-run` / `--json` for inspection. Engine `src/data_semantics_scaffold.py` is `app.`-free. Metrics that belong to no data package are reported, not silently dropped.
+
+## [0.55.31] — 2026-06-01
+
+### Fixed
+- **Frontend timestamps now render in the analyst's local timezone.** Three coupled fixes: (1) every `duckdb.connect(...)` is now routed through `src.db._open_duckdb`, which pins the DuckDB session timezone to UTC via `SET GLOBAL TimeZone='UTC'` — DuckDB's `TIMESTAMP` type strips tzinfo on write after shifting the value into the session zone, and ICU's default session zone is the host's local zone, so on a non-UTC host a UTC-aware write was previously stored as local-naive. `GLOBAL` is required because DuckDB cursors do NOT inherit session-level `SET TimeZone` (they start with the ICU default), and every repository reads through `conn.cursor()`. (2) FastAPI now serializes datetime fields with an explicit UTC offset — `app.serialization.AgnesJSONResponse` set as the default response class plus an override of `fastapi.encoders.ENCODERS_BY_TYPE[datetime]` so naive datetimes get the `+00:00` suffix on the wire instead of an offset-less ISO string that `new Date()` would parse as local time. (3) A new `window.AgnesTime` helper (`app/web/static/js/datetime.js`) hydrates `<time datetime="...">` tags client-side, replaces the per-template `fmtDate` slice helpers in `admin_users.html` / `admin_groups.html` / `admin_marketplaces.html` / `admin_user_detail.html` / `admin_group_detail.html` (which used to chop the ISO string and never convert to local tz), and powers the marketplace 'added' date. Two follow-on call sites — `app/api/health.py:_check_session_pipeline` sync-lag and `src/repositories/session_processor_state.py:scan_unprocessed_for` mtime compare — now compare against UTC-naive instead of local-naive to match the pinned DB. UTC label stays as the no-JS fallback and as the tooltip. No DuckDB schema migration — deferred until the parallel Postgres migration lands.
+
+## [0.55.30] — 2026-06-01
+
+### Fixed
+- **`system.duckdb` could roll back days of admin state (data packages, RBAC grants, group members) after an OOM kill, and the OOM kill itself was self-inflicted.** Three compounding defects in a memory-bounded container (e.g. a 4 GiB cgroup):
+  - **Uncapped system connection → OOM loop.** DuckDB enforces `memory_limit` per-connection, not per-process. The analytics + read-only connections were capped (2 GiB each) but the long-lived `system.duckdb` singleton was left uncapped, so a telemetry/audit aggregation on it could grow the process past the cgroup cap and the kernel OOM-killed the worker. `get_system_db()` now applies an explicit budget via a shared `_apply_memory_caps` helper (system 1 GiB, analytics 1.5 GiB, read-only 1 GiB) plus a `temp_directory` so an over-budget query spills to disk instead of growing RSS.
+  - **Destructive WAL-replay recovery.** On restart after an unclean kill, an unreplayable WAL (the FTS-index DDL drop-ordering failure below) made `_try_open_system_db` restore the `pre-migrate` snapshot — captured only at migrations, so potentially days stale — discarding the live file's far newer last checkpoint. Recovery now first **discards only the unreplayable WAL and reopens the live file at its last checkpoint** (`_salvage_discard_wal`), losing at most post-checkpoint transactions; the pre-migrate fallback (with the #379 version guard) fires only if the file itself won't open. The discarded WAL is preserved chmod 600 for forensics.
+  - **FTS DDL lingering in the WAL.** `ensure_knowledge_fts_index` rebuilds the `fts_main_knowledge_items` schema on every search; those DROP/CREATE ops sat in the WAL until the next checkpoint and were what DuckDB's replay choked on after a kill. It now `CHECKPOINT`s immediately after (re)creating the index (best-effort) so the FTS DDL never lingers in the WAL.
+
+## [0.55.29] — 2026-06-01
+
+### Added
+- **`agnes admin autodoc-tables` — LLM-generate descriptions for undescribed tables (#399).** Most registered tables ship with no `description`, weakening `agnes catalog` for AI agents. The command reads each undescribed table's stored profile (columns + sample rows) and asks the configured LLM (Haiku by default, via `connectors.llm`) for a short factual description, then saves it via `TableRegistryRepository.set_description`. Only empty descriptions are filled — an existing one is never overwritten — and only already-profiled tables are touched. `--table` to target one, `--dry-run` to preview, `--limit N` to cap. Pure prompt/parse core in `src/table_autodoc.py` (no `app.`/DB/network deps). Uses `ANTHROPIC_API_KEY` / `LLM_API_KEY` (or the instance `ai:` block).
+
+## [0.55.28] — 2026-06-01
+
+### Added
+- Browser-based `agnes auth login` (gh-style loopback). Instead of
+  prompting for a plaintext password, the CLI opens the browser to
+  `/cli/auth/start`, the user signs in with whatever provider their
+  account uses (Google / magic link / password), and on approval the
+  server hands a 90-day personal access token straight back to the CLI
+  over a localhost loopback — no copy/paste, no password in the
+  terminal. The durable token never travels through the browser URL: the
+  loopback carries only a single-use, ~2-min exchange code (new
+  `cli_auth_codes` table, schema v61) that the CLI trades for the PAT via
+  `POST /cli/auth/exchange`. Server routes: `GET/POST /cli/auth/start`,
+  `POST /cli/auth/exchange`. Terminal-only fallbacks preserved:
+  `agnes auth login --password` (email+password) and `--no-browser`
+  (prints the sign-in URL); a timeout or old server prints the manual
+  `agnes auth import-token` path.
+
+## [0.55.27] — 2026-06-01
+
+### Security
+- Bumped `dulwich` from 0.24.1 to 1.2.5 (Dependabot, #468). dulwich powers the in-process git server mounted at `app/marketplace_server/{git_backend,git_router}.py` that serves the curated-marketplace clone endpoint — five hardenings landed in this jump:
+  - **GHSA-gfhv-vqv2-4544** — `porcelain.submodule_update` (and `porcelain.clone(recurse_submodules=True)`) now validates submodule paths; a crafted upstream could previously direct submodule contents into `.git/hooks` and drop an executable hook there. dulwich analogue of git's CVE-2024-32002 / CVE-2024-32004.
+  - **CVE-2026-42305** — Windows tree-path validation hardened: `validate_path_element_ntfs` now rejects Windows path separators, the alternate-data-stream marker `:`, NTFS 8.3 short-name aliases of `.git`, and reserved Windows device names. `core.protectNTFS` defaults to true on every platform and both `core.protectNTFS` / `core.protectHFS` are now read under their correct option names.
+  - **CVE-2026-42563** — shell-quote values substituted into `ProcessMergeDriver` commands; a malicious branch could previously inject shell when a merge driver referenced `%P`.
+  - **CVE-2026-47712** — `porcelain.format_patch` now sanitizes commit subjects used in patch filenames; a malicious subject (e.g. `x/../../x`) could previously direct the generated patch outside `outdir`.
+  - **`receive.maxInputSize`** — `ReceivePackHandler` now honours `receive.maxInputSize`; previously an unauthenticated remote could send a tiny crafted pack with a huge declared `dest_size` and trigger hundreds of MB of allocation in `git-receive-pack`.
+  - Test impact: the four-shard test suite + `tests/test_marketplace_server_git.py` are green on 1.2.5 — no Agnes-side API breakage from the 0.x → 1.x bump.
+
+## [0.55.26] — 2026-06-01
+
+### Fixed
+- **Data Package card: the lifecycle status pill (POC / Coming soon / Draft) overlapped the curated/new badges.** Both the status pill (`.stack-card__status-pill`) and the derived-badge row (`.stack-card__badges`) were absolute-positioned at the same `top:8px; left:8px` corner of the card cover, so a package that had a non-default status *and* a derived badge rendered the two stacked on top of each other. The badge row now drops just below the status pill when one is present; placement is unchanged (top-left) when there's no pill. Macro: `app/web/templates/macros/_stack_card.html`.
+
 ## [0.56.0] — 2026-05-28
 
 ### Added

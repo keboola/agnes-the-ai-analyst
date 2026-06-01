@@ -10,6 +10,8 @@ from pathlib import Path
 import duckdb
 import httpx
 import pyarrow.parquet as pq
+
+from src.duckdb_conn import _open_duckdb
 import typer
 
 from cli.snapshot_meta import (
@@ -78,7 +80,7 @@ def drop_cmd(name: str):
         # Also drop the view from user analytics DB
         local_db = _local_dir() / "user" / "duckdb" / "analytics.duckdb"
         if local_db.exists():
-            conn = duckdb.connect(str(local_db))
+            conn = _open_duckdb(str(local_db))
             try:
                 conn.execute(f'DROP VIEW IF EXISTS "{name}"')
             finally:
@@ -329,7 +331,7 @@ def create_cmd(
         # above — we still pass parents=True because the directory may have
         # been deleted between the guard and here in pathological cases).
         local_db.parent.mkdir(parents=True, exist_ok=True)
-        conn = duckdb.connect(str(local_db))
+        conn = _open_duckdb(str(local_db))
         try:
             safe_path = str(parquet_path).replace("'", "''")
             conn.execute(

@@ -7,7 +7,9 @@ import typer
 from cli.client import api_get, api_post, api_delete, api_patch, api_put
 from cli.commands.admin_activity import activity_app
 from cli.commands.admin_ask import app as admin_ask_app
+from cli.commands.admin_autodoc import autodoc_tables
 from cli.commands.admin_data_package import admin_data_package_app
+from cli.commands.admin_data_semantics import admin_data_semantics_app
 from cli.commands.admin_memory_domain import admin_memory_domain_app
 from cli.commands.admin_metrics import admin_metrics_app
 from cli.commands.db import db_app as admin_db_app
@@ -38,8 +40,12 @@ admin_app.add_typer(memory_admin_app, name="memory")
 admin_app.add_typer(admin_usage_app, name="telemetry", help="Telemetry export and admin queries")
 admin_app.add_typer(admin_usage_app, name="usage", help="(deprecated alias of `telemetry`)")
 admin_app.add_typer(admin_data_package_app, name="data-package", help="Data Package CRUD (v49)")
+admin_app.add_typer(admin_data_semantics_app, name="data-semantics", help="Generate the workspace data-semantics pack (#469)")
 admin_app.add_typer(admin_memory_domain_app, name="memory-domain", help="Memory Domain CRUD (v49)")
 admin_app.add_typer(admin_db_app, name="db", help="Manage app-state DB backend (DuckDB / Postgres)")
+# Single direct command (mirrors `register-table` / `discover-and-register`):
+# LLM-generate descriptions for undescribed tables (#399).
+admin_app.command("autodoc-tables")(autodoc_tables)
 
 
 @admin_app.command("add-user")
