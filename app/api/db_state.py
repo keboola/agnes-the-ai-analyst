@@ -51,13 +51,58 @@ def _normalize_pg_url(url: str) -> tuple[str, int, str]:
     return (host, port, database)
 
 
-def _urls_alias(a: str, b: str) -> bool:
-    """True iff two Postgres URLs point at the same physical database.
+def _resolve_host(host: str) -> set[str]:
+    """Resolve ``host`` to its IPv4/IPv6 address set. Returns empty
+    set on any DNS error (caller treats empty as "unknown — fall back
+    to string compare").
 
-    See :func:`_normalize_pg_url` for the normalization rules. Used by
-    the migrate endpoint to reject "migrate onto self" attempts (B7).
+    B2-NEW: the pre-fix ``_urls_alias`` compared only normalised
+    hostname strings, so ``postgres`` (compose service name) vs the
+    sidecar container's IP (``172.18.0.2``) bypassed the guard.
     """
-    return _normalize_pg_url(a) == _normalize_pg_url(b)
+    import socket
+    try:
+        infos = socket.getaddrinfo(host, None)
+        return {info[4][0] for info in infos}
+    except (socket.gaierror, OSError):
+        return set()
+
+
+def _urls_alias(a: str, b: str) -> bool:
+    """True iff ``a`` and ``b`` point at the same physical database.
+
+    Compares (port, db) for exact match; then either:
+      - normalised hostnames match (cheap path), OR
+      - the IP sets returned by ``_resolve_host`` overlap (DNS path), OR
+      - one side resolved successfully and the other side's literal host
+        string appears in that IP set (covers hostname-vs-IP-literal
+        pairs where ``socket.getaddrinfo`` on the IP literal is mocked
+        or otherwise returns empty).
+
+    Falls back to string-equal-only when DNS fails for both sides.
+    B2-NEW: pre-fix compared only normalised hostname strings — inside
+    the migrator container, ``postgres`` (compose service name) vs
+    ``172.18.0.2`` (sidecar IP) bypassed the alias guard.
+    """
+    a_host, a_port, a_db = _normalize_pg_url(a)
+    b_host, b_port, b_db = _normalize_pg_url(b)
+    if (a_port, a_db) != (b_port, b_db):
+        return False
+    if a_host == b_host:
+        return True
+    a_ips = _resolve_host(a_host)
+    b_ips = _resolve_host(b_host)
+    if a_ips and b_ips:
+        return bool(a_ips & b_ips)
+    # One side resolved; check if the other side's literal host string
+    # appears in the resolved IP set.  This catches hostname-vs-IP-literal
+    # pairs (e.g. ``postgres`` → {172.18.0.2} vs host ``172.18.0.2``).
+    if a_ips and b_host in a_ips:
+        return True
+    if b_ips and a_host in b_ips:
+        return True
+    # Both unresolvable → conservative non-alias.
+    return False
 
 
 def _validate_cloud_url(url: str) -> None:

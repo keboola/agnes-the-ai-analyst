@@ -364,6 +364,33 @@ if [ -n "$SOURCE_URL" ]; then
     SOURCE_URL_ARGS=( --source-url "$SOURCE_URL" )
 fi
 
+# B2-NEW — applier-side alias guard.
+# The API endpoint checks _urls_alias before writing the job; this
+# guard catches jobs written before B2-NEW was deployed (old pending
+# jobs in the queue) where ``postgres`` (compose service name) resolved
+# to the same IP as an explicit ``172.18.0.x`` cloud_url, bypassing
+# the string-only guard.  Call the same Python implementation so the
+# logic stays centralised.
+if [ -n "$SOURCE_URL" ] && [ -n "$TARGET_URL" ]; then
+    ALIAS_RESULT=$(python3 - "$SOURCE_URL" "$TARGET_URL" <<'PY' 2>/dev/null
+import sys
+sys.path.insert(0, "/app")
+try:
+    from app.api.db_state import _urls_alias
+    print("ALIAS" if _urls_alias(sys.argv[1], sys.argv[2]) else "DISTINCT")
+except Exception:
+    print("DISTINCT")
+PY
+) || ALIAS_RESULT="DISTINCT"
+    if [ "$ALIAS_RESULT" = "ALIAS" ]; then
+        update_job "$PENDING_JOB" "failed" \
+            "applier alias guard (B2-NEW): source and target URL alias the same Postgres database — refusing to migrate onto self"
+        logger -t agnes-state-applier \
+            "Migration job $JOB_ID aborted: source and target alias the same DB (B2-NEW guard)"
+        exit 0
+    fi
+fi
+
 # 1. Stop the app + scheduler so DuckDB releases the file lock.
 docker stop agnes-app-1 agnes-scheduler-1 >/dev/null 2>&1 || true
 
