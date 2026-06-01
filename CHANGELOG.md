@@ -86,6 +86,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   native newline so multi-line prompts still work.
 
 ### Fixed
+- **Cloud-chat: ordered-list markers overflowed the message bubble.** The
+  global CSS reset zeroes list padding, so markdown lists in assistant
+  replies rendered their `list-style-position: outside` markers in the
+  negative margin — multi-digit ordered markers (`10.`, `11.`) spilled past
+  the bubble's left edge and clipped. Added an explicit `1.8em` indent for
+  `.msg-body ol/ul` so markers sit inside the bubble.
 - **Cloud-chat: `agnes` CLI was missing inside the sandbox.** The E2B
   template image baked the CLI's *runtime dependencies* (typer, rich,
   httpx, duckdb, …) but never installed the `agnes-the-ai-analyst`
