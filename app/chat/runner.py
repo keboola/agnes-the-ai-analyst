@@ -235,7 +235,22 @@ async def _real_agent_loop(
         TextBlock,
         ToolResultBlock,
         ToolUseBlock,
+        UserMessage,
     )
+
+    def _emit_tool_result(block) -> None:
+        result = block.content
+        if isinstance(result, list):
+            result = " ".join(
+                item.get("text", "") if isinstance(item, dict) else str(item)
+                for item in result
+            )
+        _emit({
+            "type": "tool_result",
+            "id": block.tool_use_id,
+            "tool": block.tool_use_id,
+            "result": result,
+        })
 
     # ``bypassPermissions`` so the agent can run its tools (Bash → ``agnes
     # catalog``/``query``/…) autonomously. The SDK's default permission mode
@@ -322,22 +337,22 @@ async def _real_agent_loop(
                             })
                             tool_calls_this_turn += 1
                         elif isinstance(block, ToolResultBlock):
-                            result = block.content
-                            if isinstance(result, list):
-                                result = " ".join(
-                                    item.get("text", "") if isinstance(item, dict) else str(item)
-                                    for item in result
-                                )
-                            _emit({
-                                "type": "tool_result",
-                                "id": block.tool_use_id,
-                                "tool": block.tool_use_id,
-                                "result": result,
-                            })
+                            _emit_tool_result(block)
                     model = msg.model
                     if msg.usage:
                         tokens_in += msg.usage.get("input_tokens", 0)
                         tokens_out += msg.usage.get("output_tokens", 0)
+
+                elif isinstance(msg, UserMessage):
+                    # The SDK feeds tool results back as a UserMessage carrying
+                    # ToolResultBlock(s) — NOT inside the AssistantMessage. Without
+                    # handling this branch the runner never emits a tool_result
+                    # frame, so the inline tool block in the UI is stuck on
+                    # "running…" forever even though the tool finished.
+                    if isinstance(msg.content, list):
+                        for block in msg.content:
+                            if isinstance(block, ToolResultBlock):
+                                _emit_tool_result(block)
 
                 elif isinstance(msg, ResultMessage):
                     if msg.usage:
@@ -351,6 +366,12 @@ async def _real_agent_loop(
                         "tokens_out": tokens_out,
                         "model": model,
                     })
+
+            # Turn finished (receive_response() drained, or budget gate broke
+            # the loop). Emit a `done` frame so the UI hides the Stop button —
+            # without it the composer is wedged in the "running" state because
+            # the frontend only clears it on done/error/cancelled.
+            _emit({"type": "done"})
 
 
 async def amain() -> None:
