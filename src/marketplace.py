@@ -465,6 +465,8 @@ def sync_marketplaces() -> Dict[str, Any]:
         try:
             from app.marketplace_server import packager as _packager
             _packager.invalidate_etag_cache()
+            from app.marketplace_server import cowork_packager as _cowork
+            _cowork.invalidate_cache()
         except ImportError:
             pass
 
