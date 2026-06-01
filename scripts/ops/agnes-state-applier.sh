@@ -323,7 +323,14 @@ __rollback() {
         "applier aborted at line ${trapped_at} (rc=${rc}); recovering via ERR trap" \
         || true
     if [ -n "${SOURCE_BACKEND:-}" ]; then
-        write_instance_yaml "$SOURCE_BACKEND" || true
+        # H8-NEW: cloud-source rollback used to drop the url because we
+        # only passed SOURCE_BACKEND. write_instance_yaml interprets a
+        # missing 2nd arg as "drop the key" → the next app boot then
+        # tried to start with backend=cloud and no DATABASE_URL,
+        # re-introducing the B4-class outage on the failure path.
+        # For duckdb source, SOURCE_URL is empty — write_instance_yaml
+        # already handles empty URL by dropping the key (correct).
+        write_instance_yaml "$SOURCE_BACKEND" "${SOURCE_URL:-}" || true
         case "$SOURCE_BACKEND" in
             duckdb|cloud) rm -f "$FLAG" 2>/dev/null || true ;;
         esac
@@ -421,7 +428,10 @@ else
     logger -t agnes-state-applier "Migration job $JOB_ID failed — leaving backend on $SOURCE_BACKEND"
     # Roll the state machine back so the next /api/admin/db/state read
     # shows the (non-transient) source backend, not *_in_progress.
-    write_instance_yaml "$SOURCE_BACKEND"
+    # H8-NEW: also pass SOURCE_URL on the failed-migration path
+    # so cloud-source rollbacks don't wipe the url. Same B4-class
+    # outage class as the __rollback site.
+    write_instance_yaml "$SOURCE_BACKEND" "${SOURCE_URL:-}"
     # Clear the lifecycle flag if the rollback lands on a non-PG state —
     # otherwise the next applier tick would re-trigger the postgres
     # lifecycle ("side-car-enabled" / "cloud-only") and leave an orphan
