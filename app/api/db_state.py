@@ -85,10 +85,31 @@ def _validate_cloud_url(url: str) -> None:
 
 
 def _redact_url(url: str | None) -> str | None:
-    """Replace password in ``postgresql://user:PASS@host`` with ``****``."""
+    """Return ``url`` with every password placement masked.
+
+    Returns ``None`` for falsy input (``None`` or empty string).
+
+    Round-2 review MED-3 — the previous regex
+    ``(://[^:]+:)[^@]+(@)`` only matched ``://user:pass@host`` userinfo
+    style and let ``?password=secret`` query-string style leak. Route
+    through ``sqlalchemy.engine.make_url`` which understands every
+    libpq form (userinfo, query string, URL-encoded chars).
+    """
     if not url:
         return None
-    return re.sub(r"(://[^:]+:)[^@]+(@)", r"\1****\2", url)
+    try:
+        redacted = make_url(url).render_as_string(hide_password=True)
+        # SQLAlchemy masks userinfo passwords but leaves ?password=<value>
+        # and ?sslpassword=<value> in the query string verbatim.  Strip
+        # both explicitly so every libpq URL-embedded credential parameter
+        # is safe.  ``passfile=`` is a path to a credential file, not a
+        # credential itself — the anchored alternation leaves it alone.
+        redacted = re.sub(r"(?i)([?&](?:password|sslpassword)=)[^&]*", r"\1***", redacted)
+        return redacted
+    except Exception:
+        # Unparseable — never echo the input back (could still carry
+        # creds if it happened to be a valid-looking URL with a typo).
+        return "<unparseable-url>"
 
 
 def _applier_last_tick_age_s() -> int | None:

@@ -12,6 +12,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 - **`agnes admin db migrate --json` no longer bypasses the `--yes` confirmation gate.** Round-2 review MED-1 — CI/cron callers must opt into the destructive cutover explicitly with `--yes`; the predicate `not yes and not as_json` was the bypass.
+- **`_redact_url` masks every libpq URL-embedded credential.** Round-2 review MED-3 — `postgresql://user@host/db?password=secret` and `?sslpassword=…` (PEM key passphrase) leaked verbatim; now routes through `sqlalchemy.engine.make_url(...).render_as_string(hide_password=True)` for userinfo, followed by a regex pass that masks `password=` and `sslpassword=` query-string parameters.
 
 ## [0.56.0] — 2026-05-28
 
