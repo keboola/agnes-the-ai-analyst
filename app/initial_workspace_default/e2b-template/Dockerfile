@@ -24,9 +24,22 @@ RUN apt-get update && apt-get install -y python3 python3-pip curl gnupg \
 # Anthropic's Claude Code CLI — required by claude-agent-sdk's MCP loop.
 RUN npm install -g @anthropic-ai/claude-code
 
-# claude-agent-sdk + agnes CLI runtime deps. Pin the SDK to the same range
-# the Agnes server depends on so a template rebuild stays in lockstep with
-# the runner version.
+# claude-agent-sdk + the agnes CLI's *runtime dependencies* — NOT the agnes
+# package itself. The CLI is installed at spawn time from a wheel staged under
+# /tmp/agnes-cli/ (the server's own build artifact — see
+# app/chat/e2b_workspace_sync.upload_agnes_wheel + runner.py::_install_agnes_cli),
+# so the in-sandbox CLI version always matches the running server. Baking the
+# deps here means that spawn-time install can run `--no-deps` and stay fast.
+#
+# This list MUST cover the agnes CLI's full import closure, because cli/main.py
+# imports every command module eagerly at startup — a missing dep makes the
+# whole `agnes` binary crash on launch, not just one subcommand. The set below
+# mirrors the CLI-relevant entries of [project.dependencies] in pyproject.toml;
+# keep it in sync when the CLI gains a new top-level third-party import. (The
+# heavier server-only deps — fastapi, google-cloud-*, matplotlib, … — are
+# deliberately omitted: the CLI never imports them.)
+# Pin the SDK to the same range the Agnes server depends on so a template
+# rebuild stays in lockstep with the runner version.
 RUN pip install --no-cache-dir --break-system-packages \
     "claude-agent-sdk>=0.2.87,<0.3.0" \
     "duckdb>=1.5.2" \
@@ -34,7 +47,12 @@ RUN pip install --no-cache-dir --break-system-packages \
     "pyyaml>=6.0" \
     "PyJWT>=2.8.0" \
     "typer>=0.12.0" \
-    "rich>=13.0.0"
+    "rich>=13.0.0" \
+    "filelock>=3.13,<4" \
+    "pyarrow>=12.0.0" \
+    "pandas>=2.0.0" \
+    "numpy>=1.24.0" \
+    "sqlglot>=30.0.0"
 
 # Per-session working dir; populated at spawn time by e2b_workspace_sync.
 RUN mkdir -p /work && chmod 755 /work

@@ -14,8 +14,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.chat.e2b_workspace_sync import (
+    SANDBOX_WHEEL_DIR,
+    SANDBOX_WHEEL_READY,
     WorkspaceTooLarge,
     download_workspace,
+    upload_agnes_wheel,
     upload_workspace,
 )
 
@@ -189,6 +192,52 @@ def test_download_writes_files_back_locally(tmp_path: Path):
 
         assert (target / "greeting.txt").read_text() == "hello"
         assert (target / "notes" / "a.md").read_text() == "# a"
+
+    asyncio.run(_run())
+
+
+def test_upload_agnes_wheel_preserves_pep427_filename(tmp_path: Path, monkeypatch):
+    """The wheel is staged under its original PEP 427 name (pip rejects a
+    renamed wheel) in the dedicated dir outside /work (so it isn't synced back)."""
+
+    async def _run():
+        wheel = tmp_path / "agnes_the_ai_analyst-0.55.25-py3-none-any.whl"
+        wheel.write_bytes(b"PK\x03\x04 fake wheel bytes")
+
+        # Stub the shared wheel-discovery helper to return our fake wheel.
+        monkeypatch.setattr(
+            "app.api.cli_artifacts._find_wheel", lambda: wheel
+        )
+
+        sb = _make_fake_sandbox()
+        dest = await upload_agnes_wheel(sb)
+
+        expected = f"{SANDBOX_WHEEL_DIR}/{wheel.name}"
+        assert dest == expected
+        # Staged outside the synced workspace dir, and never flattened to a
+        # version-less name pip would reject.
+        assert not dest.startswith("/work")
+        assert dest.endswith(".whl") and "0.55.25" in dest
+        written = {c.args[0]: c.args[1] for c in sb.files.write.await_args_list}
+        assert expected in written
+        assert written[expected] == b"PK\x03\x04 fake wheel bytes"
+        # Sentinel written so the runner's wait terminates.
+        assert SANDBOX_WHEEL_READY in written
+
+    asyncio.run(_run())
+
+
+def test_upload_agnes_wheel_noop_when_no_wheel(monkeypatch):
+    """A dev image without a built wheel returns None — but still writes the
+    sentinel so the runner doesn't block on its bounded wait."""
+
+    async def _run():
+        monkeypatch.setattr("app.api.cli_artifacts._find_wheel", lambda: None)
+        sb = _make_fake_sandbox()
+        dest = await upload_agnes_wheel(sb)
+        assert dest is None
+        written = [c.args[0] for c in sb.files.write.await_args_list]
+        assert written == [SANDBOX_WHEEL_READY]
 
     asyncio.run(_run())
 
