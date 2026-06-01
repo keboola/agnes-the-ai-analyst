@@ -196,9 +196,13 @@ def _assemble_inputs(conn, *, package_filter: Optional[str] = None):
 
 
 def _metric_tables(metric: Dict[str, Any]) -> List[str]:
+    # Union of `tables` + `table_name`, de-duplicated — mirrors the engine's
+    # coordinate derivation (src.data_semantics_scaffold._derive_metric) so
+    # package-matching and the emitted coordinate stay consistent.
     tables = list(metric.get("tables") or [])
-    if metric.get("table_name"):
-        tables.append(metric["table_name"])
+    tn = metric.get("table_name")
+    if tn and tn not in tables:
+        tables.append(tn)
     return tables
 
 

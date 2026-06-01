@@ -169,7 +169,14 @@ def _derive_metric(row: Dict[str, Any], package: Dict[str, Any]) -> Dict[str, An
     """Build the derived (machine-owned) fields of one ``metrics/<name>.yml``
     item from a ``metric_definitions`` row. Order mirrors the example file."""
     name = (row.get("name") or "").strip()
-    tables = _as_list(row.get("tables")) or _as_list(row.get("table_name"))
+    # Union of the metric's explicit ``tables`` and its single ``table_name``,
+    # de-duplicated + order-preserving. This must match the set the CLI uses to
+    # assign a metric to a package (``_metric_tables`` in admin_data_semantics)
+    # so a metric's coordinate always lists every table that placed it here.
+    tables = _as_list(row.get("tables"))
+    tn = row.get("table_name")
+    if tn and tn not in tables:
+        tables = [*tables, tn]
     slug = package.get("slug") or ""
 
     out: Dict[str, Any] = {}

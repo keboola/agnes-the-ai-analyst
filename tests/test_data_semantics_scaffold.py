@@ -159,6 +159,21 @@ def test_metric_without_tables_emits_without_coordinate():
     assert "coordinate" not in m
 
 
+def test_metric_coordinate_unions_tables_and_table_name():
+    # A metric referencing tables[] AND a distinct table_name must list both —
+    # consistent with how the CLI assigns it to a package (Devin #472 finding).
+    m = _metric("ctr", tables=["e1_events"], table_name="s1_sessions",
+                type="ratio", grain="event")
+    doc = yaml.safe_load(_generate(metrics=[m])[0]["engagement/metrics/ctr.yml"])[0]
+    assert doc["coordinate"] == ["e1_events", "s1_sessions"]
+    assert doc["coordinate_fqn"] == ["engagement.e1_events", "engagement.s1_sessions"]
+    # de-dup: a table_name already present in tables is not repeated.
+    m2 = _metric("dup", tables=["e1_events"], table_name="e1_events",
+                 type="count", grain="event")
+    doc2 = yaml.safe_load(_generate(metrics=[m2])[0]["engagement/metrics/dup.yml"])[0]
+    assert doc2["coordinate"] == ["e1_events"]
+
+
 # --------------------------------------------------------------------------- #
 # _brief.md / _overview.md
 # --------------------------------------------------------------------------- #
