@@ -22,10 +22,11 @@
            Setup is reached from /home's install flow and My Stack
            lives inside /marketplace as a tab. #}
         <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}">Home</a>
-        {# Cloud chat entry — only shown when chat.enabled is true on this
-           instance, so disabled deployments don't surface a link that
-           would redirect users to /. Gated server-side; no UX trap. #}
-        {% if request.app.state.chat_config and request.app.state.chat_config.enabled %}
+        {# Cloud chat entry — shown only when chat is enabled AND the user has
+           the RBAC grant (``can_chat`` from _build_context; admins always).
+           Default-deny: with no grant nobody but admins sees it. Gated
+           server-side too, so this is just UX — no trap. #}
+        {% if can_chat %}
         <a class="app-nav-link {% if _path == '/chat' or _path.startswith('/chat/') %}is-active{% endif %}" href="/chat">Chat</a>
         {% endif %}
         <a class="app-nav-link {% if _path == '/marketplace' or _path.startswith('/marketplace/') %}is-active{% endif %}" href="/marketplace">Marketplace</a>

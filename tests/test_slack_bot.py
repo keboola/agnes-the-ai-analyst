@@ -223,6 +223,12 @@ def test_slack_dm_bound_user_attaches_sink_and_sends(monkeypatch):
         sent.append((ch, ts, text))
 
     monkeypatch.setattr(ev, "send_thread_reply", fake_send)
+    # Chat is a default-deny RBAC resource; the Slack DM handler checks the
+    # bound user's grant before spawning. These tests cover the sink/spawn
+    # plumbing, not the gate, so grant access. (Default-deny is covered by
+    # test_chat_api::test_chat_requires_rbac_grant.)
+    import app.auth.access as _access
+    monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
 
     app, _repo, mgr, conn = _build_slack_app_state()
 
@@ -269,6 +275,9 @@ def test_slack_dm_assistant_message_reaches_thread(monkeypatch):
 
     monkeypatch.setattr(ev, "send_thread_reply", fake_send)
     monkeypatch.setattr(sink_mod, "send_thread_reply", fake_send)
+    # Grant chat access — see note in the sibling bound-user test.
+    import app.auth.access as _access
+    monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
 
     app, _repo, _mgr, conn = _build_slack_app_state()
     from services.slack_bot.binding import _ensure_table

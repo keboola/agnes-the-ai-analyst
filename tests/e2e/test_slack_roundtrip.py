@@ -201,6 +201,12 @@ def slack_app(monkeypatch):
     from services.slack_bot import sink as sink_mod
     monkeypatch.setattr(events_mod, "send_thread_reply", fake_send)
     monkeypatch.setattr(sink_mod, "send_thread_reply", fake_send)
+    # Chat is a default-deny RBAC resource; the bound-DM branch checks the
+    # user's grant before spawning. This roundtrip exercises the bind →
+    # bound-reply plumbing, not the gate, so grant access. (Default-deny is
+    # covered by test_chat_api::test_chat_requires_rbac_grant.)
+    import app.auth.access as _access
+    monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
 
     app, conn, state = _build_app(captured_slack_calls=captured)
     client = TestClient(app)

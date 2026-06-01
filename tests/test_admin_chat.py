@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import duckdb
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from src.db import _ensure_schema
@@ -65,6 +65,18 @@ def _make_app(*, as_admin: bool = True) -> tuple[FastAPI, ChatRepository]:
 
     # Override auth for both user-level and admin-level deps
     app.dependency_overrides[get_current_user] = lambda: user
+
+    # Chat is an RBAC resource (default-deny). These tests create sessions via
+    # the chat API to set up admin-dashboard fixtures — they exercise the admin
+    # surface, not the chat gate — so delegate require_chat_access to whatever
+    # get_current_user returns (skip only the grant check). Default-deny is
+    # covered by test_chat_api::test_chat_requires_rbac_grant.
+    from app.api.chat import require_chat_access
+
+    async def _granted_user(u: dict = Depends(get_current_user)) -> dict:
+        return u
+
+    app.dependency_overrides[require_chat_access] = _granted_user
     if as_admin:
         app.dependency_overrides[require_admin] = lambda: user
     # For non-admin case, require_admin is NOT overridden, so it uses the

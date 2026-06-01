@@ -38,6 +38,16 @@ def _make_app() -> FastAPI:
     return app
 
 
+@pytest.fixture(autouse=True)
+def _grant_chat_access(monkeypatch):
+    """Chat is a default-deny RBAC resource; the /chat route redirects users
+    without the grant. test_chat_html_references_resolve renders /chat to check
+    asset hrefs, so simulate "access granted" by patching can_access."""
+    import app.auth.access as _access
+
+    monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
+
+
 @pytest.fixture
 def api_client() -> TestClient:
     return TestClient(_make_app())

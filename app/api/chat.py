@@ -10,13 +10,21 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from app.auth.dependencies import get_current_user
+from app.auth.access import require_resource_access
 from app.chat.manager import ChatManager, ConcurrencyCapHit, SessionNotFound
 from app.chat.persistence import ChatRepository
 from app.chat.types import Surface
+from app.resource_types import ResourceType
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+# Cloud chat is an RBAC resource: denied to everyone by default, granted to a
+# group on /admin/access. Every chat endpoint depends on this gate (the WS
+# stream is covered transitively — its ticket is only mintable through the
+# gated create/reissue endpoints). Admins short-circuit via god-mode. The
+# resource is a singleton, so the path template is the fixed id "chat".
+require_chat_access = require_resource_access(ResourceType.CHAT, "chat")
 
 
 # In-memory ticket store. Per spec: single-worker constraint enforced at
@@ -64,7 +72,7 @@ def _get_repo(request: Request) -> ChatRepository:
 async def create_session(
     body: CreateSessionBody,
     request: Request,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_chat_access),
 ):
     mgr = _get_manager(request)
     try:
@@ -88,7 +96,7 @@ async def create_session(
 @router.get("/sessions")
 async def list_sessions(
     request: Request,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_chat_access),
 ):
     repo = _get_repo(request)
     rows = repo.list_sessions(user["email"])
@@ -109,7 +117,7 @@ async def list_sessions(
 async def reissue_ticket(
     chat_id: str,
     request: Request,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_chat_access),
 ):
     """Mint a fresh WS ticket for an EXISTING session.
 
@@ -138,7 +146,7 @@ async def list_messages(
     chat_id: str,
     request: Request,
     after_id: Optional[str] = None,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_chat_access),
 ):
     repo = _get_repo(request)
     s = repo.get_session(chat_id)
@@ -161,7 +169,7 @@ async def list_messages(
 async def archive_session(
     chat_id: str,
     request: Request,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_chat_access),
 ):
     repo = _get_repo(request)
     s = repo.get_session(chat_id)

@@ -11,6 +11,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Cloud-chat is now an RBAC resource (default-deny).** The whole chat
+  feature — web `/chat`, the REST API, and the Slack DM surface — is
+  gated behind a new `chat` resource type that nobody has access to
+  until an admin grants it to a group on `/admin/access` (admins keep
+  access via the Admin god-mode short-circuit). It is a singleton
+  feature gate (one grantable item, `(group, chat, chat)`), so no DB
+  migration is needed. Every chat endpoint depends on
+  `require_resource_access(ResourceType.CHAT, "chat")` (the WebSocket
+  stream is covered transitively — its ticket is only mintable through
+  the gated create/reissue endpoints); the `/chat` page and the Slack
+  handler check `can_access` directly and bounce/refuse non-granted
+  users, and the nav "Chat" link is hidden unless the caller holds the
+  grant. Enabling chat in `instance.yaml` is now necessary but not
+  sufficient — a group must also be granted.
 - **`agnes marketplace scaffold-metadata <repo>`** — curator-side tool that
   generates / refreshes `.claude-plugin/marketplace-metadata.json` from
   the canonical plugin sources (`marketplace.json`, each plugin's

@@ -507,6 +507,21 @@ def _build_context(
         # the OSS vendor-neutral.
         "custom_scripts": get_custom_scripts(),
     }
+    # Cloud-chat nav visibility. The /chat link is shown only to users who can
+    # actually reach it: chat enabled AND the RBAC grant (admins short-circuit).
+    # Computed here so the shared header gates the link the same way the route
+    # gates the page. Defaults False when we can't check (no conn/user) so the
+    # link never leaks where access is unknown.
+    try:
+        from app.auth.access import can_access
+        from app.resource_types import ResourceType
+        _cc = getattr(request.app.state, "chat_config", None)
+        ctx["can_chat"] = bool(
+            user and conn is not None and _cc is not None and _cc.enabled
+            and can_access(user["id"], ResourceType.CHAT.value, "chat", conn)
+        )
+    except Exception:
+        ctx["can_chat"] = False
     # Flex all extra context values for template compatibility
     # (but skip ones we just populated — extras with the same key win)
     for k, v in extra.items():
@@ -3024,6 +3039,13 @@ async def chat_page(
     ``{% if session.user %}``.
     """
     if not request.app.state.chat_config.enabled:
+        return RedirectResponse("/")
+    # Cloud chat is an RBAC resource (default-deny). Non-granted users (and
+    # everyone but admins until a grant exists) are bounced to home — the nav
+    # link is hidden for them too, this guards a direct URL hit.
+    from app.auth.access import can_access
+    from app.resource_types import ResourceType
+    if not can_access(user["id"], ResourceType.CHAT.value, "chat", conn):
         return RedirectResponse("/")
     ctx = _build_context(request, user=user, conn=conn, current_user=user)
     ctx["chat_capabilities"] = _chat_capability_snapshot(conn, user)

@@ -47,6 +47,7 @@ class ResourceType(StrEnum):
     MEMORY_DOMAIN = "memory_domain"
     MEMORY_ITEM = "memory_item"
     RECIPE = "recipe"
+    CHAT = "chat"
 
 
 # Shape returned by ``list_blocks`` delegates. Kept as plain ``dict`` to keep
@@ -344,6 +345,34 @@ def _recipe_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
 
 
 # ---------------------------------------------------------------------------
+# Cloud-chat projection
+# ---------------------------------------------------------------------------
+
+
+def _chat_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
+    """Singleton feature resource: one grantable item gating the whole
+    cloud-chat surface (web ``/chat`` + the Slack DM bot).
+
+    No DB entity backs it — the chat feature is a single toggle — so the
+    block is static. With no grant the feature is denied to everyone except
+    the ``Admin`` god-mode group; admins grant ``(group, chat, chat)`` on
+    /admin/access to turn it on for a group.
+    """
+    return [{
+        "id": "cloud_chat",
+        "name": "Cloud chat",
+        "items": [{
+            "resource_id": "chat",
+            "name": "Cloud chat",
+            "description": (
+                "Access to the cloud-hosted Claude chat (the /chat web UI and "
+                "the Slack DM bot)."
+            ),
+        }],
+    }]
+
+
+# ---------------------------------------------------------------------------
 # Registry — the one place that gets edited when adding a new resource type
 # ---------------------------------------------------------------------------
 
@@ -399,6 +428,17 @@ RESOURCE_TYPES: dict[ResourceType, ResourceTypeSpec] = {
         ),
         id_format="<recipe_id>",
         list_blocks=_recipe_blocks,
+    ),
+    ResourceType.CHAT: ResourceTypeSpec(
+        key=ResourceType.CHAT,
+        display_name="Cloud chat",
+        description=(
+            "The cloud-hosted Claude chat feature. With no grant it is "
+            "denied to everyone (except admins); grant it to a group to "
+            "turn it on for that group."
+        ),
+        id_format="chat",
+        list_blocks=_chat_blocks,
     ),
 }
 

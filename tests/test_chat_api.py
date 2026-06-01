@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import duckdb
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from src.db import _ensure_schema
@@ -66,8 +66,19 @@ def _make_app(*, chat_enabled: bool = True) -> FastAPI:
 
     app.state.chat_repo = repo
 
-    # Override auth so we don't need a running DuckDB system.db
+    # Override auth so we don't need a running DuckDB system.db. Chat is now an
+    # RBAC resource, so the endpoints depend on ``require_chat_access`` (which
+    # internally resolves the user + checks the grant). Override that gate to
+    # *delegate* to whatever get_current_user returns — skipping only the
+    # access check (these tests exercise endpoint behavior, and some switch the
+    # user mid-test). Default-deny is covered by test_chat_requires_rbac_grant.
+    from app.api.chat import require_chat_access
+
+    async def _granted_user(user: dict = Depends(get_current_user)) -> dict:
+        return user
+
     app.dependency_overrides[get_current_user] = lambda: TEST_USER
+    app.dependency_overrides[require_chat_access] = _granted_user
 
     return app
 
@@ -179,3 +190,37 @@ def test_reissue_ticket_404_for_other_users_session(api_client: TestClient, logg
     finally:
         # Restore Alice for any subsequent tests sharing the fixture.
         app.dependency_overrides[get_current_user] = lambda: TEST_USER
+
+
+# ---------------------------------------------------------------------------
+# RBAC gate — chat is default-deny
+# ---------------------------------------------------------------------------
+
+def test_chat_requires_rbac_grant():
+    """Default-deny: a user with no chat grant (and not admin) is refused 403
+    by the chat API. This is the whole-feature RBAC gate — chat is off for
+    everyone until an admin grants `(group, chat, chat)`."""
+    from app.api.chat import router as chat_router
+    from app.auth.dependencies import _get_db
+
+    app = FastAPI()
+    app.include_router(chat_router)
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    app.state.chat_repo = repo
+    app.state.chat_manager = _make_mock_manager(repo)
+
+    # Real require_chat_access (NOT overridden): the user belongs to no group
+    # with a chat grant, so can_access returns False.
+    app.dependency_overrides[get_current_user] = lambda: TEST_USER
+    app.dependency_overrides[_get_db] = lambda: conn
+
+    client = TestClient(app)
+    for method, path in [
+        ("post", "/api/chat/sessions"),
+        ("get", "/api/chat/sessions"),
+    ]:
+        r = client.request(method, path, json={"surface": "web"})
+        assert r.status_code == 403, f"{method} {path} -> {r.status_code}"

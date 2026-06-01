@@ -50,6 +50,20 @@ async def _handle_dm(app, event: dict) -> None:
             ),
         )
         return
+    # Cloud chat is an RBAC resource (default-deny). A bound Slack user still
+    # needs the grant on their group, same as the web surface — check before
+    # spawning a session so Slack can't bypass the gate.
+    from app.auth.access import can_access
+    from app.resource_types import ResourceType
+    from src.repositories.users import UserRepository
+    _u = UserRepository(repo._conn).get_by_email(user_email)
+    if not _u or not can_access(_u["id"], ResourceType.CHAT.value, "chat", repo._conn):
+        await send_thread_reply(
+            channel, thread_ts,
+            "You don't have access to Agnes chat yet — ask an admin to grant "
+            "your group access on /admin/access.",
+        )
+        return
     mgr = app.state.chat_manager
     from app.chat.types import Surface
     session = await mgr.create_session(
