@@ -45,6 +45,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Schema v67: `data_package_tools` — junction table linking data packages to MCP tools (RFC #461 §6).
 - Dual-backend: `mcp_sources_pg.py`, `tool_registry_pg.py`, `setup_tokens_pg.py` — Postgres counterparts for all three new v63-v67 repositories; factory functions registered in `src/repositories/__init__.py`. `DataPackagesPgRepository` extended with `add_tool`, `remove_tool`, `list_tools` to match the DuckDB sibling.
 - SQLAlchemy models (`src/models/mcp.py`) and Alembic migration `0014_cowork_mcp_v63_v67` covering all v63–v67 tables: `setup_tokens`, `mcp_sources`, `tool_registry`, `tool_grants`, `mcp_secrets`, `mcp_user_secrets`, `data_package_tools`.
+- `scripts/migrate_duckdb_to_pg/_PK_COLUMNS` extended with non-`id` PKs for v63–v67 tables (`tool_registry`, `tool_grants`, `mcp_secrets`, `mcp_user_secrets`, `data_package_tools`) — fixes `SELECT id FROM mcp_secrets` `UndefinedColumn` in migrator tests.
 
 ## [0.57.2] — 2026-06-01
 
