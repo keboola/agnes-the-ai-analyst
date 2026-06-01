@@ -98,6 +98,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   content — an empty placeholder plugin contributes nothing.
 
 ### Fixed
+- **Cloud-chat: the agent ignored the `agnes` CLI and claimed "no data".** The
+  sandbox runner opened the SDK client with no filesystem settings loaded
+  (`setting_sources=None`), so — unlike a local Agnes install where the
+  `claude` CLI reads the workspace `CLAUDE.md` by default — the cloud-chat
+  agent never saw the workspace's data rails. A question like "pick a random
+  customer" was treated as "find a database file here" and answered "no data".
+  The runner now loads `setting_sources=["user","project","local"]` (the same
+  scopes the local CLI loads), and the bundled default workspace ships a
+  `CLAUDE.md` with the Agnes data rails (use `agnes catalog`/`schema`/`query
+  --remote`; never claim no data without checking). Both local installs and
+  cloud-chat now get the rails from the same workspace file — no cloud-chat-
+  specific behavior.
 - **Marketplace: served `plugin.json` referencing an empty component dir made
   `claude plugin install` fail.** A scaffolded plugin that ships an unused
   `agents/` (or `commands/`) dir holding only a `.gitkeep` produced

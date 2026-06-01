@@ -295,23 +295,20 @@ async def _real_agent_loop(
     # PreToolUse hook's job and is documented as best-effort/fail-open. The
     # SDK-native in-process gate (``can_use_tool``) needs streaming-input mode
     # — a larger runner refactor tracked separately.
-    # Only load filesystem settings when the marketplace bootstrap ran — then
-    # the agent needs them to resolve the installed plugins. Both scopes
-    # matter: `refresh-marketplace` registers the marketplace in USER settings
-    # (~/.claude) but enables the plugin at PROJECT scope (cwd/.claude), so
-    # loading only one leaves the plugin unresolvable. When bootstrap is off we
-    # leave setting_sources at the SDK default (None = load nothing), keeping
-    # the lean default path.
-    _setting_sources = (
-        ["user", "project", "local"]
-        if os.environ.get("AGNES_BOOTSTRAP_MARKETPLACE") == "1"
-        else None
-    )
+    # Load the workspace's filesystem config (user + project + local) — the
+    # same scopes the local `claude` CLI loads by default. The SDK loads NONE
+    # of them unless told to (its isolation default), which would make the
+    # cloud-chat agent behave differently from a local Agnes install: it would
+    # miss the workspace CLAUDE.md (the data rails that tell it to use the
+    # `agnes` CLI instead of hunting for local files) and any installed
+    # marketplace plugins. Loading them keeps cloud-chat == local. (The
+    # marketplace registers in user scope and enables plugins at project scope,
+    # so both must load for a bootstrapped plugin to resolve.)
     async with ClaudeSDKClient(
         options=ClaudeAgentOptions(
             permission_mode="bypassPermissions",
             cwd=str(workdir),
-            setting_sources=_setting_sources,
+            setting_sources=["user", "project", "local"],
         )
     ) as client:
         # Flag to track whether we've called connect() yet
