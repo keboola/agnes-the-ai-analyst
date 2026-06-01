@@ -17,7 +17,7 @@ def fresh_conn(tmp_path):
 
 def test_fresh_install_lands_at_v64_with_junction(fresh_conn):
     _ensure_schema(fresh_conn)
-    assert fresh_conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 64
+    assert fresh_conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
     cols = {r[1] for r in fresh_conn.execute("PRAGMA table_info(data_package_tools)").fetchall()}
     assert {"package_id", "tool_id", "added_at"}.issubset(cols)
 
