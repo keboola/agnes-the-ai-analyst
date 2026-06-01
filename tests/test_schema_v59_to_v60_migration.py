@@ -26,14 +26,19 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, _v59_to_v60, get_schema_version
 
 
-def test_schema_version_is_60():
-    assert SCHEMA_VERSION == 60
+def test_schema_version_is_at_least_60():
+    # v60 lower bound — the telemetry username collapse migration ladder
+    # step. Subsequent versions (v61 added per-type FK on resource_grants
+    # via _v60_to_v61, etc.) build on top, so the assertion is a lower
+    # bound, not an equality. Lock-in test for the dedicated v60 ladder
+    # step is below in test_v59_db_migrates_to_v60.
+    assert SCHEMA_VERSION >= 60
 
 
-def test_fresh_install_lands_at_v60(tmp_path):
+def test_fresh_install_lands_at_or_past_v60(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
-    assert get_schema_version(conn) == 60
+    assert get_schema_version(conn) >= 60
 
 
 def test_uuid_username_rewritten_to_email(tmp_path):
