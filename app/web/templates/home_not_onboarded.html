@@ -653,20 +653,26 @@ What would you like to do?
                 <div class="when-to-use"><strong>Best for:</strong> people who prefer a native UI to a terminal. Same Claude Code engine, same workspace.</div>
             </article>
 
-            <article class="surface-card incomplete">
+            <article class="surface-card">
                 <div class="surface-icon" aria-hidden="true">&#x1F91D;</div>
-                <h3>Cowork (claude.ai) <span class="badge-warn">INSTRUCTIONS NEEDED</span></h3>
-                <p class="what">Claude Cowork &mdash; the collaborative workspace on <a href="https://claude.ai/" target="_blank" rel="noopener">claude.ai</a>. Currently {{ instance_brand }} supports <strong>skills only</strong> here (no data packages or plugins yet).</p>
-                <div class="incomplete-callout">
-                    &#x26A0;&#xFE0F; <strong>This section is missing detailed instructions.</strong> Add the step-by-step here:
-                    <ul>
-                        <li>How to enable {{ instance_brand }}'s skills in Cowork (URL, sign-in, where to paste config)</li>
-                        <li>What does and doesn't sync (skills &#x2705;, plugins &#x274C;, data packages &#x274C;, memory &#x274C;)</li>
-                        <li>When to use Cowork vs the other surfaces</li>
-                        <li>Known limits / roadmap for plugin + data package support</li>
-                    </ul>
+                <h3>Cowork (claude.ai)</h3>
+                <p class="what">Claude Cowork &mdash; the collaborative workspace on <a href="https://claude.ai/" target="_blank" rel="noopener">claude.ai</a>. Upload {{ instance_brand }}'s plugins one at a time and use their skills, agents &amp; commands right in Cowork.</p>
+                <div class="steps">
+                    <strong class="steps-eyebrow">CONNECT IT</strong>
+                    <ol>
+                        <li>In Cowork, open <strong>Customize &rarr; upload a custom plugin file</strong>.</li>
+                        <li>Pick a plugin below and download its <code>.zip</code>.</li>
+                        <li>Upload the zip in Cowork. <strong>One plugin per zip</strong> &mdash; repeat for each.</li>
+                    </ol>
                 </div>
-                <div class="when-to-use"><strong>Status:</strong> partial support &mdash; skills only. Full instructions to be written.</div>
+                {# Plugin download list — populated by JS from /marketplace/info
+                   (same RBAC-filtered set the analyst's Claude Code marketplace
+                   serves). Each link hits GET /marketplace/cowork/<prefixed>.zip,
+                   which transforms the plugin into a Cowork-uploadable shape. #}
+                <div class="cowork-plugin-list" id="cowork-plugin-list" aria-live="polite">
+                    <p class="cowork-plugin-empty">Loading your plugins&hellip;</p>
+                </div>
+                <div class="when-to-use"><strong>Best for:</strong> using curated skills, agents &amp; commands on claude.ai. Data packages and script-backed execution stay in Claude Code.</div>
             </article>
         </div>
         <p class="home-usage-foot">For the deepest integration, create every project under <code>~/Desktop/{{ workspace_dir }}/Projects/</code> &mdash; existing or new. The bundled plugin keeps each project in sync with the central catalog automatically, and the session-analysis loop is scoped to that root. Anything outside <code>{{ workspace_dir }}/</code> is invisible to the platform.</p>
@@ -1008,6 +1014,53 @@ What would you like to do?
                 document.body.style.overflow = '';
             }
         });
+    }
+
+    // ── Cowork plugin download list ──────────────────────────────────
+    // Pulls the caller's RBAC-filtered plugin set from /marketplace/info
+    // and renders one download link per plugin → the per-plugin Cowork zip
+    // endpoint. Same-origin cookie auth; fails soft to an empty-state.
+    var coworkList = document.getElementById('cowork-plugin-list');
+    if (coworkList) {
+        fetch('/marketplace/info', { credentials: 'same-origin' })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (info) {
+                var plugins = (info && []
+                    .concat(info.plugins || [], info.store_plugins || [])) || [];
+                if (!plugins.length) {
+                    coworkList.innerHTML =
+                        '<p class="cowork-plugin-empty">No plugins available for ' +
+                        'your account yet. Browse the <a href="/marketplace">marketplace</a> ' +
+                        'to add some.</p>';
+                    return;
+                }
+                var rows = plugins.map(function (p) {
+                    var name = p.name || p.prefixed_name || 'plugin';
+                    var ver = p.version ? (' v' + p.version) : '';
+                    var href = '/marketplace/cowork/' +
+                        encodeURIComponent(p.prefixed_name) + '.zip';
+                    var a = document.createElement('a');
+                    a.className = 'cowork-plugin-row';
+                    a.href = href;
+                    // Pin the saved filename client-side so a cached 304 (no
+                    // Content-Disposition) can't reuse a stale download name.
+                    a.setAttribute('download', p.prefixed_name + '.zip');
+                    a.innerHTML =
+                        '<span class="cowork-plugin-name"></span>' +
+                        '<span class="cowork-plugin-ver"></span>' +
+                        '<span class="cowork-plugin-dl">Download .zip &darr;</span>';
+                    a.querySelector('.cowork-plugin-name').textContent = name;
+                    a.querySelector('.cowork-plugin-ver').textContent = ver;
+                    return a;
+                });
+                coworkList.innerHTML = '';
+                rows.forEach(function (a) { coworkList.appendChild(a); });
+            })
+            .catch(function () {
+                coworkList.innerHTML =
+                    '<p class="cowork-plugin-empty">Couldn\'t load your plugins. ' +
+                    'Try the <a href="/marketplace">marketplace</a>.</p>';
+            });
     }
 })();
 </script>
