@@ -4953,6 +4953,23 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v60_to_v61(conn)
             if current < 62:
                 _v61_to_v62(conn)
+            # NOTE: a DB that ran branch's pre-merge ``_v60_to_v61``
+            # (the E.3 per-type-FK migration, before it was renumbered
+            # to v62) sits at ``current = 61`` with the E.3 columns but
+            # without ``cli_auth_codes``. Both ``if`` blocks above
+            # skip on such a DB. The ``cli_auth_codes`` table gets
+            # created out-of-band by ``_SYSTEM_SCHEMA`` running at the
+            # top of ``_ensure_schema`` (line ~4681), which has
+            # ``CREATE TABLE IF NOT EXISTS cli_auth_codes (...)``. So
+            # the ladder is "healed" via the schema declaration rather
+            # than via the migration step. If a future maintainer
+            # extends ``_v60_to_v61`` to do more than the idempotent
+            # CREATE TABLE (e.g. seed a row, add a missing index,
+            # backfill data), those steps will silently skip for any
+            # DuckDB that came through the branch's pre-merge code
+            # path — make sure such changes are also reflected in
+            # ``_SYSTEM_SCHEMA`` or guarded with their own ladder
+            # entry.
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
