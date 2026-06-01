@@ -95,6 +95,7 @@ def test_no_bare_duckdb_connect_in_production_code():
         "a separate ``duckdb.connect()`` to the same path in the same",
         # Standalone scripts that inline the SET right after open:
         "scripts/generate_sample_data.py",
+        "scripts/build_demo_extract.py",
         "connectors/jira/scripts/sync_jira.sh",
         "connectors/jira/scripts/consistency_check.py",
         "scripts/smoke-test-materialized-bq.sh",

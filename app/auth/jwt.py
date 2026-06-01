@@ -8,9 +8,27 @@ from typing import Optional
 import jwt
 
 def _get_secret_key() -> str:
-    """Load JWT secret - from env, file, or auto-generated."""
+    """Resolve the JWT signing key. Fail-closed in production."""
     if os.environ.get("TESTING", "").lower() in ("1", "true"):
         return os.environ.get("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
+
+    from app.auth.dependencies import is_local_dev_mode
+    env_key = os.environ.get("JWT_SECRET_KEY")
+    if not is_local_dev_mode():
+        # Production: an explicit, strong key is mandatory. Never auto-generate
+        # (a per-cold-start or shared signing key lets anyone forge admin tokens).
+        if not env_key:
+            raise RuntimeError(
+                "JWT_SECRET_KEY is required in production — refusing to run with an "
+                "auto-generated or shared signing key."
+            )
+        if len(env_key) < 32:
+            raise RuntimeError(
+                f"JWT_SECRET_KEY too short ({len(env_key)} chars); minimum 32 required."
+            )
+        return env_key
+
+    # Local dev keeps the auto-generate-and-persist convenience.
     from app.secrets import get_jwt_secret
     key = get_jwt_secret()
     if len(key) < 32:
@@ -20,6 +38,11 @@ def _get_secret_key() -> str:
             UserWarning, stacklevel=2,
         )
     return key
+
+
+def validate_jwt_secret_or_raise() -> None:
+    """Boot-time guard: force the fail-closed check before serving traffic."""
+    _get_secret_key()
 
 
 _SECRET_KEY_CACHE: Optional[str] = None

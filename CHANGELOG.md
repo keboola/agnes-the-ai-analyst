@@ -94,6 +94,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`/data/postgres` ownership is set at provision time, not at applier runtime.** Round-2 review B4-NEW (BLOCKER) tightening — the previous mitigation was an idempotent stat-then-chown in the applier's `ExecStart`, but that ran as the unprivileged `agnes-applier` user under `set -e` and aborted the whole tick on every fresh VM where the directory was still root-owned. Provisioning (`startup-script.sh.tpl`) now creates `/data/postgres` owned `70:70` via `install -d`, the bootstrap unit (root-running) re-asserts the chown on every boot, and the applier merely STATs the directory and warns if it's wrong — no chown attempts, no `set -e` abort.
 - **DuckDB system schema bumped to v62.** Main shipped `cli_auth_codes` table as v61 (PR #475 browser-based `agnes auth login`); this branch's per-type FK columns on `resource_grants` (E.3) were renumbered to v62 during the merge. Migration ladder runs `_v60_to_v61` (cli_auth_codes) → `_v61_to_v62` (resource_grants FK columns) in order. `_SYSTEM_SCHEMA` declares both, so fresh installs and design-pass-origin DBs at v61 heal correctly. The detailed verification matrix (one line per finding mapped to commit SHA) lives in the PR #455 description.
 
+## [0.56.0] — 2026-06-01
+
+### Added
+- `AGNES_REBUILD_ON_BOOT=1` builds master views from baked extracts at startup (for images that ship data without a scheduler).
+- `scripts/build_demo_extract.py` + `Dockerfile.demo` produce an image variant with a self-contained synthetic demo dataset.
+- Optional Artifact Registry image mirror in the release workflow (repo vars `AR_LOCATION`/`AR_PROJECT`/`AR_REPO` + secret `GCP_SA_KEY`).
+
+### Changed
+- **BREAKING**: in production (non-local-dev) the app now refuses to start without an explicit `JWT_SECRET_KEY` of ≥32 chars — auto-generation is limited to local dev. Set a strong `JWT_SECRET_KEY` before deploying.
+
 ## [0.55.32] — 2026-06-01
 
 ### Added
