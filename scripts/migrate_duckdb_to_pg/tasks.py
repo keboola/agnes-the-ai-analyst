@@ -101,17 +101,23 @@ def _build_insert(
     columns: Sequence[str],
     pk_columns: Sequence[str],
 ) -> str:
-    """Return a parameterised INSERT … ON CONFLICT (pk…) DO NOTHING statement.
+    """Build the parametrised INSERT used by GenericCopyTask.run.
 
     Columns listed in :data:`_JSON_COLUMNS` are wrapped in
     ``CAST(:col AS JSONB)`` so DuckDB-native dict/list values are coerced
     correctly in Postgres.
 
-    The ``pk_columns`` argument must be the table's primary-key column list so
-    that the ``ON CONFLICT`` clause targets only that constraint.  Using a bare
-    ``ON CONFLICT DO NOTHING`` would silently suppress conflicts on *any*
-    unique constraint (e.g. a ``UNIQUE(email)`` index), masking data-corruption
-    that would otherwise surface as a uniqueness error on the second row.
+    NEW-X: the ON CONFLICT target is intentionally OMITTED — bare
+    ``ON CONFLICT DO NOTHING`` matches every UNIQUE constraint on the
+    table, not just the PK. Pre-fix the form was
+    ``ON CONFLICT ({pk}) DO NOTHING`` which let an INSERT collide on
+    a non-PK UNIQUE (e.g. ``users.email``) raise UniqueViolation
+    mid-batch — psycopg's executemany then left a partial commit
+    in PG and aborted with secondary rows uninserted.
+
+    Side note: ``pk_columns`` is still part of the signature because
+    the validator + the row-hash code use it; the parameter is unused
+    here on purpose.
     """
     placeholders: List[str] = []
     for c in columns:
@@ -121,11 +127,10 @@ def _build_insert(
             placeholders.append(f":{c}")
     col_list = ", ".join(columns)
     val_list = ", ".join(placeholders)
-    pk_target = ", ".join(pk_columns)
     return (
         f"INSERT INTO {target_table} ({col_list}) "
         f"VALUES ({val_list}) "
-        f"ON CONFLICT ({pk_target}) DO NOTHING"
+        f"ON CONFLICT DO NOTHING"
     )
 
 
@@ -269,12 +274,13 @@ def _checksum(values: Sequence[Sequence[Any]]) -> str:
 
 @dataclass
 class GenericCopyTask:
-    """SELECT * → INSERT … ON CONFLICT (pk…) DO NOTHING + SHA-256 validate.
+    """SELECT * → INSERT … ON CONFLICT DO NOTHING + SHA-256 validate.
 
     Default handler for any table that does not require per-row work.
-    Reads every column from DuckDB, batch-inserts into PG with
-    ``ON CONFLICT (pk_columns) DO NOTHING``, and records PK-set + row-count
-    for post-copy validation.
+    Reads every column from DuckDB, batch-inserts into PG with bare
+    ``ON CONFLICT DO NOTHING`` (matches every UNIQUE constraint, not
+    just the PK — see :func:`_build_insert` for the NEW-X rationale),
+    and records PK-set + row-count for post-copy validation.
 
     Attributes:
         table_name:  DuckDB source table name (identical to PG target).
