@@ -35,11 +35,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Admin API now rejects Keboola `materialized` rows with SQL `source_query` at registration time.** Both `RegisterTableRequest` and the `PUT /api/admin/registry/{id}` handler validate that Keboola materialized `source_query` is a JSON filter spec (or absent), not a SQL statement — preventing the mismatch from reaching sync runtime.
 
 ### Internal
-- Schema v62: `setup_tokens` — short-lived one-use tokens for the Cowork setup exchange flow.
-- Schema v63: `mcp_sources`, `tool_registry`, `tool_grants` — Universal MCP source registry and RBAC tool grants.
-- Schema v64: `mcp_secrets` — shared Fernet vault for MCP source auth tokens.
-- Schema v65: `mcp_user_secrets`, `mcp_sources.scope` — per-user credential vault for `scope='per_user'` sources.
-- Schema v66: `data_package_tools` — junction table linking data packages to MCP tools (RFC #461 §6).
+- Schema v63: `setup_tokens` — short-lived one-use tokens for the Cowork setup exchange flow.
+- Schema v64: `mcp_sources`, `tool_registry`, `tool_grants` — Universal MCP source registry and RBAC tool grants.
+- Schema v65: `mcp_secrets` — shared Fernet vault for MCP source auth tokens.
+- Schema v66: `mcp_user_secrets`, `mcp_sources.scope` — per-user credential vault for `scope='per_user'` sources.
+- Schema v67: `data_package_tools` — junction table linking data packages to MCP tools (RFC #461 §6).
 
 ## [0.57.2] — 2026-06-01
 
