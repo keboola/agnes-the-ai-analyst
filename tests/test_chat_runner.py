@@ -114,6 +114,72 @@ def test_tool_call_budget_emits_confirmation_required(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_install_agnes_cli_noop_without_wheel(tmp_path: Path, monkeypatch):
+    """Empty staging dir → install is a silent no-op (no pip invocation)."""
+    from app.chat import runner
+
+    monkeypatch.setattr(runner, "_SANDBOX_WHEEL_DIR", str(tmp_path / "empty"))
+    called = []
+    monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: called.append(a))
+
+    runner._install_agnes_cli()
+    assert called == []
+
+
+def test_install_agnes_cli_invokes_pip_no_deps_system(tmp_path: Path, monkeypatch):
+    """With a wheel staged, pip is invoked --no-deps --break-system-packages
+    (NO --user — the console script must land in /usr/local/bin, on the agent
+    Bash tool's PATH) against the PEP 427 wheel filename."""
+    from app.chat import runner
+
+    staging = tmp_path / "agnes-cli"
+    staging.mkdir()
+    wheel = staging / "agnes_the_ai_analyst-0.55.25-py3-none-any.whl"
+    wheel.write_bytes(b"PK\x03\x04")
+    monkeypatch.setattr(runner, "_SANDBOX_WHEEL_DIR", str(staging))
+
+    captured = {}
+
+    def _fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+
+        class _R:
+            returncode = 0
+
+        return _R()
+
+    monkeypatch.setattr(runner.subprocess, "run", _fake_run)
+
+    runner._install_agnes_cli()
+
+    argv = captured["argv"]
+    assert argv[:4] == [sys.executable, "-m", "pip", "install"]
+    assert "--no-deps" in argv
+    assert "--user" not in argv  # system install → /usr/local/bin (on Bash tool PATH)
+    assert "--break-system-packages" in argv
+    assert str(wheel) == argv[-1]
+    assert argv[-1].endswith("agnes_the_ai_analyst-0.55.25-py3-none-any.whl")
+
+
+def test_install_agnes_cli_swallows_pip_failure(tmp_path: Path, monkeypatch, capsys):
+    """A pip failure is non-fatal — logged to stderr, no exception raised."""
+    from app.chat import runner
+
+    staging = tmp_path / "agnes-cli"
+    staging.mkdir()
+    (staging / "agnes_the_ai_analyst-0.55.25-py3-none-any.whl").write_bytes(b"PK\x03\x04")
+    monkeypatch.setattr(runner, "_SANDBOX_WHEEL_DIR", str(staging))
+
+    def _boom(*a, **k):
+        raise RuntimeError("pip exploded")
+
+    monkeypatch.setattr(runner.subprocess, "run", _boom)
+
+    runner._install_agnes_cli()  # must not raise
+    assert "agnes CLI install failed" in capsys.readouterr().err
+
+
 def test_per_tool_call_timeout_emits_synthetic_result(tmp_path: Path):
     """__slow_tool__ triggers a tool_call followed by tool_result: {timeout: true}."""
     async def _run():

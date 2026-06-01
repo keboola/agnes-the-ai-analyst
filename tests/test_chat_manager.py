@@ -199,6 +199,33 @@ class FakeHandle:
 # Task 5.2 tests
 # ---------------------------------------------------------------------------
 
+def test_spawn_sets_agnes_server_not_agnes_api(manager: ChatManager, tmp_path, monkeypatch):
+    """The runner env must carry AGNES_SERVER (the var the CLI reads) sourced
+    from SERVER_URL — not the dead AGNES_API the CLI ignores."""
+    monkeypatch.setenv("SERVER_URL", "https://chat.example.com")
+    monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "tok")
+
+    captured = {}
+
+    async def fake_spawn(**kw):
+        captured.update(kw)
+        return FakeHandle()
+
+    manager._provider.spawn = fake_spawn
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        sess = manager._repo.get_session(s.id)
+        await manager._spawn_runner(sess, tmp_path)
+
+    asyncio.run(_run())
+
+    env = captured["env"]
+    assert env["AGNES_SERVER"] == "https://chat.example.com"
+    assert "AGNES_API" not in env
+    assert env["AGNES_TOKEN"] == "tok"
+
+
 def test_attach_pumps_tokens_to_ws(manager: ChatManager):
     async def _run():
         handle = FakeHandle()
