@@ -135,9 +135,12 @@ class TestInstanceBrand:
             workspace_dir="FoundryAI",
         ))
         assert "Set up the Foundry AI CLI on this machine." in joined
-        # Step 2 is a pwd-check now (no auto-mkdir); brand + workspace_dir
-        # thread through the warning copy + expected-path string.
-        assert "$HOME/Desktop/FoundryAI" in joined
+        # Step 2 is the user-centric decision tree (#442); brand +
+        # workspace_dir thread through the 2a "pick a workspace folder
+        # (e.g. ~/Desktop/{workspace_dir})" copy, the 2c "default" hint,
+        # and the manual-mkdir example. The default-path mention now
+        # renders as `~/Desktop/...` (tilde), not `$HOME/Desktop/...`.
+        assert "~/Desktop/FoundryAI" in joined
         assert "mkdir -p ~/Desktop/FoundryAI && cd ~/Desktop/FoundryAI" in joined
         assert "Bootstrap your Foundry AI workspace" in joined
         assert "Foundry AI workspace is ready" in joined
@@ -153,9 +156,10 @@ class TestInstanceBrand:
         from app.web.setup_instructions import resolve_lines
         joined = "\n".join(resolve_lines("agnes.whl"))
         assert "Set up the Agnes CLI on this machine." in joined
-        # Step 2 is a pwd-check (no auto-mkdir); default path threads
-        # through as `$HOME/Desktop/Agnes` + the warning's manual-mkdir example.
-        assert "$HOME/Desktop/Agnes" in joined
+        # Step 2 is the user-centric decision tree (#442); default path
+        # renders as `~/Desktop/Agnes` (tilde) inside the 2c "default"
+        # branch + the manual-mkdir example.
+        assert "~/Desktop/Agnes" in joined
         assert "mkdir -p ~/Desktop/Agnes && cd ~/Desktop/Agnes" in joined
         assert "Bootstrap your Agnes workspace" in joined
         assert "Agnes workspace is ready" in joined

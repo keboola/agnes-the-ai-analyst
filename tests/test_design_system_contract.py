@@ -9,7 +9,13 @@ STATIC = Path("app/web/static")
 
 
 def _all_html() -> list[Path]:
-    return sorted(p for p in TEMPLATES.rglob("*.html"))
+    """All HTML- or JINJA-templated files that ship with the app and may
+    reference design-system tokens. Includes `*.jinja` (e.g.
+    `_claude_setup_cta.jinja`) so the token-sweep regression guards
+    cover them too."""
+    return sorted(
+        list(TEMPLATES.rglob("*.html")) + list(TEMPLATES.rglob("*.jinja"))
+    )
 
 
 # Match every class="..." or class='...' attribute, possibly multi-line.
@@ -40,6 +46,7 @@ def _classes_in_template(text: str) -> set[str]:
 DEPRECATED_CLASSES = {
     "btn-primary-v2": "btn-primary",
     "btn-secondary-v2": "btn-secondary",
+    "btn-warning": "btn-danger",
     "modal-btn": "btn + .btn-primary / .btn-secondary",
     "users-table": "data-table",
     "gp-table": "data-table",
@@ -94,7 +101,7 @@ def test_canonical_primitives_defined() -> None:
         ".btn-secondary",
         ".btn-ghost",
         ".btn-danger",
-        ".btn-warning",
+        ".btn-required",
         # form controls
         ".search-input",
         ".filter-bar",
@@ -134,6 +141,177 @@ def test_no_deprecated_class_in_templates() -> None:
             f"  .{cls} → use {DEPRECATED_CLASSES[cls]} ({sorted(files)})"
             for cls, files in offenders.items()
         )
+    )
+
+
+_LEGACY_TOKEN_FALLBACK_ALLOWLIST: set[str] = set()
+# Allowlist drained — every template now references --ds-primary explicitly
+# (#419 follow-up sweep). The stricter
+# `test_no_unprefixed_primary_token_in_templates` guards regressions; the
+# old `var(--primary, #hex)` fallback pattern this test catches is no
+# longer present in any tracked file. Re-populate if a future PR
+# legitimately needs an interim fallback.
+
+
+def test_no_legacy_primary_token_with_hex_fallback() -> None:
+    """var(--primary, #XXXXXX) encodes the old blue colour as a fallback.
+    If the compat shim in design-tokens.css is ever removed the fallback
+    fires and the element reverts to blue. Use var(--ds-primary) instead.
+
+    Files in _LEGACY_TOKEN_FALLBACK_ALLOWLIST are known-unconverted templates
+    tracked for cleanup in dedicated follow-up PRs — remove from the list
+    as each template is converted."""
+    pattern = re.compile(r"var\(--primary\s*,\s*#")
+    offenders: list[str] = []
+    for path in _all_html():
+        if path.name in _LEGACY_TOKEN_FALLBACK_ALLOWLIST:
+            continue
+        if pattern.search(path.read_text(encoding="utf-8")):
+            offenders.append(str(path))
+    assert not offenders, (
+        "var(--primary, #<hex>) found — use var(--ds-primary) instead:\n"
+        + "\n".join(f"  {p}" for p in offenders)
+    )
+
+
+_NO_RAW_HEX_TEMPLATES = (
+    "profile.html",
+    "setup.html",
+    "me_activity.html",
+)
+
+
+def test_swept_templates_use_no_raw_hex() -> None:
+    """The #419 follow-up sweep targets three templates that previously
+    inlined raw `#RRGGBB` color literals. After conversion every colour
+    must reference a `--ds-*` token instead — adding a new raw hex regress
+    the sweep silently otherwise."""
+    pattern = re.compile(r"#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b")
+    offenders: dict[str, list[str]] = {}
+    for name in _NO_RAW_HEX_TEMPLATES:
+        text = (TEMPLATES / name).read_text(encoding="utf-8")
+        hexes = pattern.findall(text)
+        if hexes:
+            offenders[name] = hexes
+    assert not offenders, (
+        "raw hex literals found in swept templates:\n"
+        + "\n".join(f"  {n}: {hs}" for n, hs in offenders.items())
+    )
+
+
+def test_no_unprefixed_primary_token_in_templates() -> None:
+    """`var(--primary)` (no `--ds-` prefix) rides the legacy blue token via
+    the compat shim in design-tokens.css. Explicit `var(--ds-primary)`
+    reads self-documenting in code review and survives a future shim
+    removal.
+
+    Per #419 follow-up sweep: every template MUST reference `--ds-primary`
+    explicitly. `base.html` and `base_ds.html` are exempt — both only
+    mention `--primary` inside CSS-comment blocks documenting the legacy
+    compat shim, not as live token references.
+    """
+    pattern = re.compile(r"var\(\s*--primary[-)\s,]")
+    exempt = {"base.html", "base_ds.html"}
+    offenders: list[str] = []
+    for path in _all_html():
+        if path.name in exempt:
+            continue
+        if pattern.search(path.read_text(encoding="utf-8")):
+            offenders.append(str(path))
+    assert not offenders, (
+        "`var(--primary…)` found — use `var(--ds-primary…)` instead:\n"
+        + "\n".join(f"  {p}" for p in offenders)
+    )
+
+
+_COMPONENTS_HTML = TEMPLATES / "_components.html"
+
+# Button macro composes ['btn', 'btn-' ~ variant] + optional 'btn-' ~ size
+# + 'btn--icon' (see _components.html:44). These are the variants actually
+# emitted across the codebase today — re-survey if a new variant is added.
+_BUTTON_VARIANTS = ("primary", "secondary", "ghost", "danger", "google", "required")
+_BUTTON_SIZES = ("sm", "lg")
+
+# CSS files where canonical rules live. Class-coverage is satisfied if the
+# selector appears in ANY of these. The four sheets imported by base.html
+# and base_ds.html (style-custom + components + design-tokens + stack_card)
+# are globally loaded; the per-page sheets under `css/*.css` ship with the
+# pages whose macros use them — coverage is still satisfied because the
+# macro emits the class only on pages that load the matching sheet.
+_CANONICAL_CSS = (
+    STATIC / "style-custom.css",
+    *sorted((STATIC / "css").glob("*.css")),
+)
+
+
+def test_component_macros_emit_only_classes_with_css_rules() -> None:
+    """Every class token a macro in `_components.html` emits MUST resolve
+    to a CSS rule in one of the canonical sheets (style-custom.css,
+    components.css, design-tokens.css). A typo'd class on a macro renders
+    nothing — this contract catches it before the macro ships.
+
+    Approach: static extraction (no Jinja render). Literal classes are
+    pulled from `class="…"` attribute values in `_components.html`,
+    Jinja-templated portions (`{{ … }}` / `{% … %}`) skipped, and the
+    button macro's computed `btn-<variant>` / `btn-<size>` classes are
+    enumerated from the documented variant tuples above.
+    """
+    text = _COMPONENTS_HTML.read_text(encoding="utf-8")
+
+    # Strip Jinja blocks/expressions/comments before tokenising — we only
+    # want the literal class strings the author wrote, not Jinja runtime
+    # gunk or comment-block examples (`{# … class="…" … #}`).
+    jinja_free = re.sub(
+        r"\{\{.*?\}\}|\{%.*?%\}|\{#.*?#\}", " ", text, flags=re.DOTALL,
+    )
+
+    static_classes: set[str] = set()
+    for m in _CLASS_ATTR_RE.finditer(jinja_free):
+        for token in m.group(2).split():
+            if "{" in token or "}" in token:
+                continue
+            static_classes.add(token)
+
+    # Button macro variants + sizes that get composed at runtime.
+    button_classes = {"btn", "btn--icon"}
+    button_classes.update(f"btn-{v}" for v in _BUTTON_VARIANTS)
+    button_classes.update(f"btn-{s}" for s in _BUTTON_SIZES)
+
+    # T11-T17 macros compose variant-driven root classes (variant arg ⇒
+    # different selector) and bespoke accent modifiers. Enumerate the
+    # documented variant values explicitly so a typo in the macro fails
+    # this contract loudly.
+    variant_classes: set[str] = {
+        # tabs_rich
+        "mp-tabs", "stack-tabs",
+        # segmented_strip
+        "os-tabs", "mode-tabs",
+        # hero_search_btn
+        "search-btn", "stack-hero__search-btn",
+        # info_panel_accent — all four canonical accents
+        "info-panel-accent",
+        "info-panel-accent--info", "info-panel-accent--warn",
+        "info-panel-accent--success", "info-panel-accent--danger",
+    }
+
+    expected = static_classes | button_classes | variant_classes
+    assert expected, "extracted no classes from _components.html — extraction broken"
+
+    # Load every canonical sheet once.
+    css_blob = "\n".join(p.read_text(encoding="utf-8") for p in _CANONICAL_CSS)
+
+    missing: list[str] = []
+    for cls in sorted(expected):
+        # Selector match: `.cls` followed by a non-class-name char so
+        # `.btn` doesn't match `.btn-primary`. CSS rules also appear in
+        # compound selectors (`.btn.is-active`) — the simple lookahead
+        # is enough because we only need ONE occurrence.
+        if not re.search(r"\." + re.escape(cls) + r"(?![\w-])", css_blob):
+            missing.append(cls)
+    assert not missing, (
+        f"_components.html emits classes with no CSS rule in any of "
+        f"{[str(p) for p in _CANONICAL_CSS]}:\n"
+        + "\n".join(f"  .{m}" for m in missing)
     )
 
 

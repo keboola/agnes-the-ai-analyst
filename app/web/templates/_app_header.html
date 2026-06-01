@@ -95,7 +95,8 @@
 
                 <details class="app-nav-menu-group" data-section="server" open>
                     <summary class="app-nav-menu-section">Server</summary>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/server-config') %}is-active{% endif %}" role="menuitem" href="/admin/server-config">Server config</a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/server-config') %}is-active{% endif %}" role="menuitem" href="/admin/server-config">Instance settings</a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/database') %}is-active{% endif %}" role="menuitem" href="/admin/database">Database backend</a>
                     {# /admin/scheduler-runs collapsed into /admin/activity as
                        a `source=scheduler` filter — old route 308-redirects. #}
                 </details>

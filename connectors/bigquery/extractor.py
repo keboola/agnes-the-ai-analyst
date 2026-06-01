@@ -18,6 +18,21 @@ from typing import List, Dict, Any, Optional
 import duckdb
 
 from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+
+
+def _pin_session_utc(conn):
+    """Inline pin — see `src.duckdb_conn._open_duckdb` for the full
+    rationale. The BQ extractor opens its connections via
+    `duckdb.connect(...)` directly (not the helper) because every test
+    in `tests/test_bigquery_extractor*.py` patches
+    `connectors.bigquery.extractor.duckdb` to intercept calls; routing
+    through a different module would bypass the patch surface.
+    """
+    try:
+        conn.execute("SET GLOBAL TimeZone='UTC'")
+    except duckdb.Error:
+        pass
+    return conn
 from src.sql_safe import (
     validate_identifier as _validate_identifier,
     validate_project_id as _validate_project_id,
@@ -444,7 +459,7 @@ def _persist_materialized_inner_view(
     safe_table = _escape_sql_string_literal(table_id)
     safe_path = _escape_sql_string_literal(str(parquet_path))
     try:
-        with duckdb.connect(str(extract_db_path), read_only=False) as ext_conn:
+        with _pin_session_utc(duckdb.connect(str(extract_db_path), read_only=False)) as ext_conn:
             _ensure_meta_table(ext_conn)
             # `_meta` has no UNIQUE on table_name (legacy schema), so we
             # do a manual delete-then-insert. Wrap in a transaction so
@@ -567,7 +582,7 @@ def _init_extract_locked(
         stats["errors"].append({"table": "<auth>", "error": str(e)})
         return stats
 
-    conn = duckdb.connect(str(tmp_db_path))
+    conn = _pin_session_utc(duckdb.connect(str(tmp_db_path)))
     try:
         # Install and load BigQuery extension
         try:
@@ -904,23 +919,16 @@ def materialize_query(
             # extension loaded with a SECRET token; bigquery_query() reuses that
             # auth path against the billing_project for the jobs API call.
             with bq.duckdb_session() as conn:
-                # Cap DuckDB memory_limit + thread count so the COPY's
-                # streaming buffer pool can't grow into the cgroup
-                # OOM-kill threshold during consolidation. Without the
-                # cap DuckDB defaults to ~80% of system RAM, which on a
-                # 4 GiB container leaves no headroom for Python objects
-                # / sidecar containers and trips OOM mid-COPY against
-                # large remote tables. See the matching cap in
-                # ``connectors/keboola/extractor.py`` for the empirical
-                # trace. Note: this session is pooled by
-                # ``_default_duckdb_session_factory``, so the SET
-                # persists for the next acquire — that's intentional
-                # (1 GiB is plenty for ad-hoc analyst queries too, and
-                # we'd rather slow a heavy ad-hoc query than crash the
-                # process).
-                conn.execute("SET memory_limit='2GB'")
-                conn.execute("SET threads=2")
-                conn.execute("SET preserve_insertion_order=false")
+                # Memory caps (memory_limit=2GB, threads=2,
+                # preserve_insertion_order=false) are applied uniformly
+                # on every pool acquire by ``apply_bq_session_settings``
+                # — see that function in ``connectors/bigquery/access.py``
+                # for the rationale and the empirical 2 GiB trace.
+                # Previously the SETs lived inline here, which only
+                # mutated whichever pool entry was acquired for this
+                # materialize call — leaving the other ~3 pool entries
+                # at the 80%-of-host default and re-opening the OOM
+                # window for any analyst query that landed on them.
                 attached = {
                     r[0] for r in conn.execute(
                         "SELECT database_name FROM duckdb_databases()"

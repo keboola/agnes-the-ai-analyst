@@ -10,6 +10,444 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.57.2] — 2026-06-01
+
+### Added
+- **Container memory caps are now overridable via `.env`.** `docker-compose.yml` reads `AGNES_APP_MEM_LIMIT` (default `4g`) and `AGNES_SCHEDULER_MEM_LIMIT` (default `2g`), so a deployment on a larger host can raise the cap without forking compose — small deploys keep the previous defaults. The `infra/modules/customer-instance` Terraform module exposes matching per-VM `app_mem_limit` / `scheduler_mem_limit` attributes on `prod_instance` / `dev_instances` (same defaults) and renders them into `/opt/agnes/.env`. Sizing note: DuckDB enforces `memory_limit` per-connection and (1.5+) defaults a fresh connection to ~80% of the cgroup limit, so on a big VM leaving the container at `4g` both wastes host RAM and lets the per-connection budgets sum past the cap, at which point the cgroup OOM-killer SIGKILLs uvicorn mid-WAL-write (the corruption guarded against by the `stop_grace_period` note in compose and the per-connection caps in `src/db.py`). Raise this cap together with those per-connection budgets.
+
+## [0.57.1] — 2026-06-01
+
+### Fixed
+- **`POST /api/admin/db/migrate` refuses to queue when the source backend is PG but `instance.yaml`'s `database.url` is unset.** Round-3 review H1-NEW — pre-fix, a migration FROM `cloud` / `side_car` whose `current_url` came back `None` (corrupted overlay per B2-NEW, or operator manually cleared the url) would queue a job with `source_url=null`, the migrator would crash later with `--source-url is required`, and the rollback path would write empty url back to `instance.yaml` — leaving `backend=cloud + no url` and requiring manual YAML repair to recover. The endpoint now refuses with a 400 naming `database.url` so the operator can fix the overlay before retrying.
+- **`POST /api/admin/db/migrate` pins the resolved target/source IP into the queued job, closing the DNS rebinding window between validation and migrator connect.** Round-3 review B1-NEW (BLOCKER) — round-2's `_urls_alias` ran `socket.getaddrinfo` for the alias check, but the hostname-bearing URL was then persisted verbatim into the pending job JSON; the applier passed it unresolved to psycopg. An attacker controlling `rebind.example`'s DNS could pass it as `cloud_url`, the host resolves to a public IP at validation time, and then to the local sidecar's IP when the migrator connects — self-migration commits, the next cloud-only applier tick stops the only live Postgres. `start_migration` now records both the display URL (hostname form) AND a `*_pinned_ip` field whose host is the resolved IP at validation time; the applier prefers the pinned URL when present and falls back to the hostname URL for v1 (legacy) jobs queued before this fix. Job-JSON `schema_version` bumped 1 → 2.
+- **Applier bash YAML fallback emits URLs as double-quoted YAML scalars; `read_backend_state` logs loudly on parse errors.** Round-3 review B2-NEW (BLOCKER) — round-2's H4-NEW added a pure-bash fallback for hosts without PyYAML, but interpolated `${url}` bare into the `url:` YAML line. URLs containing YAML-special chars (e.g. `options=-c replication: logical` — colon-space is a key-value separator in block context) produced malformed YAML that `read_backend_state` caught as `YAMLError` and silently swallowed by defaulting to `(DUCKDB, None)`. The operator's app then served the wrong backend while data lived on Postgres. The fallback now escapes `\` and `"` via `sed` and emits `printf '  url: "%s"\n'`; `read_backend_state` logs at `WARNING` on parse failure so the corruption surfaces in operator logs even with the safe-fallback behaviour preserved.
+- **`_validate_cloud_url` resolves hostnames and runs every returned IP through the reserved-range ladder.** Round-3 review MED-1-PARTIAL — the round-2 fix (commit `46334442`) rejected IP literals in the loopback / GCE metadata / RFC1918 / link-local / CGNAT / IPv6-ULA ranges, but `except ValueError: return` short-circuited validation for any non-literal hostname. Attacker-controlled DNS entries pointing `metadata.google.internal` (or similar) at `169.254.169.254` then bypassed the guard and reopened the SSRF / port-probe primitive. `_resolve_host` now feeds `socket.getaddrinfo` results through the same classification ladder (extracted into `_classify_reserved_ip`); if *any* resolved IP is reserved the URL is refused. DNS failures conservatively allow (the migrator's connect attempt will fail cleanly).
+- **Stuck-running recovery restarts `app` + `scheduler` after reverting `instance.yaml`.** Round-3 review B3-NEW (BLOCKER) — round-2's H5-NEW added recovery that marked stale-heartbeat jobs failed and restored the in-progress placeholder, but never restarted the services the migrator had stopped (line ~413 of the applier script). After a SIGKILL/OOM mid-migrator tick, the next tick's recovery ran, marked the job failed, exited at the no-pending-job path (line ~327) — and the app + scheduler stayed DOWN until the next successful migration or a manual restart. Recovery now runs `dc up -d --no-deps --force-recreate app scheduler` after the YAML revert (single call, even when multiple stuck jobs are processed).
+- **Cancel ↔ flip is now atomically gated by `MigrationLock`.** Round-3 review H1-PARTIAL — round-2's `_check_cancel_before_flip` narrowed the cancel-during-verify race but a microsecond window remained between the migrator's re-check and its `write_backend_state(TARGET, ...)`. Neither side held `MigrationLock` during the actual flip, so a concurrent `cancel_job` could revert `instance.yaml` to SOURCE between the migrator's check and its write — and the migrator would then overwrite the revert, producing data on TARGET but `instance.yaml` on SOURCE. Both sides now acquire `MigrationLock` around their check+write blocks; `MigrationInProgressError` triggers a brief retry on either side, after which the loser sees the winner's terminal state.
+
+## [0.57.0] — 2026-06-01
+
+### Added
+- **Admin-controlled DB backend state machine.** Replaces ad-hoc `.env` editing with a guarded workflow for migrating Agnes app-state between DuckDB, side-car Postgres, and managed cloud Postgres. Spec at `docs/superpowers/specs/2026-05-27-db-backend-state-machine-design.md`; operator playbook in `docs/postgres-cutover-runbook.md` (new "Admin UI / CLI" section). The machine records `target_state` intent + a `db_migration_job` row; a host-side `agnes-state-applier.timer` runs the data-migrate subprocess, then rewrites `/opt/agnes/.env` and `docker compose up -d` once verification passes. Pre-flip DuckDB snapshots land gzipped under `/data/state/backups/duckdb-pre-<target>-<ts>.duckdb.gz`.
+- **`/admin/server-config` — Database backend section.** UI card showing current backend, redacted connection URL, allowed transitions, and a live progress panel that polls the running migration job. Confirmation modal + cloud-URL input for the `cloud` transition.
+- **`agnes admin db` CLI.** `state` (inspect current backend + transitions), `migrate <target>` (kick off a migration; `--cloud-url` flag for non-interactive cloud targets), `job <id>` (poll status), `cancel <id>` (abort pre-flip). All subcommands hit the PAT-authed admin endpoints; `--json` available for scripting.
+- **`agnes-state-applier` systemd unit + timer.** Host-side daemon installed by the customer-instance startup-script that watches for pending state-machine jobs and applies them (compose lifecycle + `.env` rewrite). Idempotent; ticks every 30 s.
+- **URL alias detection blocks migrate-onto-self attempts.** Server-side normalisation of host, default port, credentials, and driver prefix means `host/db` and `host:5432/db` are treated as equal; target URL pointing at the current database returns 400 `url_alias_same_db`.
+- **Heartbeat-based stuck-job recovery.** Jobs whose applier heartbeat has not updated for 120 s are auto-marked failed on the next applier tick, allowing a fresh migration to be triggered without operator intervention.
+- **Applier liveness surfaced in `GET /api/admin/db/state` as `applier_last_tick_age_s`.** Operators can check whether the host-side timer is running without SSH access.
+- **Admin UI: localStorage progress cache, exponential polling backoff, and per-table migration progress.** The migration progress card survives page refreshes, reduces server load during idle polling, and shows row-level progress per migrated table.
+- **`agnes admin db migrate` confirmation gate; `--yes` / `-y` bypasses interactively.** Non-TTY callers (CI, scripts) must pass `--yes` explicitly; the CLI refuses without it to prevent accidental migrations from piped invocations.
+
+### Changed
+- **`agnes-state-applier` runs as non-root `agnes-applier:docker` on new VMs.** Existing VMs require a one-time migration; see the "Migrating an existing VM to the non-root applier" section in `docs/postgres-cutover-runbook.md`.
+- **`instance.yaml` writes on both the API side and the applier side now preserve non-database top-level keys.** Previously a write could silently drop unrecognised keys from the YAML file.
+
+### Fixed
+- **Migration cancel reverts `current_state` to `source_backend`; source `DATABASE_URL` is not modified.** A cancelled mid-flight job no longer leaves the state machine pointing at the target.
+- **Cancel after the flip step returns 409 rather than silently no-oping.** Once `.env` has been rewritten and the stack restarted the migration is complete; operators should not attempt manual recovery.
+- **Auto-recovery marks stuck jobs failed after 120 s of missing heartbeat.** Jobs killed by OOM or VM restart no longer stay permanently in `running` state.
+- **URL alias check rejects credential-only and driver-prefix variants of the current URL.** Prevents a class of silent no-op migrations where target and source resolve to the same physical database.
+- **`GET /api/admin/db/job/<id>` redacts passwords in connection URLs.** Plain-text credentials are no longer surfaced in API responses or the admin UI.
+- **`GET /api/admin/db/job/<id>` returns correct redacted URLs for side-car connections.** Previously the `@postgres:` host segment was partially masked.
+- **Migrator CLI exits non-zero on data-copy failure.** Previously an exception in the row-copy loop could result in exit code 0, masking the failure from the applier.
+- **Backup is written before the data copy begins, not after.** Ensures the pre-migration DuckDB snapshot is available for rollback even if the copy is interrupted.
+
+### Internal
+- **Job JSON and `instance.yaml` files are written with mode 0600.**
+- **`GET /api/admin/db/job/<id>` redacts connection URL passwords before serialisation** — credentials never reach log lines or browser DevTools.
+- **Module-scoped Alembic fixture in the Postgres test suite** reduces schema-creation overhead; per-test isolation is provided by transaction rollback.
+- **Admin auth-bypass runtime probe** added so the test suite can exercise admin endpoints without a real auth stack.
+
+### Review fixes — round 2 (PR #455)
+- **Streaming `copy_pg_to_pg` in 500-row batches** via `execution_options(yield_per=500)` and per-batch `target.begin()`. Production audit/usage tables (millions of rows) no longer materialise into the migrator container's heap; mid-stream failures only roll back the in-flight batch; ON CONFLICT DO NOTHING preserves resume semantics.
+- **Subprocess timeouts on alembic + gzip + pg_dump** (300 s / 1800 s / 1800 s respectively). `TimeoutExpired` surfaces as a typed `RuntimeError` that lands in the job JSON's `error.message`; half-written backup artifacts are removed so retries start clean.
+- **Migrator subprocess wall-clock from the applier.** `timeout(1)` wraps the `docker run` invocation; rc 124/137 marks the pending job failed with an actionable message and skips the `instance.yaml` flip. `MIGRATOR_TIMEOUT_SEC` env override defaults to 1800 s.
+- **`run_all` halt-on-first-failure semantics.** Once any task's copy or validate raises, subsequent tasks produce `{skipped: True, reason: "halted after prior task failure"}` instead of silently INSERTing into downstream tables. `main()` still refuses the flip; ON CONFLICT DO NOTHING keeps retries idempotent.
+- **Pre-copy `audit_log` PII scrub.** Audit rows captured before the runtime sanitiser existed get their `params` / `params_before` JSON rewritten in the DuckDB source (regex-matched on password / token / secret / api_key / bearer / private_key / signing_key keys) so neither the migrated PG nor the pre-cutover backup carry historical credentials. Idempotent and schema-tolerant.
+- **Pending-job age expiry.** API writes `queued_at` (UTC ISO) into the pending job JSON; the applier marks pending jobs older than `PENDING_JOB_MAX_AGE_SEC` (default 3600 s) as `PendingJobExpired` and refuses to run stale intent against potentially-divergent current state.
+- **Content-hash check in `verify_pg_row_counts`.** Row counts alone missed preseed corruption (same PKs, drifted non-PK content); SHA-256 over the first 1000 PK-ordered rows surfaces the drift as a separate `kind: content_drift` diff. Verify now returns `{kind: row_count | content_drift, ...}` entries.
+- **Per-table progress wiring (`update_table_progress`).** `run_all` gains optional `progress_callback`; `copy_duckdb_to_pg` / `copy_pg_to_pg` gain optional `writer=`. `main()` forwards the writer so the admin UI's progress bar advances during the long data_copy step instead of freezing at 40 %.
+- **`cloud → side_car` failure rollback clears the `db-state-target.flag`** in addition to the existing `duckdb` case. Prevents orphan `agnes-postgres-1` containers running with no data after a failed DR rollback.
+- **Side-car → cloud backup failure is now a hard fail** (`BackupError`). Pre-fix it was swallowed as a warning attached to `job.warnings[]` while the UI showed `success`; operators only discovered the missing recovery point at restore time.
+- **Applier ERR trap with structured rollback.** Unexpected mid-script aborts (heredoc exceptions, `set -e` chains) idempotently mark the pending job failed and revert `instance.yaml` to source. For source in (duckdb, cloud) the FLAG file is also cleared.
+- **`verify_row_counts` opens DuckDB read-only.** No stray `.wal` sidecar from a write-mode open of a SELECT-only workload.
+- **State machine: multi-destination transitions + `DUCKDB_QUACK` placeholder state.** Replaces the original forward-only `duckdb → side_car → cloud` matrix with a fully connected graph: any stable backend can migrate to any other (cost reductions, DR rollbacks, dev snapshots, compliance re-evals). The new `BackendState.DUCKDB_QUACK` is reserved in the enum + transition graph but raises `BackendNotYetSupportedError` (a `NotImplementedError` subclass) until DuckDB 2.0 ships production-grade Quack protocol (~fall 2026); operators with placeholder values in `instance.yaml` see a clear "not yet supported" message rather than an unknown-state crash. Spec rewritten to retire the *"DuckDB only for analytics, PG for state"* framing — DuckDB is a first-class long-term backend, with the `copy_pg_to_duckdb` (UPSERT) migrator path making reverse migrations equally first-class. `CLAUDE.md` documents the dual-backend discipline rules (one PR → both repository paths, cross-engine contract tests stay green, alembic + DuckDB ladder lockstep).
+- **`agnes-state-applier.service` self-bootstraps its non-root user via a paired bootstrap unit + uses `SupplementaryGroups=docker`.** A dedicated `agnes-state-applier-bootstrap.service` runs as root before the main unit, creating the `agnes-applier` user, adding it to the `docker` group, chowning `/data/state`, and `chown agnes-applier:agnes-applier` (mode 0600) on `/opt/agnes/.env` so the applier can read it. (Earlier `chgrp + 0640` was insufficient: the applier shell `source`s the file fine, but `docker compose`'s Go file loader — invoked from `dc up -d`, which auto-loads `.env` from the project dir — fails the open() syscall on group-only-readable files even when the calling process's GID list includes the file's group. Setting the file owner to `agnes-applier` makes the read unambiguous regardless of how the caller opens it. Mode stays 0600 so the security posture is unchanged — owner-only readable, just owner moved from `root` → `agnes-applier`.) The main unit `Requires=` the bootstrap unit so by the time systemd loads `User=agnes-applier`, the user exists. The main unit also re-asserts the `.env` ownership via its own `ExecStartPre=+` so an operator-rewritten `.env` doesn't break the next applier tick. **Critical fix in this round:** the main unit now uses `SupplementaryGroups=docker` instead of `Group=docker` — `Group=` REPLACES the process's primary group, leaving the applier with `egid=docker` and `supplementary=[docker]` only (no `agnes-applier` in the effective set), so reads of `/opt/agnes/.env` (group `agnes-applier`, mode 0640) failed with `Permission denied` even though the user is in the group at the OS level. `SupplementaryGroups=docker` keeps primary group at `agnes-applier` and adds `docker` on top — both `.env` reads and docker socket access work. An earlier follow-up put bootstrap in `ExecStartPre=+` of the main unit; verified live that systemd validates `User=` at unit LOAD time and refused to start before any `ExecStartPre` ran. Customer infras that maintain their own provisioning scripts get the Phase 8.1 non-root posture without shipping matching user-creation logic.
+- **Per-type FK on `resource_grants` for five typed ResourceTypes** (`table`, `data_package`, `memory_domain`, `memory_item`, `recipe`). New per-type FK columns enforce referential integrity at the DB layer with ON DELETE CASCADE; a CHECK constraint enforces that exactly the matching per-type column is populated for these five types, and that all per-type columns are NULL for the polymorphic-path-only `marketplace_plugin` type. Existing rows backfilled; legacy `resource_id` retained for backwards compatibility with app-layer lookups. DuckDB ladder step adds mirror columns (no FK / CHECK — application-validated on that backend).
+- **Test additions:** `_substitute_default` parametrised over NOW() / CURRENT_DATE branches, PG→PG round-trip with PG ARRAY + JSONB columns, python-side hang-watchdog E2E, applier shell tests use semantic keyword matchers instead of brittle argv-substring asserts, strengthened subprocess-spawn probe with explicit spies on `subprocess.*` / `os.spawn*` / `multiprocessing.Process` (catches silent spawns that earlier raise-on-call stubs would have missed).
+
+### Review fixes — round 3 (PR #455 — cvrysanek round-2 walk + live E2E)
+- **`agnes admin db migrate --json` no longer bypasses the `--yes` confirmation gate.** Round-2 review MED-1 — CI/cron callers must opt into the destructive cutover explicitly with `--yes`; the predicate `not yes and not as_json` was the bypass.
+- **`_redact_url` masks every libpq URL-embedded credential.** Round-2 review MED-3 — `postgresql://user@host/db?password=secret` and `?sslpassword=…` (PEM key passphrase) leaked verbatim; now routes through `sqlalchemy.engine.make_url(...).render_as_string(hide_password=True)` for userinfo, followed by a regex pass that masks `password=` and `sslpassword=` query-string parameters.
+- **`scrub_audit_log_pii` walks JSON keys instead of regex-matching raw values.** Round-2 review LOW-1 — `audit_log` rows whose value text happened to contain `"password"` (e.g. HTTP path `/reset-password`) were silently nuked into `{_redacted_at_migration: true}`. Now only keys named `password`/`token`/`secret`/`api_key`/`bearer`/`private_key`/`signing_key` have their values replaced; non-JSON params and value-only matches survive unchanged.
+- **`docker-compose.postgres.yml` no longer defaults `POSTGRES_PASSWORD` to the literal `agnes`.** Round-2 review LOW-2 — the `${POSTGRES_PASSWORD:-agnes}` form let `docker compose up` succeed with `agnes/agnes` credentials when the env var was unset. Compose now errors out with `POSTGRES_PASSWORD variable is not set` if the operator's `.env` is missing the secret; the API guard already enforces this on the state-machine path.
+- **`_validate_cloud_url` rejects loopback / GCE metadata / RFC1918 / link-local / CGNAT / IPv6 ULA.** Round-2 review MED-2 — an admin posting `cloud_url=postgresql://x:y@169.254.169.254:5432/db` triggered alembic to open a TCP socket to the GCE metadata server; the server-fingerprint error in `job.error.message` then leaked service liveness (SSRF/port-probe primitive). Reserved-range rejection runs after scheme/host/db validation. Set `AGNES_ALLOW_RESERVED_CLOUD_URL=1` to opt in to loopback for test/dev fixtures.
+- **`cancel_job` revert to duckdb drops the target's postgres URL.** Round-2 review MED-4 — pre-fix, cancelling a `duckdb → side_car` mid-flight left `backend: duckdb` but `url: postgresql://…@postgres/agnes` in `instance.yaml`. The overlay was self-inconsistent and operators inspecting it saw a misleading PG URL. Now the URL key is dropped whenever the source is duckdb.
+- **`POST /api/admin/db/migrate` returns 501 when `target='duckdb'` or `'duckdb_quack'`.** Round-2 review H7-NEW — the multi-destination transition matrix reserved reverse migrations to DuckDB in the state graph, but the endpoint's branch logic only knew about `side_car`/`cloud`. Posting `target='duckdb'` silently mis-routed to CLOUD (wrote `CLOUD_IN_PROGRESS` into `instance.yaml`) then crashed the migrator with `BackendNotYetSupportedError` → uncaught 500. The endpoint now rejects cleanly with 501; the matrix entry stays in place so the day-after-migrator-supports-it wiring is trivial.
+- **`GET /api/admin/db/job/<id>` redacts URL passwords inside nested `error.message`.** Round-2 review H3-NEW — `_redact_url` only masked top-level `target_url` / `source_url`; the alembic-timeout `RuntimeError` formatter embedded the raw URL into the message, which the outer handler captured into `job.error.message`. Plaintext credentials then surfaced in HTTP responses, browser history, and UI screenshots. The migrator now masks the URL at the raise site (defence in depth) and the API recursively scrubs URL-shaped substrings from the entire `error` payload before serialising.
+- **DuckDB→PG migrator derives the JSONB cast list from `Base.metadata` instead of a hand-maintained set.** Round-2 review H6-NEW — `scripts/migrate_duckdb_to_pg/tasks.py` hardcoded `_JSON_COLUMNS` and missed `data_packages.tags` (declared JSONB on the model since the PG follow-up landed), along with `data_packages.when_to_use`, `when_not_to_use`, `example_questions`, `recipes.related_table_ids`, `table_registry.sample_questions`, and `table_registry.pairs_well_with`. DuckDB→PG migrations on any instance carrying `data_packages.tags='["finance"]'` crashed at INSERT with a CAST error. The set is now derived once at module import from every model's JSONB columns, so future additions are automatically covered.
+- **DuckDB→PG migrator's INSERT is idempotent on every UNIQUE constraint, not just the PK.** Live-discovered 2026-06-01 (NEW-X) — running cycle 1 (DuckDB→side-car) on a freshly-provisioned VM with 6 source users, the migrator failed with `psycopg.errors.UniqueViolation: duplicate key value violates unique constraint "users_email_key"` after 2 of 6 rows had already committed (executemany did not honor transactional rollback as expected). The INSERT clause was tightened from `ON CONFLICT (id) DO NOTHING` to bare `ON CONFLICT DO NOTHING`, which matches every UNIQUE constraint and lets the migrator skip rows that conflict on any unique column (e.g. `users.email`) without aborting the batch.
+- **Applier python-heredoc rewrites of job JSON preserve mode 0600.** Round-2 review H2-NEW — the inline heredocs in `agnes-state-applier.sh` used `os.replace(tmp, p)` with no follow-up `os.chmod`, so the tmp file inherited the process umask (0644 on standard cloud-init VMs). Every time the applier touched a job file (H8 age expiry or `update_job` step transition), the embedded `target_url` with its plaintext password became world-readable. Both sites now `os.chmod(p, 0o600)` after the rename.
+- **`write_instance_yaml` falls back to a pure-bash writer when PyYAML is unavailable; provisioning installs `python3-yaml`.** Round-2 review H4-NEW — the B6 fix replaced the bash heredoc with `python3 -c 'import yaml; ...'`, but `python3-yaml` was not in the customer-instance provisioning bootstrap. On any such host, every successful migrator run was followed by an ERR-trap firing on the YAML write, marking the job failed and skipping the app restart. The applier now probes PyYAML; absent it, a pure-bash writer produces the (database-only-keys) overlay and logs a warning. `startup-script.sh.tpl` apt-installs `python3-yaml` so the bash fallback is a defensive-only path.
+- **Applier `__rollback` and the failed-migration branch both preserve `SOURCE_URL` on revert.** Round-2 review H8-NEW — both revert sites in `agnes-state-applier.sh` called `write_instance_yaml "$SOURCE_BACKEND"` with no second arg: (1) the ERR-trap `__rollback` recovering from a heredoc crash, and (2) the orderly `else` branch on `FINAL_STATUS != "success"` when the migrator reported non-success. The python helper read the missing URL as "drop the key", so a `cloud → side_car` migration failing on either path rewound `instance.yaml` to `backend=cloud` with no `url`. App boot then crashed with "Postgres URL unset", re-introducing the B4-class outage on the failure path. Both calls now pass `${SOURCE_URL:-}` (which is empty for a `duckdb` source — `write_instance_yaml` already handles that correctly by dropping the key).
+- **Concurrent `POST /api/admin/db/migrate` calls cannot both succeed.** Round-2 review B1-NEW (BLOCKER) — pre-fix the ordering was `validate → flock → write`. Two admins racing through validation before either took the lock both passed, then both wrote pending jobs (the second clobbered the first's flag file). The endpoint now moves the entire validation chain (transition matrix + URL alias check + pending-job surface) INSIDE the flock — the second caller re-reads state under the lock and gets a clean 409 conflict.
+- **`_urls_alias` resolves hostnames before declaring same-DB equality.** Round-2 review B2-NEW (BLOCKER) — the B7 fix normalised port + db but compared hostnames string-equal-only. Inside the migrator container, `postgres` (compose service name) vs `172.18.0.2` (sidecar IP) bypassed the alias guard; a `side_car → cloud` request whose `cloud_url` accidentally pointed back at the local sidecar then "migrated" the DB to itself, marked cloud success, and the next cloud-only applier tick stopped `agnes-postgres-1`. `_urls_alias` now resolves both sides to IP sets and reports alias on any overlap; the host-side applier shares the same Python implementation. Falls back to string-equal when DNS fails for either side (conservative non-alias).
+- **Cancel ↔ flip is mutually exclusive.** Round-2 review H1-NEW — B2's sentinel cancellation polled at step boundaries; a cancel arriving in the verify→flip window was accepted by the API (wrote `cancelled` + reverted source) while the migrator still committed the flip. End state: `instance.yaml` said SOURCE but data was on TARGET. Two-sided fix: (a) `cancel_job` writes the sentinel BEFORE reverting `instance.yaml` and refuses with 409 when the job is already terminal; (b) the migrator runs `_check_cancel_before_flip` right before `write_backend_state(TARGET, ...)` and raises if the sentinel is present.
+- **Alembic `0013` backfills typed-FK columns BEFORE creating the CHECK constraint.** Round-2 review B5-NEW (BLOCKER) — pre-fix, the migration added the per-type FK columns + the CHECK constraint in one shot. Any existing `resource_grants(resource_type='table', resource_id='foo')` row violated the CHECK while the new `resource_id_table` column was still NULL, and `alembic upgrade head` aborted on every prod instance with typed grants. The new order: add columns → backfill from `(resource_type, resource_id)` → create CHECK + FKs.
+- **Customer-instance `startup-script.sh.tpl` chowns `/opt/agnes/.env` to `agnes-applier` immediately after writing it.** Round-2 review B3-NEW (BLOCKER) tightening — the bootstrap unit's `ExecStart` already chowns the file on every boot, but the very first run on a freshly-Terraform-provisioned VM had a window between cloud-init writing `.env` and the bootstrap unit firing. During that window the applier's timer fired against a still-root-owned `.env` and exited silently. Provisioning now sets the owner correctly the moment the file lands.
+- **Stuck-running recovery restores `database.backend` from the `*_in_progress` placeholder.** Round-2 review H5-NEW — B5's heartbeat-based recovery marked the failed job but left `instance.yaml` at `side_car_in_progress` (or `cloud_in_progress`). The next migration retry then read the in-progress label as the current backend, the migrator's CLI rejected `source_backend='side_car_in_progress'`, and the state machine wedged until an operator manually edited the file. Recovery now symmetrically calls `write_backend_state(source_backend, url=source_url)`, mirroring the cancel path. The inline recovery block is extracted into `_recover_stuck_jobs()` for testability.
+- **`/data/postgres` ownership is set at provision time, not at applier runtime.** Round-2 review B4-NEW (BLOCKER) tightening — the previous mitigation was an idempotent stat-then-chown in the applier's `ExecStart`, but that ran as the unprivileged `agnes-applier` user under `set -e` and aborted the whole tick on every fresh VM where the directory was still root-owned. Provisioning (`startup-script.sh.tpl`) now creates `/data/postgres` owned `70:70` via `install -d`, the bootstrap unit (root-running) re-asserts the chown on every boot, and the applier merely STATs the directory and warns if it's wrong — no chown attempts, no `set -e` abort.
+- **DuckDB system schema bumped to v62.** Main shipped `cli_auth_codes` table as v61 (PR #475 browser-based `agnes auth login`); this branch's per-type FK columns on `resource_grants` (E.3) were renumbered to v62 during the merge. Migration ladder runs `_v60_to_v61` (cli_auth_codes) → `_v61_to_v62` (resource_grants FK columns) in order. `_SYSTEM_SCHEMA` declares both, so fresh installs and design-pass-origin DBs at v61 heal correctly. The detailed verification matrix (one line per finding mapped to commit SHA) lives in the PR #455 description.
+
+## [0.56.0] — 2026-06-01
+
+### Added
+- `AGNES_REBUILD_ON_BOOT=1` builds master views from baked extracts at startup (for images that ship data without a scheduler).
+- `scripts/build_demo_extract.py` + `Dockerfile.demo` produce an image variant with a self-contained synthetic demo dataset.
+- Optional Artifact Registry image mirror in the release workflow (repo vars `AR_LOCATION`/`AR_PROJECT`/`AR_REPO` + secret `GCP_SA_KEY`).
+
+### Changed
+- **BREAKING**: in production (non-local-dev) the app now refuses to start without an explicit `JWT_SECRET_KEY` of ≥32 chars — auto-generation is limited to local dev. Set a strong `JWT_SECRET_KEY` before deploying.
+
+## [0.55.32] — 2026-06-01
+
+### Added
+- **`agnes admin data-semantics generate <dir>` — scaffold the workspace data-semantics pack from the catalog (#469, Gap 1).** Emits a *starter* pack so an operator hand-edits know-how instead of authoring the whole tree: `<pkg>/tables/*.yml` (id, fqn, partition/cluster keys, columns — from `table_registry` + `column_metadata` + `bq_metadata_cache`), `<pkg>/metrics/*.yml` (from `metric_definitions`), grouped by `data_packages`, plus seed-if-absent `_brief.md` / `_overview.md` skeletons. Provenance + 3-way merge ride the pack's native `sync:` block (`method: generated` vs `hand-authored`): re-runs refresh machine-owned fields, keep human edits, preserve human-added keys, and drop a field whose source disappears. `--check` makes drift CI-enforceable; `--dry-run` / `--json` for inspection. Engine `src/data_semantics_scaffold.py` is `app.`-free. Metrics that belong to no data package are reported, not silently dropped.
+
+## [0.55.31] — 2026-06-01
+
+### Fixed
+- **Frontend timestamps now render in the analyst's local timezone.** Three coupled fixes: (1) every `duckdb.connect(...)` is now routed through `src.db._open_duckdb`, which pins the DuckDB session timezone to UTC via `SET GLOBAL TimeZone='UTC'` — DuckDB's `TIMESTAMP` type strips tzinfo on write after shifting the value into the session zone, and ICU's default session zone is the host's local zone, so on a non-UTC host a UTC-aware write was previously stored as local-naive. `GLOBAL` is required because DuckDB cursors do NOT inherit session-level `SET TimeZone` (they start with the ICU default), and every repository reads through `conn.cursor()`. (2) FastAPI now serializes datetime fields with an explicit UTC offset — `app.serialization.AgnesJSONResponse` set as the default response class plus an override of `fastapi.encoders.ENCODERS_BY_TYPE[datetime]` so naive datetimes get the `+00:00` suffix on the wire instead of an offset-less ISO string that `new Date()` would parse as local time. (3) A new `window.AgnesTime` helper (`app/web/static/js/datetime.js`) hydrates `<time datetime="...">` tags client-side, replaces the per-template `fmtDate` slice helpers in `admin_users.html` / `admin_groups.html` / `admin_marketplaces.html` / `admin_user_detail.html` / `admin_group_detail.html` (which used to chop the ISO string and never convert to local tz), and powers the marketplace 'added' date. Two follow-on call sites — `app/api/health.py:_check_session_pipeline` sync-lag and `src/repositories/session_processor_state.py:scan_unprocessed_for` mtime compare — now compare against UTC-naive instead of local-naive to match the pinned DB. UTC label stays as the no-JS fallback and as the tooltip. No DuckDB schema migration — deferred until the parallel Postgres migration lands.
+
+## [0.55.30] — 2026-06-01
+
+### Fixed
+- **`system.duckdb` could roll back days of admin state (data packages, RBAC grants, group members) after an OOM kill, and the OOM kill itself was self-inflicted.** Three compounding defects in a memory-bounded container (e.g. a 4 GiB cgroup):
+  - **Uncapped system connection → OOM loop.** DuckDB enforces `memory_limit` per-connection, not per-process. The analytics + read-only connections were capped (2 GiB each) but the long-lived `system.duckdb` singleton was left uncapped, so a telemetry/audit aggregation on it could grow the process past the cgroup cap and the kernel OOM-killed the worker. `get_system_db()` now applies an explicit budget via a shared `_apply_memory_caps` helper (system 1 GiB, analytics 1.5 GiB, read-only 1 GiB) plus a `temp_directory` so an over-budget query spills to disk instead of growing RSS.
+  - **Destructive WAL-replay recovery.** On restart after an unclean kill, an unreplayable WAL (the FTS-index DDL drop-ordering failure below) made `_try_open_system_db` restore the `pre-migrate` snapshot — captured only at migrations, so potentially days stale — discarding the live file's far newer last checkpoint. Recovery now first **discards only the unreplayable WAL and reopens the live file at its last checkpoint** (`_salvage_discard_wal`), losing at most post-checkpoint transactions; the pre-migrate fallback (with the #379 version guard) fires only if the file itself won't open. The discarded WAL is preserved chmod 600 for forensics.
+  - **FTS DDL lingering in the WAL.** `ensure_knowledge_fts_index` rebuilds the `fts_main_knowledge_items` schema on every search; those DROP/CREATE ops sat in the WAL until the next checkpoint and were what DuckDB's replay choked on after a kill. It now `CHECKPOINT`s immediately after (re)creating the index (best-effort) so the FTS DDL never lingers in the WAL.
+
+## [0.55.29] — 2026-06-01
+
+### Added
+- **`agnes admin autodoc-tables` — LLM-generate descriptions for undescribed tables (#399).** Most registered tables ship with no `description`, weakening `agnes catalog` for AI agents. The command reads each undescribed table's stored profile (columns + sample rows) and asks the configured LLM (Haiku by default, via `connectors.llm`) for a short factual description, then saves it via `TableRegistryRepository.set_description`. Only empty descriptions are filled — an existing one is never overwritten — and only already-profiled tables are touched. `--table` to target one, `--dry-run` to preview, `--limit N` to cap. Pure prompt/parse core in `src/table_autodoc.py` (no `app.`/DB/network deps). Uses `ANTHROPIC_API_KEY` / `LLM_API_KEY` (or the instance `ai:` block).
+
+## [0.55.28] — 2026-06-01
+
+### Added
+- Browser-based `agnes auth login` (gh-style loopback). Instead of
+  prompting for a plaintext password, the CLI opens the browser to
+  `/cli/auth/start`, the user signs in with whatever provider their
+  account uses (Google / magic link / password), and on approval the
+  server hands a 90-day personal access token straight back to the CLI
+  over a localhost loopback — no copy/paste, no password in the
+  terminal. The durable token never travels through the browser URL: the
+  loopback carries only a single-use, ~2-min exchange code (new
+  `cli_auth_codes` table, schema v61) that the CLI trades for the PAT via
+  `POST /cli/auth/exchange`. Server routes: `GET/POST /cli/auth/start`,
+  `POST /cli/auth/exchange`. Terminal-only fallbacks preserved:
+  `agnes auth login --password` (email+password) and `--no-browser`
+  (prints the sign-in URL); a timeout or old server prints the manual
+  `agnes auth import-token` path.
+
+## [0.55.27] — 2026-06-01
+
+### Security
+- Bumped `dulwich` from 0.24.1 to 1.2.5 (Dependabot, #468). dulwich powers the in-process git server mounted at `app/marketplace_server/{git_backend,git_router}.py` that serves the curated-marketplace clone endpoint — five hardenings landed in this jump:
+  - **GHSA-gfhv-vqv2-4544** — `porcelain.submodule_update` (and `porcelain.clone(recurse_submodules=True)`) now validates submodule paths; a crafted upstream could previously direct submodule contents into `.git/hooks` and drop an executable hook there. dulwich analogue of git's CVE-2024-32002 / CVE-2024-32004.
+  - **CVE-2026-42305** — Windows tree-path validation hardened: `validate_path_element_ntfs` now rejects Windows path separators, the alternate-data-stream marker `:`, NTFS 8.3 short-name aliases of `.git`, and reserved Windows device names. `core.protectNTFS` defaults to true on every platform and both `core.protectNTFS` / `core.protectHFS` are now read under their correct option names.
+  - **CVE-2026-42563** — shell-quote values substituted into `ProcessMergeDriver` commands; a malicious branch could previously inject shell when a merge driver referenced `%P`.
+  - **CVE-2026-47712** — `porcelain.format_patch` now sanitizes commit subjects used in patch filenames; a malicious subject (e.g. `x/../../x`) could previously direct the generated patch outside `outdir`.
+  - **`receive.maxInputSize`** — `ReceivePackHandler` now honours `receive.maxInputSize`; previously an unauthenticated remote could send a tiny crafted pack with a huge declared `dest_size` and trigger hundreds of MB of allocation in `git-receive-pack`.
+  - Test impact: the four-shard test suite + `tests/test_marketplace_server_git.py` are green on 1.2.5 — no Agnes-side API breakage from the 0.x → 1.x bump.
+
+## [0.55.26] — 2026-06-01
+
+### Fixed
+- **Data Package card: the lifecycle status pill (POC / Coming soon / Draft) overlapped the curated/new badges.** Both the status pill (`.stack-card__status-pill`) and the derived-badge row (`.stack-card__badges`) were absolute-positioned at the same `top:8px; left:8px` corner of the card cover, so a package that had a non-default status *and* a derived badge rendered the two stacked on top of each other. The badge row now drops just below the status pill when one is present; placement is unchanged (top-left) when there's no pill. Macro: `app/web/templates/macros/_stack_card.html`.
+
+## [0.55.25] — 2026-05-28
+
+### Fixed
+- **Telemetry dropdown listed the same user under both their email and
+  their UUID.** `usage_events.username` /
+  `usage_session_summary.username` had three writers disagreeing on what
+  the column means: REST emitters wrote `user.get('email')`, the session
+  pipeline wrote the `/data/user_sessions/<dir>/` directory name (OS
+  username from the legacy collector, `user["id"]` UUID from
+  `/api/upload/sessions`). The admin telemetry facet
+  (`SELECT DISTINCT username FROM usage_events`) then surfaced one user
+  as up to three rows — anonymised local-part *and* the same person's
+  UUID for sessions uploaded via the API. The session-pipeline runner
+  now resolves `(user_id, email)` together (new `resolve_user_identity`
+  helper) and writes the email as the canonical `username` (falling
+  back to the directory name only for orphaned uploads). Schema v60
+  migration backfills historical rows where `user_id` is set so the
+  dropdown collapses immediately on first start. Directory name remains
+  the filesystem lookup key via `session_file = "<dir>/<name>"` — only
+  the display/grouping identity changes.
+
+## [0.55.24] — 2026-05-28
+
+### Fixed
+- **/home not-onboarded hero title rendered escaped `&lt;span&gt;` text.**
+  The `{% set _brand = instance_brand | e %}` + `{% set title = _brand ~ "…<span>…" %}`
+  pattern silently autoescaped the right operand because Jinja's `~`
+  autoescapes a `str` when the left side is `Markup`. The literal
+  `<span class="accent">AI workspace.</span>` ended up as visible text
+  in the browser. Replaced with the `{% set foo %}…{% endset %}` block
+  form, which gets autoescape semantics right (operator-set
+  `instance_brand` is still escaped; literal HTML in the block stays
+  literal). Two regression tests pin both invariants
+  (`test_home_not_onboarded_hero_title_html_renders_unescaped`,
+  `test_home_not_onboarded_hero_title_html_escapes_brand`).
+
+## [0.55.23] — 2026-05-27
+
+### Added
+- **Seven new design-system macros in `_components.html`.** Closes the
+  "Macro gaps" tracker on #419 by extending the canonical 5 (button,
+  primary_nav, tabs, table, panel) with seven more:
+  `tabs_rich` (with `.mp-tabs`/`.stack-tabs` variants),
+  `segmented_strip` (`.os-tabs`/`.mode-tabs`),
+  `pill_chip` (`.pill` — button or anchor),
+  `kpi_card` (`.obs-kpi` — keeps existing `.obs-kpi-label/-value/-sub`
+  selectors so adoption is drop-in),
+  `hero_search_btn` (`.search-btn`/`.stack-hero__search-btn`),
+  `info_panel_accent` (new `.info-panel-accent*` family with four
+  canonical accents in `style-custom.css`),
+  `code_chip` (`.code-block` + `.btn-copy`).
+  Each macro carries a TODO list of known adopter templates — adoption
+  is a follow-up sweep, not part of this PR.
+- **`_app_scripts.html` partial.** The 570-line inline `<script>` block
+  in `base.html` (undo toast, modal Esc handler, command palette, admin
+  keyboard shortcuts) now lives in a partial both `base.html` and
+  `base_ds.html` include, so pages migrated to the design-system
+  layout keep behaviour parity. `profile.html` is the first adopter —
+  flipped from `base.html` → `base_ds.html` as a proof point.
+
+### Changed
+- **`var(--primary[-dark|-light])` → `var(--ds-primary[-dark|-light])` across
+  24 templates.** Mechanical sweep covering 128+ occurrences. The
+  legacy `_LEGACY_TOKEN_FALLBACK_ALLOWLIST` is drained because every
+  template now references `--ds-primary` explicitly; the compat shim in
+  `design-tokens.css` is unchanged.
+- **Replaced raw hex literals with `--ds-*` tokens in `profile.html`,
+  `setup.html`, `me_activity.html`** (~42 hex literals total). Every
+  hex maps to an existing token; no new tokens introduced. The
+  `var(--token, #hex)` fallback patterns in `setup.html` and
+  `me_activity.html` are dropped — the design-tokens.css compat shim
+  makes them dead weight.
+
+### Internal
+- **Semantic template-assertion helper (`tests/_template_assertions.py`).**
+  Replaces 22 rigid `<tag class="…">` substring assertions in
+  `test_web_marketplace_guide.py` (6) and `test_web_home_page.py` (15)
+  with `assert_element(body, tag, class_=…, href=…, attrs=…, text=…)`
+  via stdlib `html.parser` (nesting-aware; the prior lazy-regex
+  approach swallowed inner siblings via outer-container match spans).
+- **CI class-coverage contract test
+  (`test_component_macros_emit_only_classes_with_css_rules`).** Every
+  literal class the macros in `_components.html` emit — including the
+  computed `btn-<variant>`/`btn-<size>` and the new T11-T17 variant
+  roots — must resolve to a CSS rule in at least one shipped sheet.
+  Catches typo'd macro classes before they reach a page.
+- **Regression guards**
+  (`test_no_unprefixed_primary_token_in_templates`,
+  `test_swept_templates_use_no_raw_hex`) — pin the sweeps in
+  `test_design_system_contract.py` so a future PR re-introducing
+  legacy primary tokens or raw hex literals fails the build.
+
+## [0.55.22] — 2026-05-27
+
+### Added
+- **`customer-instance` module: per-VM OAuth client secrets via naming
+  template.** New module-level variable `oauth_secret_name_template` lets
+  callers declare a single convention (e.g.
+  `"agnes-google-oauth-client-{kind}-{role}"`) that the module expands across
+  every VM in the call to derive Secret Manager secret names. Placeholders:
+  `{kind}` (id|secret — REQUIRED), `{role}` (from `dev_instances[*].role`,
+  defaulting to `"dev"`; always `"prod"` for the prod VM), `{name}` (VM
+  name). Empty default (`""`) keeps the legacy shared
+  `google-oauth-client-{id,secret}` behavior, so existing callers see zero
+  plan changes. Set the template once to give prod and dev their own OAuth
+  clients (recommended for prod isolation — different redirect URIs,
+  separate blast radius from Google's end); the per-role grouping means a
+  new env (`stage`, `perf`) lands by creating Secret Manager entries that
+  match the template and setting `role = "stage"` on a `dev_instances`
+  entry, with no Terraform diff in the module surface. Resolved names get
+  `secretAccessor` IAM via the new
+  `google_secret_manager_secret_iam_member.vm_oauth` resource
+  (de-duplicated across colliding `{role}` expansions). All VMs share one
+  SA, so this buys isolation at Google's OAuth client layer but not at-rest
+  in Secret Manager — a per-VM SA refactor is tracked for a future cut.
+- **`customer-instance` module: `role` is now a first-class field on
+  `dev_instances` items** (optional, default `"dev"`). Previously the role
+  was added solely by `local.dev_defaults` and any caller-supplied `role`
+  was silently dropped by Terraform's object-type conversion before reaching
+  the merge — so the `{role}` placeholder above could only ever resolve to
+  `dev` for any dev VM, defeating the stage/perf extensibility claim. Adding
+  the field to the type lets callers set `role = "stage"` per VM and have
+  it propagate. No change is needed for callers that don't set it; the
+  default keeps every existing dev VM on `role = "dev"`.
+
+  Bump to `infra-v1.10.0`.
+
+## [0.55.21] — 2026-05-27
+
+### Added
+- **Scheduler-driven Jira self-healing pair: SLA poll + consistency check.** Brings Agnes back to parity with the legacy Data Broker `jira-sla-poll.timer` / `jira-consistency.timer` systemd units, but invoked from the in-cluster scheduler container instead of host systemd. Two new entries in `services/scheduler/__main__.py` (`jira-sla-poll`, `jira-consistency-check`) target the new endpoints `POST /api/admin/run-jira-sla-poll` and `POST /api/admin/run-jira-consistency-check`. Defaults match the systemd unit cadence — 15 min for SLA poll, 30 min for consistency — and are tunable via two new env vars: `SCHEDULER_JIRA_SLA_POLL_INTERVAL`, `SCHEDULER_JIRA_CONSISTENCY_INTERVAL`. The SLA poll re-fetches `elapsed_millis` + `status` for open tickets whose snapshot would otherwise stagnate between webhooks (and self-heals stale status/resolution on the same pass); the consistency check compares Jira API ↔ raw JSON ↔ parquet and auto-backfills small webhook-loss gaps (`max_age_days=30` default, tunable per call). Both endpoints short-circuit with `{"status": "skipped", "reason": "jira_not_configured"}` when the `JIRA_*` env vars are unset, so a customer without Jira ingest pays nothing for the default scheduler entries. `connectors/jira/scripts/poll_sla.py` `main()` was split into a programmatic `run(dry_run, verbose) -> dict` plus a thin CLI wrapper so the endpoint can call it in-process (the `consistency_check.py` `Config` + `JiraConsistencyChecker` factoring was already endpoint-shaped). The pre-existing systemd units in `connectors/jira/systemd/` are left in place for customers who prefer host-side scheduling. Twelve new parametrized tests cover defaults, env-var overrides, and rejection of invalid values for both intervals.
+
+### Removed
+- **Postgres app-state layer (PR #388) reverted in PR #451.** Shipped briefly in
+  v0.55.20; rolled back the same day for infra reasons. DuckDB remains the
+  single source of truth for system state; no operator-visible behavior change
+  if you stayed on v0.55.19 or upgraded straight to v0.55.21.
+
+## [0.55.20] — 2026-05-27
+
+### Added
+- **`/admin/tables` Keboola smart-paste — split `bucket.table_name` on paste/blur.** Keboola Storage's "COPY TO CLIPBOARD" yields the full table id `{bucket}.{table_name}` (e.g. `out.c-crm-tr-RdC3aX4M.account`). The Register Keboola modal has two separate inputs (Bucket + Source Table), so pasting the full id used to fail silently. The modal now has a dedicated `#kbTableIdPaste` input above the existing fields; pasting or blurring with a value containing a `.` splits on the LAST dot and fills both downstream inputs. Downstream fields get a synthetic `input` event so any datalist-refresh / discover hooks treat it as user-typed; manual entry through Bucket + Source Table still works as before. Closes #401.
+- **`/dashboard` live sync-status pill.** Small horizontal pill between the env-setup-cta and the stats-row. Initial state is server-rendered from the existing `data_stats.last_updated` (MAX `last_sync` across all `sync_state` rows): "Last sync: <iso>" or "No sync recorded yet". A JS poller hits `GET /api/sync/status` every 30 s and flips the pill to `is-running` (brand-primary pulsing dot, "Sync running…" text) when the `locked` flag is true. The `/api/sync/status` endpoint is intentionally tiny (`{locked: bool}`, public/no-auth for the host-side auto-upgrade cron), so the timestamp comes from server-render rather than live fetch; extending the endpoint to return last-run pass/fail status is a follow-up. Closes #392.
+- **`/catalog/t/<table_id>` data-preview button + modal.** Hero card on the table-detail page now has a "Preview data" button that opens a modal showing the first 10 rows via `GET /api/v2/sample/{table_id}`. The endpoint already enforces `can_access_table` per user, so a 403 lands as a clear inline error inside the modal body. Columns are derived dynamically from the first row's keys; states for Loading / Empty / Error are friendly text. Esc, Close, and backdrop click all dismiss. The issue text said "in catalog.html", but `/catalog` lists Data Packages (not tables) — the natural per-table affordance lives on the table-detail page. Closes #396.
+- **Five new Postgres repository ports closing the DuckDB-only gap left by PR #388.**
+  `src/repositories/{data_packages,memory_domains,memory_domain_suggestions,recipes,user_stack_subscriptions}_pg.py` mirror their DuckDB siblings method-for-method via SQLAlchemy core + psycopg. Alembic revision `0011_data_packages` covers the seven new PG tables (5 + 2 bridges: `data_package_tables`, `knowledge_item_domains`) with full downgrade and round-trip test coverage. Factory entries in `src/repositories/__init__.py` route to either backend based on `use_pg()`; ten callsites across `app/web/router.py`, `app/api/{data_packages,memory,memory_domain_suggestions,memory_domains,recipes,stack_views,sync}.py` swapped from direct `XYZRepository(conn)` instantiation to the factory layer. **Fifty-four parametrized cross-engine contract tests** (14+12+8+10+10 across the 5 clusters) prove DuckDB ↔ PG parity for every public method. Full `tests/db_pg/` suite now 322 passed, 1 skipped.
+- **`docker-compose.postgres.yml` gains a `data-migrate` one-shot service.**
+  Runs `python -m scripts.migrate_duckdb_to_pg --duckdb-path
+  /data/state/system.duckdb` on every `compose up`; `app` and `scheduler`
+  block on it exiting 0 so neither serves traffic against a partially
+  populated PG. The underlying script is idempotent (ON CONFLICT DO
+  NOTHING + per-row SHA-256 checksums) so re-runs against an
+  already-migrated PG are near-instant no-ops.
+- **`postgres_data` named volume now binds to `/data/postgres`.** Lives on
+  the customer-instance config disk that's already covered by the daily
+  snapshot policy; the startup-script pre-creates `/data/postgres` with
+  uid 70 ownership (the Alpine `postgres` user) before the side-car boots.
+  Local-dev users without `/data/postgres` can override this overlay via
+  `docker-compose.override.yml`.
+
+### Changed
+- **Admin nav: "Server config" → "Instance settings".** `_app_header.html` nav item label, `admin_server_config.html` page `<title>`, and the page-hero title now read "Instance settings" instead of "Server config" — less developer-centric and consistent with the already-shipped phrasing in the Keboola not-connected banners on `/admin/tables` (which deep-link with "Set your token in **Instance settings**"). Route `/admin/server-config` unchanged. Eyebrow "Server" kept as the category label (shared with `admin_scheduler_runs.html` under the same nav group). Closes #403.
+- **`startup-script.sh.tpl` + `scripts/ops/agnes-auto-upgrade.sh` honor
+  `COMPOSE_FILE` from `/opt/agnes/.env`.** Replaces the hard-coded
+  `-f docker-compose.yml -f docker-compose.prod.yml
+  -f docker-compose.host-mount.yml` arrays. Default falls back to the
+  prior baseline so deploys without the `.env` line are unchanged. The
+  customer-instance `.env` now writes
+  `COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:docker-compose.host-mount.yml`
+  so the prod + postgres + host-mount overlays engage automatically.
+  Host-mount loads LAST so its `volumes: !override` on `data-migrate`
+  (added here) replaces the named-volume mount with the host `/data:/data:ro`
+  bind — without that override the migration script would read an empty
+  named volume and exit 2.
+
+## [0.55.19] — 2026-05-27
+
+### Fixed
+- **Profile pass in `_run_sync` now runs each `profile_table` call in a
+  fresh Python subprocess** (`src/_profiler_worker.py`, new generic
+  helper `src/_subprocess_runner.py`). Running the profile loop in-
+  process drifted resident memory by ~100-300 MiB per iteration even
+  though each `profile_table` cleaned up its DuckDB session correctly
+  — Python's allocator keeps freed anon mmap arenas in its free-list
+  and libc's heap doesn't return them to the OS. After ~10-30 iterations
+  the cgroup OOM killer reaped uvicorn at ~4.18 GiB anon-rss (observed
+  on dev with the materialize-cap fixes from PR #431/#433/#434/#436
+  already in place; smaller caps shipped but the leak path was the
+  loop itself, not any individual call). Process exit guarantees full
+  memory return to the OS, so the per-iteration accumulation pattern
+  is broken regardless of how many tables are in scope. The parent
+  still owns the `ProfileRepository.save(...)` write so system.duckdb
+  stays single-writer.
+
+## [0.55.18] — 2026-05-27
+
+### Changed
+- **`/admin/server-config` button family migrated to the canonical `.btn-*` vocabulary.** The 21 page-local `.cfg-btn` / `.cfg-btn.primary` / `.cfg-btn.danger` instances (5 static modal buttons + 16 buttons emitted from `<script>` template literals — array/map remove + add, per-section Save, BigQuery / Keboola connection-test, initial-workspace Sync / Edit / Delete / Download / Register) now route through `.btn .btn-primary` / `.btn-secondary` / `.btn-danger`, matching the rest of the admin UI. Small "×" remove buttons compose `.btn-sm .btn--icon` for tightness. The page-local `.cfg-btn` CSS block is gone. Static modal buttons render via `ds.button`; JS-string buttons emit canonical class names directly (macros can't reach inside `<script>` literals).
+- **`/admin/corporate-memory` button family migrated to the canonical `.btn-*` vocabulary.** The bespoke moderation-specific variants (`.btn-mandate`, `.btn-approve`, `.btn-reject`, `.btn-revoke`) are retired in favor of the canonical four — `.btn-mandate` → `.btn-primary` (Save / Apply / Confirm / Mark-as-Required / Mark-as-duplicate), `.btn-approve` → `.btn-secondary` (Approve / Keep / Different), `.btn-reject` → `.btn-danger` (Reject / Delete), `.btn-revoke` → `.btn-ghost` (Dismiss). The variant-choice hierarchy (primary > secondary > danger > ghost) continues to encode the semantic priority; the green-on-approve / red-on-reject solid color cues from the bespoke palette are lost but visual hierarchy is preserved. Page-local `.btn` base rule deleted — the canonical `.btn` family in `style-custom.css` supplies the same contract. 29 button class-name swaps across Jinja static markup + JS template-literal contexts. Closes one of the four dedicated follow-up PRs called out by #427.
+- **`/admin/tables` shadowing `.btn` CSS deleted; buttons inherit canonical visual contract.** The markup on this page already used canonical `.btn` / `.btn-primary` / `.btn-secondary` / `.btn-sm` class names (migrated piecemeal across prior commits), but the template carried its own `.btn` family rules that shadowed canonical — most visibly, `.btn-secondary` rendered with a filled grey background (`var(--border-light)`) rather than the canonical white-bg + grey-border outline. Those page-local rules are gone (`.btn`, `.btn-primary`, `.btn-primary:hover`, `.btn-primary:disabled`, `.btn-secondary`, `.btn-secondary:hover`, `.btn-danger`, `.btn-danger:hover`, `.btn-sm`); buttons now match the unified admin look. Two surviving bare `<button class="btn">` sites (Remove-from-package + Delete-package destructive actions, which had inline `color:#b91c1c` overrides) were upgraded to canonical `.btn-danger` (the second commit on #437 fixed the same hazard there). `.btn-icon` (28×28 icon-only button family with `[data-tooltip]:hover::after` chip styling) stays page-local because canonical `.btn--icon` is just a size modifier with no tooltip behavior — flagged for a later pass once a canonical tooltip primitive exists. Visible delta: toolbar + modal secondary buttons shift from filled-grey to outlined-white; destructive buttons shift from filled-red to outlined-red (canonical "calm — committed to by hover" treatment).
+- **`/dashboard` page-local `.btn-register` rule retired; the four other bespoke button families stay page-local with documented rationale.** The "Create Account" submit button on the Telegram verify form (`<button class="btn-register">`) now renders via canonical `.btn .btn-primary`; its page-local rule and `:hover` variant are gone. The remaining bespoke button classes on this page — `.btn-setup` / `.btn-setup-secondary` (hero CTA using `--ds-hero-cta-*` tokens for the navy-hero context), `.notif-link` / `.notif-unlink` (soft-pill micro-actions inside the notification card's `.notif-managing` mode), and `.btn-copy-term` (dark-surface terminal-mock copy buttons; `system.md`-explicit carve-out for Catppuccin-themed dark-surface copy buttons) — stay page-local because each carries page-specific semantics canonical doesn't model. The decision matrix is documented at the top of `app/web/static/css/dashboard.css`. Closes the last of the four dedicated follow-up PRs from #427.
+- Setup-script Step 2 ("Confirm the install location") no longer treats
+  the user's current `cwd` as a mistake whenever it isn't exactly
+  `~/Desktop/{workspace_dir}`. Before, any other path triggered a "you
+  are in the wrong place" warning whose only escape hatch was the magic
+  keyword `install here` — which silently accepted `$HOME` and other
+  destructive defaults. New three-branch decision tree replaces it:
+  (a) **REFUSE** if `pwd` is `$HOME` exactly or any system dir (`/`,
+  `/tmp`, `/etc`, `/usr`, `/var`, `/opt`, `/root`, `/bin`, `/sbin`,
+  `/boot`, `/sys`, `/proc`) — no override, the install would scatter
+  `.claude/`, `.agnes/`, `AGNES_WORKSPACE.md`, marketplace clones into a
+  directory that already has unrelated meaning. (b) **PROCEED
+  SILENTLY** if `cwd` is empty or contains only a whitelist of
+  workspace artefacts (`.git`, `.claude`, `.agnes`, `AGNES_WORKSPACE.md`,
+  `README.md`) — the user clearly created+cd'd into a workspace, no
+  prompt needed. (c) **CONFIRM ONCE** for everything else, with neutral
+  phrasing: *"I'll install Agnes in `<pwd>`. Reply 'ok' to continue here,
+  'default' to install in `~/Desktop/Agnes` instead, or 'abort'."*. The
+  `default` branch runs `mkdir -p ~/Desktop/{workspace_dir} && cd …`
+  itself, so users opting back into the recommended path don't have to
+  re-paste. Legacy `install here` keyword still works as an `ok`
+  synonym for muscle-memory compatibility, and Step 9's restart cue
+  keeps the same wording.
+
+## [0.55.17] — 2026-05-27
+
+### Fixed
+- `scripts/generate_sample_data.py` size `l` preset went from
+  unfinishable (>2h wall-clock, ~30 min on `_generate_orders_and_items`
+  alone, then ~1.5h+ on `_generate_support_tickets`) to ~3m24s
+  end-to-end. Two O(N×M) hotspots:
+  (a) `_generate_orders_and_items` called
+  `rng.choices(self._customer_ids, weights=activity, k=1)` once per
+  order — `random.choices` rebuilds cumulative weights internally on
+  every call, so for 50K customers × 200K orders that's ~10B ops.
+  Fix: precompute `cum_activity = list(accumulate(activity))` once and
+  pass `cum_weights=` to the per-order call → O(log N) bisect.
+  (b) `_generate_support_tickets` ran
+  `[o for o in self._order_ids if self._order_customers[o] == cust_id]`
+  per ticket — 50K tickets × 200K orders = ~10B comparisons. Fix:
+  precompute a `customer_id → list[order_id]` index dict once before
+  the loop, O(1) lookup per ticket. Both fixes preserve byte-exact
+  output for the same `--seed` (verified at size `s`; same number of
+  `random()` draws in the same order). Sizes `s` and `m` are also
+  faster but the bug was only catastrophic at `l`.
+
+## [0.55.16] — 2026-05-27
+
+### Changed
+- **Web UI consistency pass — CSS extraction, design-token migration, parametric hero sections.** Eight templates with large inline `<style>` blocks (news, profile, error, activity_center, admin_access, dashboard, home_not_onboarded, marketplace) had their CSS extracted into dedicated stylesheets under `app/web/static/css/`, and four landing surfaces (home, dashboard, marketplace, catalog) gained parametric hero sections sharing one partial. Color references migrated from legacy `var(--primary)` (blue) to canonical `var(--ds-primary)` (green) on `me_activity` and `memory_domain_detail` so their hover/focus accents read in the unified palette; exact-match hex literals (terminal yellow, Google-sync chip green, VS Code thumbnail bg/ink) were swapped for their `--ds-*` token equivalents in `home.css` and `profile.html`. The bespoke `.btn-warning` variant was retired — its single use (the `/admin/marketplaces` system-confirm modal) now renders via canonical `.btn-danger`, since marking a plugin as system is destructive (fans out a forced grant to every existing principal). `.btn-required` (amber-disabled affordance on catalog_package_detail + memory_domain_detail) was promoted from page-local to canonical in `style-custom.css` and pinned in `tests/test_design_system_contract.py`. Modal dialogs on `/admin/tables` now center vertically.
+
+### Internal
+- The four canonical button variants are now `.btn-primary` / `.btn-secondary` / `.btn-ghost` / `.btn-danger` plus the `.btn-required` disabled-mandate state. The `.btn-warning` variant was removed from `style-custom.css` and the design-system contract test.
+
+### Fixed
+- **`src/db.py::get_analytics_db` + `get_analytics_db_readonly` now
+  cap DuckDB `memory_limit` to `2GB` + `threads=2` +
+  `preserve_insertion_order=false`.** Prior to this the analytics
+  connection inherited the DuckDB default of `~80%` of system RAM,
+  which on a 4 GiB cgroup container leaves no headroom for the host
+  Python process + short-lived consolidation / profiler connections
+  that share the container. Defensive companion to the profiler
+  bullet below — closes the only DuckDB-using surface in the sync
+  pipeline that was not yet capped. Analyst queries that hit the
+  ceiling surface a clear DuckDB OOM exception which the API layer
+  can present (vs. a silent process-wide cgroup OOM-kill).
+- **`src/profiler.py::profile_table` lowers DuckDB `memory_limit` from
+  `4GB` to `2GB` + adds `preserve_insertion_order=false`.** The prior
+  4 GiB cap matched typical container cgroup limits exactly, leaving
+  zero headroom for the host Python interpreter + ATTACHed orchestrator
+  state + sidecar processes. Observed on a 4 GiB dev container: the
+  profiler ran right up to the cap during `[SYNC] Profiled N tables`,
+  then the cgroup OOM killer reaped uvicorn within seconds of
+  orchestrator rebuild completing (anon_rss: 4180352 kB ≈ exact
+  cgroup cap). 2 GiB matches the materialize-path caps from
+  PR #431/#433 and leaves ~2 GiB of headroom for the rest of the
+  process. Profiler peak is normally a few hundred MiB (streaming
+  row-group scans + in-memory `SAMPLE`); the cap binds only when
+  something goes wrong.
+
+## [0.55.15] — 2026-05-26
+
 ### Fixed
 - **DuckDB consolidation connections in `materialize_query` now cap
   `memory_limit` + `threads`** (`connectors/keboola/extractor.py`,
@@ -61,6 +499,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   release had landed. Non-blocking `flock -n` means the second runner
   exits cleanly; the next regular tick handles whatever real change
   is pending.
+- **`apply_bq_session_settings` now applies the materialize memory caps (`memory_limit=2GB`, `threads=2`, `preserve_insertion_order=false`) on every BQ pool acquire**, fixing the pool-state asymmetry that landed in #431. Previously the caps were SET inline inside `materialize_query`, which only mutated whichever of the ~4 pool entries handled that particular call — the other entries stayed at DuckDB's 80%-of-host default and re-opened the OOM window for any analyst query that subsequently landed on them. Mirrors the per-acquire re-apply pattern `bq_query_timeout_ms` already uses.
+- Stale `1 GiB` references in the `_open_consolidation_conn` docstring (`connectors/keboola/extractor.py`) and an inline comment in `connectors/bigquery/extractor.py::materialize_query` rewritten to match the actual 2 GiB cap. Author iterated from 1 GiB → 2 GiB during #431 and the commentary was left behind.
 
 ### Added
 - `docs/ecosystem-map.md` — operator-facing bird's-eye view of the 5 repo tiers around an Agnes deployment (OSS app, per-customer infra in two patterns A/B, curated marketplace, initial-workspace template, legacy/glue), with a cross-tier checklist for new customer onboarding. Linked from `docs/README.md` operator index.
@@ -1321,6 +1761,38 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   now rejects `tables` dicts with more than 500 entries (ADV-008, ADV-009).
 - `GET /api/catalog/tables` now has a typed `response_model` (`CatalogTablesResponse`)
   so Swagger generates an accurate schema for that endpoint (ADV-007).
+
+### Internal
+- Introduced the Postgres app-state foundation alongside the existing
+  DuckDB layer (no behaviour change for existing deployments — the new
+  modules are dormant until ``AGNES_DB_URL`` is set and the cutover
+  starts). Adds Alembic + SQLAlchemy 2.0 + ``psycopg[binary]`` as core
+  deps; pytest infrastructure adds ``testcontainers[postgres]``,
+  ``pytest-postgresql``, and ``pgserver`` (userland-bundled PG 16 — no
+  Docker/system install required for local PG tests). Ships the
+  migration chain (``migrations/`` with revisions 0001-0010 covering
+  every table in ``system.duckdb``), matching SQLAlchemy 2.0 models
+  under ``src/models/``, **all 28 repository modules** mirrored at
+  ``src/repositories/*_pg.py``, a load-bearing round-trip + drift
+  test harness under ``tests/db_pg/`` (163 tests), and a one-shot
+  DuckDB → Postgres data migration framework at
+  ``scripts/migrate_duckdb_to_pg/`` (idempotent on re-run via
+  ``ON CONFLICT DO NOTHING``, with row-count and PK-checksum
+  validation). The ``knowledge`` repo's full-text search ports from
+  DuckDB BM25 to Postgres ``to_tsvector`` + ``ts_rank``. Operator
+  playbook in ``docs/migrations.md``.
+- Added `TestFullLifecycleFromInstaller` integration test class
+  (`tests/test_store_entity_versions.py`) covering the full
+  flea-market lifecycle from issuer / admin / subscribed-user
+  perspectives. Main test walks v1 upload → installer subscribes →
+  v2 promote → v3 blocked → admin force-overrides → restore v1,
+  asserting BOTH entity state AND served `marketplace.zip` bytes +
+  ETag at each transition. Plus 5 corner cases:
+  unsubscribed-user negative control, late-subscriber-during-
+  quarantine, non-owner privacy gate, second-restore reuse path
+  (PR #332 lifecycle validation), and archived-entity-keeps-
+  serving-installs (CLAUDE.md contract).
+
 ## [0.54.24] — 2026-05-16
 
 ### Fixed

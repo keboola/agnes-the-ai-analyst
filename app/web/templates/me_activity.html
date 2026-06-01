@@ -29,9 +29,9 @@
 
 .stats-panel { display: none; }
 .stats-panel.is-active { display: block; }
-.stats-loading { color: var(--hp-text-muted, #6b7280); font-style: italic; padding: 24px 0; }
-.stats-error { color: #b91c1c; padding: 24px 0; }
-.stats-empty { color: var(--hp-text-muted, #6b7280); padding: 24px 0; }
+.stats-loading { color: var(--ds-text-muted); font-style: italic; padding: 24px 0; }
+.stats-error { color: var(--ds-accent-danger-ink); padding: 24px 0; }
+.stats-empty { color: var(--ds-text-muted); padding: 24px 0; }
 
 /* Canonical .data-table is left-aligned; numeric columns opt into
    right-alignment per-page via .num (matches the pre-migration look). */
@@ -47,15 +47,15 @@
 @media (max-width: 720px) { .stats-overview { grid-template-columns: repeat(2, 1fr); } }
 
 .tok-chart { width: 100%; height: 160px; margin: 8px 0 16px; }
-.tok-chart rect { fill: var(--hp-accent, #2563eb); opacity: 0.85; }
-.tok-chart .axis text { font-size: 10px; fill: var(--hp-text-muted, #6b7280); }
+.tok-chart rect { fill: var(--ds-primary); opacity: 0.85; }
+.tok-chart .axis text { font-size: 10px; fill: var(--ds-text-muted); }
 
 .sess-help {
-    color: var(--text-secondary, #6b7280); font-size: 13px;
+    color: var(--ds-text-muted); font-size: 13px;
     margin-bottom: 16px; line-height: 1.55;
 }
 .sess-help code {
-    background: var(--border-light, #f3f4f6); padding: 1px 6px;
+    background: var(--ds-surface-dim); padding: 1px 6px;
     border-radius: 4px; font-size: 12px;
 }
 
@@ -63,21 +63,21 @@
     display: inline-block; padding: 2px 8px; border-radius: 999px;
     font-size: 11px; font-weight: 500;
 }
-.badge-pending   { background: #fef3c7; color: #92400e; }
-.badge-processed { background: #dbeafe; color: #1e40af; }
-.badge-extracted { background: #d1fae5; color: #065f46; }
+.badge-pending   { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
+.badge-processed { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+.badge-extracted { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
 
 .dl-link {
     display: inline-block; padding: 4px 10px;
-    border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    border: 1px solid var(--ds-border); border-radius: 6px;
     color: inherit; text-decoration: none; font-size: 12px; font-weight: 500;
-    background: var(--surface, #fff);
+    background: var(--ds-surface);
     transition: background 0.15s, border-color 0.15s;
 }
 .dl-link:hover {
-    background: var(--border-light, #f9fafb);
-    border-color: var(--primary, #6366f1);
-    color: var(--primary, #4338ca);
+    background: var(--ds-border-light);
+    border-color: var(--ds-primary);
+    color: var(--ds-primary);
 }
 </style>
 
@@ -142,7 +142,7 @@
             </div>
             <svg class="tok-chart" data-tok-chart viewBox="0 0 600 160" preserveAspectRatio="none"></svg>
 
-            <h3 style="font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--hp-text-muted, #6b7280);">By model</h3>
+            <h3 style="font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ds-text-muted);">By model</h3>
             <table class="data-table">
                 <thead><tr>
                     <th>Model</th><th class="num">Sessions</th>
@@ -152,7 +152,7 @@
                 <tbody data-tok-model></tbody>
             </table>
 
-            <h3 style="font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--hp-text-muted, #6b7280);">Top sessions</h3>
+            <h3 style="font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ds-text-muted);">Top sessions</h3>
             <table class="data-table">
                 <thead><tr>
                     <th>Started</th><th>Model</th>
@@ -282,7 +282,7 @@
                     : '';
                 tr.innerHTML = `
                     <td>${fmtTimestamp(r.started_at)}</td>
-                    <td>${r.primary_model || '<em style="color:#9ca3af;">unprocessed</em>'}</td>
+                    <td>${r.primary_model || '<em style="color:var(--ds-text-muted);">unprocessed</em>'}</td>
                     <td class="num">${fmtNum(r.user_messages)}</td>
                     <td class="num">${fmtNum(r.tool_calls)}</td>
                     <td class="num">${fmtNum(r.tokens_total)}</td>

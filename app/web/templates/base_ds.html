@@ -109,11 +109,11 @@
        don't load on every page. #}
     {% block extra_scripts %}{% endblock %}
 
-    {# Inline page scripts. Note: the global helpers from base.html
-       (showUndoToast, modal Esc handler, command palette, admin
-       keyboard shortcuts) are NOT loaded here. Pages that need them
-       must either stay on base.html OR include the future
-       _app_scripts.html partial when that refactor lands. #}
+    {# Global app helpers (undo toast, modal Esc, command palette, admin
+       keyboard shortcuts). Same partial that `base.html` includes — so
+       pages migrated from base.html → base_ds.html keep parity with
+       zero behaviour drift. #}
+    {% include "_app_scripts.html" %}
     {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -1003,55 +1003,78 @@ def test_gws_prompt_emits_pass_fail_contract():
 
 
 # ---------------------------------------------------------------------------
-# Step 2 — workspace folder check (no auto-mkdir).
+# Step 2 — install location decision tree (refuse / silent / confirm).
 # ---------------------------------------------------------------------------
 
-def test_step_2_checks_pwd_does_not_auto_mkdir():
-    """Step 2 must verify the user is already in the workspace folder
-    (the /home page Step 3 manual mkdir+cd) instead of silently re-running
-    `mkdir -p "$HOME/<dir>" && cd …` which would override an intentional
-    alternate install path.
+def test_step_2_uses_three_branch_decision_tree():
+    """Step 2 must use a refuse / proceed-silently / confirm-once tree
+    instead of hard-coding `~/Desktop/<workspace_dir>` as the only
+    acceptable path. The old flow scolded any user who cd'd into a
+    project folder before pasting; the new flow respects intentional cwd
+    and only protects against destructive defaults ($HOME / system dirs).
 
     Contract:
-      - Step 2 runs `pwd` and compares against `$HOME/<workspace_dir>`.
-      - Emits a warning message naming both the expected path and the
-        manual mkdir line the user already saw on /home.
-      - Does NOT emit `mkdir -p "$HOME/<workspace_dir>"` or the equivalent
-        PowerShell `New-Item -ItemType Directory -Force` line.
-      - Asks the user to reply 'install here' to proceed in a non-default
-        cwd, or 'abort' to stop. No automatic folder creation.
+      - Step header renamed to "Confirm the install location".
+      - All three branches (REFUSE, PROCEED SILENTLY, CONFIRM) are
+        documented in the script.
+      - `pwd` check is still emitted.
+      - The refuse list explicitly names `$HOME` plus the system dirs
+        the install must never touch.
+      - The silent-proceed branch whitelists the workspace artefacts a
+        prepared folder might already hold (`.git`, `.claude`, `.agnes`,
+        `AGNES_WORKSPACE.md`, `README.md`) so a re-paste into an
+        already-initialised workspace doesn't prompt.
+      - The confirm branch offers 'ok'/'default'/'abort' (instead of the
+        old 'install here'/'abort' pair) — 'default' lets the user opt
+        into the recommended `~/Desktop/<workspace_dir>` path without
+        re-pasting, and the legacy 'install here' phrasing remains as a
+        synonym for 'ok' for muscle-memory compatibility.
+      - The script never auto-runs `mkdir` for the user except inside
+        the 'default' branch of the confirm prompt.
     """
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
 
-    # The new check-only step header.
-    assert "2) Verify the user is already in the workspace folder." in joined
+    # New step header.
+    assert "2) Confirm the install location." in joined
 
-    # `pwd` check + expected-path comparison must be present.
+    # `pwd` check still present.
     assert "pwd" in joined
-    assert "$HOME/Desktop/Agnes" in joined  # default workspace_dir under Desktop
-    assert "~/Desktop/Agnes" in joined
 
-    # Warning copy that references the /home Step 2 manual mkdir line.
-    assert "/home Step 2" in joined
-    assert "mkdir -p ~/Desktop/Agnes && cd ~/Desktop/Agnes" in joined
+    # All three branches documented.
+    assert "2a) REFUSE" in joined
+    assert "2b) PROCEED SILENTLY" in joined
+    assert "2c) CONFIRM" in joined
 
-    # Explicit "install here" / "abort" decision tree.
-    assert "'install here'" in joined
+    # Refuse list explicitly names $HOME + the system paths.
+    for path in ("$HOME", "/tmp", "/etc", "/usr", "/var", "/opt", "/root"):
+        assert path in joined, f"refuse list missing {path!r}"
+
+    # Silent-proceed whitelist contains the workspace artefacts.
+    for artefact in (".git", ".claude", ".agnes", "AGNES_WORKSPACE.md", "README.md"):
+        assert artefact in joined, f"silent-proceed whitelist missing {artefact!r}"
+
+    # Confirm prompt offers the new three-way decision.
+    assert "'ok'" in joined
+    assert "'default'" in joined
     assert "'abort'" in joined
 
-    # The auto-mkdir lines from the previous step 2 must be GONE.
+    # Legacy 'install here' phrasing kept as an 'ok' synonym (muscle memory).
+    assert "'install here'" in joined
+
+    # The 'default' branch is the only place mkdir runs automatically.
+    assert "mkdir -p ~/Desktop/Agnes && cd ~/Desktop/Agnes" in joined
+
+    # No auto-mkdir from the very-old flow.
     assert 'mkdir -p "$HOME/Agnes"' not in joined
-    assert 'mkdir -p "$HOME/{workspace_dir}"' not in joined
     assert 'New-Item -ItemType Directory -Force -Path "$HOME\\Agnes"' not in joined
     assert "Set-Location \"$HOME\\Agnes\"" not in joined
 
 
-def test_step_2_warning_substitutes_custom_brand():
-    """Custom brand + workspace_dir must thread through the new step 2
-    warning copy — no leftover placeholders, expected path matches the
-    operator's configured workspace dir."""
+def test_step_2_substitutes_custom_brand_and_workspace_dir():
+    """Brand + workspace_dir threading: every visible reference resolves
+    against the operator's configured values, no placeholders leak."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines(
@@ -1059,24 +1082,40 @@ def test_step_2_warning_substitutes_custom_brand():
         instance_brand="Foundry AI",
         workspace_dir="FoundryAI",
     ))
-    assert "2) Verify the user is already in the workspace folder." in joined
-    assert "$HOME/Desktop/FoundryAI" in joined
+    assert "2) Confirm the install location." in joined
+    # Default path threads through both the silent-proceed reference and
+    # the confirm-prompt 'default' branch.
     assert "~/Desktop/FoundryAI" in joined
     assert "mkdir -p ~/Desktop/FoundryAI && cd ~/Desktop/FoundryAI" in joined
-    # Brand + workspace_dir thread through the warning copy (the text
-    # wraps across two lines so we check the substrings separately).
-    assert "but Foundry AI is normally" in joined
-    assert "installed in ~/Desktop/FoundryAI" in joined
-    # No placeholders survive into the rendered text.
+    # Brand surfaces in the refuse + confirm copy.
+    assert "I won't install Foundry AI" in joined
+    assert "I'll install Foundry AI in <pwd>" in joined
+    # No placeholders survive.
     assert "{workspace_dir}" not in joined
     assert "{instance_brand}" not in joined
 
 
+def test_step_2_refuse_branch_lists_home_and_system_paths():
+    """REFUSE must explicitly enumerate $HOME plus the system dirs.
+    Without this list a model might decide an OS path is 'fine' and
+    install into /etc or /root, scattering files where they don't belong."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    # All paths the refuse line claims to block must appear in the
+    # rendered script so the AI follower can match against pwd output.
+    for path in (
+        "$HOME", "/tmp", "/etc", "/usr", "/var",
+        "/opt", "/root", "/bin", "/sbin", "/boot", "/sys", "/proc",
+    ):
+        assert path in joined, f"refuse path {path!r} missing"
+
+
 def test_step_9_restart_references_install_dir_not_hardcoded():
-    """Step 9 must describe the restart cwd as the directory confirmed in
-    step 2 (mentioning the default path) rather than a bare hardcoded
-    `~/{workspace_dir}`. This keeps the wording accurate when the user
-    chose an alternate install path via 'install here' in step 2."""
+    """Step 9 must describe the restart cwd as the directory confirmed
+    in step 2 (mentioning the default path) rather than a bare hardcoded
+    `~/{workspace_dir}`. The phrasing keeps the user-flow connection
+    visible across step 2's three branches and step 9's restart cue."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
@@ -1085,6 +1124,6 @@ def test_step_9_restart_references_install_dir_not_hardcoded():
     assert "install dir confirmed in step 2" in joined
     # Default path still mentioned as the expected baseline.
     assert "~/Desktop/Agnes" in joined
-    # The "install here" callout in the restart step keeps the user-flow
-    # connection visible.
+    # Step 9 still mentions 'install here' as the legacy synonym so
+    # users who learned the old flow recognise it.
     assert "'install here'" in joined

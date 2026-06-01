@@ -26,11 +26,11 @@ from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db, get_current_user
-from src.repositories.audit import AuditRepository
-from src.repositories.memory_domain_suggestions import (
-    MemoryDomainSuggestionsRepository,
+from src.repositories import (
+    memory_domain_suggestions_repo,
+    memory_domains_repo,
 )
-from src.repositories.memory_domains import MemoryDomainsRepository
+from src.repositories.audit import AuditRepository
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ async def suggest_domain(
         raise HTTPException(status_code=400, detail="name is required")
     if len(name) > 100:
         raise HTTPException(status_code=400, detail="name too long (max 100 chars)")
-    repo = MemoryDomainSuggestionsRepository(conn)
+    repo = memory_domain_suggestions_repo()
     sid = repo.create(
         name=name,
         description=(payload.description or "").strip() or None,
@@ -122,7 +122,7 @@ async def list_my_suggestions(
     """Caller's own suggestions — pending + resolved, newest first. Lets
     the requester see whether admin approved/rejected without exposing
     other users' submissions."""
-    repo = MemoryDomainSuggestionsRepository(conn)
+    repo = memory_domain_suggestions_repo()
     rows = repo.list(created_by=user.get("id"))
     return {"items": [_serialize(r) for r in rows]}
 
@@ -140,7 +140,7 @@ async def admin_list_suggestions(
 ):
     """Admin moderation queue. Default lists every status; pass
     ?status=pending to narrow to open suggestions."""
-    repo = MemoryDomainSuggestionsRepository(conn)
+    repo = memory_domain_suggestions_repo()
     rows = repo.list(status=status)
     return [_serialize(r) for r in rows]
 
@@ -150,7 +150,7 @@ async def admin_count_pending(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    return {"count": MemoryDomainSuggestionsRepository(conn).count_pending()}
+    return {"count": memory_domain_suggestions_repo().count_pending()}
 
 
 @admin_router.post("/{sid}/approve")
@@ -163,7 +163,7 @@ async def approve_suggestion(
     """Approve: create the real ``memory_domains`` row + mark suggestion
     resolved. If a domain with the proposed slug already exists, returns
     409 — admin should reject with a note pointing at the existing one."""
-    sugg_repo = MemoryDomainSuggestionsRepository(conn)
+    sugg_repo = memory_domain_suggestions_repo()
     sugg = sugg_repo.get(sid)
     if not sugg:
         raise HTTPException(status_code=404, detail="suggestion_not_found")
@@ -172,7 +172,7 @@ async def approve_suggestion(
             status_code=409,
             detail=f"already_resolved:{sugg['status']}",
         )
-    dom_repo = MemoryDomainsRepository(conn)
+    dom_repo = memory_domains_repo()
     slug = (payload.slug or _slugify(sugg["name"])).strip()
     if dom_repo.exists_by_slug(slug):
         raise HTTPException(status_code=409, detail="slug_exists")
@@ -212,7 +212,7 @@ async def reject_suggestion(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = MemoryDomainSuggestionsRepository(conn)
+    repo = memory_domain_suggestions_repo()
     sugg = repo.get(sid)
     if not sugg:
         raise HTTPException(status_code=404, detail="suggestion_not_found")

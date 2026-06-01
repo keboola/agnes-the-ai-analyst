@@ -9,7 +9,7 @@
     color: var(--text-secondary, #5f6368); text-decoration: none;
     font-size: 13px; margin-bottom: 12px;
   }
-  .td-back:hover { color: var(--primary, var(--primary)); }
+  .td-back:hover { color: var(--ds-primary); }
 
   /* ── Hero ─────────────────────────────────────────────────── */
   .td-hero {
@@ -22,7 +22,7 @@
     display: inline-flex; align-items: center; justify-content: center;
     width: 56px; height: 56px; border-radius: 12px; flex-shrink: 0;
     font-size: 22px; font-weight: 700; color: #fff;
-    background: var(--td-glyph-bg, var(--primary, var(--primary)));
+    background: var(--td-glyph-bg, var(--ds-primary));
   }
   .td-hero__body { flex: 1; min-width: 0; }
   .td-hero__title {
@@ -60,7 +60,7 @@
   .td-pill--mode-remote      { background: #fef3c7; color: #92400e; }
   .td-pill--mode-materialized{ background: #e0f2fe; color: #075985; }
   .td-pill--mode-internal    { background: #f3f4f6; color: #4b5563; }
-  .td-pill--source           { background: var(--primary-light, #e0f2fe); color: var(--primary, var(--primary)); }
+  .td-pill--source           { background: var(--ds-primary-light, #e0f2fe); color: var(--ds-primary); }
 
   /* ── Sections ─────────────────────────────────────────────── */
   .td-section {
@@ -106,7 +106,7 @@
     text-transform: uppercase; font-size: 11px;
     letter-spacing: 0.4px; background: var(--border-light, #f9fafb);
   }
-  .td-columns code { font-family: var(--font-mono); font-size: 12px; color: var(--primary, var(--primary)); }
+  .td-columns code { font-family: var(--font-mono); font-size: 12px; color: var(--ds-primary); }
   .td-columns td.td-null { color: var(--text-secondary); }
 
   .td-pairs { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -116,7 +116,7 @@
     border-radius: 6px; text-decoration: none;
     color: var(--text-primary); font-size: 13px;
   }
-  .td-pairs a:hover { background: var(--primary-light, #e0f2fe); color: var(--primary, var(--primary)); }
+  .td-pairs a:hover { background: var(--ds-primary-light, #e0f2fe); color: var(--ds-primary); }
 
   .td-note {
     white-space: pre-wrap; line-height: 1.5; font-size: 14px;
@@ -135,6 +135,73 @@
   .td-edit textarea { resize: vertical; min-height: 100px; font-family: inherit; }
   .td-edit__hint { color: var(--text-secondary); font-size: 11px; margin-top: 4px; }
   .td-edit__row { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; }
+
+  /* ── #396 preview modal ────────────────────────────────────── */
+  .td-preview-modal {
+    position: fixed; inset: 0; z-index: 1000;
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px;
+  }
+  .td-preview-modal[hidden] { display: none !important; }
+  .td-preview-backdrop {
+    position: absolute; inset: 0;
+    background: rgba(15, 23, 42, 0.55);
+  }
+  .td-preview-card {
+    position: relative;
+    background: var(--surface);
+    border-radius: var(--radius-xl);
+    max-width: 920px; width: 100%;
+    max-height: 90vh;
+    display: flex; flex-direction: column;
+    /* Match the existing modal shadow convention used by .modal-card in
+       admin_marketplaces.html etc. — system-wide modal-shadow tokenization
+       would be a separate refactor across all modal surfaces. */
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+  }
+  .td-preview-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 22px;
+    border-bottom: 1px solid var(--border);
+  }
+  .td-preview-header h3 { margin: 0; font-size: 16px; font-weight: 600; }
+  .td-preview-close {
+    background: none; border: none; cursor: pointer;
+    font-size: 22px; line-height: 1;
+    color: var(--text-secondary);
+    padding: 0 4px;
+  }
+  .td-preview-close:hover { color: var(--text-primary); }
+  .td-preview-body {
+    padding: 16px 22px;
+    overflow: auto; flex: 1;
+  }
+  .td-preview-footer {
+    padding: 12px 22px;
+    border-top: 1px solid var(--border);
+    display: flex; justify-content: flex-end; gap: 8px;
+  }
+  .td-preview-table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+  }
+  .td-preview-table th, .td-preview-table td {
+    padding: 6px 10px; text-align: left;
+    border-bottom: 1px solid var(--border-light);
+    white-space: nowrap;
+    max-width: 360px; overflow: hidden; text-overflow: ellipsis;
+  }
+  .td-preview-table th {
+    font-weight: 600; color: var(--text-secondary);
+    position: sticky; top: 0;
+    background: var(--surface);
+    border-bottom-color: var(--border);
+  }
+  .td-preview-table td { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+  .td-preview-loading, .td-preview-error, .td-preview-empty {
+    text-align: center; padding: 32px;
+    color: var(--text-secondary); font-size: 13px;
+  }
+  .td-preview-error { color: var(--error); }
 </style>
 {% endblock %}
 
@@ -147,7 +214,7 @@
 
 {# ── Hero card ─────────────────────────────────────────────── #}
 {% set _qmode = (table.query_mode or 'local')|lower %}
-{% set _glyph_bg = table.color or 'var(--primary)' %}
+{% set _glyph_bg = table.color or 'var(--ds-primary)' %}
 {% set _initials =
     (table.name or table.id or '?').split()|map('first')|join('')|upper
 %}
@@ -195,10 +262,42 @@
       In package{{ '' if parent_packages|length == 1 else 's' }}:
       {% for p in parent_packages %}
       <a href="/catalog/p/{{ p.slug }}"
-         style="color:var(--primary, var(--primary)); text-decoration:none; font-weight:600;">{{ p.name }}</a>{% if not loop.last %}, {% endif %}
+         style="color:var(--ds-primary); text-decoration:none; font-weight:600;">{{ p.name }}</a>{% if not loop.last %}, {% endif %}
       {% endfor %}
     </div>
     {% endif %}
+
+    {# #396: data-preview affordance. Hits GET /api/v2/sample/{table.id}
+       which returns the first N rows (default 5, max 100). Permission-
+       gated server-side, so this button is visible to anyone who can
+       view the table detail but the server still enforces access. #}
+    <div class="td-hero__actions" style="margin-top:12px;">
+      <button type="button" class="btn btn-secondary"
+              onclick="openTablePreviewModal()">Preview data</button>
+    </div>
+  </div>
+</div>
+
+{# Preview modal — populated lazily on first open. Hidden by default
+   so the markup doesn't shift the hero layout. Self-contained
+   modal chrome (the page-shared admin modal classes don't reach
+   here). #}
+<div id="tablePreviewModal" class="td-preview-modal" hidden>
+  <div class="td-preview-backdrop" onclick="closeTablePreviewModal()"></div>
+  <div class="td-preview-card" role="dialog" aria-modal="true"
+       aria-labelledby="td-preview-title">
+    <div class="td-preview-header">
+      <h3 id="td-preview-title">Sample data — {{ table.name }}</h3>
+      <button type="button" class="td-preview-close"
+              onclick="closeTablePreviewModal()" aria-label="Close">×</button>
+    </div>
+    <div id="td-preview-body" class="td-preview-body">
+      <div class="td-preview-loading">Loading…</div>
+    </div>
+    <div class="td-preview-footer">
+      <button type="button" class="btn btn-secondary"
+              onclick="closeTablePreviewModal()">Close</button>
+    </div>
   </div>
 </div>
 
@@ -216,4 +315,79 @@
    things_to_know, pairs_well_with). The endpoints (`POST
    /api/sync/trigger`, `PATCH /api/admin/registry/{id}/docs`) still
    exist for direct API callers + admin tooling. #}
+
+{# ── #396: data-preview modal JS ──
+   Fires on click of the "Preview data" button in the hero. Hits
+   GET /api/v2/sample/{table_id}?n=10 and renders the rows in a
+   simple <table>. The server already enforces permissions; the UI
+   doesn't second-guess (a 403 lands as a clear inline error). #}
+<script>
+(function () {
+  const TABLE_ID = {{ table.id | tojson }};
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function renderRows(body, rows) {
+    if (!rows.length) {
+      body.innerHTML = '<div class="td-preview-empty">No rows returned.</div>';
+      return;
+    }
+    const cols = Object.keys(rows[0]);
+    const html = ['<table class="td-preview-table"><thead><tr>'];
+    for (const c of cols) html.push('<th>' + escapeHtml(c) + '</th>');
+    html.push('</tr></thead><tbody>');
+    for (const row of rows) {
+      html.push('<tr>');
+      for (const c of cols) {
+        const v = row[c];
+        html.push('<td>' + escapeHtml(v == null ? '' : String(v)) + '</td>');
+      }
+      html.push('</tr>');
+    }
+    html.push('</tbody></table>');
+    body.innerHTML = html.join('');
+  }
+
+  window.openTablePreviewModal = async function () {
+    const modal = document.getElementById('tablePreviewModal');
+    const body = document.getElementById('td-preview-body');
+    body.innerHTML = '<div class="td-preview-loading">Loading…</div>';
+    modal.hidden = false;
+    try {
+      const res = await fetch('/api/v2/sample/' + encodeURIComponent(TABLE_ID) + '?n=10',
+                              { credentials: 'same-origin' });
+      if (!res.ok) {
+        let msg = res.statusText || ('HTTP ' + res.status);
+        try {
+          const err = await res.json();
+          msg = (err && err.detail && (err.detail.message || err.detail)) || msg;
+        } catch (_) { /* body wasn't JSON; fall back to statusText */ }
+        body.innerHTML = '<div class="td-preview-error">' + escapeHtml(String(msg)) + '</div>';
+        return;
+      }
+      const data = await res.json();
+      renderRows(body, data.rows || []);
+    } catch (e) {
+      body.innerHTML = '<div class="td-preview-error">Network error: '
+                       + escapeHtml(e.message || String(e)) + '</div>';
+    }
+  };
+
+  window.closeTablePreviewModal = function () {
+    document.getElementById('tablePreviewModal').hidden = true;
+  };
+
+  // Esc closes (only when the modal is open, so we don't steal Esc from
+  // other handlers).
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    const modal = document.getElementById('tablePreviewModal');
+    if (modal && !modal.hidden) closeTablePreviewModal();
+  });
+})();
+</script>
 {% endblock %}

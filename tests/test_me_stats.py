@@ -24,10 +24,21 @@ from src.repositories.audit import AuditRepository
 
 
 @pytest.fixture
-def stats_conn(tmp_path):
-    db = tmp_path / "system.duckdb"
-    conn = duckdb.connect(str(db))
-    conn.execute(_SYSTEM_SCHEMA)
+def stats_conn(tmp_path, monkeypatch):
+    """Point the singleton ``get_system_db`` at an isolated per-test DB.
+
+    Endpoints in ``app.api.me_stats`` now resolve their repos through the
+    factory in ``src.repositories``, which calls ``get_system_db()``. The
+    test fixture must therefore mutate the global singleton (not just
+    open a new file by itself) so endpoint-side reads see the same rows
+    the test writes.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(exist_ok=True)
+    from src.db import close_system_db, get_system_db
+    close_system_db()
+    conn = get_system_db()
     return conn
 
 

@@ -10,6 +10,10 @@
 # (before authlib gets imported transitively) keeps `make local-dev`
 # stdout clean without hiding warnings from any other package.
 import warnings as _warnings
+from src.repositories import (
+    user_group_members_repo,
+    users_repo,
+)
 try:
     from authlib.deprecate import AuthlibDeprecationWarning as _AuthlibDepr
     _warnings.filterwarnings("ignore", category=_AuthlibDepr)
@@ -105,6 +109,7 @@ from app.api.metrics import router as metrics_router
 from app.api.metadata import router as metadata_router
 from app.api.query_hybrid import router as query_hybrid_router
 from app.api.cli_artifacts import router as cli_artifacts_router
+from app.api.cli_auth import router as cli_auth_router
 from app.api.tokens import router as tokens_router, admin_router as tokens_admin_router
 from app.api.v2_catalog import router as v2_catalog_router
 from app.api.v2_schema import router as v2_schema_router
@@ -139,6 +144,7 @@ from app.api.admin_user_sessions import router as admin_user_sessions_router
 from app.api.admin_sessions import router as admin_sessions_router
 from app.api.admin_usage import router as admin_usage_router
 from app.api.admin_usage_summary import router as admin_usage_summary_router
+from app.api.db_state import router as db_state_router
 from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import make_git_wsgi_app
 from app.web.router import router as web_router
@@ -146,8 +152,34 @@ from app.web.router import router as web_router
 logger = logging.getLogger(__name__)
 
 
+def _maybe_rebuild_on_boot() -> bool:
+    """When AGNES_REBUILD_ON_BOOT=1, ATTACH all baked extracts and build
+    master views before serving. For images that ship baked data and have
+    no scheduler (ephemeral/demo). Returns True if a rebuild ran.
+
+    Blocking by design: the dataset is small and baked, and views must
+    exist before the first request. Soft-fails (logs) so a corrupt extract
+    never wedges boot.
+    """
+    if os.environ.get("AGNES_REBUILD_ON_BOOT", "").lower() not in ("1", "true"):
+        return False
+    try:
+        from src.orchestrator import SyncOrchestrator
+        SyncOrchestrator().rebuild()
+        logger.info("AGNES_REBUILD_ON_BOOT: master views rebuilt from baked extracts")
+        return True
+    except Exception:
+        logger.exception("AGNES_REBUILD_ON_BOOT rebuild failed (non-fatal)")
+        return False
+
+
 @asynccontextmanager
 async def lifespan(app):
+    # Fail-closed: refuse to serve with a weak/absent JWT signing key in
+    # production. Cheap, runs before any request is accepted.
+    from app.auth.jwt import validate_jwt_secret_or_raise
+    validate_jwt_secret_or_raise()
+
     # Issue #81 Group A — log the effective remote_attach allowlist at
     # startup so an operator's typo in AGNES_REMOTE_ATTACH_EXTENSIONS
     # (which REPLACES, not extends, the default) is visible.
@@ -200,6 +232,9 @@ async def lifespan(app):
     except Exception:
         logger.exception("internal data-source seed failed; continuing")
 
+    # Baked-data images (no scheduler) need master views built at boot.
+    _maybe_rebuild_on_boot()
+
     # Rebuild the FTS BM25 index over knowledge_items at boot (issue #121).
     # The migration to schema v47 already does this on first upgrade, but
     # for instances that have been on v47 across restarts the boot-time
@@ -241,10 +276,8 @@ async def lifespan(app):
     if seed_email:
         try:
             from src.db import SYSTEM_ADMIN_GROUP, get_system_db
-            from src.repositories.user_group_members import UserGroupMembersRepository
-            from src.repositories.users import UserRepository
             conn = get_system_db()
-            repo = UserRepository(conn)
+            repo = users_repo()
             seed_password = os.environ.get("SEED_ADMIN_PASSWORD") or None
             password_hash = None
             if seed_password:
@@ -273,7 +306,7 @@ async def lifespan(app):
                 "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
             ).fetchone()
             if admin_group:
-                UserGroupMembersRepository(conn).add_member(
+                user_group_members_repo().add_member(
                     user_id=user_id,
                     group_id=admin_group[0],
                     source="system_seed",
@@ -334,9 +367,8 @@ async def lifespan(app):
     if not is_local_dev_mode():
         try:
             from src.db import get_system_db
-            from src.repositories.users import UserRepository
             conn = get_system_db()
-            repo = UserRepository(conn)
+            repo = users_repo()
             all_users = repo.list_all()
             has_password = any(u.get("password_hash") for u in all_users)
             if not has_password:
@@ -393,6 +425,7 @@ def _toolbar_show_callback(request, settings) -> bool:
 
 
 def create_app() -> FastAPI:
+    from app.serialization import AgnesJSONResponse
     app = FastAPI(
         title="AI Data Analyst",
         description="Data distribution platform for AI analytical systems",
@@ -404,6 +437,9 @@ def create_app() -> FastAPI:
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        # All JSON responses label datetime fields with an explicit UTC
+        # offset — see app/serialization.py for the why.
+        default_response_class=AgnesJSONResponse,
         # Intentionally NOT debug=DEBUG: FastAPI's debug=True installs
         # Starlette's ServerErrorMiddleware which intercepts unhandled
         # Exceptions and renders a plain-HTML traceback BEFORE our
@@ -728,6 +764,7 @@ def create_app() -> FastAPI:
     app.include_router(metadata_router)
     app.include_router(query_hybrid_router)
     app.include_router(cli_artifacts_router)
+    app.include_router(cli_auth_router)
     app.include_router(tokens_router)
     app.include_router(tokens_admin_router)
     app.include_router(v2_catalog_router)
@@ -759,6 +796,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_sessions_router)
     app.include_router(admin_usage_router)
     app.include_router(admin_usage_summary_router)
+    app.include_router(db_state_router)
     app.include_router(marketplace_server_router)
 
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*

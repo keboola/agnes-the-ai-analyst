@@ -23,7 +23,7 @@ def explore(
 
 
 def _explore_local(table: str, as_json: bool):
-    import duckdb
+    from src.duckdb_conn import _open_duckdb
 
     local_dir = Path(os.environ.get("AGNES_LOCAL_DIR", "."))
     db_path = local_dir / "user" / "duckdb" / "analytics.duckdb"
@@ -31,7 +31,7 @@ def _explore_local(table: str, as_json: bool):
         typer.echo("Local DuckDB not found. Run: agnes pull", err=True)
         raise typer.Exit(1)
 
-    conn = duckdb.connect(str(db_path), read_only=True)
+    conn = _open_duckdb(str(db_path), read_only=True)
     try:
         # Check table exists
         tables = [r[0] for r in conn.execute(

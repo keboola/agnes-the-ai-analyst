@@ -9,7 +9,7 @@
     color: var(--text-secondary, #5f6368); text-decoration: none;
     font-size: 13px; margin-bottom: 12px;
   }
-  .back-link:hover { color: var(--primary, var(--primary)); }
+  .back-link:hover { color: var(--ds-primary); }
 
   /* ── Hero ─────────────────────────────────────────────────── */
   .pkg-hero {
@@ -61,14 +61,9 @@
     border-radius: 6px; font-size: 11px; color: var(--text-primary);
   }
   .pkg-hero__actions { display: flex; gap: var(--space-2); align-self: flex-start; }
-  /* The Add / Remove / Edit hero buttons render via ds.button, so the
-     canonical .btn .btn-primary / .btn-danger / .btn-secondary classes
-     supply their bg/border/padding/hover treatment. Only `.btn-required`
-     stays as a page-local amber-disabled affordance — no exact match
-     in the .btn family. */
-  .pkg-hero__actions .btn-required {
-    background: #fef3c7; color: #92400e; border-color: #fde68a; cursor: not-allowed;
-  }
+  /* The Add / Remove / Edit / required-state hero buttons all render through
+     canonical .btn classes from style-custom.css (.btn-primary, .btn-danger,
+     .btn-secondary, .btn-required). No page-local overrides needed here. */
 
   /* ── Sections ─────────────────────────────────────────────── */
   /* .pkg-section sits on top of .ds-card (rendered by ds.panel) — base
@@ -167,10 +162,10 @@
 
 {% block content %}
 {# Design-system component macros — 4 `.pkg-section` panels and hero
-   Add/Remove/Edit action buttons render via `ds.panel` and `ds.button`.
-   Bespoke `.pkg-hero` (gradient + icon-block layout), `<details
-   class="pkg-table-row">` accordion, and `.btn-required` amber-disabled
-   state stay page-local. #}
+   Add/Remove/Edit action buttons render via `ds.panel` and `ds.button`;
+   the mandated state uses canonical `.btn-required` (style-custom.css).
+   Bespoke `.pkg-hero` (gradient + icon-block layout) and `<details
+   class="pkg-table-row">` accordion stay page-local. #}
 {% import "_components.html" as ds %}
 <a class="back-link" href="/catalog">← All data packages</a>
 
@@ -183,7 +178,7 @@
 {% endif %}
 
 <div class="pkg-hero">
-  <div class="pkg-hero__icon" style="background: {{ pkg.color or 'var(--primary)' }};">
+  <div class="pkg-hero__icon" style="background: {{ pkg.color or 'var(--ds-primary)' }};">
     {% if pkg.icon %}{{ pkg.icon }}{% else %}{{ _initials }}{% endif %}
   </div>
   <div class="pkg-hero__body">
@@ -213,8 +208,6 @@
   </div>
   <div class="pkg-hero__actions">
     {% if effective_requirement == 'required' %}
-      {# `.btn-required` keeps page-local amber-disabled styling — no
-         exact match in the canonical .btn family. #}
       <button class="btn btn-required" disabled
               title="Required by your organization">In stack (required)</button>
     {% elif in_stack %}
@@ -274,7 +267,7 @@
             data-href="/catalog/t/{{ t.id }}"
             onclick="event.stopPropagation(); window.location.href=this.dataset.href;"
             onkeydown="if(event.key==='Enter'||event.key===' '){event.stopPropagation();event.preventDefault();window.location.href=this.dataset.href;}"
-            style="color: var(--primary); text-decoration: none; cursor: pointer;">{{ t.name }}</span>
+            style="color: var(--ds-primary); text-decoration: none; cursor: pointer;">{{ t.name }}</span>
       <span class="qm-badge qm-{{ t.query_mode or 'local' }}">{{ t.query_mode or 'local' }}</span>
       {% if t.description %}
       <span class="pkg-table-row__desc">{{ t.description }}</span>

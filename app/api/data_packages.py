@@ -46,8 +46,8 @@ def _validate_color(value: Optional[str]) -> Optional[str]:
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from src.repositories import data_packages_repo
 from src.repositories.audit import AuditRepository
-from src.repositories.data_packages import DataPackagesRepository
 from src.repositories.table_registry import TableRegistryRepository
 
 logger = logging.getLogger(__name__)
@@ -391,7 +391,7 @@ async def list_data_packages(
     {id}`` per package) into a single round-trip — see
     ``DataPackagesRepository.list_member_ids_bulk``.
     """
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     rows = repo.list(search=search)
     serialized = [_serialize(r, conn) for r in rows]
     if include_table_ids:
@@ -410,7 +410,7 @@ async def create_data_package(
     """Create a new Data Package. ``slug`` is the user-visible stable id; the
     UNIQUE constraint in DuckDB raises ``ConstraintException`` on collision and
     we translate that to ``409 slug_exists`` per spec."""
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     if not payload.name.strip() or not payload.slug.strip():
         raise HTTPException(status_code=400, detail="name and slug are required")
     try:
@@ -451,7 +451,7 @@ async def get_data_package(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Detail view including the list of tables in the package."""
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     pkg = repo.get(pkg_id)
     if not pkg:
         raise HTTPException(status_code=404, detail="data_package_not_found")
@@ -470,7 +470,7 @@ async def update_data_package(
 ):
     """Patch package metadata. Audit row carries before/after diff so admins
     can reconstruct the rename history."""
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     existing = repo.get(pkg_id)
     if not existing:
         raise HTTPException(status_code=404, detail="data_package_not_found")
@@ -541,7 +541,7 @@ async def delete_data_package(
     row, so the junction (``data_package_tables``) + any resource_grants
     survive intact for the undo flow (POST /restore). Hard delete is
     available via ``repo.hard_delete`` but not currently exposed."""
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     existing = repo.get(pkg_id)
     if not existing:
         raise HTTPException(status_code=404, detail="data_package_not_found")
@@ -565,7 +565,7 @@ async def restore_data_package(
     """v54 undo: reverse a soft delete. Idempotent — restoring an already-
     live package is a no-op. 404 only when the row is truly gone (e.g.
     after a hard_delete)."""
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     existing = repo.get(pkg_id, include_deleted=True)
     if not existing:
         raise HTTPException(status_code=404, detail="data_package_not_found")
@@ -595,7 +595,7 @@ async def add_table_to_package(
     """Add a table to the package. 404 if the package or table doesn't exist.
     200 + ``{added: True/False}`` so the chip-input UI can re-render without
     a second roundtrip; idempotent on duplicate."""
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     if not repo.get(pkg_id):
         raise HTTPException(status_code=404, detail="data_package_not_found")
     table_repo = TableRegistryRepository(conn)
@@ -624,7 +624,7 @@ async def remove_table_from_package(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Remove a table from the package. Idempotent on missing junction row."""
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     if not repo.get(pkg_id):
         raise HTTPException(status_code=404, detail="data_package_not_found")
     removed = repo.remove_table(pkg_id, table_id)

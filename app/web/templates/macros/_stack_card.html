@@ -76,10 +76,13 @@
   {% endif %}
 
   {# v56 derived badges (curated / new). Render top-left of the card
-     when present; multiple stack horizontally. Class hooks
-     ``data-badge="<name>"`` let the visual audit test pin them. #}
+     when present; multiple stack horizontally. When a lifecycle status
+     pill is also shown (poc / coming-soon / draft), it occupies the same
+     top-left corner, so drop the badge row just below it to avoid the two
+     overlapping. Class hooks ``data-badge="<name>"`` let the visual audit
+     test pin them. #}
   {% if entry.badges %}
-  <div class="stack-card__badges" style="position:absolute; top:8px; left:8px;
+  <div class="stack-card__badges" style="position:absolute; top:{{ '32px' if _status_meta else '8px' }}; left:8px;
        display:flex; gap:4px; z-index:2;">
     {% for b in entry.badges %}
     <span class="stack-card__derived-badge stack-card__derived-badge--{{ b }}"

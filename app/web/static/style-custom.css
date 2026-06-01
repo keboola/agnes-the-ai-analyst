@@ -3952,14 +3952,67 @@ a.news-cta:hover { background: #0056A3; }
     color: #fff;
 }
 
-.btn-warning {
-    background: #f59e0b;
-    color: #fff;
-    border: 1px solid #d97706;
+/* `.btn-warning` removed — the single use in admin_marketplaces.html
+   (system-confirm modal Confirm button) was destructive in spirit (fans
+   out a forced grant to every principal) and now renders via .btn-danger.
+   The 4 canonical variants (primary / secondary / ghost / danger) cover
+   every honest CTA without inventing a 5th amber-fill axis. */
+
+/* `.btn-required` — amber-disabled affordance for the "already in stack,
+   mandated by your org" state on catalog_package_detail + memory_domain_detail.
+   Always paired with the `disabled` attribute, so the base `.btn:disabled`
+   rule below applies its opacity wash on top of the amber accent. Uses the
+   canonical --ds-accent-warn-* vocabulary so a future warn-palette tweak
+   propagates here. */
+.btn-required {
+    background: var(--ds-accent-warn-bg);
+    color: var(--ds-accent-warn-ink);
+    border: 1px solid var(--ds-accent-warn-line);
+    cursor: not-allowed;
 }
-.btn-warning:hover { filter: brightness(1.06); }
 
 .btn-lg { padding: 12px 20px; font-size: var(--text-md); }
+
+/* `.info-panel-accent` — emitted by `ds.info_panel_accent(accent='…')`.
+   Canonical replacement for `.mp-curator-block`-style aside panels. The
+   `--{accent}` modifier supplies the surface tokens. Four canonical
+   accents reuse the `--ds-accent-{info,warn,success,danger}-*` family;
+   bespoke pages can layer additional modifiers locally. */
+.info-panel-accent {
+    border: 1px solid var(--ds-border);
+    border-left-width: 4px;
+    border-radius: 8px;
+    padding: 14px 18px;
+    background: var(--ds-surface);
+    color: var(--ds-text-primary);
+}
+.info-panel-accent__title {
+    font-size: var(--text-md);
+    font-weight: 600;
+    margin: 0 0 6px;
+    color: inherit;
+}
+.info-panel-accent__body { font-size: var(--text-sm); line-height: 1.55; }
+.info-panel-accent--info {
+    background: var(--ds-accent-info-bg);
+    color: var(--ds-accent-info-ink);
+    border-left-color: var(--ds-accent-info-line);
+}
+.info-panel-accent--warn {
+    background: var(--ds-accent-warn-bg);
+    color: var(--ds-accent-warn-ink);
+    border-left-color: var(--ds-accent-warn-line);
+}
+.info-panel-accent--success {
+    background: var(--ds-accent-success-bg);
+    color: var(--ds-accent-success-ink);
+    border-left-color: var(--ds-accent-success-line);
+}
+.info-panel-accent--danger {
+    background: var(--ds-accent-danger-bg);
+    color: var(--ds-accent-danger-ink);
+    border-left-color: var(--ds-accent-danger-line);
+}
 
 .btn:disabled,
 .btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
@@ -4785,4 +4838,320 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
     border-radius: var(--radius-sm);
     font-family: var(--ds-font-mono);
     font-size: 0.9em;
+}
+
+/* =====================================================
+   /news page — page chrome
+   body.news-page class added by a DOMContentLoaded
+   script in news.html so these rules only apply there.
+   ===================================================== */
+body.news-page { background: var(--background); }
+body.news-page .container { max-width: 1280px; padding: 0 var(--space-8) var(--space-10); }
+body.news-page main { color: var(--text-primary); line-height: 1.6; }
+
+body.news-page .news-card {
+    margin-top: var(--space-7);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    padding: var(--space-8) var(--space-9);
+}
+body.news-page .news-meta {
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin-bottom: var(--space-4);
+}
+body.news-page .news-intro {
+    font-size: var(--text-md);
+    color: var(--text-secondary);
+    line-height: 1.55;
+    margin-bottom: 22px;
+    padding-bottom: 22px;
+    border-bottom: 1px solid var(--border-light);
+}
+body.news-page .news-intro p { margin: 0 0 8px; }
+body.news-page .news-intro p:last-child { margin-bottom: 0; }
+
+body.news-page .news-empty {
+    text-align: center;
+    padding: var(--space-12) var(--space-6);
+    color: var(--text-secondary);
+}
+body.news-page .news-empty h2 {
+    margin-bottom: var(--space-2);
+    color: var(--text-primary);
+}
+
+/* =====================================================
+   /me/profile page — read-only account view
+   ===================================================== */
+.container:has(.profile-page) { max-width: 1100px; }
+.profile-page {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: var(--space-7) var(--space-2) var(--space-10);
+    box-sizing: border-box;
+    font-family: var(--font-primary);
+}
+@media (max-width: 720px) {
+    .profile-page { padding: 20px 0 var(--space-8); }
+}
+.section-card {
+    border-radius: var(--radius-xl);
+    padding: var(--space-5) var(--space-6);
+    margin-bottom: var(--space-4);
+}
+.section-card h3 {
+    margin: 0 0 14px;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-secondary);
+}
+details.section-card > summary {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.account-grid {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 10px 18px;
+    font-size: var(--text-base);
+}
+.account-grid .k {
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-weight: 600;
+    align-self: center;
+}
+.account-grid .v {
+    color: var(--text-primary);
+    font-weight: 500;
+    word-break: break-word;
+}
+.groups-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+.group-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--background);
+}
+.group-row .group-name {
+    font-size: var(--text-base);
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 0;
+    flex: 0 1 auto;
+}
+.group-row .group-id {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    word-break: break-all;
+    flex: 1 1 auto;
+}
+.role-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1p5, 6px);
+    margin: 0 0 4px;
+}
+.role-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1p5, 6px);
+    padding: 4px 10px;
+    border-radius: var(--radius-full);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    background: rgba(46, 168, 119, 0.10);
+    color: var(--primary);
+    border: 1px solid rgba(46, 168, 119, 0.25);
+}
+.role-chip.is-core { background: rgba(16, 185, 129, 0.10); color: #047857; border-color: rgba(16, 185, 129, 0.25); }
+.grant-list, .group-roles-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+.grant-row, .group-roles-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--background);
+    flex-wrap: wrap;
+}
+.grant-row .grant-key, .group-roles-row .group-roles-name {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.group-roles-row .group-roles-name { font-family: var(--font-primary); }
+.grant-row .grant-source {
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    padding: 2px var(--space-2);
+    border-radius: var(--radius-sm);
+    background: rgba(107, 114, 128, 0.12);
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+.grant-row .grant-source.source-direct { background: rgba(46, 168, 119, 0.12); color: var(--primary); }
+.grant-row .grant-source.source-auto { background: rgba(245, 158, 11, 0.12); color: #b45309; }
+.grant-row .grant-meta {
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    margin-left: auto;
+}
+.group-roles-row .group-roles-arrow { color: var(--text-secondary); font-weight: 400; }
+.group-roles-row .role-chips { margin: 0; }
+.empty-state {
+    padding: 20px 0 4px;
+    color: var(--text-secondary);
+    font-size: var(--text-base);
+    line-height: 1.55;
+}
+.empty-state .empty-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+}
+.effective-help {
+    margin-top: var(--space-3);
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    line-height: 1.55;
+}
+
+/* Group chip — semantic role pill used on /me/profile and /admin/users.
+   Name-match wins: Admin/Everyone keep their canonical color even when
+   their server-side origin is google_sync. */
+.group-chip {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: var(--radius-full);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    background: #ede9fe;
+    color: #6d28d9;
+}
+.group-chip.is-admin       { background: #fef3c7; color: #92400e; font-weight: 600; }
+.group-chip.is-everyone    { background: #f3f4f6; color: #4b5563; }
+.group-chip.is-google_sync { background: #dcfce7; color: #166534; }
+.group-chip.is-custom      { background: #ede9fe; color: #6d28d9; }
+
+/* =====================================================
+   Error pages (4xx / 5xx)
+   ===================================================== */
+.error-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+    padding: var(--space-5) var(--space-3);
+}
+.error-card {
+    max-width: 36rem;
+    width: 100%;
+    padding: var(--space-9) var(--space-8);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-md);
+    text-align: center;
+}
+.error-code {
+    font-size: 4rem;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--ds-accent-danger-ink);
+    margin-bottom: var(--space-1);
+    letter-spacing: -0.02em;
+}
+.error-title {
+    margin: 0 0 var(--space-3);
+    font-size: 1.5rem;
+    font-weight: 600;
+}
+.error-message {
+    color: var(--text-secondary);
+    margin: 0 0 var(--space-5);
+    line-height: 1.5;
+}
+.error-path {
+    margin: 0 0 var(--space-6);
+    font-size: var(--text-sm);
+}
+.error-path-label { color: var(--text-secondary); margin-right: var(--space-1); }
+.error-path code,
+.error-traceback pre,
+.error-request-id code {
+    background: var(--background);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+}
+.error-path code,
+.error-request-id code { padding: 0.15rem 0.4rem; font-size: 0.85em; }
+.error-traceback {
+    text-align: left;
+    margin: 0 0 var(--space-6);
+    padding: var(--space-3) var(--space-4);
+    background: var(--background);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+}
+.error-traceback summary {
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    user-select: none;
+}
+.error-traceback pre {
+    margin: var(--space-3) 0 0;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.error-request-id {
+    margin: 0 0 var(--space-5);
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+.error-request-id-label { margin-right: var(--space-1); }
+.error-request-id code { user-select: all; }
+.error-actions {
+    display: flex;
+    gap: var(--space-3);
+    justify-content: center;
+    flex-wrap: wrap;
 }

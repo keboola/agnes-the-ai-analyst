@@ -73,7 +73,7 @@
   .source-meta .label { font-style: italic; }
   .source-meta .added { color: #9ca3af; font-size: 11px; margin-left: 6px; }
   .user-link { color: var(--text-primary, #111827); font-weight: 500; text-decoration: none; }
-  .user-link:hover { color: var(--primary, #4338ca); text-decoration: underline; }
+  .user-link:hover { color: var(--ds-primary, #4338ca); text-decoration: underline; }
 
   .add-row {
     padding: 12px 18px;
@@ -107,8 +107,8 @@
   .res-text { flex: 1; font-size: 13px; color: var(--text-secondary, #6b7280); }
   .res-link {
     padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 500;
-    background: var(--primary, #6366f1); color: #fff !important;
-    border: 1px solid var(--primary, #6366f1); text-decoration: none;
+    background: var(--ds-primary, #6366f1); color: #fff !important;
+    border: 1px solid var(--ds-primary, #6366f1); text-decoration: none;
   }
   .res-link:hover { filter: brightness(1.05); }
 
@@ -256,7 +256,7 @@ if (IS_GOOGLE_MANAGED && !MAPPED_EMAIL) {
 }
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
-function fmtDate(s) { return s ? String(s).slice(0, 16).replace("T", " ") : "-"; }
+function fmtDate(s) { return s ? (window.AgnesTime.formatDateTime(s) || "-") : "-"; }
 function toast(msg, kind = "") { window.appToast({ kind: kind || "info", msg }); }
 
 let groupState = null;

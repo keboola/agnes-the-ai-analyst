@@ -38,9 +38,16 @@ def _maybe_instrument(con, db_tag: str):
     return InstrumentedConnection(con, db_tag)
 
 
+# Re-export the lightweight helper. The implementation lives in
+# `src.duckdb_conn` so connectors / CLI / scripts can import it without
+# pulling the heavy `connectors.bigquery.auth` dep that this module
+# imports above.
+from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
+
+
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 59
+SCHEMA_VERSION = 62
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -516,6 +523,15 @@ CREATE TABLE IF NOT EXISTS resource_grants (
     requirement   VARCHAR DEFAULT 'available',
     assigned_at   TIMESTAMP DEFAULT current_timestamp,
     assigned_by   VARCHAR,
+    -- v60: per-type FK columns (E.3). One of these is non-NULL for each
+    -- of the 5 typed ResourceTypes; all NULL for marketplace_plugin.
+    -- DuckDB has no FK/CHECK enforcement — application-layer validates.
+    -- PG carries the real FKs + CHECK via migration 0013.
+    resource_id_table          VARCHAR,
+    resource_id_data_package   VARCHAR,
+    resource_id_memory_domain  VARCHAR,
+    resource_id_memory_item    VARCHAR,
+    resource_id_recipe         VARCHAR,
     UNIQUE (group_id, resource_type, resource_id)
 );
 
@@ -642,6 +658,25 @@ CREATE TABLE IF NOT EXISTS memory_domain_suggestions (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_domain_suggestions_status
     ON memory_domain_suggestions(status);
+
+-- v61: ``cli_auth_codes`` — short-lived, single-use exchange codes for the
+-- browser-loopback `agnes auth login` flow (gh-style). The browser, holding
+-- an authenticated session, confirms CLI authorization; the server mints a
+-- code (hash stored here, bound to the user) and redirects it to the CLI's
+-- localhost loopback. The CLI then POSTs the code to /cli/auth/exchange over
+-- HTTPS and receives a real PAT — so the durable credential never travels
+-- through the browser address bar / history. Codes expire in ~2 min and are
+-- consumed exactly once (compare-and-swap on ``consumed_at``). Rows are left
+-- after expiry/consumption for a short audit window; a cheap opportunistic
+-- delete of expired rows runs on each create.
+CREATE TABLE IF NOT EXISTS cli_auth_codes (
+    code_hash   VARCHAR PRIMARY KEY,   -- sha256(raw code); raw code never stored
+    user_id     VARCHAR NOT NULL,
+    email       VARCHAR NOT NULL,
+    created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    expires_at  TIMESTAMP NOT NULL,
+    consumed_at TIMESTAMP
+);
 
 -- v53: Recipes are admin-curated, multi-table query templates analysts
 -- copy + adapt. Sibling concept to Data Packages on /catalog (separate
@@ -1078,6 +1113,36 @@ _analytics_db_lock = threading.Lock()
 _analytics_db_conn: duckdb.DuckDBPyConnection | None = None
 _analytics_db_path: str | None = None
 
+# DuckDB per-connection memory budgets.
+#
+# DuckDB enforces ``memory_limit`` PER CONNECTION, not per process. In a
+# memory-constrained container (e.g. a 4 GiB cgroup) the live connections
+# must sum under the cap or the kernel OOM-kills the whole process. DuckDB
+# 1.5 is cgroup-aware — a fresh connection defaults to ~80% of the cgroup
+# limit — so a single *uncapped* connection can exceed the cap on its own.
+# We give each connection an explicit conservative budget:
+#
+#   system (singleton)             1 GiB    metadata + telemetry aggregations
+#   analytics (singleton)          1.5 GiB  working set over parquet views
+#   analytics readonly (per req)   1 GiB    one analyst's heavy query
+#
+# Steady state — the two singletons plus one in-flight readonly query —
+# is 3.5 GiB, under a 4 GiB cap with host headroom. The readonly path is
+# per-request and unbounded in count (FastAPI threadpool), so a burst of
+# concurrent analyst queries can momentarily exceed the cap; the
+# ``temp_directory`` disk spill below is the backstop — an over-budget
+# query spills to disk (or raises a clean DuckDB OOM) instead of growing
+# process RSS. For very memory-constrained, high-concurrency deployments,
+# tune AGNES_THREADPOOL_SIZE down too. (Bounding readonly connection
+# concurrency directly is a possible follow-up — out of scope here.)
+#
+# See docs/superpowers/specs/2026-06-01-system-duckdb-resilience-design.md.
+_SYSTEM_DB_MEMORY_LIMIT = "1GB"
+_ANALYTICS_DB_MEMORY_LIMIT = "1500MB"
+_ANALYTICS_RO_MEMORY_LIMIT = "1GB"
+_DUCKDB_THREADS = 2
+_DUCKDB_MAX_TEMP_DIR_SIZE = "10GB"
+
 
 def _get_data_dir() -> Path:
     return Path(os.environ.get("DATA_DIR", "./data"))
@@ -1112,7 +1177,7 @@ def _peek_schema_version(snapshot_path: Path) -> int:
     in the refusal path. Defensive: never returns -1 / None / raises.
     """
     try:
-        conn = duckdb.connect(str(snapshot_path), read_only=True)
+        conn = _open_duckdb(str(snapshot_path), read_only=True)
         try:
             row = conn.execute(
                 "SELECT MAX(version) FROM schema_version"
@@ -1140,7 +1205,7 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
     legitimate corruption (operator-edited DB, disk failure, etc.).
     """
     try:
-        return duckdb.connect(db_path)
+        return _open_duckdb(db_path)
     except duckdb.Error as e:
         msg = str(e)
         is_wal_replay = (
@@ -1150,14 +1215,34 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
         )
         if not is_wal_replay:
             raise
+        wal_path = Path(db_path + ".wal")
+
+        # STEP A — salvage the live file. Its last checkpoint is almost
+        # always newer than any pre-migrate snapshot (checkpoints run
+        # continuously; the snapshot is captured only at migrations).
+        # Discard ONLY the unreplayable WAL — DuckDB couldn't apply it
+        # anyway — and reopen the file at its last checkpoint. This loses
+        # at most the transactions written since that checkpoint, never
+        # the days of admin state a stale-snapshot rollback would drop.
+        # It also subsumes the mid-migration case: an uncommitted ALTER
+        # lives in the discarded WAL, so the file is at the pre-migration
+        # version and the idempotent ladder re-runs forward on this start.
+        salvaged = _salvage_discard_wal(db_path, wal_path, original_error=e)
+        if salvaged is not None:
+            return salvaged
+
+        # STEP B — the live file itself won't open. Fall back to the
+        # pre-migrate snapshot (with the #379 version guard below). The
+        # WAL was already moved aside by Step A, so _move_to_broken here
+        # just relocates the unreadable DB file.
         snapshot = Path(db_path).parent / "system.duckdb.pre-migrate"
         if not snapshot.exists():
             logger.error(
-                "WAL replay failed and no pre-migrate snapshot at %s — manual recovery required.",
+                "WAL replay failed, live file unreadable, and no pre-migrate "
+                "snapshot at %s — manual recovery required.",
                 snapshot,
             )
             raise
-        wal_path = Path(db_path + ".wal")
 
         # #379: refuse auto-recovery if the snapshot version doesn't
         # match SCHEMA_VERSION exactly. The migration ladder is
@@ -1219,7 +1304,54 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
         shutil.copy2(str(snapshot), db_path)
         # Re-open. If THIS also fails, propagate — auto-recovery has
         # exhausted its options.
-        return duckdb.connect(db_path)
+        return _open_duckdb(db_path)
+
+
+def _salvage_discard_wal(
+    db_path: str, wal_path: Path, *, original_error: Exception
+) -> duckdb.DuckDBPyConnection | None:
+    """Discard an unreplayable WAL and reopen the DB at its last checkpoint.
+
+    Returns the open connection on success, or ``None`` if the database
+    file itself won't open (the caller then falls back to the pre-migrate
+    snapshot). The discarded WAL is moved to ``<db>.wal.discarded.<ts>``
+    (chmod ``0o600`` — it can hold uncommitted password/PAT writes) and
+    preserved for forensics: its content is exactly what DuckDB failed to
+    replay.
+    """
+    if wal_path.exists():
+        discarded = Path(str(db_path) + f".wal.discarded.{int(time.time())}")
+        try:
+            shutil.move(str(wal_path), str(discarded))
+            try:
+                os.chmod(discarded, 0o600)
+            except OSError:
+                pass  # best-effort; preservation matters more than mode
+        except OSError as move_err:
+            logger.error(
+                "WAL salvage: could not move WAL aside (%s); cannot reopen",
+                move_err,
+            )
+            return None
+    try:
+        # Route through `_open_duckdb` so the salvage reopen inherits the
+        # same `SET GLOBAL TimeZone='UTC'` pin every other connection gets
+        # (frontend timezone fix, #473) — otherwise the WAL-salvage path
+        # would silently drop back to the host's local zone.
+        conn = _open_duckdb(db_path)
+    except duckdb.Error as reopen_err:
+        logger.warning(
+            "WAL salvage reopen failed (%s); falling back to pre-migrate snapshot",
+            reopen_err,
+        )
+        return None
+    logger.warning(
+        "WAL replay failed (%s) — discarded the unreplayable WAL and reopened "
+        "system.duckdb at its last checkpoint. Transactions written since that "
+        "checkpoint are lost; admin state up to the checkpoint is intact.",
+        str(original_error).split("\n", 1)[0][:200],
+    )
+    return conn
 
 
 def _move_to_broken(db_path: str, wal_path: Path) -> Path:
@@ -1251,6 +1383,38 @@ def _move_to_broken(db_path: str, wal_path: Path) -> Path:
     return broken
 
 
+def _apply_memory_caps(
+    conn: duckdb.DuckDBPyConnection, memory_limit: str, *, label: str
+) -> None:
+    """Apply defensive memory caps + disk-spill settings to *conn*.
+
+    DuckDB ``memory_limit`` is per-connection; this keeps any single
+    connection from growing the process past the container cgroup cap
+    (see the ``_*_MEMORY_LIMIT`` constants). Best-effort: a failing PRAGMA
+    (read-only DB, in-memory DB, older DuckDB) is logged and skipped so
+    the connection stays usable on defaults. The essential caps
+    (memory_limit/threads) are applied in their own try so an optional
+    temp-spill failure can't undo them.
+    """
+    try:
+        conn.execute(f"SET memory_limit='{memory_limit}'")
+        conn.execute(f"SET threads={_DUCKDB_THREADS}")
+        conn.execute("SET preserve_insertion_order=false")
+    except Exception as e:
+        logger.warning(
+            "%s: SET memory/threads failed (%s); defaults remain", label, e
+        )
+    # Disk spill: a query that exceeds its memory budget spills to disk
+    # (or raises a clean DuckDB error) instead of OOM-killing the process.
+    try:
+        tmp = _get_state_dir() / "duckdb-tmp"
+        tmp.mkdir(parents=True, exist_ok=True)
+        conn.execute(f"SET temp_directory='{tmp}'")
+        conn.execute(f"SET max_temp_directory_size='{_DUCKDB_MAX_TEMP_DIR_SIZE}'")
+    except Exception as e:
+        logger.debug("%s: temp_directory spill setup failed (%s)", label, e)
+
+
 def get_system_db() -> duckdb.DuckDBPyConnection:
     """Get a connection to the system state database.
 
@@ -1271,6 +1435,14 @@ def get_system_db() -> duckdb.DuckDBPyConnection:
                     pass
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
             _system_db_conn = _try_open_system_db(db_path)
+            # Cap BEFORE _ensure_schema so migrations + the on-demand FTS
+            # index rebuild (src/fts.py) run under the budget too. The
+            # system DB was missed by the analytics-only cap in PR #434 —
+            # an uncapped singleton was the dominant allocator behind the
+            # 4 GiB-cgroup OOM loop.
+            _apply_memory_caps(
+                _system_db_conn, _SYSTEM_DB_MEMORY_LIMIT, label="get_system_db"
+            )
             _system_db_path = db_path
             _ensure_schema(_system_db_conn)
         return _maybe_instrument(_system_db_conn.cursor(), "system")
@@ -1302,9 +1474,53 @@ def get_analytics_db() -> duckdb.DuckDBPyConnection:
                 except Exception:
                     pass
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-            _analytics_db_conn = duckdb.connect(db_path)
+            # Route through ``_open_duckdb`` so the connection inherits the
+            # ``SET GLOBAL TimeZone='UTC'`` pin (frontend timezone fix from
+            # #473), then apply the memory cap (OOM resilience from #479).
+            _analytics_db_conn = _open_duckdb(db_path)
+            # Defensive memory cap (budgeted with the system + readonly
+            # connections to sum under a 4 GiB cgroup — see the
+            # ``_*_MEMORY_LIMIT`` constants). Analyst-facing queries that
+            # hit the cap spill to disk or surface a clear DuckDB OOM
+            # exception, rather than a silent process-wide OOM-kill.
+            _apply_memory_caps(
+                _analytics_db_conn,
+                _ANALYTICS_DB_MEMORY_LIMIT,
+                label="get_analytics_db",
+            )
             _analytics_db_path = db_path
         return _maybe_instrument(_analytics_db_conn.cursor(), "analytics")
+
+
+def close_singleton_connections() -> None:
+    """Close both shared DuckDB connections so a subprocess can take the lock.
+
+    Called from the DB-backend state-machine migrator-spawn path
+    (`app.api.db_state.start_migration`) right before launching the migrator
+    subprocess. DuckDB ≥1.5 holds an exclusive per-process file lock on each
+    open database file; without releasing it here the subprocess raises
+    ``IOException: Conflicting lock is held in /usr/local/bin/python3.13``.
+
+    Idempotent. The next call to ``get_system_db()`` / ``get_analytics_db()``
+    will lazily re-open if the file is still on disk; if the migration
+    flipped the backend to Postgres, the app process will be recreated by
+    the host applier and these globals never need to re-open.
+    """
+    global _system_db_conn, _analytics_db_conn
+    with _system_db_lock:
+        if _system_db_conn is not None:
+            try:
+                _system_db_conn.close()
+            except Exception:
+                pass
+            _system_db_conn = None
+    with _analytics_db_lock:
+        if _analytics_db_conn is not None:
+            try:
+                _analytics_db_conn.close()
+            except Exception:
+                pass
+            _analytics_db_conn = None
 
 
 def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: Path) -> None:
@@ -1466,13 +1682,21 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
     db_path = _get_data_dir() / "analytics" / "server.duckdb"
     if not db_path.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = duckdb.connect(str(db_path), read_only=False)
+        conn = _open_duckdb(str(db_path), read_only=False)
         try:
             conn.execute("SET enable_external_access = false")
         except Exception:
             pass
+        # Memory cap — see get_analytics_db / the _*_MEMORY_LIMIT constants.
+        _apply_memory_caps(conn, _ANALYTICS_RO_MEMORY_LIMIT, label="analytics_ro")
         return _maybe_instrument(conn, "analytics_ro")
-    conn = duckdb.connect(str(db_path), read_only=True)
+    conn = _open_duckdb(str(db_path), read_only=True)
+    # Memory cap (see get_analytics_db rationale). Read-only conns can
+    # still buffer significant memory for analyst queries that hit
+    # ``CREATE TEMP TABLE`` over read_parquet — capping keeps a single
+    # analyst's heavy query from process-wide OOM-killing all other
+    # in-flight requests.
+    _apply_memory_caps(conn, _ANALYTICS_RO_MEMORY_LIMIT, label="analytics_ro")
     # ATTACH extract.duckdb files FIRST so views referencing them work
     extracts_dir = _get_data_dir() / "extracts"
     if extracts_dir.exists():
@@ -4085,6 +4309,120 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
+def _v59_to_v60(conn: duckdb.DuckDBPyConnection) -> None:
+    """Backfill ``usage_events.username`` / ``usage_session_summary.username``
+    from ``users.email`` where the row has a resolved ``user_id``.
+
+    Pre-v60 the ``username`` column was written by three writers with
+    conflicting semantics:
+
+    * REST event emitters (``sync.py``, ``stack.py``, ``memory.py``,
+      ``web/router.py``) → full email (``user.get('email')``) or
+      ``user['id']`` UUID when email empty.
+    * Session pipeline via ``/data/user_sessions/<dir>/`` → directory
+      name. From the session collector the directory is the OS
+      username (typically the email local-part); from the upload API
+      it is the user's UUID.
+
+    Result: a single user surfaces in the admin telemetry dropdown
+    under up to three different ``username`` values. The runner now
+    normalises new writes to ``users.email``; this migration cleans up
+    the historical rows so the dropdown is one row per user
+    immediately.
+
+    Only rows with a non-null ``user_id`` are touched — orphaned
+    sessions (deleted users, never-matched directories) keep whatever
+    label they had so the data isn't silently lost.
+    """
+    # Skip backfill on stub schemas (e.g. the v1→vN end-to-end test
+    # seeds ``users`` with only an ``id`` column). The required
+    # ``users.email`` plus ``usage_*.username`` / ``usage_*.user_id``
+    # columns all come from earlier migrations on every real install;
+    # if any of them is missing here, this is a synthetic fixture.
+    def _cols(table: str) -> set[str]:
+        return {
+            r[0]
+            for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE lower(table_name) = lower(?)",
+                [table],
+            ).fetchall()
+        }
+
+    users_cols = _cols("users")
+    if "email" not in users_cols:
+        conn.execute("UPDATE schema_version SET version = 60")
+        return
+
+    for table, key_col in (
+        ("usage_events", "user_id"),
+        ("usage_session_summary", "user_id"),
+    ):
+        tcols = _cols(table)
+        if {"username", key_col} - tcols:
+            continue
+        conn.execute(
+            f"""
+            UPDATE {table}
+               SET username = u.email
+              FROM users u
+             WHERE {table}.{key_col} = u.id
+               AND u.email IS NOT NULL
+               AND u.email != ''
+               AND {table}.username IS DISTINCT FROM u.email
+            """
+        )
+    conn.execute("UPDATE schema_version SET version = 60")
+
+
+def _v61_to_v62(conn: duckdb.DuckDBPyConnection) -> None:
+    """v62: per-type FK columns on ``resource_grants`` (E.3).
+
+    Adds five NULLable columns to mirror the PG per-type FK design
+    (alembic migration 0013):
+
+      resource_id_table          — set when resource_type='table'
+      resource_id_data_package   — set when resource_type='data_package'
+      resource_id_memory_domain  — set when resource_type='memory_domain'
+      resource_id_memory_item    — set when resource_type='memory_item'
+      resource_id_recipe         — set when resource_type='recipe'
+
+    DuckDB has limited FK and CHECK constraint support, so neither is
+    enforced at the DB layer here — application code is the source of
+    truth for both backends. The PG migration (0013) carries the real
+    FK + CHECK; this step merely keeps the column set in sync so the
+    DB-state migrator can copy every column when moving DuckDB → PG.
+
+    All ALTERs use ADD COLUMN IF NOT EXISTS — idempotent.
+
+    Renumbered from v61 to v62 on the second merge with main (which
+    shipped ``cli_auth_codes`` as v61 via PR #475). The first renumber
+    (v60→v61) was for main's telemetry username collapse (PR #458).
+    """
+    for col_sql in (
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_table VARCHAR",
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_data_package VARCHAR",
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_memory_domain VARCHAR",
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_memory_item VARCHAR",
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_recipe VARCHAR",
+    ):
+        conn.execute(col_sql)
+    # Backfill: copy resource_id into the per-type column for existing rows.
+    # marketplace_plugin rows are left with all per-type columns NULL.
+    for rtype, col in (
+        ("table", "resource_id_table"),
+        ("data_package", "resource_id_data_package"),
+        ("memory_domain", "resource_id_memory_domain"),
+        ("memory_item", "resource_id_memory_item"),
+        ("recipe", "resource_id_recipe"),
+    ):
+        conn.execute(
+            f"UPDATE resource_grants SET {col} = resource_id WHERE resource_type = ?",
+            [rtype],
+        )
+    conn.execute("UPDATE schema_version SET version = 62")
+
+
 def _v58_to_v59(conn: duckdb.DuckDBPyConnection) -> None:
     """v56: extended-content columns on ``data_packages`` + structured
     per-table doc columns on ``table_registry``.
@@ -4114,6 +4452,27 @@ def _v58_to_v59(conn: duckdb.DuckDBPyConnection) -> None:
     ):
         conn.execute(col_sql)
     conn.execute("UPDATE schema_version SET version = 59")
+
+
+def _v60_to_v61(conn: duckdb.DuckDBPyConnection) -> None:
+    """v61: ``cli_auth_codes`` table — single-use exchange codes for the
+    browser-loopback ``agnes auth login`` flow.
+
+    Idempotent CREATE TABLE IF NOT EXISTS. Fresh installs already get the
+    table from ``_SYSTEM_SCHEMA``; this migration covers the sequential
+    upgrade path from a v60 instance.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cli_auth_codes (
+            code_hash   VARCHAR PRIMARY KEY,
+            user_id     VARCHAR NOT NULL,
+            email       VARCHAR NOT NULL,
+            created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            expires_at  TIMESTAMP NOT NULL,
+            consumed_at TIMESTAMP
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 61")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -4403,6 +4762,20 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v56 extended content columns on data_packages + structured
             # per-table doc columns on table_registry.
             _v58_to_v59(conn)
+            # v59→v60 backfills ``username`` in usage_events /
+            # usage_session_summary from users.email. Fresh installs
+            # have empty usage_* tables, so the UPDATE is a no-op.
+            _v59_to_v60(conn)
+            # v60→v61 creates the ``cli_auth_codes`` table (main PR
+            # #475 — browser-loopback login exchange codes).
+            _v60_to_v61(conn)
+            # v61→v62 adds per-type FK columns on resource_grants (E.3,
+            # this PR). _SYSTEM_SCHEMA already declares the columns on
+            # fresh installs (no-op ALTERs); the backfill UPDATE is a
+            # no-op on empty rows. Last call in the fresh-install
+            # ladder, leaves schema_version at 62 to match
+            # SCHEMA_VERSION.
+            _v61_to_v62(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4574,6 +4947,29 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v57_to_v58(conn)
             if current < 59:
                 _v58_to_v59(conn)
+            if current < 60:
+                _v59_to_v60(conn)
+            if current < 61:
+                _v60_to_v61(conn)
+            if current < 62:
+                _v61_to_v62(conn)
+            # NOTE: a DB that ran branch's pre-merge ``_v60_to_v61``
+            # (the E.3 per-type-FK migration, before it was renumbered
+            # to v62) sits at ``current = 61`` with the E.3 columns but
+            # without ``cli_auth_codes``. Both ``if`` blocks above
+            # skip on such a DB. The ``cli_auth_codes`` table gets
+            # created out-of-band by ``_SYSTEM_SCHEMA`` running at the
+            # top of ``_ensure_schema`` (line ~4681), which has
+            # ``CREATE TABLE IF NOT EXISTS cli_auth_codes (...)``. So
+            # the ladder is "healed" via the schema declaration rather
+            # than via the migration step. If a future maintainer
+            # extends ``_v60_to_v61`` to do more than the idempotent
+            # CREATE TABLE (e.g. seed a row, add a missing index,
+            # backfill data), those steps will silently skip for any
+            # DuckDB that came through the branch's pre-merge code
+            # path — make sure such changes are also reflected in
+            # ``_SYSTEM_SCHEMA`` or guarded with their own ladder
+            # entry.
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

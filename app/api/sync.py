@@ -20,13 +20,17 @@ from app.auth.dependencies import get_current_user, _get_db
 from app.auth.scheduler_token import SCHEDULER_USER_EMAIL
 from app.utils import get_data_dir as _get_data_dir
 from src.audit_helpers import client_kind_from_user
-from src.repositories.audit import AuditRepository
-from src.repositories.sync_state import SyncStateRepository
-from src.repositories.sync_settings import SyncSettingsRepository
-from src.repositories.table_registry import TableRegistryRepository
 from src.rbac import can_access_table
 from src.scheduler import filter_due_tables, is_table_due
 
+from src.repositories import (
+    audit_repo,
+    data_packages_repo,
+    memory_domains_repo,
+    sync_settings_repo,
+    sync_state_repo,
+    table_registry_repo,
+)
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
@@ -147,8 +151,8 @@ def _run_materialized_pass(
         n = 0
     bq_max_bytes = n if n > 0 else None
 
-    registry = TableRegistryRepository(conn)
-    state = SyncStateRepository(conn)
+    registry = table_registry_repo()
+    state = sync_state_repo()
 
     summary = {"materialized": [], "skipped": [], "errors": []}
     keboola_access = None  # lazy-init on first Keboola row
@@ -384,7 +388,7 @@ def _run_sync(tables: Optional[List[str]] = None):
         # on ebb8cc9.)
         registry_has_tables = False
         try:
-            repo = TableRegistryRepository(sys_conn)
+            repo = table_registry_repo()
             if tables:
                 # Manual operator override — bypass schedule filter entirely
                 # so an admin saying "sync these specific tables now" wins.
@@ -408,7 +412,7 @@ def _run_sync(tables: Optional[List[str]] = None):
                 # every table regardless of its sync_schedule cadence,
                 # making the field a no-op at trigger time. Tables with
                 # no schedule pass through unchanged (opt-in feature).
-                state_repo = SyncStateRepository(sys_conn)
+                state_repo = sync_state_repo()
                 table_configs = filter_due_tables(table_configs, state_repo)
         finally:
             sys_conn.close()
@@ -432,7 +436,7 @@ def _run_sync(tables: Optional[List[str]] = None):
                     # Re-read table configs after auto-registration
                     sys_conn2 = get_system_db()
                     try:
-                        table_configs = TableRegistryRepository(sys_conn2).list_local(source_type)
+                        table_configs = table_registry_repo().list_local(source_type)
                     finally:
                         sys_conn2.close()
                 except Exception as e:
@@ -469,7 +473,7 @@ def _run_sync(tables: Optional[List[str]] = None):
             # _read_last_sync's first-check-config-then-fall-back pattern.
             ws_conn = get_system_db()
             try:
-                ws_repo = SyncStateRepository(ws_conn)
+                ws_repo = sync_state_repo()
                 for tc in table_configs:
                     if tc.get("sync_strategy") in ("incremental", "partitioned"):
                         state = ws_repo.get_table_state(tc.get("id") or tc.get("name"))
@@ -679,17 +683,31 @@ sys.exit(compute_exit_code(result, len(configs)))
         views = orch.rebuild()
         print(f"[SYNC] Orchestrator rebuild: {{{', '.join(f'{k}: {len(v)}' for k, v in views.items())}}}", file=_sys.stderr, flush=True)
 
-        # Auto-profile synced tables (best-effort, don't fail sync on profile error)
+        # Auto-profile synced tables (best-effort, don't fail sync on profile error).
+        #
+        # Each profile runs in a fresh Python subprocess (``src._profiler_worker``)
+        # so all DuckDB allocator state — including the anon mmap arenas that
+        # ``profile_table`` accumulates per call — is reliably reclaimed by the
+        # OS on subprocess exit. Pre-subprocess, running this loop in-process
+        # against ~30 tables would drift the resident set up by ~100-300 MiB
+        # per iteration (Python's malloc keeps freed arenas, libc keeps the
+        # heap), eventually tripping the cgroup OOM around 4 GiB even though
+        # each individual ``profile_table`` cleaned up its DuckDB session
+        # correctly. See PR notes for the empirical traces.
+        #
+        # The parent still owns the ``ProfileRepository.save(...)`` write so
+        # the system.duckdb lock semantics stay single-writer: the worker
+        # returns the profile dict, the parent persists it.
         try:
-            from src.profiler import profile_table, TableInfo
             from src.repositories.profiles import ProfileRepository
+            from src._subprocess_runner import run_subprocess_job, SubprocessJobError
 
             data_dir = Path(os.environ.get("DATA_DIR", "./data"))
             extracts_dir = data_dir / "extracts"
 
             sys_conn = get_system_db()
             try:
-                profile_repo = ProfileRepository(sys_conn)
+                profiles = profile_repo()
                 profiled = 0
                 for source_name, table_names in views.items():
                     for table_name in table_names[:10]:  # Limit per sync
@@ -697,10 +715,25 @@ sys.exit(compute_exit_code(result, len(configs)))
                         if not pq_path.exists():
                             continue
                         try:
-                            table_info = TableInfo(name=table_name, table_id=table_name)
-                            profile = profile_table(table_info, pq_path, [], {}, {})
+                            profile = run_subprocess_job(
+                                "src._profiler_worker",
+                                {
+                                    "table_name": table_name,
+                                    "table_id": table_name,
+                                    "parquet_path": str(pq_path),
+                                },
+                                timeout_sec=600,
+                            )
                             profile_repo.save(table_name, profile)
                             profiled += 1
+                        except SubprocessJobError as pe:
+                            # Worker-side failure — log subprocess stderr tail
+                            # to surface the actual traceback to operators.
+                            print(
+                                f"[SYNC] Profile {table_name}: {pe}\n"
+                                f"  stderr tail: {pe.stderr[-500:]}",
+                                file=_sys.stderr, flush=True,
+                            )
                         except Exception as pe:
                             print(f"[SYNC] Profile {table_name}: {pe}", file=_sys.stderr, flush=True)
                 print(f"[SYNC] Profiled {profiled} tables", file=_sys.stderr, flush=True)
@@ -760,13 +793,12 @@ def _build_data_packages_section(
     """
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from src.repositories.data_packages import DataPackagesRepository
 
     resolver = StackResolver(conn)
     pkg_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
     if not pkg_entries:
         return [], set()
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     packaged_table_ids: set = set()
     out: list = []
     for entry in pkg_entries:
@@ -817,13 +849,12 @@ def _build_memory_domains_section(conn, user: dict) -> list:
     """
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from src.repositories.memory_domains import MemoryDomainsRepository
 
     resolver = StackResolver(conn)
     dom_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
     if not dom_entries:
         return []
-    repo = MemoryDomainsRepository(conn)
+    repo = memory_domains_repo()
     out: list = []
     for entry in dom_entries:
         dom = repo.get(entry.id)
@@ -917,8 +948,8 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     Legacy ``tables`` dict stays in parallel for one release — older CLIs
     still parse it; newer clients prefer the typed sections.
     """
-    sync_repo = SyncStateRepository(conn)
-    table_repo = TableRegistryRepository(conn)
+    sync_repo = sync_state_repo()
+    table_repo = table_registry_repo()
     all_states = sync_repo.get_all_states()
     # `sync_state.table_id` is sourced from `_meta.table_name` which equals
     # `table_registry.name`, NOT `table_registry.id`. Auto-discovered Keboola
@@ -1027,7 +1058,7 @@ async def sync_manifest(
         # recent one). Action `manifest.fetch` covers both `agnes pull`
         # via PAT and browser-driven manifest peeks; clients can
         # disambiguate via client_kind.
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user["id"],
             action="manifest.fetch",
             resource="manifest",
@@ -1205,7 +1236,7 @@ async def trigger_sync(
         try:
             from src.db import get_system_db
             _audit_conn = get_system_db()
-            AuditRepository(_audit_conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action="sync.trigger",
                 resource=(
@@ -1234,7 +1265,7 @@ async def trigger_sync(
     try:
         from src.db import get_system_db
         _audit_conn = get_system_db()
-        AuditRepository(_audit_conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="sync.trigger",
             resource=(
@@ -1268,7 +1299,7 @@ async def get_sync_settings(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get user's dataset sync settings."""
-    repo = SyncSettingsRepository(conn)
+    repo = sync_settings_repo()
     settings = repo.get_user_settings(user["id"])
     enabled = repo.get_enabled_datasets(user["id"])
     return {
@@ -1294,7 +1325,7 @@ async def update_sync_settings(
     from app.auth.access import can_access
     from app.resource_types import ResourceType
 
-    settings_repo = SyncSettingsRepository(conn)
+    settings_repo = sync_settings_repo()
     results = {}
     for dataset, enabled in request.datasets.items():
         if not can_access(user["id"], ResourceType.TABLE.value, dataset, conn):
@@ -1319,7 +1350,7 @@ async def get_table_subscriptions(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get user's per-table subscription settings."""
-    repo = SyncSettingsRepository(conn)
+    repo = sync_settings_repo()
     settings = repo.get_user_settings(user["id"])
     return {"user_id": user["id"], "subscriptions": settings}
 
@@ -1339,7 +1370,7 @@ async def update_table_subscriptions(
     from app.auth.access import can_access
     from app.resource_types import ResourceType
 
-    repo = SyncSettingsRepository(conn)
+    repo = sync_settings_repo()
     results = {}
     for table_name, enabled in request.tables.items():
         if not can_access(user["id"], ResourceType.TABLE.value, table_name, conn):

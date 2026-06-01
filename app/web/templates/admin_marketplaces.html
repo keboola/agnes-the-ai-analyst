@@ -16,7 +16,7 @@
   .mp-avatar {
     width: 32px; height: 32px; border-radius: 8px;
     display: flex; align-items: center; justify-content: center;
-    background: var(--primary-light, #eef2ff); color: var(--primary, #6366f1);
+    background: var(--ds-primary-light, #eef2ff); color: var(--ds-primary, #6366f1);
     flex-shrink: 0;
   }
   .mp-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -67,7 +67,7 @@
     white-space: nowrap;
   }
   .icon-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb; }
-  .icon-btn.primary { color: var(--primary, #6366f1); border-color: #c7d2fe; }
+  .icon-btn.primary { color: var(--ds-primary, #6366f1); border-color: #c7d2fe; }
   .icon-btn.primary:hover { background: #eef2ff; }
   .icon-btn.danger:hover { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
   .icon-btn[disabled] { opacity: 0.5; cursor: wait; }
@@ -102,7 +102,7 @@
     font-family: inherit;
   }
   .modal-card textarea { min-height: 60px; resize: vertical; }
-  .modal-card input:focus, .modal-card textarea:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
+  .modal-card input:focus, .modal-card textarea:focus { outline: 2px solid var(--ds-primary, #6366f1); outline-offset: -1px; }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
 
   .sync-result {
@@ -154,7 +154,7 @@
     margin-top: 6px; display: flex; gap: 12px; flex-wrap: wrap;
     font-size: 11px; color: var(--text-secondary, #6b7280);
   }
-  .plugin-meta a { color: var(--primary, #6366f1); text-decoration: none; }
+  .plugin-meta a { color: var(--ds-primary, #6366f1); text-decoration: none; }
   .plugin-meta a:hover { text-decoration: underline; }
 
   /* v39: SYSTEM pill + per-plugin toggle button. Pill uses the same
@@ -393,9 +393,10 @@
     <div class="modal-actions">
       {{ ds.button('Cancel', variant='secondary',
                    attrs='data-close-modal="system-confirm-modal"') }}
-      {# `.btn-warning` stays page-local — amber-fill variant outside the
-         canonical 4 (primary/secondary/danger/ghost). #}
-      <button class="btn btn-warning" id="system-confirm-ok-btn">Confirm</button>
+      {# Confirm starts as `.btn-danger` (Mark-as-system is destructive — fans
+         out a forced grant to every principal). JS below toggles between
+         `.btn-danger` (mark) and `.btn-primary` (unmark) on open. #}
+      {{ ds.button('Confirm', variant='danger', id='system-confirm-ok-btn') }}
     </div>
   </div>
 </div>
@@ -410,7 +411,7 @@ function esc(s) {
   d.textContent = s == null ? "" : String(s);
   return d.innerHTML;
 }
-function fmtDate(s) { return s ? s.slice(0, 16).replace("T", " ") : "—"; }
+function fmtDate(s) { return s ? (window.AgnesTime.formatDateTime(s) || "—") : "—"; }
 function shortSha(s) { return s ? s.slice(0, 7) : "—"; }
 
 // ── Toast ──
@@ -650,10 +651,10 @@ function toggleSystem(btn, marketplaceId, marketplaceName) {
       <ul style="margin: 0; padding-left: 20px;">
         <li>Existing per-group RBAC grants <strong>stay</strong>.</li>
         <li>Existing per-user subscriptions <strong>stay</strong>.</li>
-        <li>Operators can revoke either via <a href="/admin/access" style="color: var(--primary, #6366f1);">/admin/access</a> or by uninstalling on each user's stack.</li>
+        <li>Operators can revoke either via <a href="/admin/access" style="color: var(--ds-primary, #6366f1);">/admin/access</a> or by uninstalling on each user's stack.</li>
       </ul>`;
     okBtn.textContent = "Unmark system";
-    okBtn.classList.remove("btn-warning");
+    okBtn.classList.remove("btn-danger");
     okBtn.classList.add("btn-primary");
   } else {
     titleEl.textContent = "Mark as system plugin?";
@@ -673,7 +674,7 @@ function toggleSystem(btn, marketplaceId, marketplaceName) {
       </p>`;
     okBtn.textContent = "Mark as system";
     okBtn.classList.remove("btn-primary");
-    okBtn.classList.add("btn-warning");
+    okBtn.classList.add("btn-danger");
   }
 
   // Single-shot handler — re-bind on every open so we don't leak across

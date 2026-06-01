@@ -14,7 +14,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_59():
+def test_schema_version_is_62():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -169,7 +169,27 @@ def test_schema_version_is_59():
     #            (grain, platforms, partition_col, history, gotchas) for
     #            the /catalog/p/<slug> rewrite per the extended-
     #            descriptions admin spec. All additive + NULLABLE.
-    assert SCHEMA_VERSION == 59
+    # v59 → v60: backfill ``usage_events.username`` and
+    #            ``usage_session_summary.username`` from ``users.email``
+    #            where ``user_id`` is non-null. Collapses the admin
+    #            telemetry dropdown which previously listed the same
+    #            user under multiple identities (email from REST writers,
+    #            UUID from upload-API sessions, OS-username from the
+    #            legacy collector).
+    # v60 → v61: ``cli_auth_codes`` table (main PR #475) — single-use
+    #            exchange codes for the browser-loopback
+    #            ``agnes auth login`` flow.
+    # v61 → v62: per-type FK columns on ``resource_grants`` (E.3, this
+    #            branch). Five NULLable VARCHAR columns mirror the PG
+    #            FK design — resource_id_table,
+    #            resource_id_data_package, resource_id_memory_domain,
+    #            resource_id_memory_item, resource_id_recipe.
+    #            Backfilled from resource_id per resource_type.
+    #            marketplace_plugin rows leave all five NULL
+    #            (application-validated). DuckDB has no FK/CHECK
+    #            enforcement; PG migration 0013 carries the real
+    #            constraints.
+    assert SCHEMA_VERSION == 62
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

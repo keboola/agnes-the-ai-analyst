@@ -27,6 +27,9 @@ from app.auth.dependencies import _get_db
 from app.api.admin_user_sessions import _SESSION_FILE_RE, _session_data_dir
 from services.session_pipeline.lib import parse_jsonl
 
+from src.repositories import (
+    audit_repo,
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/sessions", tags=["admin-sessions"])
@@ -130,6 +133,15 @@ def list_sessions(
             v = d.get(k)
             if isinstance(v, datetime):
                 d[k] = v.isoformat()
+        # `session_dir` is the on-disk directory name (UUID for upload-API
+        # path, OS-username for the legacy collector). The UI uses this for
+        # URL building so the transcript / download endpoints find the file
+        # — `username` is now the display email (v60), which is NOT a valid
+        # filesystem segment. Derived here rather than stored so older rows
+        # don't need a separate backfill. Empty string for rows missing the
+        # `<dir>/<file>` shape so the UI defaults to "_" instead of crashing.
+        sf = d.get("session_file") or ""
+        d["session_dir"] = sf.split("/", 1)[0] if "/" in sf else ""
         out.append(d)
     return {
         "rows":        out,
@@ -334,8 +346,7 @@ def download(
                 yield chunk
 
     try:
-        from src.repositories.audit import AuditRepository
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="session_download",
             resource=f"{username}/{session_file}",
@@ -386,8 +397,7 @@ def transcript(
     # Audit: looking at someone else's transcript is a privacy-sensitive
     # operation; record actor + target + bytes scanned for traceability.
     try:
-        from src.repositories.audit import AuditRepository
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="session.transcript_view",
             resource=f"{username}/{session_file}",

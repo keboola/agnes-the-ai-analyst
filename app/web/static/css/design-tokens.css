@@ -93,6 +93,10 @@
     --ds-hero-cta-bg: var(--ds-brand-accent);
     --ds-hero-cta-fg: var(--ds-hero-bg);
     --ds-hero-cta-bg-hover: var(--ds-primary);
+    /* On hover the bg darkens to --ds-primary; switch text to white
+       so contrast stays high (dark navy on medium-dark green ≈ 5.6:1,
+       white on --ds-primary ≈ 8.5:1). */
+    --ds-hero-cta-fg-hover: #ffffff;
 
     /* Typography — system stack so weight + letterforms render
        identically on macOS (San Francisco) and Windows (Segoe UI).
@@ -130,6 +134,8 @@
     --ds-hero-cta-bg: #ffffff;
     --ds-hero-cta-fg: var(--primary-dark);
     --ds-hero-cta-bg-hover: rgba(255, 255, 255, 0.88);
+    /* Blue theme: bg on hover stays near-white, keep dark text for contrast. */
+    --ds-hero-cta-fg-hover: var(--primary-dark);
 
     /* `.callout-hint` info-bg vocabulary — default is a cool-blue
        indigo (#eef3ff / #4f7cf2 / #1c3994) that reads as a

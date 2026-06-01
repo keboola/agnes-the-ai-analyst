@@ -163,3 +163,8 @@ docs/brainstorms/agnes-home-mock-*.html
 # docs/operator/ or docs/decisions/ when ready to ship.
 docs/brainstorms/
 docs/plans/
+docker-compose.local-port8001.yml
+
+# Dev-helper sed scripts used during one-shot mass refactors —
+# these belong on a personal dev branch, not in the production tree.
+scripts/_*.py

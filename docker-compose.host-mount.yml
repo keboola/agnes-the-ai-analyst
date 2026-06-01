@@ -68,6 +68,12 @@ services:
       - /data:/data
       - ./config:/app/config:ro
 
+  # NOTE: data-migrate override moved to docker-compose.postgres-host-mount.yml
+  # because referencing data-migrate here breaks validation when this file is
+  # loaded without docker-compose.postgres.yml (data-migrate is defined only
+  # there; reference here makes compose error "service has neither image nor
+  # build context" on the default baseline chain).
+
   telegram-bot:
     volumes: !override
       - /data:/data

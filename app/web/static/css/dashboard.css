@@ -1,0 +1,1176 @@
+/* Dashboard page styles — `.dashboard-mock` scope.
+ *
+ * Extracted from the inline <style> block in dashboard.html.
+ * Loaded via {% block head_extra %} using static_url() cache-busting.
+ * All selectors are scoped under .dashboard-mock to prevent leakage
+ * to other pages. Shared tokens come from design-tokens.css.
+ *
+ * ── Button vocabulary (post #427) ──
+ * The canonical `.btn .btn-*` family in style-custom.css covers
+ * primary / secondary / ghost / danger / required across the rest of
+ * the admin UI. This file deliberately keeps four families page-local
+ * because each carries page-specific semantics canonical doesn't
+ * cover:
+ *
+ *   .btn-setup, .btn-setup-secondary   Hero CTA in the navy `.env-setup-cta`
+ *                                       card. Uses the `--ds-hero-cta-*` token
+ *                                       vocabulary so the button reads
+ *                                       correctly against the navy gradient
+ *                                       (canonical .btn-primary is brand-fill,
+ *                                       wrong for navy hero).
+ *
+ *   .notif-link, .notif-unlink         Soft-pill micro-actions inside the
+ *                                       notification card, hidden by default
+ *                                       and shown only in `.notif-managing`
+ *                                       mode. Canonical .btn-primary /
+ *                                       .btn-danger would be too solid for
+ *                                       these subordinate controls.
+ *
+ *   .btn-copy-term                     Dark-surface copy button on the
+ *                                       Catppuccin-themed terminal mock.
+ *                                       system.md explicitly carves out
+ *                                       dark-surface copy buttons as
+ *                                       page-local — canonical .btn-* is
+ *                                       light-surface only.
+ *
+ * The one truly-generic primary submit on this page (`.btn-register`,
+ * the "Create Account" button in the Telegram verify form) now renders
+ * via canonical `.btn .btn-primary`; its page-local rule was removed.
+ */
+
+        /* ── Header ── */
+        .dashboard-mock .header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 0 32px;
+            height: 72px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .dashboard-mock .header-left {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 2px;
+        }
+
+        .dashboard-mock .header-logo {
+            display: inline-flex;
+            align-items: center;
+            text-decoration: none;
+            color: inherit;
+        }
+        .dashboard-mock .header-logo svg {
+            display: block;
+        }
+        .dashboard-mock a.header-logo:focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 2px;
+            border-radius: 4px;
+        }
+
+        .dashboard-mock .header-subtitle {
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+            margin-top: 2px;
+        }
+
+        .dashboard-mock .header-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .dashboard-mock .header-email {
+            font-size: 13px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .dashboard-mock .avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: var(--primary-light);
+            color: var(--primary);
+            font-size: 13px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            letter-spacing: 0.3px;
+        }
+
+        .dashboard-mock .avatar-img {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border: 2px solid var(--border);
+        }
+
+        .dashboard-mock .btn-logout {
+            font-family: var(--font-primary);
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            background: none;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 6px 14px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            text-decoration: none;
+        }
+
+        .dashboard-mock .btn-logout:hover {
+            color: var(--text-primary);
+            border-color: #D1D5DB;
+            background: var(--border-light);
+        }
+
+        /* ── Main Container ──
+           Dashboard overrides base.html's `layout` block to render
+           a full-width <main class="main"> instead of the canonical
+           `.container`. Width + gutters here match the shared
+           `.container` rule exactly so the dashboard lines up with
+           every other page (nav-to-content gap 16px, 1280px
+           max-width, 32px side gutters). */
+        .dashboard-mock .main {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 16px 32px 48px;
+        }
+
+        /* ── Stats Row ── */
+        .dashboard-mock .stats-row {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 16px;
+            margin-bottom: 28px;
+        }
+
+        .dashboard-mock .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px 22px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+        }
+
+        .dashboard-mock .stat-label {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .dashboard-mock .stat-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--text-primary);
+            letter-spacing: -0.5px;
+            line-height: 1.2;
+        }
+
+        /* ── Credit Line ── */
+        .dashboard-mock .credit-line {
+            text-align: center;
+            font-size: 12px;
+            color: #9CA3AF;
+            margin-bottom: 20px;
+        }
+
+        .dashboard-mock .credit-line .heart {
+            color: #EF4444;
+        }
+
+        .dashboard-mock .credit-line strong {
+            color: #6B7280;
+            font-weight: 500;
+        }
+
+        /* ── Two-Column Layout ── */
+        .dashboard-mock .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            grid-template-rows: auto auto;
+            gap: 24px;
+        }
+
+        .dashboard-mock .left-column {
+            grid-row: 1 / 3;
+            display: grid;
+            grid-template-rows: subgrid;
+            gap: 24px;
+        }
+
+        .dashboard-mock .right-column {
+            grid-row: 1 / 3;
+            display: grid;
+            grid-template-rows: subgrid;
+            gap: 24px;
+            position: sticky;
+            top: 24px;
+        }
+
+        /* ── Card Base ── */
+        .dashboard-mock .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+            overflow: hidden;
+        }
+
+        .dashboard-mock .card-header {
+            padding: 22px 24px 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .dashboard-mock .card-header-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .dashboard-mock .card-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .dashboard-mock .card-body {
+            padding: 20px 24px 24px;
+        }
+
+
+        /* ── Bottom Cards Row ── */
+        .dashboard-mock .bottom-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+
+        /* ── Notifications Card ── */
+        .dashboard-mock .notif-channels {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .dashboard-mock .notif-channel {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 16px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--surface);
+        }
+
+        .dashboard-mock .notif-channel-icon {
+            width: 38px;
+            height: 38px;
+            border-radius: 8px;
+            background: var(--border-light);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .dashboard-mock .notif-channel-icon.telegram {
+            background: rgba(25, 118, 210, 0.1);
+            color: #1976D2;
+        }
+
+        .dashboard-mock .notif-channel-icon.desktop {
+            background: rgba(124, 58, 237, 0.1);
+            color: #7C3AED;
+        }
+
+        .dashboard-mock .notif-channel-icon svg {
+            color: inherit;
+        }
+
+        .dashboard-mock .notif-channel-name {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 2px;
+        }
+
+        .dashboard-mock .notif-status {
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .dashboard-mock .notif-status--active {
+            color: var(--success);
+        }
+
+        .dashboard-mock .notif-status--inactive {
+            color: #9CA3AF;
+        }
+
+        .dashboard-mock .link-manage {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--primary);
+            text-decoration: none;
+            cursor: pointer;
+        }
+
+        .dashboard-mock .link-manage:hover {
+            text-decoration: underline;
+        }
+
+        .dashboard-mock .link-manage.active {
+            color: var(--text-secondary);
+        }
+
+        .dashboard-mock .notif-badge {
+            margin-left: auto;
+            flex-shrink: 0;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        .dashboard-mock .notif-badge.active {
+            background: rgba(16, 183, 127, 0.1);
+            color: #059669;
+        }
+
+        .dashboard-mock .notif-unlink {
+            display: none;
+            margin-left: auto;
+            flex-shrink: 0;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 500;
+            background: rgba(239, 68, 68, 0.1);
+            color: #EF4444;
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            cursor: pointer;
+            transition: background 0.15s;
+            white-space: nowrap;
+        }
+
+        .dashboard-mock .notif-unlink:hover {
+            background: rgba(239, 68, 68, 0.2);
+        }
+
+        .dashboard-mock .notif-unlink.visible,
+.dashboard-mock .notif-managing .notif-unlink {
+            display: inline-block;
+        }
+
+        .dashboard-mock .notif-managing .notif-badge {
+            display: none;
+        }
+
+        .dashboard-mock .notif-link {
+            display: none;
+            margin-left: auto;
+            flex-shrink: 0;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 500;
+            background: rgba(37, 99, 235, 0.1);
+            color: #2563EB;
+            border: 1px solid rgba(37, 99, 235, 0.2);
+            cursor: pointer;
+            transition: background 0.15s;
+            white-space: nowrap;
+        }
+
+        .dashboard-mock .notif-link:hover {
+            background: rgba(37, 99, 235, 0.2);
+        }
+
+        .dashboard-mock .notif-managing .notif-link {
+            display: inline-block;
+        }
+
+        .dashboard-mock .telegram-verify {
+            display: none;
+            margin-top: 12px;
+            padding: 12px;
+            background: var(--background);
+            border-radius: 8px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .dashboard-mock .telegram-verify.visible {
+            display: block;
+        }
+
+        .dashboard-mock .telegram-verify ol {
+            margin: 8px 0 12px 18px;
+            line-height: 1.8;
+        }
+
+        .dashboard-mock .telegram-verify-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .dashboard-mock .telegram-verify-row input {
+            width: 120px;
+            padding: 6px 10px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            text-align: center;
+        }
+
+        .dashboard-mock .telegram-verify-row button {
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            background: var(--primary);
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+
+        .dashboard-mock .telegram-verify-row button:hover {
+            opacity: 0.9;
+        }
+
+        .dashboard-mock .telegram-verify-error {
+            color: var(--error);
+            font-size: 11px;
+            margin-top: 6px;
+            display: none;
+        }
+
+
+        /* ── Setup Banner ── */
+        /* ── Environment Setup CTA (shown after account creation) ──
+           Hero gradient + shadow follow the active theme via
+           `--ds-hero-*` so /dashboard's top CTA flips alongside
+           every other page hero. */
+        .dashboard-mock .env-setup-cta {
+            background: linear-gradient(135deg, var(--ds-hero-bg) 0%, var(--ds-hero-bg-deep) 100%);
+            border-radius: 14px;
+            padding: 28px 32px 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 4px 16px var(--ds-hero-shadow);
+            color: white;
+        }
+
+        .dashboard-mock .env-setup-cta h3 {
+            font-size: 16px;
+            font-weight: 700;
+            margin: 0 0 4px 0;
+            color: white;
+        }
+
+        .dashboard-mock .env-setup-cta .env-subtitle {
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.7);
+            margin-bottom: 16px;
+        }
+
+        .dashboard-mock .env-setup-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .dashboard-mock .env-setup-row .code-pill {
+            background: rgba(255, 255, 255, 0.15);
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-family: var(--font-mono);
+            font-size: 14px;
+            color: white;
+        }
+
+        .dashboard-mock .env-setup-row .btn-setup {
+            font-family: var(--font-primary);
+            font-size: 13px;
+            font-weight: 600;
+            background: var(--ds-hero-cta-bg);
+            color: var(--ds-hero-cta-fg);
+            border: 1px solid var(--ds-hero-cta-bg);
+            border-radius: 6px;
+            padding: 8px 20px;
+            cursor: pointer;
+            transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+            white-space: nowrap;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .dashboard-mock .env-setup-row .btn-setup:hover {
+            background: var(--ds-hero-cta-bg-hover);
+            color: var(--ds-hero-cta-fg-hover);
+            border-color: var(--ds-hero-cta-bg-hover);
+        }
+
+        .dashboard-mock .env-setup-row .btn-setup.copied {
+            background: var(--success);
+            color: white;
+        }
+
+        .dashboard-mock .env-setup-row .env-meta {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .dashboard-mock .env-setup-row .env-hint {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        .dashboard-mock .env-setup-link {
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.9);
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
+        .dashboard-mock .env-setup-link:hover { color: #fff; }
+
+        .dashboard-mock .setup-link-banner {
+            margin-top: 12px;
+            padding: 10px 16px;
+            font-size: 13px;
+            color: var(--text-secondary, #6b7280);
+            text-align: center;
+        }
+        .dashboard-mock .setup-link-banner a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .dashboard-mock .setup-link-banner a:hover { text-decoration: underline; }
+
+        .dashboard-mock .env-setup-cta .btn-setup[disabled] {
+            opacity: 0.7;
+            cursor: wait;
+        }
+        /* .setup-error + .setup-fallback-* styles now live in
+           templates/_claude_setup_cta.jinja so /home reuses them. */
+
+        .dashboard-mock .btn-setup-secondary {
+            font-family: var(--font-primary);
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--primary);
+            background: transparent;
+            border: 1px solid var(--primary);
+            border-radius: 6px;
+            padding: 6px 16px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            white-space: nowrap;
+        }
+
+        .dashboard-mock .btn-setup-secondary:hover {
+            background: rgba(46, 168, 119, 0.05);
+        }
+
+        .dashboard-mock .btn-setup-secondary.copied {
+            background: var(--success);
+            color: white;
+            border-color: var(--success);
+        }
+
+        /* ── Support Banner ── */
+        .dashboard-mock .support-banner {
+            text-align: center;
+            padding: 16px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-top: 24px;
+        }
+
+        .dashboard-mock .support-banner .heart {
+            color: #EF4444;
+        }
+
+        .dashboard-mock .slack-badge {
+            display: inline-block;
+            margin-left: 8px;
+            padding: 2px 8px;
+            background: var(--background);
+            border-radius: 4px;
+            color: var(--text-primary);
+            text-decoration: none;
+            font-size: 12px;
+        }
+
+        .dashboard-mock .slack-badge:hover {
+            background: var(--border);
+        }
+
+        /* ── Footer ── */
+        .dashboard-mock .footer {
+            text-align: center;
+            padding: 32px;
+            font-size: 12px;
+            color: #9CA3AF;
+        }
+
+        /* ── Flash Messages ── */
+        .dashboard-mock .flash-messages {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 16px 32px 0;
+        }
+
+        .dashboard-mock .flash {
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            font-size: 13px;
+        }
+
+        .dashboard-mock .flash-success {
+            background: rgba(16, 183, 127, 0.1);
+            color: var(--success);
+            border-left: 3px solid var(--success);
+        }
+
+        .dashboard-mock .flash-error {
+            background: rgba(234, 88, 12, 0.1);
+            color: var(--error);
+            border-left: 3px solid var(--error);
+        }
+
+        /* ── New User Layout ── */
+        .dashboard-mock .new-user-grid {
+            max-width: 960px;
+            margin: 0 auto;
+        }
+
+        .dashboard-mock .setup-card {
+            padding: 32px 36px;
+        }
+
+        .dashboard-mock .setup-card h3 {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin: 0;
+        }
+
+        .dashboard-mock .setup-header {
+            display: flex;
+            align-items: baseline;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .dashboard-mock .setup-header .setup-subtitle {
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+
+        /* ── Onboarding sections ── */
+        .dashboard-mock .onboard-section {
+            margin-bottom: 20px;
+        }
+
+        .dashboard-mock .onboard-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .dashboard-mock .onboard-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .dashboard-mock .onboard-label .step-num {
+            width: 22px;
+            height: 22px;
+            background: var(--primary);
+            color: white;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+
+        .dashboard-mock .onboard-label strong {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .dashboard-mock .onboard-label .step-hint {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-left: auto;
+        }
+
+        /* ── Terminal block (steps 1-3 combined) ── */
+        .dashboard-mock .terminal-block {
+            background: #1e1e2e;
+            border-radius: 8px;
+            overflow: hidden;
+            font-family: var(--font-mono);
+            font-size: 13px;
+        }
+
+        .dashboard-mock .terminal-bar {
+            background: #313244;
+            padding: 6px 12px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .dashboard-mock .terminal-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+
+        .dashboard-mock .terminal-dot.r { background: #f38ba8; }
+        .dashboard-mock .terminal-dot.y { background: #f9e2af; }
+        .dashboard-mock .terminal-dot.g { background: #a6e3a1; }
+
+        .dashboard-mock .terminal-lines {
+            padding: 12px 16px;
+        }
+
+        .dashboard-mock .terminal-line {
+            display: flex;
+            align-items: center;
+            padding: 4px 0;
+            color: #cdd6f4;
+            line-height: 1.6;
+        }
+
+        .dashboard-mock .terminal-line .prompt {
+            color: #a6e3a1;
+            margin-right: 8px;
+            user-select: none;
+        }
+
+        .dashboard-mock .terminal-line .cmd {
+            flex: 1;
+        }
+
+        .dashboard-mock .terminal-line .comment {
+            color: #6c7086;
+            font-size: 12px;
+        }
+
+        .dashboard-mock .terminal-line .btn-copy-term {
+            padding: 2px 6px;
+            background: transparent;
+            border: 1px solid #45475a;
+            color: #6c7086;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: 11px;
+            font-family: var(--font-mono);
+            margin-left: 8px;
+            transition: all 0.15s;
+            flex-shrink: 0;
+        }
+
+        .dashboard-mock .terminal-line .btn-copy-term:hover {
+            border-color: #89b4fa;
+            color: #89b4fa;
+        }
+
+        .dashboard-mock .terminal-line .btn-copy-term.copied {
+            border-color: #a6e3a1;
+            color: #a6e3a1;
+        }
+
+        /* ── Registration inline (step 4) ── */
+        .dashboard-mock .reg-inline {
+            background: var(--background);
+            border-radius: 8px;
+            padding: 16px 20px;
+        }
+
+        .dashboard-mock .reg-inline .reg-row {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+        }
+
+        .dashboard-mock .reg-inline .reg-field {
+            flex: 1;
+        }
+
+        .dashboard-mock .reg-inline .reg-field label {
+            display: block;
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+
+        .dashboard-mock .reg-inline .reg-field textarea {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            resize: none;
+            box-sizing: border-box;
+        }
+
+        .dashboard-mock .reg-inline .reg-field textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(46, 168, 119, 0.1);
+        }
+
+        .dashboard-mock .reg-inline .reg-meta {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .dashboard-mock .reg-inline .username-tag {
+            font-family: var(--font-mono);
+            font-weight: 600;
+            color: var(--primary);
+            background: rgba(46, 168, 119, 0.08);
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+
+        /* `.btn-register` rule removed — the "Create Account" submit button
+           now renders via canonical `.btn .btn-primary` from style-custom.css. */
+
+        /* ── Claude Code section (step 5) ── */
+        .dashboard-mock .claude-section {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .dashboard-mock .claude-section .code-inline {
+            background: var(--background);
+            padding: 8px 14px;
+            border-radius: 6px;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            color: var(--text-primary);
+        }
+
+        .dashboard-mock .btn-copy-v2 {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 18px;
+            background: var(--primary);
+            color: white;
+            font-size: 13px;
+            font-weight: 600;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .dashboard-mock .btn-copy-v2:hover {
+            background: var(--primary-dark);
+        }
+
+        .dashboard-mock .btn-copy-v2.copied {
+            background: var(--success);
+        }
+
+        .dashboard-mock .claude-hint {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-left: auto;
+        }
+
+        .dashboard-mock .helper-text {
+            margin-top: 24px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        /* ── Registration Card ── */
+        .dashboard-mock .registration-card h3 {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin: 0 0 16px 0;
+        }
+
+        .dashboard-mock .info-box-v2 {
+            background: var(--background);
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        .dashboard-mock .username-preview {
+            font-family: var(--font-mono);
+            font-weight: 600;
+            color: var(--primary);
+            margin-left: 8px;
+        }
+
+        .dashboard-mock .form-v2 {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .dashboard-mock .form-group-v2 label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+        }
+
+        .dashboard-mock .form-group-v2 textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            resize: vertical;
+        }
+
+        .dashboard-mock .form-group-v2 textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(46, 168, 119, 0.1);
+        }
+
+        .dashboard-mock .form-row-v2 {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .dashboard-mock .form-info-v2 {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .dashboard-mock .form-info-v2 code {
+            background: var(--background);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-family: var(--font-mono);
+            color: var(--text-primary);
+        }
+
+        .dashboard-mock .btn-v2 {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px 16px;
+            font-size: 14px;
+            font-weight: 500;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s;
+            text-decoration: none;
+            border: none;
+        }
+
+        .dashboard-mock .btn-primary-v2 {
+            background: var(--primary);
+            color: white;
+        }
+
+        .dashboard-mock .btn-primary-v2:hover {
+            background: var(--primary-dark);
+        }
+
+        .dashboard-mock .help-text-v2 {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        /* ── Alert ── */
+        .dashboard-mock .alert-v2 {
+            padding: 20px;
+            border-radius: 8px;
+            display: flex;
+            gap: 16px;
+        }
+
+        .dashboard-mock .alert-error-v2 {
+            background: rgba(234, 88, 12, 0.1);
+            border-left: 3px solid var(--error);
+        }
+
+        .dashboard-mock .alert-icon {
+            width: 24px;
+            height: 24px;
+            background: var(--error);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+
+        .dashboard-mock .alert-v2 h4 {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin: 0 0 8px 0;
+        }
+
+        .dashboard-mock .alert-v2 p {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin: 4px 0;
+        }
+
+        .dashboard-mock .beta-badge {
+            display: inline-block;
+            padding: 2px 7px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background: #F3F4F6;
+            color: #9CA3AF;
+            border: 1px solid #E5E7EB;
+            vertical-align: middle;
+            margin-left: 6px;
+        }
+
+        /* ── Responsive ── */
+        @media (max-width: 1100px) {
+            .dashboard-mock .dashboard-grid {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto;
+            }
+
+            .dashboard-mock .left-column,
+.dashboard-mock .right-column {
+                grid-row: auto;
+                grid-template-rows: auto;
+                position: static;
+            }
+
+            .dashboard-mock .stats-row {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+
+        @media (max-width: 700px) {
+            .dashboard-mock .header {
+                padding: 0 16px;
+            }
+
+            .dashboard-mock .main {
+                padding: 20px 16px 40px;
+            }
+
+            .dashboard-mock .stats-row {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .dashboard-mock .bottom-row {
+                grid-template-columns: 1fr;
+            }
+
+            .dashboard-mock .onboard-label {
+                flex-wrap: wrap;
+            }
+
+            .dashboard-mock .onboard-label .step-hint {
+                width: 100%;
+                margin-left: 30px;
+                margin-top: 4px;
+            }
+
+            .dashboard-mock .claude-section {
+                flex-wrap: wrap;
+            }
+
+            .dashboard-mock .claude-hint {
+                width: 100%;
+                margin-left: 0;
+            }
+        }
+    
+/* ── #392: live sync-status indicator ──
+   Small pill between the env-setup-cta and stats-row. The dot pulses
+   blue when a sync is in flight (polled from /api/sync/status). The
+   text shows the server-rendered last-sync time at load; flips to
+   "Sync running…" while locked. */
+.dashboard-mock .sync-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    padding: 6px 12px;
+    margin-bottom: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+}
+.dashboard-mock .sync-status__dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex-shrink: 0;
+    transition: background 0.15s;
+}
+.dashboard-mock .sync-status.is-running .sync-status__dot {
+    background: var(--primary);
+    animation: sync-status-pulse 1.5s ease-in-out infinite;
+}
+.dashboard-mock .sync-status.is-running .sync-status__text {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+@keyframes sync-status-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.55; transform: scale(1.4); }
+}

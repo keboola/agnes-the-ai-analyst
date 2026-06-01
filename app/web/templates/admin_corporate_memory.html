@@ -61,7 +61,7 @@
         .page-icon {
             width: 36px;
             height: 36px;
-            background: var(--primary);
+            background: var(--ds-primary);
             border-radius: var(--radius-lg);
             display: flex;
             align-items: center;
@@ -102,7 +102,7 @@
         }
 
         .stat-item.highlight-blue .value {
-            color: var(--primary);
+            color: var(--ds-primary);
         }
 
         .stat-item.highlight-green .value {
@@ -160,8 +160,8 @@
         }
 
         .tab-btn.active {
-            color: var(--primary);
-            border-bottom-color: var(--primary);
+            color: var(--ds-primary);
+            border-bottom-color: var(--ds-primary);
         }
 
         .tab-badge {
@@ -211,7 +211,7 @@
             width: 16px;
             height: 16px;
             cursor: pointer;
-            accent-color: var(--primary);
+            accent-color: var(--ds-primary);
         }
 
         .batch-actions {
@@ -225,71 +225,12 @@
             color: var(--text-secondary);
         }
 
-        /* Action Buttons */
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            gap: var(--space-2);
-            padding: var(--space-2) var(--space-3);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-md);
-            font-size: var(--text-sm);
-            font-weight: var(--font-medium);
-            cursor: pointer;
-            transition: all 0.15s;
-            background: var(--surface);
-            color: var(--text-secondary);
-        }
-
-        .btn:hover:not(:disabled) {
-            border-color: var(--text-secondary);
-        }
-
-        .btn:disabled {
-            opacity: 0.4;
-            cursor: not-allowed;
-        }
-
-        .btn-approve {
-            color: var(--success);
-            border-color: var(--success);
-        }
-
-        .btn-approve:hover:not(:disabled) {
-            background: rgba(16, 183, 127, 0.1);
-            border-color: var(--success);
-        }
-
-        .btn-mandate {
-            color: white;
-            background: var(--primary);
-            border-color: var(--primary);
-        }
-
-        .btn-mandate:hover:not(:disabled) {
-            background: var(--primary-dark);
-            border-color: var(--primary-dark);
-        }
-
-        .btn-reject {
-            color: var(--error);
-            border-color: transparent;
-        }
-
-        .btn-reject:hover:not(:disabled) {
-            background: rgba(234, 88, 12, 0.1);
-            border-color: var(--error);
-        }
-
-        .btn-revoke {
-            color: var(--text-secondary);
-            border-color: transparent;
-        }
-
-        .btn-revoke:hover:not(:disabled) {
-            background: rgba(107, 114, 128, 0.1);
-            border-color: var(--text-secondary);
-        }
+        /* Action buttons — all .btn / .btn-primary / .btn-secondary /
+           .btn-danger / .btn-ghost markup on this page now renders through
+           the canonical rules in style-custom.css. The page-local .btn,
+           .btn-mandate, .btn-approve, .btn-reject, .btn-revoke variant
+           family has been retired (see the doc-comment in block content
+           below for the mapping). */
 
         /* Knowledge Item Cards */
         .knowledge-list {
@@ -309,13 +250,13 @@
         }
 
         .knowledge-item:hover {
-            border-color: var(--primary);
+            border-color: var(--ds-primary);
             box-shadow: var(--shadow-md);
         }
 
         .knowledge-item.focused {
-            border-color: var(--primary);
-            box-shadow: 0 0 0 2px var(--primary-light);
+            border-color: var(--ds-primary);
+            box-shadow: 0 0 0 2px var(--ds-primary-light);
         }
 
         /* ─── v49 Task 8.6 — Admin moderation visual parity with /memory/d/<slug> ───
@@ -456,7 +397,7 @@
             width: 16px;
             height: 16px;
             cursor: pointer;
-            accent-color: var(--primary);
+            accent-color: var(--ds-primary);
             flex-shrink: 0;
         }
 
@@ -495,7 +436,7 @@
         }
 
         .category-badge.data_analysis { background: rgba(16, 183, 127, 0.1); color: var(--success); }
-        .category-badge.api_integration { background: var(--primary-light); color: var(--primary); }
+        .category-badge.api_integration { background: var(--ds-primary-light); color: var(--ds-primary); }
         .category-badge.debugging { background: rgba(234, 88, 12, 0.1); color: var(--error); }
         .category-badge.performance { background: rgba(245, 159, 10, 0.1); color: #b45309; }
         .category-badge.workflow { background: rgba(139, 92, 246, 0.1); color: #7c3aed; }
@@ -525,8 +466,8 @@
         }
 
         .status-badge.mandatory {
-            background: var(--primary-light);
-            color: var(--primary);
+            background: var(--ds-primary-light);
+            color: var(--ds-primary);
         }
 
         .status-badge.rejected {
@@ -598,7 +539,7 @@
             width: 20px;
             height: 20px;
             border-radius: var(--radius-full);
-            background: var(--primary-light);
+            background: var(--ds-primary-light);
             border: 2px solid var(--surface);
             margin-left: -6px;
             display: flex;
@@ -606,7 +547,7 @@
             justify-content: center;
             font-size: 8px;
             font-weight: var(--font-semibold);
-            color: var(--primary);
+            color: var(--ds-primary);
         }
 
         .contributor-avatar:first-child {
@@ -658,8 +599,8 @@
 
         .mandate-form textarea:focus {
             outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 2px var(--primary-light);
+            border-color: var(--ds-primary);
+            box-shadow: 0 0 0 2px var(--ds-primary-light);
         }
 
         .mandate-form select {
@@ -727,8 +668,8 @@
         }
 
         .action-badge.mandated {
-            background: var(--primary-light);
-            color: var(--primary);
+            background: var(--ds-primary-light);
+            color: var(--ds-primary);
         }
 
         .action-badge.revoked {
@@ -815,8 +756,8 @@
         }
 
         .page-btn:hover:not(:disabled) {
-            border-color: var(--primary);
-            color: var(--primary);
+            border-color: var(--ds-primary);
+            color: var(--ds-primary);
         }
 
         .page-btn:disabled {
@@ -825,8 +766,8 @@
         }
 
         .page-btn.active {
-            background: var(--primary);
-            border-color: var(--primary);
+            background: var(--ds-primary);
+            border-color: var(--ds-primary);
             color: white;
         }
 
@@ -952,13 +893,13 @@
             cursor: text;
         }
         .tag-input-widget:focus-within {
-            border-color: var(--primary, var(--primary));
+            border-color: var(--ds-primary);
             box-shadow: 0 0 0 2px rgba(46, 168, 119, 0.15);
         }
         .tag-input-widget .tag-pill {
             display: inline-flex; align-items: center; gap: 4px;
             padding: 2px 4px 2px 10px;
-            background: var(--primary, var(--primary));
+            background: var(--ds-primary);
             color: white;
             border-radius: 999px;
             font-size: 12px; font-weight: 500;
@@ -1005,14 +946,14 @@
             font-size: 13px;
         }
         .tag-suggestion:hover, .tag-suggestion.active {
-            background: var(--primary-light, #eef5fb);
-            color: var(--primary, var(--primary));
+            background: var(--ds-primary-light, #eef5fb);
+            color: var(--ds-primary);
         }
         .tag-suggestion .hint {
             color: var(--text-muted); font-size: 11px; margin-left: 8px;
             font-weight: 500;
         }
-        .tag-suggestion.new-tag .hint { color: var(--primary, var(--primary)); }
+        .tag-suggestion.new-tag .hint { color: var(--ds-primary); }
         .tag-suggestions .empty-hint {
             padding: 8px 12px; color: var(--text-muted); font-size: 12px; font-style: italic;
         }
@@ -1020,6 +961,22 @@
 {% endblock %}
 
 {% block content %}
+{# Moderation buttons now route through the canonical .btn-* family in
+   style-custom.css. The page-local .btn-mandate/.btn-approve/.btn-reject/
+   .btn-revoke variants are retired:
+     .btn-mandate → .btn-primary   (primary submit: Save / Apply / Confirm /
+                                    Mark-as-Required / Mark-as-duplicate)
+     .btn-approve → .btn-secondary (positive low-friction: Approve / Keep /
+                                    Different)
+     .btn-reject  → .btn-danger    (negative: Reject / Delete)
+     .btn-revoke  → .btn-ghost     (dismissive: Dismiss / Revoke)
+   Loses the green-on-approve / red-on-reject solid color cues, but the
+   variant-choice hierarchy (primary > secondary > danger > ghost)
+   continues to encode the semantic priority. Class-name swaps are used
+   throughout (vs ds.button macro calls) because ~30 of the 66 button
+   sites live inside `<script>` template literals that Jinja macros
+   can't reach — the swap approach keeps the rendering uniform across
+   the static and JS-string contexts. #}
     {% set page_hero_eyebrow = "Agent Experience" %}
     {% set page_hero_title = "Memory Review" %}
     {% set page_hero_subtitle = "Review pending knowledge items from analyst sessions — approve, mandate, or reject — and resolve contradictions and duplicate candidates. Approved items flow to the user-facing <a href=\"/corporate-memory\" style=\"color:inherit;text-decoration:underline;\">Curated Memory</a> page." %}
@@ -1091,10 +1048,10 @@
                 <span class="tab-badge" id="domainsBadge" style="display:none;"></span>
             </button>
             <div style="flex:1;"></div>
-            <button class="btn"
+            <button class="btn btn-secondary"
                     onclick="openCreateMemoryItemModal()"
                     style="margin-left:auto;">+ New Item</button>
-            <button class="btn btn-mandate"
+            <button class="btn btn-primary"
                     onclick="openCreateMemoryDomainModal('', null)"
                     style="margin-left:8px;">+ New Memory Domain</button>
         </div>
@@ -1108,13 +1065,13 @@
                 </label>
                 <span class="selected-count" id="selectedCountReview"></span>
                 <div class="batch-actions">
-                    <button class="btn btn-approve" id="batchApproveBtn" disabled onclick="batchAction('approve')">
+                    <button class="btn btn-secondary" id="batchApproveBtn" disabled onclick="batchAction('approve')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="20 6 9 17 4 12"/>
                         </svg>
                         Approve Selected
                     </button>
-                    <button class="btn btn-reject" id="batchRejectBtn" disabled onclick="batchAction('reject')">
+                    <button class="btn btn-danger" id="batchRejectBtn" disabled onclick="batchAction('reject')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <line x1="18" y1="6" x2="6" y2="18"/>
                             <line x1="6" y1="6" x2="18" y2="18"/>
@@ -1122,11 +1079,11 @@
                         Reject Selected
                     </button>
                     <!-- Bulk-edit affordances (issue #62) -->
-                    <button class="btn" id="batchMoveCategoryBtn" disabled onclick="openBulkEditModal('category')">Move to category…</button>
-                    <button class="btn" id="batchMoveDomainBtn" disabled onclick="openBulkEditModal('domain')">Move to domain…</button>
-                    <button class="btn" id="batchAddTagBtn" disabled onclick="openBulkEditModal('add_tag')">Add tag…</button>
-                    <button class="btn" id="batchRemoveTagBtn" disabled onclick="openBulkEditModal('remove_tag')">Remove tag…</button>
-                    <button class="btn" id="batchSetAudienceBtn" disabled onclick="openBulkEditModal('audience')">Set audience…</button>
+                    <button class="btn btn-secondary" id="batchMoveCategoryBtn" disabled onclick="openBulkEditModal('category')">Move to category…</button>
+                    <button class="btn btn-secondary" id="batchMoveDomainBtn" disabled onclick="openBulkEditModal('domain')">Move to domain…</button>
+                    <button class="btn btn-secondary" id="batchAddTagBtn" disabled onclick="openBulkEditModal('add_tag')">Add tag…</button>
+                    <button class="btn btn-secondary" id="batchRemoveTagBtn" disabled onclick="openBulkEditModal('remove_tag')">Remove tag…</button>
+                    <button class="btn btn-secondary" id="batchSetAudienceBtn" disabled onclick="openBulkEditModal('audience')">Set audience…</button>
                 </div>
             </div>
             <div id="reviewList" class="knowledge-list">
@@ -1149,11 +1106,11 @@
                 </label>
                 <span class="selected-count" id="selectedCountAll"></span>
                 <div class="batch-actions">
-                    <button class="btn" id="batchMoveCategoryBtnAll" disabled onclick="openBulkEditModal('category')">Move to category…</button>
-                    <button class="btn" id="batchMoveDomainBtnAll" disabled onclick="openBulkEditModal('domain')">Move to domain…</button>
-                    <button class="btn" id="batchAddTagBtnAll" disabled onclick="openBulkEditModal('add_tag')">Add tag…</button>
-                    <button class="btn" id="batchRemoveTagBtnAll" disabled onclick="openBulkEditModal('remove_tag')">Remove tag…</button>
-                    <button class="btn" id="batchSetAudienceBtnAll" disabled onclick="openBulkEditModal('audience')">Set audience…</button>
+                    <button class="btn btn-secondary" id="batchMoveCategoryBtnAll" disabled onclick="openBulkEditModal('category')">Move to category…</button>
+                    <button class="btn btn-secondary" id="batchMoveDomainBtnAll" disabled onclick="openBulkEditModal('domain')">Move to domain…</button>
+                    <button class="btn btn-secondary" id="batchAddTagBtnAll" disabled onclick="openBulkEditModal('add_tag')">Add tag…</button>
+                    <button class="btn btn-secondary" id="batchRemoveTagBtnAll" disabled onclick="openBulkEditModal('remove_tag')">Remove tag…</button>
+                    <button class="btn btn-secondary" id="batchSetAudienceBtnAll" disabled onclick="openBulkEditModal('audience')">Set audience…</button>
                 </div>
             </div>
             <div class="filter-bar">
@@ -1225,10 +1182,10 @@
                     </div>
                     {% endif %}
                     <div style="display: flex; gap: var(--space-2);">
-                        <button class="btn btn-approve" onclick="resolveContradiction('{{ c.id }}', 'kept_a')" style="font-size: var(--text-xs);">Keep Item A</button>
-                        <button class="btn btn-approve" onclick="resolveContradiction('{{ c.id }}', 'kept_b')" style="font-size: var(--text-xs);">Keep Item B</button>
-                        <button class="btn" onclick="resolveContradiction('{{ c.id }}', 'merged')" style="font-size: var(--text-xs); background: var(--border-light); color: var(--text-primary);">Merge</button>
-                        <button class="btn" onclick="resolveContradiction('{{ c.id }}', 'both_valid')" style="font-size: var(--text-xs); background: var(--border-light); color: var(--text-primary);">Both Valid</button>
+                        <button class="btn btn-secondary" onclick="resolveContradiction('{{ c.id }}', 'kept_a')" style="font-size: var(--text-xs);">Keep Item A</button>
+                        <button class="btn btn-secondary" onclick="resolveContradiction('{{ c.id }}', 'kept_b')" style="font-size: var(--text-xs);">Keep Item B</button>
+                        <button class="btn btn-secondary" onclick="resolveContradiction('{{ c.id }}', 'merged')" style="font-size: var(--text-xs); background: var(--border-light); color: var(--text-primary);">Merge</button>
+                        <button class="btn btn-secondary" onclick="resolveContradiction('{{ c.id }}', 'both_valid')" style="font-size: var(--text-xs); background: var(--border-light); color: var(--text-primary);">Both Valid</button>
                     </div>
                 </div>
                 {% endfor %}
@@ -1295,8 +1252,8 @@
                 <h3 id="bulkEditTitle" style="margin-bottom: var(--space-3);">Bulk edit</h3>
                 <div id="bulkEditBody"></div>
                 <div style="display: flex; gap: var(--space-2); justify-content: flex-end; margin-top: var(--space-4);">
-                    <button class="btn" onclick="closeBulkEditModal()">Cancel</button>
-                    <button class="btn btn-mandate" onclick="submitBulkEdit()">Apply</button>
+                    <button class="btn btn-secondary" onclick="closeBulkEditModal()">Cancel</button>
+                    <button class="btn btn-primary" onclick="submitBulkEdit()">Apply</button>
                 </div>
             </div>
         </div>
@@ -1391,8 +1348,8 @@
                     </div>
                 </div>
                 <div style="display: flex; gap: var(--space-2); justify-content: flex-end; margin-top: var(--space-4);">
-                    <button class="btn" onclick="closeEditItemModal()">Cancel</button>
-                    <button class="btn btn-mandate" onclick="submitEditItem()">Save</button>
+                    <button class="btn btn-secondary" onclick="closeEditItemModal()">Cancel</button>
+                    <button class="btn btn-primary" onclick="submitEditItem()">Save</button>
                 </div>
             </div>
         </div>
@@ -1534,8 +1491,8 @@
         </div>
         <div style="display:flex; gap:var(--space-2); justify-content:flex-end;
                     margin-top:var(--space-4);">
-          <button class="btn" onclick="closeEditMemoryDomainModal()">Cancel</button>
-          <button class="btn btn-mandate" id="emd-submit-btn"
+          <button class="btn btn-secondary" onclick="closeEditMemoryDomainModal()">Cancel</button>
+          <button class="btn btn-primary" id="emd-submit-btn"
                   onclick="submitEditMemoryDomain()">Save</button>
         </div>
       </div>
@@ -1674,8 +1631,8 @@
         </div>
         <div style="display:flex; gap:var(--space-2); justify-content:flex-end;
                     margin-top:var(--space-4);">
-          <button class="btn" onclick="closeCreateMemoryDomainModal()">Cancel</button>
-          <button class="btn btn-mandate" id="cmd-submit-btn"
+          <button class="btn btn-secondary" onclick="closeCreateMemoryDomainModal()">Cancel</button>
+          <button class="btn btn-primary" id="cmd-submit-btn"
                   onclick="submitCreateMemoryDomain()">Create &amp; assign</button>
         </div>
       </div>
@@ -1757,8 +1714,8 @@
         </div>
         <div style="display:flex; gap:var(--space-2); justify-content:flex-end;
                     margin-top:var(--space-4);">
-          <button class="btn" onclick="closeCreateMemoryItemModal()">Cancel</button>
-          <button class="btn btn-mandate" id="cmi-submit-btn"
+          <button class="btn btn-secondary" onclick="closeCreateMemoryItemModal()">Cancel</button>
+          <button class="btn btn-primary" id="cmi-submit-btn"
                   onclick="submitCreateMemoryItem()">Create</button>
         </div>
       </div>
@@ -2197,7 +2154,7 @@
                 wrap.innerHTML = '<div class="empty-state" style="padding:24px; text-align:center;">'
                     + '<p><strong>No memory domains yet.</strong></p>'
                     + '<p style="font-size:13px; color:var(--text-secondary);">Domains bundle related memory items so analysts can opt-in as a group.</p>'
-                    + '<button class="btn btn-mandate" onclick="openCreateMemoryDomainModal(\'\', null)">+ New Memory Domain</button>'
+                    + '<button class="btn btn-primary" onclick="openCreateMemoryDomainModal(\'\', null)">+ New Memory Domain</button>'
                     + '</div>';
                 return;
             }
@@ -2222,9 +2179,9 @@
                         ? '    <div style="font-size:12px; color:var(--text-secondary); margin-top:2px;">' + desc + '</div>'
                         : '')
                     + '  </div>'
-                    + '  <a class="btn" href="/memory/d/' + slug + '" target="_blank" style="font-size:12px;">Open →</a>'
-                    + '  <button class="btn" onclick="openEditMemoryDomainModal(\'' + esc(d.id) + '\')" style="font-size:12px;">Edit</button>'
-                    + '  <button class="btn btn-reject" onclick="deleteMemoryDomain(\'' + esc(d.id) + '\', \'' + name.replace(/\'/g, "\\'") + '\')" style="font-size:12px;">Delete</button>'
+                    + '  <a class="btn btn-secondary" href="/memory/d/' + slug + '" target="_blank" style="font-size:12px;">Open →</a>'
+                    + '  <button class="btn btn-secondary" onclick="openEditMemoryDomainModal(\'' + esc(d.id) + '\')" style="font-size:12px;">Edit</button>'
+                    + '  <button class="btn btn-danger" onclick="deleteMemoryDomain(\'' + esc(d.id) + '\', \'' + name.replace(/\'/g, "\\'") + '\')" style="font-size:12px;">Delete</button>'
                     + '</div>';
             }).join('');
         } catch (e) {
@@ -2495,8 +2452,8 @@
                 <div class="contradiction-card" data-key="${escapeHtml(r.item_a_id)}::${escapeHtml(r.item_b_id)}" style="border: 1px solid var(--border); border-radius: var(--radius-xl); padding: var(--space-5); margin-bottom: var(--space-4); background: var(--surface);">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-3);">
                         <div>
-                            <span style="font-weight: var(--font-semibold); color: var(--primary);">Likely Duplicate</span>
-                            <span style="display: inline-block; padding: 2px 8px; background: var(--primary-light); color: var(--primary); border-radius: 999px; font-size: 11px; margin-left: 8px;">Jaccard ${score}</span>
+                            <span style="font-weight: var(--font-semibold); color: var(--ds-primary);">Likely Duplicate</span>
+                            <span style="display: inline-block; padding: 2px 8px; background: var(--ds-primary-light); color: var(--ds-primary); border-radius: 999px; font-size: 11px; margin-left: 8px;">Jaccard ${score}</span>
                         </div>
                         <span style="font-size: var(--text-xs); color: var(--text-secondary);">${escapeHtml((r.created_at || '').toString().substring(0, 10))}</span>
                     </div>
@@ -2515,9 +2472,9 @@
                         </div>
                     </div>
                     <div style="display: flex; gap: var(--space-2);">
-                        <button class="btn btn-mandate" onclick="resolveDuplicate('${esc(r.item_a_id)}', '${esc(r.item_b_id)}', 'duplicate')">Mark as duplicate</button>
-                        <button class="btn btn-approve" onclick="resolveDuplicate('${esc(r.item_a_id)}', '${esc(r.item_b_id)}', 'different')">Different</button>
-                        <button class="btn btn-revoke" onclick="resolveDuplicate('${esc(r.item_a_id)}', '${esc(r.item_b_id)}', 'dismissed')">Dismiss</button>
+                        <button class="btn btn-primary" onclick="resolveDuplicate('${esc(r.item_a_id)}', '${esc(r.item_b_id)}', 'duplicate')">Mark as duplicate</button>
+                        <button class="btn btn-secondary" onclick="resolveDuplicate('${esc(r.item_a_id)}', '${esc(r.item_b_id)}', 'different')">Different</button>
+                        <button class="btn btn-ghost" onclick="resolveDuplicate('${esc(r.item_a_id)}', '${esc(r.item_b_id)}', 'dismissed')">Dismiss</button>
                     </div>
                 </div>`;
         }).join('');
@@ -3319,26 +3276,26 @@
         let adminActionsHtml = '';
         if (mode === 'review') {
             adminActionsHtml = `
-                <button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">
+                <button class="btn btn-secondary" onclick="adminAction('approve', '${esc(item.id)}')">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="20 6 9 17 4 12"/>
                     </svg>
                     Approve <span class="shortcut-hint">A</span>
                 </button>
-                <button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">
+                <button class="btn btn-primary" onclick="showMandateForm('${esc(item.id)}')">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
                     </svg>
                     Mark as Required <span class="shortcut-hint">M</span>
                 </button>
-                <button class="btn btn-reject" onclick="adminAction('reject', '${esc(item.id)}')">
+                <button class="btn btn-danger" onclick="adminAction('reject', '${esc(item.id)}')">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <line x1="18" y1="6" x2="6" y2="18"/>
                         <line x1="6" y1="6" x2="18" y2="18"/>
                     </svg>
                     Reject <span class="shortcut-hint">R</span>
                 </button>
-                <button class="btn" onclick="openEditItemModal('${esc(item.id)}')">Edit</button>`;
+                <button class="btn btn-secondary" onclick="openEditItemModal('${esc(item.id)}')">Edit</button>`;
         } else {
             // Reuse the status-aware button set; strip the wrapping
             // .item-actions div — admin-actions row provides its own
@@ -3356,8 +3313,8 @@
                     ${(Array.isArray(GROUPS) ? GROUPS : []).map(g => `<option value="group:${esc(g.name)}">${esc(g.name)} (${g.members_count} members)</option>`).join('')}
                 </select>
                 <div class="mandate-form-actions">
-                    <button class="btn btn-mandate" onclick="submitMandate('${esc(item.id)}')">Confirm</button>
-                    <button class="btn" onclick="hideMandateForm('${esc(item.id)}')">Cancel</button>
+                    <button class="btn btn-primary" onclick="submitMandate('${esc(item.id)}')">Confirm</button>
+                    <button class="btn btn-secondary" onclick="hideMandateForm('${esc(item.id)}')">Cancel</button>
                 </div>
             </div>`;
 
@@ -3440,25 +3397,25 @@
 
         // Actions depend on the valid transitions from current status
         if (status === 'pending') {
-            buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Approve</button>`);
-            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Mark as Required</button>`);
-            buttons.push(`<button class="btn btn-reject" onclick="adminAction('reject', '${esc(item.id)}')">Reject</button>`);
+            buttons.push(`<button class="btn btn-secondary" onclick="adminAction('approve', '${esc(item.id)}')">Approve</button>`);
+            buttons.push(`<button class="btn btn-primary" onclick="showMandateForm('${esc(item.id)}')">Mark as Required</button>`);
+            buttons.push(`<button class="btn btn-danger" onclick="adminAction('reject', '${esc(item.id)}')">Reject</button>`);
         } else if (status === 'approved') {
-            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Mark as Required</button>`);
-            buttons.push(`<button class="btn btn-reject" onclick="adminAction('reject', '${esc(item.id)}')">Reject</button>`);
+            buttons.push(`<button class="btn btn-primary" onclick="showMandateForm('${esc(item.id)}')">Mark as Required</button>`);
+            buttons.push(`<button class="btn btn-danger" onclick="adminAction('reject', '${esc(item.id)}')">Reject</button>`);
         } else if (status === 'mandatory') {
-            buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Demote to Approved</button>`);
-            buttons.push(`<button class="btn btn-revoke" onclick="adminAction('revoke', '${esc(item.id)}')">Revoke</button>`);
+            buttons.push(`<button class="btn btn-secondary" onclick="adminAction('approve', '${esc(item.id)}')">Demote to Approved</button>`);
+            buttons.push(`<button class="btn btn-ghost" onclick="adminAction('revoke', '${esc(item.id)}')">Revoke</button>`);
         } else if (status === 'rejected') {
-            buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Re-approve</button>`);
+            buttons.push(`<button class="btn btn-secondary" onclick="adminAction('approve', '${esc(item.id)}')">Re-approve</button>`);
         } else if (status === 'revoked') {
-            buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Re-approve</button>`);
-            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Mark as Required</button>`);
+            buttons.push(`<button class="btn btn-secondary" onclick="adminAction('approve', '${esc(item.id)}')">Re-approve</button>`);
+            buttons.push(`<button class="btn btn-primary" onclick="showMandateForm('${esc(item.id)}')">Mark as Required</button>`);
         }
 
         // Edit is always available regardless of status — admins fix
         // category/domain/tags/audience/title/content via PATCH /admin/{id}.
-        buttons.push(`<button class="btn" onclick="openEditItemModal('${esc(item.id)}')">Edit</button>`);
+        buttons.push(`<button class="btn btn-secondary" onclick="openEditItemModal('${esc(item.id)}')">Edit</button>`);
 
         if (buttons.length === 0) return '';
         return wrapped ? `<div class="item-actions">${buttons.join('')}</div>` : buttons.join('');
