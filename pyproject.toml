@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.55.26"
+version = "0.55.27"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -55,7 +55,7 @@ dependencies = [
     "matplotlib>=3.8.0",
     "numpy>=1.24.0",
     # Claude Code marketplace endpoint — pure-Python git server mounted in FastAPI
-    "dulwich>=0.22.0",
+    "dulwich>=1.2.5",
     "a2wsgi>=1.10.0",
     # In-process TTL cache for marketplace etag (transitively present via
     # google-auth, declared explicitly here because we depend on it directly).

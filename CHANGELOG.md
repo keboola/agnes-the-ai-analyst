@@ -10,6 +10,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.27] — 2026-06-01
+
+### Security
+- Bumped `dulwich` from 0.24.1 to 1.2.5 (Dependabot, #468). dulwich powers the in-process git server mounted at `app/marketplace_server/{git_backend,git_router}.py` that serves the curated-marketplace clone endpoint — five hardenings landed in this jump:
+  - **GHSA-gfhv-vqv2-4544** — `porcelain.submodule_update` (and `porcelain.clone(recurse_submodules=True)`) now validates submodule paths; a crafted upstream could previously direct submodule contents into `.git/hooks` and drop an executable hook there. dulwich analogue of git's CVE-2024-32002 / CVE-2024-32004.
+  - **CVE-2026-42305** — Windows tree-path validation hardened: `validate_path_element_ntfs` now rejects Windows path separators, the alternate-data-stream marker `:`, NTFS 8.3 short-name aliases of `.git`, and reserved Windows device names. `core.protectNTFS` defaults to true on every platform and both `core.protectNTFS` / `core.protectHFS` are now read under their correct option names.
+  - **CVE-2026-42563** — shell-quote values substituted into `ProcessMergeDriver` commands; a malicious branch could previously inject shell when a merge driver referenced `%P`.
+  - **CVE-2026-47712** — `porcelain.format_patch` now sanitizes commit subjects used in patch filenames; a malicious subject (e.g. `x/../../x`) could previously direct the generated patch outside `outdir`.
+  - **`receive.maxInputSize`** — `ReceivePackHandler` now honours `receive.maxInputSize`; previously an unauthenticated remote could send a tiny crafted pack with a huge declared `dest_size` and trigger hundreds of MB of allocation in `git-receive-pack`.
+  - Test impact: the four-shard test suite + `tests/test_marketplace_server_git.py` are green on 1.2.5 — no Agnes-side API breakage from the 0.x → 1.x bump.
+
 ## [0.55.26] — 2026-06-01
 
 ### Fixed
