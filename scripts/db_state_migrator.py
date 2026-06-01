@@ -386,9 +386,9 @@ def scrub_audit_log_pii(duckdb_path: Path) -> dict[str, int]:
     Returns ``{"rows_scanned", "rows_redacted"}`` for the JobWriter
     summary.
     """
-    import duckdb
+    from src.duckdb_conn import _open_duckdb
 
-    conn = duckdb.connect(str(duckdb_path))
+    conn = _open_duckdb(str(duckdb_path))
     rows_redacted = 0
     rows_scanned = 0
     try:
@@ -480,7 +480,6 @@ def copy_duckdb_to_pg(
     progress bar advances during the long data_copy step instead of
     freezing at 40%.
     """
-    import duckdb
     import sqlalchemy as sa
 
     from scripts.migrate_duckdb_to_pg import run_all
@@ -498,7 +497,8 @@ def copy_duckdb_to_pg(
                 # via update_step will refresh the state anyway.
                 pass
 
-    duck_conn = duckdb.connect(str(duckdb_path), read_only=True)
+    from src.duckdb_conn import _open_duckdb
+    duck_conn = _open_duckdb(str(duckdb_path), read_only=True)
     try:
         pg_engine = _bounded_engine(target_url)
         try:
@@ -872,7 +872,8 @@ def verify_row_counts(duckdb_path: Path, target_url: str) -> list[dict]:
     # workload; a writable connection creates a .wal sidecar that adds
     # clutter and can confuse subsequent reads if the migrator crashes
     # between verify and flip.
-    duck_conn = _duckdb.connect(str(duckdb_path), read_only=True)
+    from src.duckdb_conn import _open_duckdb
+    duck_conn = _open_duckdb(str(duckdb_path), read_only=True)
     pg_engine = _bounded_engine(target_url)
     try:
         for table in tables:

@@ -49,11 +49,11 @@ def main() -> int:
         print(f"DuckDB file not found: {duckdb_path}", file=sys.stderr)
         return 2
 
-    import duckdb
     import src.db_pg as db_pg
+    from src.duckdb_conn import _open_duckdb
     from scripts.migrate_duckdb_to_pg import run_all
 
-    duck_conn = duckdb.connect(str(duckdb_path), read_only=True)
+    duck_conn = _open_duckdb(str(duckdb_path), read_only=True)
     pg_engine = db_pg.get_engine()
 
     reports = run_all(
