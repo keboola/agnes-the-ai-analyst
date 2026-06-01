@@ -319,14 +319,25 @@ def start_migration(payload: MigrateRequest) -> dict:
         write_backend_state,
     )
 
-    current_state, current_url = read_backend_state()
+    # ── Block 1: cheap pre-lock rejections ────────────────────────────────
+    # These checks are stateless (no state-machine reads) and cheap to
+    # evaluate without holding the flock.  Reject early to avoid
+    # unnecessary lock contention.
+
+    # Validate the target token is a known BackendState value.
     try:
         target_state = BackendState(payload.target)
     except ValueError:
         raise HTTPException(400, detail=f"Unknown target: {payload.target}")
 
+    # Pre-lock fast-path: validate the transition against the current state
+    # so that structurally invalid requests (self-loops, disallowed moves)
+    # are rejected immediately without acquiring the flock.  The
+    # authoritative check is re-done inside the lock (B1-NEW) — this read
+    # is best-effort early rejection only.
+    pre_lock_state, _ = read_backend_state()
     try:
-        validate_transition(current_state, target_state)
+        validate_transition(pre_lock_state, target_state)
     except InvalidTransitionError as e:
         raise HTTPException(400, detail=str(e))
     except BackendNotYetSupportedError as e:
@@ -338,6 +349,8 @@ def start_migration(payload: MigrateRequest) -> dict:
     # with 501 so the API contract is honest — versus silently
     # mis-routing to CLOUD because the branch logic was
     # ``payload.target == 'side_car' else cloud``.
+    # Placed AFTER validate_transition so a duckdb → duckdb self-loop
+    # returns 400 (invalid transition) rather than 501 (not yet supported).
     if payload.target in ("duckdb", "duckdb_quack"):
         raise HTTPException(
             status_code=501,
@@ -349,48 +362,20 @@ def start_migration(payload: MigrateRequest) -> dict:
             ),
         )
 
+    # MED-2 + scheme validation: URL structural checks are stateless and
+    # cheap; do them before locking.
     if payload.target == "cloud":
         if not payload.cloud_url:
             raise HTTPException(400, detail="cloud_url required for target=cloud")
         _validate_cloud_url(payload.cloud_url)
 
-    # Resolve target URL.
-    if payload.target == "side_car":
-        password = os.environ.get("POSTGRES_PASSWORD")
-        if not password:
-            raise HTTPException(
-                500,
-                detail=(
-                    "POSTGRES_PASSWORD env var missing on server — set it via "
-                    "Terraform / .env / docker compose override before migrating "
-                    "to side_car. The migration cannot proceed with an unknown "
-                    "credential."
-                ),
-            )
-        target_url = f"postgresql+psycopg://agnes:{password}@postgres:5432/agnes"
-    else:
-        target_url = payload.cloud_url
-
-    # Source URL — only present when source is a PG backend. The
-    # applier passes it to the migrator's --source-url.
-    source_url = current_url if current_state in (
-        BackendState.SIDE_CAR, BackendState.CLOUD
-    ) else None
-
-    # Reject same-DB cycles — would silently put two readers on the
-    # same physical Postgres after the cutover, which is data-loss
-    # destructive once the source side is wiped. The alias check
-    # normalizes credentials, default port, and driver prefix so that
-    # cosmetic URL differences cannot bypass the guard (B7).
-    if source_url and _urls_alias(source_url, target_url):
-        raise HTTPException(
-            400,
-            detail="source and target URL alias the same Postgres database — refusing to migrate onto self",
-        )
-
-    job_id = str(uuid.uuid4())
-
-    # Acquire lock — non-blocking; 409 if a peer already holds it.
+    # ── Block 2: acquire flock, re-read state, validate, write ───────────
+    # B1-NEW: the pre-fix ordering was validate → flock → write.  Two
+    # admins racing through validate_transition before either took the
+    # lock both passed, then both wrote pending jobs (the second
+    # clobbered the first's flag file).  Fix: move ALL state-reading and
+    # validation INSIDE the flock so the second caller re-reads state
+    # under the lock and sees the first caller's pending job → 409.
     try:
         lock = MigrationLock()
         lock.__enter__()
@@ -402,6 +387,66 @@ def start_migration(payload: MigrateRequest) -> dict:
         )
 
     try:
+        # Re-read current state under the lock so we see any writes made
+        # by a concurrent caller that already acquired the lock.
+        current_state, current_url = read_backend_state()
+
+        # Surface pending jobs (B8) — checked here, under the lock, so a
+        # just-written pending job is visible to the second caller.
+        existing_job = _current_job_id()
+        if existing_job:
+            raise HTTPException(
+                409,
+                detail=f"Migration already in progress: job {existing_job}",
+            )
+
+        # Validate the transition matrix under the lock so both callers
+        # cannot both pass validation against a stale current_state read.
+        try:
+            validate_transition(current_state, target_state)
+        except InvalidTransitionError as e:
+            raise HTTPException(400, detail=str(e))
+        except BackendNotYetSupportedError as e:
+            raise HTTPException(501, detail=str(e))
+
+        # Resolve target URL (needs current_state for source_url).
+        if payload.target == "side_car":
+            password = os.environ.get("POSTGRES_PASSWORD")
+            if not password:
+                raise HTTPException(
+                    500,
+                    detail=(
+                        "POSTGRES_PASSWORD env var missing on server — set it via "
+                        "Terraform / .env / docker compose override before migrating "
+                        "to side_car. The migration cannot proceed with an unknown "
+                        "credential."
+                    ),
+                )
+            target_url = f"postgresql+psycopg://agnes:{password}@postgres:5432/agnes"
+        else:
+            target_url = payload.cloud_url
+
+        # Source URL — only present when source is a PG backend. The
+        # applier passes it to the migrator's --source-url.
+        source_url = current_url if current_state in (
+            BackendState.SIDE_CAR, BackendState.CLOUD
+        ) else None
+
+        # Reject same-DB cycles — would silently put two readers on the
+        # same physical Postgres after the cutover, which is data-loss
+        # destructive once the source side is wiped. The alias check
+        # normalizes credentials, default port, and driver prefix so that
+        # cosmetic URL differences cannot bypass the guard (B7).
+        # Also under the lock (B1-NEW) so two callers with alias URLs
+        # cannot both pass if the source state changed between them.
+        if source_url and _urls_alias(source_url, target_url):
+            raise HTTPException(
+                400,
+                detail="source and target URL alias the same Postgres database — refusing to migrate onto self",
+            )
+
+        job_id = str(uuid.uuid4())
+
         in_progress = (
             BackendState.SIDE_CAR_IN_PROGRESS if payload.target == "side_car"
             else BackendState.CLOUD_IN_PROGRESS
@@ -453,6 +498,7 @@ def start_migration(payload: MigrateRequest) -> dict:
     finally:
         lock.__exit__(None, None, None)
 
+    # ── Block 3: response ─────────────────────────────────────────────────
     return {"job_id": job_id, "status": "pending"}
 
 
