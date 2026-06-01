@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.32] — 2026-06-01
+
 ### Added
 - **`agnes admin data-semantics generate <dir>` — scaffold the workspace data-semantics pack from the catalog (#469, Gap 1).** Emits a *starter* pack so an operator hand-edits know-how instead of authoring the whole tree: `<pkg>/tables/*.yml` (id, fqn, partition/cluster keys, columns — from `table_registry` + `column_metadata` + `bq_metadata_cache`), `<pkg>/metrics/*.yml` (from `metric_definitions`), grouped by `data_packages`, plus seed-if-absent `_brief.md` / `_overview.md` skeletons. Provenance + 3-way merge ride the pack's native `sync:` block (`method: generated` vs `hand-authored`): re-runs refresh machine-owned fields, keep human edits, preserve human-added keys, and drop a field whose source disappears. `--check` makes drift CI-enforceable; `--dry-run` / `--json` for inspection. Engine `src/data_semantics_scaffold.py` is `app.`-free. Metrics that belong to no data package are reported, not silently dropped.
 
