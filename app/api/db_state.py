@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -735,32 +736,83 @@ def cancel_job(job_id: str) -> dict:
     # cooperative cancellation marker — the migrator polls for it at
     # step boundaries and raises JobCancelled when it observes the file.
     sentinel = _jobs_dir() / f"{job_id}.cancel"
-    sentinel.touch()
 
-    from datetime import datetime, timezone
-    data["status"] = "cancelled"
-    data["completed_at"] = datetime.now(timezone.utc).isoformat()
-    data["error"] = {
-        "step": data["current_step"],
-        "class": "Cancelled",
-        "message": "Admin cancelled migration",
-    }
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
-    os.replace(tmp, path)
-    os.chmod(path, 0o600)
+    # H1-PARTIAL: hold MigrationLock across the cancel sentinel write
+    # AND the instance.yaml revert. Pre-fix the two operations were
+    # separate, leaving a microsecond window where the migrator's
+    # _check_cancel_before_flip could pass and then write_backend_state
+    # could overwrite the cancel's revert — split-brain end state with
+    # data on TARGET but instance.yaml on SOURCE. The migrator side now
+    # also acquires the lock around its check+flip; lock acquisition
+    # here makes the two writes mutually exclusive at the OS level.
+    from src.db_state_machine import (
+        BackendState,
+        MigrationInProgressError,
+        MigrationLock,
+        write_backend_state,
+    )
 
-    # Revert state machine to the source backend captured when the
-    # migration kicked off.  The URL was preserved across the *_in_progress
-    # write (B4), so a no-url write here keeps the live source URL.
-    #
-    # MED-4: when reverting cancel to duckdb, the target's postgres URL
-    # must NOT survive in the overlay. write_backend_state with url=None
-    # drops the key (vs the Ellipsis sentinel which would PRESERVE the
-    # current key — that's the B4 fix in round 1).
-    from src.db_state_machine import BackendState, write_backend_state
-    source_backend = data["source_backend"]
-    revert_url = None if source_backend == "duckdb" else ...
-    write_backend_state(BackendState(source_backend), url=revert_url)
+    def _do_cancel_under_lock() -> None:
+        # H1-PARTIAL atomic re-check: under the lock, re-read the job
+        # JSON so that if the migrator completed its flip (or moved
+        # past PNR) BETWEEN the pre-lock check and our lock acquisition,
+        # we bail without writing the sentinel or reverting
+        # instance.yaml — that would produce split-brain (data on
+        # TARGET + instance.yaml reverted to SOURCE).
+        fresh = json.loads(path.read_text())
+        if fresh["status"] in ("completed", "failed", "cancelled"):
+            raise HTTPException(
+                409,
+                detail=(
+                    f"job {job_id} reached terminal state ({fresh['status']}) "
+                    "while cancel was acquiring the migration lock; cancel is a no-op"
+                ),
+            )
+        if fresh["current_step"] in ("flip_backend", "app_restart", "verify_health"):
+            raise HTTPException(
+                409,
+                detail=(
+                    "Job moved past point-of-no-return (step >= flip_backend) "
+                    "while cancel was acquiring the migration lock; manual recovery required"
+                ),
+            )
+        sentinel.touch()
+        fresh["status"] = "cancelled"
+        fresh["completed_at"] = datetime.now(timezone.utc).isoformat()
+        fresh["error"] = {
+            "step": fresh["current_step"],
+            "class": "Cancelled",
+            "message": "Admin cancelled migration",
+        }
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(fresh, indent=2, sort_keys=True))
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+
+        # Revert state machine to the source backend captured when the
+        # migration kicked off.  The URL was preserved across the *_in_progress
+        # write (B4), so a no-url write here keeps the live source URL.
+        #
+        # MED-4: when reverting cancel to duckdb, the target's postgres URL
+        # must NOT survive in the overlay. write_backend_state with url=None
+        # drops the key (vs the Ellipsis sentinel which would PRESERVE the
+        # current key — that's the B4 fix in round 1).
+        source_backend = fresh["source_backend"]
+        revert_url = None if source_backend == "duckdb" else ...
+        write_backend_state(BackendState(source_backend), url=revert_url)
+
+    try:
+        with MigrationLock():
+            _do_cancel_under_lock()
+    except MigrationInProgressError:
+        # The migrator subprocess is currently holding the lock to do
+        # its own flip. It will check our sentinel right before the
+        # flip; if it's already past the check, the flip will commit
+        # and the next cancel call will see status=completed → 409.
+        # Briefly retry — the lock is held for at most one flip's
+        # worth of file I/O.
+        time.sleep(0.5)
+        with MigrationLock():
+            _do_cancel_under_lock()
 
     return {"cancelled": True}

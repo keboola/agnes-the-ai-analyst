@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -1185,8 +1186,26 @@ def main(
         # SOURCE while data is on TARGET. Re-checking here closes that gap.
         writer.update_step("flip_backend", progress_pct=95)
         target_state = BackendState(to)
-        _check_cancel_before_flip(job_path=writer._path, target_state=target_state)
-        write_backend_state(target_state, url=target_url)
+        # H1-PARTIAL: hold MigrationLock across the cancel re-check AND
+        # the write_backend_state call so a concurrent cancel cannot
+        # land between them. Pre-fix the two-line sequence had a
+        # microsecond window where the cancel handler's revert ran
+        # AFTER the re-check but BEFORE the migrator's flip, producing
+        # data-on-TARGET + instance.yaml-on-SOURCE. The retry-once on
+        # MigrationInProgressError covers the case where the API
+        # cancel_job is currently holding the lock for its revert; by
+        # the time we re-acquire, the cancel sentinel is on disk and
+        # the re-check will raise JobCancelled.
+        from src.db_state_machine import MigrationLock, MigrationInProgressError
+        try:
+            with MigrationLock():
+                _check_cancel_before_flip(job_path=writer._path, target_state=target_state)
+                write_backend_state(target_state, url=target_url)
+        except MigrationInProgressError:
+            time.sleep(0.5)
+            with MigrationLock():
+                _check_cancel_before_flip(job_path=writer._path, target_state=target_state)
+                write_backend_state(target_state, url=target_url)
 
         writer.mark_success(summary=copy_summary)
         return 0
