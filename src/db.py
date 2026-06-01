@@ -40,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 59
+SCHEMA_VERSION = 60
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -642,6 +642,25 @@ CREATE TABLE IF NOT EXISTS memory_domain_suggestions (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_domain_suggestions_status
     ON memory_domain_suggestions(status);
+
+-- v60: ``cli_auth_codes`` — short-lived, single-use exchange codes for the
+-- browser-loopback `agnes auth login` flow (gh-style). The browser, holding
+-- an authenticated session, confirms CLI authorization; the server mints a
+-- code (hash stored here, bound to the user) and redirects it to the CLI's
+-- localhost loopback. The CLI then POSTs the code to /cli/auth/exchange over
+-- HTTPS and receives a real PAT — so the durable credential never travels
+-- through the browser address bar / history. Codes expire in ~2 min and are
+-- consumed exactly once (compare-and-swap on ``consumed_at``). Rows are left
+-- after expiry/consumption for a short audit window; a cheap opportunistic
+-- delete of expired rows runs on each create.
+CREATE TABLE IF NOT EXISTS cli_auth_codes (
+    code_hash   VARCHAR PRIMARY KEY,   -- sha256(raw code); raw code never stored
+    user_id     VARCHAR NOT NULL,
+    email       VARCHAR NOT NULL,
+    created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    expires_at  TIMESTAMP NOT NULL,
+    consumed_at TIMESTAMP
+);
 
 -- v53: Recipes are admin-curated, multi-table query templates analysts
 -- copy + adapt. Sibling concept to Data Packages on /catalog (separate
@@ -4019,6 +4038,27 @@ def _v58_to_v59(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 59")
 
 
+def _v59_to_v60(conn: duckdb.DuckDBPyConnection) -> None:
+    """v60: ``cli_auth_codes`` table — single-use exchange codes for the
+    browser-loopback ``agnes auth login`` flow.
+
+    Idempotent CREATE TABLE IF NOT EXISTS. Fresh installs already get the
+    table from ``_SYSTEM_SCHEMA``; this migration covers the sequential
+    upgrade path from a v59 instance.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cli_auth_codes (
+            code_hash   VARCHAR PRIMARY KEY,
+            user_id     VARCHAR NOT NULL,
+            email       VARCHAR NOT NULL,
+            created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            expires_at  TIMESTAMP NOT NULL,
+            consumed_at TIMESTAMP
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 60")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -4306,6 +4346,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v56 extended content columns on data_packages + structured
             # per-table doc columns on table_registry.
             _v58_to_v59(conn)
+            # v60 cli_auth_codes table (browser-loopback login). Last call
+            # leaves schema_version at 60 to match SCHEMA_VERSION.
+            _v59_to_v60(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -4477,6 +4520,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v57_to_v58(conn)
             if current < 59:
                 _v58_to_v59(conn)
+            if current < 60:
+                _v59_to_v60(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
