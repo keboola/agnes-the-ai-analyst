@@ -14,8 +14,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.chat.e2b_workspace_sync import (
+    SANDBOX_WHEEL_PATH,
     WorkspaceTooLarge,
     download_workspace,
+    upload_agnes_wheel,
     upload_workspace,
 )
 
@@ -189,6 +191,42 @@ def test_download_writes_files_back_locally(tmp_path: Path):
 
         assert (target / "greeting.txt").read_text() == "hello"
         assert (target / "notes" / "a.md").read_text() == "# a"
+
+    asyncio.run(_run())
+
+
+def test_upload_agnes_wheel_writes_wheel_to_sandbox(tmp_path: Path, monkeypatch):
+    """The server's pre-built wheel is read and written to /work/agnes.whl."""
+
+    async def _run():
+        wheel = tmp_path / "agnes_the_ai_analyst-0.55.25-py3-none-any.whl"
+        wheel.write_bytes(b"PK\x03\x04 fake wheel bytes")
+
+        # Stub the shared wheel-discovery helper to return our fake wheel.
+        monkeypatch.setattr(
+            "app.api.cli_artifacts._find_wheel", lambda: wheel
+        )
+
+        sb = _make_fake_sandbox()
+        n = await upload_agnes_wheel(sb)
+
+        assert n == len(b"PK\x03\x04 fake wheel bytes")
+        written = {c.args[0]: c.args[1] for c in sb.files.write.await_args_list}
+        assert SANDBOX_WHEEL_PATH in written
+        assert written[SANDBOX_WHEEL_PATH] == b"PK\x03\x04 fake wheel bytes"
+
+    asyncio.run(_run())
+
+
+def test_upload_agnes_wheel_noop_when_no_wheel(monkeypatch):
+    """A dev image without a built wheel is a no-op (0 bytes), not an error."""
+
+    async def _run():
+        monkeypatch.setattr("app.api.cli_artifacts._find_wheel", lambda: None)
+        sb = _make_fake_sandbox()
+        n = await upload_agnes_wheel(sb)
+        assert n == 0
+        assert sb.files.write.await_count == 0
 
     asyncio.run(_run())
 

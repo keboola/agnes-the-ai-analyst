@@ -114,6 +114,66 @@ def test_tool_call_budget_emits_confirmation_required(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_install_agnes_cli_noop_without_wheel(tmp_path: Path, monkeypatch):
+    """No wheel uploaded → install is a silent no-op (no pip invocation)."""
+    from app.chat import runner
+
+    monkeypatch.setattr(runner, "_SANDBOX_WHEEL", tmp_path / "absent.whl")
+    called = []
+    monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: called.append(a))
+
+    runner._install_agnes_cli()
+    assert called == []
+
+
+def test_install_agnes_cli_invokes_pip_no_deps_user(tmp_path: Path, monkeypatch):
+    """With a wheel present, pip is invoked --no-deps --user --break-system-packages."""
+    from app.chat import runner
+
+    wheel = tmp_path / "agnes.whl"
+    wheel.write_bytes(b"PK\x03\x04")
+    monkeypatch.setattr(runner, "_SANDBOX_WHEEL", wheel)
+
+    captured = {}
+
+    def _fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+
+        class _R:
+            returncode = 0
+
+        return _R()
+
+    monkeypatch.setattr(runner.subprocess, "run", _fake_run)
+
+    runner._install_agnes_cli()
+
+    argv = captured["argv"]
+    assert argv[:4] == [sys.executable, "-m", "pip", "install"]
+    assert "--no-deps" in argv
+    assert "--user" in argv
+    assert "--break-system-packages" in argv
+    assert str(wheel) == argv[-1]
+
+
+def test_install_agnes_cli_swallows_pip_failure(tmp_path: Path, monkeypatch, capsys):
+    """A pip failure is non-fatal — logged to stderr, no exception raised."""
+    from app.chat import runner
+
+    wheel = tmp_path / "agnes.whl"
+    wheel.write_bytes(b"PK\x03\x04")
+    monkeypatch.setattr(runner, "_SANDBOX_WHEEL", wheel)
+
+    def _boom(*a, **k):
+        raise RuntimeError("pip exploded")
+
+    monkeypatch.setattr(runner.subprocess, "run", _boom)
+
+    runner._install_agnes_cli()  # must not raise
+    assert "agnes CLI install failed" in capsys.readouterr().err
+
+
 def test_per_tool_call_timeout_emits_synthetic_result(tmp_path: Path):
     """__slow_tool__ triggers a tool_call followed by tool_result: {timeout: true}."""
     async def _run():

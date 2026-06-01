@@ -24,9 +24,14 @@ RUN apt-get update && apt-get install -y python3 python3-pip curl gnupg \
 # Anthropic's Claude Code CLI — required by claude-agent-sdk's MCP loop.
 RUN npm install -g @anthropic-ai/claude-code
 
-# claude-agent-sdk + agnes CLI runtime deps. Pin the SDK to the same range
-# the Agnes server depends on so a template rebuild stays in lockstep with
-# the runner version.
+# claude-agent-sdk + the agnes CLI's *runtime dependencies* — NOT the agnes
+# package itself. The CLI is installed at spawn time from a wheel uploaded to
+# /work/agnes.whl (the server's own build artifact — see
+# app/chat/e2b_workspace_sync.upload_agnes_wheel + runner.py::_install_agnes_cli),
+# so the in-sandbox CLI version always matches the running server. Baking the
+# deps here means that spawn-time install can run `--no-deps` and stay fast.
+# Pin the SDK to the same range the Agnes server depends on so a template
+# rebuild stays in lockstep with the runner version.
 RUN pip install --no-cache-dir --break-system-packages \
     "claude-agent-sdk>=0.2.87,<0.3.0" \
     "duckdb>=1.5.2" \

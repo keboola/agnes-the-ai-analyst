@@ -108,6 +108,47 @@ async def upload_workspace(
     return total
 
 
+# Sandbox path the runner pip-installs the agnes CLI from at boot
+# (app/chat/runner.py::_install_agnes_cli).
+SANDBOX_WHEEL_PATH = f"{SANDBOX_WORKDIR}/agnes.whl"
+
+
+async def upload_agnes_wheel(sandbox) -> int:
+    """Push the server's pre-built agnes CLI wheel into the sandbox at
+    ``/work/agnes.whl`` so the runner can ``pip install`` it at boot.
+
+    The wheel is the exact artifact the server already builds at image-build
+    time (``uv build --wheel`` → ``/app/dist``) and serves at ``/cli/download``.
+    Reusing it — rather than baking the CLI into the template image or pulling
+    it from git — guarantees the in-sandbox CLI version matches the running
+    server's *exactly*, so the bundled hooks (``agnes admin grant/group/user``)
+    and RBAC semantics stay in lockstep. The template bakes the CLI's runtime
+    deps, so the runner installs ``--no-deps`` (fast spawn).
+
+    Best-effort: returns 0 (and logs a warning) when no wheel is present —
+    e.g. a dev image that skipped ``uv build``. The agent still runs; only the
+    ``agnes`` verbs (``catalog``, ``query``, ``describe``, ``snapshot``) are
+    unavailable. Returns the uploaded byte count on success.
+    """
+    # Imported lazily to avoid coupling the chat package to app.api at import
+    # time. ``_find_wheel`` is the single source of truth for wheel discovery
+    # (it honours AGNES_CLI_DIST_DIR and the /app/dist default).
+    from app.api.cli_artifacts import _find_wheel
+
+    wheel = _find_wheel()
+    if wheel is None:
+        logger.warning(
+            "upload_agnes_wheel: no wheel found under %s — the `agnes` CLI "
+            "will be absent in the sandbox (dev image without `uv build`?)",
+            os.environ.get("AGNES_CLI_DIST_DIR", "/app/dist"),
+        )
+        return 0
+    data = wheel.read_bytes()
+    await sandbox.files.write(SANDBOX_WHEEL_PATH, data)
+    logger.info("uploaded agnes wheel %s (%d bytes) to %s", wheel.name, len(data), SANDBOX_WHEEL_PATH)
+    return len(data)
+
+
 def _entry_type(e) -> str:
     """Normalize EntryInfo.type — across SDK versions it's been str or enum."""
     t = getattr(e, "type", None)
