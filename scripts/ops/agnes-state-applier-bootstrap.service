@@ -24,15 +24,20 @@ ExecStart=/usr/sbin/usermod -aG docker agnes-applier
 ExecStart=/bin/mkdir -p /data/state /data/postgres
 ExecStart=/bin/chown -R agnes-applier:agnes-applier /data/state
 ExecStart=/bin/bash -c 'chown 70:70 /data/postgres && chmod 700 /data/postgres'
-# Make /opt/agnes/.env group-readable by agnes-applier. The applier
-# script's first action is to source this file (IMAGE_REPO, IMAGE_TAG,
-# POSTGRES_PASSWORD, ...). Without this chgrp/chmod the applier — now
-# running as agnes-applier — would fail at line 1 with "Permission
-# denied" (the file is created mode 0600 owner root by the customer
-# infra startup script and contains secrets, so we keep it group-only
-# readable, not world-readable). Bootstrap unit runs as root, has
-# the privileges to flip ownership.
-ExecStart=/bin/bash -c 'if [ -f /opt/agnes/.env ]; then chgrp agnes-applier /opt/agnes/.env && chmod 0640 /opt/agnes/.env; fi'
+# Make /opt/agnes/.env readable by the applier. The script sources
+# this file (IMAGE_REPO, IMAGE_TAG, POSTGRES_PASSWORD, …) AND docker
+# compose's --env-file path reads it directly (not via shell source).
+# We chown to ``agnes-applier:agnes-applier`` (owner = applier user,
+# mode 0600) rather than just chgrp + 0640: docker compose's Go file
+# loader opens the file with flags that fail for group-only access
+# on some libc versions ("permission denied" on the open() syscall
+# even when /etc/group lists the user in the file's group). Setting
+# the owner makes it unambiguous regardless of how the caller opens
+# the file. Bootstrap unit runs as root, has the privileges to flip
+# ownership; the file still contains secrets but is owner-only readable
+# (mode 0600), so the security posture is unchanged — only the
+# identity of the owner moved from root → agnes-applier.
+ExecStart=/bin/bash -c 'if [ -f /opt/agnes/.env ]; then chown agnes-applier:agnes-applier /opt/agnes/.env && chmod 0600 /opt/agnes/.env; fi'
 
 [Install]
 WantedBy=multi-user.target

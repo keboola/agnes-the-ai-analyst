@@ -88,9 +88,9 @@ def test_bootstrap_unit_creates_user_and_state_dir():
         "bootstrap unit must add agnes-applier to docker group"
     assert "chown -R agnes-applier:agnes-applier /data/state" in unit, \
         "bootstrap unit must chown /data/state to agnes-applier"
-    assert "chgrp agnes-applier /opt/agnes/.env" in unit, \
-        "bootstrap unit must chgrp /opt/agnes/.env to agnes-applier so " \
-        "the applier can source it (Phase 8.1 follow-up #3)"
+    assert "chown agnes-applier:agnes-applier /opt/agnes/.env" in unit, \
+        "bootstrap unit must chown /opt/agnes/.env to agnes-applier so " \
+        "docker compose's Go file loader can open it (Phase 8.1 follow-up #3)"
     assert "Before=" in unit and "agnes-state-applier.service" in unit, \
         "bootstrap unit must order Before=agnes-state-applier.service"
 

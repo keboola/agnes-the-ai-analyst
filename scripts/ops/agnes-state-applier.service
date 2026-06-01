@@ -34,6 +34,6 @@ SupplementaryGroups=docker
 # RemainAfterExit=yes). If an operator or agnes-auto-upgrade
 # rewrites /opt/agnes/.env later, this catches the regression
 # before the applier drops to its non-root identity.
-ExecStartPre=+/bin/bash -c 'if [ -f /opt/agnes/.env ]; then chgrp agnes-applier /opt/agnes/.env; chmod 0640 /opt/agnes/.env; fi'
+ExecStartPre=+/bin/bash -c 'if [ -f /opt/agnes/.env ]; then chown agnes-applier:agnes-applier /opt/agnes/.env; chmod 0600 /opt/agnes/.env; fi'
 
 ExecStart=/usr/local/bin/agnes-state-applier.sh
