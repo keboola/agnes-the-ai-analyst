@@ -520,20 +520,18 @@ def _bundle_setup_py(server_url: str) -> str:
         bundle = json.loads(BUNDLE_FILE.read_text())
         server_url = (_override_server or bundle["server_url"]).rstrip("/")
 
-        # ── 1. Resolve PAT — prefer pre-baked access_token (no HTTP needed) ───
-        # The bundle embeds a short-lived PAT so setup works without any
-        # network access (e.g. from inside Claude Desktop's sandboxed shell).
-        # Falls back to: --token flag, then setup_token HTTP exchange.
-        pat = _override_token or bundle.get("access_token", "")
-        user_email = bundle.get("user_email", "")
+        # ── 1. Resolve PAT ────────────────────────────────────────────────────
+        # Preferred path: exchange setup_token → 90-day PAT (long-lived).
+        # Fallback: pre-baked 24h access_token (works offline / in sandbox).
+        # The exchange is single-use; if it was already consumed on a prior
+        # run, the fallback token takes over for that session.
+        setup_token  = bundle.get("setup_token", "")
+        pre_baked    = bundle.get("access_token", "")
+        user_email   = bundle.get("user_email", "")
 
-        if not pat:
-            # Last resort: exchange setup_token via HTTP (Terminal fallback)
-            setup_token = bundle.get("setup_token", "")
-            if not setup_token:
-                print("ERROR: No access_token or setup_token found in bundle.")
-                sys.exit(1)
-            print(f"Connecting to {{server_url}} ...")
+        pat = _override_token or ""
+
+        if not pat and setup_token:
             try:
                 req = urllib.request.Request(
                     f"{{server_url}}/api/auth/exchange-setup-token",
@@ -543,13 +541,19 @@ def _bundle_setup_py(server_url: str) -> str:
                 )
                 with urllib.request.urlopen(req, timeout=15) as r:
                     resp = json.loads(r.read())
-                pat = resp["access_token"]
+                pat = resp.get("access_token", "")
                 user_email = resp.get("user_email", user_email)
-            except Exception as exc:
-                print(f"ERROR: Cannot reach server and no pre-baked token: {{exc}}")
-                print(f"  Re-run from Terminal: python3 setup.py --server-url {{server_url}} --token <PAT>")
-                print(f"  Get your PAT at: {{server_url}}/tokens")
-                sys.exit(2)
+                if pat:
+                    print("Agnes connected (90-day token).")
+            except Exception:
+                pass  # fall through to pre-baked token below
+
+        if not pat:
+            pat = pre_baked  # 24h fallback — works offline/sandboxed
+
+        if not pat:
+            print("ERROR: No token available. Download a fresh bundle.")
+            sys.exit(2)
 
         print(f"Setting up Agnes Cowork for {{user_email or server_url}} ...")
 
