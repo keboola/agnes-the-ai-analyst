@@ -181,6 +181,9 @@ def test_schema_version_is_62():
     # v62 → v63: ``setup_tokens`` table for Agnes Cowork one-click setup.
     # v63 → v64: ``mcp_sources``, ``tool_registry``, ``tool_grants``
     #            for Universal MCP inbound connector (RFC #461).
+    # v63 → v64: ``mcp_secrets`` shared vault for MCP source auth.
+    # v64 → v65: ``mcp_user_secrets`` per-user vault.
+    # v65 → v66: ``data_package_tools`` junction.
     assert SCHEMA_VERSION >= 66
 
 
