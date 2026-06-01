@@ -582,6 +582,20 @@ def cancel_job(job_id: str) -> dict:
         raise HTTPException(404, detail=f"Unknown job_id: {job_id}")
 
     data = json.loads(path.read_text())
+
+    # H1-NEW: any terminal state means the flip already committed (completed),
+    # the migration already failed, or the job was already cancelled. A
+    # "cancel after the fact" must NOT rewrite instance.yaml — return 409 so
+    # the operator knows the action was a no-op and can inspect the real state.
+    if data["status"] in ("completed", "failed", "cancelled"):
+        raise HTTPException(
+            409,
+            detail=(
+                f"job {job_id} is already in terminal state ({data['status']}); "
+                "cancel is a no-op"
+            ),
+        )
+
     if data["status"] != "running":
         raise HTTPException(
             400, detail=f"Job is {data['status']}; cannot cancel non-running job"
@@ -592,12 +606,16 @@ def cancel_job(job_id: str) -> dict:
             detail="Past point-of-no-return (step >= flip_backend); manual recovery required"
         )
 
+    # H1-NEW ordering: write the cancel sentinel FIRST so the migrator's final
+    # pre-flip re-check (_check_cancel_before_flip) can observe it. Pre-fix the
+    # JSON status was updated before the sentinel — the migrator could pass the
+    # sentinel check and proceed to flip while the API was still writing the
+    # revert. Now: sentinel is present before any state-machine revert, making
+    # cancel ↔ flip mutually exclusive.
+    #
     # Signal the migrator subprocess (B2). The sentinel file is a
     # cooperative cancellation marker — the migrator polls for it at
-    # step boundaries and raises JobCancelled when it observes the
-    # file. We write the sentinel BEFORE flipping the job JSON status
-    # so a slow migrator that polls slightly later still sees the
-    # signal.
+    # step boundaries and raises JobCancelled when it observes the file.
     sentinel = _jobs_dir() / f"{job_id}.cancel"
     sentinel.touch()
 

@@ -194,6 +194,45 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _check_cancel_before_flip(job_path: Path, target_state: "BackendState") -> None:
+    """Final cancel-sentinel re-check right before ``flip_backend``.
+
+    H1-NEW: B2's sentinel cancellation polls at step boundaries
+    (alembic, copy, verify). A cancel arriving in the window between
+    the last poll and the flip was accepted by the API (writes the
+    cancel sentinel + reverts ``instance.yaml`` to source) while the
+    migrator continued to ``write_backend_state(target_state, ...)``.
+    End state: instance.yaml said SOURCE but data was on TARGET.
+    Re-check here so cancel ↔ flip is mutually exclusive.
+
+    Raises ``JobCancelled`` (a ``RuntimeError`` subclass, declared at
+    module top) if the cancel sentinel file exists or the job file has
+    already transitioned to a terminal cancelled state. Raising
+    ``JobCancelled`` (not bare ``RuntimeError``) is critical: the outer
+    ``run_migration`` handler has ``except JobCancelled → mark_cancelled``
+    and ``except Exception → mark_failed`` clauses. A bare ``RuntimeError``
+    would fall through to ``mark_failed``, leaving the operator-visible
+    status as ``failed`` instead of ``cancelled`` and confusing the host
+    applier (which uses status to distinguish a cancel from a real failure).
+
+    Returns normally if no sentinel is present, allowing the flip to
+    proceed.
+    """
+    sentinel = job_path.with_suffix(".cancel")
+    if sentinel.exists():
+        raise JobCancelled(step="flip_backend")
+    # Belt-and-suspenders: also check the job JSON itself in case the
+    # sentinel file was removed but the JSON was already updated.
+    if job_path.exists():
+        try:
+            data = json.loads(job_path.read_text())
+        except Exception:
+            pass
+        else:
+            if data.get("status") in ("cancelled", "cancel_requested"):
+                raise JobCancelled(step="flip_backend")
+
+
 #: Bound for the ``alembic upgrade head`` subprocess. Schema migrations
 #: are bound to PG-side ``statement_timeout`` already (set by
 #: ``_bounded_engine``), but the alembic process itself — script
@@ -1135,11 +1174,17 @@ def main(
             )
             return 1
 
-        # flip_backend is past point-of-no-return — no cancel check here.
-        # The API endpoint already 409s on cancels for step >= flip_backend,
-        # so by construction the sentinel cannot fire here legitimately.
+        # flip_backend: H1-NEW final cancel re-check immediately before the
+        # flip so cancel ↔ flip is mutually exclusive. The API endpoint
+        # already 409s on cancels for step >= flip_backend, BUT there is a
+        # narrow window between the migrator's last sentinel poll (end of
+        # verify) and this line. If a cancel lands in that window the API
+        # writes the sentinel and reverts instance.yaml; without this check
+        # the migrator would proceed to flip — leaving instance.yaml on
+        # SOURCE while data is on TARGET. Re-checking here closes that gap.
         writer.update_step("flip_backend", progress_pct=95)
         target_state = BackendState(to)
+        _check_cancel_before_flip(job_path=writer._path, target_state=target_state)
         write_backend_state(target_state, url=target_url)
 
         writer.mark_success(summary=copy_summary)
