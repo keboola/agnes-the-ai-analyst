@@ -38,6 +38,28 @@ def _maybe_instrument(con, db_tag: str):
     return InstrumentedConnection(con, db_tag)
 
 
+def _open_duckdb(path, **kwargs):
+    """Open a DuckDB connection with session timezone pinned to UTC.
+
+    All `duckdb.connect(...)` call sites in the codebase should funnel
+    through this helper. DuckDB's TIMESTAMP type stores naive values, and
+    the ICU extension's default session timezone is the host's local zone
+    (not UTC). Without pinning, a `datetime.now(timezone.utc)` write gets
+    shifted into the host zone before tzinfo is stripped, leading to
+    naive-but-local-tz values on disk. Pinning the session to UTC keeps
+    naive reads aligned with the wire / display contract documented in
+    `docs/superpowers/specs/2026-05-26-frontend-timezone-fix-design.md`.
+    """
+    conn = duckdb.connect(path, **kwargs)
+    try:
+        conn.execute("SET TimeZone='UTC'")
+    except duckdb.Error:
+        # Older DuckDB builds without the ICU extension already behave as
+        # naive-UTC; nothing to pin.
+        pass
+    return conn
+
+
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
 SCHEMA_VERSION = 61
@@ -1131,7 +1153,7 @@ def _peek_schema_version(snapshot_path: Path) -> int:
     in the refusal path. Defensive: never returns -1 / None / raises.
     """
     try:
-        conn = duckdb.connect(str(snapshot_path), read_only=True)
+        conn = _open_duckdb(str(snapshot_path), read_only=True)
         try:
             row = conn.execute(
                 "SELECT MAX(version) FROM schema_version"
@@ -1159,7 +1181,7 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
     legitimate corruption (operator-edited DB, disk failure, etc.).
     """
     try:
-        return duckdb.connect(db_path)
+        return _open_duckdb(db_path)
     except duckdb.Error as e:
         msg = str(e)
         is_wal_replay = (
@@ -1238,7 +1260,7 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
         shutil.copy2(str(snapshot), db_path)
         # Re-open. If THIS also fails, propagate — auto-recovery has
         # exhausted its options.
-        return duckdb.connect(db_path)
+        return _open_duckdb(db_path)
 
 
 def _move_to_broken(db_path: str, wal_path: Path) -> Path:
@@ -1321,7 +1343,7 @@ def get_analytics_db() -> duckdb.DuckDBPyConnection:
                 except Exception:
                     pass
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-            _analytics_db_conn = duckdb.connect(db_path)
+            _analytics_db_conn = _open_duckdb(db_path)
             # Defensive memory cap. Default ``memory_limit`` is 80% of
             # system RAM, which on a 4 GiB cgroup container resolves to
             # ~3.2 GiB — leaves no headroom for the host process + the
@@ -1506,7 +1528,7 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
     db_path = _get_data_dir() / "analytics" / "server.duckdb"
     if not db_path.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = duckdb.connect(str(db_path), read_only=False)
+        conn = _open_duckdb(str(db_path), read_only=False)
         try:
             conn.execute("SET enable_external_access = false")
         except Exception:
@@ -1519,7 +1541,7 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
         except Exception:
             pass
         return _maybe_instrument(conn, "analytics_ro")
-    conn = duckdb.connect(str(db_path), read_only=True)
+    conn = _open_duckdb(str(db_path), read_only=True)
     # Memory cap (see get_analytics_db rationale). Read-only conns can
     # still buffer significant memory for analyst queries that hit
     # ``CREATE TEMP TABLE`` over read_parquet — capping keeps a single

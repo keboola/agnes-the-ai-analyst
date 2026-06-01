@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
+from src.db import _open_duckdb
 from app.instance_config import get_value
 from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
@@ -390,7 +391,7 @@ def run_scan(
             parquet = (
                 get_data_dir() / "extracts" / source_type / "data" / f"{req.table_id}.parquet"
             )
-            local = duckdb.connect(":memory:")
+            local = _open_duckdb(":memory:")
             try:
                 projection = ", ".join(f'"{c}"' for c in req.select) if req.select else "*"
                 sql = f"SELECT {projection} FROM read_parquet(?)"
