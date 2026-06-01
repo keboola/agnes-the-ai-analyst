@@ -37,14 +37,16 @@
 services:
   postgres:
     image: postgres:16-alpine
-    # POSTGRES_PASSWORD is read from .env (or the operator's secret manager). For
-    # local-dev convenience the default is ``agnes`` — change it for any
-    # multi-user / exposed deployment. The username + db name are hard-coded
-    # here so the service URL stays stable; if you need different ones for a
-    # bare-metal prod-like stack, fork this file.
+    # LOW-2: POSTGRES_PASSWORD is REQUIRED — no literal default. Set it in
+    # your ``.env`` file (Secret Manager-sourced on customer VMs). ``docker
+    # compose up`` will fail with "POSTGRES_PASSWORD is not set" rather
+    # than silently booting Postgres with ``agnes/agnes``.
+    # The username + db name are hard-coded here so the service URL stays
+    # stable; if you need different ones for a bare-metal prod-like stack,
+    # fork this file.
     environment:
       POSTGRES_USER: agnes
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agnes}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: agnes
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -75,7 +77,7 @@ services:
       # psycopg2). ``postgres`` is the service name resolved by Compose's
       # internal DNS; from outside the compose network the same DB is
       # reachable on 127.0.0.1:5432.
-      - DATABASE_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD:-agnes}@postgres:5432/agnes
+      - DATABASE_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
     restart: "no"
 
   # One-shot DuckDB → Postgres data migration. Runs on every ``compose up``;
@@ -98,7 +100,7 @@ services:
       migrate:
         condition: service_completed_successfully
     environment:
-      - DATABASE_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD:-agnes}@postgres:5432/agnes
+      - DATABASE_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
       - DATA_DIR=/data
     volumes:
       # Read-only mount: this service must not mutate DuckDB state. ``:ro``
@@ -123,7 +125,7 @@ services:
         # On re-runs the data-migrate exit is a near-instant no-op.
         condition: service_completed_successfully
     environment:
-      - DATABASE_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD:-agnes}@postgres:5432/agnes
+      - DATABASE_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
 
   # Scheduler reads/writes the same app-state tables (sync_history,
   # materialized refresh runs, etc.) — gate it on the same migration chain so
@@ -137,7 +139,7 @@ services:
       data-migrate:
         condition: service_completed_successfully
     environment:
-      - DATABASE_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD:-agnes}@postgres:5432/agnes
+      - DATABASE_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
 
 volumes:
   # On customer-instance VMs the startup-script creates /data/postgres
