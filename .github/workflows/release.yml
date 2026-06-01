@@ -1,5 +1,9 @@
 name: Release
 
+# Optional Artifact Registry mirror (Cloud Run consumers): set repo vars
+#   AR_LOCATION (e.g. europe-west1), AR_PROJECT, AR_REPO
+# and secret GCP_SA_KEY (SA with artifactregistry.writer). Absent → skipped.
+
 on:
   push:
     branches:
@@ -186,6 +190,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve AR mirror config
+        id: armirror
+        run: |
+          if [ -n "${{ vars.AR_LOCATION }}" ] && [ -n "${{ vars.AR_PROJECT }}" ] && [ -n "${{ vars.AR_REPO }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Authenticate to Google Cloud (Artifact Registry mirror)
+        id: gcp_auth
+        if: steps.armirror.outputs.enabled == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          token_format: access_token
+
+      - name: Log in to Artifact Registry
+        if: steps.gcp_auth.outcome == 'success'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ vars.AR_LOCATION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.gcp_auth.outputs.access_token }}
+
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
@@ -201,6 +230,8 @@ jobs:
             ghcr.io/${{ github.repository }}:sha-${{ steps.meta.outputs.short_sha }}
             ${{ steps.meta.outputs.channel == 'dev' && format('ghcr.io/{0}:dev-{1}', github.repository, steps.meta.outputs.branch_slug) || '' }}
             ${{ steps.meta.outputs.channel == 'dev' && steps.meta.outputs.user_prefix != '' && format('ghcr.io/{0}:dev-{1}-latest', github.repository, steps.meta.outputs.user_prefix) || '' }}
+            ${{ steps.armirror.outputs.enabled == 'true' && format('{0}-docker.pkg.dev/{1}/{2}/agnes:{3}', vars.AR_LOCATION, vars.AR_PROJECT, vars.AR_REPO, steps.meta.outputs.channel) || '' }}
+            ${{ steps.armirror.outputs.enabled == 'true' && format('{0}-docker.pkg.dev/{1}/{2}/agnes:{3}', vars.AR_LOCATION, vars.AR_PROJECT, vars.AR_REPO, steps.meta.outputs.versioned_tag) || '' }}
 
   smoke-test:
     needs: build-and-push
