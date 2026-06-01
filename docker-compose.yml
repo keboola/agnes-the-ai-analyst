@@ -35,7 +35,7 @@ services:
       timeout: 5s
       retries: 3
     restart: unless-stopped
-    mem_limit: 4g
+    mem_limit: 8g
     mem_reservation: 1g
     cpus: 2.0
     # Default 10s is too short for graceful uvicorn shutdown — under load,
