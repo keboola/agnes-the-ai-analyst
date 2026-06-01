@@ -10,6 +10,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.55.28] — 2026-06-01
+
+### Added
+- Browser-based `agnes auth login` (gh-style loopback). Instead of
+  prompting for a plaintext password, the CLI opens the browser to
+  `/cli/auth/start`, the user signs in with whatever provider their
+  account uses (Google / magic link / password), and on approval the
+  server hands a 90-day personal access token straight back to the CLI
+  over a localhost loopback — no copy/paste, no password in the
+  terminal. The durable token never travels through the browser URL: the
+  loopback carries only a single-use, ~2-min exchange code (new
+  `cli_auth_codes` table, schema v61) that the CLI trades for the PAT via
+  `POST /cli/auth/exchange`. Server routes: `GET/POST /cli/auth/start`,
+  `POST /cli/auth/exchange`. Terminal-only fallbacks preserved:
+  `agnes auth login --password` (email+password) and `--no-browser`
+  (prints the sign-in URL); a timeout or old server prints the manual
+  `agnes auth import-token` path.
+
 ## [0.55.27] — 2026-06-01
 
 ### Security

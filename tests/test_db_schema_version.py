@@ -176,7 +176,7 @@ def test_schema_version_is_60():
     #            user under multiple identities (email from REST writers,
     #            UUID from upload-API sessions, OS-username from the
     #            legacy collector).
-    assert SCHEMA_VERSION == 60
+    assert SCHEMA_VERSION == 61
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
