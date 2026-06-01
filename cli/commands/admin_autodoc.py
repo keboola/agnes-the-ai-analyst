@@ -18,14 +18,31 @@ import typer
 def _build_extractor():
     """Construct the configured StructuredExtractor.
 
-    Uses the instance ``ai:`` block when present, else ``ANTHROPIC_API_KEY`` /
-    ``LLM_API_KEY`` from the environment (the Agnes server context). Raises
+    Reads the instance ``ai:`` block via the overlay-aware
+    ``app.instance_config.load_instance_config`` (so an ``ai:`` block written
+    to ``${DATA_DIR}/state/instance.yaml`` is honoured), and falls back to
+    ``ANTHROPIC_API_KEY`` / ``LLM_API_KEY`` from the environment. Raises
     ``ValueError`` with an actionable message when no LLM is configured.
-    Isolated as a module-level seam so tests can substitute a fake extractor.
-    """
-    from connectors.llm.factory import create_extractor_from_env_or_config
 
-    return create_extractor_from_env_or_config(None)
+    Mirrors the resolution in ``services/corporate_memory/collector.py`` and
+    ``services/session_processors/verification.py``. Isolated as a module-level
+    seam so tests can substitute a fake extractor.
+    """
+    from connectors.llm import create_extractor_from_env_or_config
+
+    ai_config = None
+    try:
+        from app.instance_config import load_instance_config
+
+        try:
+            instance_config = load_instance_config()
+        except (ValueError, FileNotFoundError):
+            instance_config = {}
+        ai_config = instance_config.get("ai") if instance_config else None
+    except Exception:
+        ai_config = None
+
+    return create_extractor_from_env_or_config(ai_config)
 
 
 def autodoc_tables(
