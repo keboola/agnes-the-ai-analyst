@@ -28,35 +28,68 @@ def _make_response(status_code=200, json_data=None, text=""):
 
 
 class TestAuthLogin:
-    def test_login_success(self):
-        """Login with valid credentials saves token and shows confirmation."""
-        mock_resp = _make_response(200, {
-            "access_token": "tok123",
+    def test_login_browser_success(self):
+        """Default browser flow: capture a code, exchange it, save the token."""
+        exch = _make_response(200, {
+            "token": "tok123",
             "email": "alice@example.com",
-            "role": "user",
+            "expires_at": "2026-09-01 00:00:00+00:00",
         })
-        with patch("cli.commands.auth.api_post", return_value=mock_resp):
-            with patch("cli.commands.auth.save_token") as mock_save:
-                # Empty password (simulates magic-link / OAuth account) — still 200 from server
-                result = runner.invoke(app, ["auth", "login", "--email", "alice@example.com"], input="\n")
-        assert result.exit_code == 0
+        with patch("cli.lib.loopback.capture_code_via_browser", return_value="code-xyz"):
+            with patch("cli.commands.auth.api_post", return_value=exch) as mock_post:
+                with patch("cli.commands.auth.save_token") as mock_save:
+                    result = runner.invoke(app, ["auth", "login", "--no-browser"])
+        assert result.exit_code == 0, result.output
         assert "alice@example.com" in result.output
         mock_save.assert_called_once_with("tok123", "alice@example.com")
+        # The captured code is exchanged at the right endpoint.
+        assert mock_post.call_args[0][0] == "/cli/auth/exchange"
+        assert mock_post.call_args[1]["json"]["code"] == "code-xyz"
 
-    def test_login_invalid_credentials(self):
-        """Login with bad credentials exits with error."""
+    def test_login_browser_timeout_prints_manual_hint(self):
+        """A timeout exits 1 and points the user at the manual import path."""
+        with patch(
+            "cli.lib.loopback.capture_code_via_browser",
+            side_effect=TimeoutError("no callback"),
+        ):
+            result = runner.invoke(app, ["auth", "login", "--no-browser"])
+        assert result.exit_code == 1
+        assert "timed out" in result.output.lower()
+        assert "import-token" in result.output
+
+    def test_login_server_too_old(self):
+        """A 404 from /cli/auth/exchange means the server predates this flow."""
+        exch = _make_response(404, {"detail": "Not Found"})
+        with patch("cli.lib.loopback.capture_code_via_browser", return_value="c"):
+            with patch("cli.commands.auth.api_post", return_value=exch):
+                result = runner.invoke(app, ["auth", "login", "--no-browser"])
+        assert result.exit_code == 1
+        assert "doesn't support browser login" in result.output
+
+    def test_login_password_mode(self):
+        """--password keeps the terminal-only email+password path."""
+        resp = _make_response(200, {"access_token": "tokP", "email": "bob@example.com"})
+        with patch("cli.commands.auth.api_post", return_value=resp) as mock_post:
+            with patch("cli.commands.auth.save_token") as mock_save:
+                result = runner.invoke(
+                    app, ["auth", "login", "--password"],
+                    input="bob@example.com\nhunter2\n",
+                )
+        assert result.exit_code == 0, result.output
+        mock_save.assert_called_once_with("tokP", "bob@example.com")
+        assert mock_post.call_args[0][0] == "/auth/token"
+        assert mock_post.call_args[1]["json"] == {"email": "bob@example.com", "password": "hunter2"}
+
+    def test_login_password_mode_invalid_credentials(self):
+        """Bad password creds exit with error under --password."""
         mock_resp = _make_response(401, {"detail": "Invalid credentials"})
         with patch("cli.commands.auth.api_post", return_value=mock_resp):
-            result = runner.invoke(app, ["auth", "login", "--email", "bad@example.com"], input="\n")
+            result = runner.invoke(
+                app, ["auth", "login", "--password"],
+                input="bad@example.com\nnope\n",
+            )
         assert result.exit_code == 1
         assert "Login failed" in result.output
-
-    def test_login_connection_error(self):
-        """Login propagates connection errors cleanly."""
-        with patch("cli.commands.auth.api_post", side_effect=Exception("Connection refused")):
-            result = runner.invoke(app, ["auth", "login", "--email", "alice@example.com"], input="\n")
-        assert result.exit_code == 1
-        assert "Connection error" in result.output
 
 
 class TestAuthLogout:
@@ -224,8 +257,9 @@ def test_da_login_sends_password(monkeypatch):
     monkeypatch.setattr(auth_mod, "api_post", fake_post, raising=False)
 
     runner = CliRunner()
-    # Provide email and password via stdin (typer prompts)
-    result = runner.invoke(auth_mod.auth_app, ["login"], input="u@t\nhunter2\n")
+    # Provide email and password via stdin (typer prompts). --password selects
+    # the terminal-only path; the default flow is now browser-based.
+    result = runner.invoke(auth_mod.auth_app, ["login", "--password"], input="u@t\nhunter2\n")
     assert result.exit_code == 0, result.output
     assert captured["path"] == "/auth/token"
     assert captured["json"] == {"email": "u@t", "password": "hunter2"}
