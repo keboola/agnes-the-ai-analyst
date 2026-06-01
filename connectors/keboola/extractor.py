@@ -135,8 +135,16 @@ def materialize_query(
     # describing whereFilters / columns / changedSince / file_type.
     payload: dict = {}
     if source_query:
+        _sq = source_query.strip()
+        if _sq.upper().startswith(("SELECT", "WITH", "INSERT", "UPDATE", "DELETE")):
+            raise ValueError(
+                f"source_query for {table_id} contains SQL, but Keboola "
+                f"materialized tables use a JSON filter spec (or null for "
+                f"full-table export). Set query_mode='local' for DuckDB-SQL "
+                f"Keboola pulls, or clear source_query for a full-table export."
+            )
         try:
-            payload = json.loads(source_query)
+            payload = json.loads(_sq)
         except json.JSONDecodeError as e:
             raise ValueError(
                 f"source_query for {table_id} is not valid JSON: {e}"
