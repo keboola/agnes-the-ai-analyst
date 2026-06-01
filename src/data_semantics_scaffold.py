@@ -8,8 +8,7 @@ holds: ``metric_definitions``, ``table_registry`` (+ ``column_metadata`` and
 *starter* pack from that data so the operator only layers hand-authored
 know-how (join contracts, gotchas, query recipes) on top.
 
-The shape mirrors the real ``FoundryAI/initial-workspace`` pack (see the
-sanitized ``groupon-sample`` example):
+The pack layout — one directory per data package:
 
     <package_slug>/
       _brief.md            AI-query instructions (prose + SQL + gotchas)
