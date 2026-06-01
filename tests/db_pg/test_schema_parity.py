@@ -27,6 +27,11 @@ import pytest
 # DuckDB-only tables that should NEVER have a PG counterpart.
 DUCKDB_ONLY_TABLES: set[str] = {
     "schema_version",  # alembic_version supersedes it in the PG world
+    # cli_auth_codes are short-lived single-use exchange codes for the
+    # browser-loopback ``agnes auth login`` flow (~2-min TTL). They are
+    # session-local — never need cross-backend portability; the state
+    # machine migrator skips them deliberately.
+    "cli_auth_codes",
 }
 
 
