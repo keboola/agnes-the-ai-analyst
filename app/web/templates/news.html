@@ -16,7 +16,7 @@ document.addEventListener('DOMContentLoaded', function () {
 <div class="news-card">
     {% if news %}
     <div class="news-meta">
-        Version {{ news.version }} · published {{ news.published_at.strftime('%Y-%m-%d') if news.published_at else '' }}
+        Version {{ news.version }} · published {% if news.published_at %}<time datetime="{{ news.published_at.isoformat() }}">{{ news.published_at.strftime('%Y-%m-%d') }}</time>{% endif %}
         {% if news.published_by %} by {{ news.published_by }}{% endif %}
     </div>
     {% if news.intro %}
