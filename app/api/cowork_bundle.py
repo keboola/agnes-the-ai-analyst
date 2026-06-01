@@ -616,44 +616,65 @@ def _bundle_setup_py(server_url: str) -> str:
         #                                  Support/Claude/claude_desktop_config.json
         #
         # Writes are best-effort; failure falls through silently.
+        # Returns list of (home_path, claude_desktop_config_path) tuples.
         def _claude_cfg_candidates():
             candidates = []
-            # Derive Mac home from project-folder path (cowork VM path mirrors Mac)
             _parts = list(HERE.parts)
             if len(_parts) >= 3 and _parts[1] == "Users":
                 _mac_home = pathlib.Path("/") / _parts[1] / _parts[2]
-                candidates.append(
+                candidates.append((
+                    _mac_home,
                     _mac_home / "Library" / "Application Support"
-                    / "Claude" / "claude_desktop_config.json"
-                )
-            # Standard platform path (works when running directly on Mac/Win/Linux)
+                    / "Claude" / "claude_desktop_config.json",
+                ))
             if platform.system() == "Darwin":
-                candidates.append(
+                candidates.append((
+                    pathlib.Path.home(),
                     pathlib.Path.home() / "Library" / "Application Support"
-                    / "Claude" / "claude_desktop_config.json"
-                )
+                    / "Claude" / "claude_desktop_config.json",
+                ))
             elif platform.system() == "Windows":
                 _appdata = os.environ.get("APPDATA", "")
-                if _appdata:
-                    candidates.append(
-                        pathlib.Path(_appdata) / "Claude" / "claude_desktop_config.json"
-                    )
+                _userprofile = os.environ.get("USERPROFILE", "")
+                if _appdata and _userprofile:
+                    candidates.append((
+                        pathlib.Path(_userprofile),
+                        pathlib.Path(_appdata) / "Claude" / "claude_desktop_config.json",
+                    ))
             elif platform.system() == "Linux":
-                candidates.append(
-                    pathlib.Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
-                )
-            # Deduplicate while preserving order
+                candidates.append((
+                    pathlib.Path.home(),
+                    pathlib.Path.home() / ".config" / "Claude" / "claude_desktop_config.json",
+                ))
             seen = set()
-            return [c for c in candidates if not (str(c) in seen or seen.add(str(c)))]
+            return [(h, c) for h, c in candidates
+                    if not (str(c) in seen or seen.add(str(c)))]
 
-        _mcp_entry = {{
-            "type": "sse",
-            "url": f"{{server_url}}/api/mcp/sse",
-            "headers": {{"Authorization": f"Bearer {{pat}}"}},
-        }}
         _registered = False
-        for _cfg_path in _claude_cfg_candidates():
+        for _home, _cfg_path in _claude_cfg_candidates():
             try:
+                import shutil as _shutil
+                # Copy mcp_server.py to a stable location outside the bundle
+                # folder so it survives bundle deletion. Files extracted from
+                # a downloaded ZIP carry com.apple.quarantine on macOS, which
+                # blocks python3 from reading them — the copy + xattr -c strip
+                # fixes that.
+                _stable_dir = _home / ".config" / "agnes"
+                _stable_mcp = _stable_dir / "mcp_server.py"
+                _stable_dir.mkdir(parents=True, exist_ok=True)
+                _shutil.copy2(str(HERE / "mcp_server.py"), str(_stable_mcp))
+                _stable_mcp.chmod(0o644)
+                if platform.system() == "Darwin":
+                    import subprocess as _sp
+                    _sp.run(["xattr", "-c", str(_stable_mcp)], capture_output=True)
+                # Write credentials alongside the stable copy so mcp_server.py
+                # can find them even after the bundle folder is deleted.
+                (_stable_dir / ".agnes-creds.json").write_text(
+                    json.dumps({{"server_url": server_url, "access_token": pat}},
+                               indent=2)
+                )
+                # claude_desktop_config.json supports stdio transport only —
+                # "type": "sse" with headers is for claude.ai web, not Desktop.
                 _desktop_cfg = {{}}
                 if _cfg_path.exists():
                     try:
@@ -661,12 +682,15 @@ def _bundle_setup_py(server_url: str) -> str:
                     except Exception:
                         _desktop_cfg = {{}}
                 _desktop_cfg.setdefault("mcpServers", {{}})
-                _desktop_cfg["mcpServers"]["agnes"] = _mcp_entry
+                _desktop_cfg["mcpServers"]["agnes"] = {{
+                    "command": "python3",
+                    "args": [str(_stable_mcp)],
+                }}
                 _cfg_path.parent.mkdir(parents=True, exist_ok=True)
                 _cfg_path.write_text(json.dumps(_desktop_cfg, indent=2))
-                print(f"Agnes registered in Claude Desktop config: {{_cfg_path}}")
+                print(f"Agnes MCP registered: {{_cfg_path}}")
                 _registered = True
-                break  # first successful write is enough
+                break
             except Exception:
                 continue
         if _registered:
