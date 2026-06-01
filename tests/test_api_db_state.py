@@ -144,7 +144,7 @@ def test_post_migrate_queues_pending_job(seeded_app, monkeypatch):
     assert job["source_backend"] == "duckdb"
     assert job["target_backend"] == "side_car"
     assert "postgres:5432" in job["target_url"]
-    assert job["schema_version"] == 1
+    assert job["schema_version"] == 2  # bumped 1→2 for B1-NEW pinned-IP fields
     # H8 — queued_at lets the applier expire stale pending jobs that
     # sat on disk while the timer was masked.
     assert "queued_at" in job and job["queued_at"], (

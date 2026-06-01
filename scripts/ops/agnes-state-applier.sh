@@ -364,22 +364,43 @@ trap '__rollback' ERR
 # emitted as empty strings. Newline-separated output + `read -r` is
 # more shell-safe than a single space-separated line — URLs contain
 # special chars that don't survive whitespace tokenization cleanly.
-{ read -r JOB_ID; read -r TARGET_URL; read -r TARGET_BACKEND; read -r SOURCE_BACKEND; read -r SOURCE_URL; } < <(
+#
+# B1-NEW: also read target_url_pinned_ip and source_url_pinned_ip
+# (schema_version=2 fields). v1 jobs written before this fix was
+# deployed will emit empty strings for the pinned fields; the
+# EFFECTIVE variables below fall back to the hostname URLs in that case.
+{ read -r JOB_ID; read -r TARGET_URL; read -r TARGET_URL_PINNED_IP; read -r TARGET_BACKEND; read -r SOURCE_BACKEND; read -r SOURCE_URL; read -r SOURCE_URL_PINNED_IP; } < <(
     python3 - "$PENDING_JOB" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 print(d["job_id"])
 print(d.get("target_url", ""))
+print(d.get("target_url_pinned_ip", "") or "")   # B1-NEW: pinned IP if present
 print(d.get("target_backend", ""))
 print(d.get("source_backend", ""))
 print(d.get("source_url", "") or "")
+print(d.get("source_url_pinned_ip", "") or "")   # B1-NEW: pinned IP if present
 PY
 )
 
+# B1-NEW: prefer the pinned-IP URL when it's present in the job JSON.
+# A v1 (legacy) job written before this fix lands will have empty
+# strings for the pinned fields; in that case we fall back to the
+# hostname URL — preserves upgrade-compatibility for jobs already
+# queued but not yet applied when this fix is deployed.
+#
+# The alias guard below uses the original hostname URLs (TARGET_URL /
+# SOURCE_URL) because _urls_alias already performs its own DNS
+# resolution internally — passing the already-resolved IP would
+# work too, but using the canonical hostname URLs keeps the guard
+# logic consistent with the API-side check.
+TARGET_URL_EFFECTIVE="${TARGET_URL_PINNED_IP:-$TARGET_URL}"
+SOURCE_URL_EFFECTIVE="${SOURCE_URL_PINNED_IP:-$SOURCE_URL}"
+
 IMAGE="ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}"
 SOURCE_URL_ARGS=()
-if [ -n "$SOURCE_URL" ]; then
-    SOURCE_URL_ARGS=( --source-url "$SOURCE_URL" )
+if [ -n "$SOURCE_URL_EFFECTIVE" ]; then
+    SOURCE_URL_ARGS=( --source-url "$SOURCE_URL_EFFECTIVE" )
 fi
 
 # B2-NEW — applier-side alias guard.
@@ -389,6 +410,10 @@ fi
 # to the same IP as an explicit ``172.18.0.x`` cloud_url, bypassing
 # the string-only guard.  Call the same Python implementation so the
 # logic stays centralised.
+# Uses the original hostname URLs (TARGET_URL / SOURCE_URL) — _urls_alias
+# resolves hostnames internally, so passing pinned IPs would also work,
+# but using canonical hostnames keeps the guard semantics identical to
+# the API-side check.
 if [ -n "$SOURCE_URL" ] && [ -n "$TARGET_URL" ]; then
     ALIAS_RESULT=$(python3 - "$SOURCE_URL" "$TARGET_URL" <<'PY' 2>/dev/null
 import sys
@@ -443,7 +468,7 @@ timeout --signal=TERM --kill-after=30 "$MIGRATOR_TIMEOUT_SEC" \
             --job-id   "$JOB_ID" \
             --to       "$TARGET_BACKEND" \
             --source-backend "$SOURCE_BACKEND" \
-            --target-url "$TARGET_URL" \
+            --target-url "$TARGET_URL_EFFECTIVE" \
             ${SOURCE_URL_ARGS[@]+"${SOURCE_URL_ARGS[@]}"} \
             --duckdb-path /data/state/system.duckdb \
             --jobs-dir   "$JOBS_DIR" \

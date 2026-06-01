@@ -129,6 +129,61 @@ def _classify_reserved_ip(ip: "ipaddress.IPv4Address | ipaddress.IPv6Address") -
     return None
 
 
+def _pin_resolved_ip(url: str) -> str:
+    """Return ``url`` with the hostname replaced by its resolved IP literal.
+
+    If the host is already an IP literal, the original URL is returned
+    unchanged — the address IS already pinned, no resolution needed.
+    If resolution fails, the original URL is returned as a safe fallback
+    (the migrator's TCP connect will fail downstream, not silently succeed
+    against the wrong host).
+
+    B1-NEW: the pre-fix code persisted the hostname-bearing URL verbatim
+    into the pending job JSON; the applier then passed it unresolved to
+    psycopg. A DNS rebind between API validation and migrator connect let
+    an attacker-controlled hostname point at the local sidecar AFTER the
+    alias guard passed — self-migration committed, the next cloud-only
+    applier tick stopped the only live Postgres.
+
+    Pinning at queue time closes the window: the migrator dials the exact
+    IP that was validated, not a re-resolved one.
+
+    The chosen IP when ``getaddrinfo`` returns multiple addresses is
+    ``sorted()[0]`` (lexicographic ascending) — deterministic across
+    runs, preserving replay reproducibility.
+    """
+    from urllib.parse import urlparse, urlunparse
+    import ipaddress as _ip
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url  # malformed — return as-is; caller already validated
+    host = parsed.hostname
+    if not host:
+        return url
+    # If host is already a literal IP, it IS the pinned form.
+    try:
+        _ip.ip_address(host)
+        return url  # already pinned
+    except ValueError:
+        pass
+    resolved = sorted(_resolve_host(host))
+    if not resolved:
+        return url  # DNS failure — fall back to hostname URL
+    chosen = resolved[0]
+    # Rebuild netloc: preserve userinfo and port, substitute host.
+    userinfo = ""
+    if parsed.username:
+        userinfo = parsed.username
+        if parsed.password:
+            userinfo += f":{parsed.password}"
+        userinfo += "@"
+    port = f":{parsed.port}" if parsed.port else ""
+    new_netloc = f"{userinfo}{chosen}{port}"
+    return urlunparse(parsed._replace(netloc=new_netloc))
+
+
 def _validate_cloud_url(url: str) -> None:
     """Reject obviously-wrong cloud URLs early (H3) and reserved/private
     addresses (MED-2, MED-1-PARTIAL).
@@ -544,14 +599,28 @@ def start_migration(payload: MigrateRequest) -> dict:
         # applier timer, queues a migration, fixes state manually,
         # then unmasks days later; we don't want the applier to
         # blindly run an old intent against now-incompatible state).
+        # B1-NEW: resolve hostnames to IP literals at queue time so the
+        # applier passes a pinned address to the migrator.  This closes the
+        # DNS rebinding window — the migrator dials the IP that passed
+        # validation, not a potentially re-resolved one.  The display URL
+        # (target_url / source_url) keeps the hostname so operators see what
+        # they posted; the applier prefers the *_pinned_ip variant.
+        # schema_version bumped 1 → 2 for the two new optional fields.
+        # Readers must treat them as optional for backwards compat with v1
+        # jobs queued before this fix was deployed.
+        target_url_pinned_ip = _pin_resolved_ip(target_url) if target_url else None
+        source_url_pinned_ip = _pin_resolved_ip(source_url) if source_url else None
+
         intent = {
             "job_id": job_id,
-            "schema_version": 1,
+            "schema_version": 2,
             "status": "pending",
             "source_backend": current_state.value,
             "target_backend": payload.target,
             "target_url": target_url,
+            "target_url_pinned_ip": target_url_pinned_ip,
             "source_url": source_url,
+            "source_url_pinned_ip": source_url_pinned_ip,
             "progress_pct": 0,
             "current_step": "queued",
             "queued_at": datetime.now(timezone.utc).isoformat(),
