@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block title %}Authorize CLI - {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<div class="login-container">
+    <div class="login-card">
+        <h2>Authorize the Agnes CLI</h2>
+        <p class="login-description">
+            A command-line login on this computer is requesting access to
+            <strong>{{ config.INSTANCE_NAME }}</strong> as
+            <strong>{{ user.email }}</strong>.
+        </p>
+        <p class="login-description">
+            Approving creates a personal access token (valid 90 days) and hands
+            it back to the terminal automatically. Only continue if you just ran
+            <code>agnes auth login</code> on this machine.
+        </p>
+        <form method="post" action="/cli/auth/start">
+            <input type="hidden" name="port" value="{{ cli_port }}">
+            <input type="hidden" name="state" value="{{ cli_state }}">
+            <button type="submit" class="btn btn-primary">Authorize</button>
+        </form>
+        <div class="login-links">
+            <a href="{{ '/' }}" class="btn btn-link">Cancel</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

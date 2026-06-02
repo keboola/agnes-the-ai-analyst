@@ -1,3 +1,7 @@
+    <!-- window.AgnesTime — local-tz timestamp hydrator for <time datetime> tags.
+         See app/web/static/js/datetime.js and the design spec at
+         docs/superpowers/specs/2026-05-26-frontend-timezone-fix-design.md. -->
+    <script src="{{ static_url('js/datetime.js') }}" defer></script>
     <script>
       // v54 global undo-toast — surfaced by admin delete handlers. The
       // toast carries an Undo button that POSTs to a restore URL, so
@@ -310,6 +314,7 @@
           { label: 'Users',                       hint: 'admin · g u',  href: '/admin/users' },
           { label: 'Groups',                      hint: 'admin · g g',  href: '/admin/groups' },
           { label: 'Server config',               hint: 'admin · g s',  href: '/admin/server-config' },
+          { label: 'Database backend',            hint: 'admin · g d',  href: '/admin/database' },
           { label: 'Activity / Audit log',        hint: 'admin · g l',  href: '/admin/activity' },
           { label: 'Telemetry',                   hint: 'admin',        href: '/admin/telemetry' },
           { label: 'Sessions',                    hint: 'admin',        href: '/admin/sessions' },

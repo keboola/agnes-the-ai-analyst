@@ -686,11 +686,12 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path) -> None:
     expect the file to exist. The parquet rebuild loop is a no-op when
     `parquet_dir` is missing.
     """
-    import duckdb
+    import duckdb  # noqa: F401  (kept for the duckdb.Error path below)
+    from src.duckdb_conn import _open_duckdb
 
     db_path = workspace / "user" / "duckdb" / "analytics.duckdb"
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = duckdb.connect(str(db_path))
+    conn = _open_duckdb(str(db_path))
     try:
         # Existing user-created BASE TABLEs we must not shadow with views.
         try:

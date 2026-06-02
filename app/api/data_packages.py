@@ -46,8 +46,8 @@ def _validate_color(value: Optional[str]) -> Optional[str]:
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from src.repositories import data_packages_repo, tool_registry_repo
 from src.repositories.audit import AuditRepository
-from src.repositories.data_packages import DataPackagesRepository
 from src.repositories.table_registry import TableRegistryRepository
 
 logger = logging.getLogger(__name__)
@@ -256,6 +256,10 @@ class AddTableRequest(BaseModel):
     table_id: str
 
 
+class AddToolRequest(BaseModel):
+    tool_id: str
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -391,7 +395,7 @@ async def list_data_packages(
     {id}`` per package) into a single round-trip — see
     ``DataPackagesRepository.list_member_ids_bulk``.
     """
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     rows = repo.list(search=search)
     serialized = [_serialize(r, conn) for r in rows]
     if include_table_ids:
@@ -410,7 +414,7 @@ async def create_data_package(
     """Create a new Data Package. ``slug`` is the user-visible stable id; the
     UNIQUE constraint in DuckDB raises ``ConstraintException`` on collision and
     we translate that to ``409 slug_exists`` per spec."""
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     if not payload.name.strip() or not payload.slug.strip():
         raise HTTPException(status_code=400, detail="name and slug are required")
     try:
@@ -450,14 +454,14 @@ async def get_data_package(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Detail view including the list of tables in the package."""
-    repo = DataPackagesRepository(conn)
+    """Detail view including the list of tables AND related MCP tools."""
+    repo = data_packages_repo()
     pkg = repo.get(pkg_id)
     if not pkg:
         raise HTTPException(status_code=404, detail="data_package_not_found")
-    tables = repo.list_tables(pkg_id)
     out = _serialize(pkg, conn)
-    out["tables"] = tables
+    out["tables"] = repo.list_tables(pkg_id)
+    out["related_tools"] = repo.list_tools(pkg_id)
     return out
 
 
@@ -470,7 +474,7 @@ async def update_data_package(
 ):
     """Patch package metadata. Audit row carries before/after diff so admins
     can reconstruct the rename history."""
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     existing = repo.get(pkg_id)
     if not existing:
         raise HTTPException(status_code=404, detail="data_package_not_found")
@@ -541,7 +545,7 @@ async def delete_data_package(
     row, so the junction (``data_package_tables``) + any resource_grants
     survive intact for the undo flow (POST /restore). Hard delete is
     available via ``repo.hard_delete`` but not currently exposed."""
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     existing = repo.get(pkg_id)
     if not existing:
         raise HTTPException(status_code=404, detail="data_package_not_found")
@@ -565,7 +569,7 @@ async def restore_data_package(
     """v54 undo: reverse a soft delete. Idempotent — restoring an already-
     live package is a no-op. 404 only when the row is truly gone (e.g.
     after a hard_delete)."""
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     existing = repo.get(pkg_id, include_deleted=True)
     if not existing:
         raise HTTPException(status_code=404, detail="data_package_not_found")
@@ -595,7 +599,7 @@ async def add_table_to_package(
     """Add a table to the package. 404 if the package or table doesn't exist.
     200 + ``{added: True/False}`` so the chip-input UI can re-render without
     a second roundtrip; idempotent on duplicate."""
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     if not repo.get(pkg_id):
         raise HTTPException(status_code=404, detail="data_package_not_found")
     table_repo = TableRegistryRepository(conn)
@@ -624,7 +628,7 @@ async def remove_table_from_package(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Remove a table from the package. Idempotent on missing junction row."""
-    repo = DataPackagesRepository(conn)
+    repo = data_packages_repo()
     if not repo.get(pkg_id):
         raise HTTPException(status_code=404, detail="data_package_not_found")
     removed = repo.remove_table(pkg_id, table_id)
@@ -635,4 +639,59 @@ async def remove_table_from_package(
             "data_package.remove_table",
             f"data_package:{pkg_id}",
             {"table_id": table_id},
+        )
+
+
+# ---------------------------------------------------------------------------
+# MCP tool junction (v64, RFC #461 §6) — symmetric with /tables above
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{pkg_id}/tools")
+async def add_tool_to_package(
+    pkg_id: str,
+    payload: AddToolRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Attach an MCP tool to the package. 404 if either side is missing,
+    200 + ``{added: True/False}`` to mirror /tables — idempotent."""
+    repo = data_packages_repo()
+    if not repo.get(pkg_id):
+        raise HTTPException(status_code=404, detail="data_package_not_found")
+    tool_repo = tool_registry_repo()
+    tool = tool_repo.get(payload.tool_id)
+    if not tool:
+        raise HTTPException(status_code=404, detail="tool_not_found")
+    added = repo.add_tool(pkg_id, payload.tool_id)
+    if added:
+        _audit(
+            conn,
+            user["id"],
+            "data_package.add_tool",
+            f"data_package:{pkg_id}",
+            {"tool_id": payload.tool_id, "exposed_name": tool.get("exposed_name")},
+        )
+    return {"added": added}
+
+
+@router.delete("/{pkg_id}/tools/{tool_id}", status_code=204)
+async def remove_tool_from_package(
+    pkg_id: str,
+    tool_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Detach an MCP tool from the package. Idempotent on missing row."""
+    repo = data_packages_repo()
+    if not repo.get(pkg_id):
+        raise HTTPException(status_code=404, detail="data_package_not_found")
+    removed = repo.remove_tool(pkg_id, tool_id)
+    if removed:
+        _audit(
+            conn,
+            user["id"],
+            "data_package.remove_tool",
+            f"data_package:{pkg_id}",
+            {"tool_id": tool_id},
         )

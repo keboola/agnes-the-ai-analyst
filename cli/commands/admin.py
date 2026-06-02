@@ -7,15 +7,25 @@ import typer
 from cli.client import api_get, api_post, api_delete, api_patch, api_put
 from cli.commands.admin_activity import activity_app
 from cli.commands.admin_ask import app as admin_ask_app
+from cli.commands.admin_autodoc import autodoc_tables
 from cli.commands.admin_data_package import admin_data_package_app
+from cli.commands.admin_data_semantics import admin_data_semantics_app
+from cli.commands.admin_mcp import mcp_app as admin_mcp_app
 from cli.commands.admin_memory_domain import admin_memory_domain_app
 from cli.commands.admin_metrics import admin_metrics_app
+from cli.commands.db import db_app as admin_db_app
 from cli.commands.admin_news import admin_news_app
 from cli.commands.admin_sessions import sessions_app as admin_sessions_app
 from cli.commands.admin_store import admin_store_app
 from cli.commands.admin_usage import app as admin_usage_app
 from cli.commands.memory_admin import memory_admin_app
 
+from src.repositories import (
+    column_metadata_repo,
+    user_group_members_repo,
+    user_groups_repo,
+    users_repo,
+)
 admin_app = typer.Typer(help="Admin operations (requires admin role)")
 admin_app.add_typer(activity_app, name="activity", help="Activity Center — audit_log timeline, health pulse, sync history")
 admin_app.add_typer(admin_ask_app, name="ask", help="Ask a natural-language question about telemetry")
@@ -31,7 +41,13 @@ admin_app.add_typer(memory_admin_app, name="memory")
 admin_app.add_typer(admin_usage_app, name="telemetry", help="Telemetry export and admin queries")
 admin_app.add_typer(admin_usage_app, name="usage", help="(deprecated alias of `telemetry`)")
 admin_app.add_typer(admin_data_package_app, name="data-package", help="Data Package CRUD (v49)")
+admin_app.add_typer(admin_data_semantics_app, name="data-semantics", help="Generate the workspace data-semantics pack (#469)")
 admin_app.add_typer(admin_memory_domain_app, name="memory-domain", help="Memory Domain CRUD (v49)")
+admin_app.add_typer(admin_db_app, name="db", help="Manage app-state DB backend (DuckDB / Postgres)")
+admin_app.add_typer(admin_mcp_app, name="mcp", help="Universal MCP source + tool admin")
+# Single direct command (mirrors `register-table` / `discover-and-register`):
+# LLM-generate descriptions for undescribed tables (#399).
+admin_app.command("autodoc-tables")(autodoc_tables)
 
 
 @admin_app.command("add-user")
@@ -637,12 +653,11 @@ def metadata_apply(
                 )
         return
 
-    from src.repositories.column_metadata import ColumnMetadataRepository
     from src.db import get_system_db
 
     conn = get_system_db()
     try:
-        repo = ColumnMetadataRepository(conn)
+        repo = column_metadata_repo()
         count = repo.import_proposal(proposal_path)
         typer.echo(f"Imported {count} column(s) from proposal.")
     finally:
@@ -1125,9 +1140,6 @@ def break_glass_grant_admin(
     import uuid as _uuid
 
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
-    from src.repositories.user_groups import UserGroupsRepository
-    from src.repositories.user_group_members import UserGroupMembersRepository
-    from src.repositories.users import UserRepository
 
     if not yes:
         confirm = typer.confirm(
@@ -1140,9 +1152,9 @@ def break_glass_grant_admin(
 
     conn = get_system_db()
     try:
-        users = UserRepository(conn)
-        groups = UserGroupsRepository(conn)
-        members = UserGroupMembersRepository(conn)
+        users = users_repo()
+        groups = user_groups_repo()
+        members = user_group_members_repo()
 
         admin_group = groups.get_by_name(SYSTEM_ADMIN_GROUP)
         if admin_group is None:

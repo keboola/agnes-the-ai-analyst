@@ -14,7 +14,7 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_60():
+def test_schema_version_is_62():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -169,9 +169,24 @@ def test_schema_version_is_60():
     #            (grain, platforms, partition_col, history, gotchas) for
     #            the /catalog/p/<slug> rewrite per the extended-
     #            descriptions admin spec. All additive + NULLABLE.
-    # v59 → v60: cloud chat tables — chat_sessions, chat_messages,
+    # v59 → v60: backfill ``usage_events.username`` and
+    #            ``usage_session_summary.username`` from ``users.email``
+    #            where ``user_id`` is non-null. Collapses the admin
+    #            telemetry dropdown which previously listed the same
+    #            user under multiple identities (email from REST writers,
+    #            UUID from upload-API sessions, OS-username from the
+    #            legacy collector).
+    # v60 → v61: ``cli_auth_codes`` table (browser-loopback login).
+    # v61 → v62: per-type FK columns on ``resource_grants`` (PR #455).
+    # v62 → v63: ``setup_tokens`` table for Agnes Cowork one-click setup.
+    # v63 → v64: ``mcp_sources``, ``tool_registry``, ``tool_grants``
+    #            for Universal MCP inbound connector (RFC #461).
+    # v63 → v64: ``mcp_secrets`` shared vault for MCP source auth.
+    # v64 → v65: ``mcp_user_secrets`` per-user vault.
+    # v65 → v66: ``data_package_tools`` junction.
+    # v67 → v68: cloud chat tables — chat_sessions, chat_messages,
     #            user_workdirs + two regular indexes.
-    assert SCHEMA_VERSION == 60
+    assert SCHEMA_VERSION >= 66
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

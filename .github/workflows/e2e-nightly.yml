@@ -56,9 +56,15 @@ jobs:
         if: env.SKIP_MATRIX != '1'
         run: |
           # docker-compose.yml declares `env_file: .env` as required; CI
-          # ships no .env, so create an empty one. Runtime values are
-          # already in the compose `environment:` block.
-          touch .env
+          # ships no .env. Generate a random per-run JWT_SECRET_KEY so the
+          # app's v0.56.0 fail-closed guard (refuses to start in production
+          # without an explicit ≥32-char key; see app/auth/jwt.py and
+          # PR #483) is satisfied. Random rather than hard-coded so the
+          # value can't be mistaken for a real key in logs or screenshots,
+          # and so two parallel runs never share the same minted token.
+          # All other runtime values are still provided by the compose
+          # `environment:` block (DATA_DIR, AGNES_TEMP_DIR, …).
+          echo "JWT_SECRET_KEY=$(openssl rand -hex 32)" > .env
           # --wait + healthcheck (defined in docker-compose.yml, hits
           # /api/health) is the same pattern as ci.yml; cleaner than
           # the prior hand-rolled curl loop, which polled the wrong

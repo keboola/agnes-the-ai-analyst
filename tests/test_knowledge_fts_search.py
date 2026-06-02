@@ -258,3 +258,56 @@ class TestCzechDiacritics:
         # Accent-stripped query must still hit the diacritic-bearing doc.
         results = repo.search("cesky")
         assert [r["id"] for r in results] == ["cs"]
+
+
+class _RecordingConn:
+    """Wraps a real DuckDB connection, records executed SQL, and can be
+    told to fail CHECKPOINT — used to assert the FTS-index flush behaviour
+    without patching methods on the C-extension connection object."""
+
+    def __init__(self, real):
+        self._real = real
+        self.calls: list[str] = []
+        self.fail_checkpoint = False
+
+    def execute(self, sql, *args, **kwargs):
+        self.calls.append(sql)
+        if self.fail_checkpoint and sql.strip().upper() == "CHECKPOINT":
+            raise duckdb.Error("Cannot CHECKPOINT: an active transaction exists")
+        return self._real.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class TestFtsIndexCheckpoint:
+    """Change: ``ensure_knowledge_fts_index`` CHECKPOINTs after (re)create
+    so the FTS DDL is flushed out of ``system.duckdb.wal`` and an unclean
+    kill can't leave an unreplayable WAL."""
+
+    def test_checkpoint_issued_after_index_create(self, tmp_path, monkeypatch):
+        real = _fresh_db(tmp_path, monkeypatch)
+        from src.fts import ensure_fts_loaded, ensure_knowledge_fts_index
+
+        if not ensure_fts_loaded(real):
+            pytest.skip("fts extension not loadable in this environment")
+
+        rec = _RecordingConn(real)
+        assert ensure_knowledge_fts_index(rec) is True
+        assert any(c.strip().upper() == "CHECKPOINT" for c in rec.calls), rec.calls
+        # CHECKPOINT must come AFTER the index DDL, not before.
+        ddl_i = next(i for i, c in enumerate(rec.calls) if "create_fts_index" in c)
+        ckpt_i = next(i for i, c in enumerate(rec.calls) if c.strip().upper() == "CHECKPOINT")
+        assert ckpt_i > ddl_i
+
+    def test_checkpoint_failure_does_not_break_index(self, tmp_path, monkeypatch):
+        real = _fresh_db(tmp_path, monkeypatch)
+        from src.fts import ensure_fts_loaded, ensure_knowledge_fts_index
+
+        if not ensure_fts_loaded(real):
+            pytest.skip("fts extension not loadable in this environment")
+
+        rec = _RecordingConn(real)
+        rec.fail_checkpoint = True
+        # A raising CHECKPOINT must be swallowed — search keeps working.
+        assert ensure_knowledge_fts_index(rec) is True

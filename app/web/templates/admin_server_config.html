@@ -1839,4 +1839,24 @@ document.getElementById("chat-save-btn").addEventListener("click", (e) => chatSa
 document.getElementById("chat-test-btn").addEventListener("click", (e) => chatTestSecrets(e.currentTarget));
 chatReadinessLoad();
 </script>
+
+<!-- ==== Database backend (state machine) ==== -->
+<!--
+  The state-machine UI moved to its own page at /admin/database — the
+  section that used to live here looked out of place in the
+  instance-config form (it doesn't share the section-by-section save
+  pattern) and the operator workflow benefits from being one click
+  from the admin menu, not buried at the bottom of this scroll.
+-->
+{% import "_components.html" as ds %}
+<section id="db-backend-section">
+  {% call ds.panel(href='/admin/database', klass='quick-card') %}
+    <h2>Database backend</h2>
+    <p>
+      Switch app-state DB between DuckDB, side-car Postgres, and a managed
+      cloud Postgres. Now on a dedicated admin page —
+      <a href="/admin/database">open <strong>/admin/database</strong> →</a>
+    </p>
+  {% endcall %}
+</section>
 {% endblock %}

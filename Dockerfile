@@ -28,6 +28,8 @@ COPY . .
 #   - agnes-auto-upgrade.sh — host cron driver (5-min digest poll)
 #   - agnes-tls-rotate.sh — host cron driver (daily corp-PKI cert refetch)
 #   - tls-fetch.sh — generic URL fetcher (sm:// gs:// https:// file://)
+#   - agnes-state-applier.{sh,service,timer} — DB backend state machine
+#     (applies compose lifecycle changes when /data/state/db-state-target.flag changes)
 #   - docker-compose.{yml,prod.yml,host-mount.yml,tls.yml} — host runtime
 #   - Caddyfile — TLS reverse proxy config
 #
@@ -39,18 +41,28 @@ COPY . .
 RUN mkdir -p /opt/agnes-host && \
     cp /app/scripts/ops/agnes-auto-upgrade.sh \
        /app/scripts/ops/agnes-tls-rotate.sh \
+       /app/scripts/ops/agnes-state-applier.sh \
+       /app/scripts/ops/agnes-state-applier.service \
+       /app/scripts/ops/agnes-state-applier.timer \
        /app/scripts/tls-fetch.sh \
        /opt/agnes-host/ && \
     cp /app/docker-compose.yml /app/docker-compose.prod.yml \
        /app/docker-compose.host-mount.yml /app/docker-compose.tls.yml \
+       /app/docker-compose.postgres.yml \
+       /app/docker-compose.postgres-host-mount.yml \
        /app/Caddyfile /opt/agnes-host/ && \
     chmod 0755 /opt/agnes-host/agnes-auto-upgrade.sh \
               /opt/agnes-host/agnes-tls-rotate.sh \
+              /opt/agnes-host/agnes-state-applier.sh \
               /opt/agnes-host/tls-fetch.sh && \
-    chmod 0644 /opt/agnes-host/docker-compose.yml \
+    chmod 0644 /opt/agnes-host/agnes-state-applier.service \
+              /opt/agnes-host/agnes-state-applier.timer \
+              /opt/agnes-host/docker-compose.yml \
               /opt/agnes-host/docker-compose.prod.yml \
               /opt/agnes-host/docker-compose.host-mount.yml \
               /opt/agnes-host/docker-compose.tls.yml \
+              /opt/agnes-host/docker-compose.postgres.yml \
+              /opt/agnes-host/docker-compose.postgres-host-mount.yml \
               /opt/agnes-host/Caddyfile
 
 # Build wheel artifact (served at /cli/download)

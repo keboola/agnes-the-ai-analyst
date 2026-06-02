@@ -26,7 +26,9 @@ import logging
 
 from connectors.llm import StructuredExtractor
 from connectors.llm.exceptions import LLMError
-from src.repositories.knowledge import KnowledgeRepository
+# ``repo`` parameters below are duck-typed — accept both the DuckDB
+# ``KnowledgeRepository`` and the Postgres ``KnowledgePgRepository``
+# via the factory in ``src.repositories.knowledge_repo()``.
 
 from .prompts import (
     BATCH_CONTRADICTION_PROMPT,
@@ -46,7 +48,7 @@ _VALID_SEVERITIES = {"hard", "soft"}
 
 
 def find_candidates(
-    repo: KnowledgeRepository,
+    repo,
     new_item: dict,
     max_candidates: int = DEFAULT_CANDIDATE_LIMIT,
 ) -> list[dict]:
@@ -106,7 +108,7 @@ def _judgment_to_record(judgment: dict, new_item_id: str) -> dict:
 def find_and_judge(
     extractor: StructuredExtractor,
     new_item: dict,
-    repo: KnowledgeRepository,
+    repo,
     max_candidates: int = DEFAULT_CANDIDATE_LIMIT,
 ) -> list[dict]:
     """Topic + judgment + resolution in one Haiku call.
@@ -170,7 +172,7 @@ def find_and_judge(
 def detect_and_record(
     extractor: StructuredExtractor,
     new_item: dict,
-    repo: KnowledgeRepository,
+    repo,
     max_candidates: int = DEFAULT_CANDIDATE_LIMIT,
 ) -> list[str]:
     """Run find_and_judge and persist the resulting contradictions.
@@ -250,7 +252,7 @@ def check_contradiction(
 def check_contradictions(
     extractor: StructuredExtractor,
     new_item: dict,
-    repo: KnowledgeRepository,
+    repo,
     max_candidates: int = DEFAULT_CANDIDATE_LIMIT,
 ) -> list[dict]:
     """Backwards-compatible alias for find_and_judge."""

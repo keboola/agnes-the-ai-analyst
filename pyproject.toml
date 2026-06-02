@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.55.25"
+version = "0.58.1"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -55,7 +55,7 @@ dependencies = [
     "matplotlib>=3.8.0",
     "numpy>=1.24.0",
     # Claude Code marketplace endpoint — pure-Python git server mounted in FastAPI
-    "dulwich>=0.22.0",
+    "dulwich>=1.2.5",
     "a2wsgi>=1.10.0",
     # In-process TTL cache for marketplace etag (transitively present via
     # google-auth, declared explicitly here because we depend on it directly).
@@ -112,6 +112,12 @@ dependencies = [
     # a uniform API; OS releases the lock automatically on process exit (no
     # stale-lock detection required). Used by cli/lib/push_lock.py.
     "filelock>=3.13,<4",
+    # MCP (Model Context Protocol) server for Claude Desktop Cowork integration.
+    # `agnes mcp` starts a stdio subprocess that Claude Desktop connects to;
+    # the subprocess has full network access so tools like catalog/query can
+    # reach the Agnes server even though the Bash tool sandbox cannot.
+    # mcp>=1.0 ships FastMCP (mcp.server.fastmcp) — no separate fastmcp dep.
+    "mcp>=1.0",
     # Transitive dependency hardened directly to dodge 5 dependabot advisories
     # (4 high, 1 medium) flagged on urllib3<2.7.0: cross-origin sensitive
     # header leak on proxied low-level redirects, decompression-bomb bypass
@@ -122,6 +128,14 @@ dependencies = [
     # who install only the CLI (`uv tool install <wheel>`) get no kbcstorage
     # and no conflict.
     "urllib3>=2.7.0",
+    # Postgres-backed app state. SQLAlchemy 2.0 for `Mapped[]` typing, psycopg
+    # 3 (the `psycopg[binary]` package) as the modern sync+async driver, and
+    # Alembic for versioned schema migrations with first-class up/down
+    # support. Replaces the in-place v1..vN ladder in src/db.py for the
+    # state half of system.duckdb. DuckDB stays for analytics only.
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.1",
+    "alembic>=1.13",
 ]
 
 [project.optional-dependencies]
@@ -164,6 +178,19 @@ dev = [
     # try/except in tests/e2e/test_chat_web.py so a missing browser binary
     # downgrades to a skip rather than an ImportError.
     "playwright>=1.40.0",
+    # Postgres test infrastructure. `testcontainers` spins a real PG container
+    # in CI (highest fidelity, no system PG binary required). `pytest-postgresql`
+    # boots a local PG process via system binary for fast dev iteration. The
+    # `pg_engine` fixture in tests/db_pg/conftest.py picks one via
+    # AGNES_TEST_PG_BACKEND (container | embedded).
+    "testcontainers[postgres]>=4",
+    "pytest-postgresql>=6",
+    # Userland-bundled Postgres binary (no system-level install, no Docker)
+    # — the default test backend, picked automatically when neither a
+    # system `postgres` binary nor a working Docker socket is available.
+    # Ideal for laptop/sandbox dev environments where installing PG
+    # system-wide is not an option.
+    "pixeltable-pgserver>=0.5.1",
 ]
 
 [project.scripts]
@@ -191,6 +218,9 @@ dev-dependencies = [
     "openai>=1.30.0",
     "fastapi-debug-toolbar>=0.6.3",
     "playwright>=1.40.0",
+    "testcontainers[postgres]>=4",
+    "pytest-postgresql>=6",
+    "pixeltable-pgserver>=0.5.1",
 ]
 # Override the urllib3<2.0.0 ceiling kbcstorage 0.9.5 declares (upstream
 # hasn't relaxed it as of 2026-05-12 but the SDK works fine against

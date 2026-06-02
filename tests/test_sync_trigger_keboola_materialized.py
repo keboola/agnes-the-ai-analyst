@@ -22,6 +22,20 @@ def system_db(tmp_path, monkeypatch):
     conn = duckdb.connect(str(db_path))
     _ensure_schema(conn)
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+
+    # _run_materialized_pass reads through the module-level factories;
+    # point them at conn-bound repos so seeded state is visible (same
+    # pattern as tests/test_sync_trigger_materialized.py).
+    from src.repositories.sync_state import SyncStateRepository
+    monkeypatch.setattr(
+        "app.api.sync.table_registry_repo",
+        lambda: TableRegistryRepository(conn),
+    )
+    monkeypatch.setattr(
+        "app.api.sync.sync_state_repo",
+        lambda: SyncStateRepository(conn),
+    )
+
     yield conn
     conn.close()
 

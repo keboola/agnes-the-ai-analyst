@@ -164,7 +164,15 @@ jobs:
 
       - name: Start services
         run: |
-          touch .env
+          # docker-compose.yml declares `env_file: .env` as required; CI
+          # ships no .env. Generate a random per-run JWT_SECRET_KEY so the
+          # app's v0.56.0 fail-closed guard (refuses to start in production
+          # without an explicit ≥32-char key; see app/auth/jwt.py and
+          # PR #483) is satisfied. Random rather than hard-coded so the
+          # value can't be mistaken for a real key in logs or screenshots.
+          # All other runtime values are still provided by the compose
+          # `environment:` block.
+          echo "JWT_SECRET_KEY=$(openssl rand -hex 32)" > .env
           docker compose up -d --wait --wait-timeout 60
 
       - name: Run Docker E2E tests

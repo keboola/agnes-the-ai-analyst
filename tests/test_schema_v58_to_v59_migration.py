@@ -45,18 +45,17 @@ def _columns(conn, table: str) -> set[str]:
     }
 
 
-def test_schema_version_is_at_least_59():
-    # v59 was the version that added the extended-content columns; the constant
-    # advances with each subsequent migration. Verify it's >= 59 rather than
-    # pinning to an exact number so this test remains valid after further bumps.
+def test_schema_version_is_current():
+    # v59 → v60: username backfill (usage_events / usage_session_summary).
+    # v60 → v61: ``setup_tokens`` table for Agnes Cowork one-click setup.
+    # v61 → v62: ``mcp_sources`` + ``tool_registry`` + ``tool_grants`` (Universal MCP).
+    # v62 → v63: ``mcp_secrets`` server-wide vault for MCP source auth.
     assert SCHEMA_VERSION >= 59
 
-
-def test_fresh_install_lands_at_current_version(tmp_path):
+def test_fresh_install_lands_at_or_past_v59(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
     assert get_schema_version(conn) == SCHEMA_VERSION
-
 
 def test_v58_to_v59_adds_data_packages_owner_columns(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
@@ -127,7 +126,6 @@ def test_v58_to_v59_is_idempotent(tmp_path):
     _ensure_schema(conn)
     _ensure_schema(conn)  # second pass — no-op
     assert get_schema_version(conn) == SCHEMA_VERSION
-
 
 def test_v58_to_v59_preserves_table_registry_rows():
     """Seed a row, re-run the v57→v58 migration (idempotent ADD COLUMN
