@@ -1,11 +1,9 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 
 {% block title %}Error {{ code }} — Data Analyst Portal{% endblock %}
 
 {% block content %}
-{# Design-system component macros — Go-home + Back action anchors
-   render via `ds.button`. #}
-{% import "_components.html" as ds %}
+{# ds.button (Go home / Back) is auto-imported by base_ds. #}
 <div class="error-container">
     <div class="error-card">
         <div class="error-code">{{ code }}</div>

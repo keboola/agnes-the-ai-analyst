@@ -39,6 +39,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {# Operator-injected scripts (placement=head_start) — run before any
+       CSS/JS so vendors that need to install global hooks first (GTM
+       dataLayer init, etc.) work. Admin-only, see instance.custom_scripts.
+       Mirrors base.html so DS-migrated pages keep operator analytics. #}
+    {% for s in custom_scripts | default([]) if s.placement == 'head_start' %}
+    {{ s.html | safe }}
+    {% endfor %}
     <title>{% block title %}{{ config.INSTANCE_NAME or 'Agnes' }}{% endblock %}</title>
 
     {# CSS load order matters: style-custom.css carries the legacy
@@ -54,6 +61,12 @@
 
     {% block head_extra %}{% endblock %}
     {% include '_theme.html' ignore missing %}
+    {# Operator-injected scripts (placement=head_end, the default) —
+       analytics + feedback widgets like Marker.io, Sentry, Hotjar.
+       Admin-only, see instance.custom_scripts. #}
+    {% for s in custom_scripts | default([]) if s.placement == 'head_end' %}
+    {{ s.html | safe }}
+    {% endfor %}
 </head>
 <body {% block body_attrs %}{% endblock %}>
 
@@ -115,5 +128,11 @@
        zero behaviour drift. #}
     {% include "_app_scripts.html" %}
     {% block scripts %}{% endblock %}
+    {# Operator-injected scripts (placement=body_end) — for vendors that
+       explicitly want bottom placement. Admin-only, see
+       instance.custom_scripts. #}
+    {% for s in custom_scripts | default([]) if s.placement == 'body_end' %}
+    {{ s.html | safe }}
+    {% endfor %}
 </body>
 </html>

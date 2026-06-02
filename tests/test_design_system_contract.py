@@ -427,3 +427,21 @@ def test_no_bare_root_block_in_leaf_templates() -> None:
         "design-tokens.css / _theme.html, not per-page:\n"
         + "\n".join(f"  {p}" for p in offenders)
     )
+
+
+def test_base_ds_carries_operator_custom_scripts() -> None:
+    """`base_ds.html` (and thus `base_page.html`) must fire all three operator
+    `custom_scripts` placements like `base.html` does. Without them every page
+    migrated onto the design-system base silently drops operator-injected
+    analytics / feedback widgets (#367 base_ds parity; surfaced during the #482
+    page migration). `test_custom_scripts_render.py` proves the loop mechanism
+    renders; this guard just keeps the loops present in base_ds."""
+    text = (TEMPLATES / "base_ds.html").read_text(encoding="utf-8")
+    missing = [
+        p for p in ("head_start", "head_end", "body_end")
+        if f"s.placement == '{p}'" not in text
+    ]
+    assert not missing, (
+        f"base_ds.html is missing operator custom_scripts loop(s): {missing} — "
+        "pages migrated onto base_ds will drop operator scripts"
+    )
