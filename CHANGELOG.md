@@ -20,7 +20,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
-## [0.59.0] — 2026-06-02
 
 ### Added
 - **Cloud-chat: admin secret management + readiness panel.** The
@@ -393,6 +392,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   empty HMAC signatures with 401; (7) a WS ticket minted for session
   A cannot open session B's WebSocket. nsjail-side tests reuse the
   same skip helper as `tests/security/test_nsjail_escape.py`.
+## [0.59.1] - 2026-06-02
+
+### Fixed
+
+- `POST /api/admin/db/migrate`: concurrent calls where one caller writes `*_in_progress` before the other's pre-lock transition check now correctly return 409 "already in progress" instead of a misleading 400 "transition not allowed".
+- Cowork nav link positioned at the end of Admin → Agent Experience group (was missing after #491 rearrangement).
+
+## [0.59.0] — 2026-06-02
+
+### Changed
+- **Cowork page renamed and relocated in the header.** The `/me/mcp` page (added in 0.58.0 as "AI Tools" in the primary nav) is now titled **"Cowork"** and reached from the **Admin → Agent Experience** dropdown instead of the top-level navigation. Page `<h1>` and browser `<title>` updated to match. Note: the Admin dropdown is admin-only, so the page is no longer linked from the header for non-admins (the route itself remains accessible to any authenticated user).
+
 ## [0.58.1] — 2026-06-02
 
 ### Fixed
