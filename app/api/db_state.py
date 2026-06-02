@@ -468,13 +468,19 @@ def start_migration(payload: MigrateRequest) -> dict:
     # are rejected immediately without acquiring the flock.  The
     # authoritative check is re-done inside the lock (B1-NEW) — this read
     # is best-effort early rejection only.
+    #
+    # Skip when pre_lock_state is already *_in_progress: a concurrent
+    # caller got there first and the in-lock _current_job_id() check will
+    # return 409.  Validating here would produce a misleading 400
+    # ("cloud_in_progress → side_car not allowed") instead.
     pre_lock_state, _ = read_backend_state()
-    try:
-        validate_transition(pre_lock_state, target_state)
-    except InvalidTransitionError as e:
-        raise HTTPException(400, detail=str(e))
-    except BackendNotYetSupportedError as e:
-        raise HTTPException(501, detail=str(e))
+    if not pre_lock_state.value.endswith("_in_progress"):
+        try:
+            validate_transition(pre_lock_state, target_state)
+        except InvalidTransitionError as e:
+            raise HTTPException(400, detail=str(e))
+        except BackendNotYetSupportedError as e:
+            raise HTTPException(501, detail=str(e))
 
     # H7-NEW: reverse migrations to DuckDB are reserved in
     # _ALLOWED_TRANSITIONS but the migrator does not yet wire

@@ -16,6 +16,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- `POST /api/admin/db/migrate`: concurrent calls where one caller writes `*_in_progress` before the other's pre-lock transition check now correctly return 409 "already in progress" instead of a misleading 400 "transition not allowed".
+- Cowork nav link moved back to primary nav (visible to all authenticated users); `/me/mcp` uses `get_current_user`, not `require_admin`, so hiding it in the admin-only dropdown was incorrect.
+
 ### Removed
 
 ### Internal
