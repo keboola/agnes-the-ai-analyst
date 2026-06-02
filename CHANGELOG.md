@@ -20,6 +20,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.60.0] — 2026-06-02
 
 ### Added
 - **Cloud-chat: admin secret management + readiness panel.** The
@@ -392,6 +393,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   empty HMAC signatures with 401; (7) a WS ticket minted for session
   A cannot open session B's WebSocket. nsjail-side tests reuse the
   same skip helper as `tests/security/test_nsjail_escape.py`.
+
 ## [0.59.1] - 2026-06-02
 
 ### Fixed
