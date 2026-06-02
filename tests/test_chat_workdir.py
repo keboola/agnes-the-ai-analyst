@@ -84,3 +84,98 @@ def test_purge_user_removes_root(workdir_mgr: WorkdirManager):
     assert n >= 2
     assert not workdir_mgr.user_workspace("u@x").exists()
     assert workdir_mgr._repo.get_workdir("u@x") is None
+
+
+# ---------------------------------------------------------------------------
+# render_workspace_prompt hook — sandbox CLAUDE.md == server-rendered analyst
+# prompt (admin Workspace Prompt / default), matching a laptop `agnes init`.
+# ---------------------------------------------------------------------------
+
+def _mgr_with_render(tmp_path: Path, render) -> WorkdirManager:
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    (bundled / "CLAUDE.md").write_text("default")
+    (bundled / ".claude").mkdir()
+    (bundled / ".claude" / "settings.json").write_text("{}")
+    return WorkdirManager(
+        data_dir=tmp_path / "data",
+        repo=repo,
+        bundled_template_dir=bundled,
+        server_url="https://agnes.example",
+        agnes_version="0.55.0",
+        get_marketplace_sha=lambda: "mkt-sha-1",
+        get_template_status=lambda: None,
+        render_workspace_prompt=render,
+    )
+
+
+def test_run_init_overwrites_claude_md_with_rendered_prompt(tmp_path: Path):
+    seen: list[str] = []
+
+    def render(email: str):
+        seen.append(email)
+        return f"# Rendered for {email}"
+
+    ws = _mgr_with_render(tmp_path, render).ensure_user_workdir("u@x")
+    assert (ws / "CLAUDE.md").read_text() == "# Rendered for u@x"
+    assert seen == ["u@x"]  # called with the user's email for RBAC context
+
+
+def test_run_init_keeps_static_claude_md_when_render_returns_none(tmp_path: Path):
+    ws = _mgr_with_render(tmp_path, lambda email: None).ensure_user_workdir("u@x")
+    assert (ws / "CLAUDE.md").read_text() == "default"
+
+
+def test_run_init_keeps_static_claude_md_when_render_raises(tmp_path: Path):
+    def boom(email: str):
+        raise RuntimeError("render failed")
+
+    # Must not propagate — best-effort, static CLAUDE.md stays.
+    ws = _mgr_with_render(tmp_path, boom).ensure_user_workdir("u@x")
+    assert (ws / "CLAUDE.md").read_text() == "default"
+
+
+def test_run_init_git_template_keeps_repo_claude_md_not_rendered(tmp_path: Path):
+    """Override mode: when an admin git initial-workspace template is active,
+    the repo's CLAUDE.md is authoritative (verbatim) — the Workspace Prompt
+    render must NOT overwrite it. Mirrors `agnes init`, which skips
+    /api/welcome in override mode. (The two are mutually exclusive by design.)
+    """
+    import io
+    import zipfile
+
+    from src.initial_workspace import TemplateStatus
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("CLAUDE.md", "# FROM GIT REPO")
+        zf.writestr(".claude/settings.json", "{}")
+    zip_bytes = buf.getvalue()
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    (bundled / "CLAUDE.md").write_text("default")
+    (bundled / ".claude").mkdir()
+    (bundled / ".claude" / "settings.json").write_text("{}")
+
+    mgr = WorkdirManager(
+        data_dir=tmp_path / "data",
+        repo=repo,
+        bundled_template_dir=bundled,
+        server_url="https://agnes.example",
+        agnes_version="0.59.0",
+        get_marketplace_sha=lambda: "sha-1",
+        get_template_status=lambda: TemplateStatus(
+            configured=True, synced=True, template_source="git", template_sha="abc",
+        ),
+        fetch_template_zip=lambda: zip_bytes,
+        render_workspace_prompt=lambda email: "RENDERED WORKSPACE PROMPT",  # must NOT win
+    )
+    ws = mgr.ensure_user_workdir("u@x")
+    assert (ws / "CLAUDE.md").read_text() == "# FROM GIT REPO"

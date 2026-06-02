@@ -92,6 +92,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   shape as the messages endpoint, no existence disclosure).
 
 ### Changed
+- **Cloud-chat sandboxes now use the admin Workspace Prompt as their
+  `CLAUDE.md`.** Previously each per-user sandbox workspace was seeded with
+  the static bundled `app/initial_workspace_default/CLAUDE.md`, so an admin
+  who customized the Workspace Prompt at `/admin/workspace-prompt` saw it on
+  laptops (via `agnes init` → `GET /api/welcome`) but NOT in cloud chat.
+  `WorkdirManager.run_init` now renders the analyst CLAUDE.md server-side
+  (`render_claude_md`, admin override or shipped default, RBAC-filtered for
+  the user) and writes it into the workspace — same content a local install
+  gets. Best-effort: any render failure leaves the bundled static CLAUDE.md
+  in place. Re-renders on workspace re-init (e.g. marketplace-SHA change).
+  Applies in **default mode only**: when an admin git initial-workspace
+  template is registered (override mode), the repo's CLAUDE.md stays
+  authoritative and is NOT overwritten — mirroring `agnes init`, which skips
+  the `/api/welcome` write in override mode (the two are mutually exclusive
+  by design; see docs/initial-workspace-override.md).
 - **Cloud-chat runner now emits `id` on `tool_call` + `tool_result` frames.**
   The previous shape used `tool: <name>` on the call and
   `tool: <tool_use_id>` on the result, so the frontend couldn't pair a

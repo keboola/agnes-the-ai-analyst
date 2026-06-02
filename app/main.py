@@ -619,12 +619,37 @@ async def lifespan(app):
                 # Fatal already logged inside the helper.
                 app.state.chat_manager = None
             else:
+                from typing import Optional
                 from app.chat.workdir import WorkdirManager
                 from app.chat.e2b_provider import E2BProvider
                 from app.chat.manager import ChatManager
                 from app.version import APP_VERSION as _APP_VERSION_CHAT
 
                 _server_url = os.environ.get("SERVER_URL", "http://localhost:8000")
+
+                def _render_workspace_prompt(user_email: str) -> Optional[str]:
+                    """Render the analyst CLAUDE.md (admin Workspace Prompt
+                    override or shipped default), RBAC-filtered for this user —
+                    the same content `agnes init` writes on a laptop via
+                    GET /api/welcome. Returns None on any failure so workdir
+                    init falls back to the bundled static CLAUDE.md."""
+                    try:
+                        from src.db import get_system_db
+                        from src.claude_md import render_claude_md
+                        from src.repositories.users import UserRepository
+
+                        conn = get_system_db()
+                        try:
+                            u = UserRepository(conn).get_by_email(user_email)
+                            if not u:
+                                return None
+                            return render_claude_md(conn, user=u, server_url=_server_url)
+                        finally:
+                            conn.close()
+                    except Exception:
+                        logger.exception("render workspace prompt failed for %s", user_email)
+                        return None
+
                 workdir_mgr = WorkdirManager(
                     data_dir=_chat_data_dir,
                     repo=app.state.chat_repo,
@@ -634,6 +659,7 @@ async def lifespan(app):
                     get_marketplace_sha=_get_marketplace_sha,
                     get_template_status=_server_template_status,
                     fetch_template_zip=_fetch_local_template_zip,
+                    render_workspace_prompt=_render_workspace_prompt,
                     marketplace_sha_debounce_seconds=app.state.chat_config.marketplace_sha_debounce_seconds,
                 )
                 # E2B sandboxes are capped at 1 hour (3600 s) by the platform.

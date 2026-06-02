@@ -33,6 +33,7 @@ class WorkdirManager:
         get_marketplace_sha: Callable[[], str],
         get_template_status: Callable[[], Optional[TemplateStatus]],
         fetch_template_zip: Optional[Callable[[], bytes]] = None,
+        render_workspace_prompt: Optional[Callable[[str], Optional[str]]] = None,
         marketplace_sha_debounce_seconds: int = 0,
     ) -> None:
         self._data_dir = data_dir
@@ -43,6 +44,14 @@ class WorkdirManager:
         self._get_marketplace_sha = get_marketplace_sha
         self._get_template_status = get_template_status
         self._fetch_template_zip = fetch_template_zip
+        # Optional ``user_email -> rendered CLAUDE.md`` hook. When set,
+        # ``run_init`` overwrites the workspace CLAUDE.md with the
+        # server-rendered analyst prompt (admin Workspace Prompt override or
+        # the shipped default), RBAC-filtered for the user — the same content
+        # ``agnes init`` writes on a laptop via ``GET /api/welcome``. Keeps
+        # cloud chat consistent with a local install instead of diverging onto
+        # the static bundled CLAUDE.md. Returns None → keep the static file.
+        self._render_workspace_prompt = render_workspace_prompt
         # Debounce cache for the marketplace-SHA lookup. Operators set
         # ``marketplace_sha_debounce_seconds`` in instance.yaml to bound
         # how often the (potentially-slow) SHA source is consulted; this
@@ -106,6 +115,13 @@ class WorkdirManager:
         status = self._get_template_status()
         template_sha = None
         if status and status.configured and status.synced and self._fetch_template_zip is not None:
+            # OVERRIDE MODE: the admin's git template repo is authoritative for
+            # CLAUDE.md (verbatim, no Jinja2, no RBAC filtering). Mirror the
+            # laptop `agnes init`, which in override mode SKIPS the
+            # /api/welcome write so the repo's CLAUDE.md wins. So we do NOT
+            # overwrite with the Workspace Prompt here. (The git override and
+            # /admin/workspace-prompt are mutually exclusive by design — see
+            # docs/initial-workspace-override.md.)
             zip_bytes = self._fetch_template_zip()
             initialize_workspace_from_template(
                 ws, zip_bytes,
@@ -122,6 +138,23 @@ class WorkdirManager:
                 server_url=self._server_url,
                 bundled_template_dir=self._bundled_template_dir,
             )
+            # DEFAULT MODE: overwrite the workspace CLAUDE.md with the
+            # server-rendered analyst prompt (admin Workspace Prompt override
+            # or shipped default), RBAC-filtered for this user — the same
+            # content `agnes init` writes on a laptop in default mode.
+            # Best-effort: any failure leaves the bundled static CLAUDE.md in
+            # place, so the agent always has *some* rails.
+            if self._render_workspace_prompt is not None:
+                try:
+                    rendered = self._render_workspace_prompt(user_email)
+                    if rendered and rendered.strip():
+                        (ws / "CLAUDE.md").write_text(rendered, encoding="utf-8")
+                        logger.info("workdir CLAUDE.md rendered from workspace-prompt: user=%s", user_email)
+                except Exception:
+                    logger.exception(
+                        "run_init: workspace-prompt render failed for %s; keeping static CLAUDE.md",
+                        user_email,
+                    )
 
         self._repo.upsert_workdir(
             user_email=user_email,
