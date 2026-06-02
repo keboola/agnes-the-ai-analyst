@@ -33,6 +33,7 @@ class WorkdirManager:
         get_marketplace_sha: Callable[[], str],
         get_template_status: Callable[[], Optional[TemplateStatus]],
         fetch_template_zip: Optional[Callable[[], bytes]] = None,
+        render_workspace_prompt: Optional[Callable[[str], Optional[str]]] = None,
         marketplace_sha_debounce_seconds: int = 0,
     ) -> None:
         self._data_dir = data_dir
@@ -43,6 +44,14 @@ class WorkdirManager:
         self._get_marketplace_sha = get_marketplace_sha
         self._get_template_status = get_template_status
         self._fetch_template_zip = fetch_template_zip
+        # Optional ``user_email -> rendered CLAUDE.md`` hook. When set,
+        # ``run_init`` overwrites the workspace CLAUDE.md with the
+        # server-rendered analyst prompt (admin Workspace Prompt override or
+        # the shipped default), RBAC-filtered for the user — the same content
+        # ``agnes init`` writes on a laptop via ``GET /api/welcome``. Keeps
+        # cloud chat consistent with a local install instead of diverging onto
+        # the static bundled CLAUDE.md. Returns None → keep the static file.
+        self._render_workspace_prompt = render_workspace_prompt
         # Debounce cache for the marketplace-SHA lookup. Operators set
         # ``marketplace_sha_debounce_seconds`` in instance.yaml to bound
         # how often the (potentially-slow) SHA source is consulted; this
@@ -122,6 +131,23 @@ class WorkdirManager:
                 server_url=self._server_url,
                 bundled_template_dir=self._bundled_template_dir,
             )
+
+        # Overwrite the workspace CLAUDE.md with the server-rendered analyst
+        # prompt (admin Workspace Prompt override or shipped default),
+        # RBAC-filtered for this user — same content `agnes init` writes on a
+        # laptop. Best-effort: any failure leaves the static CLAUDE.md from
+        # the template above in place, so the agent always has *some* rails.
+        if self._render_workspace_prompt is not None:
+            try:
+                rendered = self._render_workspace_prompt(user_email)
+                if rendered and rendered.strip():
+                    (ws / "CLAUDE.md").write_text(rendered, encoding="utf-8")
+                    logger.info("workdir CLAUDE.md rendered from workspace-prompt: user=%s", user_email)
+            except Exception:
+                logger.exception(
+                    "run_init: workspace-prompt render failed for %s; keeping static CLAUDE.md",
+                    user_email,
+                )
 
         self._repo.upsert_workdir(
             user_email=user_email,

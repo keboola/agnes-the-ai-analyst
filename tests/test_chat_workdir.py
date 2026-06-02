@@ -84,3 +84,55 @@ def test_purge_user_removes_root(workdir_mgr: WorkdirManager):
     assert n >= 2
     assert not workdir_mgr.user_workspace("u@x").exists()
     assert workdir_mgr._repo.get_workdir("u@x") is None
+
+
+# ---------------------------------------------------------------------------
+# render_workspace_prompt hook — sandbox CLAUDE.md == server-rendered analyst
+# prompt (admin Workspace Prompt / default), matching a laptop `agnes init`.
+# ---------------------------------------------------------------------------
+
+def _mgr_with_render(tmp_path: Path, render) -> WorkdirManager:
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    (bundled / "CLAUDE.md").write_text("default")
+    (bundled / ".claude").mkdir()
+    (bundled / ".claude" / "settings.json").write_text("{}")
+    return WorkdirManager(
+        data_dir=tmp_path / "data",
+        repo=repo,
+        bundled_template_dir=bundled,
+        server_url="https://agnes.example",
+        agnes_version="0.55.0",
+        get_marketplace_sha=lambda: "mkt-sha-1",
+        get_template_status=lambda: None,
+        render_workspace_prompt=render,
+    )
+
+
+def test_run_init_overwrites_claude_md_with_rendered_prompt(tmp_path: Path):
+    seen: list[str] = []
+
+    def render(email: str):
+        seen.append(email)
+        return f"# Rendered for {email}"
+
+    ws = _mgr_with_render(tmp_path, render).ensure_user_workdir("u@x")
+    assert (ws / "CLAUDE.md").read_text() == "# Rendered for u@x"
+    assert seen == ["u@x"]  # called with the user's email for RBAC context
+
+
+def test_run_init_keeps_static_claude_md_when_render_returns_none(tmp_path: Path):
+    ws = _mgr_with_render(tmp_path, lambda email: None).ensure_user_workdir("u@x")
+    assert (ws / "CLAUDE.md").read_text() == "default"
+
+
+def test_run_init_keeps_static_claude_md_when_render_raises(tmp_path: Path):
+    def boom(email: str):
+        raise RuntimeError("render failed")
+
+    # Must not propagate — best-effort, static CLAUDE.md stays.
+    ws = _mgr_with_render(tmp_path, boom).ensure_user_workdir("u@x")
+    assert (ws / "CLAUDE.md").read_text() == "default"
