@@ -1,0 +1,36 @@
+# Slack App manifest. Operators paste this at api.slack.com/apps "From manifest"
+# when installing Agnes for their workspace.
+# Replace YOUR-AGNES-HOST with the public hostname of your Agnes instance
+# (e.g. agnes.example.com).
+display_information:
+  name: Agnes
+  description: Ask Agnes data questions from Slack
+  background_color: "#1a1a1a"
+features:
+  bot_user:
+    display_name: Agnes
+    always_online: false
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - chat:write
+      - im:history
+      - im:write
+      - users:read
+      - users:read.email
+settings:
+  event_subscriptions:
+    request_url: "https://YOUR-AGNES-HOST/api/slack/events"
+    bot_events:
+      - app_mention
+      - message.im
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
