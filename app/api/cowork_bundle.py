@@ -112,6 +112,12 @@ def _generate_setup_token() -> str:
 
 _SKILL_FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 
+# Names reserved for Agnes curated skills — marketplace content must never
+# claim these so a plugin can't silently overwrite onboarding/workflow skills.
+_CURATED_SKILL_NAMES: frozenset[str] = frozenset({
+    "setup-cowork", "explore-data", "query-data", "new-skill",
+})
+
 
 def _filter_skill_for_bundle(text: str, name: str) -> str:
     """Keep name/description/compatibility; drop Claude-Code-only keys.
@@ -156,7 +162,7 @@ def _collect_marketplace_content(
     except Exception:
         return skills, agents
 
-    seen_skill: set[str] = set()
+    seen_skill: set[str] = set(_CURATED_SKILL_NAMES)  # reserves curated names
     seen_agent: set[str] = set()
 
     for plugin in plugins:
@@ -182,6 +188,8 @@ def _collect_marketplace_content(
                 name = folder.name
                 if name in seen_skill:
                     name = f"{prefix}-{folder.name}"
+                if name in seen_skill:
+                    continue  # still collides after prefix — skip
                 seen_skill.add(name)
                 filtered = _filter_skill_for_bundle(raw, name)
                 skills.append((f".claude/skills/{name}.md", filtered.encode("utf-8")))
@@ -196,6 +204,8 @@ def _collect_marketplace_content(
                 name = agent_md.stem
                 if name in seen_agent:
                     name = f"{prefix}-{agent_md.stem}"
+                if name in seen_agent:
+                    continue  # still collides after prefix — skip
                 seen_agent.add(name)
                 agents.append((f".claude/agents/{name}.md", raw.encode("utf-8")))
 
@@ -977,6 +987,7 @@ def _bundle_skill_setup_cowork() -> str:
     """
     return textwrap.dedent("""\
         ---
+        name: setup-cowork
         description: Guided Agnes Cowork setup — verify connection, explore your data, try a skill
         ---
 
