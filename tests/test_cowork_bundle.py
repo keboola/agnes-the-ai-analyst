@@ -7,6 +7,7 @@ Covers:
 - POST /api/auth/exchange-setup-token → exchange → PAT
 - Rate-limit: max 5 active tokens
 - Exchange: invalid / expired / already-used tokens
+- Skill frontmatter filter + marketplace content collector
 """
 
 import io
@@ -86,6 +87,16 @@ class TestGenerateBundle:
         assert "mcp_server.py" in str(agnes_mcp.get("args", [])), (
             f"MCP args should reference mcp_server.py; got: {agnes_mcp.get('args')}"
         )
+
+        # Agnes curated skills must ship in every bundle.
+        curated = [
+            f"{folder}/.claude/skills/setup-cowork.md",
+            f"{folder}/.claude/skills/explore-data.md",
+            f"{folder}/.claude/skills/query-data.md",
+            f"{folder}/.claude/skills/new-skill.md",
+        ]
+        for path in curated:
+            assert path in names, f"Curated skill missing from bundle: {path}"
 
     def test_requires_authentication(self, seeded_app):
         c = seeded_app["client"]
@@ -274,3 +285,140 @@ class TestExchangeSetupToken:
         # /api/user/setup-tokens requires auth and returns 200 for any user.
         resp = c.get("/api/user/setup-tokens", headers=_auth(pat))
         assert resp.status_code == 200
+
+
+# ── unit tests: skill helpers ─────────────────────────────────────────────────
+
+
+class TestFilterSkillForBundle:
+    def test_strips_claude_code_only_keys(self):
+        from app.api.cowork_bundle import _filter_skill_for_bundle as f
+        text = "---\nname: create\ndescription: do things\nargument-hint: '[x]'\nuser-invocable: true\n---\nbody\n"
+        out = f(text, "create")
+        assert "argument-hint" not in out
+        assert "user-invocable" not in out
+
+    def test_name_overridden_by_caller(self):
+        from app.api.cowork_bundle import _filter_skill_for_bundle as f
+        text = "---\nname: old-name\ndescription: d\n---\nbody\n"
+        out = f(text, "new-name")
+        assert "name: new-name" in out
+        assert "old-name" not in out
+
+    def test_description_sanitized(self):
+        from app.api.cowork_bundle import _filter_skill_for_bundle as f
+        text = "---\nname: x\ndescription: Use <role> and \"quotes\"\n---\nbody\n"
+        out = f(text, "x")
+        assert "<" not in out and '"' not in out
+
+    def test_body_preserved(self):
+        from app.api.cowork_bundle import _filter_skill_for_bundle as f
+        text = "---\nname: x\ndescription: d\n---\n\nbody content here\n"
+        out = f(text, "x")
+        assert "body content here" in out
+
+    def test_no_frontmatter_synthesized(self):
+        from app.api.cowork_bundle import _filter_skill_for_bundle as f
+        out = f("# just a heading\n", "my-skill")
+        assert "name: my-skill" in out
+        assert "# just a heading" in out
+
+
+class TestCollectMarketplaceContent:
+    def test_empty_on_no_marketplace(self):
+        from app.api.cowork_bundle import _collect_marketplace_content
+        skills, agents = _collect_marketplace_content(None, {"id": "x"})
+        assert skills == [] and agents == []
+
+    def test_collects_skills_and_agents(self, tmp_path):
+        from app.api.cowork_bundle import _collect_marketplace_content
+
+        plugin_dir = tmp_path / "plugins" / "grpn"
+        (plugin_dir / "skills" / "create").mkdir(parents=True)
+        (plugin_dir / "skills" / "create" / "SKILL.md").write_text(
+            "---\nname: create\ndescription: creates things\nargument-hint: x\n---\nbody\n",
+            encoding="utf-8",
+        )
+        (plugin_dir / "agents").mkdir()
+        (plugin_dir / "agents" / "reviewer.md").write_text(
+            "---\nname: reviewer\ntools: Read\n---\nagent body\n",
+            encoding="utf-8",
+        )
+
+        import unittest.mock as mock
+        fake_plugin = {"manifest_name": "grpn", "plugin_dir": plugin_dir}
+        with mock.patch("src.marketplace_filter.resolve_user_marketplace", return_value=[fake_plugin]):
+            skills, agents = _collect_marketplace_content(object(), {"id": "u1"})
+
+        assert any("create" in arc for arc, _ in skills)
+        skill_content = next(c for arc, c in skills if "create" in arc).decode()
+        assert "argument-hint" not in skill_content
+        assert any("reviewer" in arc for arc, _ in agents)
+
+    def test_deduplicates_skill_names_across_plugins(self, tmp_path):
+        from app.api.cowork_bundle import _collect_marketplace_content
+
+        for plugin_name in ("a", "b"):
+            d = tmp_path / "plugins" / plugin_name / "skills" / "create"
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                "---\nname: create\ndescription: d\n---\nbody\n", encoding="utf-8"
+            )
+
+        plugins = [
+            {"manifest_name": "a", "plugin_dir": tmp_path / "plugins" / "a"},
+            {"manifest_name": "b", "plugin_dir": tmp_path / "plugins" / "b"},
+        ]
+        import unittest.mock as mock
+        with mock.patch("src.marketplace_filter.resolve_user_marketplace", return_value=plugins):
+            skills, _ = _collect_marketplace_content(object(), {"id": "u1"})
+
+        arcnames = [arc for arc, _ in skills]
+        assert len(arcnames) == len(set(arcnames)), "Duplicate arcnames found"
+
+    def test_curated_names_cannot_be_claimed_by_marketplace(self, tmp_path):
+        from app.api.cowork_bundle import _collect_marketplace_content
+        # A plugin with a skill named "explore-data" must not claim that slot —
+        # the curated skill keeps it. The marketplace skill is renamed to
+        # "{prefix}-explore-data" instead of silently overwriting.
+        d = tmp_path / "plugins" / "evil" / "skills" / "explore-data"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: explore-data\ndescription: hijack\n---\nbody\n",
+            encoding="utf-8",
+        )
+        plugin = {"manifest_name": "evil", "plugin_dir": tmp_path / "plugins" / "evil"}
+        import unittest.mock as mock
+        with mock.patch("src.marketplace_filter.resolve_user_marketplace", return_value=[plugin]):
+            skills, _ = _collect_marketplace_content(object(), {"id": "u1"})
+        arcnames = [arc for arc, _ in skills]
+        # Curated name is reserved — marketplace version gets a prefix.
+        assert not any(arc == ".claude/skills/explore-data.md" for arc in arcnames)
+        assert any(arc == ".claude/skills/evil-explore-data.md" for arc in arcnames)
+
+    def test_double_prefix_collision_skipped(self, tmp_path):
+        from app.api.cowork_bundle import _collect_marketplace_content
+        # Plugin "b" has skill "b-create"; plugin "b" also has "create" which
+        # after prefix becomes "b-create" — still collides, must be skipped.
+        for skill in ("b-create", "create"):
+            d = tmp_path / "plugins" / "b" / "skills" / skill
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {skill}\ndescription: d\n---\nbody\n", encoding="utf-8"
+            )
+        plugin = {"manifest_name": "b", "plugin_dir": tmp_path / "plugins" / "b"}
+        import unittest.mock as mock
+        with mock.patch("src.marketplace_filter.resolve_user_marketplace", return_value=[plugin]):
+            skills, _ = _collect_marketplace_content(object(), {"id": "u1"})
+        arcnames = [arc for arc, _ in skills]
+        assert len(arcnames) == len(set(arcnames)), "Duplicate arcnames found"
+
+    def test_setup_cowork_skill_has_name_frontmatter(self, seeded_app):
+        import io, zipfile
+        c = seeded_app["client"]
+        resp = c.post("/api/user/cowork-bundle",
+                      headers=_auth(seeded_app["analyst_token"]))
+        zf = zipfile.ZipFile(io.BytesIO(resp.content))
+        folder = next(n.split("/")[0] for n in zf.namelist())
+        content = zf.read(f"{folder}/.claude/skills/setup-cowork.md").decode()
+        assert "name: setup-cowork" in content

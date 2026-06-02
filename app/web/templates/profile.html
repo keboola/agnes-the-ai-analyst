@@ -83,12 +83,6 @@
 
   {% include "_profile_tokens.html" %}
 
-  {% call ds.panel(title='Connect Claude Code', tag='section',
-                   klass='section-card',
-                   attrs='aria-label="Connect Claude Code"') %}
-    {% include "_profile_cowork.html" %}
-  {% endcall %}
-
   {# `<details>` can't go through `ds.panel` (the macro doesn't render
      <details>/<summary>); add `.ds-card` explicitly so the same surface
      treatment applies. `.section-card` rules override radius+padding. #}
