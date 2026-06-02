@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- **Cowork page renamed and relocated in the header.** The `/me/mcp` page (added in 0.58.0 as "AI Tools" in the primary nav) is now titled **"Cowork"** and reached from the **Admin → Agent Experience** dropdown instead of the top-level navigation. Page `<h1>` and browser `<title>` updated to match. Note: the Admin dropdown is admin-only, so the page is no longer linked from the header for non-admins (the route itself remains accessible to any authenticated user).
+
 ## [0.58.1] — 2026-06-02
 
 ### Fixed
