@@ -95,6 +95,7 @@ class AuditPgRepository:
         action_prefix: Optional[str] = None,
         action_in: Optional[List[str]] = None,
         resource: Optional[str] = None,
+        resource_prefix: Optional[str] = None,
         result_pattern: Optional[str] = None,
         correlation_id: Optional[str] = None,
         q: Optional[str] = None,
@@ -129,6 +130,9 @@ class AuditPgRepository:
         if resource is not None:
             where.append("resource = :resource_eq")
             params["resource_eq"] = resource
+        if resource_prefix is not None:
+            where.append("resource LIKE :resource_prefix")
+            params["resource_prefix"] = resource_prefix + "%"
         if result_pattern is not None:
             where.append("result LIKE :result_pattern")
             params["result_pattern"] = result_pattern
