@@ -49,7 +49,10 @@ def test_migration_creates_chat_tables():
         "title", "started_at", "last_message_at", "message_count", "archived",
     }.issubset(cols)
 
-    assert SCHEMA_VERSION == 60
+    # Chat tables landed in the v67→v68 migration (renumbered from the
+    # original v59→v60 when the branch merged main's v60–v67 ladder). Floor
+    # assertion so this stays valid after further schema bumps.
+    assert SCHEMA_VERSION >= 68
 
 
 # ---------------------------------------------------------------------------

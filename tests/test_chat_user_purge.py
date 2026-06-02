@@ -1,7 +1,10 @@
 """Tests for GDPR hard-delete of chat sessions + workdir.
 
-Uses an isolated in-memory DuckDB + minimal FastAPI app so no
-on-disk state is needed.
+The delete-user route resolves the target through the global ``users_repo()``
+factory (which, in DuckDB mode, opens ``get_system_db()``), so the test must
+seed into that same system DB rather than an isolated ``:memory:`` connection
+— otherwise the route 404s on a user the test thinks it created. We point
+``DATA_DIR`` at a tmp dir and use ``get_system_db()`` throughout.
 """
 from __future__ import annotations
 
@@ -24,6 +27,22 @@ from app.chat.types import Surface
 
 ADMIN_USER = {"id": "admin1", "email": "admin@test.com", "is_admin": True}
 TARGET_EMAIL = "target@test.com"
+
+
+def _sysdb(tmp_path: Path, monkeypatch) -> duckdb.DuckDBPyConnection:
+    """Point DATA_DIR at a tmp dir and return its system DuckDB connection.
+
+    ``get_system_db()`` reopens when the resolved path changes (per-test
+    isolation via the unique tmp_path), and runs ``_ensure_schema`` on open.
+    The route's ``users_repo()`` factory uses the same ``get_system_db()``,
+    so seeded rows are visible to the handler.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "sysdb"))
+    monkeypatch.setenv("TESTING", "1")
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
+    from src.db import get_system_db
+
+    return get_system_db()
 
 
 def _make_app(conn: duckdb.DuckDBPyConnection, tmp_path: Path) -> FastAPI:
@@ -80,10 +99,9 @@ def _seed_target_user(conn: duckdb.DuckDBPyConnection) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_hard_delete_removes_chat_sessions(tmp_path: Path):
+def test_hard_delete_removes_chat_sessions(tmp_path: Path, monkeypatch):
     """DELETE /api/users/{id}?hard=true removes all chat_sessions rows."""
-    conn = duckdb.connect(":memory:")
-    _ensure_schema(conn)
+    conn = _sysdb(tmp_path, monkeypatch)
 
     user_id = _seed_target_user(conn)
     repo = ChatRepository(conn)
@@ -102,10 +120,9 @@ def test_hard_delete_removes_chat_sessions(tmp_path: Path):
     assert repo.list_sessions(TARGET_EMAIL) == []
 
 
-def test_hard_delete_removes_workdir(tmp_path: Path):
+def test_hard_delete_removes_workdir(tmp_path: Path, monkeypatch):
     """DELETE /api/users/{id}?hard=true wipes the per-user workdir."""
-    conn = duckdb.connect(":memory:")
-    _ensure_schema(conn)
+    conn = _sysdb(tmp_path, monkeypatch)
 
     user_id = _seed_target_user(conn)
 
@@ -138,10 +155,9 @@ def test_hard_delete_removes_workdir(tmp_path: Path):
     assert not user_root.exists()
 
 
-def test_soft_delete_does_not_purge_chat(tmp_path: Path):
+def test_soft_delete_does_not_purge_chat(tmp_path: Path, monkeypatch):
     """DELETE /api/users/{id} without ?hard=true leaves chat sessions intact."""
-    conn = duckdb.connect(":memory:")
-    _ensure_schema(conn)
+    conn = _sysdb(tmp_path, monkeypatch)
 
     user_id = _seed_target_user(conn)
     repo = ChatRepository(conn)
