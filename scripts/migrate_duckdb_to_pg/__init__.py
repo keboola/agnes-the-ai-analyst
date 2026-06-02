@@ -97,6 +97,12 @@ _PK_COLUMNS: Dict[str, List[str]] = {
     "knowledge_item_domains": ["item_id", "domain_id"],
     "data_package_tables": ["package_id", "table_id"],
     "user_stack_subscriptions": ["user_id", "resource_type", "resource_id"],
+    # v63-v67 MCP / Cowork tables
+    "tool_registry": ["tool_id"],
+    "tool_grants": ["tool_id", "group_id"],
+    "mcp_secrets": ["source_id"],
+    "mcp_user_secrets": ["source_id", "user_id"],
+    "data_package_tools": ["package_id", "tool_id"],
 }
 
 

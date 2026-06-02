@@ -374,6 +374,61 @@ class DataPackagesPgRepository:
             ).mappings().all()
         return [dict(r) for r in rows]
 
+    def add_tool(self, pkg_id: str, tool_id: str) -> bool:
+        """Attach an MCP tool to a package. Returns True iff a row was inserted."""
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                sa.text(
+                    "INSERT INTO data_package_tools (package_id, tool_id) "
+                    "VALUES (:pkg_id, :tool_id) ON CONFLICT DO NOTHING"
+                ),
+                {"pkg_id": pkg_id, "tool_id": tool_id},
+            )
+        return (result.rowcount or 0) > 0
+
+    def remove_tool(self, pkg_id: str, tool_id: str) -> bool:
+        """Detach an MCP tool from a package. Returns True iff a row was deleted."""
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                sa.text(
+                    "DELETE FROM data_package_tools "
+                    "WHERE package_id = :pkg_id AND tool_id = :tool_id"
+                ),
+                {"pkg_id": pkg_id, "tool_id": tool_id},
+            )
+        return (result.rowcount or 0) > 0
+
+    def list_tools(self, pkg_id: str) -> List[Dict[str, Any]]:
+        """MCP tools attached to a package (exposed-name ordered).
+
+        Mirrors the DuckDB sibling: joins tool_registry + mcp_sources.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """
+                    SELECT t.tool_id, t.exposed_name, t.description, t.mode,
+                           s.name AS source_name
+                    FROM data_package_tools dpt
+                    JOIN tool_registry t ON t.tool_id = dpt.tool_id
+                    JOIN mcp_sources s   ON s.id = t.source_id
+                    WHERE dpt.package_id = :pkg_id
+                    ORDER BY t.exposed_name
+                    """
+                ),
+                {"pkg_id": pkg_id},
+            ).mappings().all()
+        return [
+            {
+                "tool_id": r["tool_id"],
+                "exposed_name": r["exposed_name"],
+                "description": r["description"],
+                "mode": r["mode"],
+                "source_name": r["source_name"],
+            }
+            for r in rows
+        ]
+
     def list_member_ids_bulk(self) -> Dict[str, List[str]]:
         """Bulk fetch of the ``{package_id → [table_id, ...]}`` mapping
         for every live (non-soft-deleted) package. Empty packages are

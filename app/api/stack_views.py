@@ -85,6 +85,7 @@ async def view_data_package(
     _require_access(user, ResourceType.DATA_PACKAGE, pkg["id"], conn)
     _emit_view(conn, event_type="data_package.view", user=user, slug=slug, source=source)
     tables = repo.list_tables(pkg["id"])
+    related_tools = repo.list_tools(pkg["id"])
     return {
         "id": pkg["id"],
         "slug": pkg["slug"],
@@ -93,6 +94,7 @@ async def view_data_package(
         "icon": pkg.get("icon"),
         "color": pkg.get("color"),
         "tables": tables,
+        "related_tools": related_tools,
     }
 
 

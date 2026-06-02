@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.57.2"
+version = "0.58.0"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -104,6 +104,12 @@ dependencies = [
     # a uniform API; OS releases the lock automatically on process exit (no
     # stale-lock detection required). Used by cli/lib/push_lock.py.
     "filelock>=3.13,<4",
+    # MCP (Model Context Protocol) server for Claude Desktop Cowork integration.
+    # `agnes mcp` starts a stdio subprocess that Claude Desktop connects to;
+    # the subprocess has full network access so tools like catalog/query can
+    # reach the Agnes server even though the Bash tool sandbox cannot.
+    # mcp>=1.0 ships FastMCP (mcp.server.fastmcp) — no separate fastmcp dep.
+    "mcp>=1.0",
     # Transitive dependency hardened directly to dodge 5 dependabot advisories
     # (4 high, 1 medium) flagged on urllib3<2.7.0: cross-origin sensitive
     # header leak on proxied low-level redirects, decompression-bomb bypass

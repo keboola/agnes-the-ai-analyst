@@ -105,6 +105,9 @@ def test_no_bare_duckdb_connect_in_production_code():
         # `connectors.bigquery.extractor.duckdb`. See the inline pin
         # helper in connectors/bigquery/extractor.py.
         "connectors/bigquery/extractor.py",
+        # Developer POC script — standalone, not part of the production
+        # app path, not imported by any FastAPI handler or CLI command.
+        "scripts/dev/poc_mcp_e2e.py",
         # tests/db_pg/ existing fixtures predate the _open_duckdb rollout
         # and intentionally use bare connect for fixture isolation. Each
         # is listed by file path so any NEW bare connect in tests/db_pg/

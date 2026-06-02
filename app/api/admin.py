@@ -5,6 +5,7 @@ which checks Admin user_group membership for both OAuth session and PAT
 callers via the same ``_user_group_ids`` lookup.
 """
 
+import json
 import logging
 import os
 import threading
@@ -1532,6 +1533,23 @@ class RegisterTableRequest(BaseModel):
         # backticks for dashed identifiers (e.g. `prj-org.dataset.table`).
         if self.query_mode != "materialized" and sq and "`" in sq:
             raise ValueError(_BACKTICK_REJECTION_MESSAGE)
+        # Keboola materialized source_query must be a JSON filter spec, not SQL.
+        # The extractor uses the Storage API with structured filters (columns,
+        # whereFilters, changedSince) — DuckDB SQL belongs on BigQuery rows.
+        if self.query_mode == "materialized" and self.source_type == "keboola" and sq:
+            if sq.upper().startswith(("SELECT", "WITH")):
+                raise ValueError(
+                    "Keboola materialized source_query must be a JSON filter spec "
+                    "(columns/whereFilters/changedSince), not SQL. "
+                    "Use null for full-table export, or set query_mode='local' "
+                    "for DuckDB-based Keboola pulls."
+                )
+            try:
+                json.loads(sq)
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"Keboola materialized source_query must be valid JSON: {e}"
+                ) from e
         # Normalise: stash the trimmed-or-None form so the persisted column
         # never carries surrounding whitespace or empty-string sentinels.
         self.source_query = sq
@@ -2924,19 +2942,17 @@ async def update_table(
         if merged.get("query_mode") != "materialized":
             merged["source_query"] = None
 
-        # Cross-source coherence: query_mode='materialized' requires a
-        # non-empty source_query for ALL source types, not just BigQuery.
-        # BQ rows without source_query can be server-generated from
-        # bucket+source_table (handled by _validate_bigquery_register_payload
-        # via the synthetic RegisterTableRequest below). Non-BQ rows (e.g.
-        # Keboola) still require an explicit source_query at PUT time.
+        # Cross-source coherence: query_mode='materialized' + source_query rules:
+        # - bigquery: null OK — server-generates source_query from bucket+source_table.
+        # - keboola:  null OK — null means full-table export (valid at registration too;
+        #             see RegisterTableRequest validator which guards only non-empty sq).
+        # - all others: require an explicit non-empty source_query.
         if merged.get("query_mode") == "materialized":
             sq = merged.get("source_query")
             if not sq or not str(sq).strip():
-                # BQ rows: let _validate_bigquery_register_payload generate
-                # source_query from bucket+source_table (falls through below).
-                # Non-BQ rows: no server-generate fallback; raise 422.
-                if merged.get("source_type") != "bigquery":
+                # BQ and Keboola both allow null/empty source_query — fall through.
+                # All other source types require an explicit source_query; raise 422.
+                if merged.get("source_type") not in ("bigquery", "keboola"):
                     raise HTTPException(
                         status_code=422,
                         detail=(
@@ -2952,6 +2968,30 @@ async def update_table(
             # admin SQL through the BQ jobs API using BQ-native syntax, which
             # requires backticks for dashed project/dataset identifiers.
             # Non-materialized rows still reject backticks in the model validator.
+
+            # Keboola materialized: source_query must be a JSON filter spec,
+            # not SQL. Validate after the non-empty check above so we know sq
+            # is a non-empty string here.
+            if merged.get("source_type") == "keboola":
+                _sq = str(merged.get("source_query", "") or "").strip()
+                if _sq.upper().startswith(("SELECT", "WITH")):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            "Keboola materialized source_query must be a JSON "
+                            "filter spec (columns/whereFilters/changedSince), "
+                            "not SQL. Use null for full-table export, or set "
+                            "query_mode='local' for DuckDB-based Keboola pulls."
+                        ),
+                    )
+                if _sq:
+                    try:
+                        json.loads(_sq)
+                    except json.JSONDecodeError as _e:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"Keboola materialized source_query must be valid JSON: {_e}",
+                        ) from _e
 
         if merged.get("source_type") == "bigquery":
             # Reuse the register-time validator. It mutates the request to

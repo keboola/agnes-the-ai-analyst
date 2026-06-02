@@ -776,6 +776,61 @@ async def home_page(
     return templates.TemplateResponse(request, "home_not_onboarded.html", ctx)
 
 
+@router.get("/me/mcp", response_class=HTMLResponse)
+async def me_mcp_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """User-facing view of available MCP tools and marketplace skills."""
+    from app.api.mcp_passthrough import _visible_passthrough_tools
+    from app.api.v2_marketplace import _accessible_plugins, _skills_for_plugin
+    from src.repositories.mcp_sources import MCPSourceRepository
+
+    # Passthrough tools the caller can see
+    source_names = {
+        s["id"]: s["name"]
+        for s in MCPSourceRepository(conn).list_all(enabled_only=True)
+    }
+    raw_tools = _visible_passthrough_tools(user, conn)
+    passthrough_tools = []
+    for t in raw_tools:
+        sname = source_names.get(t["source_id"])
+        if sname:
+            passthrough_tools.append({
+                "exposed_name": t["exposed_name"],
+                "description": t.get("description"),
+                "source_name": sname,
+            })
+
+    # Marketplace skills the caller can access
+    skills = []
+    for plugin in _accessible_plugins(conn, user):
+        skills.extend(_skills_for_plugin(plugin["marketplace_id"], plugin["name"]))
+
+    static_tools = [
+        {"name": "server_info",  "description": "Check Agnes connectivity and your account email."},
+        {"name": "catalog",      "description": "List all tables available to you — name, query_mode, row count."},
+        {"name": "schema",       "description": "Show column names and types for a table."},
+        {"name": "describe",     "description": "Schema + sample rows for a table in one call."},
+        {"name": "query",        "description": "Execute SQL against Agnes data (DuckDB or BigQuery dialect)."},
+        {"name": "skills",       "description": "List marketplace skills you can access — includes full SKILL.md body."},
+    ]
+
+    server_url = str(request.base_url).rstrip("/")
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=is_user_admin(user["id"], conn),
+        static_tools=static_tools,
+        passthrough_tools=passthrough_tools,
+        skills=skills,
+        server_url=server_url,
+    )
+    return templates.TemplateResponse(request, "me_mcp.html", ctx)
+
+
 @router.get("/me/activity", response_class=HTMLResponse)
 async def me_activity_page(
     request: Request,
@@ -2279,6 +2334,16 @@ async def admin_tables(
     return templates.TemplateResponse(request, "admin_tables.html", ctx)
 
 
+@router.get("/admin/sync", response_class=HTMLResponse)
+async def admin_sync_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Sync status dashboard — per-table extraction state + manual trigger."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_sync.html", ctx)
+
+
 @router.get("/admin/server-config", response_class=HTMLResponse)
 async def admin_server_config_page(
     request: Request,
@@ -2463,6 +2528,44 @@ async def admin_marketplaces_page(
     """Admin page for marketplace git repositories (register / sync / delete)."""
     ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "admin_marketplaces.html", ctx)
+
+
+# ── Inbound MCP source admin (RFC keboola/agnes-the-ai-analyst#461) ──
+#
+# Shell-only routes — every dynamic bit is fetched client-side from the
+# REST API under /api/admin/mcp-sources and /api/admin/mcp-tools (built in
+# parallel; contract pinned in the RFC §5). Keeping the server side this
+# thin means a contract drift only requires touching the templates' JS.
+@router.get("/admin/mcp-sources", response_class=HTMLResponse)
+async def admin_mcp_sources_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """List page for registered MCP sources."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_mcp_sources.html", ctx)
+
+
+@router.get("/admin/mcp-sources/{source_id}", response_class=HTMLResponse)
+async def admin_mcp_source_detail_page(
+    source_id: str,
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Detail page for a single MCP source — config, introspect, curation."""
+    ctx = _build_context(request, user=user, source_id=source_id)
+    return templates.TemplateResponse(request, "admin_mcp_source_detail.html", ctx)
+
+
+@router.get("/admin/mcp-tools/{tool_id}/grants", response_class=HTMLResponse)
+async def admin_mcp_tool_grants_page(
+    tool_id: str,
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Grant-management page for a passthrough MCP tool."""
+    ctx = _build_context(request, user=user, tool_id=tool_id)
+    return templates.TemplateResponse(request, "admin_mcp_tool_grants.html", ctx)
 
 
 # Scheduler-driven admin actions audited by app/api/admin.py and
@@ -2974,6 +3077,16 @@ async def profile_session_download(
         media_type="application/x-ndjson",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/help/cowork", response_class=HTMLResponse)
+async def cowork_help(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Step-by-step guide for the Connect Claude Code (Agnes Cowork) setup flow."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "cowork_help.html", ctx)
 
 
 @router.get("/_debug/throw/http/{code:int}", response_class=HTMLResponse, include_in_schema=False)

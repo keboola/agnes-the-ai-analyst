@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from src.models.audit import AuditLog
 from src.models.config import InstanceTemplate, MetricDefinition, PersonalAccessToken
-from src.models.data_packages import DataPackage, DataPackageTable
+from src.models.data_packages import DataPackage, DataPackageTable, DataPackageTool
 from src.models.knowledge import (
     KnowledgeContradiction,
     KnowledgeItem,
@@ -55,6 +55,14 @@ from src.models.telemetry import (
     UsageToolDaily,
     UserObservabilityView,
 )
+from src.models.mcp import (
+    MCPSecret,
+    MCPSource,
+    MCPUserSecret,
+    SetupToken,
+    ToolGrant,
+    ToolRegistry,
+)
 from src.models.rbac import (
     ResourceGrant,
     User,
@@ -69,6 +77,7 @@ __all__ = [
     "ColumnMetadata",
     "DataPackage",
     "DataPackageTable",
+    "DataPackageTool",
     "InstanceTemplate",
     "KnowledgeContradiction",
     "KnowledgeItem",
@@ -76,6 +85,9 @@ __all__ = [
     "KnowledgeItemRelation",
     "KnowledgeItemUserDismissed",
     "KnowledgeVote",
+    "MCPSecret",
+    "MCPSource",
+    "MCPUserSecret",
     "MarketplacePlugin",
     "MarketplaceRegistry",
     "MemoryDomain",
@@ -86,6 +98,7 @@ __all__ = [
     "PersonalAccessToken",
     "Recipe",
     "ResourceGrant",
+    "SetupToken",
     "ScriptRegistry",
     "SessionProcessorState",
     "StoreEntity",
@@ -101,6 +114,8 @@ __all__ = [
     "UsageMarketplaceItemWindow",
     "UsageSessionSummary",
     "UsageToolDaily",
+    "ToolGrant",
+    "ToolRegistry",
     "User",
     "UserGroup",
     "UserGroupMember",

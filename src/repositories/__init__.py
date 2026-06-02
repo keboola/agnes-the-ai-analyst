@@ -82,6 +82,10 @@ __all__ = [
     "memory_domains_repo",
     "recipes_repo",
     "user_stack_subscriptions_repo",
+    # MCP / Cowork
+    "mcp_sources_repo",
+    "tool_registry_repo",
+    "setup_tokens_repo",
 ]
 
 
@@ -455,3 +459,31 @@ def user_stack_subscriptions_repo() -> Any:
         UserStackSubscriptionsRepository,
     )
     return UserStackSubscriptionsRepository(get_system_db())
+
+
+# ---------------------------------------------------------------------------
+# MCP / Cowork
+# ---------------------------------------------------------------------------
+
+def mcp_sources_repo() -> Any:
+    if use_pg():
+        from src.repositories.mcp_sources_pg import MCPSourcePgRepository
+        return MCPSourcePgRepository(_pg_engine())
+    from src.repositories.mcp_sources import MCPSourceRepository
+    return MCPSourceRepository(get_system_db())
+
+
+def tool_registry_repo() -> Any:
+    if use_pg():
+        from src.repositories.tool_registry_pg import ToolRegistryPgRepository
+        return ToolRegistryPgRepository(_pg_engine())
+    from src.repositories.tool_registry import ToolRegistryRepository
+    return ToolRegistryRepository(get_system_db())
+
+
+def setup_tokens_repo() -> Any:
+    if use_pg():
+        from src.repositories.setup_tokens_pg import SetupTokenPgRepository
+        return SetupTokenPgRepository(_pg_engine())
+    from src.repositories.setup_tokens import SetupTokenRepository
+    return SetupTokenRepository(get_system_db())

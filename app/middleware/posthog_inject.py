@@ -70,6 +70,15 @@ class PosthogInjectionMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
 
+    async def __call__(self, scope, receive, send) -> None:
+        # BaseHTTPMiddleware buffers the full response body, which breaks SSE
+        # streaming (Python 3.13 raises AssertionError on the second
+        # http.response.start message). Bypass for all SSE/MCP paths.
+        if scope.get("type") == "http" and scope.get("path", "").startswith("/api/mcp"):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
     async def dispatch(
         self,
         request: Request,

@@ -176,20 +176,15 @@ def test_schema_version_is_62():
     #            user under multiple identities (email from REST writers,
     #            UUID from upload-API sessions, OS-username from the
     #            legacy collector).
-    # v60 → v61: ``cli_auth_codes`` table (main PR #475) — single-use
-    #            exchange codes for the browser-loopback
-    #            ``agnes auth login`` flow.
-    # v61 → v62: per-type FK columns on ``resource_grants`` (E.3, this
-    #            branch). Five NULLable VARCHAR columns mirror the PG
-    #            FK design — resource_id_table,
-    #            resource_id_data_package, resource_id_memory_domain,
-    #            resource_id_memory_item, resource_id_recipe.
-    #            Backfilled from resource_id per resource_type.
-    #            marketplace_plugin rows leave all five NULL
-    #            (application-validated). DuckDB has no FK/CHECK
-    #            enforcement; PG migration 0013 carries the real
-    #            constraints.
-    assert SCHEMA_VERSION == 62
+    # v60 → v61: ``cli_auth_codes`` table (browser-loopback login).
+    # v61 → v62: per-type FK columns on ``resource_grants`` (PR #455).
+    # v62 → v63: ``setup_tokens`` table for Agnes Cowork one-click setup.
+    # v63 → v64: ``mcp_sources``, ``tool_registry``, ``tool_grants``
+    #            for Universal MCP inbound connector (RFC #461).
+    # v63 → v64: ``mcp_secrets`` shared vault for MCP source auth.
+    # v64 → v65: ``mcp_user_secrets`` per-user vault.
+    # v65 → v66: ``data_package_tools`` junction.
+    assert SCHEMA_VERSION >= 66
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

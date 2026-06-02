@@ -115,8 +115,13 @@ from app.api.v2_catalog import router as v2_catalog_router
 from app.api.v2_schema import router as v2_schema_router
 from app.api.v2_sample import router as v2_sample_router
 from app.api.v2_scan import router as v2_scan_router
+from app.api.v2_marketplace import router as v2_marketplace_router
 from app.api.marketplaces import router as marketplaces_router
 from app.api.data_packages import router as data_packages_router
+from app.api.admin_mcp import router as admin_mcp_router
+from app.api.mcp_passthrough import router as mcp_passthrough_router
+from app.api.mcp_per_table import router as mcp_per_table_router
+from app.api.mcp_user_secrets import router as mcp_user_secrets_router
 from app.api.memory_domains import router as memory_domains_router
 from app.api.recipes import (
     public_router as recipes_public_router,
@@ -136,6 +141,11 @@ from app.api.marketplace import router as marketplace_router
 from app.api.welcome import router as welcome_router
 from app.api.claude_md import router as claude_md_router
 from app.api.news import router as news_router
+from app.api.cowork_bundle import (
+    user_router as cowork_user_router,
+    auth_router as cowork_auth_router,
+)
+from app.api.mcp_http import make_sse_app as _make_mcp_sse_app
 from app.api.cache_warmup import router as cache_warmup_router
 from app.api.bq_metadata_refresh import router as bq_metadata_refresh_router
 from app.api.activity import router as activity_router
@@ -570,6 +580,7 @@ def create_app() -> FastAPI:
         minimum_size=1024,
         skip_prefixes=(
             "/api/data/",
+            "/api/mcp",          # SSE stream — do not gzip
             "/cli/wheel/",
             "/cli/download",
             "/marketplace.git",  # git smart-HTTP is self-chunked; double-gzip bloats
@@ -771,8 +782,13 @@ def create_app() -> FastAPI:
     app.include_router(v2_schema_router)
     app.include_router(v2_sample_router)
     app.include_router(v2_scan_router)
+    app.include_router(v2_marketplace_router)
     app.include_router(marketplaces_router)
     app.include_router(data_packages_router)
+    app.include_router(admin_mcp_router)
+    app.include_router(mcp_passthrough_router)
+    app.include_router(mcp_user_secrets_router)
+    app.include_router(mcp_per_table_router)
     app.include_router(memory_domains_router)
     app.include_router(recipes_public_router)
     app.include_router(recipes_admin_router)
@@ -788,6 +804,13 @@ def create_app() -> FastAPI:
     app.include_router(welcome_router)
     app.include_router(claude_md_router)
     app.include_router(news_router)
+    app.include_router(cowork_user_router)
+    app.include_router(cowork_auth_router)
+
+    # HTTP MCP (SSE transport) for cowork VM access — must be mounted before
+    # web_router's catch-all. GZip excluded below via skip_prefixes.
+    app.mount("/api/mcp", _make_mcp_sse_app())
+
     app.include_router(cache_warmup_router)
     app.include_router(bq_metadata_refresh_router)
     app.include_router(activity_router)

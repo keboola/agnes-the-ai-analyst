@@ -40,6 +40,7 @@ import json
 import os
 import subprocess
 import sys
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -47,7 +48,7 @@ from typing import Optional
 import typer
 
 from cli.client import api_get
-from cli.config import save_config, save_token
+from cli.config import _config_dir, save_config, save_token
 from cli.error_render import render_error
 from cli.lib.commands import install_claude_commands
 from cli.lib.hooks import install_claude_hooks
@@ -207,7 +208,10 @@ init_app = typer.Typer(help="Bootstrap an analyst workspace in this directory")
 
 @init_app.callback(invoke_without_command=True)
 def init(
-    server_url: str = typer.Option(..., "--server-url", help="Agnes server URL"),
+    server_url: Optional[str] = typer.Option(
+        None, "--server-url",
+        help="Agnes server URL. Required unless --bundle is provided.",
+    ),
     token: Optional[str] = typer.Option(
         None, "--token",
         help=(
@@ -227,6 +231,16 @@ def init(
             "this way, which dodges Claude Code's bearer-token classifier."
         ),
     ),
+    bundle: Optional[str] = typer.Option(
+        None, "--bundle",
+        help=(
+            "Path to an Agnes Cowork Setup Bundle (a directory containing "
+            ".agnes-bundle.json, or the .zip file itself). When provided, "
+            "exchanges the embedded setup token for a PAT automatically — "
+            "no --server-url or --token required. The bundle is one-use "
+            "and its .agnes-bundle.json is deleted from disk after exchange."
+        ),
+    ),
     force: bool = typer.Option(False, "--force", help="Re-initialize an existing workspace"),
     workspace_str: Optional[str] = typer.Option(None, "--workspace", help="Target dir (default: cwd)"),
     skip_materialize: bool = typer.Option(
@@ -242,13 +256,149 @@ def init(
 ):
     """Bootstrap workspace: auth, CLAUDE.md, hooks, first pull, AGNES_WORKSPACE.md."""
     workspace = Path(workspace_str).resolve() if workspace_str else Path.cwd()
+
+    # ------------------------------------------------------------------
+    # Bundle flow (M4): when --bundle is provided, exchange the embedded
+    # setup token for a PAT before the normal token-resolution path.
+    #
+    # Precedence after bundle handling: --server-url overrides the bundle's
+    # server_url if both are given (unusual but safe).
+    # ------------------------------------------------------------------
+    bundle_json_path: Optional[Path] = None
+    if bundle:
+        bundle_path = Path(bundle).expanduser().resolve()
+        try:
+            if bundle_path.is_dir():
+                # Directory: prefer `agnes-bundle.json` (no dot — current format,
+                # visible to Claude tools); fall back to `.agnes-bundle.json`
+                # (legacy bundles downloaded before the rename).
+                _candidate = bundle_path / "agnes-bundle.json"
+                if not _candidate.exists():
+                    _candidate = bundle_path / ".agnes-bundle.json"
+                bundle_json_path = _candidate
+                bundle_data = json.loads(
+                    bundle_json_path.read_text(encoding="utf-8")
+                )
+            elif bundle_path.suffix == ".zip":
+                # ZIP file: extract bundle JSON in memory.
+                # Supports both flat ZIPs (legacy) and folder-prefixed ZIPs
+                # (current format where unzipping creates a workspace folder).
+                # Also supports the old `.agnes-bundle.json` name (dot-prefixed)
+                # for bundles generated before the visibility rename.
+                with zipfile.ZipFile(bundle_path) as zf:
+                    names = zf.namelist()
+                    bundle_json_name = None
+                    # Current format: `agnes-bundle.json` (no dot)
+                    for candidate_name in ("agnes-bundle.json", ".agnes-bundle.json"):
+                        if candidate_name in names:
+                            bundle_json_name = candidate_name
+                            break
+                    if bundle_json_name is None:
+                        # Folder-prefixed: look for <folder>/agnes-bundle.json or .agnes-bundle.json
+                        for suffix in ("/agnes-bundle.json", "/.agnes-bundle.json"):
+                            candidates = sorted(n for n in names if n.endswith(suffix))
+                            if candidates:
+                                bundle_json_name = candidates[0]
+                                break
+                    if bundle_json_name is None:
+                        raise ValueError(
+                            "agnes-bundle.json not found inside the ZIP"
+                        )
+                    bundle_data = json.loads(
+                        zf.read(bundle_json_name).decode("utf-8")
+                    )
+                bundle_json_path = None  # nothing to delete from disk
+            else:
+                raise ValueError(
+                    f"--bundle must be a directory or a .zip file, got: {bundle_path}"
+                )
+        except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
+            typer.echo(render_error(0, {"detail": {
+                "kind": "partial_state",
+                "hint": f"Could not read bundle from {bundle!r}: {exc}",
+            }}), err=True)
+            raise typer.Exit(1)
+
+        bundle_server_url = bundle_data.get("server_url", "").rstrip("/")
+        setup_token_raw = bundle_data.get("setup_token", "")
+
+        if not bundle_server_url or not setup_token_raw:
+            typer.echo(render_error(0, {"detail": {
+                "kind": "partial_state",
+                "hint": "Bundle is missing server_url or setup_token.",
+            }}), err=True)
+            raise typer.Exit(1)
+
+        if not server_url:
+            server_url = bundle_server_url
+
+        # Exchange setup token → PAT (unauthenticated call; setup_token IS auth)
+        typer.echo(f"Connecting to {server_url} …")
+        try:
+            import httpx as _httpx
+            exchange_resp = _httpx.post(
+                f"{server_url}/api/auth/exchange-setup-token",
+                json={"setup_token": setup_token_raw},
+                timeout=30,
+            )
+            if exchange_resp.status_code == 401:
+                typer.echo(render_error(401, {"detail": {
+                    "kind": "auth_failed",
+                    "hint": (
+                        "Setup token is invalid, expired, or already used. "
+                        "Download a new bundle from Agnes and try again."
+                    ),
+                }}), err=True)
+                raise typer.Exit(1)
+            exchange_resp.raise_for_status()
+            exchange_data = exchange_resp.json()
+        except typer.Exit:
+            raise
+        except Exception as exc:
+            typer.echo(render_error(0, {"detail": {
+                "kind": "server_unreachable",
+                "hint": f"Token exchange failed: {exc}",
+            }}), err=True)
+            raise typer.Exit(1)
+
+        if not token:
+            token = exchange_data.get("access_token")
+        user_email = exchange_data.get("user_email", "")
+        typer.echo(f"Authenticated as {user_email}")
+
+        # Remove bundle file from disk (setup token must not linger)
+        if bundle_json_path and bundle_json_path.exists():
+            try:
+                bundle_json_path.unlink()
+            except OSError:
+                pass  # best-effort; file will expire server-side anyway
+
+    # ------------------------------------------------------------------
+    # Validate that we now have a server URL (required unless --bundle
+    # provided it above).
+    # ------------------------------------------------------------------
+    if not server_url:
+        typer.echo(render_error(0, {"detail": {
+            "kind": "partial_state",
+            "hint": "Supply --server-url or use --bundle to provide it automatically.",
+        }}), err=True)
+        raise typer.Exit(1)
+
     server_url = server_url.rstrip("/")
 
-    # Resolve the token. Precedence: explicit --token > --token-file >
-    # AGNES_TOKEN env var > error. --token-file and AGNES_TOKEN exist so
-    # the analyst can paste an `agnes init --server-url … --token-file
-    # ~/.agnes/token` (or simply set the env) without Claude Code's
-    # auto-classifier flagging the long JWT in the command line.
+    # ------------------------------------------------------------------
+    # Resolve the token. Precedence (highest to lowest):
+    #   1. explicit --token flag
+    #   2. --token-file flag
+    #   3. AGNES_TOKEN env var
+    #   4. ~/.config/agnes/token.json (saved by `agnes auth login` /
+    #      `agnes auth import-token`) — M1 bug fix: was missing before
+    #   5. --bundle exchange result (already set above as `token`)
+    #   6. → error
+    #
+    # --token-file and AGNES_TOKEN exist so the analyst can avoid Claude
+    # Code's auto-classifier flagging the long JWT in the command line.
+    # ------------------------------------------------------------------
     if token is None and token_file:
         try:
             for line in Path(token_file).expanduser().read_text(encoding="utf-8").splitlines():
@@ -264,10 +414,24 @@ def init(
             raise typer.Exit(1)
     if token is None:
         token = os.environ.get("AGNES_TOKEN", "").strip() or None
+    if token is None:
+        # Fallback: PAT saved on a previous `agnes auth login` /
+        # `agnes auth import-token` run. Lets `agnes init --server-url X`
+        # work without re-supplying the token every time.
+        _tok_path = _config_dir() / "token.json"
+        if _tok_path.exists():
+            try:
+                _tok_data = json.loads(_tok_path.read_text(encoding="utf-8"))
+                token = _tok_data.get("access_token") or None
+            except (OSError, ValueError):
+                pass
     if not token:
         typer.echo(render_error(0, {"detail": {
             "kind": "partial_state",
-            "hint": "Supply a token via --token, --token-file, or AGNES_TOKEN env var.",
+            "hint": (
+                "Supply a token via --token, --token-file, AGNES_TOKEN env var, "
+                "or run `agnes auth login` first."
+            ),
         }}), err=True)
         raise typer.Exit(1)
 

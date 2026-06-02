@@ -139,7 +139,8 @@ def test_delete_materialized_keboola_row_removes_parquet(seeded_app, keboola_ins
             "name": "kbc_drop_me",
             "source_type": "keboola",
             "query_mode": "materialized",
-            "source_query": "SELECT * FROM kbc.\"in.c-bucket\".\"events\"",
+            "bucket": "in.c-bucket",
+            "source_table": "events",
         },
         headers=_auth(token),
     )
@@ -194,7 +195,8 @@ def test_delete_clears_sync_state_for_materialized_row(seeded_app, keboola_insta
             "name": "manifest_drop",
             "source_type": "keboola",
             "query_mode": "materialized",
-            "source_query": "SELECT 1",
+            "bucket": "in.c-foo",
+            "source_table": "events",
         },
         headers=_auth(token),
     )

@@ -1,0 +1,476 @@
+{% extends "base.html" %}
+{% block title %}MCP Sources — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+{# Design-system component macros — toolbar "+ Add MCP source" + modal
+   buttons render via `ds.button`. JS-generated per-row `.icon-btn`
+   actions stay page-local, mirroring admin_marketplaces.html. #}
+{% import "_components.html" as ds %}
+<style>
+  .mcp-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
+  }
+  .mcp-search {
+    padding: 8px 12px 8px 32px; min-width: 280px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
+    font-size: 13px;
+    background: #fff url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 10px center;
+  }
+
+  .mcp-name {
+    font-weight: 500; color: var(--text-primary, #111827);
+    text-decoration: none;
+  }
+  .mcp-name:hover { color: var(--ds-primary); text-decoration: underline; }
+
+  .mcp-endpoint {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12px; color: var(--text-secondary, #6b7280);
+    max-width: 320px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; display: inline-block; vertical-align: middle;
+  }
+
+  .transport-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .transport-stdio { background: #e0e7ff; color: #3730a3; }
+  .transport-http  { background: #dcfce7; color: #166534; }
+  .transport-sse   { background: #fef3c7; color: #92400e; }
+
+  .status-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+  }
+  .status-enabled  { background: #dcfce7; color: #166534; }
+  .status-disabled { background: #f3f4f6; color: #6b7280; }
+
+  .tool-count {
+    display: inline-block; min-width: 22px; padding: 2px 8px;
+    border-radius: 999px; background: #ede9fe; color: #5b21b6;
+    font-size: 11px; font-weight: 600; text-align: center;
+  }
+
+  .row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; }
+  .icon-btn {
+    background: transparent; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    padding: 5px 10px; font-size: 12px; cursor: pointer;
+    color: var(--text-secondary, #6b7280); transition: all 0.15s;
+    text-decoration: none; line-height: 1.4; white-space: nowrap;
+  }
+  .icon-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb; }
+  .icon-btn.primary { color: var(--ds-primary); border-color: #c7d2fe; }
+  .icon-btn.primary:hover { background: #eef2ff; }
+  .icon-btn.danger:hover { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
+  .icon-btn[disabled] { opacity: 0.5; cursor: wait; }
+
+  .mcp-empty, .mcp-loading {
+    text-align: center; padding: 48px 16px;
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+  }
+  .mcp-empty .big { font-size: 15px; color: var(--text-primary, #111827); margin-bottom: 6px; font-weight: 500; }
+
+  /* Modal — identical to admin_marketplaces.html */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+    display: none; align-items: center; justify-content: center; z-index: 1000;
+    padding: 16px;
+  }
+  .modal-backdrop.is-open { display: flex; }
+  .modal-card {
+    background: var(--surface, #fff); border-radius: 12px;
+    padding: 24px; width: 100%; max-width: 520px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+    max-height: 90vh; overflow-y: auto;
+  }
+  .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+  .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  .modal-card label { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary, #6b7280); margin: 12px 0 6px; }
+  .modal-card .help { font-size: 11px; color: var(--text-secondary, #9ca3af); margin-top: 4px; }
+  .modal-card input[type="text"], .modal-card input[type="url"], .modal-card select, .modal-card textarea {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px; font-size: 13px; box-sizing: border-box;
+    background: var(--surface, #fff); color: var(--text-primary, #111827);
+    font-family: inherit;
+  }
+  .modal-card textarea { min-height: 60px; resize: vertical; font-family: var(--font-mono, ui-monospace, monospace); }
+  .modal-card input:focus, .modal-card textarea:focus, .modal-card select:focus { outline: 2px solid var(--ds-primary); outline-offset: -1px; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+
+  .transport-fields { display: none; }
+  .transport-fields.is-active { display: block; }
+
+  /* Toast — same vocabulary as the other admin pages */
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .toast {
+    background: #111827; color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; max-width: 380px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error { background: #b91c1c; }
+</style>
+
+<div class="mcp-sources-page">
+  {% set page_hero_eyebrow = "Agent Experience" %}
+  {% set page_hero_title = "MCP Sources" %}
+  {% set page_hero_subtitle = "Inbound Model Context Protocol servers Agnes connects to. Discovered tools can be materialized into the table registry or exposed as passthrough lookups." %}
+  {% include "_page_hero.html" %}
+
+  <div class="mcp-toolbar">
+    <input id="mcp-search" type="search" class="mcp-search" placeholder="Filter by name, transport, or URL…" autocomplete="off">
+    {{ ds.button('+ Add MCP source', variant='primary', id='open-create-btn') }}
+  </div>
+
+  <div class="data-table-wrap">
+    <table class="data-table" id="mcp-sources-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Transport</th>
+          <th>Endpoint</th>
+          <th title="Tools registered for this source (materialize + passthrough)">Tools</th>
+          <th>Status</th>
+          <th style="text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="mcp-tbody"></tbody>
+    </table>
+    <div id="mcp-loading" class="mcp-loading">Loading MCP sources…</div>
+    <div id="mcp-empty" class="mcp-empty" style="display:none;">
+      <div class="big">No MCP sources registered</div>
+      <div>Click <strong>Add MCP source</strong> to connect to your first MCP server.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Create modal -->
+<div class="modal-backdrop" id="create-modal" role="dialog" aria-modal="true" aria-labelledby="create-modal-title">
+  <div class="modal-card">
+    <h3 id="create-modal-title">Add MCP source</h3>
+    <p class="sub">Register an inbound MCP server. After saving, open the source detail page to introspect and curate its tools.</p>
+
+    <label for="new-name">Display name</label>
+    <input id="new-name" type="text" placeholder="e.g. Acme CRM MCP" required autocomplete="off">
+
+    <label for="new-transport">Transport</label>
+    <select id="new-transport">
+      <option value="stdio">stdio (subprocess)</option>
+      <option value="http">http (streamable)</option>
+      <option value="sse">sse (server-sent events)</option>
+    </select>
+
+    <div class="transport-fields is-active" data-transport="stdio">
+      <label for="new-command">Command</label>
+      <input id="new-command" type="text" placeholder="e.g. npx" autocomplete="off">
+      <div class="help">Executable run by the subprocess transport.</div>
+
+      <label for="new-args">Arguments (one per line)</label>
+      <textarea id="new-args" autocomplete="off" placeholder="-y&#10;@acme/crm-mcp"></textarea>
+      <div class="help">One CLI argument per line, in order.</div>
+    </div>
+
+    <div class="transport-fields" data-transport="http">
+      <label for="new-url-http">Endpoint URL</label>
+      <input id="new-url-http" type="url" placeholder="https://mcp.example.com/sse" autocomplete="off">
+    </div>
+
+    <div class="transport-fields" data-transport="sse">
+      <label for="new-url-sse">SSE URL</label>
+      <input id="new-url-sse" type="url" placeholder="https://mcp.example.com/sse" autocomplete="off">
+    </div>
+
+    <label for="new-auth-method">Auth method</label>
+    <select id="new-auth-method">
+      <option value="">none</option>
+      <option value="bearer">bearer (env var)</option>
+      <option value="header">custom header</option>
+    </select>
+
+    <label for="new-auth-secret-env">Auth secret env var (optional)</label>
+    <input id="new-auth-secret-env" type="text" placeholder="e.g. ACME_CRM_TOKEN" autocomplete="off">
+    <div class="help">Name of the environment variable holding the secret value. The value itself is not stored in the DB.</div>
+
+    <div class="modal-actions">
+      {{ ds.button('Cancel', variant='secondary', attrs='data-close-modal="create-modal"') }}
+      {{ ds.button('Register', variant='primary', id='confirm-create-btn') }}
+    </div>
+  </div>
+</div>
+
+<!-- Confirm delete modal -->
+<div class="modal-backdrop" id="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+  <div class="modal-card">
+    <h3 id="confirm-title">Delete MCP source?</h3>
+    <p class="sub" id="confirm-text"></p>
+    <p class="sub" style="color:#b91c1c">All tools registered against this source will be removed (cascade).</p>
+    <div class="modal-actions">
+      {{ ds.button('Cancel', variant='secondary', attrs='data-close-modal="confirm-modal"') }}
+      {{ ds.button('Delete', variant='danger', id='confirm-ok-btn') }}
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+const API = "/api/admin/mcp-sources";
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
+}
+
+function openModal(id) {
+  document.getElementById(id).classList.add("is-open");
+  const focusable = document.querySelector(`#${id} input, #${id} button.btn-primary`);
+  focusable && focusable.focus();
+}
+function closeModal(id) { document.getElementById(id).classList.remove("is-open"); }
+document.querySelectorAll("[data-close-modal]").forEach(el =>
+  el.addEventListener("click", () => closeModal(el.dataset.closeModal)));
+document.querySelectorAll(".modal-backdrop").forEach(el => {
+  el.addEventListener("click", e => { if (e.target === el) el.classList.remove("is-open"); });
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") document.querySelectorAll(".modal-backdrop.is-open").forEach(m => m.classList.remove("is-open"));
+});
+
+// Transport selector — show/hide the fields appropriate for the chosen transport.
+function syncTransportFields() {
+  const t = document.getElementById("new-transport").value;
+  document.querySelectorAll(".transport-fields").forEach(el => {
+    el.classList.toggle("is-active", el.dataset.transport === t);
+  });
+}
+document.getElementById("new-transport").addEventListener("change", syncTransportFields);
+
+// State
+let allSources = [];
+let filterText = "";
+let pendingDeleteId = null;
+
+function renderSources() {
+  const tbody = document.getElementById("mcp-tbody");
+  const loading = document.getElementById("mcp-loading");
+  const empty = document.getElementById("mcp-empty");
+  loading.style.display = "none";
+
+  const ft = filterText.trim().toLowerCase();
+  const filtered = ft
+    ? allSources.filter(s => (s.name || "").toLowerCase().includes(ft)
+                          || (s.transport || "").toLowerCase().includes(ft)
+                          || (s.url || "").toLowerCase().includes(ft)
+                          || (s.command || "").toLowerCase().includes(ft))
+    : allSources;
+
+  if (allSources.length === 0) {
+    empty.style.display = "block";
+    tbody.innerHTML = "";
+    return;
+  }
+  empty.style.display = "none";
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" class="mcp-loading">No matches for "${esc(filterText)}"</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = "";
+  for (const s of filtered) {
+    const tr = document.createElement("tr");
+    const endpoint = s.transport === "stdio"
+      ? (s.command ? `${esc(s.command)}${s.args && s.args.length ? " " + s.args.map(esc).join(" ") : ""}` : "<span style='color:#9ca3af'>—</span>")
+      : (s.url ? esc(s.url) : "<span style='color:#9ca3af'>—</span>");
+    const enabled = s.enabled !== false;
+    const toolCount = (typeof s.tool_count === "number") ? s.tool_count : 0;
+    tr.innerHTML = `
+      <td>
+        <a class="mcp-name" href="/admin/mcp-sources/${encodeURIComponent(s.id)}">${esc(s.name || s.id)}</a>
+      </td>
+      <td><span class="transport-pill transport-${esc(s.transport || "stdio")}">${esc(s.transport || "stdio")}</span></td>
+      <td><span class="mcp-endpoint" title="${esc(s.url || s.command || "")}">${endpoint}</span></td>
+      <td>${toolCount > 0 ? `<span class="tool-count">${toolCount}</span>` : `<span style="color:#9ca3af">0</span>`}</td>
+      <td>
+        <span class="status-pill ${enabled ? "status-enabled" : "status-disabled"}">${enabled ? "Enabled" : "Disabled"}</span>
+      </td>
+      <td>
+        <div class="row-actions">
+          <button class="icon-btn" data-act="toggle" data-id="${esc(s.id)}" data-enabled="${enabled}">${enabled ? "Disable" : "Enable"}</button>
+          <a class="icon-btn primary" href="/admin/mcp-sources/${encodeURIComponent(s.id)}">Detail</a>
+          <button class="icon-btn danger" data-act="delete" data-id="${esc(s.id)}" data-name="${esc(s.name || s.id)}">Delete</button>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+document.getElementById("mcp-search").addEventListener("input", (e) => {
+  filterText = e.target.value;
+  renderSources();
+});
+
+document.getElementById("open-create-btn").addEventListener("click", () => {
+  // Reset form
+  document.getElementById("new-name").value = "";
+  document.getElementById("new-transport").value = "stdio";
+  document.getElementById("new-command").value = "";
+  document.getElementById("new-args").value = "";
+  document.getElementById("new-url-http").value = "";
+  document.getElementById("new-url-sse").value = "";
+  document.getElementById("new-auth-method").value = "";
+  document.getElementById("new-auth-secret-env").value = "";
+  syncTransportFields();
+  openModal("create-modal");
+});
+
+document.getElementById("confirm-create-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("confirm-create-btn");
+  const name = document.getElementById("new-name").value.trim();
+  const transport = document.getElementById("new-transport").value;
+  if (!name) { toast("Display name is required", "error"); return; }
+  const body = { name, transport };
+  if (transport === "stdio") {
+    body.command = document.getElementById("new-command").value.trim();
+    const argsRaw = document.getElementById("new-args").value;
+    body.args = argsRaw.split("\n").map(s => s.trim()).filter(Boolean);
+    if (!body.command) { toast("Command is required for stdio transport", "error"); return; }
+  } else if (transport === "http") {
+    body.url = document.getElementById("new-url-http").value.trim();
+    if (!body.url) { toast("URL is required for http transport", "error"); return; }
+  } else if (transport === "sse") {
+    body.url = document.getElementById("new-url-sse").value.trim();
+    if (!body.url) { toast("URL is required for sse transport", "error"); return; }
+  }
+  const authMethod = document.getElementById("new-auth-method").value;
+  const authSecretEnv = document.getElementById("new-auth-secret-env").value.trim();
+  if (authMethod) body.auth_method = authMethod;
+  if (authSecretEnv) body.auth_secret_env = authSecretEnv;
+
+  btn.disabled = true;
+  try {
+    const r = await fetch(API, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (r.ok) {
+      const created = await r.json();
+      toast("MCP source registered", "success");
+      closeModal("create-modal");
+      await loadSources();
+      // Auto-redirect to the new source detail so the admin can introspect.
+      if (created && created.id) {
+        window.location.href = `/admin/mcp-sources/${encodeURIComponent(created.id)}`;
+      }
+    } else {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      toast("Register failed: " + detail, "error");
+    }
+  } catch (e) {
+    toast("Register failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("mcp-tbody").addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-act]");
+  if (!btn) return;
+  const act = btn.dataset.act;
+  const id = btn.dataset.id;
+  if (act === "delete") {
+    pendingDeleteId = id;
+    document.getElementById("confirm-text").textContent =
+      `Remove "${btn.dataset.name}" and all its registered tools?`;
+    openModal("confirm-modal");
+    return;
+  }
+  if (act === "toggle") {
+    const enabled = btn.dataset.enabled === "true";
+    btn.disabled = true;
+    try {
+      const r = await fetch(`${API}/${encodeURIComponent(id)}`, {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !enabled }),
+      });
+      if (r.ok) {
+        toast(enabled ? "Source disabled" : "Source enabled", "success");
+        await loadSources();
+      } else {
+        let detail = r.statusText;
+        try { detail = (await r.json()).detail || detail; } catch (_) {}
+        toast("Update failed: " + detail, "error");
+      }
+    } catch (err) {
+      toast("Update failed: " + err.message, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+});
+
+document.getElementById("confirm-ok-btn").addEventListener("click", async () => {
+  if (!pendingDeleteId) return;
+  const btn = document.getElementById("confirm-ok-btn");
+  btn.disabled = true;
+  try {
+    const r = await fetch(`${API}/${encodeURIComponent(pendingDeleteId)}`, {
+      method: "DELETE", credentials: "include",
+    });
+    if (r.ok) {
+      toast("MCP source deleted", "success");
+      closeModal("confirm-modal");
+      pendingDeleteId = null;
+      await loadSources();
+    } else {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      toast("Delete failed: " + detail, "error");
+    }
+  } catch (e) {
+    toast("Delete failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function loadSources() {
+  document.getElementById("mcp-loading").style.display = "block";
+  try {
+    const r = await fetch(API, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    // Backend currently returns a bare array; accept both shapes so a
+    // future ``{sources: [...]}`` wrapper doesn't break this page.
+    allSources = Array.isArray(data) ? data : (Array.isArray(data.sources) ? data.sources : []);
+    renderSources();
+  } catch (e) {
+    document.getElementById("mcp-loading").textContent = "Failed to load: " + e.message;
+    toast("Failed to load sources: " + e.message, "error");
+  }
+}
+
+loadSources();
+</script>
+{% endblock %}
