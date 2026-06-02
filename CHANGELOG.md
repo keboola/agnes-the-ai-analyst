@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.59.3] — 2026-06-02
+
 ### Added
 - **`base_page.html` intermediate page-shell layout (#367 Tier 2).** A thin layer between `base_ds.html` and content pages that auto-wires the canonical chrome — hero (`page_hero_*` → `_page_hero.html`) + `{% block toolbar %}` + `{% block page %}` — so a page gets the standard shell without a per-page `<style>` block or a container opt-out. `profile.html` is migrated onto it as the first adopter (rendered width unchanged — the canonical `.container:has(.profile-page)` cap still applies).
 - **Design-system anti-drift guards in `tests/test_design_system_contract.py` (#367 Tier 1).** Leaf templates can no longer reintroduce a `.container:has()` width opt-out or a bare `:root {}` token-shadow block; the canonical bases (`base.html`, `base_ds.html`, `base_page.html`, `_theme.html`) are exempt.
