@@ -172,7 +172,9 @@ class TestQuery:
     def test_query_no_db(self, tmp_config):
         result = runner.invoke(app, ["query", "SELECT 1"])
         assert result.exit_code == 1
-        assert "not found" in result.output
+        # Guidance now leads with the no-download --remote path.
+        assert "--remote" in result.output
+        assert "agnes pull" in result.output
 
     def test_query_with_db(self, tmp_config):
         import duckdb

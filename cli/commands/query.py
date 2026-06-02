@@ -72,7 +72,17 @@ def _query_local(sql: str, fmt: str, limit: int):
     local_dir = Path(os.environ.get("AGNES_LOCAL_DIR", "."))
     db_path = local_dir / "user" / "duckdb" / "analytics.duckdb"
     if not db_path.exists():
-        typer.echo("Local DuckDB not found. Run: agnes pull", err=True)
+        # No local data yet. Lead with `--remote` (runs server-side, no
+        # download) — the right path in a constrained sandbox where a full
+        # `agnes pull` would drag down every granted table. `agnes pull`
+        # stays the offline-friendly option for laptop analysts.
+        typer.echo(
+            "No local DuckDB yet (nothing pulled). Two ways to run this query:\n"
+            '  - Server-side, no download (recommended):  agnes query --remote "<SQL>"\n'
+            "  - Or sync data locally first:               agnes pull   "
+            "(downloads every table you can access — may be large)",
+            err=True,
+        )
         raise typer.Exit(1)
 
     conn = _open_duckdb(str(db_path), read_only=True)

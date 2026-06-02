@@ -335,6 +335,74 @@ _SSO_LOCKED_DETAIL = (
 )
 
 
+def _purge_user_chat_data(
+    conn: duckdb.DuckDBPyConnection,
+    request,
+    user_email: str,
+    *,
+    actor_id: str,
+) -> None:
+    """GDPR hard-delete: remove all chat sessions + per-user workdir files.
+
+    Called from ``delete_user(hard=True)``. Non-fatal: each step is wrapped
+    individually so a partial failure (e.g. workdir already missing) does not
+    abort the audit trail write for steps that did succeed.
+    """
+    sessions_purged = 0
+    files_purged = 0
+
+    # 1. Purge chat DB rows (messages first to satisfy FK, then sessions).
+    try:
+        from app.chat.persistence import ChatRepository
+        chat_repo = ChatRepository(conn)
+        sessions_purged = chat_repo.hard_delete_user_sessions(user_email)
+    except Exception:
+        logger.exception("GDPR purge: chat_repo.hard_delete_user_sessions failed for %s", user_email)
+
+    # 2. Purge per-user workdir from disk (chat workspace + session dirs).
+    try:
+        from src.db import _get_data_dir as _ddir_purge
+        from app.chat.workdir import WorkdirManager
+        from app.chat.persistence import ChatRepository
+
+        # Use the live workdir manager from app.state when available; construct
+        # a minimal one inline otherwise (e.g. during tests or if chat init
+        # was skipped).
+        wm = getattr(getattr(request, "app", None), "state", None)
+        wm = getattr(wm, "chat_manager", None)
+        if wm is not None:
+            workdir_mgr = wm._workdir_mgr
+        else:
+            chat_repo = ChatRepository(conn)
+            workdir_mgr = WorkdirManager(
+                data_dir=_ddir_purge(),
+                repo=chat_repo,
+                bundled_template_dir=__import__("pathlib").Path("app/initial_workspace_default"),
+                server_url="",
+                agnes_version="",
+                get_marketplace_sha=lambda: "",
+                get_template_status=lambda: None,
+            )
+        files_purged = workdir_mgr.purge_user(user_email)
+    except Exception:
+        logger.exception("GDPR purge: workdir_mgr.purge_user failed for %s", user_email)
+
+    # 3. Audit trail entry.
+    try:
+        _audit(
+            conn,
+            actor_id,
+            "user.hard_delete_chat_data",
+            user_email,
+            {
+                "chat_sessions_purged": sessions_purged,
+                "workdir_files_purged": files_purged,
+            },
+        )
+    except Exception:
+        logger.exception("GDPR purge: audit write failed for %s", user_email)
+
+
 def _reject_if_sso(target_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None) -> None:
     """409 if the target is SSO-managed.
 
@@ -355,6 +423,7 @@ def _reject_if_sso(target_id: str, conn: Optional[duckdb.DuckDBPyConnection] = N
 async def delete_user(
     user_id: str,
     request: Request,
+    hard: bool = False,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -367,8 +436,14 @@ async def delete_user(
     _reject_if_sso(target["id"], conn)
     if is_user_admin(target["id"], conn) and repo.count_admins(active_only=True) <= 1:
         raise HTTPException(status_code=409, detail="Cannot delete the last active admin")
+    target_email = target["email"]
     repo.delete(user_id)
-    _audit(conn, user["id"], "user.delete", user_id, {"email": target["email"]})
+    _audit(conn, user["id"], "user.delete", user_id, {"email": target_email})
+
+    if hard:
+        # GDPR hard-delete: purge all chat sessions and per-user workdir
+        # files in addition to removing the user row.
+        _purge_user_chat_data(conn, request, target_email, actor_id=user["id"])
 
 
 @router.post("/{user_id}/reset-password")
