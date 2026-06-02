@@ -39,14 +39,21 @@ def _make_app(*, chat_enabled: bool = True) -> FastAPI:
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
-def _grant_chat_access(monkeypatch):
+def _grant_chat_access(monkeypatch, tmp_path):
     """Chat is an RBAC resource (default-deny); the /chat route redirects users
     without the grant, and the nav link only shows with an explicit grant.
     These tests cover HTML rendering + the disabled-redirect + nav consistency,
     not the gate, so simulate "access granted" by patching both the route guard
     (`can_access`) and the nav-visibility check (`has_explicit_grant`). The
     default-deny gate is covered by test_chat_api::test_chat_requires_rbac_grant.
+
+    Also pin DATA_DIR to a per-test tmp dir: `_build_context` opens its own
+    `get_system_db()` when no conn is threaded (the nav `can_chat` path) and
+    the /chat route's `_get_db` opens it too. On the shared default DATA_DIR
+    those collide across xdist workers (`_duckdb.IOException: Conflicting
+    lock`); an isolated path per test keeps the suite deterministic under -n.
     """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "sysdb"))
     import app.auth.access as _access
 
     monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
