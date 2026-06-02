@@ -110,7 +110,14 @@ class KnowledgePgRepository:
         supersedes: Optional[str] = None,
         sensitivity: str = "internal",
         is_personal: bool = False,
+        is_required: bool = False,
     ) -> None:
+        # NOTE (parity): the DuckDB repo also accepts ``added_by``, used to
+        # attribute the domain link in its knowledge_item_domains join table.
+        # This PG repo stores ``domain`` inline on knowledge_items (no join
+        # table in this path), so there is no separate attribution to record;
+        # ``added_by`` is intentionally not part of this signature. ``is_required``
+        # IS a real column and is wired below.
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
             conn.execute(
@@ -119,14 +126,14 @@ class KnowledgePgRepository:
                         id, title, content, category, source_user, tags, status,
                         confidence, domain, entities, source_type, source_ref,
                         valid_from, valid_until, supersedes, sensitivity, is_personal,
-                        created_at, updated_at
+                        is_required, created_at, updated_at
                     ) VALUES (:id, :title, :content, :category, :su,
                               CAST(:tags AS JSONB), :status,
                               :confidence, :domain,
                               CAST(:entities AS JSONB),
                               :st, :sr,
                               :vf, :vu, :sup, :sens, :ip,
-                              :now, :now)"""
+                              :ireq, :now, :now)"""
                 ),
                 {
                     "id": id, "title": title, "content": content,
@@ -137,7 +144,8 @@ class KnowledgePgRepository:
                     "entities": json.dumps(entities) if entities else None,
                     "st": source_type, "sr": source_ref,
                     "vf": valid_from, "vu": valid_until, "sup": supersedes,
-                    "sens": sensitivity, "ip": is_personal, "now": now,
+                    "sens": sensitivity, "ip": is_personal,
+                    "ireq": is_required, "now": now,
                 },
             )
 
