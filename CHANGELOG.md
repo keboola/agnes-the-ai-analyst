@@ -12,7 +12,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- **`/me/cowork` — AI Cowork page.** New dedicated page consolidating setup bundle download (numbered steps, first-prompt copy box, active-bundle revoke list), MCP connection details, and available tools (Agnes tools, passthrough tools, marketplace skills) in collapsible sections. Replaces the split between `/me/profile → Connect Claude Code` and `/me/mcp`. Added to the primary nav as "AI Cowork" for all authenticated users.
+
 ### Changed
+
+- **Cowork moved from Admin dropdown to primary nav.** The link previously appeared under Admin → Agent Experience; it now sits in the top-level nav next to Memory, visible to every authenticated user. The `/me/mcp` URL 301-redirects to `/me/cowork`.
+- **Profile page simplified.** The "Connect Claude Code" setup panel has been removed from `/me/profile`; setup now lives at `/me/cowork`.
 
 ### Fixed
 

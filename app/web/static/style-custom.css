@@ -3435,7 +3435,7 @@ a.app-header-logo:focus-visible {
     text-decoration: none; border-radius: 6px;
 }
 .app-user-menu-item:hover { background: var(--border-light, #f3f4f6); }
-.app-user-menu-item.is-active { background: rgba(46, 168, 119, 0.08); color: var(--primary, var(--primary)); font-weight: 500; }
+.app-user-menu-item.is-active { background: var(--primary-light); color: var(--primary); font-weight: 500; }
 
 /* ── Admin nav dropdown — same vocabulary as user menu, scoped under nav links ── */
 .app-nav-menu { position: relative; display: inline-flex; }

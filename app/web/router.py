@@ -776,18 +776,17 @@ async def home_page(
     return templates.TemplateResponse(request, "home_not_onboarded.html", ctx)
 
 
-@router.get("/me/mcp", response_class=HTMLResponse)
-async def me_mcp_page(
+@router.get("/me/cowork", response_class=HTMLResponse)
+async def me_cowork_page(
     request: Request,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """User-facing view of available MCP tools and marketplace skills."""
+    """User-facing AI Cowork page: setup bundle, MCP connection info, and available tools."""
     from app.api.mcp_passthrough import _visible_passthrough_tools
     from app.api.v2_marketplace import _accessible_plugins, _skills_for_plugin
     from src.repositories.mcp_sources import MCPSourceRepository
 
-    # Passthrough tools the caller can see
     source_names = {
         s["id"]: s["name"]
         for s in MCPSourceRepository(conn).list_all(enabled_only=True)
@@ -803,7 +802,6 @@ async def me_mcp_page(
                 "source_name": sname,
             })
 
-    # Marketplace skills the caller can access
     skills = []
     for plugin in _accessible_plugins(conn, user):
         skills.extend(_skills_for_plugin(plugin["marketplace_id"], plugin["name"]))
@@ -828,7 +826,14 @@ async def me_mcp_page(
         skills=skills,
         server_url=server_url,
     )
-    return templates.TemplateResponse(request, "me_mcp.html", ctx)
+    return templates.TemplateResponse(request, "me_cowork.html", ctx)
+
+
+@router.get("/me/mcp", response_class=HTMLResponse)
+async def me_mcp_redirect(request: Request):
+    """Legacy redirect — /me/mcp → /me/cowork."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse("/me/cowork", status_code=301)
 
 
 @router.get("/me/activity", response_class=HTMLResponse)
