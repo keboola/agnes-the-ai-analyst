@@ -26,6 +26,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.59.2] — 2026-06-02
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+- Redundant "Database backend" pointer card at the bottom of `/admin/server-config`. The backend state machine has its own `/admin/database` page, already linked from the Admin menu, so the card was a duplicate signpost that looked out of place in the instance-config form.
+
+### Internal
+
 ## [0.59.1] - 2026-06-02
 
 ### Fixed
