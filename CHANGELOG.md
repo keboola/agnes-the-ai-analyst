@@ -64,11 +64,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   toggles for power users.
 - **Cloud-chat: collapsible sidebar (mini-mode).** A new toggle in the
   sidebar header collapses the 280px sidebar to a 56px icon-rail
-  showing per-conversation initials, +New chat as an icon, and the
-  theme toggle. State persists in
-  `localStorage["agnes-chat-sidebar-collapsed"]`; an anti-FOUC pre-paint
-  script primes the rail width before chat.js boots so reloads don't
-  flash the full sidebar.
+  showing per-conversation initials and +New chat as an icon. State
+  persists in `localStorage["agnes-chat-sidebar-collapsed"]`; an
+  anti-FOUC pre-paint script primes the rail width before chat.js boots
+  so reloads don't flash the full sidebar.
 - **`POST /api/chat/sessions/{chat_id}/ticket`** mints a fresh WS ticket
   for an EXISTING chat session. The web UI now uses this when the user
   clicks an old conversation in the sidebar — re-attaching to the same
