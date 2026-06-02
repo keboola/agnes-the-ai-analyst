@@ -9,8 +9,17 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 
 from app.auth.access import require_admin
+from app.auth.dependencies import _get_db
+from app.chat.readiness import (
+    ENV_ANTHROPIC,
+    ENV_E2B,
+    secret_status,
+    test_anthropic_key,
+    test_e2b_key,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/chat", tags=["admin-chat"])
@@ -77,6 +86,84 @@ async def list_active(request: Request, admin: dict = Depends(require_admin)):
             "crash_count": live.crash_count,
         })
     return {"sessions": sessions}
+
+
+# --------------------------------------------------------------------------
+# Chat readiness — secret presence + live key validation
+# --------------------------------------------------------------------------
+# Chat needs ANTHROPIC_API_KEY + (for the e2b provider) E2B_API_KEY in the
+# server env, plus a real JWT_SECRET_KEY. When any is missing the startup
+# gates leave chat_manager=None and chat 503s. These admin-only endpoints
+# surface that state (presence, never the value), let an admin set the keys
+# from the UI (persisted to the env-overlay), and live-test that the keys
+# actually work — so a present-but-invalid key is caught here, not at the
+# first user's sandbox spawn.
+
+
+class ChatSecretsBody(BaseModel):
+    e2b_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+
+
+@router.get("/readiness")
+async def chat_readiness(request: Request, _admin: dict = Depends(require_admin)):
+    """Presence-only readiness snapshot (no secret values leak)."""
+    return secret_status(getattr(request.app.state, "chat_config", None))
+
+
+@router.post("/secrets")
+async def set_chat_secrets(
+    body: ChatSecretsBody,
+    request: Request,
+    admin: dict = Depends(require_admin),
+    conn=Depends(_get_db),
+):
+    """Persist chat provider secrets to the env-overlay (survives restart).
+
+    Only non-empty values are written; omitted / blank fields leave the
+    existing secret untouched (so the UI can save one key without clobbering
+    the other). Setting a key updates ``os.environ`` immediately, but the
+    startup gates already decided whether to build ``ChatManager`` — so a
+    restart is required to actually turn chat on. Audited without the value.
+    """
+    from app.secrets import persist_overlay_token
+    from src.repositories.audit import AuditRepository
+
+    changed: list[str] = []
+    if body.e2b_api_key and body.e2b_api_key.strip():
+        persist_overlay_token(ENV_E2B, body.e2b_api_key.strip())
+        changed.append("e2b_api_key")
+    if body.anthropic_api_key and body.anthropic_api_key.strip():
+        persist_overlay_token(ENV_ANTHROPIC, body.anthropic_api_key.strip())
+        changed.append("anthropic_api_key")
+    if not changed:
+        raise HTTPException(422, detail="no secret provided")
+
+    try:
+        AuditRepository(conn).log(
+            user_id=admin.get("id"),
+            action="chat.secrets.update",
+            resource="chat",
+            params={"changed": changed},  # names only — never the values
+            result="ok",
+        )
+    except Exception:
+        logger.exception("failed to audit chat.secrets.update")
+
+    return {
+        "changed": changed,
+        "restart_required": True,
+        "status": secret_status(getattr(request.app.state, "chat_config", None)),
+    }
+
+
+@router.post("/secrets/test")
+async def test_chat_secrets(request: Request, _admin: dict = Depends(require_admin)):
+    """Live-probe the currently-configured keys. Per-key ``{ok, detail}``."""
+    return {
+        "e2b_api_key": await test_e2b_key(),
+        "anthropic_api_key": await test_anthropic_key(),
+    }
 
 
 @router.delete("/{chat_id}", status_code=204)

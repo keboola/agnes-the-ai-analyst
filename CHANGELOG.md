@@ -11,6 +11,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Cloud-chat: admin secret management + readiness panel.** The
+  `/admin/server-config` page now has a **Cloud chat** panel that shows,
+  without leaking values, whether each required secret is present —
+  `ANTHROPIC_API_KEY`, `E2B_API_KEY` (when `provider=e2b`), and a strong
+  `JWT_SECRET_KEY` — plus an overall ready/not-ready status. Admins can set
+  the Anthropic / E2B keys straight from the UI (persisted to the server's
+  `.env_overlay`, surviving restarts; never echoed back), and a **Test
+  keys** button live-probes them — `AsyncSandbox.list` for E2B and a
+  1-token Haiku call for Anthropic — so a present-but-invalid key is caught
+  here instead of at the first user's sandbox spawn. New admin endpoints:
+  `GET /admin/chat/readiness`, `POST /admin/chat/secrets` (audited by name,
+  never value), `POST /admin/chat/secrets/test`. Setting a key still
+  requires a server restart to (re)build `ChatManager`, which the UI calls
+  out. Logic lives in `app/chat/readiness.py`.
 - **Cloud-chat is now an RBAC resource (default-deny).** The whole chat
   feature — web `/chat`, the REST API, and the Slack DM surface — is
   gated behind a new `chat` resource type that nobody has access to
