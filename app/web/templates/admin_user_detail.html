@@ -1,12 +1,7 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}{{ target_user.email }} — User detail — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{# Design-system component macros — Download-all + Sessions/Activity
-   paginators + 3 account-action buttons render via `ds.button`. The
-   JS-generated per-row Remove button + Download .jsonl anchor inside
-   the sessions table stay page-local (built in template literals). #}
-{% import "_components.html" as ds %}
+{% block head_extra %}
 <style>
   .ud-page { max-width: 1100px; margin: 0 auto; padding: 0; }
 
@@ -214,7 +209,13 @@
   .toast.success { background: #047857; }
   .toast.error { background: #b91c1c; }
 </style>
+{% endblock %}
 
+{% block content %}
+{# Download-all + Sessions/Activity paginators + 3 account-action buttons
+   render via `ds.button` (auto-imported by base_ds). JS-generated per-row
+   buttons stay page-local. The hero stays inside `.ud-page` (1100px content
+   width) — kept as-is, not hoisted to a full-width base_page hero. #}
 <div class="ud-page" data-user-id="{{ target_user.id }}">
   <div class="ud-header">
     <a href="/admin/users" class="ud-back">← Back to users</a>
