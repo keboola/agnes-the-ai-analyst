@@ -1,17 +1,10 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}Upload to Store — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{# Design-system component macros — wizard Next/Cancel + Finish/Back
-   buttons render via `ds.button`. Bespoke file-picker buttons
-   (#photo-pick, #zip-pick), `.guidelines-toggle`, `.doc-add`, and
-   JS-generated `.✕`-remove buttons stay page-local. #}
-{% import "_components.html" as ds %}
+{% block head_extra %}
 <style>
-  /* ── Container override ────────────────────────────────────────── */
-  /* Width + padding come from .page-shell (style-custom.css) — same
-     1280px container as /dashboard, /marketplace, /admin/* peers. */
-  .container:has(.upload-page) > main { margin: 0; padding: 0; }
+  /* Width + gutters come from the canonical `.container` /
+     `.container > main` rules in style-custom.css — no per-page override. */
 
   /* Hero box + typography come from the canonical `.page-header--hero`
      rule in style-custom.css. store_upload.html only adds the `meta`
@@ -331,8 +324,10 @@
     margin-top: 3px; color: #b91c1c; font-size: 12px;
   }
 </style>
+{% endblock %}
 
-<div class="upload-page page-shell">
+{% block content %}
+<div class="upload-page">
   <section class="page-header page-header--hero upload-hero">
     <div class="page-header__main">
       <div class="page-header__eyebrow">Store</div>

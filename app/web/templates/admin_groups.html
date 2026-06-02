@@ -1,12 +1,13 @@
-{% extends "base.html" %}
+{% extends "base_page.html" %}
 {% block title %}Groups — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{# Design-system component macros — toolbar "+ New group" + 4 modal
-   action buttons render via `ds.button`. JS-generated `.icon-btn` row
-   actions stay page-local. #}
-{% import "_components.html" as ds %}
-<style>  .gp-toolbar {
+{% set page_hero_eyebrow = "Users & Access" %}
+{% set page_hero_title = "Groups" %}
+{% set page_hero_subtitle = "Named groups + members. Resource access lives on the Resource access page." %}
+
+{% block head_extra %}
+<style>
+  .gp-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 12px; margin-bottom: 18px; flex-wrap: wrap;
   }
@@ -109,15 +110,13 @@
   .toast.success { background: #047857; }
   .toast.error { background: #b91c1c; }
 </style>
+{% endblock %}
 
+{% block page %}
+{# Design-system component macros — toolbar "+ New group" + 4 modal
+   action buttons render via `ds.button` (auto-imported by base_ds).
+   JS-generated `.icon-btn` row actions stay page-local. #}
 <div class="gp-page">
-  {% set page_hero_eyebrow = "Users & Access" %}
-
-  {% set page_hero_title = "Groups" %}
-
-  {% set page_hero_subtitle = "Named groups + members. Resource access lives on the Resource access page." %}
-
-  {% include "_page_hero.html" %}
 
   <div class="gp-toolbar">
     <div>

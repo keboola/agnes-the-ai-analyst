@@ -1,7 +1,7 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}Instance settings — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
+{% block head_extra %}
 {# Server configuration editor — instance.yaml fields grouped by section.
 
    Page-shell only: GET /api/admin/server-config feeds the form (with
@@ -17,9 +17,7 @@
    can't reach inside `<script>` template literals. All buttons across
    the page now route through the canonical `.btn-*` family in
    style-custom.css; the page-local `.cfg-btn` rule is gone. #}
-{% import "_components.html" as ds %}
 <style>
-  .container:has(.cfg-page) { max-width: none; padding: 24px 16px; }
   .cfg-page { max-width: 1260px; margin: 0 auto; padding: 0; }
   /* Hero subtitle is unconstrained here — page is wide and the text is long */
   .cfg-page .page-header--hero .page-header__subtitle { max-width: none; }
@@ -239,7 +237,9 @@
   .modal-card .diff-row .path { color: #b91c1c; font-weight: 600; }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
 </style>
+{% endblock %}
 
+{% block content %}
 <div class="cfg-page" data-page="server-config">
   {% set page_hero_eyebrow = "Server" %}
   {% set page_hero_title = "Instance settings" %}
@@ -1839,24 +1839,4 @@ document.getElementById("chat-save-btn").addEventListener("click", (e) => chatSa
 document.getElementById("chat-test-btn").addEventListener("click", (e) => chatTestSecrets(e.currentTarget));
 chatReadinessLoad();
 </script>
-
-<!-- ==== Database backend (state machine) ==== -->
-<!--
-  The state-machine UI moved to its own page at /admin/database — the
-  section that used to live here looked out of place in the
-  instance-config form (it doesn't share the section-by-section save
-  pattern) and the operator workflow benefits from being one click
-  from the admin menu, not buried at the bottom of this scroll.
--->
-{% import "_components.html" as ds %}
-<section id="db-backend-section">
-  {% call ds.panel(href='/admin/database', klass='quick-card') %}
-    <h2>Database backend</h2>
-    <p>
-      Switch app-state DB between DuckDB, side-car Postgres, and a managed
-      cloud Postgres. Now on a dedicated admin page —
-      <a href="/admin/database">open <strong>/admin/database</strong> →</a>
-    </p>
-  {% endcall %}
-</section>
 {% endblock %}
