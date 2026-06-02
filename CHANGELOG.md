@@ -19,6 +19,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- **DuckDB schema → v68.** The cloud-chat tables (`chat_sessions`,
+  `chat_messages`, `user_workdirs`) ship as migration `_v67_to_v68` in
+  `src/db.py` (idempotent `CREATE … IF NOT EXISTS`, wired into both the
+  sequential-apply and the `if current < N` ladder; also declared in
+  `_SYSTEM_SCHEMA` for fresh installs). Renumbered from the original v60
+  when the branch merged main's v60–v67 ladder. The three tables are
+  declared DuckDB-only in the PG schema-parity contract (cloud chat is
+  single-worker; no Postgres backend yet).
 
 
 ### Added

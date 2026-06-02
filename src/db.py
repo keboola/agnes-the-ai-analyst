@@ -1107,7 +1107,7 @@ CREATE TABLE IF NOT EXISTS usage_marketplace_item_window (
 );
 CREATE INDEX IF NOT EXISTS idx_miw_lookup ON usage_marketplace_item_window(period_label, source, type);
 
--- v60: cloud chat — per-session transcript storage + per-user workdir markers.
+-- v68: cloud chat — per-session transcript storage + per-user workdir markers.
 -- DuckDB 1.5.x does NOT support ON DELETE CASCADE on foreign keys, so the
 -- chat_messages FK is a plain reference (blocks deletes when children exist);
 -- callers must delete messages before deleting a session, or use the
