@@ -179,3 +179,44 @@ class TestGetAccessibleTables:
             assert set(get_accessible_tables({"id": "loner"}, conn)) == internal_ids
         finally:
             conn.close()
+
+
+class TestHasExplicitGrant:
+    """``has_explicit_grant`` reports only what is explicitly granted to a
+    group the user belongs to — no Admin god-mode short-circuit, no implicit
+    internal-table grants. Used for UI affordances (the cloud-chat nav link)
+    that must track rollout state, not effective access. Contrast with
+    ``can_access``, which DOES short-circuit for admins."""
+
+    def test_admin_without_grant_is_false_while_can_access_is_true(self, setup_db):
+        from src.db import get_system_db
+        from app.auth.access import can_access, has_explicit_grant
+        conn = get_system_db()
+        try:
+            # No chat grant exists anywhere in the seeded DB.
+            assert has_explicit_grant("admin1", "chat", "chat", conn) is False
+            # ...yet god-mode still grants the admin *effective* access.
+            assert can_access("admin1", "chat", "chat", conn) is True
+        finally:
+            conn.close()
+
+    def test_member_of_granted_group_is_true(self, setup_db):
+        from src.db import get_system_db
+        from app.auth.access import has_explicit_grant
+        conn = get_system_db()
+        try:
+            analysts_id = conn.execute(
+                "SELECT id FROM user_groups WHERE name = 'analysts'"
+            ).fetchone()[0]
+            conn.execute(
+                """INSERT INTO resource_grants
+                   (id, group_id, resource_type, resource_id)
+                   VALUES (?, ?, 'chat', 'chat')""",
+                [str(uuid.uuid4()), analysts_id],
+            )
+            # user1 ∈ analysts → the explicit grant is visible.
+            assert has_explicit_grant("user1", "chat", "chat", conn) is True
+            # admin1 ∉ analysts and god-mode is NOT applied here → still False.
+            assert has_explicit_grant("admin1", "chat", "chat", conn) is False
+        finally:
+            conn.close()
