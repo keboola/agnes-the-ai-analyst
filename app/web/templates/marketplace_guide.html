@@ -1,17 +1,7 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}{{ guide_title }} — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{# Publication-flow guide. Reached from the action-row CTA on /marketplace
-   ("Submit a plugin" on the curated tab; the flea variant is reachable
-   only as a fallback since flea has a self-service +Upload button).
-
-   Two distinct flows, one template — `guide_kind` switches the body. #}
-{# Design-system component macros — bottom-of-page .guide-cta buttons
-   render via `ds.button`. The purple .fastpath-cta inside .guide-
-   fastpath stays bespoke (custom flea-violet palette outside .ds-
-   accent vocabulary). #}
-{% import "_components.html" as ds %}
+{% block head_extra %}
 <style>
   .guide-page {
     max-width: 760px; margin: 0 auto;
@@ -150,7 +140,12 @@
     margin-top: var(--space-6);
   }
 </style>
+{% endblock %}
 
+{% block content %}
+{# Publication-flow guide for /marketplace submissions; `guide_kind` switches
+   curated vs flea. Bottom .guide-cta buttons render via `ds.button`
+   (auto-imported by base_ds); the purple .fastpath-cta stays bespoke. #}
 <div class="guide-page" data-kind="{{ guide_kind }}">
   <a class="back" href="/marketplace?tab={{ guide_kind }}">← Back to {{ 'Curated Marketplace' if guide_kind == 'curated' else 'Flea Market' }}</a>
   <h1>{{ guide_title }}</h1>
