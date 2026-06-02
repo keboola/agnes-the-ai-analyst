@@ -132,6 +132,40 @@ def can_access(
     return row is not None
 
 
+def has_explicit_grant(
+    user_id: str,
+    resource_type: str,
+    resource_id: str,
+    conn: duckdb.DuckDBPyConnection,
+) -> bool:
+    """True iff one of the user's groups holds an explicit ``resource_grant``
+    for ``(resource_type, resource_id)``.
+
+    Unlike :func:`can_access`, this does **not** short-circuit for the Admin
+    god-mode group and does **not** apply internal-table implicit grants — it
+    reports only what was explicitly granted to a group the user belongs to.
+
+    Use it for UI affordances that should reflect actual rollout state rather
+    than *effective* access: e.g. hiding the cloud-chat nav link until chat is
+    granted to a group, even for admins (who can still reach the page by URL,
+    since the route guard uses :func:`can_access` and admins keep god-mode
+    there). Never use it as a security gate — that is :func:`can_access`'s job.
+    """
+    group_ids = _user_group_ids(user_id, conn)
+    if not group_ids:
+        return False
+    placeholders = ",".join(["?"] * len(group_ids))
+    row = conn.execute(
+        f"""SELECT 1 FROM resource_grants
+            WHERE group_id IN ({placeholders})
+              AND resource_type = ?
+              AND resource_id = ?
+            LIMIT 1""",
+        [*group_ids, resource_type, resource_id],
+    ).fetchone()
+    return row is not None
+
+
 # ---------------------------------------------------------------------------
 # FastAPI dependencies
 # ---------------------------------------------------------------------------

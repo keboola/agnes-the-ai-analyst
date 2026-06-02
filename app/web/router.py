@@ -507,19 +507,23 @@ def _build_context(
         # the OSS vendor-neutral.
         "custom_scripts": get_custom_scripts(),
     }
-    # Cloud-chat nav visibility. The /chat link is shown only to users who can
-    # actually reach it: chat enabled AND the RBAC grant (admins short-circuit).
-    # Computed here so the shared header gates the link the same way the route
-    # gates the page — on EVERY page, not just routes that happen to thread a
-    # `conn`. Most routes call _build_context with only `user=`, so we can't
-    # rely on the passed `conn`; when it's absent we open our own short-lived
-    # system-db cursor (cheap — shared underlying connection) and close it.
-    # Defaults False when chat is disabled or there's no logged-in user.
+    # Cloud-chat nav visibility. The /chat link is shown only when chat is
+    # enabled AND one of the viewer's groups holds an explicit chat grant. We
+    # deliberately use `has_explicit_grant` (NOT `can_access`) so the link
+    # tracks actual rollout state, not effective access: admins do NOT see it
+    # until chat is granted to a group they're in, even though god-mode still
+    # lets them reach /chat by URL (the route guard uses can_access). This is
+    # UX only — the hard gate is on the route + API.
+    #
+    # Computed on EVERY page, not just routes that thread a `conn`. Most routes
+    # call _build_context with only `user=`, so when conn is absent we open a
+    # short-lived system-db cursor (cheap — shared underlying connection) and
+    # close it. Defaults False when chat is disabled or there's no user.
     ctx["can_chat"] = False
     try:
         _cc = getattr(request.app.state, "chat_config", None)
         if user and _cc is not None and _cc.enabled:
-            from app.auth.access import can_access
+            from app.auth.access import has_explicit_grant
             from app.resource_types import ResourceType
 
             _conn = conn
@@ -531,7 +535,9 @@ def _build_context(
                 _own_conn = True
             try:
                 ctx["can_chat"] = bool(
-                    can_access(user["id"], ResourceType.CHAT.value, "chat", _conn)
+                    has_explicit_grant(
+                        user["id"], ResourceType.CHAT.value, "chat", _conn
+                    )
                 )
             finally:
                 if _own_conn:

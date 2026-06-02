@@ -41,13 +41,16 @@ def _make_app(*, chat_enabled: bool = True) -> FastAPI:
 @pytest.fixture(autouse=True)
 def _grant_chat_access(monkeypatch):
     """Chat is an RBAC resource (default-deny); the /chat route redirects users
-    without the grant. These tests cover HTML rendering + the disabled-redirect,
-    not the gate, so simulate "access granted" by patching can_access. The
+    without the grant, and the nav link only shows with an explicit grant.
+    These tests cover HTML rendering + the disabled-redirect + nav consistency,
+    not the gate, so simulate "access granted" by patching both the route guard
+    (`can_access`) and the nav-visibility check (`has_explicit_grant`). The
     default-deny gate is covered by test_chat_api::test_chat_requires_rbac_grant.
     """
     import app.auth.access as _access
 
     monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
+    monkeypatch.setattr(_access, "has_explicit_grant", lambda *a, **k: True)
 
 
 @pytest.fixture
@@ -101,8 +104,8 @@ def test_can_chat_computed_without_conn_threaded():
     True on /chat + /dashboard (which thread conn) and False everywhere else
     (e.g. /marketplace), making the nav link flicker in and out as you moved
     between pages. The fix opens a short-lived system-db cursor when no conn is
-    passed, so visibility is consistent. ``can_access`` is patched True by the
-    autouse fixture, so this isolates the conn-threading behavior.
+    passed, so visibility is consistent. ``has_explicit_grant`` is patched True
+    by the autouse fixture, so this isolates the conn-threading behavior.
     """
     from types import SimpleNamespace as _NS
 
@@ -121,3 +124,32 @@ def test_can_chat_computed_without_conn_threaded():
     # Mirror the common route call: user supplied, but NO conn threaded.
     ctx = _build_context(request, user=TEST_USER)
     assert ctx["can_chat"] is True
+
+
+def test_can_chat_hidden_for_admin_without_explicit_grant(monkeypatch):
+    """The nav link tracks the explicit grant, NOT god-mode: an admin with no
+    chat grant on any of their groups does not see the Chat link, even though
+    `can_access` would let them reach /chat by URL. Pins the decoupling done
+    in `_build_context` (has_explicit_grant, not can_access)."""
+    from types import SimpleNamespace as _NS
+
+    from starlette.requests import Request
+    import app.auth.access as _access
+    from app.web.router import _build_context
+
+    # Override the autouse "granted" patch: no group holds a chat grant, but
+    # god-mode WOULD grant effective access. The nav must still hide the link.
+    monkeypatch.setattr(_access, "has_explicit_grant", lambda *a, **k: False)
+    monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
+
+    app = _NS(state=_NS(chat_config=_NS(enabled=True)))
+    scope = {
+        "type": "http", "app": app, "method": "GET", "path": "/",
+        "query_string": b"", "headers": [], "server": ("test", 80),
+        "scheme": "http", "client": ("1.2.3.4", 9),
+    }
+    request = Request(scope)
+
+    admin_user = {"id": "admin1", "email": "admin@test.com", "is_admin": True}
+    ctx = _build_context(request, user=admin_user)
+    assert ctx["can_chat"] is False

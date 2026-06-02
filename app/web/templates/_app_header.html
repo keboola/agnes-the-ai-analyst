@@ -22,10 +22,12 @@
            Setup is reached from /home's install flow and My Stack
            lives inside /marketplace as a tab. #}
         <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}">Home</a>
-        {# Cloud chat entry — shown only when chat is enabled AND the user has
-           the RBAC grant (``can_chat`` from _build_context; admins always).
-           Default-deny: with no grant nobody but admins sees it. Gated
-           server-side too, so this is just UX — no trap. #}
+        {# Cloud chat entry — shown only when chat is enabled AND one of the
+           viewer's groups holds an explicit chat grant (``can_chat`` from
+           _build_context, via has_explicit_grant). Default-deny: with no grant
+           NOBODY sees it — not even admins, who can still reach /chat by URL
+           (god-mode on the route guard). Gated server-side, so this is just
+           UX — no trap. #}
         {% if can_chat %}
         <a class="app-nav-link {% if _path == '/chat' or _path.startswith('/chat/') %}is-active{% endif %}" href="/chat">Chat</a>
         {% endif %}

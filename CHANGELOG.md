@@ -22,9 +22,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   stream is covered transitively — its ticket is only mintable through
   the gated create/reissue endpoints); the `/chat` page and the Slack
   handler check `can_access` directly and bounce/refuse non-granted
-  users, and the nav "Chat" link is hidden unless the caller holds the
-  grant. Enabling chat in `instance.yaml` is now necessary but not
-  sufficient — a group must also be granted.
+  users. The nav "Chat" link is computed on every page and shown only
+  when one of the viewer's groups holds an *explicit* grant
+  (`has_explicit_grant`, a new god-mode-free companion to `can_access`) —
+  so even admins don't see the link until chat is granted to a group
+  they're in, though they can still reach `/chat` by URL via god-mode.
+  Enabling chat in `instance.yaml` is now necessary but not sufficient —
+  a group must also be granted.
 - **`agnes marketplace scaffold-metadata <repo>`** — curator-side tool that
   generates / refreshes `.claude-plugin/marketplace-metadata.json` from
   the canonical plugin sources (`marketplace.json`, each plugin's
