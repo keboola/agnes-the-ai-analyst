@@ -219,8 +219,8 @@ def test_keboola_register_form_has_three_question_radio(seeded_app, monkeypatch)
 
 
 def test_keboola_register_payload_maps_to_materialized(seeded_app, monkeypatch):
-    """The form's whole-table mode posts query_mode='materialized' with
-    a synthetic SELECT * SQL — same pattern as BQ Synced/Whole."""
+    """The form's whole-table mode posts query_mode='materialized' — Keboola
+    materialized uses bucket/source_table (no SQL source_query)."""
     fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
     monkeypatch.setattr(
         "app.instance_config.load_instance_config",
@@ -239,7 +239,8 @@ def test_keboola_register_payload_maps_to_materialized(seeded_app, monkeypatch):
                 "name": "orders",
                 "source_type": "keboola",
                 "query_mode": "materialized",
-                "source_query": 'SELECT * FROM kbc."in.c-sales"."orders"',
+                "bucket": "in.c-sales",
+                "source_table": "orders",
                 "sync_schedule": "every 6h",
             },
         )

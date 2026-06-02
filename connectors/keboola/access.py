@@ -13,6 +13,8 @@ from typing import Iterator
 
 import duckdb
 
+from src.duckdb_conn import _open_duckdb
+
 
 class KeboolaAccess:
     """Lazy DuckDB session manager for the Keboola Storage API extension.
@@ -33,7 +35,7 @@ class KeboolaAccess:
 
     @contextmanager
     def duckdb_session(self) -> Iterator[duckdb.DuckDBPyConnection]:
-        conn = duckdb.connect(":memory:")
+        conn = _open_duckdb(":memory:")
         try:
             conn.execute("INSTALL keboola FROM community")
             conn.execute("LOAD keboola")

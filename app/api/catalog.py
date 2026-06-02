@@ -9,9 +9,12 @@ import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
-from src.repositories.profiles import ProfileRepository
 from src.rbac import can_access_table
 
+from src.repositories import (
+    profile_repo,
+    table_registry_repo,
+)
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
 
 
@@ -39,7 +42,7 @@ async def get_table_profile(
     # Check table-level access
     if not can_access_table(user, table_name, conn):
         raise HTTPException(status_code=403, detail=f"Access denied to table '{table_name}'")
-    repo = ProfileRepository(conn)
+    repo = profile_repo()
     profile = repo.get(table_name)
     if not profile:
         # Fallback: try loading from profiles.json on disk
@@ -62,8 +65,7 @@ async def list_catalog_tables(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List all available tables from table_registry."""
-    from src.repositories.table_registry import TableRegistryRepository
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     all_tables = repo.list_all()
 
     # Filter by user's accessible tables. ``can_access_table`` has its own
@@ -116,7 +118,7 @@ async def refresh_profile(
     try:
         table_info = TableInfo(name=table_name, table_id=table_name)
         profile = profile_table(table_info, candidates[0], [], {}, {})
-        ProfileRepository(conn).save(table_name, profile)
+        profile_repo().save(table_name, profile)
         return {"status": "ok", "table": table_name, "columns": len(profile.get("columns", {}))}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Profile failed: {e}")

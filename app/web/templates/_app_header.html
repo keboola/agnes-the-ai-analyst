@@ -38,7 +38,7 @@
            visibility tidy-up — non-admins who deep-link still get a 403
            from the route handler. #}
         {% if session.user.is_admin %}
-        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/store') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/admin/activity') or _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') or _path.startswith('/admin/sessions') or _path.startswith('/admin/corporate-memory') %}
+        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/mcp-sources') or _path.startswith('/admin/mcp-tools') or _path.startswith('/admin/store') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/admin/activity') or _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') or _path.startswith('/admin/sessions') or _path.startswith('/admin/corporate-memory') or _path.startswith('/admin/sync') or _path.startswith('/me/mcp') %}
         <div class="app-nav-menu" id="adminNavMenu">
             <button type="button"
                     class="app-nav-link app-nav-menu-trigger {% if _admin_active %}is-active{% endif %}"
@@ -80,6 +80,8 @@
                 <details class="app-nav-menu-group" data-section="data-packages" open>
                     <summary class="app-nav-menu-section">Data Packages</summary>
                     <a class="app-nav-menu-item {% if _path.startswith('/admin/tables') %}is-active{% endif %}" role="menuitem" href="/admin/tables">Tables</a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/sync') %}is-active{% endif %}" role="menuitem" href="/admin/sync">Sync</a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/mcp-sources') or _path.startswith('/admin/mcp-tools') %}is-active{% endif %}" role="menuitem" href="/admin/mcp-sources">MCP sources</a>
                 </details>
 
                 {# "Agent Experience" groups everything the admin curates
@@ -91,11 +93,13 @@
                     <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" role="menuitem" href="/admin/store/submissions">Flea Submissions</a>
                     <a class="app-nav-menu-item {% if _path.startswith('/admin/agent-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/agent-prompt">Init Prompt</a>
                     <a class="app-nav-menu-item {% if _path.startswith('/admin/workspace-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/workspace-prompt">Workspace Prompt</a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/me/mcp') %}is-active{% endif %}" role="menuitem" href="/me/mcp">Cowork</a>
                 </details>
 
                 <details class="app-nav-menu-group" data-section="server" open>
                     <summary class="app-nav-menu-section">Server</summary>
                     <a class="app-nav-menu-item {% if _path.startswith('/admin/server-config') %}is-active{% endif %}" role="menuitem" href="/admin/server-config">Instance settings</a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/database') %}is-active{% endif %}" role="menuitem" href="/admin/database">Database backend</a>
                     {# /admin/scheduler-runs collapsed into /admin/activity as
                        a `source=scheduler` filter — old route 308-redirects. #}
                 </details>

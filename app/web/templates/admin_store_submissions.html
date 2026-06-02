@@ -248,7 +248,7 @@
       <tbody>
         {% for s in items %}
         <tr data-href="/admin/store/submissions/{{ s.id }}">
-          <td class="ts">{{ s.created_at.strftime("%Y-%m-%d %H:%M:%S") if s.created_at else "" }}</td>
+          <td class="ts">{% if s.created_at %}<time datetime="{{ s.created_at.isoformat() }}">{{ s.created_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time>{% endif %}</td>
           <td class="submitter">
             {# Filter-by-submitter link. stopPropagation in JS so row click is suppressed when clicking the email. #}
             <a href="?{{ base_qs }}submitter={{ s.submitter_id }}" data-noprop="1">{{ s.submitter_email or s.submitter_id }}</a>

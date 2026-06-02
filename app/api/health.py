@@ -24,6 +24,9 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from src.repositories import (
+    sync_state_repo,
+)
 logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, Query
@@ -31,7 +34,6 @@ import duckdb
 
 from app.auth.dependencies import _get_db, get_current_user
 from src.db import SCHEMA_VERSION, get_system_db
-from src.repositories.sync_state import SyncStateRepository
 
 router = APIRouter(tags=["health"])
 
@@ -198,16 +200,15 @@ def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
             }
         return {"status": "ok", "session_files": len(session_files)}
 
-    # Both available — compare. session_processor_state.processed_at is
-    # stored as DuckDB TIMESTAMP (naive). DuckDB converts tz-aware writes
-    # to local time before storing, so the only safe interpretation is
-    # local-naive on read. Compute the lag against `datetime.now()` (also
-    # local-naive) and only convert to epoch via the OS's local timezone
-    # mapping at the comparison boundary.
-    now_local_naive = datetime.now()
+    # Both available — compare. `session_processor_state.processed_at` is
+    # stored as DuckDB TIMESTAMP (naive). The DuckDB connection helper
+    # (`src.db._open_duckdb`) pins the session timezone to UTC, so the
+    # naive read is UTC-clock. Compare against UTC-naive `now` to keep
+    # both sides on the same axis.
+    now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
     if hasattr(last_processed, "tzinfo") and last_processed.tzinfo is not None:
         last_processed = last_processed.replace(tzinfo=None)
-    proc_age_seconds = (now_local_naive - last_processed).total_seconds()
+    proc_age_seconds = (now_utc_naive - last_processed).total_seconds()
     file_age_seconds = time_now() - latest_session_mtime
 
     # File is newer than the last processed_at by more than grace_seconds.
@@ -376,7 +377,7 @@ async def health_check_detailed(
 
     # Sync state summary
     try:
-        repo = SyncStateRepository(conn)
+        repo = sync_state_repo()
         all_states = repo.get_all_states()
         total_tables = len(all_states)
         total_rows = sum(s.get("rows", 0) or 0 for s in all_states)

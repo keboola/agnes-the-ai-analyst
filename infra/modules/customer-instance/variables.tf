@@ -45,6 +45,14 @@ variable "prod_instance" {
     upgrade_mode = optional(string, "auto")
     tls_mode     = optional(string, "caddy")
     domain       = optional(string, "")
+    # Container memory caps written to /opt/agnes/.env and read by
+    # docker-compose.yml (mem_limit: $${AGNES_APP_MEM_LIMIT:-4g}). Defaults
+    # match the compose defaults; raise on a larger VM together with the
+    # app's per-connection DuckDB budgets (DuckDB sizes a fresh connection
+    # to ~80% of the cgroup limit, so an under-sized cap OOM-kills uvicorn
+    # mid-WAL-write).
+    app_mem_limit       = optional(string, "4g")
+    scheduler_mem_limit = optional(string, "2g")
   })
 }
 
@@ -77,6 +85,9 @@ variable "dev_instances" {
     # caller-supplied `role = "stage"` would never reach the merge() below
     # if the type omits it.
     role = optional(string, "dev")
+    # See prod_instance for the rationale; same defaults.
+    app_mem_limit       = optional(string, "4g")
+    scheduler_mem_limit = optional(string, "2g")
   }))
   default = []
 }

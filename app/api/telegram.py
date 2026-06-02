@@ -5,8 +5,11 @@ from pydantic import BaseModel
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
-from src.repositories.notifications import TelegramRepository, PendingCodeRepository
 
+from src.repositories import (
+    notifications_pending_code_repo,
+    notifications_telegram_repo,
+)
 router = APIRouter(prefix="/api/telegram", tags=["telegram"])
 
 
@@ -21,12 +24,12 @@ async def telegram_verify(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Verify a code to link Telegram account."""
-    code_repo = PendingCodeRepository(conn)
+    code_repo = notifications_pending_code_repo()
     code_data = code_repo.verify_code(request.code)
     if not code_data:
         raise HTTPException(status_code=400, detail="Invalid or expired code")
 
-    tg_repo = TelegramRepository(conn)
+    tg_repo = notifications_telegram_repo()
     tg_repo.link_user(user["id"], chat_id=code_data["chat_id"])
     return {"status": "linked", "chat_id": code_data["chat_id"]}
 
@@ -37,7 +40,7 @@ async def telegram_unlink(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Unlink Telegram account."""
-    tg_repo = TelegramRepository(conn)
+    tg_repo = notifications_telegram_repo()
     tg_repo.unlink_user(user["id"])
     return {"status": "unlinked"}
 
@@ -48,7 +51,7 @@ async def telegram_status(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get current Telegram link status."""
-    tg_repo = TelegramRepository(conn)
+    tg_repo = notifications_telegram_repo()
     link = tg_repo.get_link(user["id"])
     if link:
         return {"linked": True, "chat_id": link["chat_id"], "linked_at": str(link.get("linked_at", ""))}

@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+{% block title %}MCP tool grants — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+{% import "_components.html" as ds %}
+<style>
+  .gr-back { font-size: 12px; color: var(--text-secondary, #6b7280); text-decoration: none; margin-bottom: 8px; display: inline-block; }
+  .gr-back:hover { color: var(--ds-primary); }
+
+  .gr-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    margin-bottom: 18px;
+    overflow: hidden;
+  }
+  .gr-card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    background: var(--border-light, #f9fafb);
+  }
+  .gr-card-head h3 { margin: 0; font-size: 14px; font-weight: 600; }
+  .gr-card-body { padding: 18px; }
+
+  .tool-name {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 13px; font-weight: 600;
+    color: var(--text-primary, #111827);
+  }
+  .tool-meta {
+    margin-top: 4px; font-size: 12px; color: var(--text-secondary, #6b7280);
+  }
+
+  .gr-grants-list {
+    list-style: none; margin: 0; padding: 0;
+  }
+  .gr-grant-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+  .gr-grant-row:last-child { border-bottom: none; }
+  .gr-grant-row:hover { background: var(--border-light, #fafafa); }
+  .gr-grant-row input[type="checkbox"] {
+    width: 16px; height: 16px; cursor: pointer;
+    accent-color: var(--ds-primary);
+  }
+  .gr-group-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+  .gr-group-name { font-size: 13px; font-weight: 500; color: var(--text-primary, #111827); }
+  .gr-group-desc {
+    font-size: 11px; color: var(--text-secondary, #6b7280);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .gr-origin-chip {
+    display: inline-block;
+    padding: 1px 7px; border-radius: 999px;
+    font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .gr-origin-system     { background: #fef3c7; color: #92400e; }
+  .gr-origin-custom     { background: #ede9fe; color: #6d28d9; }
+  .gr-origin-google_sync { background: #dcfce7; color: #166534; }
+
+  .gr-empty, .gr-loading {
+    padding: 32px 16px; text-align: center;
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+  }
+
+  .gr-filter {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+  }
+  .gr-filter input {
+    width: 100%; padding: 7px 10px 7px 30px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    font-size: 12px;
+    background: #fff url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 9px center;
+  }
+
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .toast {
+    background: #111827; color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; max-width: 380px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error { background: #b91c1c; }
+</style>
+
+<div class="mcp-grants-page">
+  <a class="gr-back" id="gr-back-link" href="/admin/mcp-sources">&larr; Back to MCP sources</a>
+
+  {% set page_hero_eyebrow = "Agent Experience" %}
+  {% set page_hero_title %}Tool grants &middot; <span id="hero-tool-name">…</span>{% endset %}
+  {% set page_hero_subtitle = "Pick which user groups can call this passthrough MCP tool. Grants are checked at MCP tools/list time and at invocation." %}
+  {% include "_page_hero.html" %}
+
+  <div class="gr-card">
+    <div class="gr-card-head">
+      <h3>Tool</h3>
+    </div>
+    <div class="gr-card-body">
+      <div id="tool-summary">
+        <div class="tool-name" id="tool-name-line">…</div>
+        <div class="tool-meta" id="tool-meta-line"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="gr-card">
+    <div class="gr-card-head">
+      <h3>User groups</h3>
+      <span id="grant-count" style="font-size: 12px; color: var(--text-secondary, #6b7280);"></span>
+    </div>
+    <div class="gr-filter">
+      <input id="group-filter" type="search" placeholder="Filter groups…" autocomplete="off">
+    </div>
+    <ul class="gr-grants-list" id="group-list"></ul>
+    <div id="group-empty" class="gr-empty" style="display:none;">No user groups found.</div>
+    <div id="group-loading" class="gr-loading">Loading groups…</div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+const TOOL_ID = {{ tool_id | tojson }};
+const TOOLS_API = `/api/admin/mcp-tools`;
+const GROUPS_API = `/api/admin/groups`;
+// Tool-grants endpoint is conventional — spec §5 lists it under the admin
+// surface (see /api/admin/tools/{id}/grants in the spec) but the parallel
+// API agent ships it as a sub-resource of mcp-tools. Keep the URL local so
+// it's easy to swap if the contract drifts.
+const GRANTS_API = `/api/admin/mcp-tools/${encodeURIComponent(TOOL_ID)}/grants`;
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
+}
+
+let tool = null;
+let allGroups = [];   // [{id, name, description, origin, ...}]
+let grants = [];      // [{group_id}] or [group_id] — normalized to a Set below
+let grantedIds = new Set();
+let filterText = "";
+
+async function loadTool() {
+  try {
+    const r = await fetch(`${TOOLS_API}/${encodeURIComponent(TOOL_ID)}`, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    tool = await r.json();
+    document.getElementById("hero-tool-name").textContent = tool.exposed_name || tool.original_name || tool.tool_id;
+    document.getElementById("tool-name-line").textContent = tool.exposed_name || tool.original_name;
+    const bits = [];
+    if (tool.original_name && tool.exposed_name && tool.original_name !== tool.exposed_name) {
+      bits.push(`upstream: ${tool.original_name}`);
+    }
+    if (tool.mode) bits.push(`mode: ${tool.mode}`);
+    if (tool.source_id) bits.push(`source: ${tool.source_id}`);
+    document.getElementById("tool-meta-line").textContent = bits.join(" · ");
+    if (tool.source_id) {
+      document.getElementById("gr-back-link").href = `/admin/mcp-sources/${encodeURIComponent(tool.source_id)}`;
+      document.getElementById("gr-back-link").textContent = "← Back to source";
+    }
+  } catch (e) {
+    toast("Failed to load tool: " + e.message, "error");
+  }
+}
+
+async function loadGroupsAndGrants() {
+  document.getElementById("group-loading").style.display = "block";
+  try {
+    const [gRes, grRes] = await Promise.all([
+      fetch(GROUPS_API, { credentials: "include" }),
+      fetch(GRANTS_API, { credentials: "include" }),
+    ]);
+    if (!gRes.ok) throw new Error("Groups HTTP " + gRes.status);
+    const gData = await gRes.json();
+    allGroups = Array.isArray(gData.groups) ? gData.groups : (Array.isArray(gData) ? gData : []);
+
+    // Grants endpoint may return either {grants: [...]} or a bare array.
+    // Each entry is either an object {group_id, ...} or a bare group_id.
+    if (grRes.ok) {
+      const grData = await grRes.json();
+      const raw = Array.isArray(grData.grants) ? grData.grants : (Array.isArray(grData) ? grData : []);
+      grantedIds = new Set(raw.map(g => (typeof g === "string") ? g : g.group_id));
+    } else {
+      // 404 is normal if no grants exist yet — degrade to empty.
+      grantedIds = new Set();
+    }
+    renderGroups();
+  } catch (e) {
+    document.getElementById("group-loading").textContent = "Failed to load: " + e.message;
+    toast("Failed to load groups: " + e.message, "error");
+  }
+}
+
+function renderGroups() {
+  const list = document.getElementById("group-list");
+  const empty = document.getElementById("group-empty");
+  const loading = document.getElementById("group-loading");
+  const count = document.getElementById("grant-count");
+  loading.style.display = "none";
+
+  const ft = filterText.trim().toLowerCase();
+  const filtered = ft
+    ? allGroups.filter(g => (g.name || "").toLowerCase().includes(ft)
+                         || (g.description || "").toLowerCase().includes(ft))
+    : allGroups;
+
+  count.textContent = `${grantedIds.size} of ${allGroups.length} granted`;
+
+  if (!allGroups.length) {
+    list.innerHTML = "";
+    empty.textContent = "No user groups defined. Create one on /admin/groups first.";
+    empty.style.display = "block";
+    return;
+  }
+  if (!filtered.length) {
+    list.innerHTML = "";
+    empty.textContent = `No groups matching "${filterText}".`;
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+
+  list.innerHTML = "";
+  for (const g of filtered) {
+    const origin = g.origin || (g.is_system ? "system" : "custom");
+    const li = document.createElement("li");
+    li.className = "gr-grant-row";
+    li.dataset.groupId = g.id;
+    li.innerHTML = `
+      <input type="checkbox" ${grantedIds.has(g.id) ? "checked" : ""} aria-label="Grant ${esc(g.name)}">
+      <div class="gr-group-meta">
+        <span class="gr-group-name">
+          ${esc(g.name)}
+          <span class="gr-origin-chip gr-origin-${esc(origin)}">${esc(origin.replace("_", " "))}</span>
+        </span>
+        ${g.description ? `<span class="gr-group-desc">${esc(g.description)}</span>` : ""}
+      </div>
+    `;
+    list.appendChild(li);
+  }
+}
+
+document.getElementById("group-filter").addEventListener("input", (e) => {
+  filterText = e.target.value;
+  renderGroups();
+});
+
+document.getElementById("group-list").addEventListener("click", async (e) => {
+  // Allow clicking anywhere on the row to toggle the checkbox.
+  const row = e.target.closest(".gr-grant-row");
+  if (!row) return;
+  const groupId = row.dataset.groupId;
+  const checkbox = row.querySelector('input[type="checkbox"]');
+  // If the click landed on the checkbox itself, the browser already
+  // toggled it. If on the row chrome, toggle programmatically.
+  if (e.target !== checkbox) {
+    checkbox.checked = !checkbox.checked;
+  }
+  const grant = checkbox.checked;
+  // Optimistic UI — flip the set, re-render the count, then call the API.
+  // On failure, revert.
+  if (grant) grantedIds.add(groupId); else grantedIds.delete(groupId);
+  document.getElementById("grant-count").textContent = `${grantedIds.size} of ${allGroups.length} granted`;
+
+  try {
+    const r = grant
+      ? await fetch(GRANTS_API, {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ group_id: groupId }),
+        })
+      : await fetch(`${GRANTS_API}/${encodeURIComponent(groupId)}`, {
+          method: "DELETE", credentials: "include",
+        });
+    if (!r.ok) {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    toast(grant ? "Grant added" : "Grant removed", "success");
+  } catch (err) {
+    // Revert
+    if (grant) grantedIds.delete(groupId); else grantedIds.add(groupId);
+    checkbox.checked = !grant;
+    document.getElementById("grant-count").textContent = `${grantedIds.size} of ${allGroups.length} granted`;
+    toast("Update failed: " + err.message, "error");
+  }
+});
+
+(async () => {
+  await loadTool();
+  await loadGroupsAndGrants();
+})();
+</script>
+{% endblock %}

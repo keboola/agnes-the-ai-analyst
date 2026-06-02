@@ -17,7 +17,11 @@ from services.session_processors.usage_lib import (
     compute_summary,
     iter_events,
 )
-from src.repositories.usage import UsageRepository
+
+from src.repositories import (
+    usage_repo,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +100,7 @@ class UsageProcessor:
         if not summary.get("session_id"):
             summary["session_id"] = session_id
 
-        repo = UsageRepository(conn)
+        repo = usage_repo()
         n_written = repo.upsert_events(rows, processor_version=USAGE_PROCESSOR_VERSION)
         repo.upsert_summary(summary, processor_version=USAGE_PROCESSOR_VERSION)
 
