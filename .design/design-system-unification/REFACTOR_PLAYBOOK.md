@@ -13,7 +13,7 @@ Before you start, confirm these files exist (they're the inputs the refactor dep
 | File | Purpose |
 |------|---------|
 | `app/web/templates/_components.html` | The 5 macros: `button`, `primary_nav`, `tabs`, `table`, `panel` |
-| `app/web/templates/base_ds.html` | Opt-in design-system base layout (foothold; unused yet) |
+| `app/web/templates/base_ds.html` | Canonical design-system base layout — most pages now `{% extends %}` it (or `base_page.html`); it **auto-imports `ds`**, so the Step-2 import below is redundant there (see #367/#482) |
 | `.interface-design/system.md` | The contract — class names, token names, accent vocabulary |
 | `app/web/static/css/design-tokens.css` | All `--ds-*` tokens + accent vocabulary + focus-outline + text hierarchy |
 | `app/web/static/style-custom.css` | Canonical `.btn-*` family, `.ds-card` family, `.ds-table` family + 15 legacy aliases, `.tab-strip`, `.badge--*`, `.code-inline` |
@@ -81,7 +81,7 @@ Categorise each match:
 
 ### Step 2 — Add the macro import
 
-At the very top of `{% block content %}`, before any other markup:
+At the very top of `{% block content %}`, before any other markup (**skip this import on `base_ds.html` / `base_page.html` pages — they auto-import `ds`**; keep it only on the remaining legacy `base.html` pages):
 
 ```jinja
 {% block content %}

@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "base_page.html" %}
 {% block title %}Resource access — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
@@ -10,15 +10,12 @@
 </style>
 {% endblock %}
 
-{% block content %}
+{% set page_hero_eyebrow = "Users & Access" %}
+{% set page_hero_title = "Resource access" %}
+{% set page_hero_subtitle %}Pick a group on the left, check resources on the right to grant access. Manage groups and members on <a href="/admin/groups">Groups</a>.{% endset %}
+
+{% block page %}
 <div class="ax-page">
-  {% set page_hero_eyebrow = "Users & Access" %}
-
-  {% set page_hero_title = "Resource access" %}
-
-  {% set page_hero_subtitle %}Pick a group on the left, check resources on the right to grant access. Manage groups and members on <a href="/admin/groups">Groups</a>.{% endset %}
-
-  {% include "_page_hero.html" %}
 
   <div class="ax-toolbar">
     <div>
