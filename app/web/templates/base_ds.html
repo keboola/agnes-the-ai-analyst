@@ -35,7 +35,7 @@
     scripts           inline page scripts (last in <body>)
 #}
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="{{ instance_theme | default('blue') }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -46,6 +46,7 @@
     {% for s in custom_scripts | default([]) if s.placement == 'head_start' %}
     {{ s.html | safe }}
     {% endfor %}
+    <link rel="icon" type="image/svg+xml" href="{{ static_url('favicon.svg') }}">
     <title>{% block title %}{{ config.INSTANCE_NAME or 'Agnes' }}{% endblock %}</title>
 
     {# CSS load order matters: style-custom.css carries the legacy
