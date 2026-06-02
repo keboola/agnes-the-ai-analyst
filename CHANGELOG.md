@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.58.1] — 2026-06-02
+
+### Fixed
+- **`e2e-nightly.yml` + `ci.yml` docker-e2e workflows no longer fail at container start after v0.56.0's BREAKING JWT fail-closed (#483).** Both workflows created an empty `.env` (`touch .env`) and relied on docker-compose's `environment:` block for runtime values; with `JWT_SECRET_KEY` absent, the app refused to start in production mode and the `Container agnes-the-ai-analyst-app-1 is unhealthy` failure auto-filed issue #487 against the first v0.58.0 nightly run. Both workflows now write a random 64-hex `JWT_SECRET_KEY` (per run, via `openssl rand -hex 32`) to `.env` before `docker compose up` so the safety guard is satisfied without committing a secret to the repo. `release.yml` smoke-test was unaffected — it already mounts `docker-compose.ci.yml` overlay which sets `JWT_SECRET_KEY` for the built-image path.
+
 ## [0.58.0] — 2026-06-02
 
 ### Added
