@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 import duckdb
 
@@ -42,6 +42,71 @@ from connectors.bigquery.access import get_bq_access, BqAccessError
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/query", tags=["query"])
+
+# ---------------------------------------------------------------------------
+# Per-session BQ scan budget (Phase 12.3)
+# ---------------------------------------------------------------------------
+
+# In-memory counter: session_id → cumulative bytes scanned this session.
+# Keyed by chat session JWT claim ``chat_session_id`` (set by Task 13.1).
+# Resets on server restart (intentional — sessions are short-lived).
+_per_session_bq_bytes: dict[str, int] = {}
+
+_DEFAULT_PER_SESSION_BQ_BYTES = 20 * 1024**3  # 20 GiB
+
+
+def _maybe_charge_chat_session_bq_budget(request, scan_bytes: int) -> None:
+    """If the request was authenticated under a chat-scope JWT (claim stashed
+    on ``request.state.chat_session_id`` by ``app.auth.dependencies``), charge
+    ``scan_bytes`` against that chat session's per-session BigQuery budget.
+
+    Regular (non-chat) /api/query callers leave ``request.state.chat_session_id``
+    unset and silently skip this — they're already capped by the per-user
+    daily/concurrent BQ guards in v2_quota.
+    """
+    session_id = getattr(getattr(request, "state", None), "chat_session_id", None)
+    if not session_id:
+        return
+    cfg = None
+    try:
+        cfg = request.app.state.chat_config
+    except Exception:
+        cfg = None
+    limit_bytes = (
+        cfg.per_session_bq_scan_bytes if cfg is not None else _DEFAULT_PER_SESSION_BQ_BYTES
+    )
+    accumulate_session_bq_bytes(session_id, scan_bytes, limit_bytes=limit_bytes)
+
+
+def accumulate_session_bq_bytes(
+    session_id: str,
+    scan_bytes: int,
+    *,
+    limit_bytes: int = _DEFAULT_PER_SESSION_BQ_BYTES,
+) -> None:
+    """Accumulate ``scan_bytes`` for ``session_id`` and raise HTTPException
+    (400 / ``bq_budget_exhausted``) if the cumulative total exceeds
+    ``limit_bytes``.
+
+    Called from the BQ scan guard after the dry-run resolves ``total_bytes``.
+    Integration with the request auth path is deferred to Task 13.1 — that
+    task wires ``chat_session_id`` from the JWT into ``request.state`` so the
+    execute_query handler can pass it through here.
+    """
+    current = _per_session_bq_bytes.get(session_id, 0)
+    new_total = current + scan_bytes
+    _per_session_bq_bytes[session_id] = new_total
+    if limit_bytes > 0 and new_total > limit_bytes:
+        raise HTTPException(status_code=400, detail={
+            "reason": "bq_budget_exhausted",
+            "session_id": session_id,
+            "scan_bytes_cumulative": new_total,
+            "limit_bytes": limit_bytes,
+            "suggestion": (
+                "Per-session BigQuery scan budget exhausted. "
+                "Start a new chat session to reset the quota."
+            ),
+        })
 
 
 # Heuristic: did the BQ-side execution of a `bigquery_query()`-rewritten
@@ -274,6 +339,7 @@ def _first_table_from_sql(sql: str) -> Optional[str]:
 @router.post("", response_model=QueryResponse)
 def execute_query(
     request: QueryRequest,
+    http_request: Request,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -510,13 +576,20 @@ def execute_query(
             # Stays inside the `with quota.acquire(...)` block so the slot
             # release happens after record_bytes completes.
             if dry_run_set:
+                total_bq_bytes = sum(b for _, _, b in dry_run_set)
                 try:
                     _build_quota_tracker().record_bytes(
-                        user_id, sum(b for _, _, b in dry_run_set),
+                        user_id, total_bq_bytes,
                     )
                 except Exception:
                     # record_bytes is documented as never-raising; defensive guard.
                     logger.warning("quota record_bytes failed for user=%s", user_id)
+                # Charge the chat-session-scoped BQ scan budget when the
+                # request carries a chat JWT (request.state.chat_session_id
+                # set by app/auth/dependencies). Non-chat callers no-op.
+                # Raises HTTPException(400, bq_budget_exhausted) when the
+                # cumulative session bytes exceed ChatConfig.per_session_bq_scan_bytes.
+                _maybe_charge_chat_session_bq_budget(http_request, total_bq_bytes)
 
         # Convert to serializable types
         serializable_rows = []
