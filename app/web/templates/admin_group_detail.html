@@ -1,11 +1,7 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}{{ target_group.name }} — Group detail — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{# Design-system component macros — Edit/Delete header buttons,
-   Add-member button, and Edit-modal Cancel/Save render via `ds.button`.
-   Per-row member actions are JS-generated and stay page-local. #}
-{% import "_components.html" as ds %}
+{% block head_extra %}
 <style>
   .gd-page { max-width: 1100px; margin: 0 auto; padding: 0; }
 
@@ -113,7 +109,13 @@
 
 
 </style>
+{% endblock %}
 
+{% block content %}
+{# Edit/Delete header buttons, Add-member, and Edit-modal Cancel/Save render
+   via `ds.button` (auto-imported by base_ds). Per-row member actions are
+   JS-generated and stay page-local. `.gd-page` keeps the 1100px content
+   width (legit inner width inside the 1280px container). #}
 <div class="gd-page"
      data-group-id="{{ target_group.id }}"
      data-group-name="{{ target_group.name }}"
