@@ -86,6 +86,10 @@ __all__ = [
     "mcp_sources_repo",
     "tool_registry_repo",
     "setup_tokens_repo",
+    # Cloud chat
+    "chat_session_repo",
+    "chat_message_repo",
+    "user_workdirs_repo",
 ]
 
 
@@ -487,3 +491,31 @@ def setup_tokens_repo() -> Any:
         return SetupTokenPgRepository(_pg_engine())
     from src.repositories.setup_tokens import SetupTokenRepository
     return SetupTokenRepository(get_system_db())
+
+
+# ---------------------------------------------------------------------------
+# Cloud chat
+# ---------------------------------------------------------------------------
+
+def chat_session_repo() -> Any:
+    if use_pg():
+        from src.repositories.chat_sessions_pg import ChatSessionPgRepository
+        return ChatSessionPgRepository(_pg_engine())
+    from app.chat.persistence import ChatRepository
+    return ChatRepository(get_system_db())
+
+
+def chat_message_repo() -> Any:
+    if use_pg():
+        from src.repositories.chat_messages_pg import ChatMessagePgRepository
+        return ChatMessagePgRepository(_pg_engine())
+    from app.chat.persistence import ChatRepository
+    return ChatRepository(get_system_db())
+
+
+def user_workdirs_repo() -> Any:
+    if use_pg():
+        from src.repositories.user_workdirs_pg import UserWorkdirPgRepository
+        return UserWorkdirPgRepository(_pg_engine())
+    from app.chat.persistence import ChatRepository
+    return ChatRepository(get_system_db())

@@ -180,9 +180,54 @@ def _collect_members(plugins: List[dict], etag: str) -> List[Tuple[str, bytes]]:
                 continue
             rel = f.relative_to(plugin_dir).as_posix()
             arc = f"plugins/{prefix}/{rel}"
-            members.append((arc, f.read_bytes()))
+            data = f.read_bytes()
+            # Sanitize the served plugin.json so a component key pointing at an
+            # empty/absent dir doesn't make `claude plugin install` reject the
+            # whole plugin (it raises "agents: Invalid input" for a scaffolded
+            # but unused `agents`/`commands` dir holding only a .gitkeep).
+            if rel == ".claude-plugin/plugin.json":
+                data = _sanitize_served_plugin_json(data, plugin_dir)
+            members.append((arc, data))
 
     return members
+
+
+# Plugin.json keys that point at a component directory; Claude Code rejects a
+# plugin whose key resolves to an empty/absent dir, so we drop such keys from
+# the served manifest.
+_PLUGIN_COMPONENT_KEYS = ("skills", "agents", "commands", "hooks")
+
+
+def _dir_has_real_files(d) -> bool:
+    """True if ``d`` is a directory containing at least one non-dotfile."""
+    if not d.is_dir():
+        return False
+    return any(p.is_file() and not p.name.startswith(".") for p in d.rglob("*"))
+
+
+def _sanitize_served_plugin_json(raw: bytes, plugin_dir) -> bytes:
+    """Drop ``plugin.json`` component keys whose referenced directory is empty
+    or missing. Returns ``raw`` unchanged on any parse problem or when nothing
+    needs dropping (keeps byte-for-byte determinism for the common case)."""
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return raw
+    if not isinstance(data, dict):
+        return raw
+    dropped = False
+    for key in _PLUGIN_COMPONENT_KEYS:
+        val = data.get(key)
+        # Only handle the string-path form (e.g. "./agents"); leave arrays /
+        # other shapes untouched — a populated dir or explicit list is valid.
+        if not isinstance(val, str):
+            continue
+        if not _dir_has_real_files(plugin_dir / val):
+            data.pop(key, None)
+            dropped = True
+    if not dropped:
+        return raw
+    return json.dumps(data, indent=2).encode("utf-8")
 
 
 def _bundle_plugin_json_bytes(plugin: dict) -> bytes:

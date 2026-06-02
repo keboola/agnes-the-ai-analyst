@@ -120,10 +120,13 @@ class TestRemoteQuery:
 
 class TestLocalQuery:
     def test_local_query_no_db(self, tmp_config):
-        """Local query without DuckDB exits with guidance."""
+        """Local query without DuckDB exits with guidance that leads with the
+        no-download `--remote` path (and still mentions `agnes pull`)."""
         result = runner.invoke(app, ["query", "SELECT 1"])
         assert result.exit_code == 1
-        assert "not found" in result.output.lower()
+        out = result.output.lower()
+        assert "--remote" in out
+        assert "agnes pull" in out
 
     def test_local_query_with_real_db(self, tmp_config):
         """Local query executes against real DuckDB."""

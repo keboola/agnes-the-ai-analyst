@@ -214,7 +214,7 @@ Files NOT to modify: `connectors/jira/file_lock.py`, `connectors/jira/transform.
 
 ### system.duckdb — `{DATA_DIR}/state/system.duckdb`
 
-Current schema version: **67** (auto-migrated from any earlier version on startup — see `src/db.py`).
+Current schema version: **68** (auto-migrated from any earlier version on startup — see `src/db.py`).
 
 | Table | Purpose |
 |-------|---------|
@@ -228,6 +228,9 @@ Current schema version: **67** (auto-migrated from any earlier version on startu
 | `user_sync_settings` | Per-user dataset enable/disable preferences |
 | `table_registry` | Registered tables: source_type, bucket, source_table, query_mode, sync_schedule |
 | `table_profiles` | JSON data profiles (stats, nulls, cardinality) per table |
+| `chat_sessions` | Cloud-chat sessions (v68): per-user transcript sessions (surface, slack ids, title, message_count); dual-backend (DuckDB + Postgres via `src/models/chat.py`) |
+| `chat_messages` | Cloud-chat messages (v68): role, content, tool_calls, token/model accounting, FK → `chat_sessions` |
+| `user_workdirs` | Cloud-chat per-user workspace markers (v68): last init, marketplace/template SHA, agnes version at init |
 | `knowledge_items` | Corporate memory knowledge entries (`confidence`, `entities`, `source_type`, `source_ref`, `valid_from`/`valid_until`, `supersedes`, `sensitivity`, `is_personal`, `is_required` — v49 dropped the scalar `domain` column; relations live in `knowledge_item_domains`) |
 | `knowledge_votes` | Up/down votes on knowledge items |
 | `knowledge_contradictions` | Pairs of items the LLM judge flagged as contradictory; carries `severity` and `suggested_resolution` (JSON-encoded structured action — see ADR Decision 4) |

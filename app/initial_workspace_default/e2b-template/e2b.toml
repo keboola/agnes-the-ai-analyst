@@ -1,0 +1,25 @@
+# E2B template manifest for the Agnes chat sandbox.
+#
+# After `e2b template build` runs in this directory, the returned template
+# id (e.g. `agnes-chat`) goes into `chat.e2b_template_id` in
+# `config/instance.yaml`. Q2 (owner decision) — we use a single mutable
+# `:latest` tag rather than per-Agnes-version hashes, so operator rebuilds
+# of the template propagate to every Agnes deployment on its next sandbox
+# spawn. Docs warn operators to test rebuilds on a dev Agnes first.
+#
+# No `allowed_hosts` / firewall block here — per Q4 the egress allowlist
+# lives only in the PreToolUse hook in the workspace template, not at the
+# E2B network layer. See ../Dockerfile for the tradeoff rationale.
+
+template_name = "agnes-chat"
+dockerfile = "Dockerfile"
+
+# Working directory inside the sandbox where the per-user workspace is
+# rsynced at spawn time by app/chat/e2b_workspace_sync.py.
+start_cmd = ""
+
+# CPU/memory limits — modest defaults; operators can raise via E2B
+# dashboard if their workflows need more. Per-session billing is the
+# operator's responsibility (visible in the E2B dashboard).
+cpu_count = 2
+memory_mb = 1024
