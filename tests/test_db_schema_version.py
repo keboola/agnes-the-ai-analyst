@@ -184,6 +184,8 @@ def test_schema_version_is_62():
     # v63 → v64: ``mcp_secrets`` shared vault for MCP source auth.
     # v64 → v65: ``mcp_user_secrets`` per-user vault.
     # v65 → v66: ``data_package_tools`` junction.
+    # v67 → v68: cloud chat tables — chat_sessions, chat_messages,
+    #            user_workdirs + two regular indexes.
     assert SCHEMA_VERSION >= 66
 
 
