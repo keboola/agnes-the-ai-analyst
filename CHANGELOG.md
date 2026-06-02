@@ -38,6 +38,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- **Documented the design-system page shell for agents.** `docs/architecture.md` now describes the `base.html` → `base_ds.html` → `base_page.html` hierarchy and carries a step-by-step **New Web Page** recipe under *Extending the Platform*; `CLAUDE.md` gains a `Web pages` pointer under *Extensibility*, and the `#419` refactor playbook is de-staled (`base_ds` is canonical + auto-imports `ds`). New pages now have a clear path: extend `base_page` / `base_ds` (never legacy `base.html`), page CSS in `{% block head_extra %}`, `ds.*` macros auto-imported.
 
 ## [0.59.1] - 2026-06-02
 
