@@ -1,12 +1,7 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}Access tokens — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{# Design-system component macros — modal Cancel/Revoke buttons render
-   via `ds.button`. Bespoke `.chip-btn` filter strips, `.clear-link`
-   inline-link buttons, JS-generated `.revoke-btn` row actions, and
-   the token card stack stay page-local. #}
-{% import "_components.html" as ds %}
+{% block head_extra %}
 <style>
   /* ─────────────────────────────────────────────────────────────────────────
      /admin/tokens — ALL tokens across users for incident response + offboarding.
@@ -576,7 +571,12 @@
     .tokens-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 </style>
+{% endblock %}
 
+{% block content %}
+{# modal Cancel/Revoke render via `ds.button` (auto-imported by base_ds).
+   Bespoke .chip-btn / .clear-link / JS-generated .revoke-btn + token card
+   stack stay page-local. #}
 <div class="tokens-page" data-is-admin="true" data-view="admin">
   <!-- ═════════ HERO ═════════ -->
   {# Canonical page-hero box + bespoke `tokens-counts` chip row on the

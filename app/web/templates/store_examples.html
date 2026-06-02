@@ -1,7 +1,7 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}Submission examples — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
+{% block head_extra %}
 <style>
   .examples-page { max-width: 980px; }
   .examples-page h1 {
@@ -62,8 +62,10 @@
     font-size: 13px;
   }
 </style>
+{% endblock %}
 
-<div class="examples-page page-shell">
+{% block content %}
+<div class="examples-page">
   <div class="top-actions">
     <a href="/store/new">← Back to upload</a>
   </div>

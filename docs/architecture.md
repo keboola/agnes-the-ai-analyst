@@ -324,7 +324,43 @@ All routes are FastAPI `APIRouter` instances registered in `app/main.py`.
 
 ### Web UI (`app/web/`)
 
-HTML dashboard routes served by Jinja2 templates. Registered last (catch-all).
+HTML dashboard routes served by Jinja2 templates (`app/web/templates/`), registered last
+in `app/main.py` (catch-all). Route handlers live in `app/web/router.py` and return
+`templates.TemplateResponse(request, "<name>.html", ctx)`.
+
+**Base-template hierarchy (the design-system page shell — #367 / #482).** Every page
+`{% extends %}` one of three bases:
+
+- **`base_ds.html` — the canonical base.** Loads the four stylesheets in the required
+  order (`style-custom` → `design-tokens` → `components` → `stack_card`), sets
+  `<html data-theme="{{ instance_theme | default('blue') }}">` + the favicon, renders the
+  production nav (`_app_header.html`), the canonical `.container` shell, the operator
+  `custom_scripts` placements (`head_start` / `head_end` / `body_end`), and the global JS
+  (`_app_scripts.html` — undo toast, modal-Esc, command palette, admin shortcuts). It
+  **auto-imports `_components.html` as `ds`**, so pages call `{{ ds.button(…) }}` without
+  importing. Body extension point: `{% block content %}`. Blocks: `title`, `head_extra`,
+  `body_attrs`, `container_modifier`, `hero`, `flash`, `content`, `extra_scripts`,
+  `scripts` (plus `layout` to opt out of the `.container` wrap entirely, e.g. full-width
+  pages like `dashboard`).
+- **`base_page.html` — content-page shell (extends `base_ds`).** Adds the standard chrome:
+  an automatic gradient hero (`_page_hero.html`, rendered from top-level
+  `page_hero_eyebrow` / `page_hero_title` / `page_hero_subtitle` vars) + `{% block toolbar %}`
+  + `{% block page %}`. Use it for pages that have a hero (and optional toolbar).
+- **`base.html` — legacy.** Only bespoke/unmigrated pages still extend it: the
+  catalog/marketplace `*_detail` card-hero pages and the `_message` partial are
+  intentionally kept; any others are migration-tail follow-ups. **Do not build new pages
+  on `base.html`.**
+
+Shared partials: `_page_hero.html` (canonical hero), `_components.html` (the `ds.*` macro
+library — buttons, panels, tabs, …), `_app_header.html` (nav), `_app_scripts.html` (global
+JS). Component CSS lives in `app/web/static/` (`style-custom.css` + `css/*.css`); all colours
+come from `--ds-*` tokens in `css/design-tokens.css`.
+
+Anti-drift is enforced by `tests/test_design_system_contract.py`: leaf templates may **not**
+reintroduce a `.container:has()` width opt-out or a bare `:root {}` token block, must use the
+canonical primitives (not deprecated class aliases), and must reference `var(--ds-primary)`
+rather than `var(--primary)`. The build recipe is under **Extending the Platform → New Web
+Page**.
 
 ---
 
@@ -456,3 +492,36 @@ optional and gate the relevant connectors/providers.
 1. Add `app/auth/providers/<name>.py` exporting a FastAPI `APIRouter`.
 2. Register the router in `app/main.py`.
 3. All providers must issue a JWT and set the `access_token` cookie on success.
+
+### New Web Page
+
+Dashboard pages use the design-system page shell (see **Web UI** above). To add one:
+
+1. Add a route in `app/web/router.py` returning
+   `templates.TemplateResponse(request, "<name>.html", ctx)`.
+2. Create `app/web/templates/<name>.html`:
+   - **Extend `base_page.html`** if the page has a gradient hero (and optional toolbar),
+     otherwise **`base_ds.html`**. **Never `base.html`** — it is legacy.
+   - On `base_page`: declare the hero with top-level
+     `{% set page_hero_eyebrow / page_hero_title / page_hero_subtitle %}` (it renders
+     automatically — do **not** `{% include "_page_hero.html" %}` yourself), put action
+     buttons in `{% block toolbar %}`, and the page body in `{% block page %}`.
+   - On `base_ds`: put the body in `{% block content %}`.
+   - Page-specific CSS goes in `{% block head_extra %}` (a `<style>` block) — never an
+     inline `<style>` in the body. Prefer the `--ds-*` tokens + existing component classes;
+     raw `#rrggbb` literals and `var(--primary)` are rejected by the contract test.
+   - Call `{{ ds.button(…) }}` / `{% call ds.panel(…) %}…{% endcall %}` directly — `ds` is
+     auto-imported by `base_ds`; **do not** add `{% import "_components.html" as ds %}`.
+   - Wider shell? `{% block container_modifier %}container--wide{% endblock %}`. Do **not**
+     add a `.container:has(.x){max-width}` opt-out or a bare `:root {}` block — both fail
+     `tests/test_design_system_contract.py`.
+   - Nav, theme (`data-theme`), favicon, operator `custom_scripts`, and the global JS are
+     already provided by the base — don't reimplement them.
+3. Verify: `pytest tests/test_design_system_contract.py tests/test_web_ui.py -q`, then
+   render-check the route (status 200; the hero renders exactly once; the canonical
+   `.container` is present; no `.container:has(` and no `class="page-shell"` in the output).
+
+Reference adopters: `profile.html` (on `base_page`) and `corporate_memory.html` (on
+`base_ds`). Note: the legacy `.X-page { max-width }` inner-width wrappers some migrated
+pages still carry are intentional *content* widths inside the 1280px `.container`, not a
+pattern to copy for new pages.
