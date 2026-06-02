@@ -19,6 +19,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+## [0.60.0] — 2026-06-02
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
 - **DuckDB schema → v68.** The cloud-chat tables (`chat_sessions`,
   `chat_messages`, `user_workdirs`) ship as migration `_v67_to_v68` in
   `src/db.py` (idempotent `CREATE … IF NOT EXISTS`, wired into both the
