@@ -28,6 +28,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Migrated `admin_user_detail` onto `base_ds.html` (#482, batch 9).** Hero + inner-width page: component CSS → `{% block head_extra %}`; the `.ud-page` (1100px) wrapper and its in-wrapper `_page_hero` are kept as-is — the hero stays 1100px rather than being hoisted to a full-width `base_page` hero (faithful, no visual change). Redundant `_components.html` import dropped.
 - **Migrated `home_onboarded`, `setup_advanced` onto `base_ds.html` (#482, batch 10).** The two redesign pages (`.home-mock` / `.advanced-mock`): scoped CSS plus the `_page_chrome.html` body-tint include → `{% block head_extra %}`; bespoke hero + body stay in `{% block content %}`. Rendered output unchanged (the page-background tint was verified still rendering on base_ds).
 - **Migrated `dashboard`, `install` onto `base_ds.html` (#482, batch 11).** These override `{% block layout %}` for bespoke full-width chrome (no `.container`) — a plain `extends` swap suffices; their `head_extra` / `layout` / `scripts` blocks all carry over to `base_ds` unchanged. Render-verified: full-width body + nav intact, no `page-shell`.
+- **Migrated `admin_store_submission_detail`, `admin_tokens` onto `base_ds.html` (#482, batch 12).** Large no-hero admin pages: component CSS → `{% block head_extra %}`, body + script stay in `{% block content %}`, redundant `_components.html` import + no-op `.page-shell` dropped; bespoke `.det-page` / `.tokens-page` wrappers kept. Rendered output unchanged.
 
 ## [0.55.28] — 2026-06-01
 
