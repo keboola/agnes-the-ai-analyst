@@ -65,8 +65,44 @@ _SESSION_GROUP = (
 
 
 class ChatRepository:
+    """Dual-backend chat repository.
+
+    On DuckDB (the default / single-worker deploy) it runs the in-process
+    SQL below directly against the passed connection. When the active
+    backend is Postgres (``use_pg()`` — side-car or cloud deploys) it
+    delegates every operation to the per-table Postgres repositories under
+    ``src/repositories/*_pg.py``; the DuckDB ``conn`` is then unused.
+
+    Public method signatures and return types are identical across both
+    backends so callers (app/chat/manager.py, app/api/*, services/slack_bot/*)
+    never branch on backend.
+    """
+
     def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
         self._conn = conn
+        # Postgres delegates — populated only when the active backend is PG.
+        self._sessions_pg = None
+        self._messages_pg = None
+        self._workdirs_pg = None
+        try:
+            from src.repositories import use_pg
+
+            if use_pg():
+                from src.db_pg import get_engine
+                from src.repositories.chat_messages_pg import ChatMessagePgRepository
+                from src.repositories.chat_sessions_pg import ChatSessionPgRepository
+                from src.repositories.user_workdirs_pg import UserWorkdirPgRepository
+
+                engine = get_engine()
+                self._sessions_pg = ChatSessionPgRepository(engine)
+                self._messages_pg = ChatMessagePgRepository(engine)
+                self._workdirs_pg = UserWorkdirPgRepository(engine)
+        except Exception:
+            # If backend detection or engine construction fails, fall back to
+            # the DuckDB path bound to the passed connection.
+            self._sessions_pg = None
+            self._messages_pg = None
+            self._workdirs_pg = None
 
     # --- sessions ----------------------------------------------------------
 
@@ -79,6 +115,14 @@ class ChatRepository:
         slack_thread_ts: Optional[str] = None,
         title: Optional[str] = None,
     ) -> ChatSession:
+        if self._sessions_pg is not None:
+            return self._sessions_pg.create_session(
+                user_email=user_email,
+                surface=surface,
+                slack_channel_id=slack_channel_id,
+                slack_thread_ts=slack_thread_ts,
+                title=title,
+            )
         chat_id = _gen_id("chat")
         now = datetime.now(timezone.utc)
         self._conn.execute(
@@ -93,6 +137,8 @@ class ChatRepository:
         return fetched
 
     def get_session(self, chat_id: str) -> Optional[ChatSession]:
+        if self._sessions_pg is not None:
+            return self._sessions_pg.get_session(chat_id)
         row = self._conn.execute(
             _SESSION_SELECT + " WHERE s.id = ?" + _SESSION_GROUP,
             [chat_id],
@@ -100,6 +146,10 @@ class ChatRepository:
         return _row_to_session(row) if row else None
 
     def list_sessions(self, user_email: str, *, include_archived: bool = False) -> list[ChatSession]:
+        if self._sessions_pg is not None:
+            return self._sessions_pg.list_sessions(
+                user_email, include_archived=include_archived
+            )
         where = " WHERE s.user_email = ?"
         if not include_archived:
             where += " AND s.archived = FALSE"
@@ -111,6 +161,8 @@ class ChatRepository:
         return [_row_to_session(r) for r in rows]
 
     def get_slack_dm_session(self, slack_channel_id: str) -> Optional[ChatSession]:
+        if self._sessions_pg is not None:
+            return self._sessions_pg.get_slack_dm_session(slack_channel_id)
         # intentional: no await between SELECT and INSERT — Slack uniqueness without DB partial unique index
         row = self._conn.execute(
             _SESSION_SELECT
@@ -123,6 +175,10 @@ class ChatRepository:
     def get_slack_thread_session(
         self, slack_channel_id: str, slack_thread_ts: str,
     ) -> Optional[ChatSession]:
+        if self._sessions_pg is not None:
+            return self._sessions_pg.get_slack_thread_session(
+                slack_channel_id, slack_thread_ts
+            )
         # intentional: no await between SELECT and INSERT — Slack uniqueness without DB partial unique index
         row = self._conn.execute(
             _SESSION_SELECT
@@ -134,6 +190,9 @@ class ChatRepository:
         return _row_to_session(row) if row else None
 
     def archive_session(self, chat_id: str) -> None:
+        if self._sessions_pg is not None:
+            self._sessions_pg.archive_session(chat_id)
+            return
         self._conn.execute(
             "UPDATE chat_sessions SET archived = TRUE WHERE id = ?", [chat_id]
         )
@@ -148,6 +207,9 @@ class ChatRepository:
         Used by the auto-title path (Haiku-generated title after the
         first assistant turn) and would also be the home for any future
         inline-rename UI."""
+        if self._sessions_pg is not None:
+            self._sessions_pg.set_title(chat_id, title)
+            return
         self._conn.execute(
             "UPDATE chat_sessions SET title = ? WHERE id = ?", [title, chat_id]
         )
@@ -159,6 +221,8 @@ class ChatRepository:
         Used as the auto-title prompt: the first user message captures
         the topic better than any later turn (which is usually a
         follow-up / refinement)."""
+        if self._messages_pg is not None:
+            return self._messages_pg.get_first_user_message(chat_id)
         row = self._conn.execute(
             "SELECT content FROM chat_messages "
             "WHERE session_id = ? AND role = 'user' "
@@ -195,6 +259,10 @@ class ChatRepository:
         zero messages. ``archived = FALSE`` in the WHERE keeps the
         count accurate (don't re-archive what's already archived).
         """
+        if self._sessions_pg is not None:
+            return self._sessions_pg.archive_empty_user_sessions(
+                user_email, surface=surface, exclude_id=exclude_id
+            )
         params: list = [user_email]
         surface_clause = ""
         if surface is not None:
@@ -229,6 +297,8 @@ class ChatRepository:
         return before - after
 
     def hard_delete_user_sessions(self, user_email: str) -> int:
+        if self._sessions_pg is not None:
+            return self._sessions_pg.hard_delete_user_sessions(user_email)
         n = self._conn.execute(
             "SELECT COUNT(*) FROM chat_sessions WHERE user_email = ?", [user_email]
         ).fetchone()[0]
@@ -256,6 +326,16 @@ class ChatRepository:
         tokens_out: Optional[int] = None,
         model: Optional[str] = None,
     ) -> ChatMessage:
+        if self._messages_pg is not None:
+            return self._messages_pg.append_message(
+                session_id=session_id,
+                role=role,
+                content=content,
+                tool_calls=tool_calls,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                model=model,
+            )
         msg_id = _gen_id("msg")
         now = datetime.now(timezone.utc)
         # DuckDB 1.5.3 bug: updating a column that is part of a secondary
@@ -285,6 +365,10 @@ class ChatRepository:
     def list_messages(
         self, session_id: str, *, after_id: Optional[str] = None, limit: int = 500,
     ) -> list[ChatMessage]:
+        if self._messages_pg is not None:
+            return self._messages_pg.list_messages(
+                session_id, after_id=after_id, limit=limit
+            )
         if after_id:
             row = self._conn.execute(
                 "SELECT created_at FROM chat_messages WHERE id = ?", [after_id]
@@ -317,6 +401,8 @@ class ChatRepository:
     # --- workdirs ----------------------------------------------------------
 
     def get_workdir(self, user_email: str) -> Optional[UserWorkdir]:
+        if self._workdirs_pg is not None:
+            return self._workdirs_pg.get_workdir(user_email)
         row = self._conn.execute(
             "SELECT user_email, last_init_at, marketplace_sha, initial_workspace_sha, "
             "agnes_version_at_init FROM user_workdirs WHERE user_email = ?",
@@ -337,6 +423,14 @@ class ChatRepository:
         initial_workspace_sha: Optional[str],
         agnes_version: str,
     ) -> None:
+        if self._workdirs_pg is not None:
+            self._workdirs_pg.upsert_workdir(
+                user_email=user_email,
+                marketplace_sha=marketplace_sha,
+                initial_workspace_sha=initial_workspace_sha,
+                agnes_version=agnes_version,
+            )
+            return
         now = datetime.now(timezone.utc)
         self._conn.execute(
             "INSERT OR REPLACE INTO user_workdirs "
@@ -346,6 +440,9 @@ class ChatRepository:
         )
 
     def delete_workdir_row(self, user_email: str) -> None:
+        if self._workdirs_pg is not None:
+            self._workdirs_pg.delete_workdir_row(user_email)
+            return
         self._conn.execute("DELETE FROM user_workdirs WHERE user_email = ?", [user_email])
 
     def session_total_tokens(self, session_id: str) -> int:
@@ -357,6 +454,8 @@ class ChatRepository:
         rollup; counting at read time on every send_user_message is fine
         — DuckDB indexes on session_id and DuckDB is in-process.
         """
+        if self._messages_pg is not None:
+            return self._messages_pg.session_total_tokens(session_id)
         row = self._conn.execute(
             "SELECT COALESCE(SUM(COALESCE(tokens_in, 0) + COALESCE(tokens_out, 0)), 0) "
             "FROM chat_messages WHERE session_id = ?",
@@ -366,6 +465,8 @@ class ChatRepository:
 
     def daily_anthropic_tokens(self, user_email: str) -> tuple[int, int]:
         """Sum of tokens_in / tokens_out for this user's messages since UTC midnight."""
+        if self._messages_pg is not None:
+            return self._messages_pg.daily_anthropic_tokens(user_email)
         row = self._conn.execute(
             "SELECT COALESCE(SUM(m.tokens_in), 0), COALESCE(SUM(m.tokens_out), 0) "
             "FROM chat_messages m JOIN chat_sessions s ON m.session_id = s.id "

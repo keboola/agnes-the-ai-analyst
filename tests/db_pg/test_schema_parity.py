@@ -32,15 +32,6 @@ DUCKDB_ONLY_TABLES: set[str] = {
     # session-local — never need cross-backend portability; the state
     # machine migrator skips them deliberately.
     "cli_auth_codes",
-    # Cloud-chat tables are DuckDB-only for now. Chat runs single-worker
-    # (the WS ticket store + ChatManager are in-process; HA/multi-replica
-    # is explicitly out of scope today), so its transcript + per-user
-    # workdir state never needs to migrate to the Postgres state backend.
-    # When chat goes multi-worker, add PG models + an alembic revision and
-    # drop these from the allowlist.
-    "chat_sessions",
-    "chat_messages",
-    "user_workdirs",
 }
 
 

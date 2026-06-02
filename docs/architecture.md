@@ -228,7 +228,7 @@ Current schema version: **68** (auto-migrated from any earlier version on startu
 | `user_sync_settings` | Per-user dataset enable/disable preferences |
 | `table_registry` | Registered tables: source_type, bucket, source_table, query_mode, sync_schedule |
 | `table_profiles` | JSON data profiles (stats, nulls, cardinality) per table |
-| `chat_sessions` | Cloud-chat sessions (v68): per-user transcript sessions (surface, slack ids, title, message_count); DuckDB-only (single-worker) |
+| `chat_sessions` | Cloud-chat sessions (v68): per-user transcript sessions (surface, slack ids, title, message_count); dual-backend (DuckDB + Postgres via `src/models/chat.py`) |
 | `chat_messages` | Cloud-chat messages (v68): role, content, tool_calls, token/model accounting, FK → `chat_sessions` |
 | `user_workdirs` | Cloud-chat per-user workspace markers (v68): last init, marketplace/template SHA, agnes version at init |
 | `knowledge_items` | Corporate memory knowledge entries (`confidence`, `entities`, `source_type`, `source_ref`, `valid_from`/`valid_until`, `supersedes`, `sensitivity`, `is_personal`, `is_required` — v49 dropped the scalar `domain` column; relations live in `knowledge_item_domains`) |
