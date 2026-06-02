@@ -19,6 +19,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+---
+
+## [0.60.0] — 2026-06-02
+
+### Internal
 - **DuckDB schema → v68.** The cloud-chat tables (`chat_sessions`,
   `chat_messages`, `user_workdirs`) ship as migration `_v67_to_v68` in
   `src/db.py` (idempotent `CREATE … IF NOT EXISTS`, wired into both the
@@ -400,6 +406,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   empty HMAC signatures with 401; (7) a WS ticket minted for session
   A cannot open session B's WebSocket. nsjail-side tests reuse the
   same skip helper as `tests/security/test_nsjail_escape.py`.
+
 ## [0.59.1] - 2026-06-02
 
 ### Fixed
