@@ -82,11 +82,23 @@ def _make_passthrough_callable(
         _passthrough.__doc__ = f"Passthrough to upstream MCP tool {original_name!r}."
         return _passthrough
 
+    # Required params must precede optional ones in the synthesized
+    # signature — Python rejects `def f(opt=None, req):` as
+    # SyntaxError ("non-default argument follows default argument"),
+    # and the SyntaxError lands at `exec()` below, OUTSIDE the per-tool
+    # try/except that wraps `add_tool` — so a single upstream schema
+    # listing an optional property before a required one would crash
+    # the entire `register_passthrough_tools` loop and lose every
+    # passthrough tool, not just the one with the bad property order.
+    # Two-pass build keeps the synthesized callable parseable
+    # regardless of upstream property ordering.
+    # (Devin Review on #474)
     sig_parts: List[str] = []
     for name in safe_props:
         if name in required:
             sig_parts.append(name)
-        else:
+    for name in safe_props:
+        if name not in required:
             sig_parts.append(f"{name}=None")
     sig_str = ", ".join(sig_parts)
     arg_dict_items = ", ".join(f'"{n}": {n}' for n in safe_props)

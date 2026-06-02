@@ -68,9 +68,20 @@ def _make_rest_passthrough_callable(
         _wrap.__doc__ = f"Passthrough to upstream MCP tool {tool_id!r}."
         return _wrap
 
+    # Required params must precede optional ones in the synthesized
+    # signature — Python rejects `def f(opt=None, req):` as
+    # SyntaxError ("non-default argument follows default argument").
+    # Same fix as `app/api/mcp/tools_generator.py` (Devin Review on
+    # #474); single insertion-order loop here would have crashed the
+    # stdio MCP server's dynamic-tool registration loop on any upstream
+    # schema listing an optional property before a required one.
     sig_parts: List[str] = []
     for name in safe_props:
-        sig_parts.append(name if name in required else f"{name}=None")
+        if name in required:
+            sig_parts.append(name)
+    for name in safe_props:
+        if name not in required:
+            sig_parts.append(f"{name}=None")
     sig_str = ", ".join(sig_parts)
     arg_dict_items = ", ".join(f'"{n}": {n}' for n in safe_props)
     src = (

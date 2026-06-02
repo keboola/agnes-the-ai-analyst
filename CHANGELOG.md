@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.58.0] — 2026-06-02
+
 ### Added
 - **Cowork `setup.py` shows macOS restart dialog after MCP registration.** After writing Agnes into Claude Desktop's config, `setup.py` shows a native macOS dialog ("Agnes MCP tools registered. Restart Claude Desktop now to activate them?" / "Later" / "Restart Now"). Choosing "Restart Now" quits Claude Desktop and reopens it automatically. Best-effort — silently skipped if `osascript` is unavailable.
 - **Cowork `setup.py` uses stable `mcp_server.py` path in `~/.claude/settings.json`.** Previously wrote the bundle folder path (`HERE/mcp_server.py`) to the user-level Claude settings, which broke when the bundle folder was deleted. Now writes `~/.config/agnes/mcp_server.py` (the stable copy created by setup) so the entry survives bundle cleanup and new-bundle downloads.
@@ -36,6 +38,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`PUT /api/admin/registry/{id}` rejected Keboola `materialized` rows with `null` `source_query`.** The handler required non-empty `source_query` for all non-BigQuery materialized rows, but Keboola materialized with `null` means full-table export and is valid at registration time. Fixed by exempting `keboola` from the non-empty check (matching the registration validator which already guards only non-empty values).
 - **`POST/DELETE /api/admin/data-packages/{id}/tools` endpoints bypassed backend routing.** Both handlers used `DataPackagesRepository(conn)` and `ToolRegistryRepository(conn)` directly (neither imported); raised `NameError` in tests and silently used the wrong backend on PG. Fixed to use `data_packages_repo()` and `tool_registry_repo()` factories.
 - **`connectors/mcp/extractor.py` and `cli/mcp/server.py` bypassed `_open_duckdb`.** Both files called `duckdb.connect()` directly, skipping the UTC timezone pin. Routed through `_open_duckdb` so TIMESTAMP writes are host-timezone-safe.
+- **Passthrough tool signature synthesis no longer raises `SyntaxError` when an upstream MCP schema lists an optional property before a required one.** The single-pass build in both `app/api/mcp/tools_generator.py` and `cli/mcp/_dynamic_passthrough.py` emitted required (positional) and optional (`= None`) params in upstream insertion order; Python rejects `def f(opt=None, req):` and the SyntaxError lands at `exec()`, outside the per-tool `try/except` wrapping `add_tool` — so a single bad schema would have crashed the entire `register_passthrough_tools` loop and lost every passthrough tool, not just the one with the bad order. Two-pass build now emits required first, then optional. (Devin Review on #474)
 
 ### Internal
 - Schema v63: `setup_tokens` — short-lived one-use tokens for the Cowork setup exchange flow.
