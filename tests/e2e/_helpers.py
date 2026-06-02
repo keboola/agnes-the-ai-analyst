@@ -229,6 +229,34 @@ def docker_exec(argv: Iterable[str], *, timeout: float = 30.0) -> subprocess.Com
     return subprocess.run(cmd, check=False, capture_output=True, timeout=timeout)
 
 
+def container_exec_python(code: str, *, timeout: float = 30.0) -> str:
+    """Run a Python snippet inside the agnes compose container; return stdout.
+
+    Acceptance tests use this to verify DB side effects directly where the
+    DuckDB files live (audit_log rows, analytics sums) — e.g.
+    ``int(container_exec_python(snippet).strip())``. The container image ships
+    ``python`` (3.13). Asserts on non-zero exit so a broken snippet surfaces
+    its stderr instead of a confusing parse error on empty stdout.
+    """
+    proc = docker_exec(["python", "-c", code], timeout=timeout)
+    assert proc.returncode == 0, (
+        f"container python snippet failed (rc={proc.returncode}); "
+        f"stderr: {proc.stderr.decode('utf-8', 'replace')!r}"
+    )
+    return proc.stdout.decode("utf-8", "replace")
+
+
+def container_path_exists(path: str) -> bool:
+    """Return True iff ``path`` exists inside the agnes compose container.
+
+    Bool-returning companion to :func:`assert_container_path_exists` — used by
+    acceptance tests (e.g. test_sarah_day_one) that want to branch on or embed
+    the existence check in their own assertion messages rather than rely on
+    the helper's fixed message.
+    """
+    return docker_exec(["test", "-e", path]).returncode == 0
+
+
 def assert_container_path_exists(path: str) -> None:
     """Assert a path exists inside the agnes compose container.
 
