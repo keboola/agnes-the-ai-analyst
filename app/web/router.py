@@ -510,16 +510,32 @@ def _build_context(
     # Cloud-chat nav visibility. The /chat link is shown only to users who can
     # actually reach it: chat enabled AND the RBAC grant (admins short-circuit).
     # Computed here so the shared header gates the link the same way the route
-    # gates the page. Defaults False when we can't check (no conn/user) so the
-    # link never leaks where access is unknown.
+    # gates the page — on EVERY page, not just routes that happen to thread a
+    # `conn`. Most routes call _build_context with only `user=`, so we can't
+    # rely on the passed `conn`; when it's absent we open our own short-lived
+    # system-db cursor (cheap — shared underlying connection) and close it.
+    # Defaults False when chat is disabled or there's no logged-in user.
+    ctx["can_chat"] = False
     try:
-        from app.auth.access import can_access
-        from app.resource_types import ResourceType
         _cc = getattr(request.app.state, "chat_config", None)
-        ctx["can_chat"] = bool(
-            user and conn is not None and _cc is not None and _cc.enabled
-            and can_access(user["id"], ResourceType.CHAT.value, "chat", conn)
-        )
+        if user and _cc is not None and _cc.enabled:
+            from app.auth.access import can_access
+            from app.resource_types import ResourceType
+
+            _conn = conn
+            _own_conn = False
+            if _conn is None:
+                from src.db import get_system_db
+
+                _conn = get_system_db()
+                _own_conn = True
+            try:
+                ctx["can_chat"] = bool(
+                    can_access(user["id"], ResourceType.CHAT.value, "chat", _conn)
+                )
+            finally:
+                if _own_conn:
+                    _conn.close()
     except Exception:
         ctx["can_chat"] = False
     # Flex all extra context values for template compatibility

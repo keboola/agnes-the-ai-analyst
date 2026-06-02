@@ -90,3 +90,34 @@ def test_chat_route_html(api_client: TestClient, logged_in_user):
 def test_chat_route_redirects_when_disabled(api_client_chat_disabled: TestClient, logged_in_user):
     r = api_client_chat_disabled.get("/chat", follow_redirects=False)
     assert r.status_code in (302, 307)
+
+
+def test_can_chat_computed_without_conn_threaded():
+    """Regression: the Chat nav link must render on EVERY page for a user with
+    access — not only routes that thread a ``conn`` into ``_build_context``.
+
+    The bug: ``_build_context`` set ``can_chat`` from the *passed* ``conn``, but
+    most page routes call it with only ``user=`` (no conn). So ``can_chat`` was
+    True on /chat + /dashboard (which thread conn) and False everywhere else
+    (e.g. /marketplace), making the nav link flicker in and out as you moved
+    between pages. The fix opens a short-lived system-db cursor when no conn is
+    passed, so visibility is consistent. ``can_access`` is patched True by the
+    autouse fixture, so this isolates the conn-threading behavior.
+    """
+    from types import SimpleNamespace as _NS
+
+    from starlette.requests import Request
+    from app.web.router import _build_context
+
+    # Minimal ASGI scope + an app whose state carries an enabled chat_config.
+    app = _NS(state=_NS(chat_config=_NS(enabled=True)))
+    scope = {
+        "type": "http", "app": app, "method": "GET", "path": "/",
+        "query_string": b"", "headers": [], "server": ("test", 80),
+        "scheme": "http", "client": ("1.2.3.4", 9),
+    }
+    request = Request(scope)
+
+    # Mirror the common route call: user supplied, but NO conn threaded.
+    ctx = _build_context(request, user=TEST_USER)
+    assert ctx["can_chat"] is True
