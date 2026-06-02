@@ -7,10 +7,11 @@
  * top of the file. See ``.design/design-system-unification/system.md``
  * for the canonical conventions.
  *
- * Theme support: every color reference flows through a ``--ds-*``
- * token, so the dark-theme overrides in design-tokens.css
- * (``:root[data-theme="dark"]``) flip the page wholesale — no
- * dark-mode-specific rules live here.
+ * Color values flow through ``--ds-*`` tokens, so the chat surface
+ * matches the rest of the app. (A per-surface dark-mode toggle used to
+ * live here but was removed — dark mode only ever themed the token-
+ * driven parts of the UI, so it stayed chat-only; reintroduce it app-
+ * wide once style-custom.css is fully tokenized.)
  */
 
 /* Chat-local layout vars. Local because they don't make sense outside
@@ -225,26 +226,6 @@ body.chat-page-body main { margin: 0; padding: 0; }
 }
 .cloud-chat-list:not(:empty) + .cloud-chat-sidebar-empty { display: none; }
 
-/* Theme toggle — composes ``.btn .btn-ghost .btn-sm``. The page-
-   local rule keeps the icon-text gap at 6px (vs the canonical 8px),
-   sets the SVG size, and adds the focus ring. */
-.cloud-chat-sidebar-footer {
-  padding: var(--space-2) var(--space-3) var(--space-3);
-  border-top: 1px solid var(--ds-border);
-  display: flex;
-  justify-content: flex-end;
-}
-.cloud-chat-theme-toggle { gap: 6px; }
-.cloud-chat-theme-toggle:focus-visible {
-  outline: var(--ds-focus-outline);
-  outline-offset: var(--ds-focus-outline-offset);
-}
-.cloud-chat-theme-toggle svg { width: 14px; height: 14px; }
-/* JS swaps the visible icon by toggling [data-theme="dark"] on <html>;
-   show the sun when dark (i.e. "click for light"), moon when light. */
-:root[data-theme="dark"] .cloud-chat-theme-icon-moon { display: none; }
-:root:not([data-theme="dark"]) .cloud-chat-theme-icon-sun { display: none; }
-
 /* ===== Sidebar mini-mode =====
    When ``.is-mini`` is on the shell, the sidebar collapses to a
    ~56px rail. Labels disappear; only icons + first-letter avatars
@@ -298,13 +279,6 @@ body.chat-page-body main { margin: 0; padding: 0; }
 .cloud-chat-shell.is-mini .cloud-chat-list-del { display: none; }
 .cloud-chat-shell.is-mini .cloud-chat-list-group-header { display: none; }
 .cloud-chat-shell.is-mini .cloud-chat-sidebar-empty { display: none; }
-
-.cloud-chat-shell.is-mini .cloud-chat-sidebar-footer {
-  padding: var(--space-2) 6px var(--space-3);
-  justify-content: center;
-}
-.cloud-chat-shell.is-mini .cloud-chat-theme-toggle { padding: 6px; gap: 0; }
-.cloud-chat-shell.is-mini .cloud-chat-theme-label { display: none; }
 
 /* ============================================================ main panel */
 
