@@ -10,6 +10,390 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.60.0] — 2026-06-02
+
+### Internal
+- **DuckDB schema → v68.** The cloud-chat tables (`chat_sessions`,
+  `chat_messages`, `user_workdirs`) ship as migration `_v67_to_v68` in
+  `src/db.py` (idempotent `CREATE … IF NOT EXISTS`, wired into both the
+  sequential-apply and the `if current < N` ladder; also declared in
+  `_SYSTEM_SCHEMA` for fresh installs). Renumbered from the original v60
+  when the branch merged main's v60–v67 ladder. The three tables are
+  declared DuckDB-only in the PG schema-parity contract (cloud chat is
+  single-worker; no Postgres backend yet).
+
+
+### Added
+- **Cloud-chat: admin secret management + readiness panel.** The
+  `/admin/server-config` page now has a **Cloud chat** panel that shows,
+  without leaking values, whether each required secret is present —
+  `ANTHROPIC_API_KEY`, `E2B_API_KEY` (when `provider=e2b`), and a strong
+  `JWT_SECRET_KEY` — plus an overall ready/not-ready status. Admins can set
+  the Anthropic / E2B keys straight from the UI (persisted to the server's
+  `.env_overlay`, surviving restarts; never echoed back), and a **Test
+  keys** button live-probes them — `AsyncSandbox.list` for E2B and a
+  1-token Haiku call for Anthropic — so a present-but-invalid key is caught
+  here instead of at the first user's sandbox spawn. New admin endpoints:
+  `GET /admin/chat/readiness`, `POST /admin/chat/secrets` (audited by name,
+  never value), `POST /admin/chat/secrets/test`. Setting a key still
+  requires a server restart to (re)build `ChatManager`, which the UI calls
+  out. Logic lives in `app/chat/readiness.py`.
+- **Cloud-chat is now an RBAC resource (default-deny).** The whole chat
+  feature — web `/chat`, the REST API, and the Slack DM surface — is
+  gated behind a new `chat` resource type that nobody has access to
+  until an admin grants it to a group on `/admin/access` (admins keep
+  access via the Admin god-mode short-circuit). It is a singleton
+  feature gate (one grantable item, `(group, chat, chat)`), so no DB
+  migration is needed. Every chat endpoint depends on
+  `require_resource_access(ResourceType.CHAT, "chat")` (the WebSocket
+  stream is covered transitively — its ticket is only mintable through
+  the gated create/reissue endpoints); the `/chat` page and the Slack
+  handler check `can_access` directly and bounce/refuse non-granted
+  users. The nav "Chat" link is computed on every page and shown only
+  when one of the viewer's groups holds an *explicit* grant
+  (`has_explicit_grant`, a new god-mode-free companion to `can_access`) —
+  so even admins don't see the link until chat is granted to a group
+  they're in, though they can still reach `/chat` by URL via god-mode.
+  Enabling chat in `instance.yaml` is now necessary but not sufficient —
+  a group must also be granted.
+- **`agnes marketplace scaffold-metadata <repo>`** — curator-side tool that
+  generates / refreshes `.claude-plugin/marketplace-metadata.json` from
+  the canonical plugin sources (`marketplace.json`, each plugin's
+  `plugin.json`, and `SKILL.md` / agent frontmatter). Closes Gap 2 of
+  #469 (rolled in via PR #470). Three-way hash-based merge tracked in a
+  `_generated` block (ignored by the runtime parser): existing/never-
+  generated fields are kept as-is, machine-owned fields refresh on
+  source change, human edits always win. `--check` mode exits 1 on
+  drift (CI guard); `--dry-run` prints without writing. Pairs with the
+  cloud-chat feature so the same release ships the surface that
+  consumes RBAC-filtered marketplace plugins and the tool that makes
+  authoring those plugins cheap.
+- **Cloud-chat: auto-generated session titles.** After the first
+  assistant turn lands, `ChatManager` calls Haiku 4.5 with the first
+  user message and writes a 2–6 word title back to
+  `chat_sessions.title`. A new `session_renamed` WS frame pushes the
+  title to the open browser tab so the sidebar entry + the thread
+  header update without a refresh. Best-effort: any Haiku failure (no
+  API key, timeout, refusal) leaves the title NULL — chats never break
+  because the title call is down. Lives in `app/chat/auto_title.py`;
+  `ChatRepository.set_title` is the new persistence helper (safe to
+  UPDATE because `title` is not part of any secondary index, sidestepping
+  the DuckDB 1.5.3 FK+index bug).
+- **Cloud-chat: inline streaming tool blocks.** Each `tool_call` now
+  renders as a self-contained block in the message stream with status
+  (⏳ → ✓ / ⚠), wall-clock timing, the tool name + a one-line args
+  summary, and a result preview as soon as the `tool_result` lands.
+  Tabular results (array of objects, `{columns, rows}` shape, or
+  `{data: [...]}`) render as a real `<table>` preview (first 5 rows)
+  composing the `.ds-table` family; string results route through
+  `marked.parse` so embedded Markdown tables get the same treatment.
+  Full args / full result are always reachable behind small `<details>`
+  toggles for power users.
+- **Cloud-chat: collapsible sidebar (mini-mode).** A new toggle in the
+  sidebar header collapses the 280px sidebar to a 56px icon-rail
+  showing per-conversation initials and +New chat as an icon. State
+  persists in `localStorage["agnes-chat-sidebar-collapsed"]`; an
+  anti-FOUC pre-paint script primes the rail width before chat.js boots
+  so reloads don't flash the full sidebar.
+- **`POST /api/chat/sessions/{chat_id}/ticket`** mints a fresh WS ticket
+  for an EXISTING chat session. The web UI now uses this when the user
+  clicks an old conversation in the sidebar — re-attaching to the same
+  `chat_id` preserves message history threading. Previously the sidebar
+  click went through `POST /sessions` which creates a brand-new session
+  each time, so the panel showed old history but routed new messages to
+  a different session id. 404 for unknown / other-users' chats (same
+  shape as the messages endpoint, no existence disclosure).
+
+### Changed
+- **Cloud-chat sandboxes now use the admin Workspace Prompt as their
+  `CLAUDE.md`.** Previously each per-user sandbox workspace was seeded with
+  the static bundled `app/initial_workspace_default/CLAUDE.md`, so an admin
+  who customized the Workspace Prompt at `/admin/workspace-prompt` saw it on
+  laptops (via `agnes init` → `GET /api/welcome`) but NOT in cloud chat.
+  `WorkdirManager.run_init` now renders the analyst CLAUDE.md server-side
+  (`render_claude_md`, admin override or shipped default, RBAC-filtered for
+  the user) and writes it into the workspace — same content a local install
+  gets. Best-effort: any render failure leaves the bundled static CLAUDE.md
+  in place. Re-renders on workspace re-init (e.g. marketplace-SHA change).
+  Applies in **default mode only**: when an admin git initial-workspace
+  template is registered (override mode), the repo's CLAUDE.md stays
+  authoritative and is NOT overwritten — mirroring `agnes init`, which skips
+  the `/api/welcome` write in override mode (the two are mutually exclusive
+  by design; see docs/initial-workspace-override.md).
+- **Cloud-chat runner now emits `id` on `tool_call` + `tool_result` frames.**
+  The previous shape used `tool: <name>` on the call and
+  `tool: <tool_use_id>` on the result, so the frontend couldn't pair a
+  call with its result when two calls to the same tool were in flight.
+  Both frames now carry the same `id` (the SDK `tool_use_id`); `tool`
+  still carries the human-readable name on the call. The inline tool-
+  block renderer keys on `id` and matches reliably.
+- **Cloud-chat empty-state capability panel reads from a server-side
+  RBAC snapshot.** Previously chat.js called `/api/catalog` (wrong URL —
+  the real endpoint is `/api/catalog/tables`) and `/api/marketplaces`
+  (admin-only — non-admin users get 403). Both errors collapsed into
+  "Catalog unavailable" + "No plugins" regardless of what the caller
+  actually had access to. The `/chat` route now resolves the user's
+  table list (via `can_access_table`) and plugin list (via
+  `resolve_allowed_plugins`) and embeds a `<script type="application/json"
+  id="chat-capabilities-data">` blob the page reads synchronously —
+  no fetch, no auth races.
+- **Chat composer: Enter sends, Shift+Enter inserts a newline.** The
+  composer is a `<textarea>`, so native Enter behavior is "insert a
+  newline" and the form never submitted via keyboard. Added a `keydown`
+  handler that intercepts `Enter` (without Shift, not during IME
+  composition) and dispatches the form submit; Shift+Enter retains the
+  native newline so multi-line prompts still work.
+
+### Added
+- **Cloud-chat: optional marketplace-skill bootstrap for the sandbox agent**
+  (`chat.bootstrap_marketplace`, default off). When enabled, the runner runs
+  `agnes refresh-marketplace --bootstrap` at spawn (clones the RBAC-filtered
+  per-user marketplace, registers it with the in-sandbox `claude` CLI, enables
+  its plugins in the session project) and opens the SDK client with
+  `setting_sources=["user","project","local"]` so the marketplace plugins
+  resolve (the marketplace is registered in user settings, the plugin enabled
+  at project scope). Off by default because it adds ~10–15 s of per-spawn
+  latency and only pays off once the marketplace ships real skill/agent
+  content — an empty placeholder plugin contributes nothing.
+
+### Fixed
+- **Cloud-chat: the status banner ("Connected.") was indented out of line.**
+  The `.cloud-chat-status` strip used `--space-4` horizontal padding while the
+  thread header and message list use `--space-6`, so its text sat 8px to the
+  left of the rest of the column. Matched it to `--space-6`.
+- **Cloud-chat: the agent ignored the `agnes` CLI and claimed "no data".** The
+  sandbox runner opened the SDK client with no filesystem settings loaded
+  (`setting_sources=None`), so — unlike a local Agnes install where the
+  `claude` CLI reads the workspace `CLAUDE.md` by default — the cloud-chat
+  agent never saw the workspace's data rails. A question like "pick a random
+  customer" was treated as "find a database file here" and answered "no data".
+  The runner now loads `setting_sources=["user","project","local"]` (the same
+  scopes the local CLI loads), and the bundled default workspace ships a
+  `CLAUDE.md` with the Agnes data rails (use `agnes catalog`/`schema`/`query
+  --remote`; never claim no data without checking). Both local installs and
+  cloud-chat now get the rails from the same workspace file — no cloud-chat-
+  specific behavior.
+- **Marketplace: served `plugin.json` referencing an empty component dir made
+  `claude plugin install` fail.** A scaffolded plugin that ships an unused
+  `agents/` (or `commands/`) dir holding only a `.gitkeep` produced
+  `"agents": "./agents"` in its manifest, which Claude Code rejects
+  ("agents: Invalid input") — taking down the whole plugin install. The
+  marketplace packager now drops component keys (`skills`/`agents`/`commands`/
+  `hooks`) whose target dir is empty or absent when serving the manifest.
+- **Cloud-chat: inline tool blocks stuck on "running…" and the composer
+  never re-enabled.** The runner scanned only `AssistantMessage` content for
+  `ToolResultBlock`, but the SDK delivers tool results in a `UserMessage`, so
+  no `tool_result` frame was emitted (the inline block never flipped to done)
+  and no `done` frame was emitted (the Stop button never cleared). The runner
+  now emits `tool_result` from `UserMessage` blocks and a `done` frame at each
+  turn's end.
+- **`agnes query`: point at `--remote` when there's no local data.** A bare
+  `agnes query` with no local DuckDB used to say only "Run: agnes pull" — which
+  in the cloud-chat sandbox drags down every granted table (multi-GB). The
+  hint now leads with `agnes query --remote "<SQL>"`, which runs server-side
+  against the same RBAC-filtered views with no download; `agnes pull` remains
+  the offline-friendly option for laptop analysts.
+- **Cloud-chat: ordered-list markers overflowed the message bubble.** The
+  global CSS reset zeroes list padding, so markdown lists in assistant
+  replies rendered their `list-style-position: outside` markers in the
+  negative margin — multi-digit ordered markers (`10.`, `11.`) spilled past
+  the bubble's left edge and clipped. Added an explicit `1.8em` indent for
+  `.msg-body ol/ul` so markers sit inside the bubble.
+- **Cloud-chat: `agnes` CLI was missing inside the sandbox.** The E2B
+  template image baked the CLI's *runtime dependencies* (typer, rich,
+  httpx, duckdb, …) but never installed the `agnes-the-ai-analyst`
+  package itself, so `which agnes` returned nothing and every data rail
+  in the "Querying Agnes data" playbook (`agnes catalog`, `query`,
+  `describe`, `snapshot create`) failed with "command not found" — even
+  though the bundled hooks and `init-complete` reported a CLI version.
+  Fixed by staging the server's own pre-built wheel (the `/app/dist`
+  artifact already served at `/cli/download`, under its original PEP 427
+  filename — pip rejects a renamed wheel — in `/tmp/agnes-cli/`, outside
+  the synced `/work` so it isn't persisted back to the workspace) at
+  spawn (`e2b_workspace_sync.upload_agnes_wheel`) and having the runner
+  `pip install --no-deps --break-system-packages` it before the agent
+  starts (`runner.py::_install_agnes_cli`). No `--user`: the console
+  script must land in `/usr/local/bin` (which the agent's Bash tool has on
+  its PATH and the e2b base image makes world-writable), because Claude
+  Code's Bash tool runs with a system-default PATH and does not inherit the
+  runner's env. Reusing the server wheel keeps the in-sandbox CLI version
+  in lockstep with the server (hooks + RBAC). Best-effort: a dev image
+  without a built wheel logs a warning and the agent still runs, only the
+  `agnes` verbs are unavailable.
+- **Cloud-chat: agent could not execute any tool.** The runner ran
+  `ClaudeSDKClient()` with the default permission mode, which denies any
+  tool needing approval in this headless context (no human to prompt) — so
+  the agent emitted a `tool_call` and then hung / hallucinated success
+  without ever running it (no `agnes` command, no Bash). The runner now
+  passes `permission_mode="bypassPermissions"`: the ephemeral per-session
+  E2B microVM is the isolation boundary, and egress control remains the
+  workspace PreToolUse hook's (documented best-effort) responsibility.
+- **Cloud-chat: sandbox CLI pointed at the wrong server URL.** The runner
+  env set `AGNES_API`, but the CLI reads its server URL from `AGNES_SERVER`
+  (`cli/config.py`) — `AGNES_API` had no consumer, so once the CLI was
+  installed it still fell back to `http://localhost:8000`, unreachable from
+  the remote sandbox. Now set `AGNES_SERVER` from `SERVER_URL` (the
+  deployment's public URL), falling back to `AGNES_INTERNAL_URL` then
+  loopback. Operators running cloud chat must set `SERVER_URL` to a URL the
+  sandbox can reach for the data rails to resolve.
+- **Cloud-chat: SDK `initialize` timeout caused by HOME pointing at a host-only path.**
+  `ChatManager._spawn_runner` was setting `HOME=<session_dir>` on the
+  sandbox subprocess. `session_dir` is an Agnes-host-side path that does
+  not exist inside the E2B sandbox; the inner `claude` CLI subprocess
+  spawned by `claude-agent-sdk` writes to `$HOME/.claude/` during the
+  MCP `initialize` handshake and hung when HOME pointed nowhere. The
+  symptom was: WS handshake completes, runner emits `runner_ready`,
+  client sends `user_msg`, then ~60 s of silence followed by
+  `Control request timeout: initialize`. HOME is now hard-pinned to
+  `/home/user` (writable in the sandbox template's base image), so the
+  initialize handshake completes and the full user_msg → token →
+  assistant_message cycle works.
+
+### Changed
+- **BREAKING (cloud-chat operator surface): chat sandbox provider reversed to E2B.**
+  The v1 default chat sandbox provider changed from a host-side
+  nsjail-isolated subprocess to an E2B ephemeral microVM. The Agnes
+  server no longer needs nsjail, iptables OWNER rules, or a dedicated
+  `agnes-sandbox` host user. Instead it needs an E2B account, an
+  `E2B_API_KEY`, and a template id obtained from `e2b template build`
+  against `app/initial_workspace_default/e2b-template/`. The
+  `chat.require_isolation` and `chat.sandbox_uid` knobs are removed —
+  startup gates now require `chat.provider: e2b` (the only accepted
+  value), `chat.e2b_template_id`, `E2B_API_KEY`, and `ANTHROPIC_API_KEY`.
+  Operators who flip `chat.enabled: true` without an E2B account will
+  hit a fatal log and chat endpoints return 503. See `docs/cloud-chat.md`
+  for the full operator setup; see `docs/superpowers/plans/2026-05-28-e2b-refactor.md`
+  for the seven owner-signed design decisions.
+
+### Added
+- **`E2BProvider`** (`app/chat/e2b_provider.py`) implements the
+  `SandboxProvider` Protocol against the E2B Python SDK 1.x. Adapts
+  the SDK's callback-driven `commands.run(background=True, on_stdout=…)`
+  and string-based `commands.send_stdin(pid, str)` shape to the
+  asyncio `StreamReader`/`StreamWriter` interface the rest of the chat
+  stack expects.
+- **Workspace ↔ sandbox sync layer** (`app/chat/e2b_workspace_sync.py`).
+  `upload_workspace` pushes the per-user workspace tree into `/work/`
+  inside the sandbox at spawn time (Q1 — full-push, 100 MB cap,
+  refuses on overshoot rather than half-syncing). `download_workspace`
+  pulls changes back on session end. Symlinks are dereferenced so the
+  sandbox sees real file content.
+- **E2B sandbox template** (`app/initial_workspace_default/e2b-template/`):
+  `Dockerfile` + `e2b.toml` + operator README documenting `e2b auth
+  login` → `e2b template build` → drop the returned id into
+  `instance.yaml`. Per Q4 no firewall rules are baked into the template
+  — the egress allowlist lives only in the PreToolUse hook.
+- **`GET /admin/chat/{id}/debug`** — admin-only introspection of
+  process-local counters (per-session BQ scan bytes, live session
+  state). Replaces the pre-E2B `docker exec python -c "..."` pattern
+  the E2E suite used, which no longer applies under the remote-microVM
+  model.
+- **`tests/e2e/test_e2b_smoke.py`** — opt-in real-sandbox smoke gated
+  on `AGNES_E2E_E2B=1` + `E2B_API_KEY`.
+- **`.github/workflows/e2e-e2b.yml`** — opt-in CI workflow that runs
+  the E2B smoke + the broader F.* scenarios against real E2B. Replaces
+  the deleted `e2e-nsjail.yml`.
+- **`chat.e2b_workspace_max_bytes`** (default 100 MB) and
+  **`chat.e2b_kill_on_ws_disconnect`** (default true, Q3) knobs in
+  `instance.yaml`.
+
+### Removed
+- **`app/chat/subprocess_provider.py`** and its host-side isolation
+  knobs. The pluggable provider Protocol survives; the subprocess
+  implementation does not.
+- **`config/nsjail/chat-session.cfg.template`** + `tests/security/`
+  package + `tests/e2e/iptables-setup.sh` + `tests/test_chat_subprocess_provider.py`
+  + `tests/test_chat_api_ws.py` + `.github/workflows/e2e-nsjail.yml`.
+- **`chat.require_isolation` and `chat.sandbox_uid`**. Silently
+  ignored by the loader (old YAMLs continue to load) but no longer
+  surfaced on the ChatConfig dataclass.
+
+### Added (pre-Phase H, cumulative)
+- **Slack DM assistant-back pump (`SlackSinkBridge`).** Previously
+  `services/slack_bot/events.py::_handle_dm` accepted a user message
+  and returned — nothing consumed the runner subprocess's stdout and
+  posted it back to Slack, so the "answer in Slack thread" half of the
+  feature didn't work. New `services/slack_bot/sink.py` defines
+  `SlackSinkBridge`, a duck-typed WebSocket whose `send_json` forwards
+  `assistant_message` (and `error`, `cancelled`) frames to
+  `send_thread_reply` in the originating thread; chatty token / tool
+  frames are dropped. `_handle_dm` now `asyncio.create_task`s
+  `mgr.attach(session_id, bridge)` before forwarding the user message.
+- **Slack verification-code issuance on first DM.** First DM from an
+  unbound Slack user now mints a 6-digit `slack_binding_codes` row and
+  DMs the user a Slack-formatted prompt (`Visit {public_url}/setup?slack=1`
+  + bold `*123456*` code, expires in 10 minutes). The user redeems it
+  at `/setup` while logged into Agnes via the existing
+  `redeem_verification_code` path. Without this, the bot used to tell
+  unbound users to go to `/setup` with no code to redeem.
+- **Vendored web assets for the cloud-chat UI.**
+  `app/web/static/vendor/` now ships `marked.min.js` (12.0.2, MIT),
+  `highlight.min.js` + `highlight.min.css` (11.10.0 common build,
+  BSD-3) — both referenced by `chat.html` and `admin_chat.html`.
+  Previously these files were referenced but never committed, so the
+  chat page threw `ReferenceError: marked is not defined` on the first
+  message render. Also adds `app/web/static/css/admin.css` (loaded by
+  the admin chat dashboard and chat page) and a `LICENSES.md`
+  documenting source URLs + versions + licenses. Regression test
+  (`tests/test_web_static_assets.py`) pins all references on disk.
+
+### Fixed
+- **Admin chat tail WS now requires a one-shot ticket.** The
+  `WS /admin/chat/{id}/tail` route previously accepted any anonymous
+  WebSocket and streamed another user's `run.log` — confidentiality
+  bypass. Now mirrors the chat-WS pattern in `app/api/chat.py`: a 60 s
+  ticket is minted via `GET /admin/chat/{id}/tail-ticket` (admin-gated),
+  consumed once on WS open. The admin dashboard JS fetches the ticket
+  before opening the WS; non-admins get 403 on the ticket endpoint and
+  invalid tickets close the WS with code 4401 before any frame is sent.
+- **Cloud chat: `ANTHROPIC_API_KEY` is now forwarded into the sandbox env.**
+  Without it on the `SubprocessProvider._ENV_ALLOWLIST`, the real-agent
+  runner couldn't authenticate; only the `AGNES_RUNNER_FAKE_AGENT=1` test
+  path worked. Documented in `docs/cloud-chat.md` § Enabling on an
+  instance as a required server-env var.
+
+### Added
+- Cloud-hosted Claude Code at `/chat` (web) and via Slack DM, delivering
+  the full Agnes harness (skills, marketplace plugins, hooks, slash
+  commands, sub-agent dispatch, `agnes` CLI) without a local install.
+  Pluggable runtime provider (`subprocess` default with nsjail isolation;
+  E2B / GCP / Docker as future provider impls). Per-user persistent
+  workspace shared across surfaces. Opt-in by default via
+  `chat.enabled: false` in instance.yaml. Supersedes #459.
+
+### Internal
+- Refactored `cli/lib/initial_workspace.py` — pure server-callable
+  logic extracted to `src/initial_workspace.py`. CLI is now a thin
+  typer wrapper.
+- **CI: nsjail escape suite on Ubuntu (`e2e-nsjail.yml`).** Builds the
+  `tests/e2e/Dockerfile.e2e` image (which compiles nsjail 3.4 + sets
+  up uid 1001 + iptables), then runs `pytest tests/security/test_nsjail_escape.py`
+  inside a `docker run --cap-add NET_ADMIN` invocation. The security
+  tests already skip cleanly on macOS dev boxes; this workflow gives
+  them real Linux coverage on push to `zs/cloud-claude-code-design`
+  and on PR to main. Replaces the previously-missing CI coverage for
+  the chat sandbox isolation contract.
+- **E2E load test (`tests/e2e/test_load.py`).** Fans out 30 concurrent
+  WS connections (10 simulated users × 3 sessions) against the
+  docker-compose E2E stack with the fake-agent runner, asserts every
+  session got an `assistant_message` whose content echoes its
+  per-session marker (catches ChatManager pump cross-routing
+  regressions), and logs host RSS + p50/p95/p99 timings. Gated behind
+  `AGNES_E2E_LOAD=1` on top of `AGNES_E2E=1` + `AGNES_E2E_FAKE_AGENT=1`
+  — load is expensive, deterministic-echoes are required, and 30×
+  real Anthropic calls would rate-limit.
+- **E2E adversarial suite (`tests/e2e/test_adversarial.py`).** Encodes
+  the cloud-chat threat model as executable tests across five layers:
+  (1) PreToolUse hook refuses `rm` against `workspace/snapshots/` and
+  `curl` to non-allowlisted hosts (invokes the bundled hook directly
+  — runs on any platform, no skip); (2) nsjail chroot blocks
+  `/etc/shadow` read; (3) iptables OWNER rules drop egress to
+  `evil.example.com`; (4) `rlimit_nproc` kills a fork bomb within 10s;
+  (5) WS framing fuzz with 1000 random bytes leaves the server
+  responsive on `/healthz`; (6) `/api/slack/events` rejects bad +
+  empty HMAC signatures with 401; (7) a WS ticket minted for session
+  A cannot open session B's WebSocket. nsjail-side tests reuse the
+  same skip helper as `tests/security/test_nsjail_escape.py`.
 ## [0.59.4] — 2026-06-02
 
 ### Added
@@ -65,6 +449,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Redundant "Database backend" pointer card at the bottom of `/admin/server-config`. The backend state machine has its own `/admin/database` page, already linked from the Admin menu, so the card was a duplicate signpost that looked out of place in the instance-config form.
 
 ### Internal
+
+---
 
 ## [0.59.1] - 2026-06-02
 
