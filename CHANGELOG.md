@@ -16,12 +16,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
-- `POST /api/admin/db/migrate`: concurrent calls where one caller writes `*_in_progress` before the other's pre-lock transition check now correctly return 409 "already in progress" instead of a misleading 400 "transition not allowed".
-- Cowork nav link positioned at the end of Admin → Agent Experience group (was missing after #491 rearrangement).
-
 ### Removed
 
 ### Internal
+
+## [0.59.1] - 2026-06-02
+
+### Fixed
+
+- `POST /api/admin/db/migrate`: concurrent calls where one caller writes `*_in_progress` before the other's pre-lock transition check now correctly return 409 "already in progress" instead of a misleading 400 "transition not allowed".
+- Cowork nav link positioned at the end of Admin → Agent Experience group (was missing after #491 rearrangement).
 
 ## [0.59.0] — 2026-06-02
 
