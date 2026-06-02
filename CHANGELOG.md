@@ -12,11 +12,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
-- **`/me/cowork` — AI Cowork page.** New dedicated page consolidating setup bundle download (numbered steps, first-prompt copy box, active-bundle revoke list), MCP connection details, and available tools (Agnes tools, passthrough tools, marketplace skills) in collapsible sections. Replaces the split between `/me/profile → Connect Claude Code` and `/me/mcp`. Added to the primary nav as "AI Cowork" for all authenticated users.
+- **`/me/cowork` — AI Cowork page.** New dedicated page consolidating setup bundle download (numbered steps, first-prompt copy box, active-bundle revoke list), MCP connection details, and available tools (Agnes tools, passthrough tools, marketplace skills) in collapsible sections. Replaces the split between `/me/profile → Connect Claude Code` and `/me/mcp`. Accessible via the user menu ("AI Cowork") for all authenticated users.
+- **Cowork bundle ships marketplace skills + agents as Cowork slash commands.** The bundle ZIP now includes all RBAC-granted marketplace skills (`.claude/skills/<name>.md`) and agents (`.claude/agents/<name>.md`) so they appear as `/skill-name` slash commands immediately on first Cowork open — no per-plugin ZIP upload needed. Claude-Code-only frontmatter keys (`argument-hint`, `user-invocable`) are filtered out; skill names are de-duplicated across plugins. Three curated Agnes skills always ship: `/explore-data` (catalog + describe + suggest), `/query-data` (schema-aware SQL workflow), `/new-skill` (design + write a skill to the workspace).
 
 ### Changed
 
-- **Cowork moved from Admin dropdown to primary nav.** The link previously appeared under Admin → Agent Experience; it now sits in the top-level nav next to Memory, visible to every authenticated user. The `/me/mcp` URL 301-redirects to `/me/cowork`.
+- **Cowork moved from Admin dropdown to user menu.** The link previously appeared under Admin → Agent Experience (admin-only); it now sits in the user dropdown (Profile / AI Cowork / My activity), visible to every authenticated user. The `/me/mcp` URL 301-redirects to `/me/cowork`.
 - **Profile page simplified.** The "Connect Claude Code" setup panel has been removed from `/me/profile`; setup now lives at `/me/cowork`.
 
 ### Fixed
