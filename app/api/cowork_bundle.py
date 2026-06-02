@@ -165,16 +165,34 @@ def _bundle_mcp_server_py() -> str:
         to the Agnes REST API.
         \"\"\"
         from __future__ import annotations
-        import json, pathlib, re, sys, urllib.error, urllib.request
-
-        import ssl
-
-        _SSL_CTX = ssl.create_default_context()
-        _SSL_CTX.check_hostname = False
-        _SSL_CTX.verify_mode = ssl.CERT_NONE
+        import json, os, pathlib, re, ssl, sys, urllib.error, urllib.request
 
         HERE       = pathlib.Path(__file__).resolve().parent
         CONFIG_DIR = pathlib.Path.home() / ".config" / "agnes"
+
+        # Verified HTTPS that also works on Pythons without a usable system CA
+        # store (notably macOS python.org builds -> CERTIFICATE_VERIFY_FAILED).
+        # The Mozilla CA bundle ships next to this script as cacert.pem (and
+        # setup.py copies it into ~/.config/agnes/). Falls back to the OS trust
+        # store and honours SSL_CERT_FILE. Verification stays ON; the only
+        # opt-out is the explicit AGNES_INSECURE_SKIP_TLS_VERIFY=1 escape hatch.
+        def _ssl_context():
+            if os.environ.get("AGNES_INSECURE_SKIP_TLS_VERIFY") == "1":
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                return ctx
+            for _ca in (os.environ.get("SSL_CERT_FILE"),
+                        str(HERE / "cacert.pem"),
+                        str(CONFIG_DIR / "cacert.pem")):
+                if _ca and pathlib.Path(_ca).exists():
+                    try:
+                        return ssl.create_default_context(cafile=_ca)
+                    except Exception:
+                        pass
+            return ssl.create_default_context()
+
+        _SSL_CTX = _ssl_context()
 
         # ── credentials ──────────────────────────────────────────────────────
 
@@ -360,16 +378,34 @@ def _bundle_agnes_py() -> str:
           python3 agnes.py skills
         \"\"\"
         from __future__ import annotations
-        import json, pathlib, re, sys, urllib.error, urllib.request
-
-        import ssl
-
-        _SSL_CTX = ssl.create_default_context()
-        _SSL_CTX.check_hostname = False
-        _SSL_CTX.verify_mode = ssl.CERT_NONE
+        import json, os, pathlib, re, ssl, sys, urllib.error, urllib.request
 
         HERE       = pathlib.Path(__file__).resolve().parent
         CONFIG_DIR = pathlib.Path.home() / ".config" / "agnes"
+
+        # Verified HTTPS that also works on Pythons without a usable system CA
+        # store (notably macOS python.org builds -> CERTIFICATE_VERIFY_FAILED).
+        # The Mozilla CA bundle ships next to this script as cacert.pem (and
+        # setup.py copies it into ~/.config/agnes/). Falls back to the OS trust
+        # store and honours SSL_CERT_FILE. Verification stays ON; the only
+        # opt-out is the explicit AGNES_INSECURE_SKIP_TLS_VERIFY=1 escape hatch.
+        def _ssl_context():
+            if os.environ.get("AGNES_INSECURE_SKIP_TLS_VERIFY") == "1":
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                return ctx
+            for _ca in (os.environ.get("SSL_CERT_FILE"),
+                        str(HERE / "cacert.pem"),
+                        str(CONFIG_DIR / "cacert.pem")):
+                if _ca and pathlib.Path(_ca).exists():
+                    try:
+                        return ssl.create_default_context(cafile=_ca)
+                    except Exception:
+                        pass
+            return ssl.create_default_context()
+
+        _SSL_CTX = _ssl_context()
 
         def _load_creds():
             \"\"\"Return (server_url, pat) or raise SystemExit.\"\"\"
@@ -680,6 +716,12 @@ def _bundle_setup_py(server_url: str) -> str:
                 if platform.system() == "Darwin":
                     import subprocess as _sp
                     _sp.run(["xattr", "-c", str(_stable_mcp)], capture_output=True)
+                # Ship the CA bundle next to mcp_server.py so verified TLS works
+                # on machines whose Python lacks a usable system CA store.
+                _bundled_ca = HERE / "cacert.pem"
+                if _bundled_ca.exists():
+                    _shutil.copy2(str(_bundled_ca), str(_stable_dir / "cacert.pem"))
+                    (_stable_dir / "cacert.pem").chmod(0o644)
                 # Write credentials alongside the stable copy so mcp_server.py
                 # can find them even after the bundle folder is deleted.
                 (_stable_dir / ".agnes-creds.json").write_text(
@@ -915,6 +957,20 @@ def _bundle_skill_setup_cowork() -> str:
     """)
 
 
+def _bundle_cacert_pem() -> str:
+    """Return the Mozilla CA bundle (certifi) shipped inside the Cowork ZIP.
+
+    The generated mcp_server.py / agnes.py verify TLS against this file, so
+    Cowork connects from any end-user machine — including macOS python.org
+    builds that lack a usable system CA store (CERTIFICATE_VERIFY_FAILED) —
+    without ever disabling certificate verification.
+    """
+    import certifi
+
+    with open(certifi.where(), encoding="utf-8") as fh:
+        return fh.read()
+
+
 def _build_bundle_zip(
     server_url: str,
     setup_token: str,
@@ -936,6 +992,7 @@ def _build_bundle_zip(
         ├── setup.py                  ← one-time setup (writes .agnes-creds.json)
         ├── agnes.py                  ← pure-stdlib CLI; Claude calls via Bash tool
         ├── mcp_server.py             ← stdio MCP proxy (if cowork VM loads it)
+        ├── cacert.pem                ← Mozilla CA bundle (verified TLS on macOS)
         ├── .claude/
         │   ├── settings.json         ← SessionStart hook + mcpServers config
         │   └── skills/
@@ -963,6 +1020,7 @@ def _build_bundle_zip(
         zf.writestr(f"{folder_name}/setup.py", _bundle_setup_py(server_url))
         zf.writestr(f"{folder_name}/mcp_server.py", _bundle_mcp_server_py())
         zf.writestr(f"{folder_name}/agnes.py", _bundle_agnes_py())
+        zf.writestr(f"{folder_name}/cacert.pem", _bundle_cacert_pem())
         zf.writestr(f"{folder_name}/.claude/settings.json", _bundle_settings_json(server_url, access_token))
         zf.writestr(f"{folder_name}/.claude/skills/setup-cowork.md", _bundle_skill_setup_cowork())
         zf.writestr(

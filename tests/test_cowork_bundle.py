@@ -51,6 +51,10 @@ class TestGenerateBundle:
         assert f"{folder}/agnes.py" in names             # Bash-tool CLI fallback
         assert f"{folder}/.claude/settings.json" in names
         assert f"{folder}/CLAUDE.md" in names
+        assert f"{folder}/cacert.pem" in names           # Mozilla CA bundle for verified TLS
+
+        # The bundled CA file must be a real PEM cert bundle
+        assert "BEGIN CERTIFICATE" in zf.read(f"{folder}/cacert.pem").decode()
 
         # Shell scripts are gone — no terminal setup required
         assert "setup.sh" not in names
@@ -86,6 +90,22 @@ class TestGenerateBundle:
         assert "mcp_server.py" in str(agnes_mcp.get("args", [])), (
             f"MCP args should reference mcp_server.py; got: {agnes_mcp.get('args')}"
         )
+
+    def test_bundled_scripts_verify_tls_by_default(self, seeded_app):
+        """mcp_server.py / agnes.py must verify TLS against the bundled CA by
+        default; CERT_NONE is only reachable via the explicit opt-out env var."""
+        c = seeded_app["client"]
+        resp = c.post("/api/user/cowork-bundle",
+                      headers=_auth(seeded_app["analyst_token"]))
+        assert resp.status_code == 200
+        zf = zipfile.ZipFile(io.BytesIO(resp.content))
+        folder = zf.namelist()[0].split("/")[0]
+        for script in ("mcp_server.py", "agnes.py"):
+            src = zf.read(f"{folder}/{script}").decode()
+            assert "context=_SSL_CTX" in src, f"{script}: urlopen must pass an SSL context"
+            assert "cacert.pem" in src, f"{script}: must reference the bundled CA file"
+            assert "AGNES_INSECURE_SKIP_TLS_VERIFY" in src, f"{script}: opt-out gate missing"
+            assert "ssl.create_default_context" in src, f"{script}: must build a verifying context"
 
     def test_requires_authentication(self, seeded_app):
         c = seeded_app["client"]
