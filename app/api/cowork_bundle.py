@@ -167,6 +167,12 @@ def _bundle_mcp_server_py() -> str:
         from __future__ import annotations
         import json, pathlib, re, sys, urllib.error, urllib.request
 
+        import ssl
+
+        _SSL_CTX = ssl.create_default_context()
+        _SSL_CTX.check_hostname = False
+        _SSL_CTX.verify_mode = ssl.CERT_NONE
+
         HERE       = pathlib.Path(__file__).resolve().parent
         CONFIG_DIR = pathlib.Path.home() / ".config" / "agnes"
 
@@ -218,7 +224,7 @@ def _bundle_mcp_server_py() -> str:
             data = json.dumps(body).encode() if body is not None else None
             req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
             try:
-                with urllib.request.urlopen(req, timeout=timeout) as r:
+                with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
                     return json.loads(r.read())
             except urllib.error.HTTPError as e:
                 try:
@@ -356,6 +362,12 @@ def _bundle_agnes_py() -> str:
         from __future__ import annotations
         import json, pathlib, re, sys, urllib.error, urllib.request
 
+        import ssl
+
+        _SSL_CTX = ssl.create_default_context()
+        _SSL_CTX.check_hostname = False
+        _SSL_CTX.verify_mode = ssl.CERT_NONE
+
         HERE       = pathlib.Path(__file__).resolve().parent
         CONFIG_DIR = pathlib.Path.home() / ".config" / "agnes"
 
@@ -404,7 +416,7 @@ def _bundle_agnes_py() -> str:
             data = json.dumps(body).encode() if body is not None else None
             req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
             try:
-                with urllib.request.urlopen(req, timeout=timeout) as r:
+                with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
                     return json.loads(r.read())
             except urllib.error.HTTPError as e:
                 try:
