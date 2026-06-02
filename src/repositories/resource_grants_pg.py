@@ -165,6 +165,28 @@ class ResourceGrantsPgRepository:
             conn.execute(sql, params)
         return grant_id
 
+    def update_requirement(self, grant_id: str, requirement: str) -> Optional[str]:
+        """Update the ``requirement`` enum on a grant. Returns the prior value
+        (None if the grant is missing) so callers can detect transitions
+        (parity with the DuckDB repo).
+        """
+        if requirement not in ("available", "required"):
+            raise ValueError(
+                f"requirement must be 'available' or 'required', got {requirement!r}"
+            )
+        with self._engine.begin() as conn:
+            before = conn.execute(
+                sa.text("SELECT requirement FROM resource_grants WHERE id = :id"),
+                {"id": grant_id},
+            ).first()
+            if before is None:
+                return None
+            conn.execute(
+                sa.text("UPDATE resource_grants SET requirement = :req WHERE id = :id"),
+                {"req": requirement, "id": grant_id},
+            )
+        return before[0]
+
     def delete(self, grant_id: str) -> bool:
         with self._engine.begin() as conn:
             row = conn.execute(

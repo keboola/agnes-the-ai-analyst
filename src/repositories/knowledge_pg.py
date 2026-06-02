@@ -149,6 +149,21 @@ class KnowledgePgRepository:
                 },
             )
 
+    def set_is_required(self, item_id: str, value: bool) -> None:
+        """Toggle the global ``is_required`` flag without touching ``status``
+        (parity with the DuckDB repo). ``status`` stays reserved for lifecycle;
+        the Required tier rides on this boolean.
+        """
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "UPDATE knowledge_items SET is_required = :v, updated_at = :now "
+                    "WHERE id = :id"
+                ),
+                {"v": bool(value), "now": now, "id": item_id},
+            )
+
     def update(self, item_id: str, **fields) -> None:
         safe = {k: v for k, v in fields.items() if k in self._UPDATABLE_FIELDS}
         if not safe:
@@ -199,10 +214,13 @@ class KnowledgePgRepository:
         hide_dismissed: bool = False,
         limit: int = 100,
         offset: int = 0,
+        is_required: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
         sql_parts = ["SELECT * FROM knowledge_items WHERE 1=1"]
         params: Dict[str, Any] = {"limit": limit, "offset": offset}
 
+        if is_required is not None:
+            sql_parts.append(" AND is_required = :ireq"); params["ireq"] = bool(is_required)
         if statuses:
             keys = []
             for i, s in enumerate(statuses):
@@ -265,6 +283,7 @@ class KnowledgePgRepository:
         hide_dismissed: bool = False,
         limit: int = 100,
         offset: int = 0,
+        is_required: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
         """FTS via Postgres ``to_tsvector`` + ``plainto_tsquery`` /
         ``ts_rank`` with ILIKE fallback.
@@ -274,6 +293,7 @@ class KnowledgePgRepository:
             source_type=source_type, exclude_personal=exclude_personal,
             user_groups=user_groups, granted_domains=granted_domains,
             dismissed_by_user=dismissed_by_user, hide_dismissed=hide_dismissed,
+            is_required=is_required,
         )
         params: Dict[str, Any] = dict(filter_params)
         params["q"] = query
@@ -323,12 +343,14 @@ class KnowledgePgRepository:
         granted_domains: Optional[List[str]] = None,
         dismissed_by_user: Optional[str] = None,
         hide_dismissed: bool = False,
+        is_required: Optional[bool] = None,
     ) -> int:
         filter_parts, filter_params = self._build_filter_clauses(
             statuses=statuses, category=category, domain=domain,
             source_type=source_type, exclude_personal=exclude_personal,
             user_groups=user_groups, granted_domains=granted_domains,
             dismissed_by_user=dismissed_by_user, hide_dismissed=hide_dismissed,
+            is_required=is_required,
         )
         if not search:
             sql = "SELECT COUNT(*) FROM knowledge_items WHERE 1=1" + "".join(filter_parts)
@@ -370,9 +392,12 @@ class KnowledgePgRepository:
         granted_domains: Optional[List[str]],
         dismissed_by_user: Optional[str],
         hide_dismissed: bool,
+        is_required: Optional[bool] = None,
     ) -> tuple[list[str], Dict[str, Any]]:
         parts: List[str] = []
         params: Dict[str, Any] = {}
+        if is_required is not None:
+            parts.append(" AND is_required = :ireq"); params["ireq"] = bool(is_required)
         if statuses:
             keys = []
             for i, s in enumerate(statuses):
