@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.56.0] — 2026-06-02
+
+### Added
 - **Cloud-chat is now an RBAC resource (default-deny).** The whole chat
   feature — web `/chat`, the REST API, and the Slack DM surface — is
   gated behind a new `chat` resource type that nobody has access to
