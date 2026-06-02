@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.56.0] — 2026-06-02
+
+### Added
 - **Cloud-chat: admin secret management + readiness panel.** The
   `/admin/server-config` page now has a **Cloud chat** panel that shows,
   without leaking values, whether each required secret is present —
