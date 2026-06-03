@@ -274,6 +274,21 @@ function _makeSidebarItem(s) {
   label.textContent = s.title || "Untitled chat";
   li.appendChild(label);
 
+  // Cross-surface origin pill. Slack-originated sessions (slack_dm /
+  // slack_thread) get a small, non-interactive "Slack" text pill so the
+  // user can tell at a glance which conversations came in over Slack vs
+  // the web composer. Text, not a brand icon — no asset bundled, satisfies
+  // the design-system contract. Unknown / undefined surface → no pill
+  // (fail-closed: an older server that doesn't emit `surface` shows the
+  // plain web style).
+  if (s.surface === "slack_dm" || s.surface === "slack_thread") {
+    const badge = document.createElement("span");
+    badge.className = "cloud-chat-surface-badge";
+    badge.textContent = "Slack";
+    badge.setAttribute("aria-hidden", "true");  // label already names the row
+    li.appendChild(badge);
+  }
+
   const del = document.createElement("button");
   del.type = "button";
   del.className = "cloud-chat-list-del";
