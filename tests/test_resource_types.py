@@ -222,6 +222,41 @@ class TestAccessOverviewIncludesTables:
         assert "overview_test" in all_resource_ids
 
 
+class TestSlackChannelBlocks:
+    def test_enum_member_and_spec_registered(self):
+        from app.resource_types import RESOURCE_TYPES, ResourceType
+        assert ResourceType.SLACK_CHANNEL.value == "slack_channel"
+        spec = RESOURCE_TYPES[ResourceType.SLACK_CHANNEL]
+        assert spec.display_name == "Slack channels"
+        assert spec.id_format == "<channel_id>"
+
+    def test_in_enabled_resource_types(self):
+        from app.resource_types import enabled_resource_types, ResourceType
+        keys = {s.key for s in enabled_resource_types()}
+        assert ResourceType.SLACK_CHANNEL in keys
+
+    def test_projects_seeded_grant(self, system_conn):
+        from app.resource_types import _slack_channel_blocks
+        gid = system_conn.execute(
+            "SELECT id FROM user_groups WHERE name = 'Everyone'"
+        ).fetchone()[0]
+        system_conn.execute(
+            "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
+            "VALUES ('rg_sc1', ?, 'slack_channel', 'C123')",
+            [gid],
+        )
+        blocks = _slack_channel_blocks(system_conn)
+        items = [it for b in blocks for it in b["items"]]
+        assert any(it["resource_id"] == "C123" for it in items)
+
+    def test_empty_when_no_grants(self, system_conn):
+        from app.resource_types import _slack_channel_blocks
+        system_conn.execute(
+            "DELETE FROM resource_grants WHERE resource_type = 'slack_channel'"
+        )
+        assert _slack_channel_blocks(system_conn) == []
+
+
 class TestTableGrantsAlwaysOn:
     """v19+ — the env-gate AGNES_ENABLE_TABLE_GRANTS was removed; TABLE is
     listed unconditionally and grants succeed without a feature flag."""
