@@ -60,7 +60,11 @@ def _make_rest_passthrough_callable(
             raise RuntimeError(f"upstream error: {str(resp.get('text', ''))[:300]}")
         return resp.get("text", "")
 
-    if fallback_kwargs or not safe_props:
+    # Empty schema (no props) must fall through to the synthesized
+    # parameterless ``def _passthrough():`` below — only genuine
+    # non-identifier prop names take the **kwargs wrapper. (FastMCP renders
+    # **kwargs as a required field, which breaks no-arg calls.)
+    if fallback_kwargs:
         def _wrap(**kwargs: Any) -> str:
             return _forward(kwargs)
 

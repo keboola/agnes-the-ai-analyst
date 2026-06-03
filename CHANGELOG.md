@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.62.1] — 2026-06-03
+
+### Fixed
+- MCP passthrough tools that declare no input parameters (e.g. canned-view tools such as a pipeline summary) no longer fail with a `kwargs` validation error. Empty-schema tools now register a parameterless signature in both the server-hosted (`app/api/mcp/tools_generator.py`) and CLI stdio (`cli/mcp/_dynamic_passthrough.py`) MCP servers, instead of a `**kwargs` wrapper that FastMCP rendered as a required field (so the only valid — empty — call was rejected).
+
 ## [0.62.0] — 2026-06-03
 
 ### Added
