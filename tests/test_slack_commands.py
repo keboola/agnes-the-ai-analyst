@@ -61,6 +61,71 @@ def test_open_im_returns_none_without_token(monkeypatch):
     assert asyncio.run(snd.open_im("U123")) is None
 
 
+def _sign_ok(monkeypatch):
+    import services.slack_bot.sigverify as sv
+    monkeypatch.setattr(sv, "verify_slack_signature", lambda *a, **k: True)
+    import app.api.slack as slack_api
+    monkeypatch.setattr(slack_api, "verify_slack_signature", lambda *a, **k: True)
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "shhh")
+
+
+def _make_client(monkeypatch, scheduled):
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import app.api.slack as slack_api
+
+    async def fake_dispatch(app, cmd):
+        scheduled.append(cmd)
+
+    monkeypatch.setattr(slack_api, "dispatch_command", fake_dispatch)
+    app = FastAPI()
+    app.include_router(slack_api.router)
+    app.state.chat_repo = SimpleNamespace()
+    app.state.chat_manager = SimpleNamespace()
+    return TestClient(app)
+
+
+def test_commands_bad_signature_401(monkeypatch):
+    import app.api.slack as slack_api
+    monkeypatch.setattr(slack_api, "verify_slack_signature", lambda *a, **k: False)
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "shhh")
+    scheduled: list = []
+    client = _make_client(monkeypatch, scheduled)
+    r = client.post("/api/slack/commands", data={"command": "/agnes", "text": "hi"})
+    assert r.status_code == 401
+    assert scheduled == []  # forged command never dispatched
+
+
+def test_commands_help_is_synchronous(monkeypatch):
+    _sign_ok(monkeypatch)
+    scheduled: list = []
+    client = _make_client(monkeypatch, scheduled)
+    r = client.post(
+        "/api/slack/commands",
+        data={"command": "/agnes", "text": "help", "user_id": "U1",
+              "channel_id": "C1", "response_url": "https://r/1"},
+    )
+    assert r.status_code == 200
+    assert "/agnes-new" in r.json()["text"]
+    assert scheduled == []  # help did no async work
+
+
+def test_commands_schedules_dispatch(monkeypatch):
+    _sign_ok(monkeypatch)
+    scheduled: list = []
+    client = _make_client(monkeypatch, scheduled)
+    r = client.post(
+        "/api/slack/commands",
+        data={"command": "/agnes", "text": "what is mrr", "user_id": "U1",
+              "channel_id": "C1", "response_url": "https://r/1"},
+    )
+    assert r.status_code == 200
+    assert len(scheduled) == 1
+    assert scheduled[0]["command"] == "/agnes"
+    assert scheduled[0]["text"] == "what is mrr"
+
+
 def test_ephemeral_command_sink_forwards_first_assistant_message(monkeypatch):
     from services.slack_bot import sink as sink_mod
 

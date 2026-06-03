@@ -7,7 +7,15 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from urllib.parse import parse_qs
+
 from app.auth.dependencies import get_current_user
+from services.slack_bot.commands import (
+    _help_body,
+    _run_logged as _cmd_run_logged,
+    _schedule as _cmd_schedule,
+    dispatch_command,
+)
 from services.slack_bot.events import _run_logged, _schedule, dispatch_event
 from services.slack_bot.sigverify import verify_slack_signature
 
@@ -36,6 +44,28 @@ async def slack_events(request: Request):
         _schedule(_run_logged(dispatch_event(request.app, payload["event"])))
         return {"ok": True}
     return {"ok": True}
+
+
+@router.post("/commands")
+async def slack_commands(request: Request):
+    body = await request.body()
+    ts = request.headers.get("X-Slack-Request-Timestamp", "")
+    sig = request.headers.get("X-Slack-Signature", "")
+    secret = os.environ.get("SLACK_SIGNING_SECRET", "")
+    if not secret or not verify_slack_signature(secret, ts, sig, body):
+        raise HTTPException(401, "bad_signature")
+    form = {k: v[0] for k, v in parse_qs(body.decode()).items()}
+    command = (form.get("command") or "").strip()
+    text = (form.get("text") or "").strip()
+    # /agnes help answers synchronously in the 3 s ack — no session, no async.
+    if command == "/agnes" and text in ("", "help"):
+        return {"response_type": "ephemeral", "text": _help_body()}
+    # Wrap the dispatch in _cmd_run_logged so an UNHANDLED handler exception
+    # posts a best-effort ephemeral instead of vanishing (per-command errors
+    # already reach response_url via the sink — this is the backstop).
+    _cmd_schedule(_cmd_run_logged(dispatch_command(request.app, form),
+                                  response_url=form.get("response_url")))
+    return {"response_type": "ephemeral", "text": "_Working on it…_"}
 
 
 class BindBody(BaseModel):
