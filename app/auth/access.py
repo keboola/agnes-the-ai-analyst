@@ -37,6 +37,7 @@ import duckdb
 from fastapi import Depends, HTTPException, Request, status
 
 from app.auth.dependencies import _get_db, get_current_user
+from app.auth.session_principal import SessionPrincipal
 from app.resource_types import ResourceType
 from src.db import SYSTEM_ADMIN_GROUP
 
@@ -210,22 +211,41 @@ def has_explicit_grant(
     return row is not None
 
 
+def can_access_session(
+    principal: "SessionPrincipal",
+    resource_type: str,
+    resource_id: str,
+) -> bool:
+    """Co-session access: membership in the live intersection. Must NOT call
+    is_user_admin / can_access (PR checklist item) — the SessionPrincipal's
+    ``intersection`` was already built without the admin short-circuit."""
+    return resource_id in principal.intersection.get(resource_type, frozenset())
+
+
 # ---------------------------------------------------------------------------
 # FastAPI dependencies
 # ---------------------------------------------------------------------------
 
 
 async def require_admin(
-    user: dict = Depends(get_current_user),
+    user=Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-) -> dict:
+):
     """Dependency: require user is in the Admin group. Raises 403 otherwise.
 
     Replaces the v9 ``require_role(Role.ADMIN)`` and
     ``require_internal_role("core.admin")`` thin wrappers. Same calling
     convention as before — endpoints write ``Depends(require_admin)`` (no
     parens) and receive the user dict.
+
+    A ``SessionPrincipal`` (co-session runner token) is HARD-DENIED before
+    any ``is_user_admin`` check — co-sessions never hold admin authority.
     """
+    if isinstance(user, SessionPrincipal):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
     if not is_user_admin(user["id"], conn):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -258,9 +278,9 @@ def require_resource_access(
 
     async def dep(
         request: Request,
-        user: dict = Depends(get_current_user),
+        user=Depends(get_current_user),
         conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-    ) -> dict:
+    ):
         try:
             resource_id = path_template.format(**request.path_params)
         except KeyError as e:
@@ -273,12 +293,15 @@ def require_resource_access(
                     f"{path_template!r} references missing path_param {e}"
                 ),
             )
-        if not can_access(user["id"], resource_type.value, resource_id, conn):
+        if isinstance(user, SessionPrincipal):
+            allowed = can_access_session(user, resource_type.value, resource_id)
+        else:
+            allowed = can_access(user["id"], resource_type.value, resource_id, conn)
+        if not allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=(
-                    f"Access denied to {resource_type.value} "
-                    f"{resource_id!r}"
+                    f"Access denied to {resource_type.value} {resource_id!r}"
                 ),
             )
         return user
