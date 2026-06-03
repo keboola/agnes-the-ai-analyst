@@ -155,6 +155,13 @@ observability = [
     # be explicit can `pip install -e ".[observability]"` and signal intent.
     "posthog>=3.7.0",
 ]
+slack-socket = [
+    # Socket Mode (optional inbound transport). Imported lazily inside
+    # SocketModeDispatcher.start() — never at module top — so HTTP-only
+    # deployments need not install it. A missing import is a fail-closed
+    # gate at lifespan init (logs + disables Slack, never a dead WS).
+    "slack_sdk>=3.27",
+]
 dev = [
     "pytest>=9.0.0",
     "pytest-timeout>=2.0.0",
