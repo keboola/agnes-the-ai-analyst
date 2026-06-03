@@ -144,8 +144,19 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     # (test-isolation / DuckDB-mode), same pattern as app/auth/access.py — NOT a
     # raw backend-split. On Postgres these route through the factory.
     "app/services/stack_resolver.py": {"DataPackagesRepository", "MemoryDomainsRepository", "ResourceGrantsRepository", "UserGroupMembersRepository", "UserGroupsRepository", "UserStackSubscriptionsRepository"},
-    "app/chat/persistence.py": {"ChatMessagePgRepository", "ChatSessionPgRepository", "UserWorkdirPgRepository"},
+    # cloud-chat PG-only persistence (legit by design, see module docstring):
+    # ChatRepository.__init__ instantiates the *Pg repos only under `use_pg()`
+    # and dispatches every method through them — not a backend-split.
+    "app/chat/persistence.py": {"ChatMessagePgRepository", "ChatSessionPgRepository", "UserWorkdirPgRepository", "ChatSessionParticipantPgRepository"},
     "app/main.py": {"UserGroupMembersRepository", "UserRepository"},
+    # Sanctioned `if conn is not None and not use_pg(): UserRepository(conn) else:
+    # users_repo()` escape hatch (same pattern as app/auth/access.py). On Postgres
+    # the read routes through the factory.
+    "src/grant_intersection.py": {"UserRepository"},
+    # Residual from #528 (Slack agent expansion): _cmd_agnes reads the user off
+    # `repo._conn` (the DuckDB chat conn) instead of the factory — wrong backend
+    # on PG. Real fix + parity test tracked on the follow-up routing branch.
+    "services/slack_bot/commands.py": {"UserRepository"},
     # app/web/router.py — migrated to table_registry_repo()/sync_state_repo()
     # (catalog detail pages); entry removed as the residual shrank.
     "cli/commands/admin_data_semantics.py": {"BqMetadataCacheRepository", "ColumnMetadataRepository", "DataPackagesRepository", "MetricRepository", "TableRegistryRepository"},
@@ -173,6 +184,12 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     "app/api/v2_sample.py",
     "app/auth/access.py",
     "app/auth/dependencies.py",
+    # Residual from #528 (co-drive): co-session token resolution reads
+    # chat_session_participants / chat_sessions off get_system_db() (always
+    # DuckDB) — empty on a PG instance, so co-sessions fail closed. Real fix
+    # (route through a dispatching chat repo) + parity test tracked on the
+    # follow-up routing branch.
+    "app/auth/pat_resolver.py",
     "app/auth/providers/google.py",
     "app/auth/providers/password.py",
     "app/auth/router.py",

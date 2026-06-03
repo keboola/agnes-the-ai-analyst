@@ -17,6 +17,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   bypassed under xdist sharding when an `AGNES_DB_URL` from another shard flipped
   `use_pg()`. Also dropped a vestigial `get_system_db()` call in
   `cache_warmup._list_remote_rows` (rows already come from the factory).
+- Backend-split guard caught two new residual sites the chat/Slack work landed:
+  `app/chat/persistence.py`'s 4th PG repo (`ChatSessionParticipantPgRepository`)
+  and `src/grant_intersection.py` are recognized as legit (gated PG dispatch /
+  `not use_pg()` escape hatch); the genuine backend-split sites
+  (`services/slack_bot/commands.py`, `app/auth/pat_resolver.py`) are pinned as
+  residual to keep the ratchet honest until they're routed through the factory.
 
 ### Fixed
 - **Postgres backend: admin telemetry, the stack resolver, and per-user MCP
