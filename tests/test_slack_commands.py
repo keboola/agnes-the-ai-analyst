@@ -126,6 +126,124 @@ def test_commands_schedules_dispatch(monkeypatch):
     assert scheduled[0]["text"] == "what is mrr"
 
 
+def _agnes_app(monkeypatch, *, bound=True, can_chat=True):
+    from types import SimpleNamespace
+    import duckdb
+    from src.db import _ensure_schema
+    from app.chat.persistence import ChatRepository
+    from app.chat.types import ChatSession, Surface
+    from datetime import datetime, timezone
+    from services.slack_bot.binding import _ensure_table
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    conn.execute("INSERT INTO users(id, email, name) VALUES ('uid1','bob@example.com','Bob')")
+    repo = ChatRepository(conn)
+    _ensure_table(conn)
+    if bound:
+        conn.execute("UPDATE users SET slack_user_id='U1' WHERE email='bob@example.com'")
+
+    created: list = []
+    attached: list = []
+    sent: list = []
+
+    async def create_session(*, user_email, surface, slack_channel_id=None, **kw):
+        s = ChatSession(
+            id="dm-1", user_email=user_email, surface=surface,
+            slack_channel_id=slack_channel_id, slack_thread_ts=None, title=None,
+            started_at=datetime.now(timezone.utc), last_message_at=None,
+            message_count=0, archived=False,
+        )
+        created.append(s)
+        return s
+
+    async def attach(chat_id, sink):
+        attached.append((chat_id, sink))
+        await sink.send_json({"type": "assistant_message", "content": "the answer"})
+
+    async def send_user_message(chat_id, text):
+        sent.append((chat_id, text))
+
+    mgr = SimpleNamespace(
+        list_live=lambda: [], create_session=create_session, attach=attach,
+        send_user_message=send_user_message,
+        _config=SimpleNamespace(concurrency_per_user=3),
+        _created=created, _attached=attached, _sent=sent,
+    )
+    app = SimpleNamespace(state=SimpleNamespace(
+        chat_repo=repo, chat_manager=mgr, public_url="https://agnes.example.com"))
+
+    import app.auth.access as _access
+    monkeypatch.setattr(_access, "can_access", lambda *a, **k: can_chat)
+    import services.slack_bot.commands as cmds
+    async def fake_open_im(uid): return "D1"
+    monkeypatch.setattr(cmds, "open_im", fake_open_im)
+    return app, cmds
+
+
+def test_agnes_happy_path_keys_on_im_channel(monkeypatch):
+    from services.slack_bot import sink as sink_mod
+    app, cmds = _agnes_app(monkeypatch)
+    eph: list = []
+    async def fake_eph(url, text, blocks=None): eph.append((url, text))
+    monkeypatch.setattr(cmds, "send_ephemeral", fake_eph)
+    monkeypatch.setattr(sink_mod, "send_ephemeral", fake_eph)
+
+    cmd = {"command": "/agnes", "text": "what is mrr", "user_id": "U1",
+           "channel_id": "C_PUBLIC", "response_url": "https://r/1"}
+
+    async def _run():
+        await cmds.dispatch_command(app, cmd)
+        import asyncio as _a; await _a.sleep(0.1)
+    __import__("asyncio").run(_run())
+
+    mgr = app.state.chat_manager
+    assert mgr._created[0].slack_channel_id == "D1"   # IM channel, NOT C_PUBLIC
+    assert mgr._sent == [("dm-1", "what is mrr")]
+    assert eph == [("https://r/1", "the answer")]
+
+
+def test_agnes_unbound_user_gets_code(monkeypatch):
+    app, cmds = _agnes_app(monkeypatch, bound=False)
+    eph: list = []
+    async def fake_eph(url, text, blocks=None): eph.append((url, text))
+    monkeypatch.setattr(cmds, "send_ephemeral", fake_eph)
+
+    cmd = {"command": "/agnes", "text": "hi", "user_id": "U_NEW",
+           "channel_id": "C1", "response_url": "https://r/2"}
+    __import__("asyncio").run(cmds.dispatch_command(app, cmd))
+    assert eph and "6-digit" in eph[0][1]
+    assert app.state.chat_manager._created == []   # no session for unbound
+
+
+def test_agnes_no_chat_grant_denied(monkeypatch):
+    app, cmds = _agnes_app(monkeypatch, can_chat=False)
+    eph: list = []
+    async def fake_eph(url, text, blocks=None): eph.append((url, text))
+    monkeypatch.setattr(cmds, "send_ephemeral", fake_eph)
+
+    cmd = {"command": "/agnes", "text": "hi", "user_id": "U1",
+           "channel_id": "C1", "response_url": "https://r/3"}
+    __import__("asyncio").run(cmds.dispatch_command(app, cmd))
+    assert eph and "admin" in eph[0][1].lower()
+    assert app.state.chat_manager._created == []
+
+
+def test_agnes_cap_hit_ephemeral(monkeypatch):
+    app, cmds = _agnes_app(monkeypatch)
+    from app.chat.manager import ConcurrencyCapHit
+    async def boom(**kw): raise ConcurrencyCapHit("at cap")
+    app.state.chat_manager.create_session = boom
+    eph: list = []
+    async def fake_eph(url, text, blocks=None): eph.append((url, text))
+    monkeypatch.setattr(cmds, "send_ephemeral", fake_eph)
+
+    cmd = {"command": "/agnes", "text": "hi", "user_id": "U1",
+           "channel_id": "C1", "response_url": "https://r/4"}
+    __import__("asyncio").run(cmds.dispatch_command(app, cmd))
+    assert eph and "/agnes-new" in eph[0][1]
+
+
 def test_ephemeral_command_sink_forwards_first_assistant_message(monkeypatch):
     from services.slack_bot import sink as sink_mod
 
