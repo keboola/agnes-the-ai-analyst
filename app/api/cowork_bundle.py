@@ -13,11 +13,19 @@ Bundle structure (unzipping creates a ready-to-open Claude Code workspace)::
   ├── agnes-bundle.json         ← setup token + server URL (visible to Claude tools)
   ├── setup.py                  ← pure stdlib fallback (no pip required)
   ├── .claude/
-  │   └── settings.json         ← SessionStart hook: ``agnes init --bundle .``
+  │   ├── settings.json         ← SessionStart hook: ``agnes init --bundle .``
+  │   ├── skills/
+  │   │   ├── setup-cowork.md   ← /setup-cowork — guided onboarding
+  │   │   ├── explore-data.md   ← /explore-data — catalog + describe + suggest
+  │   │   ├── query-data.md     ← /query-data — schema-aware SQL workflow
+  │   │   ├── new-skill.md      ← /new-skill — design + write a new skill
+  │   │   └── <marketplace skills from user's RBAC-granted plugins>
+  │   └── agents/
+  │       └── <marketplace agents from user's RBAC-granted plugins>
   └── CLAUDE.md                 ← user-friendly instructions + agent guidance
 
 User flow:
-  1. Download ZIP from /me/profile → Connect Claude Code.
+  1. Download ZIP from /me/cowork.
   2. Unzip the file.
   3. Open Claude Code → File → Open Folder → select the unzipped folder.
   4. The SessionStart hook fires ``agnes init --bundle .`` which exchanges the
@@ -44,6 +52,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import secrets
 import textwrap
 import uuid
@@ -97,6 +106,110 @@ def _hash_token(raw: str) -> str:
 def _generate_setup_token() -> str:
     """Return a 67-char ``st_<64 url-safe base64 chars>`` token."""
     return "st_" + secrets.token_urlsafe(48)
+
+
+# ── skill frontmatter helpers ─────────────────────────────────────────────────
+
+_SKILL_FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
+
+# Names reserved for Agnes curated skills — marketplace content must never
+# claim these so a plugin can't silently overwrite onboarding/workflow skills.
+_CURATED_SKILL_NAMES: frozenset[str] = frozenset({
+    "setup-cowork", "explore-data", "query-data", "new-skill",
+})
+
+
+def _filter_skill_for_bundle(text: str, name: str) -> str:
+    """Keep name/description/compatibility; drop Claude-Code-only keys.
+
+    Name is always overridden by the caller-supplied ``name`` (the skill's
+    folder name, de-duplicated across plugins) so the slash command is
+    predictable regardless of what's in the source SKILL.md frontmatter.
+    """
+    m = _SKILL_FM_RE.match(text)
+    if not m:
+        return f"---\nname: {name}\ndescription: {name}\n---\n\n{text.lstrip()}"
+    block, body = m.group(1), text[m.end():]
+    parsed: dict = {}
+    for line in block.splitlines():
+        if ":" in line and not line.startswith((" ", "\t")):
+            k, _, v = line.partition(":")
+            parsed[k.strip()] = v.strip().strip('"').strip("'")
+    lines = [f"name: {name}"]
+    if "description" in parsed:
+        desc = parsed["description"].replace("<", "").replace(">", "").replace('"', "'")
+        lines.append(f"description: {desc}")
+    if "compatibility" in parsed:
+        lines.append(f"compatibility: {parsed['compatibility']}")
+    return "---\n" + "\n".join(lines) + "\n---\n" + body.lstrip("\n")
+
+
+def _collect_marketplace_content(
+    conn, user: dict
+) -> tuple[list[tuple[str, bytes]], list[tuple[str, bytes]]]:
+    """Return (skills, agents) lists of (arcname, bytes) from the user's granted plugins.
+
+    Skills land in ``.claude/skills/<name>.md``; agents in ``.claude/agents/<name>.md``.
+    Names are de-duplicated by prefixing the plugin's manifest_name when a
+    collision would otherwise occur. Failures are silently swallowed — a
+    missing marketplace is not a bundle error.
+    """
+    skills: list[tuple[str, bytes]] = []
+    agents: list[tuple[str, bytes]] = []
+    try:
+        from src import marketplace_filter
+        plugins = marketplace_filter.resolve_user_marketplace(conn, user)
+    except Exception:
+        return skills, agents
+
+    seen_skill: set[str] = set(_CURATED_SKILL_NAMES)  # reserves curated names
+    seen_agent: set[str] = set()
+
+    for plugin in plugins:
+        plugin_dir = plugin.get("plugin_dir")
+        if not plugin_dir or not plugin_dir.is_dir():
+            continue
+        prefix = plugin.get("manifest_name") or "plugin"
+
+        skills_dir = plugin_dir / "skills"
+        if skills_dir.is_dir():
+            for folder in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
+                skill_md = next(
+                    (f for f in folder.iterdir()
+                     if f.name.lower() == "skill.md" and f.is_file()),
+                    None,
+                )
+                if skill_md is None:
+                    continue
+                try:
+                    raw = skill_md.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                name = folder.name
+                if name in seen_skill:
+                    name = f"{prefix}-{folder.name}"
+                if name in seen_skill:
+                    continue  # still collides after prefix — skip
+                seen_skill.add(name)
+                filtered = _filter_skill_for_bundle(raw, name)
+                skills.append((f".claude/skills/{name}.md", filtered.encode("utf-8")))
+
+        agents_dir = plugin_dir / "agents"
+        if agents_dir.is_dir():
+            for agent_md in sorted(agents_dir.glob("*.md")):
+                try:
+                    raw = agent_md.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                name = agent_md.stem
+                if name in seen_agent:
+                    name = f"{prefix}-{agent_md.stem}"
+                if name in seen_agent:
+                    continue  # still collides after prefix — skip
+                seen_agent.add(name)
+                agents.append((f".claude/agents/{name}.md", raw.encode("utf-8")))
+
+    return skills, agents
 
 
 # ── bundle generation helpers ─────────────────────────────────────────────────
@@ -874,6 +987,7 @@ def _bundle_skill_setup_cowork() -> str:
     """
     return textwrap.dedent("""\
         ---
+        name: setup-cowork
         description: Guided Agnes Cowork setup — verify connection, explore your data, try a skill
         ---
 
@@ -903,6 +1017,82 @@ def _bundle_skill_setup_cowork() -> str:
     """)
 
 
+def _skill_explore_data() -> str:
+    return textwrap.dedent("""\
+        ---
+        name: explore-data
+        description: Explore Agnes data — list tables, examine the most interesting ones, suggest questions
+        ---
+
+        Run this flow when /explore-data is invoked.
+
+        1. Call `catalog()` (or `python3 agnes.py catalog`) to list all available tables.
+        2. Pick the 2–3 most interesting tables based on names and descriptions.
+        3. Call `describe(<table_id>)` on each to see real sample values and column types.
+        4. Based on what you see, suggest 3 concrete, specific questions the user could explore.
+        5. Ask which question they want to pursue first, then run it.
+
+        Be proactive — don't wait for the user to tell you what to look at. Lead with a finding.
+    """)
+
+
+def _skill_query_data() -> str:
+    return textwrap.dedent("""\
+        ---
+        name: query-data
+        description: Write and run SQL queries against Agnes data — guided workflow with schema lookup
+        ---
+
+        Run this flow when /query-data is invoked.
+
+        1. Ask the user what they want to find out (one sentence is enough).
+        2. Call `catalog()` to identify which tables are relevant.
+        3. Call `schema(<table_id>)` for each relevant table — know the exact column names before writing SQL.
+        4. Draft the SQL query. Show it to the user before running.
+        5. Call `query(<sql>)` and present results clearly — table, key numbers, plain-language summary.
+        6. Offer a follow-up: refine filter, add aggregation, compare periods, or export to CSV.
+
+        SQL dialect notes:
+        - Local / materialized tables → DuckDB SQL (`DATE '2026-01-01'`, `strftime`, window functions).
+        - Remote tables (BigQuery) → BQ SQL (`DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)`, `REGEXP_CONTAINS`).
+        - Check `query_mode` in catalog output to know which dialect to use.
+    """)
+
+
+def _skill_new_skill() -> str:
+    return textwrap.dedent("""\
+        ---
+        name: new-skill
+        description: Design and create a new skill for your Agnes Cowork workspace
+        ---
+
+        Run this flow when /new-skill is invoked.
+
+        1. Ask the user: what should this skill do? What will they type to invoke it?
+        2. Ask: what Agnes data or tools does it need? (tables, catalog, query, schema?)
+        3. Draft a SKILL.md:
+           - frontmatter: `name`, `description` (one line, no angle brackets or double quotes)
+           - body: clear step-by-step instructions Claude follows when the skill is invoked
+           - Keep the body focused — one workflow, not a swiss-army knife
+        4. Show the draft. Refine until the user is happy.
+        5. Write the file using the Bash tool:
+           ```
+           python3 -c "
+           import pathlib
+           p = pathlib.Path('.claude/skills/<name>.md')
+           p.parent.mkdir(parents=True, exist_ok=True)
+           p.write_text('''<content>''', encoding='utf-8')
+           print('Created', p)
+           "
+           ```
+        6. Tell the user: the new /<name> command is available immediately in this session.
+           In Cowork, open a new session or re-upload the bundle to pick it up.
+
+        To share the skill with the whole team, send the .md file to your Agnes admin
+        for review and inclusion in the marketplace.
+    """)
+
+
 def _build_bundle_zip(
     server_url: str,
     setup_token: str,
@@ -910,6 +1100,9 @@ def _build_bundle_zip(
     user_email: str,
     expires_at: datetime,
     folder_name: str,
+    *,
+    marketplace_skills: list[tuple[str, bytes]] | None = None,
+    marketplace_agents: list[tuple[str, bytes]] | None = None,
 ) -> bytes:
     """Return a ZIP archive as bytes.
 
@@ -926,8 +1119,14 @@ def _build_bundle_zip(
         ├── mcp_server.py             ← stdio MCP proxy (if cowork VM loads it)
         ├── .claude/
         │   ├── settings.json         ← SessionStart hook + mcpServers config
-        │   └── skills/
-        │       └── setup-cowork.md   ← /setup-cowork guided onboarding skill
+        │   ├── skills/
+        │   │   ├── setup-cowork.md   ← /setup-cowork — guided onboarding
+        │   │   ├── explore-data.md   ← /explore-data — catalog + describe + suggest
+        │   │   ├── query-data.md     ← /query-data — schema-aware SQL workflow
+        │   │   ├── new-skill.md      ← /new-skill — design + write a new skill
+        │   │   └── <marketplace skills per user's RBAC grants>
+        │   └── agents/
+        │       └── <marketplace agents per user's RBAC grants>
         └── CLAUDE.md                 ← user + agent guidance (Bash-first)
 
     The ``access_token`` field in ``agnes-bundle.json`` is a short-lived PAT
@@ -952,7 +1151,16 @@ def _build_bundle_zip(
         zf.writestr(f"{folder_name}/mcp_server.py", _bundle_mcp_server_py())
         zf.writestr(f"{folder_name}/agnes.py", _bundle_agnes_py())
         zf.writestr(f"{folder_name}/.claude/settings.json", _bundle_settings_json(server_url, access_token))
+        # Agnes curated skills — always present regardless of marketplace config.
         zf.writestr(f"{folder_name}/.claude/skills/setup-cowork.md", _bundle_skill_setup_cowork())
+        zf.writestr(f"{folder_name}/.claude/skills/explore-data.md", _skill_explore_data())
+        zf.writestr(f"{folder_name}/.claude/skills/query-data.md", _skill_query_data())
+        zf.writestr(f"{folder_name}/.claude/skills/new-skill.md", _skill_new_skill())
+        # Marketplace skills + agents from the user's RBAC-granted plugins.
+        for arcname, content in (marketplace_skills or []):
+            zf.writestr(f"{folder_name}/{arcname}", content)
+        for arcname, content in (marketplace_agents or []):
+            zf.writestr(f"{folder_name}/{arcname}", content)
         zf.writestr(
             f"{folder_name}/CLAUDE.md",
             _bundle_claude_md(server_url, user_email, expires_at),
@@ -1056,6 +1264,7 @@ async def generate_bundle(
     folder_name = f"agnes-cowork-setup-{ts}"
     filename = f"{folder_name}.zip"
 
+    mkt_skills, mkt_agents = _collect_marketplace_content(conn, user)
     zip_bytes = _build_bundle_zip(
         server_url=server_url,
         setup_token=raw_token,
@@ -1063,6 +1272,8 @@ async def generate_bundle(
         user_email=user.get("email", ""),
         expires_at=expires_at,
         folder_name=folder_name,
+        marketplace_skills=mkt_skills,
+        marketplace_agents=mkt_agents,
     )
 
     return StreamingResponse(

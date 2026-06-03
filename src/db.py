@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 67
+SCHEMA_VERSION = 68
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1106,6 +1106,56 @@ CREATE TABLE IF NOT EXISTS usage_marketplace_item_window (
     PRIMARY KEY (period_label, source, type, parent_plugin, name)
 );
 CREATE INDEX IF NOT EXISTS idx_miw_lookup ON usage_marketplace_item_window(period_label, source, type);
+
+-- v68: cloud chat — per-session transcript storage + per-user workdir markers.
+-- DuckDB 1.5.x does NOT support ON DELETE CASCADE on foreign keys, so the
+-- chat_messages FK is a plain reference (blocks deletes when children exist);
+-- callers must delete messages before deleting a session, or use the
+-- ChatRepository.delete_session() helper that does both.
+-- DuckDB 1.5.x does NOT support partial (filtered) unique indexes, so the
+-- per-surface uniqueness for slack_dm / slack_thread is enforced at the
+-- application layer in ChatRepository (not by DB index).
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id               VARCHAR PRIMARY KEY,
+    user_email       VARCHAR NOT NULL,
+    surface          VARCHAR NOT NULL,
+    slack_channel_id VARCHAR,
+    slack_thread_ts  VARCHAR,
+    title            VARCHAR,
+    started_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- NOTE: last_message_at and message_count are NEVER written after
+    -- INSERT. DuckDB 1.5.3 raises a false FK violation when UPDATE-ing
+    -- last_message_at (it's part of idx_chat_sessions_user). Workaround:
+    -- ChatRepository computes both via LEFT JOIN at read time. Code that
+    -- reads these columns directly will see (NULL, 0) for every row.
+    last_message_at  TIMESTAMP,
+    message_count    INTEGER NOT NULL DEFAULT 0,
+    archived         BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_user
+    ON chat_sessions(user_email, last_message_at);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id          VARCHAR PRIMARY KEY,
+    session_id  VARCHAR NOT NULL REFERENCES chat_sessions(id),
+    role        VARCHAR NOT NULL,
+    content     TEXT NOT NULL,
+    tool_calls  JSON,
+    tokens_in   INTEGER,
+    tokens_out  INTEGER,
+    model       VARCHAR,
+    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session
+    ON chat_messages(session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS user_workdirs (
+    user_email             VARCHAR PRIMARY KEY,
+    last_init_at           TIMESTAMP,
+    marketplace_sha        VARCHAR,
+    initial_workspace_sha  VARCHAR,
+    agnes_version_at_init  VARCHAR
+);
 """
 
 
@@ -4662,6 +4712,75 @@ def _v66_to_v67(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 67")
 
 
+def _v67_to_v68(conn: duckdb.DuckDBPyConnection) -> None:
+    """v68: cloud chat — per-session transcript storage + per-user workdir markers.
+
+    Creates three tables: chat_sessions, chat_messages, user_workdirs.
+    Adds two regular indexes for common query patterns.
+
+    DuckDB 1.5.x limitations (documented in _SYSTEM_SCHEMA comment above):
+    - ON DELETE CASCADE is not supported; application code must delete
+      child messages before deleting a session row.
+    - Partial (WHERE-clause) unique indexes are not supported; per-surface
+      uniqueness for slack_dm / slack_thread is enforced at the application
+      layer in ChatRepository.
+    - UPDATE on a column that is part of a secondary index on a parent
+      table raises a false FK violation when child rows exist. The
+      ``last_message_at`` column is part of ``idx_chat_sessions_user`` and
+      therefore cannot be UPDATEd once any chat_messages row references
+      the session. Consequently ``chat_sessions.last_message_at`` and
+      ``chat_sessions.message_count`` are NEVER written after row
+      creation — they stay (NULL, 0) at the SQL level. ChatRepository
+      computes both via LEFT JOIN at read time; any code that reads these
+      columns directly (bypassing ChatRepository) will see stale values.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id               VARCHAR PRIMARY KEY,
+            user_email       VARCHAR NOT NULL,
+            surface          VARCHAR NOT NULL,
+            slack_channel_id VARCHAR,
+            slack_thread_ts  VARCHAR,
+            title            VARCHAR,
+            started_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_message_at  TIMESTAMP,
+            message_count    INTEGER NOT NULL DEFAULT 0,
+            archived         BOOLEAN NOT NULL DEFAULT FALSE
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id          VARCHAR PRIMARY KEY,
+            session_id  VARCHAR NOT NULL REFERENCES chat_sessions(id),
+            role        VARCHAR NOT NULL,
+            content     TEXT NOT NULL,
+            tool_calls  JSON,
+            tokens_in   INTEGER,
+            tokens_out  INTEGER,
+            model       VARCHAR,
+            created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_workdirs (
+            user_email             VARCHAR PRIMARY KEY,
+            last_init_at           TIMESTAMP,
+            marketplace_sha        VARCHAR,
+            initial_workspace_sha  VARCHAR,
+            agnes_version_at_init  VARCHAR
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_messages_session "
+        "ON chat_messages(session_id, created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_user "
+        "ON chat_sessions(user_email, last_message_at)"
+    )
+    conn.execute("UPDATE schema_version SET version = 68")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -4971,6 +5090,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v65_to_v66(conn)
             # v66→v67: data_package_tools junction — links packages to MCP tools.
             _v66_to_v67(conn)
+            # v67→v68: cloud chat tables — chat_sessions, chat_messages,
+            # user_workdirs + indexes. _SYSTEM_SCHEMA already creates them on
+            # fresh installs via CREATE TABLE/INDEX IF NOT EXISTS (no-op here).
+            _v67_to_v68(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5158,6 +5281,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v65_to_v66(conn)
             if current < 67:
                 _v66_to_v67(conn)
+            if current < 68:
+                _v67_to_v68(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

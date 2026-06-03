@@ -1,0 +1,52 @@
+/* Minimal admin dashboard styling — topbar + tables + buttons.
+ * Loaded by app/web/templates/admin_chat.html (and chat.html via the
+ * shared `.admin-body` class on the dashboard page).
+ */
+
+.admin-body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  margin: 0;
+  background: #fff;
+  color: #111;
+}
+
+.admin-body h1 {
+  margin: 1rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.admin-body table {
+  border-collapse: collapse;
+  width: calc(100% - 2rem);
+  margin: 1rem;
+  font-size: 0.875rem;
+}
+
+.admin-body th,
+.admin-body td {
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid #eee;
+  text-align: left;
+  vertical-align: top;
+}
+
+.admin-body th {
+  background: #fafafa;
+  font-weight: 600;
+  border-bottom: 1px solid #ddd;
+}
+
+.admin-body button {
+  padding: 0.25rem 0.75rem;
+  margin-right: 0.25rem;
+  cursor: pointer;
+  border: 1px solid #ccc;
+  background: #f5f5f5;
+  border-radius: 3px;
+  font: inherit;
+}
+
+.admin-body button:hover {
+  background: #ebebeb;
+}

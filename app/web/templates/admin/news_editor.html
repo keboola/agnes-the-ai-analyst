@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 
 {% block title %}Admin · News — {{ instance_name or "AI Data Analyst" }}{% endblock %}
 
@@ -225,7 +225,6 @@ document.addEventListener('DOMContentLoaded', function () {
    button.primary` / `button.ghost` rules are no longer matched
    (markup now carries `.btn .btn-*` instead). The `.unpublish-btn`
    class survives via klass= to keep the JS selector working. #}
-{% import "_components.html" as ds %}
 {% set page_hero_eyebrow = "Server" %}
 {% set page_hero_title = "News editor" %}
 {% set page_hero_subtitle = "Compose the news intro shown at the bottom of /home." %}

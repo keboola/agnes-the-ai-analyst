@@ -1,14 +1,8 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 
 {% block title %}{{ domain.name }} — Memory — {{ config.INSTANCE_NAME or 'AI Data Analyst' }}{% endblock %}
 
-{% block content %}
-{# Design-system component macros — the 3 hero action buttons
-   (Add/Remove from stack + the required-state placeholder) render via
-   `ds.button`. `.btn-required` is canonical (style-custom.css) — the
-   amber-disabled mandated state. Per-item vote/dismiss buttons are
-   styled via page-local selectors and stay as-is. #}
-{% import "_components.html" as ds %}
+{% block head_extra %}
 <style>
   .dom-detail-header {
     display: flex; gap: 16px; align-items: flex-start;
@@ -139,7 +133,12 @@
   }
   .back-link:hover { color: var(--ds-primary); }
 </style>
+{% endblock %}
 
+{% block content %}
+{# Hero action buttons (Add/Remove from stack + required-state placeholder)
+   render via `ds.button` (auto-imported by base_ds). `.btn-required` is
+   canonical; per-item vote/dismiss buttons stay page-local. #}
 <a class="back-link" href="/corporate-memory">← All memory domains</a>
 
 <div class="dom-detail-header">

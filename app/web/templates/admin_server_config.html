@@ -1,7 +1,7 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}Instance settings — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
+{% block head_extra %}
 {# Server configuration editor — instance.yaml fields grouped by section.
 
    Page-shell only: GET /api/admin/server-config feeds the form (with
@@ -17,9 +17,7 @@
    can't reach inside `<script>` template literals. All buttons across
    the page now route through the canonical `.btn-*` family in
    style-custom.css; the page-local `.cfg-btn` rule is gone. #}
-{% import "_components.html" as ds %}
 <style>
-  .container:has(.cfg-page) { max-width: none; padding: 24px 16px; }
   .cfg-page { max-width: 1260px; margin: 0 auto; padding: 0; }
   /* Hero subtitle is unconstrained here — page is wide and the text is long */
   .cfg-page .page-header--hero .page-header__subtitle { max-width: none; }
@@ -239,7 +237,9 @@
   .modal-card .diff-row .path { color: #b91c1c; font-weight: 600; }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
 </style>
+{% endblock %}
 
+{% block content %}
 <div class="cfg-page" data-page="server-config">
   {% set page_hero_eyebrow = "Server" %}
   {% set page_hero_title = "Instance settings" %}
@@ -287,6 +287,48 @@
       <div id="iw-loading" class="cfg-loading">Loading…</div>
     </div>
     <div class="section-actions" id="iw-actions" hidden></div>
+  </section>
+
+  <!-- Cloud chat readiness — secret presence + live key test.
+
+       Like iw-section, this is a bespoke panel (NOT part of the generic
+       instance.yaml form): ANTHROPIC_API_KEY / E2B_API_KEY are env-var
+       secrets routed to the .env_overlay via /admin/chat/secrets, not
+       yaml fields. The status badges and the "Test keys" probe come from
+       /admin/chat/readiness and /admin/chat/secrets/test. -->
+  <section class="cfg-section" id="chat-section">
+    <header>
+      <div>
+        <h3>Cloud chat</h3>
+        <div class="section-help">
+          The cloud-hosted chat needs <code>ANTHROPIC_API_KEY</code> and
+          (for the E2B sandbox provider) <code>E2B_API_KEY</code> in the
+          server environment, plus a strong <code>JWT_SECRET_KEY</code>.
+          Missing or invalid keys leave chat disabled. Set the keys here
+          (stored in the server's env-overlay, never echoed back) and use
+          <strong>Test keys</strong> to confirm they actually work. A server
+          restart is required after setting keys for chat to start.
+        </div>
+      </div>
+    </header>
+    <div class="section-body">
+      <div id="chat-readiness-status" class="cfg-loading">Loading…</div>
+      <div class="iw-form-field">
+        <label for="chat-e2b-key">E2B_API_KEY</label>
+        <input type="password" id="chat-e2b-key"
+               placeholder="e2b_••• (leave blank to keep existing)" autocomplete="off">
+      </div>
+      <div class="iw-form-field">
+        <label for="chat-anthropic-key">ANTHROPIC_API_KEY</label>
+        <input type="password" id="chat-anthropic-key"
+               placeholder="sk-ant-••• (leave blank to keep existing)" autocomplete="off">
+      </div>
+    </div>
+    <div class="section-actions">
+      <button type="button" class="btn btn-primary" id="chat-save-btn">Save keys</button>
+      <button type="button" class="btn btn-secondary" id="chat-test-btn">Test keys</button>
+      <span class="chat-test-result" hidden style="margin-left: 8px; font-size: 13px;"></span>
+    </div>
   </section>
     </div><!-- /.cfg-main -->
   </div><!-- /.cfg-body -->
@@ -1689,25 +1731,112 @@ async function iwDelete() {
 
 document.getElementById("iw-modal-save").addEventListener("click", iwSave);
 iwLoad();
-</script>
 
-<!-- ==== Database backend (state machine) ==== -->
-<!--
-  The state-machine UI moved to its own page at /admin/database — the
-  section that used to live here looked out of place in the
-  instance-config form (it doesn't share the section-by-section save
-  pattern) and the operator workflow benefits from being one click
-  from the admin menu, not buried at the bottom of this scroll.
--->
-{% import "_components.html" as ds %}
-<section id="db-backend-section">
-  {% call ds.panel(href='/admin/database', klass='quick-card') %}
-    <h2>Database backend</h2>
-    <p>
-      Switch app-state DB between DuckDB, side-car Postgres, and a managed
-      cloud Postgres. Now on a dedicated admin page —
-      <a href="/admin/database">open <strong>/admin/database</strong> →</a>
-    </p>
-  {% endcall %}
-</section>
+// ════════════════════════════════════════════════════════════════════════
+// Cloud chat readiness — secret presence + live key test. Dedicated
+// lifecycle like Initial Workspace: the keys are env-var secrets routed to
+// the .env_overlay via /admin/chat/secrets, not part of the instance.yaml
+// form save.
+// ════════════════════════════════════════════════════════════════════════
+
+const CHAT_API = "/admin/chat";
+
+function chatBadge(set, required) {
+  if (set) return '<span style="color: #2a8c4a;">✓ set</span>';
+  return required
+    ? '<span style="color: #c0392b;">✗ missing (required)</span>'
+    : '<span style="color: #888;">— not set</span>';
+}
+
+async function chatReadinessLoad() {
+  const el = document.getElementById("chat-readiness-status");
+  if (!el) return;
+  try {
+    const r = await fetch(CHAT_API + "/readiness", { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const s = await r.json();
+    const rows = [
+      ["ANTHROPIC_API_KEY", s.secrets.anthropic_api_key],
+      ["E2B_API_KEY", s.secrets.e2b_api_key],
+      ["JWT_SECRET_KEY", s.secrets.jwt_secret_key],
+      ["e2b_template_id", s.secrets.e2b_template_id],
+    ];
+    const overall = !s.enabled
+      ? '<span style="color: #888;">chat disabled in instance.yaml</span>'
+      : (s.ready
+          ? '<span style="color: #2a8c4a;">✓ ready</span>'
+          : '<span style="color: #c0392b;">✗ not ready — missing ' + escHtml(s.missing.join(", ")) + '</span>');
+    el.className = "";
+    el.innerHTML =
+      '<div style="margin-bottom: 8px;"><strong>Status:</strong> ' + overall + '</div>' +
+      '<ul style="list-style: none; padding: 0; margin: 0;">' +
+      rows.map(([name, v]) =>
+        `<li style="padding: 2px 0;"><code>${escHtml(name)}</code> — ${chatBadge(v.set, v.required)}</li>`
+      ).join("") +
+      '</ul>';
+  } catch (e) {
+    el.className = "";
+    el.innerHTML = '<span style="color: #c0392b;">Failed to load readiness: ' + escHtml(e.message) + '</span>';
+  }
+}
+
+async function chatSaveSecrets(btn) {
+  const e2b = document.getElementById("chat-e2b-key").value.trim();
+  const anth = document.getElementById("chat-anthropic-key").value.trim();
+  if (!e2b && !anth) {
+    showBanner("Enter at least one key to save.", "error");
+    return;
+  }
+  const payload = {};
+  if (e2b) payload.e2b_api_key = e2b;
+  if (anth) payload.anthropic_api_key = anth;
+  btn.disabled = true;
+  try {
+    const r = await fetch(CHAT_API + "/secrets", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const body = await r.json();
+    // Clear the inputs so the secret doesn't linger in the DOM.
+    document.getElementById("chat-e2b-key").value = "";
+    document.getElementById("chat-anthropic-key").value = "";
+    showBanner("Saved " + body.changed.join(", ") + ". Restart the server to activate chat.", "success");
+    chatReadinessLoad();
+  } catch (e) {
+    showBanner("Failed to save keys: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function chatTestSecrets(btn) {
+  const resultEl = document.querySelector("#chat-section .chat-test-result");
+  resultEl.hidden = false;
+  resultEl.textContent = "Testing…";
+  resultEl.style.color = "";
+  btn.disabled = true;
+  try {
+    const r = await fetch(CHAT_API + "/secrets/test", { method: "POST", credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const b = await r.json();
+    const fmt = (label, x) => `${x.ok ? "✓" : "✗"} ${label}: ${x.detail}`;
+    resultEl.innerHTML =
+      '<div>' + escHtml(fmt("E2B", b.e2b_api_key)) + '</div>' +
+      '<div>' + escHtml(fmt("Anthropic", b.anthropic_api_key)) + '</div>';
+    resultEl.style.color = (b.e2b_api_key.ok && b.anthropic_api_key.ok) ? "#2a8c4a" : "#c0392b";
+  } catch (e) {
+    resultEl.textContent = "✗ " + e.message;
+    resultEl.style.color = "#c0392b";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById("chat-save-btn").addEventListener("click", (e) => chatSaveSecrets(e.currentTarget));
+document.getElementById("chat-test-btn").addEventListener("click", (e) => chatTestSecrets(e.currentTarget));
+chatReadinessLoad();
+</script>
 {% endblock %}

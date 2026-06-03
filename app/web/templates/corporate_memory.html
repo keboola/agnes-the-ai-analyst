@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% from "macros/_stack_card.html" import card %}
 
 {% block title %}Memory — {{ config.INSTANCE_NAME or 'AI Data Analyst' }}{% endblock %}
@@ -9,7 +9,6 @@
    Bespoke `.stack-hero__search-btn`, `.stack-tabs` with rich body,
    `.pill` filter chips, JS-generated `.stack-card` install buttons
    stay page-local. #}
-{% import "_components.html" as ds %}
 {# Hero — gradient banner mirroring marketplace.html .mp-hero so /memory
    and /marketplace read as one product. #}
 <div class="stack-hero">

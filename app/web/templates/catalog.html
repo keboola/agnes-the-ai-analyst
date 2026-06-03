@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% from "macros/_stack_card.html" import card %}
 
 {% block title %}Data Packages — {{ config.INSTANCE_NAME or 'AI Data Analyst' }}{% endblock %}
@@ -8,8 +8,7 @@
    Package" buttons + 4 modal action buttons (Create/Edit recipe) render
    via `ds.button`. Bespoke `.stack-hero__search-btn`, `.stack-tabs`
    (SVG icons + count badges), `.pill` filter chips, JS-generated
-   `.stack-card` install buttons stay page-local. #}
-{% import "_components.html" as ds %}
+   `.stack-card` install buttons stay page-local (ds auto-imported by base_ds). #}
 {# ── Hero content — set here so operators can override without touching markup. #}
 {% set catalog_hero_eyebrow     = "Data" %}
 {% set catalog_hero_title       = "What data are you looking for?" %}

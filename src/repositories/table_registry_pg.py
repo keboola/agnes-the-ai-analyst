@@ -6,6 +6,7 @@ module so behaviour stays bit-identical across backends.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
@@ -48,6 +49,7 @@ class TableRegistryPgRepository:
         partition_by: Optional[str] = None,
         partition_granularity: Optional[str] = None,
         initial_load_chunk_days: Optional[int] = None,
+        bq_fqn: Optional[str] = None,
     ) -> None:
         ts = registered_at or datetime.now(timezone.utc)
         encoded_pk = _encode_primary_key(primary_key)
@@ -62,12 +64,12 @@ class TableRegistryPgRepository:
                           sync_schedule, profile_after_sync,
                           incremental_window_days, max_history_days, incremental_column,
                           where_filters, partition_by, partition_granularity,
-                          initial_load_chunk_days)
+                          initial_load_chunk_days, bq_fqn)
                        VALUES (:id, :name, :folder, :strategy, :pk, :description,
                                :registered_by, :registered_at,
                                :source_type, :bucket, :source_table, :source_query, :query_mode,
                                :sync_schedule, :profile_after_sync,
-                               :iwd, :mhd, :icol, :wf, :pby, :pgr, :ilcd)
+                               :iwd, :mhd, :icol, :wf, :pby, :pgr, :ilcd, :bq_fqn)
                        ON CONFLICT (id) DO UPDATE SET
                          name = EXCLUDED.name,
                          folder = EXCLUDED.folder,
@@ -88,7 +90,8 @@ class TableRegistryPgRepository:
                          where_filters = EXCLUDED.where_filters,
                          partition_by = EXCLUDED.partition_by,
                          partition_granularity = EXCLUDED.partition_granularity,
-                         initial_load_chunk_days = EXCLUDED.initial_load_chunk_days"""
+                         initial_load_chunk_days = EXCLUDED.initial_load_chunk_days,
+                         bq_fqn = EXCLUDED.bq_fqn"""
                 ),
                 {
                     "id": id,
@@ -113,6 +116,7 @@ class TableRegistryPgRepository:
                     "pby": partition_by,
                     "pgr": partition_granularity,
                     "ilcd": initial_load_chunk_days,
+                    "bq_fqn": bq_fqn,
                 },
             )
 
@@ -123,6 +127,66 @@ class TableRegistryPgRepository:
         if "where_filters" in row_dict:
             row_dict["where_filters"] = _decode_where_filters(row_dict["where_filters"])
         return row_dict
+
+    def update_docs(
+        self,
+        table_id: str,
+        *,
+        # v52 docs surface
+        sample_questions: Optional[List[str]] = None,
+        things_to_know: Optional[str] = None,
+        pairs_well_with: Optional[List[str]] = None,
+        clear_sample_questions: bool = False,
+        clear_things_to_know: bool = False,
+        clear_pairs_well_with: bool = False,
+        # v56 structured docs
+        grain: Optional[str] = None,
+        platforms: Optional[List[str]] = None,
+        partition_col: Optional[str] = None,
+        history: Optional[str] = None,
+        gotchas: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        """Parity with the DuckDB repo: partial write of per-table docs fields
+        shown on /catalog/t/<id> and the package-detail page. Optional-is-no-op;
+        pass an explicit ``clear_*`` flag to actively NULL a v52 field.
+
+        Column types in the PG model: ``sample_questions`` / ``pairs_well_with``
+        are JSONB; ``platforms`` / ``gotchas`` are text columns that store the
+        JSON-serialized value (mirrors the DuckDB repo); the rest are plain text.
+        """
+        fields: List[str] = []
+        params: Dict[str, Any] = {"id": table_id}
+        if clear_sample_questions:
+            fields.append("sample_questions = NULL")
+        elif sample_questions is not None:
+            fields.append("sample_questions = CAST(:sq AS JSONB)")
+            params["sq"] = json.dumps(sample_questions)
+        if clear_things_to_know:
+            fields.append("things_to_know = NULL")
+        elif things_to_know is not None:
+            fields.append("things_to_know = :ttk"); params["ttk"] = things_to_know
+        if clear_pairs_well_with:
+            fields.append("pairs_well_with = NULL")
+        elif pairs_well_with is not None:
+            fields.append("pairs_well_with = CAST(:pww AS JSONB)")
+            params["pww"] = json.dumps(pairs_well_with)
+        if grain is not None:
+            fields.append("grain = :grain"); params["grain"] = grain
+        if platforms is not None:
+            fields.append("platforms = :plat"); params["plat"] = json.dumps(platforms)
+        if partition_col is not None:
+            fields.append("partition_col = :pcol"); params["pcol"] = partition_col
+        if history is not None:
+            fields.append("history = :hist"); params["hist"] = history
+        if gotchas is not None:
+            fields.append("gotchas = :got"); params["got"] = json.dumps(gotchas)
+        if not fields:
+            return
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(f"UPDATE table_registry SET {', '.join(fields)} WHERE id = :id"),
+                params,
+            )
 
     def unregister(self, table_id: str) -> None:
         with self._engine.begin() as conn:

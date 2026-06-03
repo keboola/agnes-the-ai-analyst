@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.59.1"
+version = "0.60.0"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -60,6 +60,14 @@ dependencies = [
     # In-process TTL cache for marketplace etag (transitively present via
     # google-auth, declared explicitly here because we depend on it directly).
     "cachetools>=5.3.0",
+    # Claude agent SDK for in-process chat sessions
+    "claude-agent-sdk>=0.2.87,<0.3.0",
+    # E2B Python SDK — cloud sandbox provider for chat runner. The chat
+    # runner (`app/chat/runner.py`) executes inside an E2B ephemeral
+    # microVM (`AsyncSandbox`); `app/chat/e2b_provider.py` adapts the SDK's
+    # background-command + filesystem APIs to our `SandboxProvider`
+    # Protocol. See `docs/cloud-chat.md` for operator setup.
+    "e2b>=1.0.0,<2.0.0",
     # Per-IP rate limiting on auth endpoints (#45). In-process counters by
     # default — fine for single-replica deploys. Multi-replica rollouts can
     # swap the storage backend via slowapi's `storage_uri` (Redis, Memcached).
@@ -164,6 +172,12 @@ dev = [
     # Provides per-request panels (headers, routes, timer, profiling, etc.)
     # for local development. Never loaded in production (no DEBUG=1 there).
     "fastapi-debug-toolbar>=0.6.3",
+    # Browser automation for the cloud-chat E2E suite (tests/e2e/test_chat_web.py).
+    # Pure-Python wheel; the Chromium binary is downloaded separately via
+    # `playwright install chromium --with-deps`. Imports are wrapped behind a
+    # try/except in tests/e2e/test_chat_web.py so a missing browser binary
+    # downgrades to a skip rather than an ImportError.
+    "playwright>=1.40.0",
     # Postgres test infrastructure. `testcontainers` spins a real PG container
     # in CI (highest fidelity, no system PG binary required). `pytest-postgresql`
     # boots a local PG process via system binary for fast dev iteration. The
@@ -203,6 +217,7 @@ dev-dependencies = [
     "anthropic>=0.30.0",
     "openai>=1.30.0",
     "fastapi-debug-toolbar>=0.6.3",
+    "playwright>=1.40.0",
     "testcontainers[postgres]>=4",
     "pytest-postgresql>=6",
     "pixeltable-pgserver>=0.5.1",

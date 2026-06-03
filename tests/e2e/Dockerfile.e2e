@@ -1,0 +1,43 @@
+# Dockerfile.e2e — Linux Agnes server for the cloud-chat E2E suite.
+#
+# Under the E2B-provider model the in-container isolation stack (nsjail,
+# iptables, dedicated sandbox uid) is gone — chat sandboxes run in E2B's
+# cloud microVMs, not on this host. All this image needs is the FastAPI
+# app + sample data; no NET_ADMIN, no host uid mapping, no nsjail build.
+#
+# The container still exists rather than running uvicorn naked from the
+# tests because the sample-data loader and DuckDB init need a stable
+# /data layout and the conftest fixture spins it up via docker-compose
+# for parity with production startup ordering.
+
+FROM python:3.11-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Provision the venv first so the layer caches across source edits.
+COPY pyproject.toml ./
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --upgrade pip \
+    && /opt/venv/bin/pip install -e ".[dev,server]"
+
+# Copy the rest of the source. `.dockerignore` should keep .venv and
+# .git out — the compose file uses repo root as the build context.
+COPY . .
+
+# /data is the runtime data dir referenced by ChatRepository,
+# WorkdirManager, the analytics warehouse, and the sample-data loader.
+RUN mkdir -p /data/state /data/analytics /data/marketplaces /data/users
+
+EXPOSE 8000
+
+CMD ["/app/tests/e2e/start.sh"]

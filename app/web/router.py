@@ -522,6 +522,43 @@ def _build_context(
         # the OSS vendor-neutral.
         "custom_scripts": get_custom_scripts(),
     }
+    # Cloud-chat nav visibility. The /chat link is shown only when chat is
+    # enabled AND one of the viewer's groups holds an explicit chat grant. We
+    # deliberately use `has_explicit_grant` (NOT `can_access`) so the link
+    # tracks actual rollout state, not effective access: admins do NOT see it
+    # until chat is granted to a group they're in, even though god-mode still
+    # lets them reach /chat by URL (the route guard uses can_access). This is
+    # UX only — the hard gate is on the route + API.
+    #
+    # Computed on EVERY page, not just routes that thread a `conn`. Most routes
+    # call _build_context with only `user=`, so when conn is absent we open a
+    # short-lived system-db cursor (cheap — shared underlying connection) and
+    # close it. Defaults False when chat is disabled or there's no user.
+    ctx["can_chat"] = False
+    try:
+        _cc = getattr(request.app.state, "chat_config", None)
+        if user and _cc is not None and _cc.enabled:
+            from app.auth.access import has_explicit_grant
+            from app.resource_types import ResourceType
+
+            _conn = conn
+            _own_conn = False
+            if _conn is None:
+                from src.db import get_system_db
+
+                _conn = get_system_db()
+                _own_conn = True
+            try:
+                ctx["can_chat"] = bool(
+                    has_explicit_grant(
+                        user["id"], ResourceType.CHAT.value, "chat", _conn
+                    )
+                )
+            finally:
+                if _own_conn:
+                    _conn.close()
+    except Exception:
+        ctx["can_chat"] = False
     # Flex all extra context values for template compatibility
     # (but skip ones we just populated — extras with the same key win)
     for k, v in extra.items():
@@ -776,18 +813,17 @@ async def home_page(
     return templates.TemplateResponse(request, "home_not_onboarded.html", ctx)
 
 
-@router.get("/me/mcp", response_class=HTMLResponse)
-async def me_mcp_page(
+@router.get("/me/cowork", response_class=HTMLResponse)
+async def me_cowork_page(
     request: Request,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """User-facing view of available MCP tools and marketplace skills."""
+    """User-facing AI Cowork page: setup bundle, MCP connection info, and available tools."""
     from app.api.mcp_passthrough import _visible_passthrough_tools
     from app.api.v2_marketplace import _accessible_plugins, _skills_for_plugin
     from src.repositories.mcp_sources import MCPSourceRepository
 
-    # Passthrough tools the caller can see
     source_names = {
         s["id"]: s["name"]
         for s in MCPSourceRepository(conn).list_all(enabled_only=True)
@@ -803,7 +839,6 @@ async def me_mcp_page(
                 "source_name": sname,
             })
 
-    # Marketplace skills the caller can access
     skills = []
     for plugin in _accessible_plugins(conn, user):
         skills.extend(_skills_for_plugin(plugin["marketplace_id"], plugin["name"]))
@@ -828,7 +863,14 @@ async def me_mcp_page(
         skills=skills,
         server_url=server_url,
     )
-    return templates.TemplateResponse(request, "me_mcp.html", ctx)
+    return templates.TemplateResponse(request, "me_cowork.html", ctx)
+
+
+@router.get("/me/mcp", response_class=HTMLResponse)
+async def me_mcp_redirect(request: Request):
+    """Legacy redirect — /me/mcp → /me/cowork."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse("/me/cowork", status_code=301)
 
 
 @router.get("/me/activity", response_class=HTMLResponse)
@@ -3119,6 +3161,95 @@ async def _debug_throw_exc(request: Request):
 
 def _is_debug() -> bool:
     return os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+
+
+@router.get("/chat", response_class=HTMLResponse)
+async def chat_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Web chat UI — streams Claude Code sessions over WebSocket.
+
+    Goes through ``_build_context`` so the page inherits the standard
+    Agnes chrome from ``base_ds.html``: ``_app_header.html`` (nav),
+    ``static_url(...)``-resolved CSS, ``config.INSTANCE_NAME``,
+    ``session.user.is_admin`` for the admin dropdown, footer copyright.
+    Without this, the head's four ``<link rel="stylesheet" href="">``
+    tags render with empty href and the nav block short-circuits on
+    ``{% if session.user %}``.
+    """
+    if not request.app.state.chat_config.enabled:
+        return RedirectResponse("/")
+    # Cloud chat is an RBAC resource (default-deny). Non-granted users (and
+    # everyone but admins until a grant exists) are bounced to home — the nav
+    # link is hidden for them too, this guards a direct URL hit.
+    from app.auth.access import can_access
+    from app.resource_types import ResourceType
+    if not can_access(user["id"], ResourceType.CHAT.value, "chat", conn):
+        return RedirectResponse("/")
+    ctx = _build_context(request, user=user, conn=conn, current_user=user)
+    ctx["chat_capabilities"] = _chat_capability_snapshot(conn, user)
+    return templates.TemplateResponse(request, "chat.html", ctx)
+
+
+def _chat_capability_snapshot(
+    conn: duckdb.DuckDBPyConnection, user: dict
+) -> dict:
+    """Compute the empty-state capability panel data server-side.
+
+    The previous shape called ``/api/catalog`` + ``/api/marketplaces`` from
+    JS. Those URLs were wrong (``/api/catalog`` 404s — the real endpoint is
+    ``/api/catalog/tables``; ``/api/marketplaces`` is admin-only and 403s
+    for normal users), so the panel always rendered "unavailable" /
+    "no plugins". Resolving here side-steps both: we already have ``user``
+    + ``conn`` from the route's Depends, both RBAC-filter helpers are
+    sync, and rendering becomes a single round-trip with no client-side
+    fetch races. JSON gets embedded by the template via ``| tojson``.
+    """
+    from src.rbac import can_access_table
+    from src.repositories.table_registry import TableRegistryRepository
+    from src.marketplace_filter import resolve_allowed_plugins
+
+    by_source: dict[str, int] = {}
+    try:
+        all_tables = TableRegistryRepository(conn).list_all()
+        for t in all_tables:
+            if not can_access_table(user, t["id"], conn):
+                continue
+            src = t.get("source_type") or "unknown"
+            by_source[src] = by_source.get(src, 0) + 1
+        tables_total = sum(by_source.values())
+    except Exception:
+        logger.exception("chat capability snapshot: tables query failed")
+        tables_total = 0
+        by_source = {}
+
+    try:
+        plugins = resolve_allowed_plugins(conn, user)
+        # Keep only the fields the template renders to keep the embedded
+        # JSON small; ``plugin_dir`` is a Path which doesn't survive
+        # ``tojson``, ``raw`` is upstream marketplace.json and can be MB.
+        plugin_summaries = [
+            {
+                "name": p.get("manifest_name") or p.get("original_name"),
+                "marketplace": p.get("marketplace_slug"),
+                "tagline": (p.get("raw") or {}).get("description"),
+            }
+            for p in plugins
+        ]
+        marketplace_count = len({p["marketplace"] for p in plugin_summaries})
+    except Exception:
+        logger.exception("chat capability snapshot: plugins query failed")
+        plugin_summaries = []
+        marketplace_count = 0
+
+    return {
+        "tables_total": tables_total,
+        "tables_by_source": by_source,
+        "plugins": plugin_summaries,
+        "marketplace_count": marketplace_count,
+    }
 
 
 @router.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)

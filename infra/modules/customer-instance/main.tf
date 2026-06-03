@@ -136,6 +136,18 @@ resource "google_secret_manager_secret_iam_member" "vm_runtime" {
   member    = "serviceAccount:${google_service_account.vm.email}"
 }
 
+# Grant read access to secrets that get auto-injected as .env entries (E2B,
+# Anthropic, Slack, etc.) per var.runtime_secret_env. The startup script
+# iterates this map and writes one `<env_var>=$(gcloud secrets ...)` line
+# per entry to /opt/agnes/.env.
+resource "google_secret_manager_secret_iam_member" "vm_runtime_env" {
+  for_each  = var.runtime_secret_env
+  project   = var.gcp_project_id
+  secret_id = each.key
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
 # Per-VM OAuth client secrets, expanded from var.oauth_secret_name_template.
 # Granted to the same shared VM SA (all VMs in this module call use one SA, so
 # every per-VM OAuth secret is technically readable from every VM — isolation
@@ -309,6 +321,7 @@ resource "google_compute_instance" "vm" {
     compose_ref                     = var.compose_ref
     oauth_client_id_secret_name     = try(local.per_vm_oauth[each.value.name].id, "")
     oauth_client_secret_secret_name = try(local.per_vm_oauth[each.value.name].secret, "")
+    runtime_secret_env              = var.runtime_secret_env
   })
 
   service_account {
@@ -335,6 +348,7 @@ resource "google_compute_instance" "vm" {
   depends_on = [
     google_secret_manager_secret_iam_member.vm_jwt,
     google_secret_manager_secret_iam_member.vm_runtime,
+    google_secret_manager_secret_iam_member.vm_runtime_env,
     google_secret_manager_secret_iam_member.vm_oauth,
     google_secret_manager_secret_version.jwt,
   ]
