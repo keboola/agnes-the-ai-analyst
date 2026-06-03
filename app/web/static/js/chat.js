@@ -5,6 +5,33 @@ let ws = null;
 let currentChatId = null;
 let inFlightToolCalls = new Map();
 
+// --- Cross-surface deep link (/chat?session=<id>) ------------------------
+// chat.html's <body data-initial-session="<id>"> hook carries an optional
+// session id from the ?session= query param. We open it ONCE on boot,
+// after the sidebar cache is populated, and only if the user hasn't
+// already navigated into a session (``!currentChatId``). Consumed once
+// (set to null) so a later loadSidebar() refresh can't re-hijack the view.
+// On an unknown / forbidden id, openSession proceeds (it sets currentChatId
+// and clears the message pane) but its session-scoped endpoint calls
+// (GET /sessions/{id}/messages, POST /sessions/{id}/ticket) fail their RBAC
+// guards and surface a status message via setStatus — no page crash, no
+// data leak; the view simply lands on an empty "Untitled chat" with an
+// error status. (This is not a clean no-op: a bad deep link leaves the UI
+// in an empty/error state, which is acceptable and RBAC-safe.)
+let _initialSessionId = (document.body.dataset.initialSession || "").trim() || null;
+
+/** Open the deep-linked session exactly once on boot. No-op if there's no
+ *  deep link, if the user already opened a session, or after first use. */
+function _maybeOpenInitialSession() {
+  if (!_initialSessionId || currentChatId) return;
+  const id = _initialSessionId;
+  _initialSessionId = null;            // consume once — refreshes can't re-fire
+  requestAnimationFrame(() => {
+    if (currentChatId) return;          // re-check: a click may have raced in
+    openSession(id);
+  });
+}
+
 // Promise that resolves on the first ``ready`` / ``runner_ready`` frame from
 // the server after we open a WebSocket. ``ws.readyState === 1`` (the TCP/HTTP
 // handshake) does NOT mean the server-side ``ChatManager.attach`` has finished
@@ -1668,4 +1695,7 @@ function closePalette() {
   wireSuggestionButtons();
   autosizeComposer();
   await loadSidebar();
+  // Sidebar cache (_sessionsCache) is now populated so openSession can
+  // resolve the title; fire the one-shot deep-link open.
+  _maybeOpenInitialSession();
 })();
