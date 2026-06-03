@@ -9,7 +9,7 @@ soft-fail branch becomes dead code and can be removed.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 from uuid import uuid4
 
 import sqlalchemy as sa
@@ -49,6 +49,28 @@ class UserGroupsPgRepository:
                 {"name": name},
             ).mappings().first()
         return dict(row) if row else None
+
+    def list_names_by_ids(self, group_ids: Iterable[str]) -> List[str]:
+        """PG mirror of ``UserGroupsRepository.list_names_by_ids``."""
+        gids = list(group_ids)
+        if not gids:
+            return []
+        gid_keys: List[str] = []
+        params: Dict[str, Any] = {}
+        for i, gid in enumerate(gids):
+            k = f"g_{i}"
+            gid_keys.append(f":{k}")
+            params[k] = gid
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    f"SELECT name FROM user_groups "
+                    f"WHERE id IN ({','.join(gid_keys)}) "
+                    f"ORDER BY name"
+                ),
+                params,
+            ).all()
+        return [r[0] for r in rows]
 
     def create(
         self,
