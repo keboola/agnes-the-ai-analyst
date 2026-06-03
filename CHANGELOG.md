@@ -448,6 +448,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- Most confirmation, alert, and input dialogs across the web UI now render as styled in-app modals instead of native browser `confirm()`/`alert()`/`prompt()` pop-ups — design-system look, non–event-loop-blocking, with focus trap and Esc/backdrop dismissal. (#497)
+
 ### Fixed
 
 ### Removed
