@@ -32,6 +32,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   silently drop a refresh. Cross-engine contract coverage added in
   `tests/db_pg/test_rbac_contract.py`; DuckDB-specific reader-isolation and
   retry coverage in `tests/test_group_sync_atomicity.py`.
+- **Knowledge-domain junction rewrites were non-atomic (same bug class).** A
+  sweep for the pattern above found two more DuckDB repo methods rewriting the
+  `knowledge_item_domains` junction as DELETE-then-INSERT on the shared
+  singleton connection, where the Postgres siblings were already atomic:
+  `MemoryDomainsRepository.replace_domains_for_item` and the domain-routing
+  path in `KnowledgeRepository.update`. A concurrent reader could see an item
+  momentarily domain-less (breaking domain-scoped RBAC reads), and an unknown
+  slug mid-rewrite left a half-applied edit — in `update` it even committed
+  the scalar column change while failing the domain swap. Both now wrap the
+  rewrite in a transaction (the FTS index rebuild in `update` stays *after*
+  commit — `PRAGMA create_fts_index` is catalog DDL that can't run inside a
+  transaction). Coverage in `tests/test_memory_atomicity.py`.
 
 ## [0.60.0] — 2026-06-02
 
