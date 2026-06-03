@@ -92,6 +92,27 @@ def test_upsert_then_get_returns_same_shape(repo):
     assert row["scope"] == "shared"
 
 
+def test_env_round_trips_on_both_backends(repo):
+    """Per-source non-secret env survives upsert→get as a dict on both engines."""
+    repo.upsert(
+        id="s1", name="crm", transport="stdio", command="crm-mcp",
+        env={"CRM_API_URL": "https://x"},
+        auth_secret_env="CRM_TOKEN",
+    )
+    row = repo.get("s1")
+    assert row is not None
+    # env is JSON on the wire but the repo returns a dict on both backends
+    assert row["env"] == {"CRM_API_URL": "https://x"}
+
+
+def test_env_omitted_is_null_for_backward_compat(repo):
+    """Omitting env leaves it NULL/None (existing rows behave as before)."""
+    repo.upsert(id="s1", name="legacy", transport="stdio", command="legacy-mcp")
+    row = repo.get("s1")
+    assert row is not None
+    assert row.get("env") is None
+
+
 def test_upsert_replaces_existing_row(repo):
     repo.upsert(id="s1", name="x", transport="http", url="https://a.example/mcp")
     repo.upsert(id="s1", name="x", transport="http", url="https://b.example/mcp", enabled=False)

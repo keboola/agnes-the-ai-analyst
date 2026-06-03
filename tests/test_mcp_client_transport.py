@@ -146,6 +146,72 @@ def test_http_transport_without_url_raises_value_error():
         asyncio.run(_drive())
 
 
+def test_stdio_env_is_base_secret_overlays(monkeypatch):
+    """Per-source ``env`` is the base; the auth_secret_env secret overlays it."""
+    captured = {}
+
+    def _fake_stdio_params(*, command, args, env):
+        captured["command"] = command
+        captured["args"] = args
+        captured["env"] = env
+        return MagicMock(name="StdioServerParameters")
+
+    fake_stdio = _fake_streams_cm((MagicMock(name="read"), MagicMock(name="write")))
+    ctor, _session = _fake_client_session()
+
+    monkeypatch.setattr(mcp_client, "StdioServerParameters", _fake_stdio_params)
+    monkeypatch.setattr(mcp_client, "stdio_client", fake_stdio)
+    monkeypatch.setattr(mcp_client, "ClientSession", ctor)
+    monkeypatch.setattr(
+        mcp_client, "_lookup_secret_for_source", lambda src, **kw: "tok-123"
+    )
+
+    src = {
+        "transport": "stdio",
+        "command": "crm-mcp",
+        "args": ["--flag"],
+        "env": {"CRM_API_URL": "u"},
+        "auth_secret_env": "CRM_TOKEN",
+    }
+
+    async def _drive():
+        async with mcp_client._open_session(src):
+            pass
+
+    asyncio.run(_drive())
+
+    assert captured["command"] == "crm-mcp"
+    assert captured["args"] == ["--flag"]
+    # base env preserved, secret overlaid under its env-var name
+    assert captured["env"] == {"CRM_API_URL": "u", "CRM_TOKEN": "tok-123"}
+
+
+def test_stdio_no_env_no_secret_passes_none(monkeypatch):
+    """No env and no secret → env=None (prior behavior, unchanged)."""
+    captured = {}
+
+    def _fake_stdio_params(*, command, args, env):
+        captured["env"] = env
+        return MagicMock(name="StdioServerParameters")
+
+    fake_stdio = _fake_streams_cm((MagicMock(name="read"), MagicMock(name="write")))
+    ctor, _session = _fake_client_session()
+
+    monkeypatch.setattr(mcp_client, "StdioServerParameters", _fake_stdio_params)
+    monkeypatch.setattr(mcp_client, "stdio_client", fake_stdio)
+    monkeypatch.setattr(mcp_client, "ClientSession", ctor)
+
+    src = {"transport": "stdio", "command": "plain-mcp"}
+
+    async def _drive():
+        async with mcp_client._open_session(src):
+            pass
+
+    asyncio.run(_drive())
+
+    assert captured["env"] is None
+
+
 def test_unknown_transport_raises_notimplemented():
     src = {"transport": "websocket", "url": "wss://x"}
 
