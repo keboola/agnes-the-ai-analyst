@@ -222,9 +222,11 @@ def test_connectors_section_removed_from_home(fresh_db):
     body2 = _client().get("/home", cookies={"access_token": sess2}).text
     assert 'class="connector-tiles"' not in body2
     assert 'data-section="connectors"' not in body2
-    # Lead-paragraph mentions the three connector families so the
-    # benefit isn't lost when the dedicated section disappears.
-    assert "Asana, Google Workspace, Atlassian" in body2
+    # The install-prompt's finale step lists the configured connectors
+    # by display_name — sourced from the seed manifest. Bundled snapshot
+    # ships Asana, Atlassian (Jira / Confluence), Google Workspace (the
+    # alphabetical sort order ``load_manifest`` enforces).
+    assert "Asana, Atlassian (Jira / Confluence), Google Workspace" in body2
 
 
 def test_minimize_toggle_no_longer_rendered(fresh_db):

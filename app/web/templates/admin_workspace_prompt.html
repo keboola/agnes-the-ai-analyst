@@ -217,6 +217,30 @@
     </div>
   </div>
 
+  <!-- Banner shown when the operator's Initial Workspace Template owns
+       workspace/CLAUDE.md (per-file detection via
+       src.initial_workspace.seed_owns). The editor switches to read-only
+       at the same time — see applySeedLock() in the page script. -->
+  <div id="seed-owns-banner" hidden style="
+    background: #fff7ed;
+    border: 1px solid #fed7aa;
+    border-left: 4px solid #ea580c;
+    color: #7c2d12;
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin: 12px 0 16px;
+    font-size: 13px;
+    line-height: 1.5;
+  ">
+    <strong>Editor disabled — seed owns this template.</strong>
+    Your Initial Workspace Template provides
+    <code id="seed-owns-banner-path" style="background: rgba(0,0,0,0.05); padding: 1px 6px; border-radius: 4px;"></code>,
+    so <code>agnes init</code> reads that file directly. Save / Reset
+    here would write a local DB row the CLI no longer consults.
+    Edit the file in your seed repo, then click
+    <em>Sync now</em> in <a href="/admin/server-config">/admin/server-config</a>.
+  </div>
+
   <div class="welcome-card">
     <div class="welcome-card-body">
       <p class="welcome-desc">
@@ -418,6 +442,11 @@ document.addEventListener("keydown", e => {
 // ── Status chip ───────────────────────────────────────────────────────
 function setStatusChip(data) {
   const wrap = document.getElementById("status-chip");
+  if (data.source === "seed") {
+    const path = data.seed_path || "(unknown seed file)";
+    wrap.innerHTML = `<span class="origin-chip origin-override" title="Seed file: ${path}">Seed-owned</span>`;
+    return;
+  }
   if (data.content !== null) {
     const when = data.updated_at
       ? new Date(data.updated_at).toISOString().slice(0, 16).replace("T", " ") + " UTC"
@@ -429,14 +458,49 @@ function setStatusChip(data) {
   }
 }
 
+// Disable editor + buttons + show banner when the IWT clone owns
+// workspace/CLAUDE.md. Idempotent — safe to call on every refresh.
+function applySeedLock(data) {
+  const seedOwned = data.source === "seed";
+  const banner = document.getElementById("seed-owns-banner");
+  const bannerPath = document.getElementById("seed-owns-banner-path");
+  const saveBtn = document.getElementById("save-btn");
+  const resetBtn = document.getElementById("reset-btn");
+
+  if (seedOwned) {
+    banner.hidden = false;
+    bannerPath.textContent = data.seed_path || "(unknown seed file)";
+    if (saveBtn) saveBtn.style.display = "none";
+    if (resetBtn) resetBtn.style.display = "none";
+    if (window.editor && typeof window.editor.setOption === "function") {
+      window.editor.setOption("readOnly", "nocursor");
+    } else {
+      const ta = document.getElementById("content");
+      if (ta) ta.setAttribute("readonly", "readonly");
+    }
+  } else {
+    banner.hidden = true;
+    if (saveBtn) saveBtn.style.display = "";
+    if (resetBtn) resetBtn.style.display = "";
+    if (window.editor && typeof window.editor.setOption === "function") {
+      window.editor.setOption("readOnly", false);
+    } else {
+      const ta = document.getElementById("content");
+      if (ta) ta.removeAttribute("readonly");
+    }
+  }
+}
+
 // ── Refresh status + editor content from API ─────────────────────────
 async function refreshStatus() {
   const r = await fetch(API, { credentials: "include" });
   if (!r.ok) return;
   const data = await r.json();
   setStatusChip(data);
-  // When an override is set, show it; otherwise show the live default so the
-  // editor is never empty and admins can see what they're overriding.
+  applySeedLock(data);
+  // When the seed owns the template, the GET response carries the seed
+  // file content as `content` — show it directly. Otherwise show the
+  // local override (if any) or the live default.
   editor.setValue(data.content !== null ? data.content : (data.default || ""));
   renderPreview();
 }
@@ -530,5 +594,10 @@ document.querySelectorAll(".btn-copy[data-copy-target]").forEach(btn => {
       });
   });
 });
+
+// Initial fetch — the server-rendered `current` content seeds the
+// textarea, but we still need to hit /api to learn whether the seed
+// owns the template (so applySeedLock can disable the editor).
+refreshStatus();
 </script>
 {% endblock %}

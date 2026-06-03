@@ -98,6 +98,17 @@ class TemplateGetResponse(BaseModel):
     # Empty when no override is set or when the override is clean. Surfaced
     # so the admin UI can prompt re-authoring after a CLI surface rename.
     legacy_strings_detected: list[str] = []
+    # `"seed"` when the IWT clone owns workspace/CLAUDE.md — the admin UI
+    # flips into read-only mode and displays the seed file content
+    # instead of the local DB override. `"local"` otherwise.
+    source: str = "local"
+    seed_path: Optional[str] = None
+
+
+# Path inside the seed repo for the analyst CLAUDE.md template. Shared
+# between the GET/PUT/DELETE gate so the admin UI banner names the same
+# file the endpoints check.
+_SEED_PATH = "workspace/CLAUDE.md"
 
 
 class TemplatePutRequest(BaseModel):
@@ -151,8 +162,28 @@ async def admin_get_workspace_template(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    row = claude_md_template_repo().get()
+    from src.initial_workspace import resolve_seed_file, seed_owns
+
     server_url = str(request.base_url).rstrip("/")
+    if seed_owns(_SEED_PATH):
+        # Seed owns workspace/CLAUDE.md — `agnes init` already wires the
+        # seed file directly (cli/commands/init.py OVERRIDE MODE skips
+        # the /api/welcome → CLAUDE.md fetch). Show the seed content
+        # read-only so the admin sees what's actually serving.
+        resolved = resolve_seed_file(_SEED_PATH)
+        seed_content = resolved[0] if resolved is not None else ""
+        live_default = compute_default_claude_md(conn, user=user, server_url=server_url)
+        return TemplateGetResponse(
+            content=seed_content,
+            default=live_default,
+            updated_at=None,
+            updated_by=None,
+            legacy_strings_detected=[],
+            source="seed",
+            seed_path=_SEED_PATH,
+        )
+
+    row = claude_md_template_repo().get()
     live_default = compute_default_claude_md(conn, user=user, server_url=server_url)
     legacy_hits = _scan_legacy_strings(row["content"] or "")
     return TemplateGetResponse(
@@ -161,6 +192,7 @@ async def admin_get_workspace_template(
         updated_at=row["updated_at"].isoformat() if row["updated_at"] else None,
         updated_by=row["updated_by"],
         legacy_strings_detected=legacy_hits,
+        source="local",
     )
 
 
@@ -178,6 +210,22 @@ async def admin_put_workspace_template(
     - Pass 2: render with a minimal anon-style user stub — catches templates
       that hard-depend on admin-only context fields.
     """
+    from src.initial_workspace import seed_owns
+
+    if seed_owns(_SEED_PATH):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "kind": "iwt_seed_owns_template",
+                "seed_path": _SEED_PATH,
+                "hint": (
+                    "Initial Workspace Template owns this template. Edit "
+                    f"`{_SEED_PATH}` in the seed repo + click 'Sync now' "
+                    "in /admin/server-config."
+                ),
+            },
+        )
+
     env = Environment(undefined=StrictUndefined, autoescape=False)
     try:
         template = env.from_string(payload.content)
@@ -206,6 +254,21 @@ async def admin_reset_workspace_template(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    from src.initial_workspace import seed_owns
+
+    if seed_owns(_SEED_PATH):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "kind": "iwt_seed_owns_template",
+                "seed_path": _SEED_PATH,
+                "hint": (
+                    "Initial Workspace Template owns this template — "
+                    "there is no local DB override to reset. Edit the "
+                    f"seed repo's `{_SEED_PATH}` instead."
+                ),
+            },
+        )
     claude_md_template_repo().reset(updated_by=user["email"])
     return Response(status_code=204)
 

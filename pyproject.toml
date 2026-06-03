@@ -203,6 +203,16 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["app", "src", "connectors", "cli", "services", "config"]
 
+# `src/_bundled_seed/` (markdown templates + connector skill files) ships
+# inside the wheel automatically because hatch packages every file under
+# the listed `src` directory, not just Python sources. No `force-include`
+# is needed — adding one duplicates the entries and causes hatch to
+# abort with "A second file is being added to the wheel archive at the
+# same path". Runtime resolution (operator-configured Initial Workspace
+# Template ALWAYS beats this bundle) lives in
+# `src/initial_workspace.py::resolve_seed_file`. See
+# `docs/seed-repo-contract.md` for the contract.
+
 [tool.ruff]
 line-length = 120
 target-version = "py313"

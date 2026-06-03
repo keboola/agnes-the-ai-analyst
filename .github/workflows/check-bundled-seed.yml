@@ -1,0 +1,105 @@
+name: Check bundled seed integrity
+
+# Runs on PRs that touch src/_bundled_seed/ (or this workflow itself).
+# Verifies that .source_ref describes a real commit at source_url — guards
+# against (a) snapshots edited by hand without running sync_bundled_seed.sh,
+# (b) provenance drift where the SHA points at a deleted branch / force-push.
+#
+# Does NOT enforce "must equal HEAD of source_url" — operator owns the
+# upgrade cadence. Just enforces "must equal SOME real commit".
+
+on:
+  pull_request:
+    paths:
+      - 'src/_bundled_seed/**'
+      - '.github/workflows/check-bundled-seed.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-provenance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR
+        uses: actions/checkout@v4
+
+      - name: Parse .source_ref
+        id: src
+        run: |
+          REF_FILE="src/_bundled_seed/.source_ref"
+          if [ ! -f "$REF_FILE" ]; then
+            echo "::error::Missing $REF_FILE — run scripts/sync_bundled_seed.sh"
+            exit 1
+          fi
+          URL=$(awk -F= '/^source_url=/ {print $2}' "$REF_FILE")
+          SHA=$(awk -F= '/^source_sha=/ {print $2}' "$REF_FILE")
+          if [ -z "$URL" ] || [ -z "$SHA" ]; then
+            echo "::error::source_url or source_sha missing in $REF_FILE"
+            exit 1
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Verify SHA exists at source_url
+        run: |
+          URL="${{ steps.src.outputs.url }}"
+          SHA="${{ steps.src.outputs.sha }}"
+          echo "Verifying $SHA exists at $URL"
+          # ls-remote returns the SHA's commit on success; non-zero on missing.
+          git ls-remote "$URL" | grep -qE "^${SHA}\b" || {
+            echo "::error::Bundled seed SHA $SHA is not a known ref at $URL."
+            echo "    Either the commit was force-pushed away, the branch deleted, or"
+            echo "    .source_ref is stale. Re-run scripts/sync_bundled_seed.sh to refresh."
+            exit 1
+          }
+
+      - name: Verify bundle content matches source
+        run: |
+          URL="${{ steps.src.outputs.url }}"
+          SHA="${{ steps.src.outputs.sha }}"
+          TMP=$(mktemp -d)
+          git clone --depth 1 "$URL" "$TMP/seed" 2>/dev/null
+          git -C "$TMP/seed" fetch --depth 1 origin "$SHA" 2>/dev/null || true
+          git -C "$TMP/seed" checkout "$SHA" 2>/dev/null || {
+            # Shallow clone may not reach the SHA — fall back to unshallowing.
+            git -C "$TMP/seed" fetch --unshallow 2>/dev/null || true
+            git -C "$TMP/seed" checkout "$SHA"
+          }
+          # Compare the bundle's content with the upstream snapshot.
+          #
+          # Earlier revision of this step tried `diff -r <bundle> <(tar
+          # -cf - <subset>)` to limit the comparison to the four shipped
+          # sub-trees. That doesn't work: `diff -r` requires a directory
+          # on both sides — a tar stream via process substitution is a
+          # pseudo-file, so the diff always errored, then a fallback
+          # full-tree diff ran without exit-1 propagation. Net: the
+          # check was decorative.
+          #
+          # Stage the shipped sub-trees into a sibling directory we CAN
+          # compare directory-to-directory. Files outside the staging
+          # are ignored on purpose — the bundle is by design a subset
+          # of the upstream seed (no .github, no example workspaces).
+          STAGED=$(mktemp -d)
+          for sub in install-prompt \
+                     workspace/.claude/skills/connector-asana \
+                     workspace/.claude/skills/connector-atlassian \
+                     workspace/.claude/skills/connector-gws \
+                     workspace/.claude/skills/_lib; do
+            if [ -e "$TMP/seed/$sub" ]; then
+              mkdir -p "$STAGED/$(dirname "$sub")"
+              cp -a "$TMP/seed/$sub" "$STAGED/$sub"
+            fi
+          done
+          if diff -r --exclude='.source_ref' "src/_bundled_seed" "$STAGED" > /tmp/seed-diff.txt 2>&1; then
+            echo "Bundle matches upstream snapshot at $SHA."
+          else
+            echo "Diff:"
+            cat /tmp/seed-diff.txt || true
+            echo ""
+            echo "::error::Bundle contents don't match $URL@$SHA. Re-run scripts/sync_bundled_seed.sh."
+            # Don't hard-fail yet — keep warning-only until the subset
+            # rules are stable across consecutive releases. Flip to
+            # `exit 1` in a follow-up once forks confirm clean diffs.
+            echo "::warning::Strict content match not enforced in this workflow version."
+          fi
