@@ -59,3 +59,45 @@ def test_open_im_returns_none_without_token(monkeypatch):
     from services.slack_bot import sender as snd
     monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
     assert asyncio.run(snd.open_im("U123")) is None
+
+
+def test_ephemeral_command_sink_forwards_first_assistant_message(monkeypatch):
+    from services.slack_bot import sink as sink_mod
+
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send(url, text, blocks=None):
+        sent.append((url, text))
+
+    monkeypatch.setattr(sink_mod, "send_ephemeral", fake_send)
+
+    async def _run():
+        s = sink_mod.EphemeralCommandSink(response_url="https://r/1")
+        await s.send_json({"type": "token", "text": "noisy"})   # dropped
+        await s.send_json({"type": "ready"})                    # dropped
+        await s.send_json({"type": "assistant_message", "content": "answer"})
+        await s.send_json({"type": "assistant_message", "content": "second"})  # ignored
+        await s.close()
+
+    asyncio.run(_run())
+    assert sent == [("https://r/1", "answer")]
+
+
+def test_ephemeral_command_sink_forwards_error(monkeypatch):
+    from services.slack_bot import sink as sink_mod
+
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send(url, text, blocks=None):
+        sent.append((url, text))
+
+    monkeypatch.setattr(sink_mod, "send_ephemeral", fake_send)
+
+    async def _run():
+        s = sink_mod.EphemeralCommandSink(response_url="https://r/2")
+        await s.send_json({"type": "error", "kind": "rate_limit", "message": "slow down"})
+        await s.close()
+
+    asyncio.run(_run())
+    assert len(sent) == 1
+    assert "rate_limit" in sent[0][1] and "slow down" in sent[0][1]
