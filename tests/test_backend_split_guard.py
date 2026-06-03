@@ -152,7 +152,9 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     "services/slack_bot/events.py": {"UserRepository"},
     "src/catalog_export.py": {"TableRegistryRepository"},
     "src/claude_md.py": {"ClaudeMdTemplateRepository"},
-    "src/orchestrator.py": {"SyncStateRepository", "TableRegistryRepository", "ViewOwnershipRepository"},
+    # src/orchestrator.py — rebuild/sync_state/view_ownership migrated to the
+    # factory (view_ownership_repo / table_registry_repo / sync_state_repo) so
+    # the sync pipeline reads/writes the active backend; entry removed.
     "src/profiler.py": {"MetricRepository"},
     "src/store_guardrails/purge.py": {"StoreEntitiesRepository", "StoreSubmissionsRepository"},
     "src/store_guardrails/reaper.py": {"AuditRepository"},
@@ -184,7 +186,6 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     "cli/commands/admin_metrics.py",
     "services/verification_detector/__main__.py",
     "src/catalog_export.py",
-    "src/orchestrator.py",
     "src/profiler.py",
     "src/rbac.py",
 }
