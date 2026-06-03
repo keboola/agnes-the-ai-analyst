@@ -1,4 +1,6 @@
-"""DuckDB v68→v69 migration coverage: co-presence columns + participants table."""
+"""DuckDB v68→v70 migration coverage: per-source MCP env (v69) + co-presence
+columns/participants table (v70). After the main merge the co-presence schema
+landed at v70, on top of main's v68→v69 MCP-env step."""
 import duckdb
 import pytest
 
@@ -16,10 +18,13 @@ def _cols(conn, table):
     }
 
 
-def test_fresh_install_has_v69_shape(tmp_path):
+def test_fresh_install_has_v70_shape(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
-    assert get_schema_version(conn) == SCHEMA_VERSION == 69
+    assert get_schema_version(conn) == SCHEMA_VERSION == 70
+    # main's v69 MCP-env addition.
+    assert "env" in _cols(conn, "mcp_sources")
+    # our v70 co-presence additions.
     assert {"is_co_session", "ephemeral"} <= _cols(conn, "chat_sessions")
     assert "sender_email" in _cols(conn, "chat_messages")
     tables = {
@@ -32,13 +37,23 @@ def test_fresh_install_has_v69_shape(tmp_path):
     conn.close()
 
 
-def test_v68_db_migrates_to_v69_with_backfill(tmp_path):
-    """A pre-existing v68 DB upgrades cleanly: new columns default FALSE,
-    sender_email backfills to the owner for existing user turns, and the
-    participants table is created."""
+def test_v68_db_migrates_to_v70_with_backfill(tmp_path):
+    """A pre-existing v68 DB upgrades cleanly up through v69 (MCP env) and
+    v69→v70 (co-presence): mcp_sources.env is added, the co-presence columns
+    default FALSE, sender_email backfills to the owner for existing user
+    turns, and the participants table is created."""
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)")
     conn.execute("INSERT INTO schema_version (version) VALUES (68)")
+    # mcp_sources exists from v64 in a real v68 DB; the v68→v69 step ALTERs it.
+    conn.execute("""CREATE TABLE mcp_sources (
+        id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL UNIQUE,
+        transport VARCHAR NOT NULL, command VARCHAR, args JSON, url VARCHAR,
+        auth_method VARCHAR, auth_secret_env VARCHAR,
+        enabled BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+        updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+    )""")
     conn.execute("""CREATE TABLE chat_sessions (
         id VARCHAR PRIMARY KEY, user_email VARCHAR NOT NULL, surface VARCHAR NOT NULL,
         slack_channel_id VARCHAR, slack_thread_ts VARCHAR, title VARCHAR,
@@ -58,7 +73,10 @@ def test_v68_db_migrates_to_v69_with_backfill(tmp_path):
 
     _ensure_schema(conn)
 
-    assert get_schema_version(conn) == SCHEMA_VERSION == 69
+    assert get_schema_version(conn) == SCHEMA_VERSION == 70
+    # v69 MCP-env step ran.
+    assert "env" in _cols(conn, "mcp_sources")
+    # v70 co-presence step ran.
     assert {"is_co_session", "ephemeral"} <= _cols(conn, "chat_sessions")
     flags = conn.execute("SELECT is_co_session, ephemeral FROM chat_sessions WHERE id = 's1'").fetchone()
     assert flags == (False, False)
