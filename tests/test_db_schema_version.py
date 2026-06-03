@@ -186,7 +186,8 @@ def test_schema_version_is_62():
     # v65 → v66: ``data_package_tools`` junction.
     # v67 → v68: cloud chat tables — chat_sessions, chat_messages,
     #            user_workdirs + two regular indexes.
-    assert SCHEMA_VERSION >= 66
+    # v68 → v69: live co-drive foundation — chat_session_participants + is_co_session/ephemeral/sender_email.
+    assert SCHEMA_VERSION >= 69
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
