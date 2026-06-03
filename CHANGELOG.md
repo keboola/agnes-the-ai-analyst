@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- `/home` "Mark me as onboarded" (and `agnes init`) now takes effect on a
+  Postgres-backed instance. The route read `users.onboarded` with a raw
+  `conn.execute` against DuckDB while `POST /api/me/onboarded` writes through
+  the backend-aware `users_repo()` — so on a `db-state-machine` CLOUD /
+  SIDE_CAR instance the flag was written to Postgres but read back from the
+  stale DuckDB row, leaving the setup panel visible forever regardless of
+  reloads or cache. `/home` now reads `onboarded` through `users_repo()` so
+  the read and write share the active backend.
+
 ## [0.61.5] — 2026-06-03
 
 ### Added

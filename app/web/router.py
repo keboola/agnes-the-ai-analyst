@@ -764,10 +764,16 @@ async def home_page(
 
     See origin: docs/brainstorms/home-page-requirements.md.
     """
-    row = conn.execute(
-        "SELECT onboarded FROM users WHERE id = ?", [user["id"]]
-    ).fetchone()
-    onboarded = bool(row[0]) if row else False
+    # Read onboarded through the backend-aware repo factory, NOT the raw
+    # `conn` (which is always DuckDB via `_get_db`). On a Postgres-backed
+    # instance the source of truth is Postgres: POST /api/me/onboarded
+    # writes there via `users_repo()`, but a raw DuckDB read here returns the
+    # stale pre-migration value — so the "Mark me as onboarded" button (and
+    # `agnes init`) would flip the flag in Postgres yet /home keeps rendering
+    # the setup view forever. Routing the read through `users_repo()` keeps
+    # write and read on the same backend.
+    urow = users_repo().get_by_id(user["id"])
+    onboarded = bool(urow.get("onboarded")) if urow else False
 
     # Pull the latest published news intro for the bottom-of-page section.
     # Template renders the section only when intro is non-empty, so an
