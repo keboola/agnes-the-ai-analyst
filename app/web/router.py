@@ -28,7 +28,6 @@ from app.instance_config import (
     get_instance_logo_svg, get_instance_overview, get_instance_support,
     get_instance_theme, get_custom_scripts,
 )
-
 from src.repositories import (
     audit_repo,
     claude_md_template_repo,
@@ -48,7 +47,7 @@ from src.repositories import (
     users_repo,
     welcome_template_repo,
 )
-from app.web.connector_prompts import all_connector_prompts
+from src.connectors_manifest import load_manifest
 from app.api.me_debug import (
     require_debug_auth_enabled,
     _read_session_token,
@@ -457,23 +456,19 @@ def _build_context(
         server_host = request.url.netloc
         ca_pem = _read_agnes_ca_pem()
 
-        # Connector prompts wired through so the setup script's connector
-        # step inlines them. all_connector_prompts() reads operator GWS
-        # OAuth config so the GCP-frictionless branch fires when the
-        # admin has provisioned a shared client_id+secret.
-        _connector_prompts = all_connector_prompts(
-            gws_oauth=get_gws_oauth_credentials(),
-            instance_admin_email=get_instance_admin_email(),
-            atlassian_base_url=get_atlassian_base_url(),
-            instance_brand=get_instance_brand(),
-        )
+        # Connector manifest sourced from the seed (operator IWT clone first,
+        # bundled snapshot in the wheel as fallback). Operator GWS OAuth /
+        # Atlassian base URL etc. now live in `~/.claude/agnes/.env` written
+        # by `agnes init`; the seed-resident SKILL.md bodies read those at
+        # install time. Renderer just needs the metadata to build tiles.
+        _connector_manifest = load_manifest()
 
         setup_instructions_lines = resolve_lines(
             _wheel_filename,
             plugin_install_names=[],
             server_host=server_host,
             ca_pem=ca_pem,
-            connector_prompts=_connector_prompts,
+            connector_manifest=_connector_manifest,
             instance_brand=get_instance_brand(),
             workspace_dir=get_workspace_dir_name(),
         )

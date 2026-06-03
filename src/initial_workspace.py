@@ -295,6 +295,145 @@ def delete_template_dir() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Seed-file resolution — IWT clone (operator) > bundled snapshot (wheel)
+#
+# Used by:
+#   - ``app/web/setup_instructions.py`` to load the install-prompt template
+#   - ``src/connectors_manifest.py`` to enumerate connector-* SKILL.md files
+#   - ``app/api/claude_md.py`` + ``app/api/welcome.py`` to gate admin editors
+#     when the operator's seed owns the corresponding template
+#
+# Rule: operator IWT clone ALWAYS beats the bundled snapshot. The bundle is
+# the parity-preserving fallback so fresh installs (no IWT configured) still
+# render an install prompt and ship the canonical connectors.
+# ---------------------------------------------------------------------------
+
+_BUNDLED_SEED_DIR = Path(__file__).resolve().parent / "_bundled_seed"
+
+
+def bundled_seed_path() -> Path:
+    """Return the on-disk path to the bundled seed snapshot shipped inside
+    the Agnes wheel (``src/_bundled_seed/``). Treat as read-only.
+    """
+    return _BUNDLED_SEED_DIR
+
+
+def is_configured() -> bool:
+    """True iff an admin has registered an Initial Workspace Template URL
+    in ``instance.yaml`` (operator-side switch). Filesystem presence of a
+    clone is NOT enough — an admin can unset the URL while the working
+    copy lingers, and that "unset" state must beat a stale clone.
+    """
+    # Lazy import to avoid pulling app.api into src module load time.
+    from app.api.initial_workspace import _read_section
+    return bool(_read_section().get("url"))
+
+
+def _iwt_snapshot() -> Optional[Path]:
+    """Single-call atomic read of the IWT state. Returns the on-disk
+    clone path iff (a) ``instance.yaml`` currently reports IWT
+    configured AND (b) the clone directory exists at that moment.
+    Returns ``None`` otherwise.
+
+    Why a single helper: ``seed_owns``, ``resolve_seed_file``, and
+    ``list_seed_files`` each used to do a 2-step probe (``is_configured``
+    then a separate ``.is_file()``/``.is_dir()``). If an admin clicked
+    "unset URL" between the two steps, the answer was inconsistent —
+    yes-then-no or no-then-yes — and a downstream editor could land in
+    a state that contradicts the YAML's source of truth. Funneling
+    both probes through one helper collapses the inconsistency window
+    to the gap between this helper's two stat calls (microseconds),
+    and the answer is then re-used consistently by the caller without
+    a second YAML read mid-function.
+    """
+    if not is_configured():
+        return None
+    iwt_root = get_initial_workspace_dir()
+    if not iwt_root.is_dir():
+        return None
+    return iwt_root
+
+
+def resolve_seed_file(rel_path: str) -> Optional[tuple[str, str]]:
+    """Look up a seed file by repo-relative path.
+
+    ``rel_path`` is the path inside the seed repo root — e.g.
+    ``install-prompt/template.md.tmpl`` or
+    ``workspace/.claude/skills/connector-asana/SKILL.md``.
+
+    Returns ``(content, source)`` where ``source`` is one of:
+      * ``"iwt"`` — operator-configured Initial Workspace Template clone
+      * ``"bundled"`` — bundled snapshot inside the wheel
+
+    Returns ``None`` when neither tier has the file. Read errors propagate
+    (a corrupt clone is an operator failure that should surface, not be
+    silently masked by the bundle).
+    """
+    iwt_root = _iwt_snapshot()
+    if iwt_root is not None:
+        iwt_path = iwt_root / rel_path
+        if iwt_path.is_file():
+            return (iwt_path.read_text(encoding="utf-8"), "iwt")
+
+    bundled_path = _BUNDLED_SEED_DIR / rel_path
+    if bundled_path.is_file():
+        return (bundled_path.read_text(encoding="utf-8"), "bundled")
+
+    return None
+
+
+def seed_owns(rel_path: str) -> bool:
+    """True iff the operator-configured IWT clone has ``rel_path``.
+
+    Used by ``/admin/workspace-prompt`` and ``/admin/agent-prompt`` to gate
+    their editors: when seed owns the corresponding file, the local DB
+    override is dead-code and the editor switches to read-only mode.
+
+    Does NOT consider the bundled snapshot — the bundle is Agnes's own
+    fallback, not "operator-owned content". Admin can override the bundle
+    via local DB write; only IWT-clone-provided files lock the editor.
+    """
+    iwt_root = _iwt_snapshot()
+    if iwt_root is None:
+        return False
+    return (iwt_root / rel_path).is_file()
+
+
+def list_seed_files(rel_dir: str) -> List[Path]:
+    """Enumerate seed files under a repo-relative directory, with IWT
+    clone winning over the bundle as a whole. Used by the connector
+    manifest scan: when IWT has any ``connector-*/`` skill, the bundle's
+    connectors are ignored (operator seed is the source of truth).
+
+    **Per-directory all-or-nothing**, by design: an IWT clone that ships
+    only Asana hides the bundle's GWS + Atlassian skills from `/home`.
+    That's the operator's explicit opt-in (they've taken ownership of
+    the connector slate). Contrast with :func:`resolve_seed_file`
+    (per-file IWT→bundle fallback) used elsewhere.
+
+    Renderer invariant: callers MUST only ask `_load_connector_body`
+    for slugs that came back from `load_manifest` (which uses this
+    function). Asking for a bundled slug after an IWT directory take-
+    over would hit `resolve_seed_file` and silently mix sources mid-
+    prompt, defeating the all-or-nothing contract here.
+
+    Returns absolute paths sorted alphabetically. Empty list when neither
+    tier has the directory.
+    """
+    iwt_root = _iwt_snapshot()
+    if iwt_root is not None:
+        iwt_dir = iwt_root / rel_dir
+        if iwt_dir.is_dir():
+            return sorted(p for p in iwt_dir.rglob("*") if p.is_file())
+
+    bundled_dir = _BUNDLED_SEED_DIR / rel_dir
+    if bundled_dir.is_dir():
+        return sorted(p for p in bundled_dir.rglob("*") if p.is_file())
+
+    return []
+
+
+# ---------------------------------------------------------------------------
 # Pure workspace-init helpers — no typer, no prompts, no CLI dependencies.
 # Usable from the CLI wrapper AND from the server-side chat manager.
 # ---------------------------------------------------------------------------
