@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- Marketplace **My Stack** tab returned HTTP 500 on the Postgres state backend — the `user_store_installs` PG repo's `list_for_user` omitted `title` / `tagline` / `synthetic_name` from its SELECT, which the flea-card builder (`_flea_to_item`) reads directly (`entity["synthetic_name"]` → `KeyError`). Brought the PG projection to parity with the DuckDB repo and added a cross-engine contract test.
+
 ## [0.61.4] — 2026-06-03
 
 ### Changed
