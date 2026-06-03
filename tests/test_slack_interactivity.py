@@ -185,3 +185,41 @@ def test_new_session_block_carries_owner_and_channel():
     btn = block["elements"][0]
     assert btn["action_id"] == blocks.ACTION_NEW_SESSION
     assert blocks.decode_value(btn["value"]) == {"channel_id": "D1", "owner": "a@example.com"}
+
+
+def test_post_thread_reply_with_blocks_returns_ts(monkeypatch):
+    import services.slack_bot.sender as snd
+    cap = _patch_client(monkeypatch)
+    ts = asyncio.run(snd.post_thread_reply_with_blocks("C1", "1.1", "hi", [{"type": "x"}]))
+    assert ts == "9.9"
+    url, body = cap["client"].calls[0]
+    assert url.endswith("/chat.postMessage")
+    assert body["channel"] == "C1" and body["thread_ts"] == "1.1"
+    assert body["blocks"] == [{"type": "x"}] and body["text"] == "hi"
+
+
+def test_update_message_calls_chat_update(monkeypatch):
+    import services.slack_bot.sender as snd
+    cap = _patch_client(monkeypatch)
+    asyncio.run(snd.update_message("C1", "9.9", "final", []))
+    url, body = cap["client"].calls[0]
+    assert url.endswith("/chat.update")
+    assert body == {"channel": "C1", "ts": "9.9", "text": "final", "blocks": []}
+
+
+def test_post_channel_message_omits_thread_ts(monkeypatch):
+    import services.slack_bot.sender as snd
+    cap = _patch_client(monkeypatch)
+    asyncio.run(snd.post_channel_message("C1", "public answer"))
+    url, body = cap["client"].calls[0]
+    assert url.endswith("/chat.postMessage")
+    assert body == {"channel": "C1", "text": "public answer"}
+
+
+def test_respond_via_response_url_posts_body(monkeypatch):
+    import services.slack_bot.sender as snd
+    cap = _patch_client(monkeypatch)
+    asyncio.run(snd.respond_via_response_url("https://hooks.example/r", {"delete_original": True}))
+    url, body = cap["client"].calls[0]
+    assert url == "https://hooks.example/r"
+    assert body == {"delete_original": True}

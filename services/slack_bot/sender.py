@@ -73,6 +73,64 @@ async def send_ephemeral_to_user(channel: str, slack_user_id: str, text: str) ->
         )
 
 
+async def post_thread_reply_with_blocks(
+    channel: str, thread_ts: str, text: str, blocks: list[dict],
+) -> str | None:
+    """Post a threaded reply with Block Kit blocks; return the message ts
+    (so the caller can later chat.update it to strip the buttons), or None
+    on failure."""
+    token = os.environ.get("SLACK_BOT_TOKEN")
+    if not token:
+        logger.error("SLACK_BOT_TOKEN missing — cannot reply")
+        return None
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(
+            "https://slack.com/api/chat.postMessage",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"channel": channel, "thread_ts": thread_ts, "text": text, "blocks": blocks},
+        )
+    data = resp.json()
+    if not data.get("ok"):
+        logger.error("chat.postMessage failed: %s", data.get("error"))
+        return None
+    return data.get("ts")
+
+
+async def update_message(channel: str, ts: str, text: str, blocks: list[dict]) -> None:
+    """Edit an existing message (used to strip the Stop button at turn end)."""
+    token = os.environ.get("SLACK_BOT_TOKEN")
+    if not token:
+        logger.error("SLACK_BOT_TOKEN missing — cannot update")
+        return
+    async with httpx.AsyncClient(timeout=10) as client:
+        await client.post(
+            "https://slack.com/api/chat.update",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"channel": channel, "ts": ts, "text": text, "blocks": blocks},
+        )
+
+
+async def post_channel_message(channel: str, text: str) -> None:
+    """Public, non-threaded channel post (Share-to-channel promotion)."""
+    token = os.environ.get("SLACK_BOT_TOKEN")
+    if not token:
+        logger.error("SLACK_BOT_TOKEN missing — cannot post")
+        return
+    async with httpx.AsyncClient(timeout=10) as client:
+        await client.post(
+            "https://slack.com/api/chat.postMessage",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"channel": channel, "text": text},
+        )
+
+
+async def respond_via_response_url(response_url: str, body: dict) -> None:
+    """POST a raw body to a Slack response_url (clear-ephemeral, ephemeral
+    fallback). 30-min / 5-post limited — single-shot use only."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        await client.post(response_url, json=body)
+
+
 async def send_thread_reply(channel: str, thread_ts: str, text: str) -> None:
     token = os.environ.get("SLACK_BOT_TOKEN")
     if not token:
