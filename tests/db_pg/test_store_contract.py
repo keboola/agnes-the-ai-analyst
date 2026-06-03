@@ -182,6 +182,21 @@ def test_uninstall_removes_row(store_repos):
     assert removed2 is False
 
 
+def test_list_for_user_returns_enriched_columns(store_repos):
+    """list_for_user must surface title/tagline/synthetic_name on BOTH
+    backends — _flea_to_item reads entity['synthetic_name'] directly
+    (KeyError → marketplace My Stack 500 otherwise)."""
+    repos, _, _ = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    _make_entity(repos["entities"], visibility_status="approved")
+    repos["installs"].install("user-1", "entity-1")
+
+    rows = repos["installs"].list_for_user("user-1")
+    assert len(rows) == 1
+    for key in ("synthetic_name", "title", "tagline"):
+        assert key in rows[0], f"missing {key}"
+
+
 def test_submission_lifecycle_pending_to_approved(store_repos):
     """create → status='pending_llm' → update_status to 'approved' → get reflects it."""
     repos, _, _ = store_repos

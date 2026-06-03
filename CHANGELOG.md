@@ -16,6 +16,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 - **Extracted `app.auth.group_sync.apply_user_groups(user_id, email, conn) -> SyncResult`** from the OAuth callback's inline sync block (`app/auth/providers/google.py`), so the callback and the new refresh endpoint write the snapshot through one implementation. Cuts ~70 LoC of duplication and removes the OAuth-only assumption baked into the previous shape. Behavior preserved end-to-end (verified by the existing prefix/system-mapping/idempotency suite).
 
+## [0.61.6] — 2026-06-03
+
+### Fixed
+- `/home` "Mark me as onboarded" (and `agnes init`) now takes effect on a
+  Postgres-backed instance. The route read `users.onboarded` with a raw
+  `conn.execute` against DuckDB while `POST /api/me/onboarded` writes through
+  the backend-aware `users_repo()` — so on a `db-state-machine` CLOUD /
+  SIDE_CAR instance the flag was written to Postgres but read back from the
+  stale DuckDB row, leaving the setup panel visible forever regardless of
+  reloads or cache. `/home` now reads `onboarded` through `users_repo()` so
+  the read and write share the active backend. (#518)
+- Marketplace **My Stack** tab returned HTTP 500 on the Postgres state backend — the `user_store_installs` PG repo's `list_for_user` omitted `title` / `tagline` / `synthetic_name` from its SELECT, which the flea-card builder (`_flea_to_item`) reads directly (`entity["synthetic_name"]` → `KeyError`). Brought the PG projection to parity with the DuckDB repo and added a cross-engine contract test. (#517)
+
 ## [0.61.5] — 2026-06-03
 
 ### Added
