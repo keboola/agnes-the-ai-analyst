@@ -10,6 +10,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- Cowork bundle now ships skills in Claude Code's directory format
+  (`.claude/skills/<name>/SKILL.md`) with supporting files (references/,
+  assets/) preserved, instead of flat `.claude/skills/<name>.md` files that
+  Claude Code never loaded as skills. Affects both curated skills
+  (setup-cowork, explore-data, query-data, new-skill) and RBAC-granted
+  marketplace skills. Note: this fixes skill loading in terminal Claude Code /
+  Claude Desktop project sessions; Cowork's agentic VM still only surfaces
+  skills installed via its own Customize → Skills UI (upstream limitation,
+  anthropics/claude-code#50669), not workspace `.claude/skills/`.
+
 ## [0.60.0] — 2026-06-02
 
 ### Internal

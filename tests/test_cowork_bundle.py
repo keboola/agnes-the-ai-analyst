@@ -94,10 +94,10 @@ class TestGenerateBundle:
 
         # Agnes curated skills must ship in every bundle.
         curated = [
-            f"{folder}/.claude/skills/setup-cowork.md",
-            f"{folder}/.claude/skills/explore-data.md",
-            f"{folder}/.claude/skills/query-data.md",
-            f"{folder}/.claude/skills/new-skill.md",
+            f"{folder}/.claude/skills/setup-cowork/SKILL.md",
+            f"{folder}/.claude/skills/explore-data/SKILL.md",
+            f"{folder}/.claude/skills/query-data/SKILL.md",
+            f"{folder}/.claude/skills/new-skill/SKILL.md",
         ]
         for path in curated:
             assert path in names, f"Curated skill missing from bundle: {path}"
@@ -354,10 +354,14 @@ class TestCollectMarketplaceContent:
         from app.api.cowork_bundle import _collect_marketplace_content
 
         plugin_dir = tmp_path / "plugins" / "grpn"
-        (plugin_dir / "skills" / "create").mkdir(parents=True)
+        (plugin_dir / "skills" / "create" / "references").mkdir(parents=True)
         (plugin_dir / "skills" / "create" / "SKILL.md").write_text(
             "---\nname: create\ndescription: creates things\nargument-hint: x\n---\nbody\n",
             encoding="utf-8",
+        )
+        # Supporting file must ride along into the skill directory.
+        (plugin_dir / "skills" / "create" / "references" / "ref.md").write_text(
+            "reference content", encoding="utf-8",
         )
         (plugin_dir / "agents").mkdir()
         (plugin_dir / "agents" / "reviewer.md").write_text(
@@ -370,8 +374,13 @@ class TestCollectMarketplaceContent:
         with mock.patch("src.marketplace_filter.resolve_user_marketplace", return_value=[fake_plugin]):
             skills, agents = _collect_marketplace_content(object(), {"id": "u1"})
 
-        assert any("create" in arc for arc, _ in skills)
-        skill_content = next(c for arc, c in skills if "create" in arc).decode()
+        arcnames = [arc for arc, _ in skills]
+        # Directory format: entrypoint is <name>/SKILL.md, NOT a flat <name>.md.
+        assert ".claude/skills/create/SKILL.md" in arcnames
+        assert ".claude/skills/create.md" not in arcnames
+        # Supporting files are preserved next to SKILL.md.
+        assert ".claude/skills/create/references/ref.md" in arcnames
+        skill_content = next(c for arc, c in skills if arc.endswith("create/SKILL.md")).decode()
         assert "argument-hint" not in skill_content
         assert any("reviewer" in arc for arc, _ in agents)
 
@@ -413,8 +422,8 @@ class TestCollectMarketplaceContent:
             skills, _ = _collect_marketplace_content(object(), {"id": "u1"})
         arcnames = [arc for arc, _ in skills]
         # Curated name is reserved — marketplace version gets a prefix.
-        assert not any(arc == ".claude/skills/explore-data.md" for arc in arcnames)
-        assert any(arc == ".claude/skills/evil-explore-data.md" for arc in arcnames)
+        assert not any(arc == ".claude/skills/explore-data/SKILL.md" for arc in arcnames)
+        assert any(arc == ".claude/skills/evil-explore-data/SKILL.md" for arc in arcnames)
 
     def test_double_prefix_collision_skipped(self, tmp_path):
         from app.api.cowork_bundle import _collect_marketplace_content
@@ -440,5 +449,5 @@ class TestCollectMarketplaceContent:
                       headers=_auth(seeded_app["analyst_token"]))
         zf = zipfile.ZipFile(io.BytesIO(resp.content))
         folder = next(n.split("/")[0] for n in zf.namelist())
-        content = zf.read(f"{folder}/.claude/skills/setup-cowork.md").decode()
+        content = zf.read(f"{folder}/.claude/skills/setup-cowork/SKILL.md").decode()
         assert "name: setup-cowork" in content
