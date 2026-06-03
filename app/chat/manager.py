@@ -259,6 +259,10 @@ class ChatManager:
     async def add_sink(self, chat_id: str, sink, participant_email: str) -> None:
         """Attach an additional output sink to an already-live session.
 
+        SR-9: re-verifies that the participant is still a live (left_at IS NULL)
+        member before appending; raises PermissionError otherwise so a
+        post-leave join attempt is rejected at the door.
+
         Replays persisted history to the new sink BEFORE appending it to the
         broadcast list, so a late joiner never misses in-flight frames and
         never double-receives one (replay + append are serialized here; the
@@ -268,6 +272,12 @@ class ChatManager:
         live = self._live.get(chat_id)
         if live is None or live.state == SessionState.DEAD:
             raise SessionNotFound(chat_id)
+        # SR-9: membership re-verify — only live participants may join.
+        parts = self._repo.get_session_participants(chat_id)
+        if not any(p.user_email == participant_email and p.left_at is None for p in parts):
+            raise PermissionError(
+                f"{participant_email} is not a live participant of {chat_id}"
+            )
         for msg in self._repo.list_messages(chat_id):
             await sink.send_json({
                 "type": "assistant_message" if msg.role == "assistant" else "user_msg",
@@ -478,14 +488,23 @@ class ChatManager:
             live.handle = new_handle
             live.state = SessionState.ACTIVE
             await self._broadcast(live, {"type": "ready"})
-            # Replay last 3 user turns into the new subprocess
+            # Replay last 3 user turns into the new subprocess.
+            # SR-11: for co-sessions, skip turns authored by a departed
+            # participant and carry sender_email so the runner sees
+            # who sent each message.
             history = self._repo.list_messages(live.chat_id)[-3:]
+            live_emails = set(live.participant_emails) or {live.user_email}
             for msg in history:
-                if msg.role == "user":
-                    payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
-                    async with live._stdin_lock:
-                        new_handle.stdin.write(payload.encode("utf-8"))
-                        await new_handle.stdin.drain()
+                if msg.role != "user":
+                    continue
+                author = getattr(msg, "sender_email", None) or live.user_email
+                # SR-11: do not replay a departed participant's turn
+                if live.participant_emails and author not in live_emails:
+                    continue
+                payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
+                async with live._stdin_lock:
+                    new_handle.stdin.write(payload.encode("utf-8"))
+                    await new_handle.stdin.drain()
             # Replace (not append) the per-session pump task so the task
             # list does not grow unboundedly across crash respawns.  The old
             # pump returned on EOF; cancel it for hygiene, then drop it from
@@ -571,6 +590,80 @@ class ChatManager:
             await live.handle.stdin.drain()
         live.last_activity = datetime.now(timezone.utc)
         live.state = SessionState.ACTIVE
+
+    async def leave_session(self, chat_id: str, participant_email: str) -> None:
+        """SR-9: atomically stamp left_at, remove+close the leaver's sink,
+        refresh live.participant_emails, then respawn under the narrowed
+        intersection. After this method returns, zero frames will reach the
+        removed sink — the sink is removed from live.sinks BEFORE _broadcast
+        is called again, and we await its close() before returning."""
+        live = self._live.get(chat_id)
+        if live is None:
+            return
+        self._repo.remove_participant(chat_id, participant_email)  # stamps left_at
+        leaving = [s for s in live.sinks if s.participant_email == participant_email]
+        live.sinks = [s for s in live.sinks if s.participant_email != participant_email]
+        for s in leaving:
+            try:
+                await s.sink.close()
+            except Exception:
+                logger.exception("close leaver sink failed for %s", chat_id)
+        parts = self._repo.get_session_participants(chat_id)
+        live.participant_emails = [p.user_email for p in parts if p.left_at is None]
+        await self._respawn_co_runner(live)
+
+    async def _respawn_co_runner(self, live: LiveSession) -> None:
+        """Recompute intersection for remaining participants and re-spawn runner.
+
+        Called after a participant leaves (SR-7). Kills the current handle,
+        rebuilds the ephemeral workspace under the new (narrower) intersection,
+        spawns a fresh runner, and replaces live.current_pump. If no participants
+        remain, kills the session entirely."""
+        if not live.participant_emails:
+            await self.kill(live.chat_id, reason="all_participants_left")
+            return
+        session = self._repo.get_session(live.chat_id)
+        if session is None:
+            return
+        from src.grant_intersection import compute_grant_intersection
+        inter = compute_grant_intersection(live.participant_emails, self._repo._conn)
+        session_dir = self._workdir_mgr.prepare_ephemeral_session_dir(
+            live.chat_id, live.participant_emails, inter,
+        )
+        if live.handle is not None:
+            try:
+                await live.handle.kill()
+            except Exception:
+                logger.exception("_respawn_co_runner: kill old handle failed")
+        new_handle = await self._spawn_runner(session, session_dir)
+        live.handle = new_handle
+        live.state = SessionState.ACTIVE
+        await self._broadcast(live, {"type": "ready"})
+        # Replay last 3 user turns skipping departed participants (SR-11).
+        history = self._repo.list_messages(live.chat_id)[-3:]
+        live_emails = set(live.participant_emails) or {live.user_email}
+        for msg in history:
+            if msg.role != "user":
+                continue
+            author = getattr(msg, "sender_email", None) or live.user_email
+            if author not in live_emails:
+                continue  # SR-11: do not replay a departed participant's turn
+            payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
+            async with live._stdin_lock:
+                new_handle.stdin.write(payload.encode("utf-8"))
+                await new_handle.stdin.drain()
+        old_pump = live.current_pump
+        if old_pump is not None and not old_pump.done():
+            old_pump.cancel()
+            try:
+                await old_pump
+            except (asyncio.CancelledError, Exception):
+                pass
+        if old_pump is not None and old_pump in live.tasks:
+            live.tasks.remove(old_pump)
+        new_pump = asyncio.create_task(self._pump_subprocess_to_ws(live))
+        live.current_pump = new_pump
+        live.tasks.append(new_pump)
 
     async def cancel(self, chat_id: str) -> None:
         live = self._live.get(chat_id)
