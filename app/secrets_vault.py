@@ -45,6 +45,30 @@ _ENV_KEY_NAME = "AGNES_VAULT_KEY"
 _ephemeral_key: Optional[bytes] = None
 
 
+class VaultKeyNotConfiguredError(RuntimeError):
+    """Raised when a secret WRITE is attempted in a non-local-dev process
+    that has no AGNES_VAULT_KEY set — storing under the ephemeral key would
+    silently lose the secret on restart."""
+
+
+def _is_local_dev_mode() -> bool:
+    # Mirror app.auth.dependencies.is_local_dev_mode without importing it
+    # (keeps app.secrets_vault free of an app.auth import edge).
+    return os.environ.get("LOCAL_DEV_MODE", "").strip().lower() in ("1", "true", "yes")
+
+
+def vault_key_configured() -> bool:
+    """True iff AGNES_VAULT_KEY is set to a syntactically valid Fernet key."""
+    raw = os.environ.get(_ENV_KEY_NAME, "").strip()
+    if not raw:
+        return False
+    try:
+        Fernet(raw.encode("ascii"))
+        return True
+    except (ValueError, InvalidToken):
+        return False
+
+
 def _get_fernet() -> Fernet:
     """Return a Fernet instance built from ``$AGNES_VAULT_KEY``, or an
     ephemeral key when the env var is absent.
@@ -78,7 +102,16 @@ def _get_fernet() -> Fernet:
 
 
 def encrypt_secret(value: str) -> bytes:
-    """Encrypt ``value`` and return ciphertext bytes (Fernet token)."""
+    """Encrypt ``value`` and return ciphertext bytes (Fernet token).
+
+    Refuses to encrypt under the ephemeral key outside LOCAL_DEV_MODE — a
+    secret stored that way is lost on restart, so we fail loudly instead.
+    """
+    if not vault_key_configured() and not _is_local_dev_mode():
+        raise VaultKeyNotConfiguredError(
+            f"{_ENV_KEY_NAME} must be set before storing secrets — otherwise "
+            "they are unrecoverable after restart."
+        )
     return _get_fernet().encrypt(value.encode("utf-8"))
 
 
