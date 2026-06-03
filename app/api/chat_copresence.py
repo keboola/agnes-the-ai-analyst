@@ -141,18 +141,27 @@ async def join_ticket(
     user=Depends(get_current_user),
     conn=Depends(_get_db),
 ):
-    """Issue a WS ticket for a live participant of a co-session.
+    """Issue a short-lived WS ticket for a live participant of a co-session.
 
     SR-9: only a user with an active (left_at IS NULL) participant row
     can obtain a ticket.  Strangers receive 403.
+
+    The ticket is an opaque secret (same _TICKETS mechanism as the primary
+    stream path) carrying (session_id, participant_email).  The WS join
+    route /api/chat/sessions/{id}/join consumes it, re-verifies
+    participant membership (SR-9), and calls add_sink.
     """
     deny_principal(user)
     repo = _get_repo(request)
     parts = repo.get_session_participants(session_id)
     if not any(p.user_email == user["email"] and p.left_at is None for p in parts):
         raise HTTPException(403, "not a live participant")
-    from app.auth.access import mint_co_session_jwt
-    return {"ticket": mint_co_session_jwt(session_id), "ws": f"/ws/chat/{session_id}"}
+    from app.api.chat import _issue_ticket
+    ticket = _issue_ticket(session_id, user["email"])
+    return {
+        "ticket": ticket,
+        "ws": f"/api/chat/sessions/{session_id}/join?ticket={ticket}",
+    }
 
 
 @router.post("/{session_id}/leave")
