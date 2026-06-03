@@ -306,6 +306,41 @@ def test_slack_dm_assistant_message_reaches_thread(monkeypatch):
     ), sent
 
 
+class TestSendEphemeralToUser:
+    def test_posts_ephemeral_with_user_and_token(self, monkeypatch):
+        import asyncio
+        import services.slack_bot.sender as sender_mod
+
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+        captured = {}
+
+        class _FakeResp:
+            pass
+
+        class _FakeClient:
+            def __init__(self, *a, **k): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def post(self, url, headers=None, json=None):
+                captured["url"] = url
+                captured["headers"] = headers
+                captured["json"] = json
+                return _FakeResp()
+
+        monkeypatch.setattr(sender_mod.httpx, "AsyncClient", _FakeClient)
+        asyncio.run(sender_mod.send_ephemeral_to_user("C1", "U1", "nope"))
+        assert captured["url"].endswith("/chat.postEphemeral")
+        assert captured["json"] == {"channel": "C1", "user": "U1", "text": "nope"}
+        assert captured["headers"]["Authorization"] == "Bearer xoxb-test"
+
+    def test_no_token_is_noop(self, monkeypatch):
+        import asyncio
+        import services.slack_bot.sender as sender_mod
+        monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+        # Must not raise even though no HTTP client is patched.
+        asyncio.run(sender_mod.send_ephemeral_to_user("C1", "U1", "nope"))
+
+
 class TestStripBotMention:
     def test_strips_leading_mention(self):
         from services.slack_bot.events import _strip_bot_mention
