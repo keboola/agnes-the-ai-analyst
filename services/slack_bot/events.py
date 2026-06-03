@@ -3,13 +3,66 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Awaitable, Callable, Optional
 
 from services.slack_bot.binding import issue_verification_code, lookup_user_email
 from services.slack_bot.sender import send_thread_reply
 from services.slack_bot.sink import SlackSinkBridge
 
 logger = logging.getLogger(__name__)
+
+# Strong references to every scheduled dispatch task. asyncio only keeps a
+# weak ref to a bare create_task() result, so a fire-and-forget task can be
+# GC-collected (and cancelled) mid-flight. Holding it here until the
+# done-callback discards it guarantees the dispatch runs to completion.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def _schedule(coro) -> asyncio.Task:
+    """Schedule a coroutine on the running loop, retaining a strong ref.
+
+    Used at every transport's dispatch call site (HTTP endpoint + Socket
+    Mode) so the slow body runs *after* the 3s Slack ack has been sent.
+    """
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
+
+
+async def _run_logged(
+    coro,
+    *,
+    on_failure: Optional[Callable[[BaseException], Awaitable[None]]] = None,
+) -> None:
+    """Wrap a scheduled dispatch coroutine — the ONLY recovery path.
+
+    Because we ack Slack *before* processing (ack-then-async), a failure
+    here does NOT trigger a Slack retry. So this wrapper must (a) never let
+    the exception escape — an escaped exception surfaces as an asyncio
+    "Task exception was never retrieved" and silently drops the work — and
+    (b) drive the best-effort user-visible recovery notice.
+
+    ``on_failure`` is that recovery seam: an awaitable the caller supplies
+    to post a user-visible ephemeral with the failure. It is itself
+    best-effort — a notifier that raises is caught and logged, never
+    propagated. Phase 0 call sites pass ``on_failure=None`` (the HTTP DM
+    handler emits its own binding/error replies inline, and the context-free
+    dispatch here carries no channel/response_url to post to, and the
+    ``send_ephemeral`` helper does not exist until Phase 2). Later phases
+    (mentions/slash/interactivity), which have channel/response_url context,
+    pass an ``on_failure`` that posts the ephemeral. The seam is wired and
+    tested now; only the concrete ephemeral payload is deferred.
+    """
+    try:
+        await coro
+    except Exception as exc:  # noqa: BLE001 — last line of defence for a detached task
+        logger.exception("scheduled Slack dispatch failed")
+        if on_failure is not None:
+            try:
+                await on_failure(exc)
+            except Exception:  # noqa: BLE001 — recovery notice is best-effort
+                logger.exception("best-effort Slack failure notice failed")
 
 
 async def dispatch_event(app, event: dict[str, Any]) -> None:
