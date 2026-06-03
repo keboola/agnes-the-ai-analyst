@@ -10,6 +10,93 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Postgres backend: MCP passthrough tools broke on a PG instance.** The
+  passthrough helper `_visible_passthrough_tools` and the `/api/mcp/passthrough`
+  routes (`list` + `invoke`) plus the `/me/cowork` page read `mcp_sources` /
+  `tool_registry` / RBAC grants off a raw DuckDB connection. On a Postgres
+  instance those tables are empty, so the Cowork page showed no MCP tools and
+  `POST /tools/{id}/call` 404'd ("passthrough tool not found") / 409'd for tools
+  that exist. All reads now go through the repo factory (`tool_registry_repo()`,
+  `mcp_sources_repo()`, `is_user_admin` / `_user_group_ids` without a conn); one
+  backend-aware `_visible_passthrough_tools` fixes every caller.
+- **Postgres backend: cloud-chat nav link hidden even when granted.**
+  `has_explicit_grant` (powers the `/chat` nav-link visibility) ran a raw
+  `conn.execute` against `resource_grants` instead of the backend-aware
+  factory, so on a Postgres instance it read the stale/empty DuckDB table and
+  the link stayed hidden for users who actually had the grant. It now mirrors
+  `can_access` (routes through `resource_grants_repo()`, honoring a passed conn
+  only in DuckDB mode), and the nav-link caller no longer opens a throwaway
+  DuckDB cursor. Cosmetic (UI affordance only — the route/API gate was never
+  affected). Follow-up to the marketplace/RBAC backend-split sweep.
+- **Postgres backend: store submission rescan crashed.** The `/admin` store
+  submission rescan route reached into the factory repo's private DuckDB
+  connection (`subs.conn.execute("UPDATE store_submissions …")`). On a
+  Postgres-backed instance `store_submissions_repo()` returns the PG repo,
+  which has no `.conn` attribute → `AttributeError`. Replaced both raw writes
+  with a new `set_inline_result(id, inline_checks=…, status=…)` method on both
+  the DuckDB and PG repos (cross-engine contract test added).
+- **Postgres backend: the entire marketplace was empty on a PG instance.** The
+  nightly marketplace ingestion in `src/marketplace.py` ran on a raw DuckDB
+  connection (`_get_conn()` → `get_system_db()`): `sync_marketplaces()` read the
+  registry from DuckDB → empty on a PG instance → "nothing to sync", so the sync
+  silently never ran; and `_refresh_plugin_cache()` wrote `marketplace_plugins`
+  rows into the DuckDB file the factory-backed readers (`/marketplace` UI, RBAC
+  fanout) never read. `sync_one` / `sync_marketplaces` / `_refresh_plugin_cache`
+  now go through `marketplace_registry_repo()` / `marketplace_plugins_repo()`.
+  The read side `GET /api/v2/marketplace/skills` (`_accessible_plugins`) had the
+  same defect — it read plugins AND resolved RBAC group membership off a DuckDB
+  conn; it now uses the factory and lets `is_user_admin` / `_user_group_ids`
+  fall back to the active backend.
+- **Postgres backend: curated plugin install/uninstall 404'd / mis-gated.** On a
+  Postgres-backed instance, `POST /api/marketplace/curated/{id}/{name}/install`
+  checked plugin existence with a raw `conn.execute` against DuckDB (`conn` from
+  `Depends(_get_db)` is always DuckDB), while the plugins actually live in
+  Postgres — so every curated plugin appeared not to exist and install raised
+  404 `plugin_not_found`; nobody could install a curated plugin on a PG instance.
+  The uninstall twin read `is_system` the same raw way (mis-gating the
+  system-plugin uninstall guard). Both now read through `marketplace_plugins_repo()`
+  via a new `get(marketplace_id, name)` method added to both the DuckDB and PG
+  repos (with a cross-engine contract test).
+- **Postgres backend: repository method-parity drift (same class as #499/#513).**
+  Several public methods lived on a DuckDB repo but were missing from the
+  `_pg` sibling, so calls that work on a DuckDB dev box crash once a
+  Postgres-backed (CLOUD / SIDE_CAR) instance is live:
+  - `agnes admin metrics import` / `export` (the documented starter-pack
+    command) and the column-metadata proposal import `AttributeError`-crashed
+    on Postgres — `metric_repo()` / `column_metadata_repo()` resolved to the
+    PG repo, which lacked `import_from_yaml` / `export_to_yaml` /
+    `import_proposal`. These backend-agnostic helpers now live in a shared
+    mixin used by both backends, so they can't drift again.
+  - The LLM table auto-doc writeback (`agnes admin … autodoc`) and server-side
+    telemetry events (`data_package.view`, `memory_domain.view`,
+    `memory.dismiss`/`undismiss`, `sync.pull_*`) constructed their repos with a
+    raw DuckDB connection, so on a Postgres instance the writes silently landed
+    in the unused DuckDB file. `set_description` / `emit_server_event` are now
+    implemented on the PG repo and these callers go through the backend-aware
+    repo factory.
+
+### Internal
+- New cross-engine guard `tests/db_pg/test_repo_method_parity.py` — a static
+  (AST) check that every public method (and its parameters) on a DuckDB
+  repository also exists on its `_pg` sibling, with a documented allow-list for
+  intentional asymmetries. Turns the #499/#513 "method missing on PG" drift
+  class from a production-only discovery into a CI failure on the PR that
+  introduces it. Sister to the existing `test_schema_parity.py` (column drift).
+  Behavioural coverage for the methods ported in this change lives in
+  `tests/db_pg/test_ported_methods_contract.py` (parametrised over both
+  backends).
+- New ratchet guard `tests/test_backend_split_guard.py` — enumerates every
+  current direct backend-aware repo instantiation (`XRepository(conn)`, #513)
+  and every non-infra `get_system_db()` caller (#518), pins them in an
+  allow-list, and fails CI when a NEW one appears. Companion stale-entry checks
+  force an entry's removal once its site is migrated to the factory, so the
+  allow-list always reflects the live residual (it cannot silently hide work) —
+  shrinking it to the legitimately-DuckDB-only sites is the mechanical
+  definition of "the DuckDB→Postgres migration is finished". Meta-tests assert
+  the detector flags a planted violation and ignores the factory-call form.
+
+
 ## [0.63.0] — 2026-06-03
 
 ### Added

@@ -3,10 +3,10 @@
 Mirrors ``src/repositories/metrics.py``. The DuckDB ``list_contains(arr, x)``
 becomes PG's ``x = ANY(arr)`` operator; ``unnest()`` stays the same.
 
-``import_from_yaml`` from the DuckDB original is not ported here — that
-helper is a backend-agnostic I/O wrapper around ``create()`` and belongs in
-a shared file outside the repository class. Callers should construct rows
-and call ``create()`` directly until the helper is moved.
+``import_from_yaml`` / ``export_to_yaml`` — backend-agnostic I/O wrappers
+around ``create()`` / ``list()`` — are provided by the shared
+``MetricYamlMixin`` so DuckDB and PG share one implementation (see #499/#513
+drift class).
 """
 from __future__ import annotations
 
@@ -17,12 +17,14 @@ from typing import Any, Dict, List, Optional
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
+from src.repositories._orchestration_mixins import MetricYamlMixin
+
 
 def _json_dumps(obj) -> Optional[str]:
     return None if obj is None else json.dumps(obj)
 
 
-class MetricPgRepository:
+class MetricPgRepository(MetricYamlMixin):
     def __init__(self, engine: Engine):
         self._engine = engine
 
