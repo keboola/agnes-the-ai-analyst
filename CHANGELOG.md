@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Fresh customer-instance VMs on the Postgres/cloud path now boot.** Two gaps broke first-boot for any VM whose startup-script engages the Postgres overlay (existing DuckDB-only fleets were unaffected): (1) the `Dockerfile` never copied `agnes-state-applier-bootstrap.service` into `/opt/agnes-host/`, so the startup-script's `install` of it failed under `set -e` (`install: cannot stat …`); (2) the `migrate` and `data-migrate` services in `docker-compose.postgres.yml` declared only `build: .`, so `docker compose up` tried to build them on the sourceless VM and failed with `failed to read dockerfile`. The Dockerfile now ships the bootstrap unit, and both one-shot services carry an `image:` (the pulled GHCR image) alongside `build` — mirroring the app/scheduler split. Regression tests assert every startup-script-installed ops unit is shipped by the Dockerfile and that the overlay's migrate services carry a prebuilt image.
+
 ## [0.61.5] — 2026-06-03
 
 ### Added
