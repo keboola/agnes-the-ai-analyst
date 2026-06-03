@@ -48,6 +48,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   is logged (and surfaced via the best-effort recovery seam) rather than
   retried by Slack.
 
+### Internal
+- **DuckDB schema → v69 + Postgres parity (co-drive foundation).** Additive
+  migration `_v68_to_v69` in `src/db.py` (matching Alembic `0016_cloud_chat_v69`)
+  adds `chat_sessions.is_co_session` / `ephemeral` (BOOLEAN DEFAULT FALSE),
+  `chat_messages.sender_email` (nullable, backfilled to the session owner for
+  existing user turns), and the `chat_session_participants` table. DuckDB
+  `ChatRepository` deletes participant rows before sessions on hard-delete
+  (no `ON DELETE CASCADE`); PG uses the FK cascade. New repo methods
+  (`add_session_participant`, `get_session_participants`, `remove_participant`,
+  `update_participant_role`, `list_sessions_for_participant`,
+  `fork_session_as_co_session`) ship on both backends with cross-engine
+  contract tests.
+- **`ChatManager` multi-sink fan-out.** `LiveSession.ws` is now
+  `sinks: list[SinkEntry]`; runner frames broadcast to every sink while
+  persistence/audit stay singular. `attach` gains a `*, is_primary=True`
+  parameter; `add_sink` replays persisted history before appending a
+  late-joining sink. `send_user_message` accepts `sender_email` and serializes
+  the stdin write+drain under a per-session `_stdin_lock` so concurrent turns
+  can't interleave partial JSON lines. New `ChatManager.active_count_for_user`
+  wrapper.
+
 ## [0.60.0] — 2026-06-02
 
 ### Internal
