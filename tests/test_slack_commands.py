@@ -244,6 +244,54 @@ def test_agnes_cap_hit_ephemeral(monkeypatch):
     assert eph and "/agnes-new" in eph[0][1]
 
 
+def test_agnes_new_archives_existing(monkeypatch):
+    app, cmds = _agnes_app(monkeypatch)
+    mgr = app.state.chat_manager
+
+    from app.chat.types import ChatSession, Surface
+    from datetime import datetime, timezone
+    existing = ChatSession(
+        id="dm-old", user_email="bob@example.com", surface=Surface.SLACK_DM,
+        slack_channel_id="D1", slack_thread_ts=None, title=None,
+        started_at=datetime.now(timezone.utc), last_message_at=None,
+        message_count=1, archived=False,
+    )
+    killed: list = []
+    archived: list = []
+
+    # Handler calls these on the REPO:
+    app.state.chat_repo.get_slack_dm_session = lambda ch: existing if ch == "D1" else None
+    app.state.chat_repo.archive_session = lambda cid: archived.append(cid)
+    # Handler calls kill on the MANAGER:
+    async def kill(chat_id, *, reason): killed.append((chat_id, reason))
+    mgr.kill = kill
+
+    eph: list = []
+    async def fake_eph(url, text, blocks=None): eph.append((url, text))
+    monkeypatch.setattr(cmds, "send_ephemeral", fake_eph)
+
+    cmd = {"command": "/agnes-new", "text": "", "user_id": "U1",
+           "channel_id": "C1", "response_url": "https://r/5"}
+    __import__("asyncio").run(cmds.dispatch_command(app, cmd))
+
+    assert killed == [("dm-old", "agnes_new")]
+    assert archived == ["dm-old"]
+    assert eph and "fresh" in eph[0][1].lower()
+
+
+def test_agnes_new_no_existing_still_confirms(monkeypatch):
+    app, cmds = _agnes_app(monkeypatch)
+    app.state.chat_repo.get_slack_dm_session = lambda ch: None
+    eph: list = []
+    async def fake_eph(url, text, blocks=None): eph.append((url, text))
+    monkeypatch.setattr(cmds, "send_ephemeral", fake_eph)
+
+    cmd = {"command": "/agnes-new", "text": "", "user_id": "U1",
+           "channel_id": "C1", "response_url": "https://r/6"}
+    __import__("asyncio").run(cmds.dispatch_command(app, cmd))
+    assert eph  # always confirms
+
+
 def test_ephemeral_command_sink_forwards_first_assistant_message(monkeypatch):
     from services.slack_bot import sink as sink_mod
 

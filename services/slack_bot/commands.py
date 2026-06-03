@@ -140,8 +140,38 @@ async def _cmd_agnes(app, cmd: dict) -> None:
     await mgr.send_user_message(session.id, text)
 
 
-async def _cmd_new(app, cmd: dict) -> None:  # implemented in Task 7
-    raise NotImplementedError
+async def _soft_archive_dm(app, slack_user_id: str) -> bool:
+    """Resolve the caller's IM channel, kill + archive any live DM session.
+
+    Returns True if a session was archived, False if none existed. Shared
+    by /agnes-new and (Phase 3) the New-session button.
+    """
+    repo = app.state.chat_repo
+    mgr = app.state.chat_manager
+    im_channel = await open_im(slack_user_id)
+    if im_channel is None:
+        return False
+    existing = repo.get_slack_dm_session(im_channel)
+    if existing is None:
+        return False
+    try:
+        await mgr.kill(existing.id, reason="agnes_new")
+    except Exception:
+        logger.exception("kill failed for %s during /agnes-new", existing.id)
+    repo.archive_session(existing.id)
+    return True
+
+
+async def _cmd_new(app, cmd: dict) -> None:
+    slack_user_id = cmd.get("user_id", "")
+    response_url = cmd.get("response_url", "")
+    # Binding/grant are enforced on the next /agnes; /agnes-new is a no-op
+    # for unbound users (no DM session can exist), so we skip the gate here.
+    archived = await _soft_archive_dm(app, slack_user_id)
+    if archived:
+        await send_ephemeral(response_url, "Archived your Agnes session — your next `/agnes` starts fresh.")
+    else:
+        await send_ephemeral(response_url, "No active Agnes session to archive — your next `/agnes` starts fresh.")
 
 
 async def _cmd_status(app, cmd: dict) -> None:  # implemented in Task 8
