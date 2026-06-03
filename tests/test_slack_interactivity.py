@@ -342,3 +342,71 @@ def test_share_token_expires(monkeypatch):
 def test_share_token_missing_returns_none():
     from services.slack_bot import interactivity as inter
     assert inter.get_share_answer("nope") is None
+
+
+def _share_app(monkeypatch, *, bound_email, allowlisted, body="shared body"):
+    from types import SimpleNamespace
+    import services.slack_bot.interactivity as inter_mod
+    monkeypatch.setattr(inter_mod, "lookup_user_email", lambda repo, uid: bound_email)
+    monkeypatch.setattr(inter_mod, "is_channel_allowlisted", lambda conn, ch: allowlisted)
+    audits = []
+    monkeypatch.setattr(inter_mod, "write_audit", lambda conn, **kw: audits.append(kw))
+    posts, clears = [], []
+    async def fake_post(ch, text): posts.append((ch, text))
+    async def fake_resp(url, b): clears.append((url, b))
+    monkeypatch.setattr(inter_mod.sender, "post_channel_message", fake_post)
+    monkeypatch.setattr(inter_mod.sender, "respond_via_response_url", fake_resp)
+    eph = []
+    async def fake_eph(url, text, blocks=None): eph.append(text)
+    monkeypatch.setattr(inter_mod.sender, "send_ephemeral", fake_eph)
+    inter_mod._SHARE_ANSWERS.clear()
+    tok = inter_mod.store_share_answer(body)
+    repo = SimpleNamespace(_conn=object())
+    app = SimpleNamespace(state=SimpleNamespace(chat_repo=repo))
+    return app, tok, SimpleNamespace(posts=posts, clears=clears, audits=audits, eph=eph)
+
+
+def test_on_share_allowlisted_posts_clears_and_audits(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    app, tok, rec = _share_app(monkeypatch, bound_email="a@example.com", allowlisted=True)
+    it = inter.Interaction(action_id=inter.blocks.ACTION_SHARE_CHANNEL, slack_user_id="U1",
+                           channel_id="C1", response_url="https://r",
+                           value={"channel_id": "C1", "token": tok})
+    asyncio.run(inter._on_share(app, it))
+    assert rec.posts == [("C1", "shared body")]
+    assert rec.clears and rec.clears[0][1].get("delete_original") is True
+    assert len(rec.audits) == 1 and rec.audits[0]["action"] == "slack_share"
+    assert rec.audits[0]["user_email"] == "a@example.com"
+
+
+def test_on_share_not_allowlisted_never_posts(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    app, tok, rec = _share_app(monkeypatch, bound_email="a@example.com", allowlisted=False)
+    it = inter.Interaction(action_id=inter.blocks.ACTION_SHARE_CHANNEL, slack_user_id="U1",
+                           channel_id="C1", response_url="https://r",
+                           value={"channel_id": "C1", "token": tok})
+    asyncio.run(inter._on_share(app, it))
+    assert rec.posts == []
+    assert rec.audits == []
+    assert rec.eph  # denial ephemeral
+
+
+def test_on_share_unbound_never_posts(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    app, tok, rec = _share_app(monkeypatch, bound_email=None, allowlisted=True)
+    it = inter.Interaction(action_id=inter.blocks.ACTION_SHARE_CHANNEL, slack_user_id="U9",
+                           channel_id="C1", response_url="https://r",
+                           value={"channel_id": "C1", "token": tok})
+    asyncio.run(inter._on_share(app, it))
+    assert rec.posts == [] and rec.audits == [] and rec.eph
+
+
+def test_on_share_expired_token_no_post(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    app, _tok, rec = _share_app(monkeypatch, bound_email="a@example.com", allowlisted=True)
+    it = inter.Interaction(action_id=inter.blocks.ACTION_SHARE_CHANNEL, slack_user_id="U1",
+                           channel_id="C1", response_url="https://r",
+                           value={"channel_id": "C1", "token": "missing"})
+    asyncio.run(inter._on_share(app, it))
+    assert rec.posts == [] and rec.audits == []
+    assert rec.eph  # "expired" ephemeral

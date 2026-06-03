@@ -14,8 +14,9 @@ import time as _time
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.chat.audit import write_audit
 from services.slack_bot import blocks, sender
-from services.slack_bot.binding import lookup_user_email
+from services.slack_bot.binding import is_channel_allowlisted, lookup_user_email
 
 logger = logging.getLogger(__name__)
 
@@ -103,8 +104,40 @@ async def _on_stop(app, it: Interaction) -> None:
     await mgr.cancel(chat_id)  # idempotent; sink strips the button on `cancelled`
 
 
-async def _on_share(app, it: Interaction) -> None:  # filled in Task 6
-    raise NotImplementedError
+async def _on_share(app, it: Interaction) -> None:
+    repo = app.state.chat_repo
+    conn = repo._conn
+    clicker_email = lookup_user_email(repo, it.slack_user_id)
+    if not clicker_email:
+        await sender.send_ephemeral(
+            it.response_url, "Bind your Slack identity first (DM Agnes to start)."
+        )
+        return
+    channel_id = it.value.get("channel_id", "")
+    # SECURITY: re-check the allowlist at click time against the
+    # signature-verified channel — never trust a stale grant or the payload's
+    # display channel. is_channel_allowlisted does a direct Everyone-scoped
+    # grant lookup (no admin short-circuit).
+    if not is_channel_allowlisted(conn, channel_id):
+        await sender.send_ephemeral(it.response_url, "Agnes can't post in this channel.")
+        return
+    body = get_share_answer(it.value.get("token", ""))
+    if body is None:
+        await sender.send_ephemeral(
+            it.response_url, "That answer expired — re-run /agnes to share again."
+        )
+        return
+    await sender.post_channel_message(channel_id, body)
+    # Clear the ephemeral; the public post already landed, so a response_url
+    # expiry here is non-fatal.
+    try:
+        await sender.respond_via_response_url(it.response_url, {"delete_original": True})
+    except Exception:
+        logger.warning("response_url clear failed after share (post already public)")
+    write_audit(
+        conn, user_email=clicker_email, action="slack_share",
+        details={"channel_id": channel_id},
+    )
 
 
 async def _on_new_session(app, it: Interaction) -> None:  # filled in Task 7
