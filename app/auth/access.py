@@ -350,3 +350,23 @@ def mint_session_jwt(user_email: str, chat_id: str, *, ttl_seconds: int = 3600) 
         "test-jwt-secret-key-minimum-32-chars!!",
     )
     return jwt.encode(payload, secret, algorithm="HS256")
+
+
+def mint_co_session_jwt(session_id: str, *, ttl: int = 3600) -> str:
+    """Mint a co-session runner token. Carries ONLY chat_session_id +
+    typ='co_session' + a synthetic sub (never a user UUID). No participant
+    email list is baked in (SR-4) — the resolver reads chat_session_participants
+    live as the sole source of truth, eliminating the stale-grant replay window.
+
+    Encoded with the canonical auth secret (app/auth/jwt) so verify_token
+    decodes it in every env.
+    """
+    from datetime import timedelta
+    from app.auth.jwt import create_access_token
+    return create_access_token(
+        user_id=f"session:{session_id}",
+        email="",  # no real identity; resolver never reads this
+        expires_delta=timedelta(seconds=ttl),
+        typ="co_session",
+        extra_claims={"chat_session_id": session_id},
+    )
