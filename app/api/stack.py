@@ -19,17 +19,14 @@ events land in ``usage_events`` via ``UsageRepository.emit_server_event``.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
-import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.access import can_access
-from app.auth.dependencies import _get_db, get_current_user
+from app.auth.dependencies import get_current_user
 from app.resource_types import ResourceType
 from app.services.stack_resolver import StackResolver
-from src.repositories.usage import UsageRepository
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +68,6 @@ def _validate_type(value: str) -> ResourceType:
 
 
 def _emit_event(
-    conn: duckdb.DuckDBPyConnection,
     *,
     event_type: str,
     user: dict,
@@ -79,7 +75,8 @@ def _emit_event(
 ) -> None:
     """Fire-and-forget — telemetry must never break the user's action."""
     try:
-        UsageRepository(conn).emit_server_event(
+        from src.repositories import usage_repo
+        usage_repo().emit_server_event(
             event_type=event_type,
             user_id=user["id"],
             username=user.get("email") or user["id"],
@@ -98,7 +95,6 @@ def _emit_event(
 async def list_stack(
     type: str,
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Return the user's effective stack for the given resource type.
 
@@ -107,7 +103,7 @@ async def list_stack(
     subscription row.
     """
     rt = _validate_type(type)
-    resolver = StackResolver(conn)
+    resolver = StackResolver()
     items = [
         {
             "id": e.id,
@@ -127,7 +123,6 @@ async def list_stack(
 async def subscribe(
     payload: SubscribeRequest,
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Opt in to an ``available`` grant. Refuses to subscribe if the resource
     is required (it's already in the stack — clients shouldn't bother)."""
@@ -135,15 +130,14 @@ async def subscribe(
     # The user must have *some* grant on the resource — otherwise this is a
     # 403 (you can't subscribe to something you can't access). can_access
     # short-circuits for admins, which is the intended behavior.
-    if not can_access(user["id"], rt.value, payload.resource_id, conn):
+    if not can_access(user["id"], rt.value, payload.resource_id):
         raise HTTPException(status_code=403, detail="no_grant")
-    resolver = StackResolver(conn)
+    resolver = StackResolver()
     try:
         resolver.add_to_stack(user["id"], rt, payload.resource_id)
     except HTTPException:
         raise
     _emit_event(
-        conn,
         event_type="stack.subscribe",
         user=user,
         props={
@@ -159,7 +153,6 @@ async def unsubscribe(
     resource_type: str,
     resource_id: str,
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Opt out of an ``available`` grant. Returns 400 ``cannot_remove_required``
     when the resource is required for any of the user's groups.
@@ -170,13 +163,12 @@ async def unsubscribe(
     because Required tier blocks opt-out".
     """
     rt = _validate_type(resource_type)
-    resolver = StackResolver(conn)
+    resolver = StackResolver()
     try:
         resolver.remove_from_stack(user["id"], rt, resource_id)
     except HTTPException:
         raise
     _emit_event(
-        conn,
         event_type="stack.unsubscribe",
         user=user,
         props={

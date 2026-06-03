@@ -29,7 +29,7 @@ _PER_TYPE_COLUMN: Dict[str, str] = {
 class ResourceGrantsPgRepository:
     _SELECT_COLS = (
         "id, group_id, resource_type, resource_id, "
-        "assigned_at, assigned_by"
+        "assigned_at, assigned_by, requirement"
     )
 
     def __init__(self, engine: Engine):
@@ -53,7 +53,7 @@ class ResourceGrantsPgRepository:
         sql = (
             f"""SELECT g.id, g.group_id, ug.name AS group_name,
                        g.resource_type, g.resource_id,
-                       g.assigned_at, g.assigned_by
+                       g.assigned_at, g.assigned_by, g.requirement
                 FROM resource_grants g
                 JOIN user_groups ug ON ug.id = g.group_id
                 {where_sql}

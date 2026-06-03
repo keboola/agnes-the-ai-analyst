@@ -67,10 +67,12 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import _get_db, get_current_user
 from app.auth.jwt import create_access_token
-from src.repositories.access_tokens import AccessTokenRepository
-from src.repositories.audit import AuditRepository
-from src.repositories.setup_tokens import SetupTokenRepository
-from src.repositories.users import UserRepository
+from src.repositories import (
+    access_token_repo,
+    audit_repo,
+    setup_tokens_repo,
+    users_repo,
+)
 
 # ── routers ──────────────────────────────────────────────────────────────────
 
@@ -91,7 +93,7 @@ _SETUP_TOKEN_TTL = timedelta(hours=24)
 
 def _audit(conn, actor: str, action: str, target: str, params=None):
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor, action=action,
             resource=f"setup_token:{target}", params=params,
         )
@@ -1204,7 +1206,7 @@ async def generate_bundle(
 
     Rate-limited: max 5 active (unexpired, unused) setup tokens per user.
     """
-    repo = SetupTokenRepository(conn)
+    repo = setup_tokens_repo()
 
     active_count = repo.count_active_for_user(user["id"])
     if active_count >= _MAX_ACTIVE_TOKENS:
@@ -1248,7 +1250,7 @@ async def generate_bundle(
         expires_delta=_SETUP_TOKEN_TTL,
         extra_claims={"scope": "cowork-bundle"},
     )
-    AccessTokenRepository(conn).create(
+    access_token_repo().create(
         id=pat_id,
         user_id=user["id"],
         name="Agnes Cowork Setup (auto-generated)",
@@ -1289,7 +1291,7 @@ async def list_setup_tokens(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List the calling user's active (unexpired, unused) setup tokens."""
-    rows = SetupTokenRepository(conn).list_active_for_user(user["id"])
+    rows = setup_tokens_repo().list_active_for_user(user["id"])
     return [
         SetupTokenItem(
             id=r["id"],
@@ -1307,7 +1309,7 @@ async def revoke_setup_token(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Revoke (delete) a setup token. Only the owner may revoke their own tokens."""
-    repo = SetupTokenRepository(conn)
+    repo = setup_tokens_repo()
     rows = repo.list_active_for_user(user["id"])
     owned = {r["id"] for r in rows}
     if token_id not in owned:
@@ -1337,7 +1339,7 @@ async def exchange_setup_token(
         raise HTTPException(status_code=400, detail="Invalid token format")
 
     token_hash = _hash_token(payload.setup_token)
-    repo = SetupTokenRepository(conn)
+    repo = setup_tokens_repo()
     row = repo.get_by_hash(token_hash)
 
     now = datetime.now(timezone.utc)
@@ -1357,7 +1359,7 @@ async def exchange_setup_token(
         raise HTTPException(status_code=401, detail="Setup token has already been used")
 
     # Fetch the user the token belongs to
-    user_row = UserRepository(conn).get_by_id(row["user_id"])
+    user_row = users_repo().get_by_id(row["user_id"])
     if not user_row or user_row.get("deleted_at"):
         raise HTTPException(status_code=401, detail="Account not found")
 
@@ -1376,7 +1378,7 @@ async def exchange_setup_token(
     pat_hash = _hl.sha256(jwt_token.encode()).hexdigest()
     prefix = token_id.replace("-", "")[:8]
     expires_at = now + expires_delta
-    AccessTokenRepository(conn).create(
+    access_token_repo().create(
         id=token_id,
         user_id=user_row["id"],
         name="Agnes Cowork (auto-generated)",
