@@ -734,6 +734,17 @@ async def lifespan(app):
         app.state.chat_manager = None
     # --- end CHAT-INIT -------------------------------------------------------
 
+    # --- SLACK-INIT: resolve bot user id once (mention loop-guard / strip) ---
+    app.state.slack_bot_user_id = None
+    try:
+        from services.slack_bot.identity import resolve_bot_user_id
+        app.state.slack_bot_user_id = await resolve_bot_user_id()
+        if app.state.slack_bot_user_id:
+            logger.info("slack bot user id resolved: %s", app.state.slack_bot_user_id)
+    except Exception:
+        logger.exception("SLACK-INIT failed (non-fatal); bot user id unresolved")
+    # --- end SLACK-INIT ------------------------------------------------------
+
     # --- SLACK SOCKET MODE (optional inbound transport) ----------------------
     # Boot-safety boundary: a Slack misconfig (bad transport value, preflight
     # raising, etc.) must NEVER crash app startup. The helper self-guards

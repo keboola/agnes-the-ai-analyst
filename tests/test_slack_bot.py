@@ -306,6 +306,50 @@ def test_slack_dm_assistant_message_reaches_thread(monkeypatch):
     ), sent
 
 
+class TestResolveBotUserId:
+    def test_returns_user_id_on_ok(self, monkeypatch):
+        import asyncio
+        import services.slack_bot.identity as ident
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+
+        class _Resp:
+            def json(self): return {"ok": True, "user_id": "U07BOT"}
+
+        class _FakeClient:
+            def __init__(self, *a, **k): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def post(self, url, headers=None):
+                assert url.endswith("/auth.test")
+                return _Resp()
+
+        monkeypatch.setattr(ident.httpx, "AsyncClient", _FakeClient)
+        assert asyncio.run(ident.resolve_bot_user_id()) == "U07BOT"
+
+    def test_returns_none_on_not_ok(self, monkeypatch):
+        import asyncio
+        import services.slack_bot.identity as ident
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+
+        class _Resp:
+            def json(self): return {"ok": False, "error": "invalid_auth"}
+
+        class _FakeClient:
+            def __init__(self, *a, **k): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def post(self, url, headers=None): return _Resp()
+
+        monkeypatch.setattr(ident.httpx, "AsyncClient", _FakeClient)
+        assert asyncio.run(ident.resolve_bot_user_id()) is None
+
+    def test_returns_none_without_token(self, monkeypatch):
+        import asyncio
+        import services.slack_bot.identity as ident
+        monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+        assert asyncio.run(ident.resolve_bot_user_id()) is None
+
+
 class TestSendEphemeralToUser:
     def test_posts_ephemeral_with_user_and_token(self, monkeypatch):
         import asyncio
