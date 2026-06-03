@@ -199,6 +199,7 @@ def test_socket_dispatcher_acks_envelope_before_scheduling(monkeypatch):
     """_on_request must call send_socket_mode_response(envelope_id) BEFORE
     it schedules the dispatch, and dispatch_event must receive the exact
     payload["event"] dict (byte-identical to the HTTP extraction)."""
+    pytest.importorskip("slack_sdk")  # optional 'slack-socket' extra; _on_request imports SocketModeResponse
     from services.slack_bot.socket_mode_client import SocketModeDispatcher
 
     order: list[str] = []
@@ -251,6 +252,7 @@ def test_socket_dispatcher_acks_envelope_before_scheduling(monkeypatch):
 def test_socket_dispatcher_ignores_non_event_callback(monkeypatch):
     """A non-event_callback payload (e.g. a hello) is still acked but not
     dispatched (slash/interactivity routing is a later phase)."""
+    pytest.importorskip("slack_sdk")  # optional 'slack-socket' extra; _on_request imports SocketModeResponse
     from services.slack_bot.socket_mode_client import SocketModeDispatcher
 
     acked: list[str] = []
