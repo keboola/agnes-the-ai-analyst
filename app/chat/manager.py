@@ -41,12 +41,21 @@ class SessionNotFound(Exception):
 
 
 @dataclass
+class SinkEntry:
+    """One output target for a live session's frames. Duck-typed sink:
+    a web WebSocket or a SlackSinkBridge — both expose ``send_json`` and
+    ``close``. ``participant_email`` attributes the sink to a principal so
+    leave/teardown can drop exactly one sink (used by co-drive in 5b)."""
+    participant_email: str
+    sink: object
+
+
+@dataclass
 class LiveSession:
     chat_id: str
     user_email: str
     state: SessionState
     handle: Optional[SandboxHandle]
-    ws: object  # WebSocket; typed loosely to avoid FastAPI import cycle
     started_at: datetime
     last_activity: datetime
     crash_count: int = 0
@@ -61,6 +70,14 @@ class LiveSession:
     # even if the user sends a second turn while the first one is
     # still in-flight.
     auto_title_started: bool = False
+    # Output sinks the runner's frames fan out to. One SinkEntry per
+    # attached principal (web WS or SlackSinkBridge). The primary sink is
+    # seated by attach(); add_sink() appends late joiners (co-drive, 5b).
+    sinks: list["SinkEntry"] = field(default_factory=list)
+    # Serializes the stdin write+drain pair so two participants' concurrent
+    # turns can never interleave partial JSON lines on the shared stdin
+    # (spec §6.2).
+    _stdin_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class ChatManager:
@@ -181,7 +198,7 @@ class ChatManager:
 
     # --- attach + runtime methods (Task 5.2) --------------------------------
 
-    async def attach(self, chat_id: str, ws) -> None:
+    async def attach(self, chat_id: str, ws, *, is_primary: bool = True) -> None:
         session = self._repo.get_session(chat_id)
         if session is None:
             raise SessionNotFound(chat_id)
@@ -190,14 +207,21 @@ class ChatManager:
         session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, chat_id)
 
         handle = await self._spawn_runner(session, session_dir)
+        # 5a seats the primary sink unconditionally. is_primary is part of
+        # the spec §6.3 attach contract so 5b co-drive can attach a runner
+        # without a primary seat (it seats collaborators via add_sink); 5a
+        # never passes is_primary=False, so the primary is always present.
         live = LiveSession(
             chat_id=chat_id,
             user_email=session.user_email,
             state=SessionState.ACTIVE,
             handle=handle,
-            ws=ws,
             started_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
+            sinks=(
+                [SinkEntry(participant_email=session.user_email, sink=ws)]
+                if is_primary else []
+            ),
         )
         self._live[chat_id] = live
         await ws.send_json({"type": "ready"})
@@ -211,6 +235,27 @@ class ChatManager:
             await asyncio.gather(*live.tasks, return_exceptions=True)
         finally:
             await self.kill(chat_id, reason="ws_disconnect")
+
+    async def add_sink(self, chat_id: str, sink, participant_email: str) -> None:
+        """Attach an additional output sink to an already-live session.
+
+        Replays persisted history to the new sink BEFORE appending it to the
+        broadcast list, so a late joiner never misses in-flight frames and
+        never double-receives one (replay + append are serialized here; the
+        pump only ever sees the sink once it's in live.sinks). Sends ``ready``
+        last. Used by single-principal Slack cross-surface attach and (5b)
+        co-drive join."""
+        live = self._live.get(chat_id)
+        if live is None or live.state == SessionState.DEAD:
+            raise SessionNotFound(chat_id)
+        for msg in self._repo.list_messages(chat_id):
+            await sink.send_json({
+                "type": "assistant_message" if msg.role == "assistant" else "user_msg",
+                "content": msg.content,
+                "sender_email": msg.sender_email,
+            })
+        live.sinks.append(SinkEntry(participant_email=participant_email, sink=sink))
+        await sink.send_json({"type": "ready"})
 
     async def _spawn_runner(self, session: ChatSession, session_dir: Path):
         from app.auth.access import mint_session_jwt
@@ -330,11 +375,7 @@ class ChatManager:
             except json.JSONDecodeError:
                 continue
             live.last_activity = datetime.now(timezone.utc)
-            try:
-                await live.ws.send_json(frame)
-            except Exception:
-                logger.warning("ws send failed for %s", live.chat_id)
-                return
+            await self._broadcast(live, frame)
             if frame.get("type") == "assistant_message":
                 self._repo.append_message(
                     session_id=live.chat_id,
@@ -364,6 +405,30 @@ class ChatManager:
                     },
                 )
 
+    async def _broadcast(self, live: LiveSession, frame: dict) -> None:
+        """Send a frame to every sink, snapshotting the list first so a
+        concurrent add/remove can't mutate it mid-iteration. Dead sinks are
+        removed and closed after the loop. A failing sink never aborts the
+        broadcast to the others."""
+        dead: list[SinkEntry] = []
+        for entry in list(live.sinks):
+            try:
+                await entry.sink.send_json(frame)
+            except Exception:
+                logger.warning("sink send failed for %s", live.chat_id)
+                dead.append(entry)
+        for entry in dead:
+            if entry in live.sinks:
+                live.sinks.remove(entry)
+            asyncio.create_task(self._safe_close(entry.sink))
+
+    @staticmethod
+    async def _safe_close(sink) -> None:
+        try:
+            await sink.close()
+        except Exception:
+            pass
+
     async def _wait_for_exit_and_respawn(self, live: LiveSession, session_dir: Path) -> None:
         while True:
             assert live.handle is not None
@@ -372,7 +437,7 @@ class ChatManager:
                 return
             # Crash path
             live.crash_count += 1
-            await live.ws.send_json({
+            await self._broadcast(live, {
                 "type": "error",
                 "kind": "subprocess_crashed",
                 "auto_respawn": live.crash_count < 3,
@@ -386,14 +451,15 @@ class ChatManager:
             new_handle = await self._spawn_runner(session, session_dir)
             live.handle = new_handle
             live.state = SessionState.ACTIVE
-            await live.ws.send_json({"type": "ready"})
+            await self._broadcast(live, {"type": "ready"})
             # Replay last 3 user turns into the new subprocess
             history = self._repo.list_messages(live.chat_id)[-3:]
             for msg in history:
                 if msg.role == "user":
                     payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
-                    new_handle.stdin.write(payload.encode("utf-8"))
-                    await new_handle.stdin.drain()
+                    async with live._stdin_lock:
+                        new_handle.stdin.write(payload.encode("utf-8"))
+                        await new_handle.stdin.drain()
             # Replace (not append) the per-session pump task so the task
             # list does not grow unboundedly across crash respawns.  The old
             # pump returned on EOF; cancel it for hygiene, then drop it from
@@ -412,7 +478,7 @@ class ChatManager:
             live.tasks.append(new_pump)
             # Loop back to wait on the new handle.
 
-    async def send_user_message(self, chat_id: str, text: str) -> None:
+    async def send_user_message(self, chat_id: str, text: str, *, sender_email: Optional[str] = None) -> None:
         live = self._live.get(chat_id)
         if live is None or live.handle is None or live.state == SessionState.DEAD:
             raise SessionNotFound(chat_id)
@@ -423,7 +489,7 @@ class ChatManager:
             + tokens_out * _PRICE_OUT_PER_MTOK / 1_000_000
         )
         if spent_usd >= self._config.daily_anthropic_spend_usd:
-            await live.ws.send_json({
+            await self._broadcast(live, {
                 "type": "error",
                 "kind": "daily_budget",
                 "message": (
@@ -439,7 +505,7 @@ class ChatManager:
         # documented in persistence.py).
         session_tokens = self._repo.session_total_tokens(chat_id)
         if session_tokens >= self._config.max_session_tokens:
-            await live.ws.send_json({
+            await self._broadcast(live, {
                 "type": "error",
                 "kind": "max_session_tokens",
                 "message": (
@@ -459,7 +525,7 @@ class ChatManager:
         while window and (now_mono - window[0]) > 3600:
             window.popleft()
         if len(window) >= self._config.rate_messages_per_hour:
-            await live.ws.send_json({
+            await self._broadcast(live, {
                 "type": "error",
                 "kind": "rate_limit",
                 "message": (
@@ -469,10 +535,14 @@ class ChatManager:
             })
             raise RuntimeError("rate_limit_exceeded")
         window.append(now_mono)
-        self._repo.append_message(session_id=chat_id, role="user", content=text)
+        self._repo.append_message(
+            session_id=chat_id, role="user", content=text,
+            sender_email=sender_email or live.user_email,
+        )
         payload = json.dumps({"type": "user_msg", "text": text}) + "\n"
-        live.handle.stdin.write(payload.encode("utf-8"))
-        await live.handle.stdin.drain()
+        async with live._stdin_lock:
+            live.handle.stdin.write(payload.encode("utf-8"))
+            await live.handle.stdin.drain()
         live.last_activity = datetime.now(timezone.utc)
         live.state = SessionState.ACTIVE
 
@@ -481,8 +551,9 @@ class ChatManager:
         if live is None or live.handle is None:
             return
         payload = json.dumps({"type": "cancel"}) + "\n"
-        live.handle.stdin.write(payload.encode("utf-8"))
-        await live.handle.stdin.drain()
+        async with live._stdin_lock:
+            live.handle.stdin.write(payload.encode("utf-8"))
+            await live.handle.stdin.drain()
         # Synthetic tool_result so the agent's conversation history reflects
         # the cancellation (per spec § Lifecycle "On cancellation").  Without
         # this, the next user_msg lands in a dangling tool_call context and
@@ -493,13 +564,13 @@ class ChatManager:
             "tool": "_cancel",
             "result": {"cancelled": True},
         }
-        await live.ws.send_json(synthetic)
+        await self._broadcast(live, synthetic)
         self._repo.append_message(
             session_id=chat_id, role="assistant",
             content="",
             tool_calls=[{"cancelled": True}],
         )
-        await live.ws.send_json({"type": "cancelled"})
+        await self._broadcast(live, {"type": "cancelled"})
 
     async def kill(self, chat_id: str, *, reason: str) -> None:
         live = self._live.pop(chat_id, None)
@@ -561,11 +632,11 @@ class ChatManager:
                 return
             self._repo.set_title(live.chat_id, title)
             # Push the new title to the live WS so the sidebar +
-            # thread header update without a refresh. ws.send_json may
+            # thread header update without a refresh. _broadcast may
             # raise if the socket has dropped — swallow it; the
             # persisted title will surface on the next sidebar load.
             try:
-                await live.ws.send_json({
+                await self._broadcast(live, {
                     "type": "session_renamed",
                     "chat_id": live.chat_id,
                     "title": title,
