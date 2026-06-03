@@ -17,9 +17,11 @@ from pydantic import BaseModel, Field
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.repositories.welcome_template import WelcomeTemplateRepository
 from src.welcome_template import build_context, compute_default_agent_prompt, render_agent_prompt_banner
 
+from src.repositories import (
+    welcome_template_repo,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -112,7 +114,7 @@ async def admin_get_template(
             seed_path=_SEED_PATH,
         )
 
-    row = WelcomeTemplateRepository(conn).get()
+    row = welcome_template_repo().get()
     live_default = compute_default_agent_prompt(conn, user=user, server_url=server_url)
     return TemplateGetResponse(
         content=row["content"],
@@ -179,7 +181,7 @@ async def admin_put_template(
             ),
         )
 
-    WelcomeTemplateRepository(conn).set(payload.content, updated_by=user["email"])
+    welcome_template_repo().set(payload.content, updated_by=user["email"])
     return {"status": "ok"}
 
 
@@ -203,7 +205,7 @@ async def admin_reset_template(
                 ),
             },
         )
-    WelcomeTemplateRepository(conn).reset(updated_by=user["email"])
+    welcome_template_repo().reset(updated_by=user["email"])
     return Response(status_code=204)
 
 

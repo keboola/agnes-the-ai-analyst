@@ -16,10 +16,12 @@ import duckdb
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from src.db import get_system_db
-from src.repositories.audit import AuditRepository
-from src.repositories.notifications import ScriptRepository
 from src.scheduler import is_valid_schedule, is_table_due
 
+from src.repositories import (
+    audit_repo,
+    notifications_script_repo,
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/scripts", tags=["scripts"])
@@ -68,7 +70,7 @@ async def list_scripts(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List deployed scripts. Admin-only."""
-    repo = ScriptRepository(conn)
+    repo = notifications_script_repo()
     scripts = repo.list_all()
     return {"scripts": scripts, "count": len(scripts)}
 
@@ -87,7 +89,7 @@ async def deploy_script(
     re-claim itself perpetually.
     """
     _validate_script_source(request.source)
-    repo = ScriptRepository(conn)
+    repo = notifications_script_repo()
     script_id = str(uuid.uuid4())
     repo.deploy(
         id=script_id,
@@ -109,7 +111,7 @@ async def run_deployed_script(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Run a deployed script by ID. Admin-only."""
-    repo = ScriptRepository(conn)
+    repo = notifications_script_repo()
     script = repo.get(script_id)
     if not script:
         raise HTTPException(status_code=404, detail="Script not found")
@@ -133,7 +135,7 @@ async def undeploy_script(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = ScriptRepository(conn)
+    repo = notifications_script_repo()
     if not repo.get(script_id):
         raise HTTPException(status_code=404, detail="Script not found")
     repo.undeploy(script_id)
@@ -164,7 +166,7 @@ async def run_due_scripts(
     ?``). Documenting this as an accepted v0 limitation; revisit if it
     bites in practice.
     """
-    repo = ScriptRepository(conn)
+    repo = notifications_script_repo()
     claimed: list[str] = []
     for script in repo.list_all():
         schedule = script.get("schedule")
@@ -187,7 +189,7 @@ async def run_due_scripts(
     scripts_run_count = len(claimed)
     try:
         _audit_conn = get_system_db()
-        AuditRepository(_audit_conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="script_runner.tick",
             params={"scripts_run": scripts_run_count, "scripts_failed": 0},
@@ -216,7 +218,7 @@ def _run_claimed_script(script_id: str, source: str, name: str) -> None:
     # was returned to FastAPI by the time this fires.
     bg_conn = get_system_db()
     try:
-        bg_repo = ScriptRepository(bg_conn)
+        bg_repo = notifications_script_repo()
         try:
             result = _execute_script(source, name)
             status = "success" if result.get("exit_code", 1) == 0 else "failure"

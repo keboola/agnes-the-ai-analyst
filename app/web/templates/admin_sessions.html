@@ -1,23 +1,81 @@
-{% extends "base.html" %}
+{% extends "base_page.html" %}
 {% block title %}Sessions — Admin{% endblock %}
 
-{% block content %}
+{% set page_hero_eyebrow = "Activity Center" %}
+{% set page_hero_title = "Sessions" %}
+{% set page_hero_subtitle = "Every collected JSONL across users plus a transcript viewer with next-error navigation." %}
+
+{% block head_extra %}
+<style>
+.obs-page { font: 14px/1.5 var(--font-sans, system-ui); color: var(--text-primary, #111827); }
+.obs-topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
+  padding: 12px 0 20px; border-bottom: 1px solid var(--border, #e5e7eb); margin-bottom: 16px; }
+.obs-topbar-left { flex: 1; min-width: 0; }
+.obs-subtitle { margin: 0 0 10px; color: var(--text-secondary, #6b7280); font-size: 13px; max-width: 720px; }
+.obs-subtitle b { color: var(--text-primary, #111827); }
+.obs-narrative { font-size: 16px; line-height: 1.45; }
+.obs-narrative b { font-weight: 600; }
+.obs-topbar-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.obs-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--text-secondary, #6b7280); display: block; margin-bottom: 2px; }
+.obs-window select { padding: 6px 8px; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+  background: var(--surface, #fff); font: inherit; }
+/* `.obs-btn` rules deleted — buttons render via `ds.button(variant=
+   'secondary', size='sm')` carrying canonical .btn family. */
+.obs-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+.obs-kpi { text-align: left; padding: 14px 16px; border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px; background: var(--surface, #fff); cursor: pointer;
+  display: flex; flex-direction: column; gap: 4px; }
+.obs-kpi:hover { border-color: #2563eb; background: var(--border-light, #f3f4f6); }
+.obs-kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--text-secondary, #6b7280); }
+.obs-kpi-value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.obs-kpi-sub { font-size: 12px; color: var(--text-secondary, #6b7280); font-variant-numeric: tabular-nums; }
+.obs-filters { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;
+  padding: 12px 14px; background: var(--border-light, #f3f4f6); border-radius: 8px; margin-bottom: 12px; }
+.obs-filter { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
+.obs-filter-grow { flex: 1; min-width: 200px; }
+.obs-filter label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--text-secondary, #6b7280); }
+.obs-select, .obs-filter input[type=search] { padding: 6px 8px;
+  border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+  background: var(--surface, #fff); font: inherit; }
+.obs-checkbox { display: flex; align-items: center; gap: 6px;
+  text-transform: none; letter-spacing: 0; font-size: 13px;
+  color: var(--text-primary, #111827); cursor: pointer; padding-top: 14px; }
+.obs-filter-actions { display: flex; align-items: flex-end; }
+.obs-table-wrap { border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
+  overflow: hidden; background: var(--surface, #fff); }
+.obs-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.obs-table thead th { text-align: left; padding: 10px 12px; background: var(--border-light, #f3f4f6);
+  border-bottom: 1px solid var(--border, #e5e7eb); font-weight: 600;
+  color: var(--text-secondary, #6b7280); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap; }
+.obs-table thead th button { background: none; border: 0; padding: 0; font: inherit; color: inherit;
+  cursor: pointer; display: inline-flex; gap: 4px; text-transform: inherit; letter-spacing: inherit; }
+.obs-table thead th[aria-sort="ascending"] .obs-sort-arrow::before { content: "▲"; }
+.obs-table thead th[aria-sort="descending"] .obs-sort-arrow::before { content: "▼"; }
+.obs-sort-arrow { font-size: 9px; color: var(--text-secondary, #6b7280); }
+.obs-table tbody td { padding: 8px 12px; border-bottom: 1px solid var(--border-light, #f3f4f6); vertical-align: top; }
+.obs-table tbody tr { cursor: pointer; }
+.obs-table tbody tr:hover { background: var(--border-light, #f3f4f6); }
+.obs-table tbody tr.has-errors { background: #fff7f7; }
+.obs-table tbody tr.has-errors:hover { background: #ffebeb; }
+.obs-num { text-align: right; font-variant-numeric: tabular-nums; }
+.obs-empty { padding: 40px 16px; text-align: center; color: var(--text-secondary, #6b7280); font-size: 13px; }
+.obs-table-footer { display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px; border-top: 1px solid var(--border, #e5e7eb); background: var(--border-light, #f3f4f6); }
+.obs-row-count { color: var(--text-secondary, #6b7280); font-size: 12px; }
+.obs-err-chip { display: inline-block; padding: 1px 6px; border-radius: 4px; background: #fee2e2;
+  color: #991b1b; font-size: 11px; font-weight: 500; }
+</style>
+{% endblock %}
+
+{% block page %}
 {# Design-system component macros — Reset + Prev/Next paginator render
-   via `ds.button`. .obs-kpi cards + .obs-table page-local enhancements
-   stay as-is per system.md. #}
-{% import "_components.html" as ds %}
-<div class="obs-page page-shell">
-
-  {% set page_hero_eyebrow = "Activity Center" %}
-
-
-  {% set page_hero_title = "Sessions" %}
-
-
-  {% set page_hero_subtitle = "Every collected JSONL across users plus a transcript viewer with next-error navigation." %}
-
-
-  {% include "_page_hero.html" %}
+   via `ds.button` (auto-imported by base_ds). .obs-kpi cards + .obs-table
+   page-local enhancements stay as-is per system.md. #}
+<div class="obs-page">
 
 
   <header class="obs-topbar">
@@ -103,70 +161,6 @@
     </div>
   </section>
 </div>
-
-<style>
-.obs-page { font: 14px/1.5 var(--font-sans, system-ui); color: var(--text-primary, #111827); }
-.obs-topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
-  padding: 12px 0 20px; border-bottom: 1px solid var(--border, #e5e7eb); margin-bottom: 16px; }
-.obs-topbar-left { flex: 1; min-width: 0; }
-.obs-subtitle { margin: 0 0 10px; color: var(--text-secondary, #6b7280); font-size: 13px; max-width: 720px; }
-.obs-subtitle b { color: var(--text-primary, #111827); }
-.obs-narrative { font-size: 16px; line-height: 1.45; }
-.obs-narrative b { font-weight: 600; }
-.obs-topbar-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.obs-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
-  color: var(--text-secondary, #6b7280); display: block; margin-bottom: 2px; }
-.obs-window select { padding: 6px 8px; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
-  background: var(--surface, #fff); font: inherit; }
-/* `.obs-btn` rules deleted — buttons render via `ds.button(variant=
-   'secondary', size='sm')` carrying canonical .btn family. */
-.obs-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
-.obs-kpi { text-align: left; padding: 14px 16px; border: 1px solid var(--border, #e5e7eb);
-  border-radius: 8px; background: var(--surface, #fff); cursor: pointer;
-  display: flex; flex-direction: column; gap: 4px; }
-.obs-kpi:hover { border-color: #2563eb; background: var(--border-light, #f3f4f6); }
-.obs-kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
-  color: var(--text-secondary, #6b7280); }
-.obs-kpi-value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.obs-kpi-sub { font-size: 12px; color: var(--text-secondary, #6b7280); font-variant-numeric: tabular-nums; }
-.obs-filters { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;
-  padding: 12px 14px; background: var(--border-light, #f3f4f6); border-radius: 8px; margin-bottom: 12px; }
-.obs-filter { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
-.obs-filter-grow { flex: 1; min-width: 200px; }
-.obs-filter label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
-  color: var(--text-secondary, #6b7280); }
-.obs-select, .obs-filter input[type=search] { padding: 6px 8px;
-  border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
-  background: var(--surface, #fff); font: inherit; }
-.obs-checkbox { display: flex; align-items: center; gap: 6px;
-  text-transform: none; letter-spacing: 0; font-size: 13px;
-  color: var(--text-primary, #111827); cursor: pointer; padding-top: 14px; }
-.obs-filter-actions { display: flex; align-items: flex-end; }
-.obs-table-wrap { border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
-  overflow: hidden; background: var(--surface, #fff); }
-.obs-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.obs-table thead th { text-align: left; padding: 10px 12px; background: var(--border-light, #f3f4f6);
-  border-bottom: 1px solid var(--border, #e5e7eb); font-weight: 600;
-  color: var(--text-secondary, #6b7280); font-size: 11px;
-  text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap; }
-.obs-table thead th button { background: none; border: 0; padding: 0; font: inherit; color: inherit;
-  cursor: pointer; display: inline-flex; gap: 4px; text-transform: inherit; letter-spacing: inherit; }
-.obs-table thead th[aria-sort="ascending"] .obs-sort-arrow::before { content: "▲"; }
-.obs-table thead th[aria-sort="descending"] .obs-sort-arrow::before { content: "▼"; }
-.obs-sort-arrow { font-size: 9px; color: var(--text-secondary, #6b7280); }
-.obs-table tbody td { padding: 8px 12px; border-bottom: 1px solid var(--border-light, #f3f4f6); vertical-align: top; }
-.obs-table tbody tr { cursor: pointer; }
-.obs-table tbody tr:hover { background: var(--border-light, #f3f4f6); }
-.obs-table tbody tr.has-errors { background: #fff7f7; }
-.obs-table tbody tr.has-errors:hover { background: #ffebeb; }
-.obs-num { text-align: right; font-variant-numeric: tabular-nums; }
-.obs-empty { padding: 40px 16px; text-align: center; color: var(--text-secondary, #6b7280); font-size: 13px; }
-.obs-table-footer { display: flex; justify-content: space-between; align-items: center;
-  padding: 10px 14px; border-top: 1px solid var(--border, #e5e7eb); background: var(--border-light, #f3f4f6); }
-.obs-row-count { color: var(--text-secondary, #6b7280); font-size: 12px; }
-.obs-err-chip { display: inline-block; padding: 1px 6px; border-radius: 4px; background: #fee2e2;
-  color: #991b1b; font-size: 11px; font-weight: 500; }
-</style>
 
 <script>
 (function() {

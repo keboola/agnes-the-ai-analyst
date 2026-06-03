@@ -1,13 +1,13 @@
-{% extends "base.html" %}
+{% extends "base_page.html" %}
 {% block title %}Users — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{# Design-system component macros — toolbar "+ Add user" + 9 modal
-   action buttons across 5 modals (Create / Set-password / Reset-link /
-   Invite / Confirm) render via `ds.button`. JS-generated per-row table
-   actions stay page-local. #}
-{% import "_components.html" as ds %}
-<style>  .users-toolbar {
+{% set page_hero_eyebrow = "Users & Access" %}
+{% set page_hero_title = "Users" %}
+{% set page_hero_subtitle = "Manage analyst accounts and group membership." %}
+
+{% block head_extra %}
+<style>
+  .users-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
   }
@@ -164,15 +164,13 @@
   .toast.success { background: #047857; }
   .toast.error { background: #b91c1c; }
 </style>
+{% endblock %}
 
+{% block page %}
+{# Design-system component macros — toolbar "+ Add user" + 9 modal action
+   buttons across 5 modals render via `ds.button` (auto-imported by base_ds).
+   JS-generated per-row table actions stay page-local. #}
 <div class="users-page">
-  {% set page_hero_eyebrow = "Users & Access" %}
-
-  {% set page_hero_title = "Users" %}
-
-  {% set page_hero_subtitle = "Manage analyst accounts and group membership." %}
-
-  {% include "_page_hero.html" %}
 
   <div class="users-toolbar">
     <input id="user-search" type="search" class="search-input" placeholder="Filter by email or name…" autocomplete="off">
@@ -321,7 +319,7 @@ function deriveDisplayName(fullEmail) {
   if (!s) return local;
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
-function fmtDate(s) { return s ? s.slice(0, 16).replace("T", " ") : "—"; }
+function fmtDate(s) { return s ? (window.AgnesTime.formatDateTime(s) || "—") : "—"; }
 function initials(u) {
   const src = (u.name || u.email || "?").trim();
   const parts = src.split(/[\s@.]+/).filter(Boolean);

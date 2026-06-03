@@ -267,6 +267,9 @@ Auth providers in `app/auth/` (FastAPI-based):
 - **Email**: magic link (itsdangerous token)
 - **Desktop**: JWT for API
 
+### Web pages
+HTML dashboard pages use the design-system **page shell** (#367/#482): `{% extends "base_page.html" %}` (gradient hero + `{% block toolbar %}` + `{% block page %}`) or `{% extends "base_ds.html" %}` (everything else; body in `{% block content %}`). **Never `base.html`** — it is legacy. The base auto-imports the `ds.*` macros (no `{% import "_components.html" %}`), sets theme/favicon/nav/global-JS, and provides the canonical `.container`; page CSS goes in `{% block head_extra %}`, never inline in the body. Contract guards in `tests/test_design_system_contract.py` reject `.container:has()` opt-outs, bare `:root{}`, raw `#hex`, and `var(--primary)` (use `var(--ds-primary)`). Full step-by-step recipe: [`docs/architecture.md`](docs/architecture.md) → *Extending the Platform → New Web Page*.
+
 ## Key Implementation Details
 
 ### DuckDB Schema (src/db.py)
@@ -327,6 +330,22 @@ This repo is the public OSS distribution. **Nothing customer-specific belongs in
 
 ### Issue economy — fix or close, don't spawn
 The default reaction to "I noticed something while doing X" is **fix it now**, **close it as moot after audit**, or **leave a `TODO` in the touching diff** — not "file an issue". Before filing any follow-up issue: verify the claim is still true on current `main` (issues routinely cite moved line numbers and deleted call sites — if the premise is gone, close the parent), and check whether it's a ≤30-min, ≤1-file fix you could just do in the current PR. Filing is acceptable only for multi-file refactors with open design questions, production changes needing operator coordination, unclear cross-team ownership, or bugs whose fix would balloon the current PR ≥3×. When investigating an existing issue, reproduce the symptom on current `main` first; if it doesn't fire, close with a comment documenting the audit. When in doubt: fix it, or close it.
+
+### Dual-backend discipline (DuckDB + Postgres parity)
+
+DuckDB and Postgres are **both** first-class long-term backends for app-state, not a legacy/destination pair. Every feature must work on either engine, with cross-engine contract tests catching drift.
+
+Non-negotiable rules:
+
+- **Add a method to `src/repositories/X.py` (DuckDB)? Add the matching method to `src/repositories/X_pg.py` (PG) in the same PR.** No exceptions for "I'll do PG later". The DuckDB-bias drift in the codebase happens commit-by-commit; one PR with only `_pg.py` change is the canonical first step toward unmaintainable parity gaps.
+- **Cross-engine contract tests must stay green.** `tests/db_pg/test_<cluster>_contract.py` parametrizes both backends through the same assertion set. If you add a method, extend the contract test in the same PR.
+- **Alembic migration for PG? Matching `_vN_to_v(N+1)` step in `src/db.py` for DuckDB.** Both ladders must reach the same schema endpoint; `tests/test_db_schema_version.py` is the integration gate.
+- **No PG-only optimizations without a DuckDB fallback path.** If a query has a PG-native window function, the DuckDB sibling either uses the same syntax (DuckDB ⊇ PG in most window-function support) or implements an equivalent in DuckDB's flavor.
+- **DuckDB extensions (BQ, FTS, etc.) are not "DuckDB legacy".** They live next to the PG repos; analytics and state both ride DuckDB where appropriate.
+
+When DuckDB-Quack matures (DuckDB 2.0, ~fall 2026), it becomes a fourth backend state (`duckdb_quack`); the dual-repo pattern absorbs it via the same factory layer. The state machine in `src/db_state_machine.py` already reserves the enum value.
+
+The framing of *"DuckDB only for analytics, Postgres for state"* (from the PR #388 era) is **explicitly retired** — both backends are valid for state, and the platform supports multi-destination transitions in either direction.
 
 ### Git commits & pull requests
 - Keep commit messages clean and concise.

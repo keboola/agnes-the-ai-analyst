@@ -27,9 +27,14 @@ from src.marketplace import (
     sync_marketplaces,
     sync_one,
 )
-from src.repositories.audit import AuditRepository
-from src.repositories.marketplace_plugins import MarketplacePluginsRepository
-from src.repositories.marketplace_registry import MarketplaceRegistryRepository
+
+from src.repositories import (
+    audit_repo,
+    marketplace_plugins_repo,
+    marketplace_registry_repo,
+    resource_grants_repo,
+    user_curated_subscriptions_repo,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/marketplaces", tags=["marketplaces"])
@@ -56,7 +61,7 @@ def _audit(
                     safe_params[k] = v.isoformat()
                 else:
                     safe_params[k] = v
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id,
             action=action,
             resource=f"marketplace:{target_id}",
@@ -198,10 +203,10 @@ async def list_marketplaces(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    counts = MarketplacePluginsRepository(conn).count_by_marketplace()
+    counts = marketplace_plugins_repo().count_by_marketplace()
     return [
         _to_response(row, counts.get(row["id"], 0))
-        for row in MarketplaceRegistryRepository(conn).list_all()
+        for row in marketplace_registry_repo().list_all()
     ]
 
 
@@ -217,9 +222,9 @@ async def list_plugins(
     `.claude-plugin/marketplace.json` on every successful sync. An
     unsynced marketplace will return an empty list.
     """
-    if not MarketplaceRegistryRepository(conn).get(marketplace_id):
+    if not marketplace_registry_repo().get(marketplace_id):
         raise HTTPException(status_code=404, detail="marketplace not found")
-    rows = MarketplacePluginsRepository(conn).list_for_marketplace(marketplace_id)
+    rows = marketplace_plugins_repo().list_for_marketplace(marketplace_id)
     return [
         PluginResponse(
             name=r["name"],
@@ -272,7 +277,7 @@ async def create_marketplace(
             status_code=400, detail="curator_email is not a valid email address",
         )
 
-    repo = MarketplaceRegistryRepository(conn)
+    repo = marketplace_registry_repo()
     if repo.get(slug):
         raise HTTPException(status_code=409, detail=f"marketplace '{slug}' already exists")
 
@@ -309,7 +314,7 @@ async def update_marketplace(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = MarketplaceRegistryRepository(conn)
+    repo = marketplace_registry_repo()
     existing = repo.get(marketplace_id)
     if not existing:
         raise HTTPException(status_code=404, detail="marketplace not found")
@@ -399,7 +404,7 @@ async def update_marketplace(
         curator_email=updated["curator_email"],
     )
     _audit(conn, user["id"], "marketplace.update", marketplace_id, changed)
-    counts = MarketplacePluginsRepository(conn).count_by_marketplace()
+    counts = marketplace_plugins_repo().count_by_marketplace()
     return _to_response(repo.get(marketplace_id), counts.get(marketplace_id, 0))
 
 
@@ -410,7 +415,7 @@ async def delete_marketplace(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = MarketplaceRegistryRepository(conn)
+    repo = marketplace_registry_repo()
     existing = repo.get(marketplace_id)
     if not existing:
         raise HTTPException(status_code=404, detail="marketplace not found")
@@ -440,10 +445,7 @@ async def delete_marketplace(
         )
         # Drop user subscriptions to plugins from this marketplace so a
         # re-registered slug doesn't inherit stale subscribe state.
-        from src.repositories.user_curated_subscriptions import (
-            UserCuratedSubscriptionsRepository,
-        )
-        UserCuratedSubscriptionsRepository(conn).delete_for_marketplace(
+        user_curated_subscriptions_repo().delete_for_marketplace(
             marketplace_id
         )
     except Exception as e:
@@ -572,10 +574,6 @@ def mark_plugin_system(
     runs the fanout (cheap; ON CONFLICT DO NOTHING) so any user/group
     that slipped past the creation hooks gets caught up.
     """
-    from src.repositories.resource_grants import ResourceGrantsRepository
-    from src.repositories.user_curated_subscriptions import (
-        UserCuratedSubscriptionsRepository,
-    )
 
     plugin_row = conn.execute(
         "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",
@@ -605,7 +603,7 @@ def mark_plugin_system(
     # through DuckDB's ON CONFLICT on the PK, which is well-supported.
     # Partial-application is safe: a re-run completes the remainder.
     groups = conn.execute("SELECT id FROM user_groups").fetchall()
-    grants_repo = ResourceGrantsRepository(conn)
+    grants_repo = resource_grants_repo()
     actor_email = user.get("email") or user.get("id")
     for (group_id,) in groups:
         try:
@@ -619,9 +617,9 @@ def mark_plugin_system(
         except duckdb.ConstraintException:
             continue
 
-    affected_users = UserCuratedSubscriptionsRepository(
-        conn,
-    ).fanout_system_for_plugin(marketplace_id, plugin_name)
+    affected_users = user_curated_subscriptions_repo().fanout_system_for_plugin(
+        marketplace_id, plugin_name,
+    )
 
     _audit(
         conn,

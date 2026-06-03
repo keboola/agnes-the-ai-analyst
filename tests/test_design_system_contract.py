@@ -363,3 +363,85 @@ def test_classes_helper_compound_match_is_not_false_positive() -> None:
     <span class="badge">x</span>
     '''
     assert _classes_in_template(sample) == {"badge"}
+
+
+# --------------------------------------------------------------------------- #
+# #367 — page-shell layout guards.
+#
+# Leaf templates must not re-introduce the per-page chrome drift the
+# design-system page-shell (`base_page.html` / `base_ds.html` + `.container`)
+# exists to remove: container opt-outs and bare `:root` token-shadow blocks.
+# The canonical bases + theme shim are exempt.
+#
+# NOTE: a broad `.X-page { max-width }` fence is intentionally NOT added yet —
+# many pages still carry legitimate inner-width wrappers pending the full
+# base_page.html migration (tracked as a #367 follow-up). It would false-
+# positive today.
+# --------------------------------------------------------------------------- #
+
+# Templates allowed to own layout/theme CSS (the canonical bases + theme shim).
+_CANONICAL_LAYOUT_FILES = {"base.html", "base_ds.html", "base_page.html", "_theme.html"}
+
+_JINJA_RE = re.compile(r"\{\{.*?\}\}|\{%.*?%\}|\{#.*?#\}", re.DOTALL)
+_STYLE_BLOCK_RE = re.compile(r"<style[^>]*>(.*?)</style>", re.DOTALL | re.IGNORECASE)
+
+
+def _inline_styles_in_template(text: str) -> str:
+    """Concatenated content of a template's inline <style> blocks, with Jinja
+    expressions / blocks / comments stripped first so documented examples
+    inside `{# … #}` don't trip the scanners."""
+    jinja_free = _JINJA_RE.sub(" ", text)
+    return "\n".join(_STYLE_BLOCK_RE.findall(jinja_free))
+
+
+def test_no_container_has_optout_in_leaf_templates() -> None:
+    """`.container:has(.X-page) { max-width: none }` is the per-page container
+    opt-out the page-shell replaced (#367). Width changes belong on the
+    canonical `.container--wide/--narrow/--full` modifiers, not a leaf opt-out."""
+    offenders: list[str] = []
+    for path in _all_html():
+        if path.name in _CANONICAL_LAYOUT_FILES:
+            continue
+        if ".container:has(" in _inline_styles_in_template(path.read_text(encoding="utf-8")):
+            offenders.append(str(path))
+    assert not offenders, (
+        "`.container:has(` opt-out found in a leaf template — use a canonical "
+        "`.container--wide/--narrow/--full` modifier instead:\n"
+        + "\n".join(f"  {p}" for p in offenders)
+    )
+
+
+def test_no_bare_root_block_in_leaf_templates() -> None:
+    """A bare `:root { … }` block in a leaf template shadows the canonical
+    design tokens (cf. the `admin_tables :root{--primary:…}` collapse, #367).
+    Only `_theme.html` and the bases may declare `:root`."""
+    pattern = re.compile(r":root\s*\{")
+    offenders: list[str] = []
+    for path in _all_html():
+        if path.name in _CANONICAL_LAYOUT_FILES:
+            continue
+        if pattern.search(_inline_styles_in_template(path.read_text(encoding="utf-8"))):
+            offenders.append(str(path))
+    assert not offenders, (
+        "bare `:root {` block found in a leaf template — design tokens live in "
+        "design-tokens.css / _theme.html, not per-page:\n"
+        + "\n".join(f"  {p}" for p in offenders)
+    )
+
+
+def test_base_ds_carries_operator_custom_scripts() -> None:
+    """`base_ds.html` (and thus `base_page.html`) must fire all three operator
+    `custom_scripts` placements like `base.html` does. Without them every page
+    migrated onto the design-system base silently drops operator-injected
+    analytics / feedback widgets (#367 base_ds parity; surfaced during the #482
+    page migration). `test_custom_scripts_render.py` proves the loop mechanism
+    renders; this guard just keeps the loops present in base_ds."""
+    text = (TEMPLATES / "base_ds.html").read_text(encoding="utf-8")
+    missing = [
+        p for p in ("head_start", "head_end", "body_end")
+        if f"s.placement == '{p}'" not in text
+    ]
+    assert not missing, (
+        f"base_ds.html is missing operator custom_scripts loop(s): {missing} — "
+        "pages migrated onto base_ds will drop operator scripts"
+    )

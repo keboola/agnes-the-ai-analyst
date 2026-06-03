@@ -1,0 +1,277 @@
+"""Postgres-backed resource-grants repository.
+
+Mirrors ``src/repositories/resource_grants.py``. ``fanout_system_for_group``
+is soft-failed when ``marketplace_plugins`` isn't migrated yet (Phase F
+in progress); once the table lands, the try/except becomes unnecessary.
+"""
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+import sqlalchemy as sa
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
+
+
+# Maps resource_type string to the per-type FK column name (migration 0013).
+# marketplace_plugin is absent — it uses the legacy polymorphic resource_id
+# only (composite slug/name path, no surrogate FK possible).
+_PER_TYPE_COLUMN: Dict[str, str] = {
+    "table": "resource_id_table",
+    "data_package": "resource_id_data_package",
+    "memory_domain": "resource_id_memory_domain",
+    "memory_item": "resource_id_memory_item",
+    "recipe": "resource_id_recipe",
+}
+
+
+class ResourceGrantsPgRepository:
+    _SELECT_COLS = (
+        "id, group_id, resource_type, resource_id, "
+        "assigned_at, assigned_by"
+    )
+
+    def __init__(self, engine: Engine):
+        self._engine = engine
+
+    def list_all(
+        self,
+        resource_type: Optional[str] = None,
+        group_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        where: List[str] = []
+        params: Dict[str, Any] = {}
+        if resource_type:
+            where.append("g.resource_type = :rtype")
+            params["rtype"] = resource_type
+        if group_id:
+            where.append("g.group_id = :gid")
+            params["gid"] = group_id
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+        sql = (
+            f"""SELECT g.id, g.group_id, ug.name AS group_name,
+                       g.resource_type, g.resource_id,
+                       g.assigned_at, g.assigned_by
+                FROM resource_grants g
+                JOIN user_groups ug ON ug.id = g.group_id
+                {where_sql}
+                ORDER BY ug.name, g.resource_type, g.resource_id"""
+        )
+        with self._engine.connect() as conn:
+            rows = conn.execute(sa.text(sql), params).mappings().all()
+        return [dict(r) for r in rows]
+
+    def list_for_groups(
+        self,
+        group_ids: List[str],
+        resource_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        if not group_ids:
+            return []
+        in_keys: List[str] = []
+        params: Dict[str, Any] = {}
+        for i, gid in enumerate(group_ids):
+            k = f"g_{i}"
+            in_keys.append(f":{k}")
+            params[k] = gid
+        type_clause = ""
+        if resource_type:
+            type_clause = "AND resource_type = :rtype"
+            params["rtype"] = resource_type
+
+        sql = (
+            f"""SELECT {self._SELECT_COLS}
+                FROM resource_grants
+                WHERE group_id IN ({','.join(in_keys)}) {type_clause}
+                ORDER BY resource_type, resource_id"""
+        )
+        with self._engine.connect() as conn:
+            rows = conn.execute(sa.text(sql), params).mappings().all()
+        return [dict(r) for r in rows]
+
+    def get(self, grant_id: str) -> Optional[Dict[str, Any]]:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(f"SELECT {self._SELECT_COLS} FROM resource_grants WHERE id = :id"),
+                {"id": grant_id},
+            ).mappings().first()
+        return dict(row) if row else None
+
+    def has_grant(
+        self,
+        group_ids: List[str],
+        resource_type: str,
+        resource_id: str,
+    ) -> bool:
+        if not group_ids:
+            return False
+        in_keys: List[str] = []
+        params: Dict[str, Any] = {"rtype": resource_type, "rid": resource_id}
+        for i, gid in enumerate(group_ids):
+            k = f"g_{i}"
+            in_keys.append(f":{k}")
+            params[k] = gid
+        sql = (
+            f"""SELECT 1 FROM resource_grants
+                WHERE group_id IN ({','.join(in_keys)})
+                  AND resource_type = :rtype
+                  AND resource_id = :rid
+                LIMIT 1"""
+        )
+        with self._engine.connect() as conn:
+            row = conn.execute(sa.text(sql), params).first()
+        return row is not None
+
+    def create(
+        self,
+        group_id: str,
+        resource_type: str,
+        resource_id: str,
+        assigned_by: Optional[str] = None,
+        requirement: Optional[str] = None,
+    ) -> str:
+        """Insert a new grant. Returns the assigned id.
+
+        ``requirement`` defaults to the column default (``'available'``) when
+        ``None``. Pass ``'required'`` to create a Required-tier grant in a
+        single round-trip (parity with the DuckDB repo). Rejected if it is
+        anything other than the two enum values.
+        """
+        if requirement is not None and requirement not in ("available", "required"):
+            raise ValueError(
+                f"requirement must be 'available' or 'required', got {requirement!r}"
+            )
+        grant_id = str(uuid4())
+        per_type_col = _PER_TYPE_COLUMN.get(resource_type)
+
+        cols = ["id", "group_id", "resource_type", "resource_id"]
+        vals = [":id", ":gid", ":rtype", ":rid"]
+        params: Dict[str, Any] = {
+            "id": grant_id, "gid": group_id, "rtype": resource_type,
+            "rid": resource_id, "ab": assigned_by,
+        }
+        if per_type_col:
+            cols.append(per_type_col); vals.append(":rid")
+        cols.append("assigned_by"); vals.append(":ab")
+        if requirement is not None:
+            cols.append("requirement"); vals.append(":req"); params["req"] = requirement
+
+        sql = sa.text(
+            f"INSERT INTO resource_grants ({', '.join(cols)}) VALUES ({', '.join(vals)})"
+        )
+        with self._engine.begin() as conn:
+            conn.execute(sql, params)
+        return grant_id
+
+    def update_requirement(self, grant_id: str, requirement: str) -> Optional[str]:
+        """Update the ``requirement`` enum on a grant. Returns the prior value
+        (None if the grant is missing) so callers can detect transitions
+        (parity with the DuckDB repo).
+        """
+        if requirement not in ("available", "required"):
+            raise ValueError(
+                f"requirement must be 'available' or 'required', got {requirement!r}"
+            )
+        with self._engine.begin() as conn:
+            before = conn.execute(
+                sa.text("SELECT requirement FROM resource_grants WHERE id = :id"),
+                {"id": grant_id},
+            ).first()
+            if before is None:
+                return None
+            conn.execute(
+                sa.text("UPDATE resource_grants SET requirement = :req WHERE id = :id"),
+                {"req": requirement, "id": grant_id},
+            )
+        return before[0]
+
+    def delete(self, grant_id: str) -> bool:
+        with self._engine.begin() as conn:
+            row = conn.execute(
+                sa.text("DELETE FROM resource_grants WHERE id = :id RETURNING 1"),
+                {"id": grant_id},
+            ).first()
+        return row is not None
+
+    def delete_by_resource(
+        self,
+        resource_type: str,
+        resource_id: str,
+    ) -> int:
+        with self._engine.begin() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """DELETE FROM resource_grants
+                       WHERE resource_type = :rtype AND resource_id = :rid
+                       RETURNING 1"""
+                ),
+                {"rtype": resource_type, "rid": resource_id},
+            ).all()
+        return len(rows)
+
+    def delete_all_for_group(self, group_id: str) -> int:
+        """Drop every grant for ``group_id``. Used by the group-delete cascade."""
+        with self._engine.begin() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "DELETE FROM resource_grants WHERE group_id = :gid RETURNING 1"
+                ),
+                {"gid": group_id},
+            ).all()
+        return len(rows)
+
+    def count_for_group(self, group_id: str) -> int:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text("SELECT COUNT(*) FROM resource_grants WHERE group_id = :gid"),
+                {"gid": group_id},
+            ).first()
+        return int(row[0]) if row else 0
+
+    def fanout_system_for_group(
+        self,
+        group_id: str,
+        assigned_by: Optional[str] = None,
+    ) -> int:
+        """Grant every ``is_system=TRUE`` marketplace_plugin to ``group_id``.
+
+        Soft-fail if ``marketplace_plugins`` isn't migrated yet (Phase F
+        in progress). Once that port lands, drop the try/except.
+        """
+        try:
+            with self._engine.connect() as conn:
+                rows = conn.execute(
+                    sa.text(
+                        "SELECT marketplace_id, name FROM marketplace_plugins "
+                        "WHERE is_system = TRUE"
+                    ),
+                ).all()
+        except Exception:
+            return 0
+
+        inserted = 0
+        for marketplace_id, plugin_name in rows:
+            resource_id = f"{marketplace_id}/{plugin_name}"
+            try:
+                with self._engine.begin() as conn:
+                    conn.execute(
+                        sa.text(
+                            """INSERT INTO resource_grants
+                               (id, group_id, resource_type, resource_id, assigned_by)
+                               VALUES (:id, :gid, 'marketplace_plugin', :rid, :ab)
+                               ON CONFLICT ON CONSTRAINT uq_resource_grants_group_type_id
+                                 DO NOTHING"""
+                        ),
+                        {
+                            "id": str(uuid4()),
+                            "gid": group_id,
+                            "rid": resource_id,
+                            "ab": assigned_by,
+                        },
+                    )
+                    inserted += 1
+            except IntegrityError:
+                continue
+        return inserted

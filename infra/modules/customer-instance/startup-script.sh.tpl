@@ -28,6 +28,11 @@ fi
 if ! docker compose version &>/dev/null; then
     apt-get update && apt-get install -y docker-compose-plugin
 fi
+# H4-NEW: required by agnes-state-applier.sh's write_instance_yaml PyYAML path.
+# The applier has a pure-bash fallback so a missing package does not wedge the
+# state machine, but installing it here ensures all freshly-provisioned VMs
+# take the full-fidelity PyYAML path (which preserves non-database YAML keys).
+apt-get install -y --no-install-recommends python3-yaml
 
 # --- 2. Persistent data disk mount ---
 DATA_DEV="/dev/disk/by-id/google-data"
@@ -55,6 +60,22 @@ if [ -b "$DATA_DEV" ]; then
     chown -R 999:999 "$DATA_MNT"
 fi
 
+# Initial instance.yaml::database = {backend: "duckdb"} so the app starts in
+# DuckDB mode even before any admin migration. The DB-backend state machine
+# (see scripts/ops/agnes-state-applier.sh + app/api/admin_db_migrate.py)
+# reads this file at boot to decide which compose overlay set to run.
+# Idempotent: never clobber an existing file — an operator-initiated
+# migration may have already flipped backend to "postgres".
+INSTANCE_YAML="$DATA_MNT/state/instance.yaml"
+if [ ! -f "$INSTANCE_YAML" ]; then
+    mkdir -p "$DATA_MNT/state"
+    cat > "$INSTANCE_YAML" <<'YAML'
+database:
+  backend: duckdb
+YAML
+    chown 999:999 "$INSTANCE_YAML"
+fi
+
 # --- 3. App directory + extract host artifacts from the pinned image ---
 APP_DIR="/opt/agnes"
 mkdir -p "$APP_DIR"
@@ -80,6 +101,42 @@ docker cp "$EXTRACT_CONTAINER:/opt/agnes-host/." "$APP_DIR/"
 docker cp "$EXTRACT_CONTAINER:/opt/agnes-host/agnes-auto-upgrade.sh" /usr/local/bin/agnes-auto-upgrade.sh
 chmod +x /usr/local/bin/agnes-auto-upgrade.sh
 
+# Install agnes-state-applier (DB backend state machine — applies compose
+# lifecycle changes when /data/state/db-state-target.flag changes). The
+# script + its systemd units are baked into /opt/agnes-host/ via Dockerfile
+# (same image-extract contract as agnes-auto-upgrade.sh above), already
+# pulled into $APP_DIR by the recursive docker cp two lines up.
+# Create dedicated non-root user for the DB-state applier — limits
+# blast radius from full root to "docker group" (still effectively
+# root via /var/run/docker.sock, but no other system surface).
+# Idempotent on re-runs.
+if ! id -u agnes-applier >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin \
+            --user-group agnes-applier
+fi
+usermod -aG docker agnes-applier
+mkdir -p /data/state /data/postgres
+chown -R agnes-applier:agnes-applier /data/state
+# /data/postgres must stay 70:70 (postgres image uid) — applier just
+# runs docker exec against the container, doesn't touch the volume.
+chown 70:70 /data/postgres
+chmod 700 /data/postgres
+
+install -m 0755 "$APP_DIR/agnes-state-applier.sh" /usr/local/bin/agnes-state-applier.sh
+install -m 0644 "$APP_DIR/agnes-state-applier.service" /etc/systemd/system/agnes-state-applier.service
+install -m 0644 "$APP_DIR/agnes-state-applier.timer" /etc/systemd/system/agnes-state-applier.timer
+# Bootstrap unit (Phase 8.1 follow-up #2). Runs as root, creates the
+# agnes-applier user + chowns /data/state on first boot. The main
+# applier unit ``Requires=`` it so by the time systemd resolves
+# ``User=agnes-applier`` for the applier, the user definitely exists.
+# The eager useradd block above (lines ~108-117) is now belt-and-
+# braces; customer infras that don't ship matching provisioning logic
+# get the bootstrap for free via this unit.
+install -m 0644 "$APP_DIR/agnes-state-applier-bootstrap.service" /etc/systemd/system/agnes-state-applier-bootstrap.service
+systemctl daemon-reload
+systemctl enable --now agnes-state-applier-bootstrap.service
+systemctl enable --now agnes-state-applier.timer
+
 # docker-compose.tls.yml + Caddyfile land regardless of TLS_MODE. agnes-auto-upgrade.sh
 # detects TLS at runtime via cert files on disk; certs can appear after boot via
 # agnes-tls-rotate.sh or manual provisioning. The caddy service bind-mounts
@@ -94,6 +151,23 @@ if [ "$DATA_SOURCE" = "keboola" ]; then
     KEBOOLA_TOKEN=$(gcloud secrets versions access latest --secret=keboola-storage-token)
 fi
 JWT_KEY=$(gcloud secrets versions access latest --secret=agnes-$${CUSTOMER_NAME}-jwt-secret)
+
+# ── Postgres password from Secret Manager + side-car data dir prep ──
+# Task 2A.1 provisioned agnes-<customer>-postgres-password with VM SA bound to
+# secretAccessor. Pull every boot (idempotent — the secret value is stable
+# across reboots; we re-fetch rather than reading from .env because .env may
+# have been wiped to force a reset).
+POSTGRES_PASSWORD=$(gcloud secrets versions access latest --secret=agnes-$${CUSTOMER_NAME}-postgres-password)
+
+# postgres:16-alpine runs as uid 70 (the Alpine ``postgres`` user). When a
+# future overlay bind-mounts /data/postgres into the side-car (mirroring the
+# /data:/data pattern in docker-compose.host-mount.yml), the dir must be
+# pre-created and owned by uid 70 so initdb / runtime writes succeed.
+# Cheap to do unconditionally — the dir is unused when the side-car runs on
+# the default named volume.
+mkdir -p "$DATA_MNT/postgres"
+chown 70:70 "$DATA_MNT/postgres"
+chmod 700 "$DATA_MNT/postgres"
 
 # SCHEDULER_API_TOKEN — shared secret between the app and scheduler containers.
 # Both source the same /opt/agnes/.env via Docker Compose env_file:, so the
@@ -136,6 +210,15 @@ if [ -z "$${OAUTH_ID_SECRET_NAME}" ]; then OAUTH_ID_SECRET_NAME="google-oauth-cl
 if [ -z "$${OAUTH_SECRET_NAME}" ]; then OAUTH_SECRET_NAME="google-oauth-client-secret"; fi
 GOOGLE_CLIENT_ID=$(gcloud secrets versions access latest --secret="$${OAUTH_ID_SECRET_NAME}" 2>/dev/null || echo "")
 GOOGLE_CLIENT_SECRET=$(gcloud secrets versions access latest --secret="$${OAUTH_SECRET_NAME}" 2>/dev/null || echo "")
+
+# Optional app-level secrets injected via the caller's `runtime_secret_env` map
+# (e.g. E2B_API_KEY, ANTHROPIC_API_KEY, SLACK_BOT_TOKEN). Module auto-grants
+# secretAccessor for each map key. Missing / 403 / empty -> silent fallback to ""
+# so the operator can wire a secret name before the value exists; the app
+# surfaces its own missing-key error at startup (e.g. _chat_e2b_api_key_ok).
+%{ for secret_name, env_name in runtime_secret_env ~}
+${env_name}=$(gcloud secrets versions access latest --secret=${secret_name} 2>/dev/null || echo "")
+%{ endfor ~}
 
 # AGNES_VERSION, RELEASE_CHANNEL, AGNES_COMMIT_SHA are baked into the image
 # itself as ENV (see Dockerfile ARG/ENV + release.yml build-args). We do NOT
@@ -202,13 +285,32 @@ SCHEDULER_API_TOKEN=$SCHEDULER_API_TOKEN
 LOG_LEVEL=info
 DOMAIN=$DOMAIN
 AGNES_TAG=$EFFECTIVE_AGNES_TAG
+AGNES_APP_MEM_LIMIT=${app_mem_limit}
+AGNES_SCHEDULER_MEM_LIMIT=${scheduler_mem_limit}
 ACME_EMAIL=$ACME_EMAIL
 GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
+%{ for secret_name, env_name in runtime_secret_env ~}
+${env_name}=$${${env_name}}
+%{ endfor ~}
+POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+DATABASE_URL=postgresql+psycopg://agnes:$POSTGRES_PASSWORD@postgres:5432/agnes
+COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:docker-compose.host-mount.yml:docker-compose.postgres-host-mount.yml
 $CADDY_TLS_LINE
 $AGNES_TEMP_DIR_LINE
 ENVEOF
 chmod 600 "$APP_DIR/.env"
+# B3-NEW: chown .env to agnes-applier IMMEDIATELY so the non-root
+# applier's very first run (before the bootstrap unit fires) can
+# already source the file. The bootstrap unit's ExecStart re-asserts
+# this every boot in case an operator (or agnes-auto-upgrade) rewrites
+# .env later.
+if ! id -u agnes-applier >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin \
+            --user-group agnes-applier
+fi
+chown agnes-applier:agnes-applier /opt/agnes/.env
+chmod 0600 /opt/agnes/.env
 
 # --- 5. Start Agnes ---
 COMPOSE_PROFILES_ARG=""
@@ -216,10 +318,26 @@ if [ "$TLS_MODE" = "caddy" ] && [ -n "$DOMAIN" ]; then
     COMPOSE_PROFILES_ARG="--profile tls"
 fi
 
-COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml"
+# Honor COMPOSE_FILE from /opt/agnes/.env. The .env write above sets the
+# full list ``docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:docker-compose.host-mount.yml``
+# so the prod + postgres + host-mount overlays engage by default. Order
+# matters: host-mount loads LAST so its ``volumes: !override`` on
+# data-migrate (in docker-compose.host-mount.yml) can see the service
+# defined by docker-compose.postgres.yml. Fall back to the historical
+# prod + host-mount baseline when .env doesn't set COMPOSE_FILE — keeps
+# existing customer instances behaving identically if an operator removes
+# the line. The colon-separated COMPOSE_FILE form is the documented
+# alternative to explicit ``-f`` args (docker.com/compose/reference/envvars
+# /compose_file); docker compose reads it from the working-directory .env
+# automatically. Export so the value is visible to the docker compose
+# subprocess regardless of whether docker's own dotenv loader fires first.
+COMPOSE_FILE_DEFAULT="docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml"
+# shellcheck disable=SC1091
+set -a; . "$APP_DIR/.env"; set +a
+export COMPOSE_FILE="$${COMPOSE_FILE:-$COMPOSE_FILE_DEFAULT}"
 
-docker compose $COMPOSE_FILES $COMPOSE_PROFILES_ARG pull
-docker compose $COMPOSE_FILES $COMPOSE_PROFILES_ARG up -d
+docker compose $COMPOSE_PROFILES_ARG pull
+docker compose $COMPOSE_PROFILES_ARG up -d
 
 # --- 6. Auto-upgrade via cron (pulls new image digest every 5 min) ---
 if [ "$UPGRADE_MODE" = "auto" ]; then

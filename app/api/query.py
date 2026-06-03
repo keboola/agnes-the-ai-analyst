@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 import duckdb
 
@@ -21,11 +21,14 @@ from connectors.internal.access import (
     find_internal_refs,
     is_internal_table,
 )
+
+from src.repositories import (
+    audit_repo,
+    table_registry_repo,
+)
 from src.audit_helpers import client_kind_from_user
 from src.db import get_analytics_db_readonly
 from src.rbac import get_accessible_tables
-from src.repositories.table_registry import TableRegistryRepository
-from src.repositories.audit import AuditRepository
 
 # Imported at module level so tests can monkeypatch via
 # `app.api.query._bq_dry_run_bytes` without resolving lazy imports inside
@@ -39,6 +42,71 @@ from connectors.bigquery.access import get_bq_access, BqAccessError
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/query", tags=["query"])
+
+# ---------------------------------------------------------------------------
+# Per-session BQ scan budget (Phase 12.3)
+# ---------------------------------------------------------------------------
+
+# In-memory counter: session_id → cumulative bytes scanned this session.
+# Keyed by chat session JWT claim ``chat_session_id`` (set by Task 13.1).
+# Resets on server restart (intentional — sessions are short-lived).
+_per_session_bq_bytes: dict[str, int] = {}
+
+_DEFAULT_PER_SESSION_BQ_BYTES = 20 * 1024**3  # 20 GiB
+
+
+def _maybe_charge_chat_session_bq_budget(request, scan_bytes: int) -> None:
+    """If the request was authenticated under a chat-scope JWT (claim stashed
+    on ``request.state.chat_session_id`` by ``app.auth.dependencies``), charge
+    ``scan_bytes`` against that chat session's per-session BigQuery budget.
+
+    Regular (non-chat) /api/query callers leave ``request.state.chat_session_id``
+    unset and silently skip this — they're already capped by the per-user
+    daily/concurrent BQ guards in v2_quota.
+    """
+    session_id = getattr(getattr(request, "state", None), "chat_session_id", None)
+    if not session_id:
+        return
+    cfg = None
+    try:
+        cfg = request.app.state.chat_config
+    except Exception:
+        cfg = None
+    limit_bytes = (
+        cfg.per_session_bq_scan_bytes if cfg is not None else _DEFAULT_PER_SESSION_BQ_BYTES
+    )
+    accumulate_session_bq_bytes(session_id, scan_bytes, limit_bytes=limit_bytes)
+
+
+def accumulate_session_bq_bytes(
+    session_id: str,
+    scan_bytes: int,
+    *,
+    limit_bytes: int = _DEFAULT_PER_SESSION_BQ_BYTES,
+) -> None:
+    """Accumulate ``scan_bytes`` for ``session_id`` and raise HTTPException
+    (400 / ``bq_budget_exhausted``) if the cumulative total exceeds
+    ``limit_bytes``.
+
+    Called from the BQ scan guard after the dry-run resolves ``total_bytes``.
+    Integration with the request auth path is deferred to Task 13.1 — that
+    task wires ``chat_session_id`` from the JWT into ``request.state`` so the
+    execute_query handler can pass it through here.
+    """
+    current = _per_session_bq_bytes.get(session_id, 0)
+    new_total = current + scan_bytes
+    _per_session_bq_bytes[session_id] = new_total
+    if limit_bytes > 0 and new_total > limit_bytes:
+        raise HTTPException(status_code=400, detail={
+            "reason": "bq_budget_exhausted",
+            "session_id": session_id,
+            "scan_bytes_cumulative": new_total,
+            "limit_bytes": limit_bytes,
+            "suggestion": (
+                "Per-session BigQuery scan budget exhausted. "
+                "Start a new chat session to reset the quota."
+            ),
+        })
 
 
 # Heuristic: did the BQ-side execution of a `bigquery_query()`-rewritten
@@ -232,7 +300,7 @@ def _run_internal_query(
         for row in rows
     ]
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user.get("id"),
             action="query.internal",
             resource=("table:" + ",".join(internal_refs))[:256],
@@ -271,6 +339,7 @@ def _first_table_from_sql(sql: str) -> Optional[str]:
 @router.post("", response_model=QueryResponse)
 def execute_query(
     request: QueryRequest,
+    http_request: Request,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -347,7 +416,7 @@ def execute_query(
             )
         # Reject if user SQL also mentions any non-internal registry id —
         # that would be a mixed query against analytics.duckdb views.
-        registry_rows = TableRegistryRepository(conn).list_all()
+        registry_rows = table_registry_repo().list_all()
         for r in registry_rows:
             rid = r.get("id") or ""
             if not rid or is_internal_table(rid):
@@ -382,7 +451,7 @@ def execute_query(
             # pre-existing class of name/id mismatch flagged across this
             # PR's BQ guardrail too).
             allowed_ids = set(allowed)
-            registry_rows = TableRegistryRepository(conn).list_all()
+            registry_rows = table_registry_repo().list_all()
             allowed_view_names = {
                 r["name"] for r in registry_rows
                 if r.get("name") and r.get("id") in allowed_ids
@@ -507,13 +576,20 @@ def execute_query(
             # Stays inside the `with quota.acquire(...)` block so the slot
             # release happens after record_bytes completes.
             if dry_run_set:
+                total_bq_bytes = sum(b for _, _, b in dry_run_set)
                 try:
                     _build_quota_tracker().record_bytes(
-                        user_id, sum(b for _, _, b in dry_run_set),
+                        user_id, total_bq_bytes,
                     )
                 except Exception:
                     # record_bytes is documented as never-raising; defensive guard.
                     logger.warning("quota record_bytes failed for user=%s", user_id)
+                # Charge the chat-session-scoped BQ scan budget when the
+                # request carries a chat JWT (request.state.chat_session_id
+                # set by app/auth/dependencies). Non-chat callers no-op.
+                # Raises HTTPException(400, bq_budget_exhausted) when the
+                # cumulative session bytes exceed ChatConfig.per_session_bq_scan_bytes.
+                _maybe_charge_chat_session_bq_budget(http_request, total_bq_bytes)
 
         # Convert to serializable types
         serializable_rows = []
@@ -536,7 +612,7 @@ def execute_query(
         # bytes_scanned from _dry_run_set (pinned to entry 0 after _bq_quota_and_cap_guard).
         _bytes_scanned = sum(b for _, _, b in _dry_run_set) if _dry_run_set else None
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action=_action,
                 resource=_resource,
@@ -563,7 +639,7 @@ def execute_query(
         _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
         _action_err = "query.remote" if _dry_run_set else "query.local"
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action=_action_err,
                 resource=_resource,
@@ -593,7 +669,7 @@ def execute_query(
         _first_table = _first_table_from_sql(request.sql)
         _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=user.get("id"),
                 action="query.local",
                 resource=_resource,
@@ -634,7 +710,7 @@ def _materialized_hint_for_query_error(
     if "does not exist" not in el and "table with name" not in el:
         return None
     try:
-        repo = TableRegistryRepository(conn)
+        repo = table_registry_repo()
         rows = repo.list_all()
     except Exception:
         # Registry read failed for whatever reason — don't compound the
@@ -713,7 +789,7 @@ def _bq_guardrail_inputs(
       grant on the registered name (`bq_path_access_denied`). None when the
       RBAC check passes.
     """
-    repo = TableRegistryRepository(sys_conn)
+    repo = table_registry_repo()
 
     # 1. Bare-name pass: look up registered remote-BQ names that appear in
     # the user SQL as word-boundary tokens. Reuses the same regex shape as
@@ -1036,7 +1112,7 @@ def _rewrite_user_sql_for_bigquery_query(
     seen_paths: set = set()
 
     try:
-        repo = TableRegistryRepository(conn)
+        repo = table_registry_repo()
         bq_rows = repo.list_by_source("bigquery")
         all_rows = repo.list_all()
     except Exception:

@@ -311,6 +311,71 @@ class DataPackagesRepository:
         ).fetchall()
         return [{"id": r[0], "name": r[1]} for r in rows]
 
+    # --- MCP tool junction (v64, RFC #461 §6) -----------------------------
+    #
+    # Symmetric with the table-junction methods above. ``related_tools``
+    # surfaces alongside ``tables`` in the package detail response so an
+    # analyst opening the "Customer Lifecycle" package sees both the
+    # orders table and a passthrough ``crm.searchAccounts`` tool in the
+    # same UI.
+
+    def add_tool(self, pkg_id: str, tool_id: str) -> bool:
+        """Attach an MCP tool to a package. Returns True iff a row was inserted."""
+        before = self.conn.execute(
+            "SELECT 1 FROM data_package_tools WHERE package_id = ? AND tool_id = ?",
+            [pkg_id, tool_id],
+        ).fetchone()
+        if before:
+            return False
+        self.conn.execute(
+            "INSERT INTO data_package_tools(package_id, tool_id) VALUES (?, ?) "
+            "ON CONFLICT DO NOTHING",
+            [pkg_id, tool_id],
+        )
+        return True
+
+    def remove_tool(self, pkg_id: str, tool_id: str) -> bool:
+        """Detach an MCP tool from a package. Returns True iff a row was deleted."""
+        before = self.conn.execute(
+            "SELECT 1 FROM data_package_tools WHERE package_id = ? AND tool_id = ?",
+            [pkg_id, tool_id],
+        ).fetchone()
+        if not before:
+            return False
+        self.conn.execute(
+            "DELETE FROM data_package_tools WHERE package_id = ? AND tool_id = ?",
+            [pkg_id, tool_id],
+        )
+        return True
+
+    def list_tools(self, pkg_id: str) -> List[Dict[str, Any]]:
+        """MCP tools attached to a package (exposed-name ordered).
+
+        Joins tool_registry + mcp_sources so the response carries enough
+        for a UI to render: tool_id, exposed_name (display), description,
+        source name (badge), and mode (materialize vs passthrough).
+        """
+        rows = self.conn.execute(
+            """SELECT t.tool_id, t.exposed_name, t.description, t.mode,
+                      s.name AS source_name
+                 FROM data_package_tools dpt
+                 JOIN tool_registry t ON t.tool_id = dpt.tool_id
+                 JOIN mcp_sources s   ON s.id     = t.source_id
+                WHERE dpt.package_id = ?
+                ORDER BY t.exposed_name""",
+            [pkg_id],
+        ).fetchall()
+        return [
+            {
+                "tool_id": r[0],
+                "exposed_name": r[1],
+                "description": r[2],
+                "mode": r[3],
+                "source_name": r[4],
+            }
+            for r in rows
+        ]
+
     def list_member_ids_bulk(self) -> Dict[str, List[str]]:
         """v54: single-query bulk fetch of the {package_id → [table_id, …]}
         mapping for every live (non-soft-deleted) package. Used by the

@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 
 {% block title %}News — {{ instance_name or "AI Data Analyst" }}{% endblock %}
 
@@ -16,7 +16,8 @@ document.addEventListener('DOMContentLoaded', function () {
 <div class="news-card">
     {% if news %}
     <div class="news-meta">
-        Version {{ news.version }} · published {{ news.published_at.strftime('%Y-%m-%d') if news.published_at else '' }}
+        {# `published_at` is intentionally rendered date-only (no time component), so it is NOT wrapped in <time> — the global hydrateTimes() helper in datetime.js always swaps the body for formatDateTime() (date + clock time), which would add unwanted time precision here. Local-tz conversion isn't meaningful for a date with no time. #}
+        Version {{ news.version }} · published {% if news.published_at %}{{ news.published_at.strftime('%Y-%m-%d') }}{% endif %}
         {% if news.published_by %} by {{ news.published_by }}{% endif %}
     </div>
     {% if news.intro %}

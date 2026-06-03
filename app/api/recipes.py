@@ -29,8 +29,8 @@ from app.api.data_packages import _validate_color, _validate_status
 from app.auth.access import can_access, is_user_admin, require_admin
 from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
+from src.repositories import recipes_repo
 from src.repositories.audit import AuditRepository
-from src.repositories.recipes import RecipesRepository
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ async def list_recipes(
     rows the caller's groups have a ``resource_grants`` row for. Default
     visibility is *closed* — without a grant a recipe is hidden, matching
     the data-package behavior on /catalog Browse."""
-    rows = RecipesRepository(conn).list(search=search)
+    rows = recipes_repo().list(search=search)
     is_admin = is_user_admin(user["id"], conn)
     if not is_admin:
         rows = [
@@ -161,7 +161,7 @@ async def get_recipe(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = RecipesRepository(conn)
+    repo = recipes_repo()
     r = repo.get_by_slug(slug)
     if not r:
         raise HTTPException(status_code=404, detail="recipe_not_found")
@@ -188,7 +188,7 @@ async def create_recipe(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = RecipesRepository(conn)
+    repo = recipes_repo()
     if not payload.title.strip():
         raise HTTPException(status_code=400, detail="title is required")
     try:
@@ -216,7 +216,7 @@ async def admin_list_recipes(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    rows = RecipesRepository(conn).list(search=search)
+    rows = recipes_repo().list(search=search)
     return [_serialize(r) for r in rows]
 
 
@@ -226,7 +226,7 @@ async def admin_get_recipe(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    r = RecipesRepository(conn).get(recipe_id)
+    r = recipes_repo().get(recipe_id)
     if not r:
         raise HTTPException(status_code=404, detail="recipe_not_found")
     return _serialize(r)
@@ -239,7 +239,7 @@ async def update_recipe(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = RecipesRepository(conn)
+    repo = recipes_repo()
     existing = repo.get(recipe_id)
     if not existing:
         raise HTTPException(status_code=404, detail="recipe_not_found")
@@ -273,7 +273,7 @@ async def delete_recipe(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """v54: soft delete (sets ``deleted_at``). Undo via POST /restore."""
-    repo = RecipesRepository(conn)
+    repo = recipes_repo()
     existing = repo.get(recipe_id)
     if not existing:
         raise HTTPException(status_code=404, detail="recipe_not_found")
@@ -289,7 +289,7 @@ async def restore_recipe(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """v54 undo: reverse a soft delete. Idempotent."""
-    repo = RecipesRepository(conn)
+    repo = recipes_repo()
     existing = repo.get(recipe_id, include_deleted=True)
     if not existing:
         raise HTTPException(status_code=404, detail="recipe_not_found")

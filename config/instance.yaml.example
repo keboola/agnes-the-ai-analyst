@@ -530,6 +530,39 @@ catalog:
 materialize:
   lock_ttl_seconds: 86400
 
+# --- Cloud-hosted Claude Code (optional) ---
+# Cloud-hosted Claude Code (web /chat + Slack adapter). Off by default;
+# turn on per-instance once you've built the E2B sandbox template and
+# set ANTHROPIC_API_KEY + E2B_API_KEY in the Agnes server env. See
+# docs/cloud-chat.md for the operator walkthrough.
+chat:
+  enabled: false
+  # Only 'e2b' is accepted in production (per Q7 owner decision —
+  # the MockE2BProvider variant was dropped).
+  provider: e2b
+  # E2B template id returned by `e2b template build` inside
+  # app/initial_workspace_default/e2b-template/. Required when
+  # provider=e2b and enabled=true; startup gate refuses otherwise.
+  # e2b_template_id: "agnes-chat"
+  # Per-spawn workspace push cap. Files past this cap → user-facing
+  # workspace_too_large error. 100 MB default keeps spawn latency in
+  # the 3-5 s range.
+  e2b_workspace_max_bytes: 104857600
+  # Kill the sandbox the moment the WS disconnects rather than
+  # waiting for the idle reaper. Cuts billable sandbox-minutes on
+  # UI close.
+  e2b_kill_on_ws_disconnect: true
+  concurrency_per_user: 3
+  idle_ttl_seconds: 1800              # 30 min
+  per_tool_call_seconds: 90
+  per_session_bq_scan_bytes: 21474836480   # 20 GiB
+  daily_anthropic_spend_usd: 20.0
+  max_session_seconds: 14400
+  max_session_tokens: 200000
+  rate_messages_per_hour: 100
+  tool_calls_per_turn_budget: 50
+  marketplace_sha_debounce_seconds: 300
+
 
 # --- Initial Workspace Template (optional) ---
 #

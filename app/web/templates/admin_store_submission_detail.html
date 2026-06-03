@@ -1,12 +1,7 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}Submission {{ sub.id[:8] }} — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{# Design-system component macros — 5 detail-page action buttons
-   (Override+publish / Rescan / Download bundle / Retry LLM / Delete)
-   render via `ds.button`. Page-local chrome (.det-back, .badge status
-   pills, dl/dd metadata grid) stays as-is. #}
-{% import "_components.html" as ds %}
+{% block head_extra %}
 <style>
   /* Width + padding come from .page-shell (style-custom.css) — same
      1280px container as /dashboard, /marketplace, /admin/* peers. */
@@ -114,8 +109,12 @@
 
 
 </style>
+{% endblock %}
 
-<div class="det-page page-shell">
+{% block content %}
+{# 5 detail-page action buttons render via `ds.button` (auto-imported by
+   base_ds). Page-local chrome (.det-back, .badge pills, dl/dd grid) stays. #}
+<div class="det-page">
   <a class="det-back" href="/admin/store/submissions">← Back to all submissions</a>
 
   {% if sub.status in ['pending_inline','pending_llm'] %}
@@ -175,13 +174,13 @@
       </div>
       <div>
         <dt>Created</dt>
-        <dd>{{ sub.created_at.strftime("%Y-%m-%d %H:%M:%S UTC") if sub.created_at else "" }}</dd>
+        <dd>{% if sub.created_at %}<time datetime="{{ sub.created_at.isoformat() }}">{{ sub.created_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time>{% endif %}</dd>
       </div>
       <div>
         <dt>Last update</dt>
         <dd>
           {%- if sub.updated_at -%}
-          {{ sub.updated_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}
+          <time datetime="{{ sub.updated_at.isoformat() }}">{{ sub.updated_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time>
           <span class="relative" data-rel-since="{{ sub.updated_at.isoformat() }}"
                 style="display:block; font-size:11px; color: var(--text-secondary, #9ca3af);">just now</span>
           {%- endif -%}
@@ -220,7 +219,7 @@
         <dd>
           {%- if sub.bundle_purged_at -%}
             <span class="badge blocked_inline">purged</span>
-            <span style="font-size: 12px; color: var(--text-secondary, #6b7280); margin-left: 6px;">on {{ sub.bundle_purged_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}</span>
+            <span style="font-size: 12px; color: var(--text-secondary, #6b7280); margin-left: 6px;">on <time datetime="{{ sub.bundle_purged_at.isoformat() }}">{{ sub.bundle_purged_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time></span>
           {%- elif sub.entity_id -%}
             <span class="badge approved">on disk</span>
           {%- else -%}
@@ -303,7 +302,7 @@
           <td><code>{{ (s.version or '')[:12] }}</code></td>
           <td style="font-size:11px;color:var(--text-secondary,#6b7280);">{{ s.reviewed_by_model or '—' }}</td>
           <td style="font-size:11px;color:var(--text-secondary,#6b7280);">
-            {{ s.created_at.strftime("%Y-%m-%d %H:%M") if s.created_at else "" }}
+            {% if s.created_at %}<time datetime="{{ s.created_at.isoformat() }}">{{ s.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</time>{% endif %}
           </td>
           <td>
             {% if s.is_current %}
@@ -324,7 +323,7 @@
   <div class="det-card">
     <h2>Override</h2>
     <div class="override-block">
-      Overridden by <strong>{{ override_email or sub.override_by }}</strong>{% if sub.updated_at %} on {{ sub.updated_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}{% endif %}.
+      Overridden by <strong>{{ override_email or sub.override_by }}</strong>{% if sub.updated_at %} on <time datetime="{{ sub.updated_at.isoformat() }}">{{ sub.updated_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time>{% endif %}.
       {% if sub.override_reason %}<br><em>Reason:</em> {{ sub.override_reason }}{% endif %}
     </div>
   </div>
@@ -339,7 +338,7 @@
     <ul class="timeline">
       {% for row in rows %}
       <li>
-        <span class="ts">{{ row.timestamp.strftime("%Y-%m-%d %H:%M:%S") if row.timestamp else "" }}</span>
+        <span class="ts">{% if row.timestamp %}<time datetime="{{ row.timestamp.isoformat() }}">{{ row.timestamp.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time>{% endif %}</span>
         <span>
           <span class="action">{{ row.action }}</span>
           {# Inline `vN` chip when the audit's params reference a

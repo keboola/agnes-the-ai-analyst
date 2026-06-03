@@ -29,6 +29,8 @@ fallback solved a problem we don't have.
 from __future__ import annotations
 
 import logging
+import os
+import time
 from typing import Optional
 
 import duckdb
@@ -41,17 +43,27 @@ from src.db import SYSTEM_ADMIN_GROUP
 logger = logging.getLogger(__name__)
 
 
-def _get_group_id_by_name(name: str, conn: duckdb.DuckDBPyConnection) -> Optional[str]:
+def _get_group_id_by_name(name: str, conn: Optional[duckdb.DuckDBPyConnection] = None) -> Optional[str]:
     """Look up a group's id by its (unique) name. Returns None if absent —
     typically only happens during the very first migration pass before
-    _seed_system_groups has run, or in mis-seeded test fixtures."""
-    row = conn.execute(
-        "SELECT id FROM user_groups WHERE name = ?", [name]
-    ).fetchone()
-    return row[0] if row else None
+    _seed_system_groups has run, or in mis-seeded test fixtures.
+
+    Honors ``conn`` only when the active backend is DuckDB and ``conn``
+    is a DuckDB connection (test-isolation escape hatch for fixtures that
+    seed into a per-test DuckDB). When the active backend is Postgres,
+    ``conn`` is the local DuckDB view-handle which would be stale; we
+    route through the global factory which reads from PG instead.
+    """
+    from src.repositories import use_pg, user_groups_repo
+    if conn is not None and not use_pg():
+        from src.repositories.user_groups import UserGroupsRepository
+        row = UserGroupsRepository(conn).get_by_name(name)
+    else:
+        row = user_groups_repo().get_by_name(name)
+    return row["id"] if row else None
 
 
-def _user_group_ids(user_id: str, conn: duckdb.DuckDBPyConnection) -> set[str]:
+def _user_group_ids(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None) -> set[str]:
     """Set of group_ids the user is in.
 
     Returns only the rows present in ``user_group_members``. The implicit
@@ -61,21 +73,24 @@ def _user_group_ids(user_id: str, conn: duckdb.DuckDBPyConnection) -> set[str]:
     auditing /admin/access sees the same set the authorization layer
     enforces. Callers that want Everyone-style "always granted" plugins
     must grant them to a real group the user is a member of.
+
+    Honors ``conn`` only in DuckDB-backend mode (see ``_get_group_id_by_name``
+    for rationale); routes through the global factory otherwise.
     """
-    rows = conn.execute(
-        "SELECT group_id FROM user_group_members WHERE user_id = ?",
-        [user_id],
-    ).fetchall()
-    return {r[0] for r in rows}
+    from src.repositories import use_pg, user_group_members_repo
+    if conn is not None and not use_pg():
+        from src.repositories.user_group_members import UserGroupMembersRepository
+        return set(UserGroupMembersRepository(conn).list_groups_for_user(user_id))
+    return set(user_group_members_repo().list_groups_for_user(user_id))
 
 
-def is_user_admin(user_id: str, conn: duckdb.DuckDBPyConnection) -> bool:
+def is_user_admin(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None) -> bool:
     """True iff the user is a member of the Admin system group.
 
-    Cheap — one SELECT EXISTS-style check (the inner _user_group_ids does
-    one fetchall + a name lookup; both are tiny, both indexed).
+    ``conn`` honored when explicitly passed (test isolation); falls back
+    to the global factory otherwise.
     """
-    admin_id = _get_group_id_by_name(SYSTEM_ADMIN_GROUP, conn)
+    admin_id = _get_group_id_by_name(SYSTEM_ADMIN_GROUP, conn=conn)
     if admin_id is None:
         # No Admin group seeded — defensively deny. Fail-closed beats the
         # alternative of silently granting elevated access.
@@ -83,20 +98,16 @@ def is_user_admin(user_id: str, conn: duckdb.DuckDBPyConnection) -> bool:
             "is_user_admin: Admin group missing in user_groups; denying access"
         )
         return False
-    return admin_id in _user_group_ids(user_id, conn)
+    return admin_id in _user_group_ids(user_id, conn=conn)
 
 
 def can_access(
     user_id: str,
     resource_type: str,
     resource_id: str,
-    conn: duckdb.DuckDBPyConnection,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
 ) -> bool:
     """Generic access check. Admin short-circuits; otherwise group JOIN.
-
-    Two SELECTs in the worst case:
-      1. _user_group_ids — fetch group membership.
-      2. has_grant on resource_grants for (group_ids, resource_type, resource_id).
 
     Internal data-source tables (``agnes_sessions``/``_usage``/``_audit``) are
     implicitly granted to every authenticated user. Security there is
@@ -104,20 +115,56 @@ def can_access(
     enforced in the query path; the table-grain gate just waves them
     through so they appear in /catalog and /api/v2/catalog for analysts,
     not just admins.
+
+    ``conn`` honored when explicitly passed (test isolation); falls back
+    to the global factory otherwise.
     """
     if resource_type == "table":
         from connectors.internal.access import is_internal_table
         if is_internal_table(resource_id):
             return True
 
-    group_ids = _user_group_ids(user_id, conn)
-    admin_id = _get_group_id_by_name(SYSTEM_ADMIN_GROUP, conn)
+    group_ids = _user_group_ids(user_id, conn=conn)
+    admin_id = _get_group_id_by_name(SYSTEM_ADMIN_GROUP, conn=conn)
     if admin_id is not None and admin_id in group_ids:
         return True
 
     if not group_ids:
         return False
 
+    from src.repositories import use_pg, resource_grants_repo
+    if conn is not None and not use_pg():
+        from src.repositories.resource_grants import ResourceGrantsRepository
+        return ResourceGrantsRepository(conn).has_grant(
+            list(group_ids), resource_type, resource_id,
+        )
+    return resource_grants_repo().has_grant(
+        list(group_ids), resource_type, resource_id,
+    )
+
+
+def has_explicit_grant(
+    user_id: str,
+    resource_type: str,
+    resource_id: str,
+    conn: duckdb.DuckDBPyConnection,
+) -> bool:
+    """True iff one of the user's groups holds an explicit ``resource_grant``
+    for ``(resource_type, resource_id)``.
+
+    Unlike :func:`can_access`, this does **not** short-circuit for the Admin
+    god-mode group and does **not** apply internal-table implicit grants — it
+    reports only what was explicitly granted to a group the user belongs to.
+
+    Use it for UI affordances that should reflect actual rollout state rather
+    than *effective* access: e.g. hiding the cloud-chat nav link until chat is
+    granted to a group, even for admins (who can still reach the page by URL,
+    since the route guard uses :func:`can_access` and admins keep god-mode
+    there). Never use it as a security gate — that is :func:`can_access`'s job.
+    """
+    group_ids = _user_group_ids(user_id, conn)
+    if not group_ids:
+        return False
     placeholders = ",".join(["?"] * len(group_ids))
     row = conn.execute(
         f"""SELECT 1 FROM resource_grants
@@ -204,3 +251,46 @@ def require_resource_access(
         return user
 
     return dep
+
+
+def mint_session_jwt(user_email: str, chat_id: str, *, ttl_seconds: int = 3600) -> str:
+    """Mint a short-lived service JWT scoped to one chat session.
+
+    Used by ChatManager._spawn_runner to inject AGNES_TOKEN into the
+    subprocess env. The token is verified by the existing get_current_user
+    dependency (app/auth/pat_resolver.py calls UserRepository.get_by_id on
+    the ``sub`` claim), so ``sub`` MUST be the user's UUID — not the email.
+
+    Secret is read from the ``JWT_SECRET_KEY`` environment variable —
+    the same key used by the rest of the auth layer (see app/auth/jwt.py).
+    """
+    import jwt  # PyJWT — already a project dependency
+    from src.db import get_system_db
+    from src.repositories.users import UserRepository
+
+    conn = get_system_db()
+    try:
+        row = UserRepository(conn).get_by_email(user_email)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    if not row:
+        raise ValueError(f"mint_session_jwt: user not found: {user_email!r}")
+    user_id = row["id"]
+
+    now = int(time.time())
+    payload = {
+        "sub": user_id,
+        "iat": now,
+        "exp": now + ttl_seconds,
+        "scope": "chat",
+        "chat_session_id": chat_id,
+        "email": user_email,
+    }
+    secret = os.environ.get(
+        "JWT_SECRET_KEY",
+        "test-jwt-secret-key-minimum-32-chars!!",
+    )
+    return jwt.encode(payload, secret, algorithm="HS256")

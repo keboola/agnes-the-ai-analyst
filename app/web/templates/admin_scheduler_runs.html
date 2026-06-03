@@ -61,7 +61,7 @@
       <tbody>
         {% for r in rows %}
         <tr>
-          <td class="ts">{{ r.timestamp.strftime("%Y-%m-%d %H:%M:%S") if r.timestamp else "" }}</td>
+          <td class="ts">{% if r.timestamp %}<time datetime="{{ r.timestamp.isoformat() }}">{{ r.timestamp.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time>{% endif %}</td>
           <td class="action">{{ r.action }}</td>
           <td>{{ r.resource or "" }}</td>
           <td class="duration">{% if r.duration_ms is not none %}{{ r.duration_ms }} ms{% endif %}</td>

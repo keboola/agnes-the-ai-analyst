@@ -178,6 +178,10 @@ _CREATOR_POST_ALLOWLIST = frozenset({
     "/auth/email/verify",
     "/auth/password/reset",
     "/auth/password/setup",
+    # CLI browser-loopback auth — POST confirms authorization and 303-
+    # redirects the freshly-minted exchange code to the CLI's localhost
+    # loopback. Not a JSON resource create; conventional auth-flow shape.
+    "/cli/auth/start",
     # Register/update upsert — saves config, not a pure create
     "/api/admin/initial-workspace",
     # Saved-view upsert — ON CONFLICT updates existing name rather than creating
@@ -250,4 +254,73 @@ def test_protected_endpoints_declare_auth_errors(spec):
         + ("\n  … (truncated)" if len(violations) > 40 else "")
         + "\n\nFix: ensure the path is covered by _add_auth_error_responses() in app/main.py, "
         "or add to _PUBLIC_API_PATHS above if it is genuinely unauthenticated."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rule 5 — Every mutating /api/admin/ endpoint must carry Depends(require_admin)
+#
+# Rationale: admin endpoints gate privileged operations (user management,
+# registry mutations, server config, marketplace ingestion). A future author
+# who forgets the decorator opens an unauthenticated write path. Static code
+# review misses this; runtime dependency introspection via FastAPI's
+# ``route.dependant`` tree catches it automatically on every test run.
+#
+# Whitelist: intentional public-admin paths (none today). Add here only if
+# an endpoint genuinely must be reachable without authentication, with a
+# comment explaining the rationale.
+# ---------------------------------------------------------------------------
+
+_PUBLIC_ADMIN_MUTATING: frozenset[str] = frozenset(
+    # Example entry shape (none currently):
+    # "/api/admin/some-public-endpoint",  # reason: liveness probe, no secrets
+)
+
+
+def test_admin_mutating_endpoints_all_require_admin():
+    """Phase 7.12 — every POST/PUT/PATCH/DELETE under /api/admin/
+    must carry Depends(require_admin) somewhere in its dependency
+    chain.
+
+    Catches a future endpoint authored without the auth decorator.
+    The static rule (manual code-review for the decorator) is
+    brittle; this runtime introspection is enforceable every CI run.
+
+    If this test fails with a non-empty offenders list, it means an
+    unguarded write path exists in the admin API — do NOT whitelist
+    it without explicit security sign-off.
+    """
+    from fastapi.routing import APIRoute
+    from app.auth.access import require_admin
+    from app.main import create_app
+
+    app = create_app()
+
+    def _has_require_admin(dependant) -> bool:
+        """Recursively walk the FastAPI dependant tree for require_admin."""
+        for sub in dependant.dependencies:
+            if sub.call is require_admin:
+                return True
+            if _has_require_admin(sub):
+                return True
+        return False
+
+    offenders: list[str] = []
+    for route in app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        if not route.path.startswith("/api/admin/"):
+            continue
+        mutating = route.methods - {"GET", "HEAD", "OPTIONS"}
+        if not mutating:
+            continue  # read-only endpoint — separate concern
+        if route.path in _PUBLIC_ADMIN_MUTATING:
+            continue  # explicitly whitelisted
+        if not _has_require_admin(route.dependant):
+            offenders.append(f"{','.join(sorted(mutating))} {route.path}")
+
+    assert not offenders, (
+        "These mutating /api/admin/ endpoints lack Depends(require_admin):\n  "
+        + "\n  ".join(offenders)
+        + "\n\nDo NOT add to _PUBLIC_ADMIN_MUTATING without explicit security sign-off."
     )

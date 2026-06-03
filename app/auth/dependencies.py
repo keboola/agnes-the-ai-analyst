@@ -15,7 +15,6 @@ from fastapi import Depends, HTTPException, Header, Request, status
 
 from app.auth.jwt import verify_token
 from src.db import get_system_db
-from src.repositories.users import UserRepository
 
 logger = logging.getLogger(__name__)
 
@@ -133,16 +132,50 @@ def _client_ip(request: Optional[Request]) -> Optional[str]:
     return getattr(client, "host", None) if client else None
 
 
-def _get_local_dev_user(conn: duckdb.DuckDBPyConnection) -> Optional[dict]:
-    """Return the seeded dev user when LOCAL_DEV_MODE is on, else None."""
-    repo = UserRepository(conn)
-    user = repo.get_by_email(get_local_dev_email())
+def _get_local_dev_user(conn: Optional[duckdb.DuckDBPyConnection] = None) -> Optional[dict]:
+    """Return the seeded dev user when LOCAL_DEV_MODE is on, else None.
+
+    ``conn`` retained for signature compat; ignored — uses the factory.
+    """
+    from src.repositories import users_repo
+    user = users_repo().get_by_email(get_local_dev_email())
     if not user:
         logger.error(
             "LOCAL_DEV_MODE is on but dev user %s is not seeded; expected app startup to seed it",
             get_local_dev_email(),
         )
     return user
+
+
+def _stash_chat_session_id_from_token(
+    request: Optional[Request], token: str
+) -> None:
+    """Decode ``token`` and, if it carries ``scope=chat`` plus a
+    ``chat_session_id`` claim, stash that claim on ``request.state``.
+
+    Called from ``get_current_user`` after the bearer is validated. The
+    per-session BigQuery scan budget in ``app/api/query.py`` reads
+    ``request.state.chat_session_id`` to charge the right bucket; without
+    this stash, the chat-side budget would silently never accumulate even
+    though ``mint_session_jwt`` already embeds the claim. Non-chat tokens
+    (regular session/PAT) leave ``request.state`` untouched.
+    """
+    if request is None:
+        return
+    try:
+        from app.auth.jwt import verify_token as _verify
+        payload = _verify(token) or {}
+    except Exception:
+        return
+    if payload.get("scope") != "chat":
+        return
+    session_id = payload.get("chat_session_id")
+    if not session_id:
+        return
+    try:
+        request.state.chat_session_id = session_id
+    except Exception:
+        pass
 
 
 def _stash_user(request: Optional[Request], user: dict) -> dict:
@@ -218,6 +251,9 @@ async def get_current_user(
         payload = verify_token(token) or {}
         if payload.get("typ") == "pat":
             user["token_type"] = "pat"
+        # Park chat-session claim on request.state so the BQ scan accumulator
+        # in app/api/query.py can charge the per-session budget bucket.
+        _stash_chat_session_id_from_token(request, token)
         return _stash_user(request, user)
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

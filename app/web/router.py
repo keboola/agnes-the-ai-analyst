@@ -28,6 +28,25 @@ from app.instance_config import (
     get_instance_logo_svg, get_instance_overview, get_instance_support,
     get_instance_theme, get_custom_scripts,
 )
+from src.repositories import (
+    audit_repo,
+    claude_md_template_repo,
+    data_packages_repo,
+    knowledge_repo,
+    memory_domains_repo,
+    news_template_repo,
+    profile_repo,
+    recipes_repo,
+    store_entities_repo,
+    store_submissions_repo,
+    sync_settings_repo,
+    sync_state_repo,
+    table_registry_repo,
+    user_group_members_repo,
+    user_groups_repo,
+    users_repo,
+    welcome_template_repo,
+)
 from src.connectors_manifest import load_manifest
 from app.api.me_debug import (
     require_debug_auth_enabled,
@@ -36,11 +55,6 @@ from app.api.me_debug import (
     _token_fingerprint,
     _last_sync_summary,
 )
-from src.repositories.sync_state import SyncStateRepository
-from src.repositories.sync_settings import SyncSettingsRepository
-from src.repositories.knowledge import KnowledgeRepository
-from src.repositories.users import UserRepository
-from src.repositories.profiles import ProfileRepository
 
 
 def _resolved_home_route() -> str:
@@ -503,6 +517,43 @@ def _build_context(
         # the OSS vendor-neutral.
         "custom_scripts": get_custom_scripts(),
     }
+    # Cloud-chat nav visibility. The /chat link is shown only when chat is
+    # enabled AND one of the viewer's groups holds an explicit chat grant. We
+    # deliberately use `has_explicit_grant` (NOT `can_access`) so the link
+    # tracks actual rollout state, not effective access: admins do NOT see it
+    # until chat is granted to a group they're in, even though god-mode still
+    # lets them reach /chat by URL (the route guard uses can_access). This is
+    # UX only — the hard gate is on the route + API.
+    #
+    # Computed on EVERY page, not just routes that thread a `conn`. Most routes
+    # call _build_context with only `user=`, so when conn is absent we open a
+    # short-lived system-db cursor (cheap — shared underlying connection) and
+    # close it. Defaults False when chat is disabled or there's no user.
+    ctx["can_chat"] = False
+    try:
+        _cc = getattr(request.app.state, "chat_config", None)
+        if user and _cc is not None and _cc.enabled:
+            from app.auth.access import has_explicit_grant
+            from app.resource_types import ResourceType
+
+            _conn = conn
+            _own_conn = False
+            if _conn is None:
+                from src.db import get_system_db
+
+                _conn = get_system_db()
+                _own_conn = True
+            try:
+                ctx["can_chat"] = bool(
+                    has_explicit_grant(
+                        user["id"], ResourceType.CHAT.value, "chat", _conn
+                    )
+                )
+            finally:
+                if _own_conn:
+                    _conn.close()
+    except Exception:
+        ctx["can_chat"] = False
     # Flex all extra context values for template compatibility
     # (but skip ones we just populated — extras with the same key win)
     for k, v in extra.items():
@@ -627,9 +678,9 @@ async def dashboard(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    sync_repo = SyncStateRepository(conn)
-    settings_repo = SyncSettingsRepository(conn)
-    profile_repo = ProfileRepository(conn)
+    sync_repo = sync_state_repo()
+    settings_repo = sync_settings_repo()
+    profiles = profile_repo()
 
     all_states = sync_repo.get_all_states()
     enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
@@ -721,8 +772,7 @@ async def home_page(
     # Pull the latest published news intro for the bottom-of-page section.
     # Template renders the section only when intro is non-empty, so an
     # instance that has never published news shows nothing extra.
-    from src.repositories.news_template import NewsTemplateRepository
-    news = NewsTemplateRepository(conn).get_current_published()
+    news = news_template_repo().get_current_published()
     news_intro = news["intro"] if (news and news.get("intro")) else ""
 
     # Homepage status frame (Last sync, Sessions, Prompts, Tokens, Projects).
@@ -756,6 +806,66 @@ async def home_page(
         status_frame_enabled=status_frame_enabled,
     )
     return templates.TemplateResponse(request, "home_not_onboarded.html", ctx)
+
+
+@router.get("/me/cowork", response_class=HTMLResponse)
+async def me_cowork_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """User-facing AI Cowork page: setup bundle, MCP connection info, and available tools."""
+    from app.api.mcp_passthrough import _visible_passthrough_tools
+    from app.api.v2_marketplace import _accessible_plugins, _skills_for_plugin
+    from src.repositories.mcp_sources import MCPSourceRepository
+
+    source_names = {
+        s["id"]: s["name"]
+        for s in MCPSourceRepository(conn).list_all(enabled_only=True)
+    }
+    raw_tools = _visible_passthrough_tools(user, conn)
+    passthrough_tools = []
+    for t in raw_tools:
+        sname = source_names.get(t["source_id"])
+        if sname:
+            passthrough_tools.append({
+                "exposed_name": t["exposed_name"],
+                "description": t.get("description"),
+                "source_name": sname,
+            })
+
+    skills = []
+    for plugin in _accessible_plugins(conn, user):
+        skills.extend(_skills_for_plugin(plugin["marketplace_id"], plugin["name"]))
+
+    static_tools = [
+        {"name": "server_info",  "description": "Check Agnes connectivity and your account email."},
+        {"name": "catalog",      "description": "List all tables available to you — name, query_mode, row count."},
+        {"name": "schema",       "description": "Show column names and types for a table."},
+        {"name": "describe",     "description": "Schema + sample rows for a table in one call."},
+        {"name": "query",        "description": "Execute SQL against Agnes data (DuckDB or BigQuery dialect)."},
+        {"name": "skills",       "description": "List marketplace skills you can access — includes full SKILL.md body."},
+    ]
+
+    server_url = str(request.base_url).rstrip("/")
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=is_user_admin(user["id"], conn),
+        static_tools=static_tools,
+        passthrough_tools=passthrough_tools,
+        skills=skills,
+        server_url=server_url,
+    )
+    return templates.TemplateResponse(request, "me_cowork.html", ctx)
+
+
+@router.get("/me/mcp", response_class=HTMLResponse)
+async def me_mcp_redirect(request: Request):
+    """Legacy redirect — /me/mcp → /me/cowork."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse("/me/cowork", status_code=301)
 
 
 @router.get("/me/activity", response_class=HTMLResponse)
@@ -794,8 +904,7 @@ async def news_page(
     """Permalink page for the latest published news. Renders empty-state
     copy when no version is published. Authed-only (same as /home).
     """
-    from src.repositories.news_template import NewsTemplateRepository
-    news = NewsTemplateRepository(conn).get_current_published()
+    news = news_template_repo().get_current_published()
     ctx = _build_context(
         request,
         user=user,
@@ -815,8 +924,7 @@ async def admin_news_editor(
     """Admin authoring surface — current published banner, draft editor,
     versions table. JS hits the /api/admin/news/* endpoints for the
     write paths."""
-    from src.repositories.news_template import NewsTemplateRepository
-    repo = NewsTemplateRepository(conn)
+    repo = news_template_repo()
     ctx = _build_context(
         request,
         user=user,
@@ -928,10 +1036,9 @@ async def catalog(
     # source-card / per-table list moved into /catalog/p/<slug> (Task 8.3).
     from app.services.stack_resolver import StackResolver
     from app.resource_types import ResourceType
-    from src.repositories.data_packages import DataPackagesRepository
 
     resolver = StackResolver(conn)
-    pkg_repo = DataPackagesRepository(conn)
+    pkg_repo = data_packages_repo()
 
     # Pre-compute per-package table counts + source-type tag set in one pass
     # so we don't repeat the join per card.
@@ -1045,12 +1152,11 @@ async def catalog_package_detail(
     from app.auth.access import can_access
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from src.repositories.data_packages import DataPackagesRepository
     from src.repositories.sync_state import SyncStateRepository
     from src.repositories.table_registry import TableRegistryRepository
     from src.repositories.usage import UsageRepository
 
-    pkg_repo = DataPackagesRepository(conn)
+    pkg_repo = data_packages_repo()
     pkg = pkg_repo.get_by_slug(slug)
     if not pkg:
         raise HTTPException(status_code=404, detail="data_package_not_found")
@@ -1169,7 +1275,6 @@ async def catalog_table_detail(
     """
     from app.auth.access import can_access
     from app.resource_types import ResourceType
-    from src.repositories.data_packages import DataPackagesRepository
     from src.repositories.sync_state import SyncStateRepository
     from src.repositories.table_registry import TableRegistryRepository
 
@@ -1180,7 +1285,7 @@ async def catalog_table_detail(
 
     # Find every package that includes this table; gate access on
     # admin god-mode OR a grant on ANY of those packages.
-    pkg_repo = DataPackagesRepository(conn)
+    pkg_repo = data_packages_repo()
     parent_packages = []
     is_admin = is_user_admin(user["id"], conn)
     has_grant = False
@@ -1300,10 +1405,9 @@ async def catalog_recipe_detail(
     """
     from app.auth.access import can_access
     from app.resource_types import ResourceType
-    from src.repositories.recipes import RecipesRepository
     from src.repositories.table_registry import TableRegistryRepository
 
-    recipe = RecipesRepository(conn).get_by_slug(slug)
+    recipe = recipes_repo().get_by_slug(slug)
     if not recipe:
         raise HTTPException(status_code=404, detail="recipe_not_found")
     is_admin = is_user_admin(user["id"], conn)
@@ -1403,11 +1507,10 @@ async def corporate_memory(
     """
     from app.services.stack_resolver import StackResolver
     from app.resource_types import ResourceType
-    from src.repositories.memory_domains import MemoryDomainsRepository
 
     resolver = StackResolver(conn)
-    domains_repo = MemoryDomainsRepository(conn)
-    repo = KnowledgeRepository(conn)
+    domains_repo = memory_domains_repo()
+    repo = knowledge_repo()
 
     # Per-domain counts (items + required) computed once and indexed by id.
     dom_meta: dict[str, dict] = {}
@@ -1512,11 +1615,10 @@ async def memory_domain_detail(
     from app.auth.access import can_access
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from src.repositories.memory_domains import MemoryDomainsRepository
     from src.repositories.usage import UsageRepository
 
-    domains_repo = MemoryDomainsRepository(conn)
-    repo = KnowledgeRepository(conn)
+    domains_repo = memory_domains_repo()
+    repo = knowledge_repo()
     domain = domains_repo.get_by_slug(slug)
     if not domain:
         raise HTTPException(status_code=404, detail="memory_domain_not_found")
@@ -1606,7 +1708,7 @@ async def corporate_memory_admin(
     page: pending items awaiting review, contradictions, duplicate
     candidates, and the audit trail. Reached from the Admin nav dropdown.
     """
-    repo = KnowledgeRepository(conn)
+    repo = knowledge_repo()
     pending = repo.list_items(statuses=["pending"], limit=100)
     all_items = repo.list_items(limit=10000)
     status_counts = {}
@@ -1645,10 +1747,8 @@ async def corporate_memory_admin(
     # `<option value="group:<name>">` rows in the per-item mandate form;
     # the previous shape (`{}` from the YAML config) crashed renderItemCard
     # with "GROUPS.map is not a function" the moment any pending item rendered.
-    from src.repositories.user_groups import UserGroupsRepository as _UserGroupsRepo
-    from src.repositories.user_group_members import UserGroupMembersRepository as _UserGroupMembersRepo
-    _groups_repo = _UserGroupsRepo(conn)
-    _members_repo = _UserGroupMembersRepo(conn)
+    _groups_repo = user_groups_repo()
+    _members_repo = user_group_members_repo()
     user_groups_for_ui = [
         {"name": g["name"], "members_count": _members_repo.count_members(g["id"])}
         for g in _groups_repo.list_all()
@@ -1730,7 +1830,6 @@ async def setup_page(
     override is set, the live default from
     setup_instructions.resolve_lines() is used.
     """
-    from src.repositories.welcome_template import WelcomeTemplateRepository
     from src.welcome_template import compute_default_agent_prompt, _sanitize_banner_html
     from jinja2 import Environment, StrictUndefined, TemplateError
 
@@ -1739,7 +1838,7 @@ async def setup_page(
     # Determine the script text: override (Jinja2-rendered) or live default.
     # The override is per-instance, applies to every caller — admins who set
     # an override are opting into the exact text they wrote.
-    row = WelcomeTemplateRepository(conn).get()
+    row = welcome_template_repo().get()
     override_content = row.get("content")
     if override_content:
         # Admin override — render Jinja2 placeholders server-side.
@@ -1871,11 +1970,9 @@ async def store_edit(
     server-side).
     """
     from app.auth.access import is_user_admin
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
     from src.store_categories import STORE_CATEGORIES
 
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     is_admin = is_user_admin(user["id"], conn)
@@ -1886,7 +1983,7 @@ async def store_edit(
 
     pending_sub = None
     if entity.get("visibility_status") == "pending":
-        latest = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+        latest = store_submissions_repo().latest_for_entity(entity_id)
         if latest and latest.get("status") in ("pending_inline", "pending_llm"):
             pending_sub = latest
 
@@ -1951,10 +2048,8 @@ async def marketplace_flea_detail(
     """
     from app.api.store import _enforce_visibility
     from app.auth.access import is_user_admin
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
 
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     # Owner/admin get a version-status decorated entity so the versions
     # card can gate the Restore button on past-version approval state
     # (#316). Plain viewers don't see the versions card at all, so the
@@ -1987,7 +2082,7 @@ async def marketplace_flea_detail(
     # failure from the owner — that was the regression #316 fixed.
     quarantine_sub = None
     if is_owner or is_admin:
-        quarantine_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+        quarantine_sub = store_submissions_repo().latest_for_entity(entity_id)
 
     # v37: the Edit button locks while a submission is under review.
     edit_in_flight = bool(
@@ -2124,8 +2219,7 @@ async def marketplace_flea_skill_detail(
     """
     from app.api.store import _enforce_visibility
     from app.auth.access import is_user_admin
-    from src.repositories.store_entities import StoreEntitiesRepository
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
     _enforce_visibility(entity, user, conn)
@@ -2163,8 +2257,7 @@ async def marketplace_flea_agent_detail(
     """
     from app.api.store import _enforce_visibility
     from app.auth.access import is_user_admin
-    from src.repositories.store_entities import StoreEntitiesRepository
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
     _enforce_visibility(entity, user, conn)
@@ -2263,9 +2356,8 @@ async def admin_tables(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    from src.repositories.table_registry import TableRegistryRepository
     from app.instance_config import get_data_source_type
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     tables = repo.list_all()
     # Branch the register-modal layout server-side so the JS doesn't have
     # to round-trip /api/admin/server-config to learn the source type.
@@ -2277,6 +2369,16 @@ async def admin_tables(
         data_source_type=data_source_type,
     )
     return templates.TemplateResponse(request, "admin_tables.html", ctx)
+
+
+@router.get("/admin/sync", response_class=HTMLResponse)
+async def admin_sync_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Sync status dashboard — per-table extraction state + manual trigger."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_sync.html", ctx)
 
 
 @router.get("/admin/server-config", response_class=HTMLResponse)
@@ -2295,6 +2397,20 @@ async def admin_server_config_page(
     """
     ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "admin_server_config.html", ctx)
+
+
+@router.get("/admin/database", response_class=HTMLResponse)
+async def admin_database_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """DB backend state machine — current backend, allowed transitions,
+    active migration progress. Standalone page (not buried in
+    /admin/server-config) so the operator workflow is one click from
+    the admin menu.
+    """
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_database.html", ctx)
 
 
 @router.get("/admin/users", response_class=HTMLResponse)
@@ -2324,7 +2440,7 @@ async def admin_user_detail_page(
     admin reload picks up state changes from a sibling tab without a
     full-page reload elsewhere.
     """
-    repo = UserRepository(conn)
+    repo = users_repo()
     target = repo.get_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
@@ -2402,9 +2518,8 @@ async def admin_group_detail_page(
 ):
     """Single-group detail page — header + members table. Resource grants
     live on /admin/grants (deep-linked from here)."""
-    from src.repositories.user_groups import UserGroupsRepository
     from app.api.access import _is_google_managed, _mapped_email
-    g = UserGroupsRepository(conn).get(group_id)
+    g = user_groups_repo().get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
     # Project the same flags the API derives so the template avoids env
@@ -2452,6 +2567,44 @@ async def admin_marketplaces_page(
     return templates.TemplateResponse(request, "admin_marketplaces.html", ctx)
 
 
+# ── Inbound MCP source admin (RFC keboola/agnes-the-ai-analyst#461) ──
+#
+# Shell-only routes — every dynamic bit is fetched client-side from the
+# REST API under /api/admin/mcp-sources and /api/admin/mcp-tools (built in
+# parallel; contract pinned in the RFC §5). Keeping the server side this
+# thin means a contract drift only requires touching the templates' JS.
+@router.get("/admin/mcp-sources", response_class=HTMLResponse)
+async def admin_mcp_sources_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """List page for registered MCP sources."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_mcp_sources.html", ctx)
+
+
+@router.get("/admin/mcp-sources/{source_id}", response_class=HTMLResponse)
+async def admin_mcp_source_detail_page(
+    source_id: str,
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Detail page for a single MCP source — config, introspect, curation."""
+    ctx = _build_context(request, user=user, source_id=source_id)
+    return templates.TemplateResponse(request, "admin_mcp_source_detail.html", ctx)
+
+
+@router.get("/admin/mcp-tools/{tool_id}/grants", response_class=HTMLResponse)
+async def admin_mcp_tool_grants_page(
+    tool_id: str,
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Grant-management page for a passthrough MCP tool."""
+    ctx = _build_context(request, user=user, tool_id=tool_id)
+    return templates.TemplateResponse(request, "admin_mcp_tool_grants.html", ctx)
+
+
 # Scheduler-driven admin actions audited by app/api/admin.py and
 # app/api/marketplaces.py. Keep in sync with the JOBS list in
 # services/scheduler/__main__.py.
@@ -2497,7 +2650,6 @@ async def admin_store_submissions_page(
     ``limit`` (default 50, clamped to [1, 200] for the UI page-size
     selector).
     """
-    from src.repositories.store_submissions import StoreSubmissionsRepository
 
     statuses = None
     if status:
@@ -2520,7 +2672,7 @@ async def admin_store_submissions_page(
 
     valid_sort = sort if sort in {"created_at", "file_size", "status", "name"} else None
     valid_order = order if order in {"asc", "desc"} else None
-    items, total = StoreSubmissionsRepository(conn).list_for_admin(
+    items, total = store_submissions_repo().list_for_admin(
         status=statuses,
         submitter_id=submitter or None,
         type_=valid_type,
@@ -2536,8 +2688,7 @@ async def admin_store_submissions_page(
     # (The submitter id is opaque to admins; show the human label instead.)
     submitter_email = ""
     if submitter:
-        from src.repositories.users import UserRepository
-        urow = UserRepository(conn).get_by_id(submitter)
+        urow = users_repo().get_by_id(submitter)
         if urow:
             submitter_email = urow.get("email") or submitter
 
@@ -2569,12 +2720,8 @@ async def admin_store_submission_detail_page(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Per-submission detail with full verdict + override + retry actions."""
-    from src.repositories.audit import AuditRepository
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
-    from src.repositories.users import UserRepository
 
-    sub = StoreSubmissionsRepository(conn).get(submission_id)
+    sub = store_submissions_repo().get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
 
@@ -2593,7 +2740,7 @@ async def admin_store_submission_detail_page(
     submission_version_no = None
     sibling_submissions: list = []
     if sub.get("entity_id"):
-        ent = StoreEntitiesRepository(conn).get(sub["entity_id"])
+        ent = store_entities_repo().get(sub["entity_id"])
         if ent:
             entity_visibility_status = ent.get("visibility_status")
             entity_version_no = ent.get("version_no")
@@ -2641,11 +2788,11 @@ async def admin_store_submission_detail_page(
                     "is_current": row["id"] == submission_id,
                 })
 
-    other_count = StoreSubmissionsRepository(conn).count_for_submitter(
+    other_count = store_submissions_repo().count_for_submitter(
         sub["submitter_id"], exclude_id=submission_id,
     )
 
-    user_repo = UserRepository(conn)
+    user_repo = users_repo()
     override_email = ""
     if sub.get("override_by"):
         urow = user_repo.get_by_id(sub["override_by"])
@@ -2676,12 +2823,12 @@ async def admin_store_submission_detail_page(
         f"store_entity:{submission_id}",
         submission_id,
     ]
-    submission_audit_rows = AuditRepository(conn).query_for_resources(
+    submission_audit_rows = audit_repo().query_for_resources(
         submission_resources, limit=100,
     )
     entity_audit_rows: list = []
     if sub.get("entity_id"):
-        entity_audit_rows = AuditRepository(conn).query_for_resources(
+        entity_audit_rows = audit_repo().query_for_resources(
             [f"store_entity:{sub['entity_id']}"], limit=100,
         )
         # Drop entity-scoped rows that are actually submission audits for
@@ -2742,10 +2889,9 @@ async def admin_agent_prompt_page(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    from src.repositories.welcome_template import WelcomeTemplateRepository
     from src.welcome_template import compute_default_agent_prompt
 
-    row = WelcomeTemplateRepository(conn).get()
+    row = welcome_template_repo().get()
     base_url = str(request.base_url).rstrip("/")
     default_template = compute_default_agent_prompt(conn, user=user, server_url=base_url)
     ctx = _build_context(
@@ -2766,11 +2912,10 @@ async def admin_workspace_prompt_page(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    from src.repositories.claude_md_template import ClaudeMdTemplateRepository
     from src.claude_md import compute_default_claude_md
     from app.api.claude_md import _scan_legacy_strings
 
-    row = ClaudeMdTemplateRepository(conn).get()
+    row = claude_md_template_repo().get()
     server_url = str(request.base_url).rstrip("/")
     default_template = compute_default_claude_md(conn, user=user, server_url=server_url)
     ctx = _build_context(
@@ -2971,6 +3116,16 @@ async def profile_session_download(
     )
 
 
+@router.get("/help/cowork", response_class=HTMLResponse)
+async def cowork_help(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Step-by-step guide for the Connect Claude Code (Agnes Cowork) setup flow."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "cowork_help.html", ctx)
+
+
 @router.get("/_debug/throw/http/{code:int}", response_class=HTMLResponse, include_in_schema=False)
 async def _debug_throw_http(request: Request, code: int):
     """Dev helper — raise an HTTPException with the given status code.
@@ -3001,6 +3156,95 @@ async def _debug_throw_exc(request: Request):
 
 def _is_debug() -> bool:
     return os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+
+
+@router.get("/chat", response_class=HTMLResponse)
+async def chat_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Web chat UI — streams Claude Code sessions over WebSocket.
+
+    Goes through ``_build_context`` so the page inherits the standard
+    Agnes chrome from ``base_ds.html``: ``_app_header.html`` (nav),
+    ``static_url(...)``-resolved CSS, ``config.INSTANCE_NAME``,
+    ``session.user.is_admin`` for the admin dropdown, footer copyright.
+    Without this, the head's four ``<link rel="stylesheet" href="">``
+    tags render with empty href and the nav block short-circuits on
+    ``{% if session.user %}``.
+    """
+    if not request.app.state.chat_config.enabled:
+        return RedirectResponse("/")
+    # Cloud chat is an RBAC resource (default-deny). Non-granted users (and
+    # everyone but admins until a grant exists) are bounced to home — the nav
+    # link is hidden for them too, this guards a direct URL hit.
+    from app.auth.access import can_access
+    from app.resource_types import ResourceType
+    if not can_access(user["id"], ResourceType.CHAT.value, "chat", conn):
+        return RedirectResponse("/")
+    ctx = _build_context(request, user=user, conn=conn, current_user=user)
+    ctx["chat_capabilities"] = _chat_capability_snapshot(conn, user)
+    return templates.TemplateResponse(request, "chat.html", ctx)
+
+
+def _chat_capability_snapshot(
+    conn: duckdb.DuckDBPyConnection, user: dict
+) -> dict:
+    """Compute the empty-state capability panel data server-side.
+
+    The previous shape called ``/api/catalog`` + ``/api/marketplaces`` from
+    JS. Those URLs were wrong (``/api/catalog`` 404s — the real endpoint is
+    ``/api/catalog/tables``; ``/api/marketplaces`` is admin-only and 403s
+    for normal users), so the panel always rendered "unavailable" /
+    "no plugins". Resolving here side-steps both: we already have ``user``
+    + ``conn`` from the route's Depends, both RBAC-filter helpers are
+    sync, and rendering becomes a single round-trip with no client-side
+    fetch races. JSON gets embedded by the template via ``| tojson``.
+    """
+    from src.rbac import can_access_table
+    from src.repositories.table_registry import TableRegistryRepository
+    from src.marketplace_filter import resolve_allowed_plugins
+
+    by_source: dict[str, int] = {}
+    try:
+        all_tables = TableRegistryRepository(conn).list_all()
+        for t in all_tables:
+            if not can_access_table(user, t["id"], conn):
+                continue
+            src = t.get("source_type") or "unknown"
+            by_source[src] = by_source.get(src, 0) + 1
+        tables_total = sum(by_source.values())
+    except Exception:
+        logger.exception("chat capability snapshot: tables query failed")
+        tables_total = 0
+        by_source = {}
+
+    try:
+        plugins = resolve_allowed_plugins(conn, user)
+        # Keep only the fields the template renders to keep the embedded
+        # JSON small; ``plugin_dir`` is a Path which doesn't survive
+        # ``tojson``, ``raw`` is upstream marketplace.json and can be MB.
+        plugin_summaries = [
+            {
+                "name": p.get("manifest_name") or p.get("original_name"),
+                "marketplace": p.get("marketplace_slug"),
+                "tagline": (p.get("raw") or {}).get("description"),
+            }
+            for p in plugins
+        ]
+        marketplace_count = len({p["marketplace"] for p in plugin_summaries})
+    except Exception:
+        logger.exception("chat capability snapshot: plugins query failed")
+        plugin_summaries = []
+        marketplace_count = 0
+
+    return {
+        "tables_total": tables_total,
+        "tables_by_source": by_source,
+        "plugins": plugin_summaries,
+        "marketplace_count": marketplace_count,
+    }
 
 
 @router.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)

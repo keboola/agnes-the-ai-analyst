@@ -13,6 +13,7 @@ ID format:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -189,3 +190,106 @@ def _handle_install_error(e: V2ClientError) -> None:
         typer.echo("You do not have permission to access this plugin.", err=True)
     else:
         typer.echo(str(e), err=True)
+
+
+# --------------------------------------------------------------------------- #
+# Curator tool — scaffold the Agnes enrichment file (Gap 2 / #469).
+#
+# Purely local: operates on a cloned curated-marketplace repo, no server call.
+# --------------------------------------------------------------------------- #
+
+
+@marketplace_app.command("scaffold-metadata")
+def scaffold_metadata(
+    path: Path = typer.Argument(
+        ...,
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        help="Path to a cloned curated-marketplace repo "
+        "(contains .claude-plugin/marketplace.json).",
+    ),
+    check: bool = typer.Option(
+        False,
+        "--check",
+        help="Exit non-zero if the on-disk file is out of sync. Writes nothing. "
+        "Intended for CI.",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print the would-be file; write nothing."
+    ),
+    json_out: bool = typer.Option(
+        False, "--json", help="With --dry-run, print only the JSON (no report)."
+    ),
+):
+    """Generate / refresh .claude-plugin/marketplace-metadata.json (curator tool).
+
+    Derives display_name, tagline, invocation, and when_to_use from
+    marketplace.json + each plugin.json + SKILL.md / agent frontmatter, while
+    preserving every human-authored field (cover photos, polished copy, sample
+    interactions). Re-run any time the plugins change; human edits always win.
+    """
+    from src.marketplace_metadata import (
+        MARKETPLACE_METADATA_REL,
+        read_marketplace_metadata,
+    )
+    from src.marketplace_metadata_scaffold import (
+        ScaffoldError,
+        comparable_view,
+        render_document,
+        scaffold_metadata as _scaffold,
+    )
+
+    try:
+        existing = read_marketplace_metadata(path)
+        doc, report = _scaffold(path, existing=existing)
+    except ScaffoldError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+    if check:
+        if comparable_view(existing) != comparable_view(doc):
+            typer.echo(
+                "marketplace-metadata.json is OUT OF SYNC — run: "
+                f"agnes marketplace scaffold-metadata {path}",
+                err=True,
+            )
+            raise typer.Exit(1)
+        typer.echo("marketplace-metadata.json is up to date.")
+        return
+
+    rendered = render_document(doc)
+
+    if dry_run:
+        if json_out:
+            typer.echo(rendered)
+            return
+        _print_scaffold_report(report)
+        typer.echo("\n--- marketplace-metadata.json (dry-run, not written) ---")
+        typer.echo(rendered)
+        return
+
+    target = path / MARKETPLACE_METADATA_REL
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(rendered, encoding="utf-8")
+    _print_scaffold_report(report)
+    typer.echo(f"\nWrote {target}")
+
+
+def _print_scaffold_report(report) -> None:
+    typer.echo(
+        f"Plugins: {len(report.plugins)}  "
+        f"Skills: {len(report.skills)}  Agents: {len(report.agents)}"
+    )
+    counts = report.status_counts()
+    if counts:
+        typer.echo(
+            "Fields: " + ", ".join(f"{k}={counts[k]}" for k in sorted(counts))
+        )
+    for w in report.warnings:
+        typer.echo(f"  warning: {w}", err=True)
+    if report.orphans:
+        typer.echo(
+            f"  note: {len(report.orphans)} section(s) in the file are not in "
+            "marketplace.json (kept untouched): " + ", ".join(report.orphans)
+        )

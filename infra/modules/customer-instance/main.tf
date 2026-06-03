@@ -79,6 +79,27 @@ resource "google_secret_manager_secret_version" "jwt" {
   secret_data = random_password.jwt.result
 }
 
+# Postgres password for the side-car postgres:16-alpine container.
+# Startup-script pulls this and writes POSTGRES_PASSWORD + DATABASE_URL
+# into /opt/agnes/.env before docker compose up.
+resource "google_secret_manager_secret" "postgres" {
+  secret_id = "agnes-${var.customer_name}-postgres-password"
+  project   = var.gcp_project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "random_password" "postgres" {
+  length  = 32
+  special = false # PG-friendly; avoids shell-quoting in startup-script
+}
+
+resource "google_secret_manager_secret_version" "postgres" {
+  secret      = google_secret_manager_secret.postgres.id
+  secret_data = random_password.postgres.result
+}
+
 # --- VM service account (dedicated, read-only on specific secrets only) ---
 
 resource "google_service_account" "vm" {
@@ -97,12 +118,32 @@ resource "google_secret_manager_secret_iam_member" "vm_jwt" {
   member    = "serviceAccount:${google_service_account.vm.email}"
 }
 
+# Same scoped read access for the postgres password secret.
+resource "google_secret_manager_secret_iam_member" "vm_postgres" {
+  project   = var.gcp_project_id
+  secret_id = google_secret_manager_secret.postgres.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
 # Grant read access to additional secrets the app needs (e.g. keboola-storage-token).
 # Caller specifies these via var.runtime_secrets. Each secret must already exist.
 resource "google_secret_manager_secret_iam_member" "vm_runtime" {
   for_each  = toset(var.runtime_secrets)
   project   = var.gcp_project_id
   secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
+# Grant read access to secrets that get auto-injected as .env entries (E2B,
+# Anthropic, Slack, etc.) per var.runtime_secret_env. The startup script
+# iterates this map and writes one `<env_var>=$(gcloud secrets ...)` line
+# per entry to /opt/agnes/.env.
+resource "google_secret_manager_secret_iam_member" "vm_runtime_env" {
+  for_each  = var.runtime_secret_env
+  project   = var.gcp_project_id
+  secret_id = each.key
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.vm.email}"
 }
@@ -266,6 +307,8 @@ resource "google_compute_instance" "vm" {
     customer_name                   = var.customer_name
     image_repo                      = var.image_repo
     image_tag                       = each.value.image_tag
+    app_mem_limit                   = each.value.app_mem_limit
+    scheduler_mem_limit             = each.value.scheduler_mem_limit
     upgrade_mode                    = each.value.upgrade_mode
     tls_mode                        = each.value.tls_mode
     domain                          = each.value.domain
@@ -278,6 +321,7 @@ resource "google_compute_instance" "vm" {
     compose_ref                     = var.compose_ref
     oauth_client_id_secret_name     = try(local.per_vm_oauth[each.value.name].id, "")
     oauth_client_secret_secret_name = try(local.per_vm_oauth[each.value.name].secret, "")
+    runtime_secret_env              = var.runtime_secret_env
   })
 
   service_account {
@@ -304,6 +348,7 @@ resource "google_compute_instance" "vm" {
   depends_on = [
     google_secret_manager_secret_iam_member.vm_jwt,
     google_secret_manager_secret_iam_member.vm_runtime,
+    google_secret_manager_secret_iam_member.vm_runtime_env,
     google_secret_manager_secret_iam_member.vm_oauth,
     google_secret_manager_secret_version.jwt,
   ]

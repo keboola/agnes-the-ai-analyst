@@ -10,6 +10,10 @@
 # (before authlib gets imported transitively) keeps `make local-dev`
 # stdout clean without hiding warnings from any other package.
 import warnings as _warnings
+from src.repositories import (
+    user_group_members_repo,
+    users_repo,
+)
 try:
     from authlib.deprecate import AuthlibDeprecationWarning as _AuthlibDepr
     _warnings.filterwarnings("ignore", category=_AuthlibDepr)
@@ -46,6 +50,126 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.middleware.request_id import RequestIdMiddleware
+
+
+def _chat_jwt_secret_ok(chat_config) -> bool:
+    """Refuse ``chat.enabled=true`` deployments that lack a real
+    ``JWT_SECRET_KEY`` (unset or shorter than 32 bytes).
+
+    The chat path mints session JWTs that authenticate the sandboxed
+    runner back to the Agnes server.  If ``JWT_SECRET_KEY`` is unset, the
+    auth layer falls back to the public test constant
+    (``test-jwt-secret-key-minimum-32-chars!!`` — committed in jwt.py for
+    local-dev convenience).  A production deployment that flips
+    ``chat.enabled: true`` without setting a real secret would mint and
+    verify tokens against that constant — anyone who reads the source
+    could mint runner JWTs.  Refuse to enable chat in that state and
+    surface a fatal log so the operator knows why.
+
+    Returns True when chat is disabled (irrelevant) or when the secret is
+    set and >= 32 bytes; False otherwise.
+    """
+    if not chat_config.enabled:
+        return True
+    # Bypass when TESTING=1 — pytest-driven sessions deliberately use the
+    # short fallback constant and we don't want every chat-touching test
+    # to need a manually-set 32+-byte env var.
+    if os.environ.get("TESTING", "").lower() in ("1", "true"):
+        return True
+    secret = os.environ.get("JWT_SECRET_KEY", "")
+    if not secret:
+        logger = logging.getLogger("app.main")
+        logger.error(
+            "chat.enabled=true but JWT_SECRET_KEY is unset — "
+            "refusing to enable chat. Set a 32+ byte JWT_SECRET_KEY in "
+            "the server env before flipping chat.enabled.",
+        )
+        return False
+    if len(secret) < 32:
+        logger = logging.getLogger("app.main")
+        logger.error(
+            "chat.enabled=true but JWT_SECRET_KEY is only %d bytes — "
+            "refusing to enable chat (minimum 32 bytes).",
+            len(secret),
+        )
+        return False
+    return True
+
+
+def _chat_anthropic_key_ok(chat_config) -> bool:
+    """Refuse ``chat.enabled=true`` deployments that lack ``ANTHROPIC_API_KEY``.
+
+    The chat runner inside the E2B sandbox calls the Anthropic API on
+    behalf of each user.  If the key is absent the runner silently fails
+    on its first API call.  Refuse to enable chat and surface a fatal
+    log so the operator finds the cause immediately rather than after
+    users start reporting mysterious errors.
+
+    Returns True when chat is disabled (irrelevant) or when
+    ``ANTHROPIC_API_KEY`` is set to a non-empty value; False otherwise.
+    """
+    if not chat_config.enabled:
+        return True
+    # Bypass for TESTING=1 — pytest-driven sessions don't need a real key.
+    if os.environ.get("TESTING", "").lower() in ("1", "true"):
+        return True
+    if os.environ.get("ANTHROPIC_API_KEY", ""):
+        return True
+    logging.getLogger("app.main").error(
+        "chat.enabled=true requires ANTHROPIC_API_KEY env to be set; "
+        "refusing to spawn ChatManager",
+    )
+    return False
+
+
+def _chat_e2b_api_key_ok(chat_config) -> bool:
+    """Refuse ``chat.enabled=true`` deployments that lack ``E2B_API_KEY``.
+
+    Mirrors ``_chat_anthropic_key_ok``: the E2B SDK requires an API key
+    to spawn sandboxes; without it ``AsyncSandbox.create`` would 401 on
+    every session start. Refuse the manager rather than letting users
+    hit the failure.
+
+    Returns True when chat is disabled or provider is not ``e2b``, or
+    when the key is present; False otherwise.
+    """
+    if not chat_config.enabled:
+        return True
+    if chat_config.provider != "e2b":
+        return True
+    if os.environ.get("TESTING", "").lower() in ("1", "true"):
+        return True
+    if os.environ.get("E2B_API_KEY", ""):
+        return True
+    logging.getLogger("app.main").error(
+        "chat.enabled=true with provider=e2b requires E2B_API_KEY env; "
+        "refusing to spawn ChatManager",
+    )
+    return False
+
+
+def _chat_e2b_template_id_ok(chat_config) -> bool:
+    """Refuse ``chat.enabled=true`` without a ``chat.e2b_template_id``.
+
+    The provider can't pick a default template — every operator builds
+    their own ``agnes-chat`` template against their E2B account. Without
+    the id, the provider would 404 at spawn time. Refuse at boot.
+    """
+    if not chat_config.enabled:
+        return True
+    if chat_config.provider != "e2b":
+        return True
+    if os.environ.get("TESTING", "").lower() in ("1", "true"):
+        return True
+    if getattr(chat_config, "e2b_template_id", None):
+        return True
+    logging.getLogger("app.main").error(
+        "chat.enabled=true with provider=e2b requires chat.e2b_template_id "
+        "to be set in instance.yaml; refusing to spawn ChatManager. "
+        "Run `e2b template build` against app/initial_workspace_default/e2b-template "
+        "and copy the returned id into instance.yaml.",
+    )
+    return False
 
 
 class _SelectiveGZipMiddleware:
@@ -105,13 +229,19 @@ from app.api.metrics import router as metrics_router
 from app.api.metadata import router as metadata_router
 from app.api.query_hybrid import router as query_hybrid_router
 from app.api.cli_artifacts import router as cli_artifacts_router
+from app.api.cli_auth import router as cli_auth_router
 from app.api.tokens import router as tokens_router, admin_router as tokens_admin_router
 from app.api.v2_catalog import router as v2_catalog_router
 from app.api.v2_schema import router as v2_schema_router
 from app.api.v2_sample import router as v2_sample_router
 from app.api.v2_scan import router as v2_scan_router
+from app.api.v2_marketplace import router as v2_marketplace_router
 from app.api.marketplaces import router as marketplaces_router
 from app.api.data_packages import router as data_packages_router
+from app.api.admin_mcp import router as admin_mcp_router
+from app.api.mcp_passthrough import router as mcp_passthrough_router
+from app.api.mcp_per_table import router as mcp_per_table_router
+from app.api.mcp_user_secrets import router as mcp_user_secrets_router
 from app.api.memory_domains import router as memory_domains_router
 from app.api.recipes import (
     public_router as recipes_public_router,
@@ -132,6 +262,11 @@ from app.api.welcome import router as welcome_router
 from app.api.connectors import router as connectors_router
 from app.api.claude_md import router as claude_md_router
 from app.api.news import router as news_router
+from app.api.cowork_bundle import (
+    user_router as cowork_user_router,
+    auth_router as cowork_auth_router,
+)
+from app.api.mcp_http import make_sse_app as _make_mcp_sse_app
 from app.api.cache_warmup import router as cache_warmup_router
 from app.api.bq_metadata_refresh import router as bq_metadata_refresh_router
 from app.api.activity import router as activity_router
@@ -140,15 +275,45 @@ from app.api.admin_user_sessions import router as admin_user_sessions_router
 from app.api.admin_sessions import router as admin_sessions_router
 from app.api.admin_usage import router as admin_usage_router
 from app.api.admin_usage_summary import router as admin_usage_summary_router
+from app.api.db_state import router as db_state_router
 from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import make_git_wsgi_app
 from app.web.router import router as web_router
+from app.api.chat import router as chat_router
+from app.api.slack import router as slack_router
+from app.api.admin_chat import router as admin_chat_router
 
 logger = logging.getLogger(__name__)
 
 
+def _maybe_rebuild_on_boot() -> bool:
+    """When AGNES_REBUILD_ON_BOOT=1, ATTACH all baked extracts and build
+    master views before serving. For images that ship baked data and have
+    no scheduler (ephemeral/demo). Returns True if a rebuild ran.
+
+    Blocking by design: the dataset is small and baked, and views must
+    exist before the first request. Soft-fails (logs) so a corrupt extract
+    never wedges boot.
+    """
+    if os.environ.get("AGNES_REBUILD_ON_BOOT", "").lower() not in ("1", "true"):
+        return False
+    try:
+        from src.orchestrator import SyncOrchestrator
+        SyncOrchestrator().rebuild()
+        logger.info("AGNES_REBUILD_ON_BOOT: master views rebuilt from baked extracts")
+        return True
+    except Exception:
+        logger.exception("AGNES_REBUILD_ON_BOOT rebuild failed (non-fatal)")
+        return False
+
+
 @asynccontextmanager
 async def lifespan(app):
+    # Fail-closed: refuse to serve with a weak/absent JWT signing key in
+    # production. Cheap, runs before any request is accepted.
+    from app.auth.jwt import validate_jwt_secret_or_raise
+    validate_jwt_secret_or_raise()
+
     # Issue #81 Group A — log the effective remote_attach allowlist at
     # startup so an operator's typo in AGNES_REMOTE_ATTACH_EXTENSIONS
     # (which REPLACES, not extends, the default) is visible.
@@ -201,6 +366,9 @@ async def lifespan(app):
     except Exception:
         logger.exception("internal data-source seed failed; continuing")
 
+    # Baked-data images (no scheduler) need master views built at boot.
+    _maybe_rebuild_on_boot()
+
     # Rebuild the FTS BM25 index over knowledge_items at boot (issue #121).
     # The migration to schema v47 already does this on first upgrade, but
     # for instances that have been on v47 across restarts the boot-time
@@ -242,10 +410,8 @@ async def lifespan(app):
     if seed_email:
         try:
             from src.db import SYSTEM_ADMIN_GROUP, get_system_db
-            from src.repositories.user_group_members import UserGroupMembersRepository
-            from src.repositories.users import UserRepository
             conn = get_system_db()
-            repo = UserRepository(conn)
+            repo = users_repo()
             seed_password = os.environ.get("SEED_ADMIN_PASSWORD") or None
             password_hash = None
             if seed_password:
@@ -274,7 +440,7 @@ async def lifespan(app):
                 "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
             ).fetchone()
             if admin_group:
-                UserGroupMembersRepository(conn).add_member(
+                user_group_members_repo().add_member(
                     user_id=user_id,
                     group_id=admin_group[0],
                     source="system_seed",
@@ -335,9 +501,8 @@ async def lifespan(app):
     if not is_local_dev_mode():
         try:
             from src.db import get_system_db
-            from src.repositories.users import UserRepository
             conn = get_system_db()
-            repo = UserRepository(conn)
+            repo = users_repo()
             all_users = repo.list_all()
             has_password = any(u.get("password_hash") for u in all_users)
             if not has_password:
@@ -360,6 +525,181 @@ async def lifespan(app):
                         pc.host, pc.identify_mode, pc.replay_enabled)
     except Exception:
         logger.exception("PostHog init at startup failed")
+
+    # --- CHAT-INIT -----------------------------------------------------------
+    # Always create chat_repo + chat_config regardless of chat.enabled so that
+    # the admin_chat and chat API routers (which use app.state.chat_repo) work
+    # even when chat is disabled — they degrade gracefully via _get_manager().
+    try:
+        from src.db import get_system_db as _get_system_db_chat, _get_data_dir as _get_data_dir_chat
+        from app.chat.config import load_chat_config
+        from app.chat.persistence import ChatRepository
+
+        _chat_data_dir = _get_data_dir_chat()
+        _chat_conn = _get_system_db_chat()
+        app.state.chat_repo = ChatRepository(_chat_conn)
+        app.state.chat_data_dir = _chat_data_dir
+
+        _chat_instance_yaml = _chat_data_dir / "state" / "instance.yaml"
+        app.state.chat_config = load_chat_config(_chat_instance_yaml)
+
+        def _get_marketplace_sha() -> str:
+            """Return combined SHA over all synced marketplace repos.
+
+            The marketplace ingest pipeline writes
+            ``${DATA_DIR}/marketplaces/.combined-sha`` after each nightly
+            sync. Read it when it exists; otherwise return empty string so
+            WorkdirManager.needs_reinit() falls through to the version check.
+            """
+            p = _chat_data_dir / "marketplaces" / ".combined-sha"
+            try:
+                return p.read_text().strip() if p.exists() else ""
+            except Exception:
+                return ""
+
+        def _server_template_status():
+            """Return TemplateStatus if an initial-workspace template is configured."""
+            try:
+                from src.initial_workspace import TemplateStatus
+                from app.api.initial_workspace import _read_section
+                section = _read_section()
+                if not section.get("url"):
+                    return None
+                synced = bool(section.get("last_commit_sha"))
+                return TemplateStatus(
+                    configured=True,
+                    synced=synced,
+                    template_source=section.get("url"),
+                    template_sha=section.get("last_commit_sha"),
+                    synced_at=section.get("last_synced_at"),
+                )
+            except Exception:
+                logger.exception("_server_template_status failed (non-fatal)")
+                return None
+
+        def _fetch_local_template_zip() -> bytes:
+            """Read the cached template zip from disk."""
+            try:
+                from src.initial_workspace import build_zip
+                return build_zip()
+            except Exception:
+                logger.exception("_fetch_local_template_zip failed (non-fatal)")
+                return b""
+
+        if app.state.chat_config.enabled:
+            if app.state.chat_config.provider != "e2b":
+                logger.error(
+                    "chat.provider=%r is not supported — only 'e2b' is "
+                    "accepted in production (per Q7 owner decision, "
+                    "MockE2BProvider was dropped). Set chat.provider: e2b "
+                    "in instance.yaml or flip chat.enabled: false.",
+                    app.state.chat_config.provider,
+                )
+                app.state.chat_manager = None
+            elif int(os.environ.get("UVICORN_WORKERS", "1")) > 1:
+                logger.error(
+                    "chat.enabled=true but UVICORN_WORKERS > 1 — "
+                    "cloud chat requires a single-worker deployment; "
+                    "chat_manager disabled"
+                )
+                app.state.chat_manager = None
+            elif not _chat_jwt_secret_ok(app.state.chat_config):
+                # Fatal already logged inside the helper.  Disable chat so the
+                # runner never spawns with a public-constant secret.
+                app.state.chat_manager = None
+            elif not _chat_anthropic_key_ok(app.state.chat_config):
+                # Fatal already logged inside the helper.  No key → no runner.
+                logger.error(
+                    "ANTHROPIC_API_KEY missing; disabling chat",
+                )
+                app.state.chat_manager = None
+            elif not _chat_e2b_api_key_ok(app.state.chat_config):
+                # Fatal already logged inside the helper.
+                app.state.chat_manager = None
+            elif not _chat_e2b_template_id_ok(app.state.chat_config):
+                # Fatal already logged inside the helper.
+                app.state.chat_manager = None
+            else:
+                from typing import Optional
+                from app.chat.workdir import WorkdirManager
+                from app.chat.e2b_provider import E2BProvider
+                from app.chat.manager import ChatManager
+                from app.version import APP_VERSION as _APP_VERSION_CHAT
+
+                _server_url = os.environ.get("SERVER_URL", "http://localhost:8000")
+
+                def _render_workspace_prompt(user_email: str) -> Optional[str]:
+                    """Render the analyst CLAUDE.md (admin Workspace Prompt
+                    override or shipped default), RBAC-filtered for this user —
+                    the same content `agnes init` writes on a laptop via
+                    GET /api/welcome. Returns None on any failure so workdir
+                    init falls back to the bundled static CLAUDE.md."""
+                    try:
+                        from src.db import get_system_db
+                        from src.claude_md import render_claude_md
+                        from src.repositories.users import UserRepository
+
+                        conn = get_system_db()
+                        try:
+                            u = UserRepository(conn).get_by_email(user_email)
+                            if not u:
+                                return None
+                            return render_claude_md(conn, user=u, server_url=_server_url)
+                        finally:
+                            conn.close()
+                    except Exception:
+                        logger.exception("render workspace prompt failed for %s", user_email)
+                        return None
+
+                workdir_mgr = WorkdirManager(
+                    data_dir=_chat_data_dir,
+                    repo=app.state.chat_repo,
+                    bundled_template_dir=Path("app/initial_workspace_default"),
+                    server_url=_server_url,
+                    agnes_version=_APP_VERSION_CHAT,
+                    get_marketplace_sha=_get_marketplace_sha,
+                    get_template_status=_server_template_status,
+                    fetch_template_zip=_fetch_local_template_zip,
+                    render_workspace_prompt=_render_workspace_prompt,
+                    marketplace_sha_debounce_seconds=app.state.chat_config.marketplace_sha_debounce_seconds,
+                )
+                # E2B sandboxes are capped at 1 hour (3600 s) by the platform.
+                # If chat.max_session_seconds is higher (default 4 h), clamp here
+                # so AsyncSandbox.create() doesn't 400. The idle reaper / per-tool
+                # caps still enforce shorter limits as configured; this just
+                # prevents the spawn call from failing fast on the upper bound.
+                E2B_SANDBOX_MAX_SECONDS = 3600
+                provider = E2BProvider(
+                    api_key=os.environ.get("E2B_API_KEY", ""),
+                    template_id=app.state.chat_config.e2b_template_id or "",
+                    sandbox_timeout_seconds=min(
+                        app.state.chat_config.max_session_seconds,
+                        E2B_SANDBOX_MAX_SECONDS,
+                    ),
+                )
+                mgr = ChatManager(
+                    provider=provider,
+                    workdir_mgr=workdir_mgr,
+                    repo=app.state.chat_repo,
+                    config=app.state.chat_config,
+                )
+                mgr.start_idle_reaper()
+                app.state.chat_manager = mgr
+                logger.info(
+                    "chat.enabled: ChatManager started (provider=e2b, "
+                    "template=%s, idle_ttl=%ds, concurrency_per_user=%d)",
+                    app.state.chat_config.e2b_template_id,
+                    app.state.chat_config.idle_ttl_seconds,
+                    app.state.chat_config.concurrency_per_user,
+                )
+        else:
+            app.state.chat_manager = None
+            logger.info("chat.enabled=false; ChatManager not started")
+    except Exception:
+        logger.exception("CHAT-INIT failed (non-fatal); chat features will be unavailable")
+        app.state.chat_manager = None
+    # --- end CHAT-INIT -------------------------------------------------------
+
     yield
     try:
         from src.observability import get_posthog
@@ -394,6 +734,7 @@ def _toolbar_show_callback(request, settings) -> bool:
 
 
 def create_app() -> FastAPI:
+    from app.serialization import AgnesJSONResponse
     app = FastAPI(
         title="AI Data Analyst",
         description="Data distribution platform for AI analytical systems",
@@ -405,6 +746,9 @@ def create_app() -> FastAPI:
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        # All JSON responses label datetime fields with an explicit UTC
+        # offset — see app/serialization.py for the why.
+        default_response_class=AgnesJSONResponse,
         # Intentionally NOT debug=DEBUG: FastAPI's debug=True installs
         # Starlette's ServerErrorMiddleware which intercepts unhandled
         # Exceptions and renders a plain-HTML traceback BEFORE our
@@ -535,6 +879,7 @@ def create_app() -> FastAPI:
         minimum_size=1024,
         skip_prefixes=(
             "/api/data/",
+            "/api/mcp",          # SSE stream — do not gzip
             "/cli/wheel/",
             "/cli/download",
             "/marketplace.git",  # git smart-HTTP is self-chunked; double-gzip bloats
@@ -729,14 +1074,20 @@ def create_app() -> FastAPI:
     app.include_router(metadata_router)
     app.include_router(query_hybrid_router)
     app.include_router(cli_artifacts_router)
+    app.include_router(cli_auth_router)
     app.include_router(tokens_router)
     app.include_router(tokens_admin_router)
     app.include_router(v2_catalog_router)
     app.include_router(v2_schema_router)
     app.include_router(v2_sample_router)
     app.include_router(v2_scan_router)
+    app.include_router(v2_marketplace_router)
     app.include_router(marketplaces_router)
     app.include_router(data_packages_router)
+    app.include_router(admin_mcp_router)
+    app.include_router(mcp_passthrough_router)
+    app.include_router(mcp_user_secrets_router)
+    app.include_router(mcp_per_table_router)
     app.include_router(memory_domains_router)
     app.include_router(recipes_public_router)
     app.include_router(recipes_admin_router)
@@ -753,6 +1104,13 @@ def create_app() -> FastAPI:
     app.include_router(connectors_router)
     app.include_router(claude_md_router)
     app.include_router(news_router)
+    app.include_router(cowork_user_router)
+    app.include_router(cowork_auth_router)
+
+    # HTTP MCP (SSE transport) for cowork VM access — must be mounted before
+    # web_router's catch-all. GZip excluded below via skip_prefixes.
+    app.mount("/api/mcp", _make_mcp_sse_app())
+
     app.include_router(cache_warmup_router)
     app.include_router(bq_metadata_refresh_router)
     app.include_router(activity_router)
@@ -761,7 +1119,11 @@ def create_app() -> FastAPI:
     app.include_router(admin_sessions_router)
     app.include_router(admin_usage_router)
     app.include_router(admin_usage_summary_router)
+    app.include_router(db_state_router)
     app.include_router(marketplace_server_router)
+    app.include_router(chat_router)
+    app.include_router(slack_router)
+    app.include_router(admin_chat_router)
 
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*
     # WSGI → ASGI bridge (dulwich is WSGI-native; FastAPI is ASGI).
@@ -803,6 +1165,7 @@ def create_app() -> FastAPI:
         "/marketplace.zip",
         "/marketplace.git",
         "/marketplace/",
+        "/admin/chat",
     )
 
     _ERROR_TITLES = {

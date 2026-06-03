@@ -276,6 +276,16 @@ class TableRegistryRepository:
     def unregister(self, table_id: str) -> None:
         self.conn.execute("DELETE FROM table_registry WHERE id = ?", [table_id])
 
+    def set_description(self, table_id: str, description: str) -> None:
+        """Set only the ``description`` column, leaving every other field
+        untouched (unlike ``register()``'s full upsert). Used by the LLM
+        auto-doc tool (#399) to backfill descriptions without disturbing
+        sync-strategy / partition / docs columns."""
+        self.conn.execute(
+            "UPDATE table_registry SET description = ? WHERE id = ?",
+            [description, table_id],
+        )
+
     def get(self, table_id: str) -> Optional[Dict[str, Any]]:
         result = self.conn.execute(
             "SELECT * FROM table_registry WHERE id = ?", [table_id]

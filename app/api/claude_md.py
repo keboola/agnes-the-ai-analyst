@@ -18,9 +18,11 @@ from pydantic import BaseModel, Field
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db, get_current_user
-from src.repositories.claude_md_template import ClaudeMdTemplateRepository
 from src.claude_md import build_claude_md_context, compute_default_claude_md, render_claude_md
 
+from src.repositories import (
+    claude_md_template_repo,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -181,7 +183,7 @@ async def admin_get_workspace_template(
             seed_path=_SEED_PATH,
         )
 
-    row = ClaudeMdTemplateRepository(conn).get()
+    row = claude_md_template_repo().get()
     live_default = compute_default_claude_md(conn, user=user, server_url=server_url)
     legacy_hits = _scan_legacy_strings(row["content"] or "")
     return TemplateGetResponse(
@@ -243,7 +245,7 @@ async def admin_put_workspace_template(
             ),
         )
 
-    ClaudeMdTemplateRepository(conn).set(payload.content, updated_by=user["email"])
+    claude_md_template_repo().set(payload.content, updated_by=user["email"])
     return {"status": "ok"}
 
 
@@ -267,7 +269,7 @@ async def admin_reset_workspace_template(
                 ),
             },
         )
-    ClaudeMdTemplateRepository(conn).reset(updated_by=user["email"])
+    claude_md_template_repo().reset(updated_by=user["email"])
     return Response(status_code=204)
 
 

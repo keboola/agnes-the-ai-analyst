@@ -297,6 +297,7 @@ def _build_fresh_bq_session():
     """
     import duckdb  # type: ignore
     from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+    from src.duckdb_conn import _open_duckdb
 
     try:
         token = get_metadata_token()
@@ -307,7 +308,7 @@ def _build_fresh_bq_session():
             details={"original": str(e)},
         )
 
-    conn = duckdb.connect(":memory:")
+    conn = _open_duckdb(":memory:")
     try:
         conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
         escaped = token.replace("'", "''")

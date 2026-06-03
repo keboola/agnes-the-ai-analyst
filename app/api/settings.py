@@ -8,8 +8,10 @@ import duckdb
 from app.auth.access import can_access
 from app.auth.dependencies import get_current_user, _get_db
 from app.resource_types import ResourceType
-from src.repositories.sync_settings import SyncSettingsRepository
 
+from src.repositories import (
+    sync_settings_repo,
+)
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
@@ -29,7 +31,7 @@ async def get_settings(
     was removed in v19 — table access is now via ``resource_grants``,
     queryable through ``GET /api/me/effective-access``.
     """
-    settings_repo = SyncSettingsRepository(conn)
+    settings_repo = sync_settings_repo()
     return {
         "user_id": user["id"],
         "sync_settings": settings_repo.get_user_settings(user["id"]),
@@ -52,6 +54,6 @@ async def update_dataset_setting(
     if not can_access(user["id"], ResourceType.TABLE.value, request.dataset, conn):
         raise HTTPException(status_code=403, detail=f"No access to dataset '{request.dataset}'")
 
-    settings_repo = SyncSettingsRepository(conn)
+    settings_repo = sync_settings_repo()
     settings_repo.set_dataset_enabled(user["id"], request.dataset, request.enabled)
     return {"dataset": request.dataset, "enabled": request.enabled}

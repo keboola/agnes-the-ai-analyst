@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}Marketplace — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
@@ -9,8 +9,7 @@
 {# Design-system component macros — action-row CTAs render via
    `ds.button`. Bespoke `.mp-tabs` (SVG icons + count spans), `.mp-card`
    install/remove (JS-generated), `.mp-curator-block`, `.pill` filter
-   chips, `.search-btn` stay page-local. #}
-{% import "_components.html" as ds %}
+   chips, `.search-btn` stay page-local (ds auto-imported by base_ds). #}
 {# ── Hero content — set here so operators can override via a child
    template without touching markup. All strings flow through these
    variables; nothing is hardcoded in the hero HTML below. #}
@@ -21,7 +20,7 @@
 
 <script id="category-icons-data" type="application/json">{{ category_icons_json | safe }}</script>
 
-<div class="mp-page page-shell">
+<div class="mp-page">
 
   {# Marketplace hero. Composite class: the canonical `.page-header--hero`
      gives the shared box (padding + radius + gradient + max-width +
@@ -362,7 +361,7 @@ function buildCard(it) {
   } else {
     ownerLine = `by <strong>${esc(it.owner || '')}</strong>`;
   }
-  const addedFmt = it.added ? new Date(it.added).toISOString().slice(0,10) : '';
+  const addedFmt = it.added ? (window.AgnesTime.formatDate(it.added) || '') : '';
   const verFmt = it.version ? `v${esc(it.version)}` : '';
   const catBadge = it.category ? `<span class="cat-badge">${esc(it.category)}</span>` : '';
 
