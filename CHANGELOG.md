@@ -10,6 +10,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.61.1] — 2026-06-03
+
+### Fixed
+- **`app/api/mcp_http.py:_BASE` no longer reuses `AGNES_BASE_URL` for self-calls.** The MCP HTTP server makes server-side self-calls into Agnes for `catalog` / `schema` / `describe` / `query` / `skills`. Reusing the public-facing `AGNES_BASE_URL` made every tool round-trip through the reverse proxy (added TLS + DNS + proxy latency, broke when the external URL wasn't resolvable from inside the container). The base URL is now read from a dedicated `AGNES_MCP_INTERNAL_URL` env var (default `http://localhost:8000`). Operators running Agnes split across multiple pods can point the var at the in-cluster service URL. (Devin Review on #474.)
+- **`app/api/admin_mcp.py` adopts the `mcp_sources_repo()` / `tool_registry_repo()` factory functions across all 15 handler sites.** Direct `MCPSourceRepository(conn)` / `ToolRegistryRepository(conn)` instantiations skipped the dual-backend factory, so a Postgres-backed (side-car / cloud) deploy was reading MCP source / tool data from the wrong place. The `audit_log` path keeps the conn dependency intact since it's a per-router helper; only the MCP repository constructions were swapped. (Devin Review on #474.)
+
+### Internal
+- **Cross-engine contract tests for the MCP repository pairs.** New `tests/db_pg/test_mcp_sources_contract.py` (11 tests) + `tests/db_pg/test_tool_registry_contract.py` (8 tests) parametrise over `[duckdb, pg]` (sister of `test_data_packages_contract.py`) so DuckDB and Postgres implementations of `mcp_sources` + `tool_registry` upsert / get / get_by_name / list / delete + their validators are exercised against the same call sites. Closes the third Devin Review follow-up on #474 (cross-engine contract tests for the 3 new repository pairs landed by Cowork + MCP); the `setup_tokens` pair (the third) has narrower API surface and is exercised end-to-end through the existing Cowork bundle setup tests.
+
 ## [0.61.0] — 2026-06-03
 
 ### Added
