@@ -5157,3 +5157,43 @@ details.section-card > summary {
     justify-content: center;
     flex-wrap: wrap;
 }
+
+/* =====================================================================
+   Modal — global structural styles (#497 §1).
+
+   Promoted verbatim from the page-local <style> in admin_users.html so
+   the shared modal helper (static/js/modal.js → window.confirmModal /
+   alertModal / promptModal) renders correctly on EVERY page, not just
+   the three admin pages that hand-rolled these rules. admin_users.html /
+   admin_tokens.html / admin_marketplaces.html still ship identical
+   page-local copies; those are redundant now but harmless (same rules)
+   and can be stripped in a later cleanup pass.
+
+   Buttons inside .modal-actions use the canonical .btn / .btn-* variants
+   (via the ds.button macro or modal.js), so no .modal-btn rules here.
+   ===================================================================== */
+.modal-backdrop {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+    display: none; align-items: center; justify-content: center; z-index: 1000;
+    padding: 16px;
+}
+.modal-backdrop.is-open { display: flex; }
+.modal-card {
+    background: var(--surface, #fff); border-radius: 12px;
+    padding: 24px; width: 100%; max-width: 440px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+}
+.modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+.modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+.modal-card label { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary, #6b7280); margin: 12px 0 6px; }
+.modal-card input[type="text"], .modal-card input[type="email"], .modal-card input[type="password"], .modal-card select {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px; font-size: 13px; box-sizing: border-box;
+    background: var(--surface, #fff); color: var(--text-primary, #111827);
+}
+.modal-card input:focus, .modal-card select:focus { outline: 2px solid var(--ds-primary, #6366f1); outline-offset: -1px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+/* Preserve newlines in helper-supplied messages — native alert/confirm/
+   prompt rendered \n as line breaks (e.g. bulleted error lists). The
+   page-local admin_users copy never needed this (its modals are static). */
+.modal-card h3, .modal-card p.sub { white-space: pre-wrap; }

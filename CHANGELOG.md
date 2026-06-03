@@ -10,8 +10,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.61.3] — 2026-06-03
+
 ### Changed
 - Brand-green tints, focus rings, and shadows across the static CSS (`style-custom.css`, `home.css`, `dashboard.css`, `marketplace.css`, `activity_center.css`, `admin_access.css`) now derive from the `--ds-primary` theme token via `color-mix` instead of hardcoded green, so they follow the active theme (light/blue/dark). No visual change in the default theme. (#497)
+
+## [0.61.2] — 2026-06-03
+
+### Changed
+- Confirmation, alert, and input dialogs across the web UI now render as styled in-app modals instead of native browser `confirm()` / `alert()` / `prompt()` pop-ups — design-system look (rounded corners + brand colours), non–event-loop-blocking, with focus trap, Esc/backdrop dismissal, and keyboard-friendly Enter-to-confirm. Helpers live in `app/web/static/js/modal.js` (`confirmModal()` / `alertModal()` / `promptModal()`), CSS in `app/web/static/style-custom.css`, autoloaded via `_app_scripts.html`. Touches 22 templates + `admin/db_state.js`; covers regular pages and the admin surface (`admin_tables`, `admin_corporate_memory`, `admin_store_submission_detail`, `admin_user_detail`, etc.). The Devin Review on #508 caught a `window.confirm` slip in `home_not_onboarded.html` (the prior audit regex matched bare `confirm(` but not the `window.`-prefixed form); converted in this PR. Also fixes a name collision where `admin_tokens.html` / `_profile_tokens.html` defined a page-local `confirmModal` element id that shadowed the helper. (#497)
 
 ## [0.61.1] — 2026-06-03
 

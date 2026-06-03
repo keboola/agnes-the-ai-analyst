@@ -985,7 +985,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
       _ercpRbacOriginal = {};
       document.getElementById('editRecipeModal').style.display = 'block';
     } catch (e) {
-      alert('Failed to load recipe: ' + e.message);
+      await alertModal('Failed to load recipe: ' + e.message);
     }
   };
   window.closeEditRecipeModal = function () {
@@ -1127,7 +1127,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
     const btn = document.getElementById('ercp-submit-btn');
     const id = document.getElementById('ercp-id').value;
     const title = document.getElementById('ercp-title').value.trim();
-    if (!id || !title) { alert('Title is required.'); return; }
+    if (!id || !title) { await alertModal('Title is required.'); return; }
     const related = document.getElementById('ercp-related').value
       .split(',').map(s => s.trim()).filter(Boolean);
     const body = {
@@ -1150,7 +1150,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
         const d = await r.json().catch(() => ({}));
         let msg = d.detail || r.statusText;
         if (Array.isArray(msg)) msg = msg.map(x => x.msg).join('; ');
-        alert('Save failed: ' + msg);
+        await alertModal('Save failed: ' + msg);
         return;
       }
       // Apply any RBAC matrix deltas after the metadata PUT — the
@@ -1167,7 +1167,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
       _recipesLoaded = false;
       loadRecipesTab(true);
     } catch (e) {
-      alert('Network error: ' + e.message);
+      await alertModal('Network error: ' + e.message);
     } finally {
       btn.disabled = false;
     }
@@ -1181,7 +1181,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
                             { method: 'DELETE', credentials: 'same-origin' });
       if (!r.ok && r.status !== 204) {
         const d = await r.json().catch(() => ({}));
-        alert('Delete failed: ' + (d.detail || r.statusText));
+        await alertModal('Delete failed: ' + (d.detail || r.statusText));
         return;
       }
       _recipesLoaded = false;
@@ -1194,14 +1194,14 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
         );
       }
     } catch (e) {
-      alert('Network error: ' + e.message);
+      await alertModal('Network error: ' + e.message);
     }
   };
 
   window.submitCreateRecipe = async function () {
     const btn = document.getElementById('rcp-submit-btn');
     const title = document.getElementById('rcp-title').value.trim();
-    if (!title) { alert('Title is required.'); return; }
+    if (!title) { await alertModal('Title is required.'); return; }
     let slug = document.getElementById('rcp-slug').value.trim();
     if (!slug) slug = _slugifyTitle(title);
     const related = document.getElementById('rcp-related').value
@@ -1227,7 +1227,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
         const d = await r.json().catch(() => ({}));
         let msg = d.detail || r.statusText;
         if (Array.isArray(msg)) msg = msg.map(x => x.msg).join('; ');
-        alert('Create failed: ' + msg);
+        await alertModal('Create failed: ' + msg);
         return;
       }
       const respBody = await r.json().catch(() => ({}));
@@ -1252,7 +1252,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
       _recipesLoaded = false;
       loadRecipesTab(true);
     } catch (e) {
-      alert('Network error: ' + e.message);
+      await alertModal('Network error: ' + e.message);
     } finally {
       btn.disabled = false;
     }
