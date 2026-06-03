@@ -48,6 +48,36 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   is logged (and surfaced via the best-effort recovery seam) rather than
   retried by Slack.
 
+### Added (continued)
+- Live co-drive co-presence authorization: a co-session authorizes against the
+  intersection of all live participants' grants (`SessionPrincipal`,
+  `compute_grant_intersection`, `can_access_session`) with no admin
+  short-circuit; the co-session JWT carries no participant identity (read live
+  from `chat_session_participants`); fork-on-invite, membership-gated join,
+  atomic leave teardown with respawn under the narrowed intersection,
+  per-sender budgets/rate-limits/caps, and an ephemeral workspace that never
+  mounts a personal directory or `CLAUDE.local.md`. Invite/join/leave/fork
+  endpoints are RBAC-gated; every fork is audited.
+- Co-presence web surface: a Co-drive pill, participant-avatar cluster,
+  per-message sender attribution, and Invite/Fork affordances, driven by a new
+  `session_participants` WebSocket frame (all co fields optional → graceful
+  degradation on older servers).
+
+### Changed
+- `can_access_table`, `get_accessible_tables`, `StackResolver.stack`, and the
+  sync manifest builder now accept either a user dict or a `SessionPrincipal`,
+  so every audited data-read path (`/api/data`, `/api/catalog`,
+  `/api/sync/manifest`, `/api/v2/{scan,sample,schema}`) authorizes a
+  co-session against the live intersection; settings-mutation and
+  stack-management endpoints hard-deny a `SessionPrincipal`.
+- Slack binding: at most one active verification code per Slack user, issuance
+  throttling, per-code attempt lockout, and an audit entry on every redeem.
+
+### Security
+- A single-user token aimed at an `is_co_session` session is rejected
+  (`invalid_token`) at the resolver, independent of minter correctness.
+- `require_admin` hard-denies a `SessionPrincipal` before any admin check.
+
 ### Internal
 - **DuckDB schema → v69 + Postgres parity (co-drive foundation).** Additive
   migration `_v68_to_v69` in `src/db.py` (matching Alembic `0016_cloud_chat_v69`)
