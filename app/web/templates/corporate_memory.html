@@ -506,7 +506,7 @@ window.closeSuggestDomainModal = function () {
 window.submitSuggestDomain = async function () {
   const btn = document.getElementById('sg-domain-submit-btn');
   const name = (document.getElementById('sg-domain-name').value || '').trim();
-  if (!name) { alert('Please enter a name for the domain.'); return; }
+  if (!name) { await alertModal('Please enter a name for the domain.'); return; }
   btn.disabled = true;
   try {
     const r = await fetch('/api/memory-domain-suggestions', {
@@ -521,7 +521,7 @@ window.submitSuggestDomain = async function () {
     });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      alert('Failed to send: ' + (d.detail || r.statusText));
+      await alertModal('Failed to send: ' + (d.detail || r.statusText));
       return;
     }
     window.closeSuggestDomainModal();
@@ -532,7 +532,7 @@ window.submitSuggestDomain = async function () {
       setTimeout(() => { toast.hidden = true; }, 4000);
     }
   } catch (e) {
-    alert('Network error: ' + e.message);
+    await alertModal('Network error: ' + e.message);
   } finally {
     btn.disabled = false;
   }

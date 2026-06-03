@@ -594,7 +594,7 @@
         }
 
         .dashboard-mock .btn-setup-secondary:hover {
-            background: rgba(46, 168, 119, 0.05);
+            background: color-mix(in srgb, var(--ds-primary) 5%, transparent);
         }
 
         .dashboard-mock .btn-setup-secondary.copied {
@@ -853,7 +853,7 @@
         .dashboard-mock .reg-inline .reg-field textarea:focus {
             outline: none;
             border-color: var(--primary);
-            box-shadow: 0 0 0 2px rgba(46, 168, 119, 0.1);
+            box-shadow: 0 0 0 2px color-mix(in srgb, var(--ds-primary) 10%, transparent);
         }
 
         .dashboard-mock .reg-inline .reg-meta {
@@ -869,7 +869,7 @@
             font-family: var(--font-mono);
             font-weight: 600;
             color: var(--primary);
-            background: rgba(46, 168, 119, 0.08);
+            background: color-mix(in srgb, var(--ds-primary) 8%, transparent);
             padding: 2px 8px;
             border-radius: 4px;
         }
@@ -977,7 +977,7 @@
         .dashboard-mock .form-group-v2 textarea:focus {
             outline: none;
             border-color: var(--primary);
-            box-shadow: 0 0 0 2px rgba(46, 168, 119, 0.1);
+            box-shadow: 0 0 0 2px color-mix(in srgb, var(--ds-primary) 10%, transparent);
         }
 
         .dashboard-mock .form-row-v2 {

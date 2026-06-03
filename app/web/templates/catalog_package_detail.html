@@ -347,7 +347,7 @@
       const r = await call('POST', '/api/stack/subscribe',
         { resource_type: 'data_package', resource_id: pkgId });
       if (r.ok) location.reload();
-      else { alert('Failed to add to stack'); addBtn.disabled = false; }
+      else { await alertModal('Failed to add to stack'); addBtn.disabled = false; }
     });
   }
   if (removeBtn) {
@@ -356,7 +356,7 @@
       const r = await call('DELETE',
         '/api/stack/subscription/data_package/' + encodeURIComponent(pkgId));
       if (r.ok || r.status === 204) location.reload();
-      else { alert('Failed to remove from stack'); removeBtn.disabled = false; }
+      else { await alertModal('Failed to remove from stack'); removeBtn.disabled = false; }
     });
   }
 })();

@@ -631,48 +631,48 @@
       btn.disabled = true;
       try {
         if (action === 'override') {
-          const reason = prompt('Override reason (required, ≥ 4 chars):');
+          const reason = await promptModal('Override reason (required, ≥ 4 chars):');
           if (!reason || reason.length < 4) { btn.disabled = false; return; }
           const r = await fetch(`/api/admin/store/submissions/${subId}/override`, {
             method: 'POST', credentials: 'same-origin',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({reason}),
           });
-          if (!r.ok) { alert('Override failed: ' + await r.text()); btn.disabled = false; return; }
+          if (!r.ok) { await alertModal('Override failed: ' + await r.text()); btn.disabled = false; return; }
           window.location.reload();
         } else if (action === 'retry') {
           const r = await fetch(`/api/admin/store/submissions/${subId}/retry`, {
             method: 'POST', credentials: 'same-origin',
           });
-          if (!r.ok) { alert('Retry failed: ' + await r.text()); btn.disabled = false; return; }
+          if (!r.ok) { await alertModal('Retry failed: ' + await r.text()); btn.disabled = false; return; }
           // Don't reload — show toast, let the polling pick up the
           // verdict so the admin sees the in-progress state.
           toast('LLM review re-queued — polling for verdict…');
           setTimeout(() => window.location.reload(), 1500);
         } else if (action === 'rescan') {
-          if (!confirm('Re-run all checks against the current bundle? Verdict may flip.')) {
+          if (!(await confirmModal({ message: 'Re-run all checks against the current bundle? Verdict may flip.', danger: false }))) {
             btn.disabled = false; return;
           }
           const r = await fetch(`/api/admin/store/submissions/${subId}/rescan`, {
             method: 'POST', credentials: 'same-origin',
           });
-          if (!r.ok) { alert('Rescan failed: ' + await r.text()); btn.disabled = false; return; }
+          if (!r.ok) { await alertModal('Rescan failed: ' + await r.text()); btn.disabled = false; return; }
           toast('Rescan queued — polling for verdict…');
           // Reload after a beat so the page re-renders with the
           // pending banner; that page will start its own poll loop.
           setTimeout(() => window.location.reload(), 1500);
         } else if (action === 'delete') {
-          if (!confirm('Delete submission and its bundle? This cannot be undone.')) {
+          if (!(await confirmModal('Delete submission and its bundle? This cannot be undone.'))) {
             btn.disabled = false; return;
           }
           const r = await fetch(`/api/admin/store/submissions/${subId}`, {
             method: 'DELETE', credentials: 'same-origin',
           });
-          if (!r.ok) { alert('Delete failed: ' + await r.text()); btn.disabled = false; return; }
+          if (!r.ok) { await alertModal('Delete failed: ' + await r.text()); btn.disabled = false; return; }
           window.location.href = '/admin/store/submissions';
         }
       } catch (e) {
-        alert('Action failed: ' + e);
+        await alertModal('Action failed: ' + e);
         btn.disabled = false;
       }
     });

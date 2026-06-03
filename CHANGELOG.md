@@ -13,6 +13,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 - The configured instance logo (`AGNES_INSTANCE_LOGO_SVG` env > `instance.logo_svg` YAML) now renders on the `/login` Sign In card, above the heading — previously the logo only surfaced in the app header. Empty default keeps the OSS vendor-neutral: no logo renders unless an operator sets one.
 
+## [0.61.4] — 2026-06-03
+
+### Changed
+- **Migrated the 7 remaining `base.html` leaf pages onto the design-system base (`base_ds`).** `admin_tables`, `admin_database`, `admin_sync`, `admin_mcp_sources`, `admin_mcp_source_detail`, `admin_mcp_tool_grants`, `cowork_help` — pages added on `main` *after* the #481 batch (Cowork + Universal MCP #474, db-state #455). Each is an extends-swap onto `base_ds` with its per-page component CSS moved into `{% block head_extra %}` and the redundant `_components.html` import dropped (`base_ds` auto-imports `ds`); every hero is kept in place (faithful — no visual change, render-verified). Only the 7 intentionally-bespoke templates (the catalog/marketplace `*_detail` card-heroes, the dead `admin_scheduler_runs` redirect, and the `_message` partial) now remain on `base.html`. Migration-tail follow-up to #482.
+
+## [0.61.3] — 2026-06-03
+
+### Changed
+- Brand-green tints, focus rings, and shadows across the static CSS (`style-custom.css`, `home.css`, `dashboard.css`, `marketplace.css`, `activity_center.css`, `admin_access.css`) now derive from the `--ds-primary` theme token via `color-mix` instead of hardcoded green, so they follow the active theme (light/blue/dark). No visual change in the default theme. (#497)
+
+## [0.61.2] — 2026-06-03
+
+### Changed
+- Confirmation, alert, and input dialogs across the web UI now render as styled in-app modals instead of native browser `confirm()` / `alert()` / `prompt()` pop-ups — design-system look (rounded corners + brand colours), non–event-loop-blocking, with focus trap, Esc/backdrop dismissal, and keyboard-friendly Enter-to-confirm. Helpers live in `app/web/static/js/modal.js` (`confirmModal()` / `alertModal()` / `promptModal()`), CSS in `app/web/static/style-custom.css`, autoloaded via `_app_scripts.html`. Touches 22 templates + `admin/db_state.js`; covers regular pages and the admin surface (`admin_tables`, `admin_corporate_memory`, `admin_store_submission_detail`, `admin_user_detail`, etc.). The Devin Review on #508 caught a `window.confirm` slip in `home_not_onboarded.html` (the prior audit regex matched bare `confirm(` but not the `window.`-prefixed form); converted in this PR. Also fixes a name collision where `admin_tokens.html` / `_profile_tokens.html` defined a page-local `confirmModal` element id that shadowed the helper. (#497)
+
+## [0.61.1] — 2026-06-03
+
+### Fixed
+- **`app/api/mcp_http.py:_BASE` no longer reuses `AGNES_BASE_URL` for self-calls.** The MCP HTTP server makes server-side self-calls into Agnes for `catalog` / `schema` / `describe` / `query` / `skills`. Reusing the public-facing `AGNES_BASE_URL` made every tool round-trip through the reverse proxy (added TLS + DNS + proxy latency, broke when the external URL wasn't resolvable from inside the container). The base URL is now read from a dedicated `AGNES_MCP_INTERNAL_URL` env var (default `http://localhost:8000`). Operators running Agnes split across multiple pods can point the var at the in-cluster service URL. (Devin Review on #474.)
+- **`app/api/admin_mcp.py` adopts the `mcp_sources_repo()` / `tool_registry_repo()` factory functions across all 15 handler sites.** Direct `MCPSourceRepository(conn)` / `ToolRegistryRepository(conn)` instantiations skipped the dual-backend factory, so a Postgres-backed (side-car / cloud) deploy was reading MCP source / tool data from the wrong place. The `audit_log` path keeps the conn dependency intact since it's a per-router helper; only the MCP repository constructions were swapped. (Devin Review on #474.)
+
+### Internal
+- **Cross-engine contract tests for the MCP repository pairs.** New `tests/db_pg/test_mcp_sources_contract.py` (11 tests) + `tests/db_pg/test_tool_registry_contract.py` (8 tests) parametrise over `[duckdb, pg]` (sister of `test_data_packages_contract.py`) so DuckDB and Postgres implementations of `mcp_sources` + `tool_registry` upsert / get / get_by_name / list / delete + their validators are exercised against the same call sites. Closes the third Devin Review follow-up on #474 (cross-engine contract tests for the 3 new repository pairs landed by Cowork + MCP); the `setup_tokens` pair (the third) has narrower API surface and is exercised end-to-end through the existing Cowork bundle setup tests.
+
 ## [0.61.0] — 2026-06-03
 
 ### Added

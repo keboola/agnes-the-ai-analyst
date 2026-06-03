@@ -8,7 +8,7 @@
 
   .mp-page {
     --surface: #ffffff;
-    --primary-light: rgba(46, 168, 119, 0.12);
+    --primary-light: color-mix(in srgb, var(--ds-primary) 12%, transparent);
     --border-light: #eceff1;
     --text-primary: #202124;
     --text-secondary: #5f6368;
@@ -265,7 +265,7 @@
   }
   .mp-card:hover {
     border-color: var(--primary);
-    box-shadow: 0 6px 20px rgba(46, 168, 119, 0.12);
+    box-shadow: 0 6px 20px color-mix(in srgb, var(--ds-primary) 12%, transparent);
     transform: translateY(-2px);
   }
   .mp-card .photo {
@@ -303,7 +303,7 @@
     font-size: 10px; font-weight: var(--font-semibold);
     text-transform: uppercase; letter-spacing: 0.5px;
   }
-  .mp-card .type-badge[data-type="plugin"] { background: rgba(46, 168, 119, 0.12); color: #0056A3; }
+  .mp-card .type-badge[data-type="plugin"] { background: color-mix(in srgb, var(--ds-primary) 12%, transparent); color: #0056A3; }
   .mp-card .type-badge[data-type="skill"]  { background: rgba(16, 183, 127, 0.14); color: #0e9b6a; }
   .mp-card .type-badge[data-type="agent"]  { background: rgba(124, 58, 237, 0.14); color: #6d28d9; }
   .mp-card .cat-badge {
