@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- The registered/discovered MCP tools tables (`/admin/mcp-sources/…`) now use the canonical `.ds-table` class instead of bespoke `tools-table` styles; the key-value config summary stays bespoke. (#497)
+
 ## [0.61.0] — 2026-06-03
 
 ### Added

@@ -78,21 +78,8 @@
   .transport-fields { display: none; }
   .transport-fields.is-active { display: block; }
 
-  /* Tools tables */
-  .tools-table { width: 100%; font-size: 13px; border-collapse: collapse; }
-  .tools-table thead th {
-    text-align: left; padding: 10px 12px;
-    background: var(--border-light, #f9fafb);
-    border-bottom: 1px solid var(--border, #e5e7eb);
-    font-weight: 600; color: var(--text-secondary, #6b7280);
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
-  }
-  .tools-table tbody td {
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--border-light, #f3f4f6);
-    vertical-align: top;
-  }
-  .tools-table tbody tr:last-child td { border-bottom: none; }
+  /* Registered + discovered tools render as the canonical .ds-table (#497 §4).
+     cfg-table above stays bespoke — it's a key-value summary, not a data grid. */
   .tool-name {
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 12px; font-weight: 600;
@@ -285,7 +272,7 @@
       <span id="registered-count" style="font-size: 12px; color: var(--text-secondary, #6b7280);"></span>
     </div>
     <div class="src-card-body" style="padding:0;">
-      <table class="tools-table" id="registered-table">
+      <table class="ds-table" id="registered-table">
         <thead>
           <tr>
             <th>Original</th>
@@ -485,7 +472,7 @@ function renderProposals() {
   // to "skip" for tools that are already curated.
   const registeredOriginals = new Set(registered.map(t => t.original_name));
 
-  let html = `<table class="tools-table">
+  let html = `<table class="ds-table">
     <thead>
       <tr>
         <th>Tool</th>
