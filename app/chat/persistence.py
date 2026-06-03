@@ -20,7 +20,7 @@ from typing import Optional
 
 import duckdb
 
-from app.chat.types import ChatMessage, ChatSession, Surface, UserWorkdir
+from app.chat.types import ChatMessage, ChatSession, SessionParticipant, Surface, UserWorkdir
 
 
 def _gen_id(prefix: str) -> str:
@@ -30,7 +30,8 @@ def _gen_id(prefix: str) -> str:
 def _row_to_session(row: tuple) -> ChatSession:
     # Row order matches _SESSION_COLS_JOIN below:
     # id, user_email, surface, slack_channel_id, slack_thread_ts, title,
-    # started_at, last_message_at (derived), message_count (derived), archived
+    # started_at, last_message_at (derived), message_count (derived), archived,
+    # is_co_session, ephemeral
     return ChatSession(
         id=row[0],
         user_email=row[1],
@@ -42,6 +43,8 @@ def _row_to_session(row: tuple) -> ChatSession:
         last_message_at=row[7],
         message_count=int(row[8]) if row[8] is not None else 0,
         archived=bool(row[9]),
+        is_co_session=bool(row[10]),
+        ephemeral=bool(row[11]),
     )
 
 
@@ -54,13 +57,13 @@ _SESSION_SELECT = (
     "s.title, s.started_at, "
     "MAX(m.created_at) AS last_message_at, "
     "COUNT(m.id) AS message_count, "
-    "s.archived "
+    "s.archived, s.is_co_session, s.ephemeral "
     "FROM chat_sessions s "
     "LEFT JOIN chat_messages m ON m.session_id = s.id"
 )
 _SESSION_GROUP = (
     " GROUP BY s.id, s.user_email, s.surface, s.slack_channel_id, s.slack_thread_ts, "
-    "s.title, s.started_at, s.archived"
+    "s.title, s.started_at, s.archived, s.is_co_session, s.ephemeral"
 )
 
 
@@ -84,6 +87,7 @@ class ChatRepository:
         self._sessions_pg = None
         self._messages_pg = None
         self._workdirs_pg = None
+        self._participants_pg = None
         try:
             from src.repositories import use_pg
 
@@ -92,17 +96,22 @@ class ChatRepository:
                 from src.repositories.chat_messages_pg import ChatMessagePgRepository
                 from src.repositories.chat_sessions_pg import ChatSessionPgRepository
                 from src.repositories.user_workdirs_pg import UserWorkdirPgRepository
+                from src.repositories.chat_session_participants_pg import (
+                    ChatSessionParticipantPgRepository,
+                )
 
                 engine = get_engine()
                 self._sessions_pg = ChatSessionPgRepository(engine)
                 self._messages_pg = ChatMessagePgRepository(engine)
                 self._workdirs_pg = UserWorkdirPgRepository(engine)
+                self._participants_pg = ChatSessionParticipantPgRepository(engine)
         except Exception:
             # If backend detection or engine construction fails, fall back to
             # the DuckDB path bound to the passed connection.
             self._sessions_pg = None
             self._messages_pg = None
             self._workdirs_pg = None
+            self._participants_pg = None
 
     # --- sessions ----------------------------------------------------------
 
@@ -302,6 +311,13 @@ class ChatRepository:
         n = self._conn.execute(
             "SELECT COUNT(*) FROM chat_sessions WHERE user_email = ?", [user_email]
         ).fetchone()[0]
+        # DuckDB has no ON DELETE CASCADE. Delete participant rows first so
+        # the chat_session_participants FK can't block the parent delete.
+        self._conn.execute(
+            "DELETE FROM chat_session_participants WHERE session_id IN ("
+            " SELECT id FROM chat_sessions WHERE user_email = ?)",
+            [user_email],
+        )
         # FK on chat_messages.session_id blocks parent delete while
         # children exist (DuckDB has no ON DELETE CASCADE — Task 1.1
         # documented this). Delete messages first.
@@ -325,6 +341,7 @@ class ChatRepository:
         tokens_in: Optional[int] = None,
         tokens_out: Optional[int] = None,
         model: Optional[str] = None,
+        sender_email: Optional[str] = None,
     ) -> ChatMessage:
         if self._messages_pg is not None:
             return self._messages_pg.append_message(
@@ -335,6 +352,7 @@ class ChatRepository:
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 model=model,
+                sender_email=sender_email,
             )
         msg_id = _gen_id("msg")
         now = datetime.now(timezone.utc)
@@ -350,16 +368,16 @@ class ChatRepository:
         # read-time-derivation approach for both columns for consistency.
         self._conn.execute(
             "INSERT INTO chat_messages "
-            "(id, session_id, role, content, tool_calls, tokens_in, tokens_out, model, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(id, session_id, role, content, tool_calls, tokens_in, tokens_out, model, sender_email, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [msg_id, session_id, role, content,
              json.dumps(tool_calls) if tool_calls else None,
-             tokens_in, tokens_out, model, now],
+             tokens_in, tokens_out, model, sender_email, now],
         )
         return ChatMessage(
             id=msg_id, session_id=session_id, role=role, content=content,
             tool_calls=tool_calls, tokens_in=tokens_in, tokens_out=tokens_out,
-            model=model, created_at=now,
+            model=model, created_at=now, sender_email=sender_email,
         )
 
     def list_messages(
@@ -379,7 +397,7 @@ class ChatRepository:
 
         q = (
             "SELECT id, session_id, role, content, tool_calls, tokens_in, tokens_out, "
-            "model, created_at FROM chat_messages WHERE session_id = ?"
+            "model, sender_email, created_at FROM chat_messages WHERE session_id = ?"
         )
         params: list = [session_id]
         if cutoff is not None:
@@ -393,10 +411,142 @@ class ChatRepository:
             ChatMessage(
                 id=r[0], session_id=r[1], role=r[2], content=r[3],
                 tool_calls=json.loads(r[4]) if r[4] else None,
-                tokens_in=r[5], tokens_out=r[6], model=r[7], created_at=r[8],
+                tokens_in=r[5], tokens_out=r[6], model=r[7],
+                sender_email=r[8], created_at=r[9],
             )
             for r in rows
         ]
+
+    # --- participants ------------------------------------------------------
+
+    def add_session_participant(
+        self, *, session_id: str, user_email: str, user_id: str, role: str,
+    ) -> SessionParticipant:
+        if self._participants_pg is not None:
+            return self._participants_pg.add_session_participant(
+                session_id=session_id, user_email=user_email,
+                user_id=user_id, role=role,
+            )
+        pid = _gen_id("part")
+        now = datetime.now(timezone.utc)
+        self._conn.execute(
+            "INSERT INTO chat_session_participants "
+            "(id, session_id, user_email, user_id, role, joined_at, left_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, NULL)",
+            [pid, session_id, user_email, user_id, role, now],
+        )
+        return SessionParticipant(
+            id=pid, session_id=session_id, user_email=user_email,
+            user_id=user_id, role=role, joined_at=now, left_at=None,
+        )
+
+    def get_session_participants(self, session_id: str) -> list[SessionParticipant]:
+        """Active participants (left_at IS NULL) for a session — the live
+        membership set co-drive authorization reads as its source of truth."""
+        if self._participants_pg is not None:
+            return self._participants_pg.get_session_participants(session_id)
+        rows = self._conn.execute(
+            "SELECT id, session_id, user_email, user_id, role, joined_at, left_at "
+            "FROM chat_session_participants "
+            "WHERE session_id = ? AND left_at IS NULL "
+            "ORDER BY joined_at ASC",
+            [session_id],
+        ).fetchall()
+        return [
+            SessionParticipant(
+                id=r[0], session_id=r[1], user_email=r[2], user_id=r[3],
+                role=r[4], joined_at=r[5], left_at=r[6],
+            )
+            for r in rows
+        ]
+
+    def remove_participant(self, session_id: str, user_email: str) -> None:
+        """Stamp left_at so the participant is no longer active. Idempotent."""
+        if self._participants_pg is not None:
+            self._participants_pg.remove_participant(session_id, user_email)
+            return
+        self._conn.execute(
+            "UPDATE chat_session_participants SET left_at = ? "
+            "WHERE session_id = ? AND user_email = ? AND left_at IS NULL",
+            [datetime.now(timezone.utc), session_id, user_email],
+        )
+
+    def update_participant_role(self, session_id: str, user_email: str, role: str) -> None:
+        if self._participants_pg is not None:
+            self._participants_pg.update_participant_role(session_id, user_email, role)
+            return
+        self._conn.execute(
+            "UPDATE chat_session_participants SET role = ? "
+            "WHERE session_id = ? AND user_email = ? AND left_at IS NULL",
+            [role, session_id, user_email],
+        )
+
+    def list_sessions_for_participant(self, user_email: str) -> list[ChatSession]:
+        """Co-sessions where this email is an active participant."""
+        if self._participants_pg is not None:
+            return self._participants_pg.list_sessions_for_participant(user_email)
+        ids = [
+            r[0]
+            for r in self._conn.execute(
+                "SELECT DISTINCT session_id FROM chat_session_participants "
+                "WHERE user_email = ? AND left_at IS NULL",
+                [user_email],
+            ).fetchall()
+        ]
+        out: list[ChatSession] = []
+        for sid in ids:
+            s = self.get_session(sid)
+            if s is not None:
+                out.append(s)
+        return out
+
+    def fork_session_as_co_session(
+        self,
+        source_id: str,
+        *,
+        owner_email: str,
+        owner_user_id: str,
+        invitee_email: str,
+        invitee_user_id: str,
+        seed_summary: Optional[str] = None,
+    ) -> ChatSession:
+        """Create a fresh co-session (is_co_session=TRUE, ephemeral=TRUE) with
+        the owner + invitee as participants. Never blind-clones the source
+        transcript (SR-8): seeds only an optional intersection-produced
+        ``seed_summary`` as a system message. The source session is untouched.
+
+        DuckDB has no multi-statement transaction guard here; steps are ordered
+        so a partial failure leaves at most a harmless empty ephemeral session
+        that the GC sweep (5b) reclaims.
+        """
+        if self._participants_pg is not None:
+            return self._participants_pg.fork_session_as_co_session(
+                source_id, owner_email=owner_email, owner_user_id=owner_user_id,
+                invitee_email=invitee_email, invitee_user_id=invitee_user_id,
+                seed_summary=seed_summary,
+            )
+        chat_id = _gen_id("chat")
+        now = datetime.now(timezone.utc)
+        self._conn.execute(
+            "INSERT INTO chat_sessions "
+            "(id, user_email, surface, slack_channel_id, slack_thread_ts, title, "
+            "started_at, last_message_at, message_count, archived, is_co_session, ephemeral) "
+            "VALUES (?, ?, 'web', NULL, NULL, NULL, ?, NULL, 0, FALSE, TRUE, TRUE)",
+            [chat_id, owner_email, now],
+        )
+        self.add_session_participant(
+            session_id=chat_id, user_email=owner_email, user_id=owner_user_id, role="owner",
+        )
+        self.add_session_participant(
+            session_id=chat_id, user_email=invitee_email, user_id=invitee_user_id, role="collaborator",
+        )
+        if seed_summary:
+            self.append_message(
+                session_id=chat_id, role="system", content=seed_summary,
+            )
+        fetched = self.get_session(chat_id)
+        assert fetched is not None
+        return fetched
 
     # --- workdirs ----------------------------------------------------------
 

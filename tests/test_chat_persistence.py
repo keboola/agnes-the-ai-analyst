@@ -191,3 +191,85 @@ def test_daily_anthropic_tokens(repo: ChatRepository):
                          tokens_in=200, tokens_out=80)
     tin, tout = repo.daily_anthropic_tokens("u@x")
     assert tin == 300 and tout == 130
+
+
+def test_v69_flags_default_false_and_sender_email_roundtrip(tmp_path):
+    import duckdb
+    from src.db import _ensure_schema
+    from app.chat.persistence import ChatRepository
+    from app.chat.types import Surface
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    s = repo.create_session(user_email="o@x.com", surface=Surface.WEB)
+    assert s.is_co_session is False and s.ephemeral is False
+    repo.append_message(session_id=s.id, role="user", content="hi", sender_email="b@x.com")
+    msgs = repo.list_messages(s.id)
+    assert msgs[0].sender_email == "b@x.com"
+
+
+def test_participant_crud_and_list_for_participant(tmp_path):
+    import duckdb
+    from src.db import _ensure_schema
+    from app.chat.persistence import ChatRepository
+    from app.chat.types import Surface
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    s = repo.create_session(user_email="o@x.com", surface=Surface.WEB)
+    repo.add_session_participant(session_id=s.id, user_email="o@x.com", user_id="u-o", role="owner")
+    repo.add_session_participant(session_id=s.id, user_email="c@x.com", user_id="u-c", role="collaborator")
+    active = repo.get_session_participants(s.id)
+    assert {p.user_email for p in active} == {"o@x.com", "c@x.com"}
+    repo.update_participant_role(s.id, "c@x.com", "owner")
+    assert {p.role for p in repo.get_session_participants(s.id)} == {"owner"}
+    repo.remove_participant(s.id, "c@x.com")
+    active = repo.get_session_participants(s.id)
+    assert {p.user_email for p in active} == {"o@x.com"}
+    assert s.id in {x.id for x in repo.list_sessions_for_participant("o@x.com")}
+
+
+def test_fork_session_as_co_session(tmp_path):
+    import duckdb
+    from src.db import _ensure_schema
+    from app.chat.persistence import ChatRepository
+    from app.chat.types import Surface
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    s0 = repo.create_session(user_email="o@x.com", surface=Surface.WEB)
+    s1 = repo.fork_session_as_co_session(
+        s0.id, owner_email="o@x.com", owner_user_id="u-o",
+        invitee_email="c@x.com", invitee_user_id="u-c", seed_summary="prior context",
+    )
+    # S0 untouched.
+    assert repo.get_session(s0.id).is_co_session is False
+    # S1 flags set, two participant rows, summary seeded as a system message.
+    assert s1.is_co_session is True and s1.ephemeral is True
+    parts = repo.get_session_participants(s1.id)
+    assert {(p.user_email, p.role) for p in parts} == {("o@x.com", "owner"), ("c@x.com", "collaborator")}
+    seeded = repo.list_messages(s1.id)
+    assert seeded and seeded[0].content == "prior context"
+
+
+def test_hard_delete_removes_participants_first(tmp_path):
+    import duckdb
+    from src.db import _ensure_schema
+    from app.chat.persistence import ChatRepository
+    from app.chat.types import Surface
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    s = repo.create_session(user_email="gone@x.com", surface=Surface.WEB)
+    repo.add_session_participant(session_id=s.id, user_email="gone@x.com", user_id="u-g", role="owner")
+    repo.append_message(session_id=s.id, role="user", content="bye", sender_email="gone@x.com")
+    n = repo.hard_delete_user_sessions("gone@x.com")
+    assert n == 1
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM chat_session_participants WHERE session_id = ?", [s.id]
+    ).fetchone()[0]
+    assert remaining == 0
