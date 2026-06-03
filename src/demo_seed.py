@@ -7,7 +7,9 @@ All seeders are idempotent — safe to call on every boot.
 import json
 import logging
 from pathlib import Path
+from typing import Optional
 
+from src.repositories.data_packages import DataPackagesRepository
 from src.repositories.knowledge import KnowledgeRepository
 from src.repositories.memory_domains import MemoryDomainsRepository
 from src.repositories.metrics import MetricRepository
@@ -16,6 +18,7 @@ log = logging.getLogger(__name__)
 
 _METRICS_DIR = Path(__file__).resolve().parent.parent / "docs" / "metrics"
 _MEMORY_FIXTURE = Path(__file__).resolve().parent / "_demo_seed" / "memory_items.json"
+_DATA_PACKAGE_FIXTURE = Path(__file__).resolve().parent / "_demo_seed" / "data_package.json"
 
 
 def seed_metrics(conn) -> int:
@@ -104,3 +107,73 @@ def seed_memory(conn) -> int:
         _MEMORY_FIXTURE,
     )
     return items_created
+
+
+def seed_data_package(conn) -> Optional[str]:
+    """Seed the bundled "E-commerce Analytics" data package from
+    ``src/_demo_seed/data_package.json`` and attach its demo tables.
+
+    Idempotent across boots: the package is keyed by ``slug``. If a package
+    with the fixture's slug already exists we log and return early (no
+    duplicate, no re-attach).
+
+    The fixture's ``tables`` are extract table *names* (e.g. ``orders_demo``).
+    Each is resolved to its ``table_registry`` id via
+    ``SELECT id FROM table_registry WHERE name = ?`` — that id is what the
+    ``data_package_tables`` junction stores. The baked demo tables are only
+    registered once ``AGNES_REBUILD_ON_BOOT`` runs, so in a unit-test DB they
+    are absent; such tables are logged and skipped rather than failing the
+    seed.
+
+    Returns the package id (created or pre-existing), or ``None`` if creation
+    failed.
+    """
+    payload = json.loads(_DATA_PACKAGE_FIXTURE.read_text())
+    slug = payload["slug"]
+    packages_repo = DataPackagesRepository(conn)
+
+    existing = conn.execute(
+        "SELECT id FROM data_packages WHERE slug = ?", [slug]
+    ).fetchone()
+    if existing:
+        log.info("seed_data_package: package %r already exists, skipping", slug)
+        return existing[0]
+
+    pkg_id = packages_repo.create(
+        name=payload["name"],
+        slug=slug,
+        description=payload.get("description"),
+        icon=payload.get("icon"),
+        color=payload.get("color"),
+        created_by="system",
+        status=payload.get("status", "prod"),
+        when_to_use=payload.get("when_to_use"),
+        example_questions=payload.get("example_questions"),
+    )
+
+    attached = 0
+    skipped = []
+    for table_name in payload.get("tables", []):
+        row = conn.execute(
+            "SELECT id FROM table_registry WHERE name = ?", [table_name]
+        ).fetchone()
+        if not row:
+            skipped.append(table_name)
+            continue
+        packages_repo.add_table(pkg_id, row[0], added_by="system")
+        attached += 1
+
+    if skipped:
+        log.warning(
+            "seed_data_package: skipped %d unregistered table(s): %s",
+            len(skipped),
+            ", ".join(skipped),
+        )
+    log.info(
+        "seed_data_package: created package %r (%s), attached %d table(s) from %s",
+        slug,
+        pkg_id,
+        attached,
+        _DATA_PACKAGE_FIXTURE,
+    )
+    return pkg_id
