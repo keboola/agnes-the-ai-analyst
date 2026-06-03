@@ -116,6 +116,21 @@ def test_delete_clears_vault(seeded_app):
         conn.close()
 
 
+def test_set_secret_returns_409_without_vault_key(seeded_app, monkeypatch):
+    _seed_source()
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+    _reset_ephemeral_key_for_tests()
+    client = seeded_app["client"]
+    r = client.put(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        json={"value": "x"},
+    )
+    assert r.status_code == 409
+    assert "vault_key_not_configured" in r.json()["detail"]
+
+
 def test_encrypt_secret_blocked_without_key_in_prod(monkeypatch):
     import app.secrets_vault as v
     monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)

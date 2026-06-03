@@ -41,7 +41,7 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from app.secrets_vault import SharedSecretsRepository
+from app.secrets_vault import SharedSecretsRepository, VaultKeyNotConfiguredError
 from connectors.mcp import classifier as mcp_classifier
 from connectors.mcp import extractor as mcp_extractor
 from src.repositories import mcp_sources_repo, tool_registry_repo
@@ -509,7 +509,13 @@ async def set_mcp_source_secret(
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     if not body.value:
         raise HTTPException(status_code=400, detail="secret value required")
-    SharedSecretsRepository(conn).upsert(source_id, body.value)
+    try:
+        SharedSecretsRepository(conn).upsert(source_id, body.value)
+    except VaultKeyNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
+        ) from exc
     _audit(
         conn, user["id"], "mcp_source.secret.set",
         f"mcp_source:{source_id}", {},
