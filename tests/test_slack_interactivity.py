@@ -560,6 +560,83 @@ def test_interactivity_endpoint_bad_signature_401(monkeypatch):
     assert r.status_code == 401
 
 
+def test_stop_then_cancelled_strips_button_integration(monkeypatch):
+    """Join _on_stop and the sink: owner clicks Stop → cancel() broadcasts a
+    `cancelled` frame to the sink → sink strips the Stop button. Drives both
+    halves through one fake live session rather than mocking each in isolation."""
+    from types import SimpleNamespace
+    from services.slack_bot import interactivity as inter, sink as sink_mod
+
+    # --- sink half: capture the button post + the strip update ---
+    updates = []
+    async def fake_post_blocks(ch, ts, text, bs):
+        return "msg-1"
+    async def fake_update(ch, ts, text, bs):
+        updates.append((ch, ts, text, bs))
+    monkeypatch.setattr(sink_mod, "post_thread_reply_with_blocks", fake_post_blocks)
+    monkeypatch.setattr(sink_mod, "update_message", fake_update)
+    async def fake_send_reply(ch, ts, text):  # for the "_(stopped)_" line
+        pass
+    monkeypatch.setattr(sink_mod, "send_thread_reply", fake_send_reply)
+
+    # --- manager half: cancel() forwards a `cancelled` frame to the bound sink ---
+    class FakeManager:
+        def __init__(self): self.sink = None
+        async def cancel(self, chat_id):
+            await self.sink.send_json({"type": "cancelled"})
+
+    monkeypatch.setattr(inter, "lookup_user_email", lambda repo, uid: "a@example.com")
+    mgr = FakeManager()
+    app = SimpleNamespace(state=SimpleNamespace(
+        chat_repo=SimpleNamespace(_conn=object()), chat_manager=mgr))
+
+    async def _run():
+        bridge = sink_mod.SlackSinkBridge(
+            channel="D1", thread_ts="1.1", chat_id="s1", owner="a@example.com", web_base="",
+        )
+        mgr.sink = bridge
+        # post a turn so there's a button to strip
+        await bridge.send_json({"type": "assistant_message", "content": "working"})
+        it = inter.Interaction(action_id=inter.blocks.ACTION_STOP, slack_user_id="U1",
+                               channel_id="D1", response_url="https://r",
+                               value={"chat_id": "s1", "owner": "a@example.com"})
+        await inter._on_stop(app, it)
+
+    asyncio.run(_run())
+    # cancel() -> cancelled frame -> button stripped (blocks == [])
+    assert updates == [("D1", "msg-1", "working", [])]
+
+
+def test_interactivity_endpoint_does_not_block_on_slow_handler(monkeypatch):
+    import json, time
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import app.api.slack as slack_api
+
+    async def slow_dispatch(app, interaction):
+        await asyncio.sleep(5)  # > Slack's 3s budget
+    # Use the real _schedule (create_task) so the slow handler runs detached;
+    # the test asserts the response returns long before the 5s sleep completes.
+    monkeypatch.setattr(slack_api, "dispatch_interaction", slow_dispatch)
+
+    app = FastAPI()
+    app.include_router(slack_api.router)
+    from services.slack_bot import blocks
+    payload = json.dumps({
+        "type": "block_actions", "user": {"id": "U1"}, "channel": {"id": "C1"},
+        "response_url": "https://r",
+        "actions": [{"action_id": blocks.ACTION_STOP, "value": "{}"}],
+    })
+    body, ts, sig = _signed_form_request(monkeypatch, payload, good_sig=True)
+    t0 = time.monotonic()
+    r = TestClient(app).post("/api/slack/interactivity", content=body,
+                             headers={"X-Slack-Request-Timestamp": ts, "X-Slack-Signature": sig,
+                                      "Content-Type": "application/x-www-form-urlencoded"})
+    elapsed = time.monotonic() - t0
+    assert r.status_code == 200
+    assert elapsed < 3.0, f"endpoint blocked {elapsed:.2f}s on slow handler"
+
+
 def test_interactivity_endpoint_acks_and_schedules(monkeypatch):
     import json
     from fastapi import FastAPI
