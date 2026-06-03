@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.62.3] — 2026-06-03
+
+### Fixed
+- `Dockerfile.demo` pins `ENV DATA_DIR=/data` so the baked demo extract (written to the absolute `/data/extracts/demo` at build time) is found by the boot-time rebuild. The app default `DATA_DIR=./data` is relative to the `/app` workdir, so without this the demo tables (`orders_demo`, `customers_demo`) silently never loaded and the demo catalog came up empty. (#525)
+
 ## [0.62.2] — 2026-06-03
 
 ### Fixed
