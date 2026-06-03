@@ -7,7 +7,9 @@ Mirrors ``src/repositories/usage.py``. ``INSERT OR IGNORE`` becomes
 from __future__ import annotations
 
 import json
-from typing import Any
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
@@ -46,6 +48,48 @@ class UsagePgRepository:
                 params["processor_version"] = processor_version
                 conn.execute(sa.text(sql), params)
         return len(rows)
+
+    def emit_server_event(
+        self,
+        *,
+        event_type: str,
+        user_id: Optional[str],
+        username: str = "",
+        props: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Insert one synthetic usage_events row for a server-side product event.
+
+        Mirrors ``UsageRepository.emit_server_event`` (DuckDB). ``props`` is
+        serialized into the ``friction_tags`` JSONB column via
+        ``CAST(:friction_tags AS JSONB)`` (the project's PG-JSONB write
+        convention); ``session_id`` / ``session_file`` are server-synthetic so
+        the NOT NULL constraints stay satisfied.
+        """
+        event_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    """INSERT INTO usage_events
+                       (id, session_id, session_file, username, event_type,
+                        is_error, source, occurred_at, processor_version,
+                        friction_tags, user_id)
+                       VALUES (:id, :session_id, :session_file, :username, :event_type,
+                               FALSE, 'server', :occurred_at, 1,
+                               CAST(:friction_tags AS JSONB), :user_id)"""
+                ),
+                {
+                    "id": event_id,
+                    "session_id": f"server-{event_id[:8]}",
+                    "session_file": f"server/{event_type}.jsonl",
+                    "username": username or (user_id or "anonymous"),
+                    "event_type": event_type,
+                    "occurred_at": now,
+                    "friction_tags": json.dumps(props) if props else None,
+                    "user_id": user_id,
+                },
+            )
+        return event_id
 
     def upsert_summary(self, summary: dict, *, processor_version: int) -> None:
         with self._engine.begin() as conn:

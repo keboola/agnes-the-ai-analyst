@@ -195,6 +195,9 @@ class TestHasExplicitGrant:
         try:
             # No chat grant exists anywhere in the seeded DB.
             assert has_explicit_grant("admin1", "chat", "chat", conn) is False
+            # Same answer through the backend-aware default path (no conn) —
+            # this is what the nav-link caller now uses post-fix.
+            assert has_explicit_grant("admin1", "chat", "chat") is False
             # ...yet god-mode still grants the admin *effective* access.
             assert can_access("admin1", "chat", "chat", conn) is True
         finally:
@@ -216,6 +219,8 @@ class TestHasExplicitGrant:
             )
             # user1 ∈ analysts → the explicit grant is visible.
             assert has_explicit_grant("user1", "chat", "chat", conn) is True
+            # Backend-aware default path (no conn) sees the same grant.
+            assert has_explicit_grant("user1", "chat", "chat") is True
             # admin1 ∉ analysts and god-mode is NOT applied here → still False.
             assert has_explicit_grant("admin1", "chat", "chat", conn) is False
         finally:
