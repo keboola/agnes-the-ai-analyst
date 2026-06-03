@@ -10,8 +10,31 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.62.3] — 2026-06-03
+
 ### Fixed
-- `Dockerfile.demo` pins `ENV DATA_DIR=/data` so the baked demo extract (written to the absolute `/data/extracts/demo` at build time) is found by the boot-time rebuild. The app default `DATA_DIR=./data` is relative to the `/app` workdir, so without this the demo tables silently never loaded.
+- `Dockerfile.demo` pins `ENV DATA_DIR=/data` so the baked demo extract (written to the absolute `/data/extracts/demo` at build time) is found by the boot-time rebuild. The app default `DATA_DIR=./data` is relative to the `/app` workdir, so without this the demo tables (`orders_demo`, `customers_demo`) silently never loaded and the demo catalog came up empty. (#525)
+
+## [0.62.2] — 2026-06-03
+
+### Fixed
+- **Served Claude Code marketplace was missing every plugin on Postgres-backed deployments.** `src/marketplace_filter.py:resolve_allowed_plugins` ran the `resource_grants ⋈ marketplace_plugins ⋈ marketplace_registry` JOIN as raw `conn.execute` against the DuckDB-typed connection. On a `db-state-machine` CLOUD / SIDE_CAR instance the rows live in Postgres — the raw SQL hit an empty DuckDB table and the JOIN returned 0 rows, so `/marketplace.git/` and `/marketplace.zip` served only plugins from marketplaces ingested *before* the PG cutover (typically the seed `grpn-foundryai` set). `agnes marketplace search` still reported `installed: true` on the missing plugins because the curated tab reads `user_curated_subscriptions` through the repo factory and that *was* PG-routed — divergent UX signals that matched the field tickets exactly. Routed `resolve_allowed_plugins`, `resolve_user_groups`, and the subscription / store-install reads in `resolve_user_marketplace` through the repo factory (`marketplace_plugins_repo().list_granted_for_groups`, `user_groups_repo().list_names_by_ids`, `user_curated_subscriptions_repo`, `user_store_installs_repo`) so the served set, the marketplace search results, and the My Stack page all read the same source of truth on either backend. (#522)
+
+### Internal
+- New cross-engine contract test (`tests/db_pg/test_marketplace_plugins_grants_contract.py`) parametrises `list_granted_for_groups` + `list_names_by_ids` over both DuckDB and Postgres backends — pins the JOIN shape (DISTINCT + ORDER BY parity with PG's stricter standard), the registered-at + name ordering, the marketplace_registry INNER-JOIN filter (orphan plugins drop), and the empty-input short-circuit. Catches the routing regression that drove this PR and prevents it from reappearing on either side. (#522)
+
+## [0.62.1] — 2026-06-03
+
+### Fixed
+- MCP passthrough tools that declare no input parameters (e.g. canned-view tools such as a pipeline summary) no longer fail with a `kwargs` validation error. Empty-schema tools now register a parameterless signature in both the server-hosted (`app/api/mcp/tools_generator.py`) and CLI stdio (`cli/mcp/_dynamic_passthrough.py`) MCP servers, instead of a `**kwargs` wrapper that FastMCP rendered as a required field (so the only valid — empty — call was rejected).
+
+## [0.62.0] — 2026-06-03
+
+### Added
+- **`agnes auth refresh-groups` + `POST /auth/refresh-groups`** — re-sync the caller's Google Workspace group memberships against the live Admin SDK without a browser sign-in. Closes the gap that drove a recurring class of "I'm in the new group but Agnes can't see my access" tickets: previously the `user_group_members.source='google_sync'` snapshot refreshed *only* in the browser OAuth callback (`app/auth/group_sync.fetch_user_groups`), so CLI/PAT users (`agnes refresh-marketplace`, `agnes pull`, `/api/marketplace/*`) saw a frozen view of their groups until they re-signed-in on the dashboard. The new endpoint reuses the OAuth-callback write path (prefix filter, admin/everyone mapping, `replace_google_sync_groups`) via the extracted `apply_user_groups` helper, so policy stays single-sourced. Rate-limited at 5/min/IP (slowapi default key — matches the `/token` and `/bootstrap` pattern in the same router; refreshing is cheap on our side but each call costs a Workspace Admin SDK quota unit, so the limit guards the upstream quota). Response reports `added` / `removed` / `current` so the CLI shows exactly what changed. The diff-computation read path goes through `user_group_members_repo().list_groups_with_meta_for_user()` so the response is correct on both DuckDB and Postgres state backends (Devin Review caught the original raw-SQL drift); a new `tests/db_pg/test_user_group_members_contract.py` pins down the read shape across both engines. (#520)
+
+### Internal
+- **Extracted `app.auth.group_sync.apply_user_groups(user_id, email, conn) -> SyncResult`** from the OAuth callback's inline sync block (`app/auth/providers/google.py`), so the callback and the new refresh endpoint write the snapshot through one implementation. Cuts ~70 LoC of duplication and removes the OAuth-only assumption baked into the previous shape. Behavior preserved end-to-end (verified by the existing prefix/system-mapping/idempotency suite). The extracted function preserves the pre-extraction OAuth callback's fail-soft contract: a transient `ug_repo.ensure()` / `get_by_name()` hiccup (DuckDB write lock, PG connection drop) downgrades to `soft_failed=True` rather than raising — without this, the OAuth callback would turn a transient DB hiccup into `/login?error=oauth_failed` (user locked out) and the refresh endpoint into HTTP 500. The denied case (`denied=True`) deliberately preserves existing `source='google_sync'` rows rather than wiping RBAC on a prefix-policy mismatch that may be transient (operator-typo in `PREFIX_ENV` / Admin SDK propagation lag). Both contracts documented on the function's docstring. (#520)
 
 ## [0.61.6] — 2026-06-03
 
