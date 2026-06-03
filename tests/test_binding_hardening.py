@@ -35,10 +35,19 @@ def test_issuance_throttle(conn):
 
 
 def test_attempt_lockout_on_redeem(conn):
+    """Wrong guesses with a non-existent code do NOT affect the real code.
+
+    SR-12 fix: the old behaviour incremented ALL codes' attempts on every
+    wrong guess, enabling a cross-user DoS (any user could exhaust all
+    outstanding codes by spamming a bogus code).  After the fix, wrong
+    guesses against a non-existent code are no-ops; the real code remains
+    redeemable.
+    """
     from services.slack_bot.binding import issue_verification_code, redeem_verification_code
-    issue_verification_code(conn, slack_user_id="U1")
+    real = issue_verification_code(conn, slack_user_id="U1")
     for _ in range(5):
         assert redeem_verification_code(conn, user_email="a@example.com", code="000000") is False
-    real = conn.execute("SELECT code FROM slack_binding_codes WHERE slack_user_id='U1'").fetchone()
-    if real:
-        assert redeem_verification_code(conn, user_email="a@example.com", code=real[0]) is False
+    # Real code must still be redeemable — wrong guesses are scoped to the
+    # submitted code (which doesn't exist), so U1's code is untouched.
+    result = redeem_verification_code(conn, user_email="a@example.com", code=real)
+    assert result is True, "Real code was locked out by wrong-guess DoS (regression)"

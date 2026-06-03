@@ -15,6 +15,7 @@ SR-12 hardening:
 """
 from __future__ import annotations
 
+import json
 import secrets
 from datetime import datetime
 from typing import Optional
@@ -103,10 +104,13 @@ def redeem_verification_code(
         [code],
     ).fetchone()
     if not row:
-        # Wrong code — charge one attempt against every outstanding code
-        # for this email's user id (if known), or against ALL codes when
-        # we can't resolve the user.  Then evict any over the ceiling.
-        conn.execute("UPDATE slack_binding_codes SET attempts = attempts + 1")
+        # Wrong code — increment attempts only on the specific code that was
+        # supplied (WHERE code = ?) so a wrong guess for one user never
+        # touches another user's outstanding code (SR-12: per-victim scope).
+        # The code doesn't exist, so this UPDATE is a no-op — which is correct:
+        # the unknown code gets silently discarded (don't leak timing info about
+        # valid codes by differentiating "wrong code" vs "wrong guess on known code").
+        # We DO still evict any codes that reached the ceiling to clean up state.
         conn.execute(
             "DELETE FROM slack_binding_codes WHERE attempts >= ?",
             [_MAX_REDEEM_ATTEMPTS],
@@ -127,6 +131,10 @@ def redeem_verification_code(
     conn.execute("DELETE FROM slack_binding_codes WHERE code = ?", [code])
     # Audit (best-effort — missing audit_log table or factory not initialised
     # must never block the bind itself).
+    # Use json.dumps for the params value — f-string interpolation of
+    # slack_user_id or user_email allows injection of arbitrary JSON keys
+    # (e.g. a Slack user ID containing '"injected":"yes' would produce
+    # malformed/injected audit JSON).
     try:
         conn.execute(
             "INSERT INTO audit_log (id, timestamp, user_id, action, params) "
@@ -134,7 +142,7 @@ def redeem_verification_code(
             [
                 f"aud_{secrets.token_hex(8)}",
                 user_email,
-                f'{{"slack_user_id":"{slack_user_id}","email":"{user_email}"}}',
+                json.dumps({"slack_user_id": slack_user_id, "email": user_email}),
             ],
         )
     except Exception:
