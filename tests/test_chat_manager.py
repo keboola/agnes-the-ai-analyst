@@ -646,3 +646,19 @@ def test_double_crash_dies_after_three(manager: ChatManager):
             attach_task.cancel()
 
     asyncio.run(go())
+
+
+def test_active_count_for_user_matches_private(monkeypatch):
+    from types import SimpleNamespace
+    from app.chat.manager import ChatManager
+    from app.chat.types import SessionState
+
+    mgr = ChatManager.__new__(ChatManager)  # bypass __init__; we set only _live
+    mgr._live = {
+        "a": SimpleNamespace(user_email="x@e.com", state=SessionState.ACTIVE),
+        "b": SimpleNamespace(user_email="x@e.com", state=SessionState.IDLE),
+        "c": SimpleNamespace(user_email="y@e.com", state=SessionState.ACTIVE),
+        "d": SimpleNamespace(user_email="x@e.com", state=SessionState.DEAD),
+    }
+    assert mgr.active_count_for_user("x@e.com") == 2
+    assert mgr.active_count_for_user("x@e.com") == mgr._active_count_for_user("x@e.com")

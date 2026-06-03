@@ -163,6 +163,11 @@ class ChatManager:
             and s.state in (SessionState.NEW, SessionState.ACTIVE, SessionState.IDLE)
         )
 
+    def active_count_for_user(self, user_email: str) -> int:
+        """Public wrapper over the private cap predicate so callers
+        (e.g. /agnes-status) report exactly what create_session enforces."""
+        return self._active_count_for_user(user_email)
+
     def list_live(self) -> list[LiveSession]:
         return list(self._live.values())
 
