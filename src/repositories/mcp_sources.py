@@ -17,7 +17,7 @@ class MCPSourceRepository:
         if not row:
             return None
         d = dict(zip(cols, row))
-        for k in ("args",):
+        for k in ("args", "env"):
             if d.get(k) is not None and isinstance(d[k], str):
                 try:
                     d[k] = json.loads(d[k])
@@ -33,6 +33,7 @@ class MCPSourceRepository:
         transport: str,
         command: Optional[str] = None,
         args: Optional[List[str]] = None,
+        env: Optional[Dict[str, str]] = None,
         url: Optional[str] = None,
         auth_method: Optional[str] = None,
         auth_secret_env: Optional[str] = None,
@@ -50,22 +51,24 @@ class MCPSourceRepository:
 
         now = datetime.now(timezone.utc)
         args_json = json.dumps(args) if args is not None else None
+        env_json = json.dumps(env) if env is not None else None
         self.conn.execute(
             """INSERT INTO mcp_sources
-               (id, name, transport, command, args, url, auth_method, auth_secret_env, enabled, scope, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               (id, name, transport, command, args, env, url, auth_method, auth_secret_env, enabled, scope, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT (id) DO UPDATE SET
                    name = excluded.name,
                    transport = excluded.transport,
                    command = excluded.command,
                    args = excluded.args,
+                   env = excluded.env,
                    url = excluded.url,
                    auth_method = excluded.auth_method,
                    auth_secret_env = excluded.auth_secret_env,
                    enabled = excluded.enabled,
                    scope = excluded.scope,
                    updated_at = excluded.updated_at""",
-            [id, name, transport, command, args_json, url, auth_method, auth_secret_env, enabled, scope, now, now],
+            [id, name, transport, command, args_json, env_json, url, auth_method, auth_secret_env, enabled, scope, now, now],
         )
 
     def get(self, source_id: str) -> Optional[Dict[str, Any]]:
