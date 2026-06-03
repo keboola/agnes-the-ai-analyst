@@ -281,6 +281,11 @@ from app.web.router import router as web_router
 from app.api.chat import router as chat_router
 from app.api.slack import router as slack_router
 from app.api.admin_chat import router as admin_chat_router
+from app.instance_config import get_slack_transport
+from services.slack_bot.socket_mode_client import (
+    SocketModeDispatcher,
+    socket_mode_preflight,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +309,36 @@ def _maybe_rebuild_on_boot() -> bool:
     except Exception:
         logger.exception("AGNES_REBUILD_ON_BOOT rebuild failed (non-fatal)")
         return False
+
+
+async def _start_slack_socket_transport(app) -> None:
+    """If chat.slack.transport=socket, start one Socket Mode WS behind
+    fail-closed gates. On any miss -> log + leave Slack HTTP-only; never
+    crash and never start a dead WS. Stashed on app.state for shutdown."""
+    app.state.slack_socket_dispatcher = None
+    if get_slack_transport() != "socket":
+        return
+    app_token = os.environ.get("SLACK_APP_TOKEN", "")
+    bot_token = os.environ.get("SLACK_BOT_TOKEN", "")
+    try:
+        workers = int(os.environ.get("UVICORN_WORKERS", "1"))
+    except ValueError:
+        workers = 1
+    ok, reason = socket_mode_preflight(
+        workers=workers, app_token=app_token, bot_token=bot_token,
+    )
+    if not ok:
+        logger.error("Slack Socket Mode disabled: %s", reason)
+        return
+    try:
+        dispatcher = SocketModeDispatcher(
+            app=app, app_token=app_token, bot_token=bot_token,
+        )
+        await dispatcher.start()
+        app.state.slack_socket_dispatcher = dispatcher
+    except Exception:
+        logger.exception("Slack Socket Mode disabled: start() failed")
+        app.state.slack_socket_dispatcher = None
 
 
 @asynccontextmanager
@@ -699,7 +734,21 @@ async def lifespan(app):
         app.state.chat_manager = None
     # --- end CHAT-INIT -------------------------------------------------------
 
+    # --- SLACK SOCKET MODE (optional inbound transport) ----------------------
+    try:
+        await _start_slack_socket_transport(app)
+    except Exception:
+        logger.exception("Slack Socket Mode wiring failed (non-fatal)")
+        app.state.slack_socket_dispatcher = None
+    # --- end SLACK SOCKET MODE -----------------------------------------------
+
     yield
+    _socket_disp = getattr(app.state, "slack_socket_dispatcher", None)
+    if _socket_disp is not None:
+        try:
+            await _socket_disp.stop()
+        except Exception:
+            logger.exception("Slack Socket Mode shutdown failed")
     try:
         from src.observability import get_posthog
         get_posthog().shutdown()

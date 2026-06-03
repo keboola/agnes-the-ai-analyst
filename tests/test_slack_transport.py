@@ -304,3 +304,59 @@ def test_socket_gate_fails_closed(monkeypatch, workers, app_tok, bot_tok, sdk, n
     )
     assert ok is False
     assert needle in reason
+
+
+def test_start_slack_socket_transport_happy(monkeypatch):
+    from types import SimpleNamespace
+    import app.main as main_mod
+
+    started: list[str] = []
+
+    class FakeDispatcher:
+        def __init__(self, *, app, app_token, bot_token):
+            self.app = app
+        async def start(self):
+            started.append("start")
+
+    monkeypatch.setattr(main_mod, "get_slack_transport", lambda: "socket")
+    monkeypatch.setattr(main_mod, "SocketModeDispatcher", FakeDispatcher)
+    monkeypatch.setattr(main_mod, "socket_mode_preflight",
+                        lambda **k: (True, ""))
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-a")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-b")
+    monkeypatch.setenv("UVICORN_WORKERS", "1")
+
+    app = SimpleNamespace(state=SimpleNamespace())
+
+    import asyncio
+    asyncio.run(main_mod._start_slack_socket_transport(app))
+
+    assert started == ["start"]
+    assert isinstance(app.state.slack_socket_dispatcher, FakeDispatcher)
+
+
+def test_start_slack_socket_transport_http_is_noop(monkeypatch):
+    from types import SimpleNamespace
+    import app.main as main_mod
+    monkeypatch.setattr(main_mod, "get_slack_transport", lambda: "http")
+    app = SimpleNamespace(state=SimpleNamespace())
+    import asyncio
+    asyncio.run(main_mod._start_slack_socket_transport(app))
+    assert getattr(app.state, "slack_socket_dispatcher", None) is None
+
+
+def test_start_slack_socket_transport_failclosed_on_preflight(monkeypatch, caplog):
+    import logging
+    from types import SimpleNamespace
+    import app.main as main_mod
+    monkeypatch.setattr(main_mod, "get_slack_transport", lambda: "socket")
+    monkeypatch.setattr(main_mod, "socket_mode_preflight",
+                        lambda **k: (False, "SLACK_APP_TOKEN missing"))
+    monkeypatch.setenv("SLACK_APP_TOKEN", "")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "")
+    caplog.set_level(logging.ERROR, logger="app.main")
+    app = SimpleNamespace(state=SimpleNamespace())
+    import asyncio
+    asyncio.run(main_mod._start_slack_socket_transport(app))
+    assert app.state.slack_socket_dispatcher is None
+    assert any("Slack Socket Mode disabled" in r.message for r in caplog.records)
