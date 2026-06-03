@@ -13,7 +13,6 @@ import hmac
 import json
 import time
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -42,12 +41,11 @@ def test_events_endpoint_acks_before_slow_dispatch(monkeypatch):
     monkeypatch.setenv("SLACK_SIGNING_SECRET", _SECRET)
 
     dispatched: list[dict] = []
-    done = asyncio.Event()
 
     async def slow_dispatch(app, event):
+        # 5s mock dispatch — must stay > the 3.0s assertion below to catch a regression back to await
         await asyncio.sleep(5)  # simulate E2B spawn > 3s budget
         dispatched.append(event)
-        done.set()
 
     # Patch the symbol used inside the endpoint module.
     import app.api.slack as slack_api
