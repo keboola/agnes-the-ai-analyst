@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 68
+SCHEMA_VERSION = 69
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -4781,6 +4781,19 @@ def _v67_to_v68(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 68")
 
 
+def _v68_to_v69(conn: duckdb.DuckDBPyConnection) -> None:
+    """v69: per-source non-secret env vars for stdio MCP sources.
+
+    Adds ``mcp_sources.env`` — a JSON object of ``{VAR: value}`` passed to
+    the spawned stdio subprocess (the ``auth_secret_env`` secret overlays
+    it). NULL on existing rows preserves the prior single-secret behavior.
+    """
+    conn.execute(
+        "ALTER TABLE mcp_sources ADD COLUMN IF NOT EXISTS env VARCHAR"
+    )
+    conn.execute("UPDATE schema_version SET version = 69")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -5094,6 +5107,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # user_workdirs + indexes. _SYSTEM_SCHEMA already creates them on
             # fresh installs via CREATE TABLE/INDEX IF NOT EXISTS (no-op here).
             _v67_to_v68(conn)
+            # v68→v69: mcp_sources.env — per-source non-secret env vars for
+            # the spawned stdio subprocess. ADD COLUMN IF NOT EXISTS (no-op here).
+            _v68_to_v69(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5283,6 +5299,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v66_to_v67(conn)
             if current < 68:
                 _v67_to_v68(conn)
+            if current < 69:
+                _v68_to_v69(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

@@ -197,7 +197,9 @@ async def _open_session(
             except (json.JSONDecodeError, TypeError):
                 args = []
 
-        env_extra: Optional[Dict[str, str]] = None
+        # Per-source non-secret env (e.g. CRM_API_URL) is the base; the
+        # auth_secret_env secret overlays it (takes precedence).
+        env_extra: Dict[str, str] = dict(source.get("env") or {})
         secret_env = source.get("auth_secret_env")
         if secret_env:
             # Vault first, env-var second — same precedence as the HTTP
@@ -208,9 +210,9 @@ async def _open_session(
             # contract stays unchanged.
             token = _lookup_secret_for_source(source, caller_user_id=caller_user_id)
             if token:
-                env_extra = {secret_env: token}
+                env_extra[secret_env] = token
 
-        params = StdioServerParameters(command=command, args=list(args), env=env_extra)
+        params = StdioServerParameters(command=command, args=list(args), env=env_extra or None)
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
