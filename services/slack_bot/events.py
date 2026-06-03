@@ -6,8 +6,12 @@ import logging
 import re
 from typing import Any, Awaitable, Callable, Coroutine, Optional
 
-from services.slack_bot.binding import issue_verification_code, lookup_user_email
-from services.slack_bot.sender import send_thread_reply
+from services.slack_bot.binding import (
+    issue_verification_code,
+    is_channel_allowlisted,
+    lookup_user_email,
+)
+from services.slack_bot.sender import send_ephemeral_to_user, send_thread_reply
 from services.slack_bot.sink import SlackSinkBridge
 
 logger = logging.getLogger(__name__)
@@ -150,15 +154,88 @@ async def _handle_dm(app, event: dict) -> None:
 
 
 async def _handle_mention(app, event: dict) -> None:
-    # MVP: scope = DM only (per spec defaults). Stub for follow-up — channel
-    # @agnes mentions land in a future PR. Operators who install the manifest
-    # can still see events arriving at this handler in the logs.
-    logger.info(
-        "app_mention received but not yet implemented",
-        extra={
-            "channel": event.get("channel"),
-            "thread_ts": event.get("thread_ts"),
-            "user": event.get("user"),
-        },
+    """Channel @agnes mention → public in-thread reply on a persistent
+    SLACK_THREAD session owned by the mention starter. Gated by the
+    per-channel allowlist (default-deny). All denials are ephemeral.
+    """
+    # 2. Bot loop-guard: ignore our own / any bot's posts.
+    bot_user_id = getattr(app.state, "slack_bot_user_id", None)
+    if event.get("bot_id") or (bot_user_id and event.get("user") == bot_user_id):
+        return
+
+    channel = event["channel"]
+    thread_ts = event.get("thread_ts") or event["ts"]
+    slack_user_id = event.get("user")
+    text = event.get("text", "")
+    repo = app.state.chat_repo
+    conn = repo._conn
+
+    # 3. Allowlist (direct Everyone grant — never can_access).
+    if not is_channel_allowlisted(conn, channel):
+        await send_ephemeral_to_user(
+            channel, slack_user_id, "Agnes isn't enabled in this channel."
+        )
+        return
+
+    # 4. Identity binding.
+    user_email = lookup_user_email(repo, slack_user_id)
+    if user_email is None:
+        code = issue_verification_code(conn, slack_user_id=slack_user_id)
+        public_url = getattr(app.state, "public_url", "")
+        setup_link = f"{public_url}/setup?slack=1" if public_url else "/setup?slack=1"
+        await send_ephemeral_to_user(
+            channel, slack_user_id,
+            (
+                "To use Agnes here, bind your Slack identity:\n"
+                f"1. Visit {setup_link} while logged in.\n"
+                f"2. Paste this 6-digit code: *{code}* (expires in 10 minutes)."
+            ),
+        )
+        return
+
+    # 5. CHAT grant.
+    from app.auth.access import can_access
+    from app.resource_types import ResourceType
+    from src.repositories.users import UserRepository
+    _u = UserRepository(conn).get_by_email(user_email)
+    if not _u or not can_access(_u["id"], ResourceType.CHAT.value, "chat", conn):
+        await send_ephemeral_to_user(
+            channel, slack_user_id,
+            "You don't have access to Agnes chat yet — ask an admin to grant "
+            "your group access on /admin/access.",
+        )
+        return
+
+    # 6. Thread session: reuse or create; reject if owned by someone else.
+    mgr = app.state.chat_manager
+    from app.chat.types import Surface
+    existing = repo.get_slack_thread_session(channel, thread_ts)
+    if existing is not None and existing.user_email != user_email:
+        owner_row = conn.execute(
+            "SELECT slack_user_id FROM users WHERE email = ?",
+            [existing.user_email],
+        ).fetchone()
+        owner_ref = f"<@{owner_row[0]}>" if owner_row and owner_row[0] else "another user"
+        await send_ephemeral_to_user(
+            channel, slack_user_id, f"This thread belongs to {owner_ref}."
+        )
+        return
+    session = await mgr.create_session(
+        user_email=user_email,
+        surface=Surface.SLACK_THREAD,
+        slack_channel_id=channel,
+        slack_thread_ts=thread_ts,
     )
-    return
+
+    # 7. Strip our own mention token.
+    clean = _strip_bot_mention(text, bot_user_id)
+
+    # 8. Attach (NOT awaited — keep the 3s ack budget).
+    if not _is_attached(mgr, session.id):
+        sink = SlackSinkBridge(channel=channel, thread_ts=thread_ts, chat_id=session.id)
+        asyncio.create_task(mgr.attach(session.id, sink))
+        await asyncio.sleep(0.1)
+
+    # 9. Inject the user turn. send_user_message(chat_id, text) — no sender_email
+    #    (per-sender attribution arrives with Phase 5a's multi-sink refactor).
+    await mgr.send_user_message(session.id, clean)

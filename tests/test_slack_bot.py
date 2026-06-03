@@ -49,6 +49,29 @@ def test_redeem_rejects_expired(conn, monkeypatch):
 class _RepoStub:
     def __init__(self, conn): self._conn = conn
 
+    def get_slack_thread_session(self, slack_channel_id, slack_thread_ts):
+        """Minimal impl: look up a chat_sessions row by channel+thread_ts."""
+        from app.chat.types import ChatSession, Surface
+        from datetime import datetime
+        row = self._conn.execute(
+            "SELECT id, user_email, surface, slack_channel_id, slack_thread_ts, "
+            "title, started_at, last_message_at, message_count, archived "
+            "FROM chat_sessions "
+            "WHERE surface = 'slack_thread' "
+            "AND slack_channel_id = ? AND slack_thread_ts = ? AND archived = FALSE",
+            [slack_channel_id, slack_thread_ts],
+        ).fetchone()
+        if not row:
+            return None
+        return ChatSession(
+            id=row[0], user_email=row[1],
+            surface=Surface(row[2]),
+            slack_channel_id=row[3], slack_thread_ts=row[4],
+            title=row[5], started_at=row[6] or datetime.now(),
+            last_message_at=row[7], message_count=row[8] or 0,
+            archived=bool(row[9]),
+        )
+
 
 # ---------------------------------------------------------------------------
 # SlackSinkBridge unit tests (architect finding #4)
@@ -447,28 +470,250 @@ class TestChannelAllowlist:
         assert is_channel_allowlisted(conn, "C_ADMIN") is False
 
 
-def test_slack_app_mention_emits_log_record(caplog):
-    """`app_mention` events must produce an INFO log so operators can see
-    that the bot is receiving channel mentions even though channel scope
-    is deferred (DM-only MVP).
-    """
-    import asyncio
-    import logging
-    import services.slack_bot.events as ev
+class _FakeApp:
+    """Mimics the bits of `app` _handle_mention touches."""
+    class _State:
+        pass
 
-    caplog.set_level(logging.INFO, logger="services.slack_bot.events")
-    event = {
-        "type": "app_mention", "channel": "C1", "thread_ts": "1.1",
-        "user": "U999", "text": "<@AGNES> hello",
-    }
+    def __init__(self, conn, mgr, *, bot_user_id="U07BOT", public_url="https://example.com"):
+        self.state = _FakeApp._State()
+        self.state.chat_repo = _RepoStub(conn)
+        self.state.chat_manager = mgr
+        self.state.slack_bot_user_id = bot_user_id
+        self.state.public_url = public_url
+
+
+class _FakeMgr:
+    def __init__(self):
+        self.created = []
+        self.sent = []
+        self.attached = []
+        self._live = []
+
+    def list_live(self):
+        return self._live
+
+    async def create_session(self, **kw):
+        from app.chat.types import ChatSession, Surface
+        from datetime import datetime
+        sess = ChatSession(
+            id="sess_new",
+            user_email=kw["user_email"],
+            surface=kw["surface"],
+            slack_channel_id=kw.get("slack_channel_id"),
+            slack_thread_ts=kw.get("slack_thread_ts"),
+            title=None,
+            started_at=datetime.now(),
+            last_message_at=None,
+            message_count=0,
+            archived=False,
+        )
+        self.created.append(sess)
+        return sess
+
+    async def attach(self, chat_id, sink):
+        self.attached.append((chat_id, sink))
+
+    async def send_user_message(self, chat_id, text):
+        self.sent.append((chat_id, text))
+
+
+def test_mention_bot_loop_guard_returns_silently(monkeypatch):
+    import asyncio
+    import services.slack_bot.events as ev
+    posts = []
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: posts.append(a))
+    conn = duckdb.connect(":memory:"); _ensure_schema(conn)
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"bot_id": "B1", "channel": "C1", "ts": "1.0", "user": "U07BOT"}))
+    assert posts == [] and mgr.created == []
+
+
+def test_mention_not_allowlisted_ephemeral_deny(monkeypatch):
+    import asyncio
+    import services.slack_bot.events as ev
+    from services.slack_bot.binding import _ensure_table
+    posts = []
+    async def _fake_ep(ch, u, txt): posts.append((ch, u, txt))
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
+    conn = duckdb.connect(":memory:"); _ensure_schema(conn); _ensure_table(conn)
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_X", "ts": "1.0", "user": "U1", "text": "<@U07BOT> hi"}))
+    assert posts and "isn't enabled" in posts[0][2]
+    assert mgr.created == []
+
+
+def test_mention_unbound_user_gets_code(monkeypatch):
+    import asyncio
+    import services.slack_bot.events as ev
+    from services.slack_bot.binding import _ensure_table
+    posts = []
+    async def _fake_ep(ch, u, txt): posts.append((ch, u, txt))
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
+    conn = duckdb.connect(":memory:"); _ensure_schema(conn); _ensure_table(conn)
+    gid = conn.execute("SELECT id FROM user_groups WHERE name='Everyone'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
+        "VALUES ('rg1', ?, 'slack_channel', 'C_OK')", [gid])
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "1.0", "user": "U_NEW", "text": "<@U07BOT> hi"}))
+    assert posts and "6-digit code" in posts[0][2]
+    assert mgr.created == []
+
+
+def _seed_bound_chat_user(conn, *, email="u@x", slack_id="U_OK"):
+    """Seed a user bound to slack_id, in Everyone, with a CHAT grant.
+    Primes the lazy users.slack_user_id column first (binding._ensure_table)."""
+    from services.slack_bot.binding import _ensure_table
+    _ensure_table(conn)  # adds users.slack_user_id if missing
+    uid = f"uid_{slack_id}"
+    conn.execute("DELETE FROM users WHERE email = ?", [email])
+    conn.execute(
+        "INSERT INTO users(id, email, name, slack_user_id) VALUES (?, ?, 'U', ?)",
+        [uid, email, slack_id],
+    )
+    egid = conn.execute("SELECT id FROM user_groups WHERE name='Everyone'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO user_group_members(user_id, group_id, source) VALUES (?, ?, 'system_seed')",
+        [uid, egid],
+    )
+    conn.execute(
+        "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
+        "VALUES ('rg_chat', ?, 'chat', 'chat') ON CONFLICT DO NOTHING", [egid])
+    return uid
+
+
+def _allow_channel(conn, channel="C_OK"):
+    egid = conn.execute("SELECT id FROM user_groups WHERE name='Everyone'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
+        "VALUES ('rg_ch', ?, 'slack_channel', ?)", [egid, channel])
+
+
+def test_mention_happy_path_creates_thread_and_sends(monkeypatch):
+    import asyncio
+    import services.slack_bot.events as ev
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
+    conn = duckdb.connect(":memory:"); _ensure_schema(conn)
+    _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.1", "user": "U_OK", "text": "<@U07BOT> revenue?"}))
+    assert len(mgr.created) == 1
+    assert mgr.created[0].surface.value == "slack_thread"
+    assert mgr.created[0].slack_thread_ts == "9.1"
+    assert mgr.attached and mgr.attached[0][0] == "sess_new"
+    assert mgr.sent and mgr.sent[0][1] == "revenue?"
+
+
+def test_mention_ownership_reject_ephemeral(monkeypatch):
+    import asyncio
+    import services.slack_bot.events as ev
+    posts = []
+    async def _fake_ep(ch, u, txt): posts.append(txt)
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
+    conn = duckdb.connect(":memory:"); _ensure_schema(conn)
+    _seed_bound_chat_user(conn, email="owner@x", slack_id="U_OWNER")
+    _seed_bound_chat_user(conn, email="other@x", slack_id="U_OTHER")
+    _allow_channel(conn)
+    # pre-existing thread session owned by owner@x (column is started_at)
+    conn.execute(
+        "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
+        "slack_thread_ts, title, started_at) VALUES "
+        "('s_owned', 'owner@x', 'slack_thread', 'C_OK', '9.2', NULL, current_timestamp)"
+    )
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.2", "user": "U_OTHER", "text": "<@U07BOT> hi"}))
+    # owner has a bound slack id → rendered as <@U_OWNER>
+    assert posts and "belongs to <@U_OWNER>" in posts[0]
+    assert mgr.created == []
+
+
+def test_mention_same_thread_reuses_session(monkeypatch):
+    """A second mention in the same thread by the OWNER must NOT be rejected
+    (no ownership reject) and proceeds to send. (Real dedup to a single row is
+    ChatManager.create_session's job via get_slack_thread_session; the handler
+    only enforces the owner check.)"""
+    import asyncio
+    import services.slack_bot.events as ev
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
+    conn = duckdb.connect(":memory:"); _ensure_schema(conn)
+    _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+    # existing session owned by the SAME user (column is started_at)
+    conn.execute(
+        "INSERT INTO chat_sessions(id, user_email, surface, slack_channel_id, "
+        "slack_thread_ts, title, started_at) VALUES "
+        "('s_mine', 'u@x', 'slack_thread', 'C_OK', '9.3', NULL, current_timestamp)"
+    )
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "9.3", "user": "U_OK", "text": "<@U07BOT> again"}))
+    assert mgr.sent and mgr.sent[0][1] == "again"
+
+
+def test_mention_attach_not_awaited_returns_under_budget(monkeypatch):
+    """attach() blocks forever; the handler must still return promptly because
+    attach is create_task'd, not awaited (3s-ack contract)."""
+    import asyncio
+    import services.slack_bot.events as ev
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
+    conn = duckdb.connect(":memory:"); _ensure_schema(conn)
+    _seed_bound_chat_user(conn)
+    _allow_channel(conn)
+
+    blocker = asyncio.Event()  # never set
+
+    class _BlockingMgr(_FakeMgr):
+        async def attach(self, chat_id, sink):
+            self.attached.append((chat_id, sink))
+            await blocker.wait()  # would hang if awaited
+
+    mgr = _BlockingMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
 
     async def _run():
-        await ev.dispatch_event(app=object(), event=event)
-
+        await asyncio.wait_for(
+            ev._handle_mention(app, {"channel": "C_OK", "ts": "9.4", "user": "U_OK", "text": "<@U07BOT> q"}),
+            timeout=2.0,
+        )
     asyncio.run(_run())
+    assert mgr.sent  # handler reached step 9 despite attach blocking
 
-    matched = [
-        r for r in caplog.records
-        if "app_mention received" in r.message
-    ]
-    assert matched, f"expected app_mention log record; got {caplog.records!r}"
+
+def test_slack_app_mention_dispatches(monkeypatch):
+    """`app_mention` events are dispatched to `_handle_mention` without error.
+
+    The stub log-based check is replaced now that the full handler is
+    implemented. This test verifies dispatch_event routes `app_mention` to
+    the handler; the handler returns silently when the channel isn't
+    allowlisted (default-deny) — no session is created, no exception raised.
+    """
+    import asyncio
+    import services.slack_bot.events as ev
+
+    posts = []
+    async def _fake_ep(ch, u, txt): posts.append((ch, u, txt))
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
+
+    conn = duckdb.connect(":memory:"); _ensure_schema(conn)
+    from services.slack_bot.binding import _ensure_table
+    _ensure_table(conn)
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+
+    event = {
+        "type": "app_mention", "channel": "C1", "thread_ts": "1.1",
+        "user": "U999", "text": "<@U07BOT> hello",
+    }
+
+    asyncio.run(ev.dispatch_event(app=app, event=event))
+
+    # Channel not allowlisted → ephemeral "isn't enabled" deny, no session created.
+    assert posts and "isn't enabled" in posts[0][2]
+    assert mgr.created == []
