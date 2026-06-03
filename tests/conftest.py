@@ -322,6 +322,25 @@ def admin_user(seeded_app):
     return {"Authorization": f"Bearer {token}"}
 
 
+@pytest.fixture
+def system_db(tmp_path, monkeypatch):
+    """Fresh, isolated system.duckdb connection bound to a temp DATA_DIR.
+
+    The conftest sets DATA_DIR globally at import time, so per-test we
+    repoint it at ``tmp_path`` and reset the connection singleton both
+    before and after so each test gets a clean, auto-migrated system DB.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    (tmp_path / "state").mkdir(exist_ok=True)
+    (tmp_path / "analytics").mkdir(exist_ok=True)
+    from src.db import close_system_db, get_system_db
+
+    close_system_db()
+    conn = get_system_db()
+    yield conn
+    close_system_db()
+
+
 import contextlib as _contextlib
 
 
