@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.60.0"
+version = "0.61.0"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -67,7 +67,7 @@ dependencies = [
     # microVM (`AsyncSandbox`); `app/chat/e2b_provider.py` adapts the SDK's
     # background-command + filesystem APIs to our `SandboxProvider`
     # Protocol. See `docs/cloud-chat.md` for operator setup.
-    "e2b>=1.0.0,<2.0.0",
+    "e2b>=1.0.0,<3.0.0",
     # Per-IP rate limiting on auth endpoints (#45). In-process counters by
     # default — fine for single-replica deploys. Multi-replica rollouts can
     # swap the storage backend via slowapi's `storage_uri` (Redis, Memcached).
