@@ -166,3 +166,30 @@ def test_load_chat_config_scalar_slack_block_defaults_http(tmp_path, scalar):
     yaml_path.write_text(f"chat:\n  enabled: true\n  slack: {scalar}\n")
     cfg = load_chat_config(yaml_path)
     assert cfg.slack.transport == "http"
+
+
+def test_get_slack_transport_env_overrides_yaml(monkeypatch):
+    import app.instance_config as ic
+    monkeypatch.setattr(ic, "get_value", lambda *k, default=None: "socket")
+    monkeypatch.setenv("SLACK_TRANSPORT", "http")
+    assert ic.get_slack_transport() == "http"  # env wins
+
+
+def test_get_slack_transport_yaml_when_env_unset(monkeypatch):
+    import app.instance_config as ic
+    monkeypatch.delenv("SLACK_TRANSPORT", raising=False)
+    monkeypatch.setattr(ic, "get_value", lambda *k, default=None: "socket")
+    assert ic.get_slack_transport() == "socket"
+
+
+def test_get_slack_transport_default_http(monkeypatch):
+    import app.instance_config as ic
+    monkeypatch.delenv("SLACK_TRANSPORT", raising=False)
+    monkeypatch.setattr(ic, "get_value", lambda *k, default=None: default)
+    assert ic.get_slack_transport() == "http"
+
+
+def test_get_slack_transport_unknown_value_falls_back_http(monkeypatch):
+    import app.instance_config as ic
+    monkeypatch.setenv("SLACK_TRANSPORT", "carrier-pigeon")
+    assert ic.get_slack_transport() == "http"
