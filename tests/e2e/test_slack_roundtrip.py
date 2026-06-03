@@ -201,6 +201,12 @@ def slack_app(monkeypatch):
     from services.slack_bot import sink as sink_mod
     monkeypatch.setattr(events_mod, "send_thread_reply", fake_send)
     monkeypatch.setattr(sink_mod, "send_thread_reply", fake_send)
+    # With chat_id wired in the DM handler, the sink uses post_thread_reply_with_blocks
+    # for the first assistant turn. Capture those too so assertions still hold.
+    async def fake_post_blocks(channel: str, thread_ts: str, text: str, blocks: list) -> str:
+        captured.append((channel, thread_ts, text))
+        return "msg-fake"
+    monkeypatch.setattr(sink_mod, "post_thread_reply_with_blocks", fake_post_blocks)
     # Chat is a default-deny RBAC resource; the bound-DM branch checks the
     # user's grant before spawning. This roundtrip exercises the bind →
     # bound-reply plumbing, not the gate, so grant access. (Default-deny is

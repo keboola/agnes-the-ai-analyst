@@ -11,6 +11,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Slack Block Kit interactivity.** Bot DM replies now carry interactive
+  buttons, delivered via a new signature-verified `POST /api/slack/interactivity`
+  endpoint (ack-then-async, empty 200): **Stop** (owner-gated, cancels the live
+  turn), **Continue on web** (deep link to `/chat?session=<id>`), and **New
+  session** (owner-gated soft-archive, shared path with `/agnes-new`). The Stop
+  button is posted on the first assistant turn and stripped when the turn ends
+  (`done`), errors, or is cancelled. A **Share to channel** consumer is also
+  added (promotes an answer to a public in-thread post — allowlist re-checked at
+  click time, audited as `slack_share`); its producer attaches with the slash
+  `/agnes` ephemeral surface in a later change. New leaf `blocks.py` builders +
+  `interactivity.py` parser/router; `sender.py` gains block/update/channel/
+  ephemeral/`response_url` primitives; `binding.py` gains a per-channel
+  allowlist check; the Slack events webhook now acks-then-processes. Manifest
+  enables interactivity and documents HTTP vs Socket Mode stanzas.
 - Slack slash commands: `/agnes <question>` (runs on your persistent DM session so the answer also appears on web `/chat`), `/agnes-new` (archive the current DM session), `/agnes-status` (active session count vs cap + a `/chat` deep link), and `/agnes help`. New signature-verified `POST /api/slack/commands` endpoint acks within 3 s and delivers answers asynchronously via Slack `response_url`.
 - Slack channel mentions: `@agnes` in an allowlisted channel now opens a public in-thread session owned by the mention starter, gated by a new `slack_channel` resource type (default-deny; admins enable a channel by granting `(Everyone, slack_channel, <channel_id>)` on /admin/access). Denials are ephemeral.
 - **Slack Socket Mode transport (optional).** A second inbound Slack
