@@ -17,6 +17,7 @@ from typing import Any
 from app.chat.audit import write_audit
 from services.slack_bot import blocks, sender
 from services.slack_bot.binding import is_channel_allowlisted, lookup_user_email
+from services.slack_bot.commands import _soft_archive_dm_for_button as _soft_archive_dm
 
 logger = logging.getLogger(__name__)
 
@@ -140,5 +141,17 @@ async def _on_share(app, it: Interaction) -> None:
     )
 
 
-async def _on_new_session(app, it: Interaction) -> None:  # filled in Task 7
-    raise NotImplementedError
+async def _on_new_session(app, it: Interaction) -> None:
+    repo = app.state.chat_repo
+    clicker_email = lookup_user_email(repo, it.slack_user_id)
+    owner = it.value.get("owner", "")
+    channel_id = it.value.get("channel_id", "")
+    if not clicker_email or clicker_email != owner:
+        await sender.send_ephemeral(
+            it.response_url, "This session belongs to someone else; only its owner can reset it."
+        )
+        return
+    await _soft_archive_dm(app, owner, channel_id)
+    await sender.send_ephemeral(
+        it.response_url, "Started a fresh session — your next message begins anew."
+    )

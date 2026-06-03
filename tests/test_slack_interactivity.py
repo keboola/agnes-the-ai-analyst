@@ -410,3 +410,41 @@ def test_on_share_expired_token_no_post(monkeypatch):
     asyncio.run(inter._on_share(app, it))
     assert rec.posts == [] and rec.audits == []
     assert rec.eph  # "expired" ephemeral
+
+
+def test_on_new_session_owner_archives(monkeypatch):
+    from types import SimpleNamespace
+    from services.slack_bot import interactivity as inter
+    monkeypatch.setattr(inter, "lookup_user_email", lambda repo, uid: "a@example.com")
+    archived = []
+    async def fake_archive(app, owner, ch): archived.append((owner, ch))
+    monkeypatch.setattr(inter, "_soft_archive_dm", fake_archive)
+    eph = []
+    async def fake_eph(url, text, blocks=None): eph.append(text)
+    monkeypatch.setattr(inter.sender, "send_ephemeral", fake_eph)
+    app = SimpleNamespace(state=SimpleNamespace(chat_repo=SimpleNamespace(_conn=object())))
+    it = inter.Interaction(action_id=inter.blocks.ACTION_NEW_SESSION, slack_user_id="U1",
+                           channel_id="D1", response_url="https://r",
+                           value={"channel_id": "D1", "owner": "a@example.com"})
+    asyncio.run(inter._on_new_session(app, it))
+    assert archived == [("a@example.com", "D1")]
+    assert eph  # confirmation ephemeral
+
+
+def test_on_new_session_non_owner_denied(monkeypatch):
+    from types import SimpleNamespace
+    from services.slack_bot import interactivity as inter
+    monkeypatch.setattr(inter, "lookup_user_email", lambda repo, uid: "intruder@example.com")
+    archived = []
+    async def fake_archive(app, owner, ch): archived.append((owner, ch))
+    monkeypatch.setattr(inter, "_soft_archive_dm", fake_archive)
+    eph = []
+    async def fake_eph(url, text, blocks=None): eph.append(text)
+    monkeypatch.setattr(inter.sender, "send_ephemeral", fake_eph)
+    app = SimpleNamespace(state=SimpleNamespace(chat_repo=SimpleNamespace(_conn=object())))
+    it = inter.Interaction(action_id=inter.blocks.ACTION_NEW_SESSION, slack_user_id="U2",
+                           channel_id="D1", response_url="https://r",
+                           value={"channel_id": "D1", "owner": "a@example.com"})
+    asyncio.run(inter._on_new_session(app, it))
+    assert archived == []
+    assert any("belongs to" in t or "only" in t.lower() for t in eph)
