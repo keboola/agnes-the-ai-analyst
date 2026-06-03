@@ -81,40 +81,36 @@ def resolve_token_to_user(
     co_session_id = payload.get("chat_session_id")
 
     if typ == "co_session" or co_session_id:
-        from src.db import get_system_db
-        sconn = get_system_db()
-        try:
-            if typ == "co_session":
-                from src.grant_intersection import compute_grant_intersection
-                from app.auth.session_principal import SessionPrincipal
-                rows = sconn.execute(
-                    "SELECT user_id, user_email FROM chat_session_participants "
-                    "WHERE session_id = ? AND left_at IS NULL",
-                    [co_session_id],
-                ).fetchall()
-                if not rows:
-                    return None, "invalid_token"  # no live participants -> deny
-                emails = [r[1] for r in rows]
-                principal = SessionPrincipal(
-                    session_id=co_session_id,
-                    participant_user_ids=[r[0] for r in rows],
-                    participant_emails=emails,
-                    intersection=compute_grant_intersection(emails, sconn),
-                )
-                return principal, None
-            # Defense-in-depth (SR-3): a plain single-user token that names a
-            # co-session must never drive it, regardless of _spawn_runner.
-            row = sconn.execute(
-                "SELECT is_co_session FROM chat_sessions WHERE id = ?",
-                [co_session_id],
-            ).fetchone()
-            if row and bool(row[0]):
-                return None, "invalid_token"  # FAIL CLOSED
-        finally:
-            try:
-                sconn.close()
-            except Exception:
-                pass
+        # Route chat-session reads through the repo factory so co-session
+        # resolution works on either backend (DuckDB or Postgres). The old
+        # path read these tables off the always-DuckDB system connection, so on
+        # a PG instance the participant / is_co_session lookups came back empty
+        # and every co-session token failed closed.
+        from src.repositories import chat_session_participants_repo, chat_session_repo
+
+        if typ == "co_session":
+            from src.grant_intersection import compute_grant_intersection
+            from app.auth.session_principal import SessionPrincipal
+            participants = chat_session_participants_repo().get_session_participants(
+                co_session_id
+            )
+            if not participants:
+                return None, "invalid_token"  # no live participants -> deny
+            emails = [p.user_email for p in participants]
+            principal = SessionPrincipal(
+                session_id=co_session_id,
+                participant_user_ids=[p.user_id for p in participants],
+                participant_emails=emails,
+                # No conn → compute_grant_intersection resolves through the
+                # factory (backend-correct) rather than a raw DuckDB conn.
+                intersection=compute_grant_intersection(emails),
+            )
+            return principal, None
+        # Defense-in-depth (SR-3): a plain single-user token that names a
+        # co-session must never drive it, regardless of _spawn_runner.
+        session = chat_session_repo().get_session(co_session_id)
+        if session is not None and bool(session.is_co_session):
+            return None, "invalid_token"  # FAIL CLOSED
 
     from src.repositories import users_repo, access_token_repo
     user = users_repo().get_by_id(payload.get("sub", ""))

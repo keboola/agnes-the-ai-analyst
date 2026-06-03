@@ -10,7 +10,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+- `app/auth/pat_resolver.py` co-session resolution is now routed through the
+  repo factory and dropped from the backend-split guard's `get_system_db`
+  residual list. The Slack bot handlers (`services/slack_bot/commands.py` +
+  `events.py`) stay grandfathered as a coherent DuckDB-conn unit — full
+  Slack-identity-on-Postgres migration is a separate subsystem effort.
+
 ### Fixed
+- **Postgres backend: co-session tokens failed closed on a PG instance.**
+  Co-session token resolution (`pat_resolver.resolve_token_to_user`) read
+  `chat_session_participants` / `chat_sessions` off the always-DuckDB system
+  connection — empty on Postgres, so every co-session token was rejected with
+  `invalid_token`. It now reads the live participant set + `is_co_session` flag
+  through the repo factory (`chat_session_participants_repo()` /
+  `chat_session_repo()`), and `compute_grant_intersection` resolves participant
+  identities through the factory too. A new `chat_session_participants_repo()`
+  factory backs the participant reads. Pinned by a both-backends parity test
+  (`tests/db_pg/test_parity_co_session_resolution.py`).
 - **Postgres backend: the sync pipeline served no data on a PG instance.**
   `SyncOrchestrator.rebuild()` read the table registry, wrote `sync_state`, and
   read/reconciled `view_ownership` through a raw `get_system_db()` (always

@@ -91,6 +91,7 @@ __all__ = [
     "chat_session_repo",
     "chat_message_repo",
     "user_workdirs_repo",
+    "chat_session_participants_repo",
 ]
 
 
@@ -526,5 +527,15 @@ def user_workdirs_repo() -> Any:
     if use_pg():
         from src.repositories.user_workdirs_pg import UserWorkdirPgRepository
         return UserWorkdirPgRepository(_pg_engine())
+    from app.chat.persistence import ChatRepository
+    return ChatRepository(get_system_db())
+
+
+def chat_session_participants_repo() -> Any:
+    if use_pg():
+        from src.repositories.chat_session_participants_pg import (
+            ChatSessionParticipantPgRepository,
+        )
+        return ChatSessionParticipantPgRepository(_pg_engine())
     from app.chat.persistence import ChatRepository
     return ChatRepository(get_system_db())
