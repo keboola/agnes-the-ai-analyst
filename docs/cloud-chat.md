@@ -73,6 +73,24 @@ server refuses to enable chat if `UVICORN_WORKERS > 1`. HA support
 3. Slack users DM the bot to receive a 6-digit verification code,
    which they paste at `/setup` while logged into Agnes.
 
+### Slash commands
+
+The manifest also registers three slash commands, all pointed at
+`https://YOUR-AGNES-HOST/api/slack/commands` (a separate Request URL
+from the Events endpoint):
+
+| Command | What it does |
+|---|---|
+| `/agnes <question>` | Asks Agnes; runs on your persistent DM session, so the answer also appears on web `/chat`. |
+| `/agnes-new` | Archives your current Agnes DM session so the next `/agnes` starts fresh. |
+| `/agnes-status` | Shows your active session count vs. the per-user cap, plus a `/chat` deep link. |
+| `/agnes help` | Lists these commands (answered inline, no async work). |
+
+Each command acks within Slack's 3 s budget and delivers its answer
+asynchronously (ephemerally) via the command's `response_url`. Under
+Socket Mode the commands arrive over the socket instead of the HTTP
+Request URL — no manifest `url:` is needed in that mode.
+
 ## Cost & limits
 
 Per-user defaults (configurable in `/admin/server-config`):

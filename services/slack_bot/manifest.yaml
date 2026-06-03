@@ -23,6 +23,22 @@ oauth_config:
       - im:write
       - users:read
       - users:read.email
+# Slash commands. Under Socket Mode, omit each `url:` — commands arrive
+# over the socket and route through the same dispatch_command.
+slash_commands:
+  - command: /agnes
+    url: "https://YOUR-AGNES-HOST/api/slack/commands"
+    description: Ask Agnes a data question
+    usage_hint: "<your question> | help"
+    should_escape: false
+  - command: /agnes-new
+    url: "https://YOUR-AGNES-HOST/api/slack/commands"
+    description: Archive your Agnes session and start fresh
+    should_escape: false
+  - command: /agnes-status
+    url: "https://YOUR-AGNES-HOST/api/slack/commands"
+    description: Show your active Agnes session count and cap
+    should_escape: false
 settings:
   event_subscriptions:
     request_url: "https://YOUR-AGNES-HOST/api/slack/events"
