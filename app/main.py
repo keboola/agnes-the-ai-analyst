@@ -279,6 +279,7 @@ from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import make_git_wsgi_app
 from app.web.router import router as web_router
 from app.api.chat import router as chat_router
+from app.api.chat_copresence import router as chat_copresence_router
 from app.api.slack import router as slack_router
 from app.api.admin_chat import router as admin_chat_router
 from app.instance_config import get_slack_transport
@@ -1182,6 +1183,7 @@ def create_app() -> FastAPI:
     app.include_router(db_state_router)
     app.include_router(marketplace_server_router)
     app.include_router(chat_router)
+    app.include_router(chat_copresence_router)
     app.include_router(slack_router)
     app.include_router(admin_chat_router)
 
