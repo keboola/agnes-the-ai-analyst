@@ -232,6 +232,16 @@
           <input id="edit-url-sse" type="url" autocomplete="off">
         </div>
 
+        <label for="edit-scope">Secret scope</label>
+        <select id="edit-scope">
+          <option value="shared">shared (one server-wide secret)</option>
+          <option value="per_user">per_user (each analyst supplies their own)</option>
+        </select>
+
+        <label for="edit-env">Environment variables (KEY=VALUE per line)</label>
+        <textarea id="edit-env" autocomplete="off" placeholder="CRM_API_URL=https://api.example.com&#10;REGION=eu"></textarea>
+        <div class="help" style="font-size:11px; color: var(--text-secondary, #9ca3af); margin-top:4px;">Non-secret env vars passed to the stdio subprocess (KEY=VALUE per line).</div>
+
         <label for="edit-auth-method">Auth method</label>
         <select id="edit-auth-method">
           <option value="">none</option>
@@ -239,8 +249,9 @@
           <option value="header">custom header</option>
         </select>
 
-        <label for="edit-auth-secret-env">Auth secret env var</label>
+        <label for="edit-auth-secret-env" style="margin-top:16px;">Auth secret env var — Advanced (legacy)</label>
         <input id="edit-auth-secret-env" type="text" autocomplete="off">
+        <div class="help" style="font-size:11px; color: var(--text-secondary, #9ca3af); margin-top:4px;">Advanced/legacy: names a host env var holding the secret. Prefer the vault — set the secret value below so no host env var is needed.</div>
 
         <label style="display:inline-flex; align-items:center; gap:6px; margin-top:14px; font-weight:500; color: var(--text-primary, #111827);">
           <input id="edit-enabled" type="checkbox"> Enabled
@@ -253,6 +264,28 @@
       </div>
 
       <div id="test-result" class="test-result"></div>
+    </div>
+  </div>
+
+  <!-- Vault secret card -->
+  <div class="src-card">
+    <div class="src-card-head">
+      <h3>Vault secret</h3>
+      <span id="secret-status" style="font-size: 12px; color: var(--text-secondary, #6b7280);">…</span>
+    </div>
+    <div class="src-card-body">
+      <p style="margin: 0 0 12px; font-size: 13px; color: var(--text-secondary, #6b7280);">
+        Store this source's secret encrypted at rest in the vault — no host env var needed.
+        The value is write-only: it can be set, rotated, or cleared, but never read back.
+      </p>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <input id="set-vault-secret" type="password" autocomplete="new-password"
+               placeholder="Enter secret value to set or rotate"
+               style="flex:1; min-width:240px; padding:8px 11px; border:1px solid var(--border, #e5e7eb); border-radius:6px; font-size:13px; box-sizing:border-box;">
+        {{ ds.button('Set / rotate', variant='primary', id='set-secret-btn') }}
+        {{ ds.button('Clear', variant='danger', id='clear-secret-btn') }}
+      </div>
+      <div id="secret-result" class="test-result"></div>
     </div>
   </div>
 
@@ -316,6 +349,22 @@ function esc(s) {
   return d.innerHTML;
 }
 
+// Parse a KEY=VALUE-per-line textarea into an object. Blank lines and
+// lines without an `=` are skipped; only the first `=` splits the pair.
+function parseEnvText(raw) {
+  const env = {};
+  (raw || "").split("\n").forEach(line => {
+    const t = line.trim();
+    if (!t) return;
+    const i = t.indexOf("=");
+    if (i < 1) return;
+    const k = t.slice(0, i).trim();
+    const v = t.slice(i + 1).trim();
+    if (k) env[k] = v;
+  });
+  return env;
+}
+
 function toast(msg, kind = "") {
   const el = document.createElement("div");
   el.className = "toast " + kind;
@@ -360,6 +409,22 @@ function renderConfigSummary() {
   document.getElementById("cfg-auth-method").textContent = source.auth_method || "none";
   document.getElementById("cfg-auth-secret-env").textContent = source.auth_secret_env || "—";
   document.getElementById("cfg-enabled").textContent = (source.enabled === false) ? "no" : "yes";
+  renderSecretStatus();
+}
+
+function renderSecretStatus() {
+  const el = document.getElementById("secret-status");
+  if (!el || !source) return;
+  if (source.has_vault_secret) {
+    el.textContent = "🔒 Vault secret set";
+    el.style.color = "#166534";
+  } else if (source.auth_secret_env) {
+    el.textContent = `Host env var (legacy): ${source.auth_secret_env}`;
+    el.style.color = "var(--text-secondary, #6b7280)";
+  } else {
+    el.textContent = "No secret";
+    el.style.color = "var(--text-secondary, #6b7280)";
+  }
 }
 
 // ── Edit toggle ────────────────────────────────────────────────────────
@@ -380,6 +445,9 @@ document.getElementById("edit-toggle-btn").addEventListener("click", () => {
   document.getElementById("edit-url-sse").value = source.transport === "sse" ? (source.url || "") : "";
   document.getElementById("edit-auth-method").value = source.auth_method || "";
   document.getElementById("edit-auth-secret-env").value = source.auth_secret_env || "";
+  document.getElementById("edit-scope").value = source.scope || "shared";
+  document.getElementById("edit-env").value =
+    Object.entries(source.env || {}).map(([k, v]) => `${k}=${v}`).join("\n");
   document.getElementById("edit-enabled").checked = source.enabled !== false;
   syncTransportFields("edit");
   document.getElementById("cfg-summary").style.display = "none";
@@ -401,6 +469,8 @@ document.getElementById("edit-save-btn").addEventListener("click", async () => {
     transport,
     auth_method: document.getElementById("edit-auth-method").value || null,
     auth_secret_env: document.getElementById("edit-auth-secret-env").value.trim() || null,
+    scope: document.getElementById("edit-scope").value || "shared",
+    env: parseEnvText(document.getElementById("edit-env").value),
     enabled: document.getElementById("edit-enabled").checked,
   };
   if (transport === "stdio") {
@@ -461,6 +531,70 @@ document.getElementById("test-btn").addEventListener("click", async () => {
   } catch (e) {
     out.className = "test-result err";
     out.textContent = "Failed: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ── Vault secret set / rotate / clear ──────────────────────────────────
+const SECRET_API = `${SOURCE_API}/secret`;
+
+function showSecretResult(msg, kind) {
+  const out = document.getElementById("secret-result");
+  out.className = "test-result " + (kind === "ok" ? "ok" : "err");
+  out.textContent = msg;
+}
+
+document.getElementById("set-secret-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("set-secret-btn");
+  const input = document.getElementById("set-vault-secret");
+  const value = input.value;
+  if (!value) { toast("Enter a secret value first", "error"); return; }
+  document.getElementById("secret-result").className = "test-result";
+  btn.disabled = true;
+  try {
+    const r = await fetch(SECRET_API, {
+      method: "PUT", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+    if (r.status === 204 || r.ok) {
+      input.value = "";  // never keep the plaintext around
+      toast("Vault secret saved", "success");
+      await loadSource();  // refresh has_vault_secret → status
+    } else {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      showSecretResult("Failed: " + detail, "err");
+      toast("Save failed: " + detail, "error");
+    }
+  } catch (e) {
+    showSecretResult("Failed: " + e.message, "err");
+    toast("Save failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("clear-secret-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("clear-secret-btn");
+  document.getElementById("secret-result").className = "test-result";
+  btn.disabled = true;
+  try {
+    const r = await fetch(SECRET_API, { method: "DELETE", credentials: "include" });
+    if (r.status === 204 || r.ok) {
+      document.getElementById("set-vault-secret").value = "";
+      toast("Vault secret cleared", "success");
+      await loadSource();
+    } else {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      showSecretResult("Failed: " + detail, "err");
+      toast("Clear failed: " + detail, "error");
+    }
+  } catch (e) {
+    showSecretResult("Failed: " + e.message, "err");
+    toast("Clear failed: " + e.message, "error");
   } finally {
     btn.disabled = false;
   }

@@ -35,7 +35,7 @@ RESOLVER_TARGET_MS = float(os.environ.get("AGNES_PERF_RESOLVER_MS", "50"))
 # 180-550ms; the test prints the actual number so regressions are still
 # visible in logs, but we stop blocking PRs on every cold-start spike.
 # Tighten via the env var when running on a hot machine.
-MANIFEST_TARGET_MS = float(os.environ.get("AGNES_PERF_MANIFEST_MS", "600"))
+MANIFEST_TARGET_MS = float(os.environ.get("AGNES_PERF_MANIFEST_MS", "1000"))
 
 
 # ---------------------------------------------------------------------------

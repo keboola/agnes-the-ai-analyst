@@ -41,7 +41,11 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from app.secrets_vault import SharedSecretsRepository
+from app.secrets_vault import (
+    PerUserSecretsRepository,
+    SharedSecretsRepository,
+    VaultKeyNotConfiguredError,
+)
 from connectors.mcp import classifier as mcp_classifier
 from connectors.mcp import extractor as mcp_extractor
 from src.repositories import mcp_sources_repo, tool_registry_repo
@@ -236,8 +240,15 @@ def _audit(
         logger.warning("audit log failed for %s/%s", action, resource)
 
 
-def _serialize_source(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Project a ``mcp_sources`` row to the API shape (timestamps as ISO)."""
+def _serialize_source(
+    row: Dict[str, Any], *, has_vault_secret: bool = False
+) -> Dict[str, Any]:
+    """Project a ``mcp_sources`` row to the API shape (timestamps as ISO).
+
+    ``has_vault_secret`` is a write-only-secret status flag — True iff a
+    vault-stored secret exists for this source (the value is never read
+    back into the API).
+    """
     return {
         "id": row.get("id"),
         "name": row.get("name"),
@@ -250,6 +261,7 @@ def _serialize_source(row: Dict[str, Any]) -> Dict[str, Any]:
         "auth_secret_env": row.get("auth_secret_env"),
         "enabled": bool(row.get("enabled")) if row.get("enabled") is not None else True,
         "scope": row.get("scope") or "shared",
+        "has_vault_secret": has_vault_secret,
         "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
         "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
     }
@@ -392,7 +404,10 @@ async def list_mcp_sources(
 ):
     repo = mcp_sources_repo()
     rows = repo.list_all(enabled_only=enabled_only)
-    return [_serialize_source(r) for r in rows]
+    secrets = SharedSecretsRepository(conn)
+    return [
+        _serialize_source(r, has_vault_secret=secrets.has(r["id"])) for r in rows
+    ]
 
 
 @router.get("/mcp-sources/{source_id}")
@@ -408,7 +423,9 @@ async def get_mcp_source(
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     tools_repo = tool_registry_repo()
     tools = tools_repo.list_for_source(source_id)
-    out = _serialize_source(src)
+    out = _serialize_source(
+        src, has_vault_secret=SharedSecretsRepository(conn).has(source_id)
+    )
     out["tools"] = [_serialize_tool(t) for t in tools]
     return out
 
@@ -451,7 +468,13 @@ async def update_mcp_source(
         {"after": after},
         params_before={"before": before},
     )
-    return _serialize_source(fresh) if fresh else {"id": source_id}
+    return (
+        _serialize_source(
+            fresh, has_vault_secret=SharedSecretsRepository(conn).has(source_id)
+        )
+        if fresh
+        else {"id": source_id}
+    )
 
 
 @router.delete("/mcp-sources/{source_id}", status_code=204)
@@ -471,6 +494,12 @@ async def delete_mcp_source(
     tool_count = len(tool_repo.list_for_source(source_id))
     tool_repo.delete_for_source(source_id)
     src_repo.delete(source_id)
+    # Clean up vault secrets so a deleted source leaves no orphaned encrypted
+    # blobs — the shared secret plus any per-user rows. (Devin Review on #530.)
+    SharedSecretsRepository(conn).delete(source_id)
+    pu_secrets = PerUserSecretsRepository(conn)
+    for uid in pu_secrets.list_for_source(source_id):
+        pu_secrets.delete(source_id, uid)
     _audit(
         conn,
         user["id"],
@@ -509,7 +538,13 @@ async def set_mcp_source_secret(
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     if not body.value:
         raise HTTPException(status_code=400, detail="secret value required")
-    SharedSecretsRepository(conn).upsert(source_id, body.value)
+    try:
+        SharedSecretsRepository(conn).upsert(source_id, body.value)
+    except VaultKeyNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
+        ) from exc
     _audit(
         conn, user["id"], "mcp_source.secret.set",
         f"mcp_source:{source_id}", {},

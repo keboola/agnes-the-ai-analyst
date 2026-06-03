@@ -117,6 +117,21 @@ def test_my_secret_put_then_status_returns_yes(seeded_app):
     assert body["source_scope"] == "per_user"
 
 
+def test_my_secret_returns_409_without_vault_key(seeded_app, monkeypatch):
+    _seed_per_user_source()
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+    _reset_ephemeral_key_for_tests()
+    client = seeded_app["client"]
+    r = client.put(
+        "/api/mcp/sources/src_pu/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+        json={"value": "x"},
+    )
+    assert r.status_code == 409
+    assert "vault_key_not_configured" in r.json()["detail"]
+
+
 def test_my_secret_404_for_unknown_source(seeded_app):
     client = seeded_app["client"]
     r = client.put(
