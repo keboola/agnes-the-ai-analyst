@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+- Brand-green tints, focus rings, and shadows across the static CSS (`style-custom.css`, `home.css`, `dashboard.css`, `marketplace.css`, `activity_center.css`, `admin_access.css`) now derive from the `--ds-primary` theme token via `color-mix` instead of hardcoded green, so they follow the active theme (light/blue/dark). No visual change in the default theme. (#497)
+
 ## [0.61.0] — 2026-06-03
 
 ### Added
@@ -33,7 +36,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   - `docs/initial-workspace-override.md` cross-links to the new contract doc.
 
 ### Changed
-- Brand-green focus ring, button-hover shadows, and badge/flash/grant-row tints now derive from the `--ds-primary` theme token via `color-mix` instead of hardcoded green, so they follow the active theme (light/blue/dark). No visual change in the default theme. (#497)
 - Install-prompt renderer (`app/web/setup_instructions.py`) now sources connector content from the seed manifest + per-skill SKILL.md bodies instead of hardcoded Python strings (A1.2 of the connector-skills refactor).
   - `app/web/connector_prompts.py` retired and deleted. The asana / atlassian / gws prompts moved to `workspace/.claude/skills/connector-*/SKILL.md` inside the seed (operator IWT clone or bundled snapshot fallback). Adding a fourth connector now requires only a new `connector-X/SKILL.md` in the seed — no Agnes code change.
   - `resolve_lines()` / `render_setup_instructions()` accept `connector_manifest: list[ConnectorEntry]` instead of `connector_prompts: dict[str, str]`. `None` triggers a fresh `load_manifest()` call; `[]` intentionally renders no connectors step (was previously rehydrated silently).
