@@ -102,6 +102,7 @@ class CreateMCPSourceRequest(BaseModel):
     transport: str
     command: Optional[str] = None
     args: Optional[List[str]] = None
+    env: Optional[Dict[str, str]] = None
     url: Optional[str] = None
     auth_method: Optional[str] = None
     auth_secret_env: Optional[str] = None
@@ -131,6 +132,7 @@ class UpdateMCPSourceRequest(BaseModel):
     transport: Optional[str] = None
     command: Optional[str] = None
     args: Optional[List[str]] = None
+    env: Optional[Dict[str, str]] = None
     url: Optional[str] = None
     auth_method: Optional[str] = None
     auth_secret_env: Optional[str] = None
@@ -242,6 +244,7 @@ def _serialize_source(row: Dict[str, Any]) -> Dict[str, Any]:
         "transport": row.get("transport"),
         "command": row.get("command"),
         "args": row.get("args") or [],
+        "env": row.get("env") or {},
         "url": row.get("url"),
         "auth_method": row.get("auth_method"),
         "auth_secret_env": row.get("auth_secret_env"),
@@ -287,6 +290,7 @@ def _merge_source_patch(
         "transport": data.get("transport", existing.get("transport")),
         "command": data.get("command", existing.get("command")),
         "args": data.get("args", existing.get("args")),
+        "env": data.get("env", existing.get("env")),
         "url": data.get("url", existing.get("url")),
         "auth_method": data.get("auth_method", existing.get("auth_method")),
         "auth_secret_env": data.get(
@@ -358,6 +362,7 @@ async def create_mcp_source(
             transport=payload.transport,
             command=payload.command,
             args=payload.args,
+            env=payload.env,
             url=payload.url,
             auth_method=payload.auth_method,
             auth_secret_env=payload.auth_secret_env,
