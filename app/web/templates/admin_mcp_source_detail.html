@@ -267,6 +267,28 @@
     </div>
   </div>
 
+  <!-- Vault secret card -->
+  <div class="src-card">
+    <div class="src-card-head">
+      <h3>Vault secret</h3>
+      <span id="secret-status" style="font-size: 12px; color: var(--text-secondary, #6b7280);">…</span>
+    </div>
+    <div class="src-card-body">
+      <p style="margin: 0 0 12px; font-size: 13px; color: var(--text-secondary, #6b7280);">
+        Store this source's secret encrypted at rest in the vault — no host env var needed.
+        The value is write-only: it can be set, rotated, or cleared, but never read back.
+      </p>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <input id="set-vault-secret" type="password" autocomplete="new-password"
+               placeholder="Enter secret value to set or rotate"
+               style="flex:1; min-width:240px; padding:8px 11px; border:1px solid var(--border, #e5e7eb); border-radius:6px; font-size:13px; box-sizing:border-box;">
+        {{ ds.button('Set / rotate', variant='primary', id='set-secret-btn') }}
+        {{ ds.button('Clear', variant='danger', id='clear-secret-btn') }}
+      </div>
+      <div id="secret-result" class="test-result"></div>
+    </div>
+  </div>
+
   <!-- Discover / introspect card -->
   <div class="src-card">
     <div class="src-card-head">
@@ -387,6 +409,22 @@ function renderConfigSummary() {
   document.getElementById("cfg-auth-method").textContent = source.auth_method || "none";
   document.getElementById("cfg-auth-secret-env").textContent = source.auth_secret_env || "—";
   document.getElementById("cfg-enabled").textContent = (source.enabled === false) ? "no" : "yes";
+  renderSecretStatus();
+}
+
+function renderSecretStatus() {
+  const el = document.getElementById("secret-status");
+  if (!el || !source) return;
+  if (source.has_vault_secret) {
+    el.textContent = "🔒 Vault secret set";
+    el.style.color = "#166534";
+  } else if (source.auth_secret_env) {
+    el.textContent = `Host env var (legacy): ${source.auth_secret_env}`;
+    el.style.color = "var(--text-secondary, #6b7280)";
+  } else {
+    el.textContent = "No secret";
+    el.style.color = "var(--text-secondary, #6b7280)";
+  }
 }
 
 // ── Edit toggle ────────────────────────────────────────────────────────
@@ -493,6 +531,70 @@ document.getElementById("test-btn").addEventListener("click", async () => {
   } catch (e) {
     out.className = "test-result err";
     out.textContent = "Failed: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ── Vault secret set / rotate / clear ──────────────────────────────────
+const SECRET_API = `${SOURCE_API}/secret`;
+
+function showSecretResult(msg, kind) {
+  const out = document.getElementById("secret-result");
+  out.className = "test-result " + (kind === "ok" ? "ok" : "err");
+  out.textContent = msg;
+}
+
+document.getElementById("set-secret-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("set-secret-btn");
+  const input = document.getElementById("set-vault-secret");
+  const value = input.value;
+  if (!value) { toast("Enter a secret value first", "error"); return; }
+  document.getElementById("secret-result").className = "test-result";
+  btn.disabled = true;
+  try {
+    const r = await fetch(SECRET_API, {
+      method: "PUT", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+    if (r.status === 204 || r.ok) {
+      input.value = "";  // never keep the plaintext around
+      toast("Vault secret saved", "success");
+      await loadSource();  // refresh has_vault_secret → status
+    } else {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      showSecretResult("Failed: " + detail, "err");
+      toast("Save failed: " + detail, "error");
+    }
+  } catch (e) {
+    showSecretResult("Failed: " + e.message, "err");
+    toast("Save failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("clear-secret-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("clear-secret-btn");
+  document.getElementById("secret-result").className = "test-result";
+  btn.disabled = true;
+  try {
+    const r = await fetch(SECRET_API, { method: "DELETE", credentials: "include" });
+    if (r.status === 204 || r.ok) {
+      document.getElementById("set-vault-secret").value = "";
+      toast("Vault secret cleared", "success");
+      await loadSource();
+    } else {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      showSecretResult("Failed: " + detail, "err");
+      toast("Clear failed: " + detail, "error");
+    }
+  } catch (e) {
+    showSecretResult("Failed: " + e.message, "err");
+    toast("Clear failed: " + e.message, "error");
   } finally {
     btn.disabled = false;
   }
