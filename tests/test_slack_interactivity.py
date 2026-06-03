@@ -448,3 +448,85 @@ def test_on_new_session_non_owner_denied(monkeypatch):
     asyncio.run(inter._on_new_session(app, it))
     assert archived == []
     assert any("belongs to" in t or "only" in t.lower() for t in eph)
+
+
+def test_sink_emits_all_buttons_then_strips_on_cancelled(monkeypatch):
+    from services.slack_bot import sink as sink_mod, blocks
+
+    posts, updates = [], []
+    async def fake_post_blocks(ch, ts, text, bs):
+        posts.append((ch, ts, text, bs))
+        return "msg-1"
+    async def fake_update(ch, ts, text, bs):
+        updates.append((ch, ts, text, bs))
+    monkeypatch.setattr(sink_mod, "post_thread_reply_with_blocks", fake_post_blocks)
+    monkeypatch.setattr(sink_mod, "update_message", fake_update)
+
+    async def _run():
+        bridge = sink_mod.SlackSinkBridge(
+            channel="D1", thread_ts="1.1", chat_id="s1",
+            owner="a@example.com", web_base="https://host.example",
+        )
+        await bridge.send_json({"type": "assistant_message", "content": "thinking..."})
+        await bridge.send_json({"type": "cancelled"})
+        await bridge.close()
+
+    asyncio.run(_run())
+    assert len(posts) == 1
+    emitted = posts[0][3]
+    action_ids = [
+        e["action_id"]
+        for b in emitted if b["type"] == "actions"
+        for e in b["elements"] if "action_id" in e
+    ]
+    # Stop + New-session carry callbacks; Continue-on-web is a link (no action_id).
+    assert blocks.ACTION_STOP in action_ids
+    assert blocks.ACTION_NEW_SESSION in action_ids
+    has_link = any(
+        e.get("url", "").endswith("/chat?session=s1")
+        for b in emitted if b["type"] == "actions" for e in b["elements"]
+    )
+    assert has_link
+    # cancelled stripped the buttons via chat.update (blocks == []).
+    assert updates and updates[-1][1] == "msg-1" and updates[-1][3] == []
+
+
+def test_sink_strips_buttons_on_done(monkeypatch):
+    """Happy path: turn-end `done` frame strips the Stop button (primary
+    spec requirement 'removes it at turn end'). runner.py emits {'type':'done'}."""
+    from services.slack_bot import sink as sink_mod
+
+    updates = []
+    async def fake_post_blocks(ch, ts, text, bs):
+        return "msg-1"
+    async def fake_update(ch, ts, text, bs):
+        updates.append((ch, ts, text, bs))
+    monkeypatch.setattr(sink_mod, "post_thread_reply_with_blocks", fake_post_blocks)
+    monkeypatch.setattr(sink_mod, "update_message", fake_update)
+
+    async def _run():
+        bridge = sink_mod.SlackSinkBridge(
+            channel="D1", thread_ts="1.1", chat_id="s1", owner="a@example.com", web_base="",
+        )
+        await bridge.send_json({"type": "assistant_message", "content": "answer"})
+        await bridge.send_json({"type": "done"})
+        await bridge.close()
+
+    asyncio.run(_run())
+    assert updates == [("D1", "msg-1", "answer", [])]
+
+
+def test_sink_without_chat_id_keeps_plain_behavior(monkeypatch):
+    """Back-compat: no chat_id → plain send_thread_reply, no blocks."""
+    from services.slack_bot import sink as sink_mod
+    sent = []
+    async def fake_send(ch, ts, text): sent.append((ch, ts, text))
+    monkeypatch.setattr(sink_mod, "send_thread_reply", fake_send)
+
+    async def _run():
+        bridge = sink_mod.SlackSinkBridge(channel="D1", thread_ts="1.1")
+        await bridge.send_json({"type": "assistant_message", "content": "hello"})
+        await bridge.close()
+
+    asyncio.run(_run())
+    assert sent == [("D1", "1.1", "hello")]

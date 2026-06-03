@@ -299,6 +299,12 @@ def test_slack_dm_assistant_message_reaches_thread(monkeypatch):
 
     monkeypatch.setattr(ev, "send_thread_reply", fake_send)
     monkeypatch.setattr(sink_mod, "send_thread_reply", fake_send)
+    # Now that _handle_dm wires chat_id, the sink uses post_thread_reply_with_blocks
+    # for the first assistant turn. Capture those too.
+    async def fake_post_blocks(ch, ts, text, blocks):
+        sent.append((ch, ts, text))
+        return "msg-1"
+    monkeypatch.setattr(sink_mod, "post_thread_reply_with_blocks", fake_post_blocks)
     # Grant chat access — see note in the sibling bound-user test.
     import app.auth.access as _access
     monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
@@ -336,7 +342,7 @@ class TestSinkBridgeChatId:
         b1 = SlackSinkBridge(channel="C1", thread_ts="111.0", chat_id="sess_1")
         assert b1._chat_id == "sess_1"
         b2 = SlackSinkBridge(channel="C1", thread_ts="111.0")
-        assert b2._chat_id is None
+        assert not b2._chat_id  # empty string or None — no chat_id means no buttons
 
 
 class TestResolveBotUserId:

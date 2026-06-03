@@ -145,7 +145,11 @@ async def _handle_dm(app, event: dict) -> None:
     # The bridge forwards assistant_message frames to send_thread_reply so
     # the user actually sees the answer in Slack.
     if not _is_attached(mgr, session.id):
-        sink = SlackSinkBridge(channel=channel, thread_ts=thread_ts)
+        web_base = getattr(app.state, "public_url", "")
+        sink = SlackSinkBridge(
+            channel=channel, thread_ts=thread_ts,
+            chat_id=session.id, owner=user_email, web_base=web_base,
+        )
         _schedule(mgr.attach(session.id, sink))
         # Give attach() a beat to set up the pump and emit `ready` before
         # we feed the user message into the runner stdin.
