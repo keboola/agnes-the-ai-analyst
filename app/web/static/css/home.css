@@ -245,7 +245,7 @@
 }
 .home-mock a.what-is-item:hover {
     border-color: var(--ds-primary);
-    box-shadow: 0 4px 12px rgba(46, 168, 119, 0.14);
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--ds-primary) 14%, transparent);
     transform: translateY(-1px);
 }
 .home-mock .what-is-item .ico { font-size: 22px; margin-bottom: 8px; display: block; }
@@ -1335,7 +1335,7 @@
     place-items: center;
     font-weight: 700;
     font-size: 16px;
-    box-shadow: 0 2px 6px rgba(46, 168, 119, 0.25);
+    box-shadow: 0 2px 6px color-mix(in srgb, var(--ds-primary) 25%, transparent);
     flex-shrink: 0;
 }
 .home-mock .session-content { min-width: 0; }
@@ -1547,7 +1547,7 @@
 .home-mock .surface-card .what code {
     background: var(--ds-primary-light);
     color: var(--ds-primary-dark);
-    border: 1px solid rgba(46, 168, 119, 0.30);
+    border: 1px solid color-mix(in srgb, var(--ds-primary) 30%, transparent);
     padding: 1px 6px;
     border-radius: 4px;
     font-family: var(--ds-font-mono);
@@ -1674,7 +1674,7 @@
 .home-mock .surface-card .steps code {
     background: var(--ds-primary-light);
     color: var(--ds-primary-dark);
-    border: 1px solid rgba(46, 168, 119, 0.30);
+    border: 1px solid color-mix(in srgb, var(--ds-primary) 30%, transparent);
     padding: 1px 5px;
     border-radius: 4px;
     font-family: var(--ds-font-mono);
@@ -1950,7 +1950,7 @@
 .home-mock .install-hero a {
     color: var(--ds-primary);
     text-decoration: underline;
-    text-decoration-color: rgba(46, 168, 119, 0.4);
+    text-decoration-color: color-mix(in srgb, var(--ds-primary) 40%, transparent);
 }
 .home-mock .install-hero a:hover,
 .home-mock .install-hero a:focus {
@@ -1963,7 +1963,7 @@
 .home-mock .install-note > code {
     background: var(--ds-primary-light);
     color: var(--ds-primary-dark);
-    border-color: rgba(46, 168, 119, 0.30);
+    border-color: color-mix(in srgb, var(--ds-primary) 30%, transparent);
 }
 /* Setup-meta chips on light bg — primary chip uses brand-light pill,
    secondary chips lose the white-on-dark treatment for ink-muted. */
@@ -2032,7 +2032,7 @@
 .home-mock .install-block .step-lede code {
     background: var(--ds-primary-light);
     color: var(--ds-primary-dark);
-    border: 1px solid rgba(46, 168, 119, 0.30);
+    border: 1px solid color-mix(in srgb, var(--ds-primary) 30%, transparent);
     padding: 1px 6px;
     border-radius: 4px;
     font-family: var(--ds-font-mono);
@@ -2231,11 +2231,11 @@
 .home-mock .auto-detect-badge {
     background: var(--ds-primary-light);
     color: var(--ds-primary-dark);
-    border: 1px solid rgba(46, 168, 119, 0.30);
+    border: 1px solid color-mix(in srgb, var(--ds-primary) 30%, transparent);
 }
 .home-mock .auto-detect-badge .pulse { background: var(--ds-primary); }
 .home-mock .auto-detect-badge code {
-    background: rgba(46, 168, 119, 0.18);
+    background: color-mix(in srgb, var(--ds-primary) 18%, transparent);
     color: var(--ds-primary-dark);
 }
 /* Terminal-howto disclosure — blue info-hint box matching the design's
