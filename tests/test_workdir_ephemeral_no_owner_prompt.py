@@ -94,3 +94,6 @@ def test_ephemeral_dir_uses_static_codrive_header(tmp_path):
     )
     claude_md = (session_dir / "CLAUDE.md").read_text()
     assert "Co-drive session" in claude_md
+    # SR-6: the ephemeral co-session dir must NEVER carry a personal
+    # CLAUDE.local.md (unlike regular per-user sessions, which symlink it).
+    assert not (session_dir / "CLAUDE.local.md").exists()

@@ -166,8 +166,17 @@ class WorkdirManager:
 
     def prepare_session_dir(
         self, user_email: str, chat_id: str,
-        *, include_personal_override: bool = False,
+        *, include_personal_override: bool = True,
     ) -> Path:
+        """Prepare a regular per-user session directory.
+
+        By default (``include_personal_override=True``) the user's personal
+        ``CLAUDE.local.md`` is symlinked into the session dir alongside the
+        shared workspace state, so regular per-user sessions carry the
+        analyst's personal overrides. Co-drive sessions never call this
+        method — they use :meth:`prepare_ephemeral_session_dir`, which
+        deliberately excludes ``CLAUDE.local.md`` (SR-6 protection).
+        """
         sessions_root = self.user_sessions_root(user_email)
         sessions_root.mkdir(parents=True, exist_ok=True)
         sdir = sessions_root / chat_id
