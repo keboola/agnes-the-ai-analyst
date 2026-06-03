@@ -19,18 +19,22 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-import duckdb
 import pytest
 
 
 def _make_duckdb_repos(tmp_path):
+    # Route through `_open_duckdb` (rather than bare `duckdb.connect`) so
+    # the session timezone is pinned to UTC — `tests/test_duckdb_session_tz.py`
+    # `test_no_bare_duckdb_connect_in_production_code` regression guard
+    # catches any new bare connect in `tests/db_pg/`.
     from src.db import _ensure_schema
+    from src.duckdb_conn import _open_duckdb
     from src.repositories.marketplace_plugins import (
         MarketplacePluginsRepository,
     )
     from src.repositories.user_groups import UserGroupsRepository
 
-    conn = duckdb.connect(str(tmp_path / "duck.duckdb"))
+    conn = _open_duckdb(str(tmp_path / "duck.duckdb"))
     _ensure_schema(conn)
     return {
         "plugins": MarketplacePluginsRepository(conn),
