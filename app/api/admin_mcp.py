@@ -236,8 +236,15 @@ def _audit(
         logger.warning("audit log failed for %s/%s", action, resource)
 
 
-def _serialize_source(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Project a ``mcp_sources`` row to the API shape (timestamps as ISO)."""
+def _serialize_source(
+    row: Dict[str, Any], *, has_vault_secret: bool = False
+) -> Dict[str, Any]:
+    """Project a ``mcp_sources`` row to the API shape (timestamps as ISO).
+
+    ``has_vault_secret`` is a write-only-secret status flag — True iff a
+    vault-stored secret exists for this source (the value is never read
+    back into the API).
+    """
     return {
         "id": row.get("id"),
         "name": row.get("name"),
@@ -250,6 +257,7 @@ def _serialize_source(row: Dict[str, Any]) -> Dict[str, Any]:
         "auth_secret_env": row.get("auth_secret_env"),
         "enabled": bool(row.get("enabled")) if row.get("enabled") is not None else True,
         "scope": row.get("scope") or "shared",
+        "has_vault_secret": has_vault_secret,
         "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
         "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
     }
@@ -392,7 +400,10 @@ async def list_mcp_sources(
 ):
     repo = mcp_sources_repo()
     rows = repo.list_all(enabled_only=enabled_only)
-    return [_serialize_source(r) for r in rows]
+    secrets = SharedSecretsRepository(conn)
+    return [
+        _serialize_source(r, has_vault_secret=secrets.has(r["id"])) for r in rows
+    ]
 
 
 @router.get("/mcp-sources/{source_id}")
@@ -408,7 +419,9 @@ async def get_mcp_source(
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     tools_repo = tool_registry_repo()
     tools = tools_repo.list_for_source(source_id)
-    out = _serialize_source(src)
+    out = _serialize_source(
+        src, has_vault_secret=SharedSecretsRepository(conn).has(source_id)
+    )
     out["tools"] = [_serialize_tool(t) for t in tools]
     return out
 
@@ -451,7 +464,13 @@ async def update_mcp_source(
         {"after": after},
         params_before={"before": before},
     )
-    return _serialize_source(fresh) if fresh else {"id": source_id}
+    return (
+        _serialize_source(
+            fresh, has_vault_secret=SharedSecretsRepository(conn).has(source_id)
+        )
+        if fresh
+        else {"id": source_id}
+    )
 
 
 @router.delete("/mcp-sources/{source_id}", status_code=204)
