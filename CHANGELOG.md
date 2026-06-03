@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- The configured instance logo (`AGNES_INSTANCE_LOGO_SVG` env > `instance.logo_svg` YAML) now renders on the `/login` Sign In card, above the heading — previously the logo only surfaced in the app header. Empty default keeps the OSS vendor-neutral: no logo renders unless an operator sets one.
+
 ## [0.61.0] — 2026-06-03
 
 ### Added
