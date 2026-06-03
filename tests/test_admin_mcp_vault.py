@@ -116,6 +116,119 @@ def test_delete_clears_vault(seeded_app):
         conn.close()
 
 
+def test_delete_source_also_clears_vault_secret(seeded_app):
+    """Deleting the SOURCE must not leave an orphaned encrypted secret row."""
+    _seed_source()
+    client = seeded_app["client"]
+    hdr = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+    client.put("/api/admin/mcp-sources/src_v/secret", headers=hdr, json={"value": "orphan-me"})
+    conn = get_system_db()
+    try:
+        assert SharedSecretsRepository(conn).has("src_v") is True
+    finally:
+        conn.close()
+
+    r = client.delete("/api/admin/mcp-sources/src_v", headers=hdr)
+    assert r.status_code == 204
+
+    conn = get_system_db()
+    try:
+        assert SharedSecretsRepository(conn).has("src_v") is False
+    finally:
+        conn.close()
+
+
+def test_health_reports_vault_key_configured(seeded_app, monkeypatch):
+    from cryptography.fernet import Fernet
+    client = seeded_app["client"]
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+    assert client.get("/api/health").json()["vault_key_configured"] is True
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    assert client.get("/api/health").json()["vault_key_configured"] is False
+
+
+def test_set_secret_returns_409_without_vault_key(seeded_app, monkeypatch):
+    _seed_source()
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+    _reset_ephemeral_key_for_tests()
+    client = seeded_app["client"]
+    r = client.put(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        json={"value": "x"},
+    )
+    assert r.status_code == 409
+    assert "vault_key_not_configured" in r.json()["detail"]
+
+
+def test_encrypt_secret_blocked_without_key_in_prod(monkeypatch):
+    import app.secrets_vault as v
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+    v._reset_ephemeral_key_for_tests()
+    assert v.vault_key_configured() is False
+    with pytest.raises(v.VaultKeyNotConfiguredError):
+        v.encrypt_secret("s3cr3t")
+
+
+def test_encrypt_secret_allowed_in_local_dev_without_key(monkeypatch):
+    import app.secrets_vault as v
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_DEV_MODE", "1")
+    v._reset_ephemeral_key_for_tests()
+    token = v.encrypt_secret("s3cr3t")           # ephemeral OK in local dev
+    assert v.decrypt_secret(token) == "s3cr3t"
+
+
+def test_encrypt_secret_allowed_with_key(monkeypatch):
+    import app.secrets_vault as v
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+    monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+    v._reset_ephemeral_key_for_tests()
+    assert v.vault_key_configured() is True
+    assert v.decrypt_secret(v.encrypt_secret("s3cr3t")) == "s3cr3t"
+
+
+def test_source_serialization_includes_has_vault_secret(seeded_app):
+    _seed_source()
+    client = seeded_app["client"]
+    headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+    # before: no vault secret
+    assert (
+        client.get("/api/admin/mcp-sources/src_v", headers=headers).json()[
+            "has_vault_secret"
+        ]
+        is False
+    )
+    client.put(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers=headers,
+        json={"value": "tok"},
+    )
+    assert (
+        client.get("/api/admin/mcp-sources/src_v", headers=headers).json()[
+            "has_vault_secret"
+        ]
+        is True
+    )
+
+
+def test_list_includes_has_vault_secret(seeded_app):
+    _seed_source()
+    client = seeded_app["client"]
+    headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+    client.put(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers=headers,
+        json={"value": "tok"},
+    )
+    rows = client.get("/api/admin/mcp-sources", headers=headers).json()
+    row = next(r for r in rows if r["id"] == "src_v")
+    assert row["has_vault_secret"] is True
+
+
 def test_client_lookup_uses_vault_over_env(seeded_app, monkeypatch):
     """connectors/mcp/client._lookup_secret_for_source should prefer the
     vault row over the env-var named in auth_secret_env."""

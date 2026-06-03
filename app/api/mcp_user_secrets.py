@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.dependencies import _get_db, get_current_user
-from app.secrets_vault import PerUserSecretsRepository
+from app.secrets_vault import PerUserSecretsRepository, VaultKeyNotConfiguredError
 from src.repositories.mcp_sources import MCPSourceRepository
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,13 @@ async def set_my_secret(
     src_repo = MCPSourceRepository(conn)
     if not src_repo.get(source_id):
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
-    PerUserSecretsRepository(conn).upsert(source_id, user["id"], body.value)
+    try:
+        PerUserSecretsRepository(conn).upsert(source_id, user["id"], body.value)
+    except VaultKeyNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
+        ) from exc
 
 
 @router.delete("/{source_id}/my-secret", status_code=204)

@@ -48,7 +48,13 @@ def test_encrypt_decrypt_round_trip_with_env_key(monkeypatch):
 
 
 def test_encrypt_decrypt_round_trip_with_ephemeral_key(monkeypatch):
+    # The ephemeral key is now a LOCAL_DEV_MODE-only convenience — storing a
+    # secret with no AGNES_VAULT_KEY outside local dev is refused (it would be
+    # lost on restart). Under LOCAL_DEV_MODE the ephemeral round-trip still works.
     monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_DEV_MODE", "1")
+    import app.secrets_vault as _v
+    _v._reset_ephemeral_key_for_tests()
     token = encrypt_secret("hunter2")
     assert decrypt_secret(token) == "hunter2"
 
