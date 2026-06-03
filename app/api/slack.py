@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
-from services.slack_bot.events import dispatch_event
+from services.slack_bot.events import _run_logged, _schedule, dispatch_event
 from services.slack_bot.sigverify import verify_slack_signature
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,13 @@ async def slack_events(request: Request):
     if payload.get("type") == "url_verification":
         return {"challenge": payload["challenge"]}
     if payload.get("type") == "event_callback":
-        await dispatch_event(request.app, payload["event"])
+        # Ack-then-async: schedule the (slow, E2B-spawning) dispatch and
+        # return the 200 immediately so Slack's 3s budget is never blown.
+        # A failure inside the detached task is handled by _run_logged, not
+        # by a Slack retry (we already acked). The DM handler emits its own
+        # binding/error replies inline, so no top-level on_failure is needed
+        # here (the recovery seam is used by later, context-bearing phases).
+        _schedule(_run_logged(dispatch_event(request.app, payload["event"])))
         return {"ok": True}
     return {"ok": True}
 
