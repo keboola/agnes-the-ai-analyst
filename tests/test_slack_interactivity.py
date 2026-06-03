@@ -223,3 +223,47 @@ def test_respond_via_response_url_posts_body(monkeypatch):
     url, body = cap["client"].calls[0]
     assert url == "https://hooks.example/r"
     assert body == {"delete_original": True}
+
+
+def _block_actions_payload(action_id, value, *, user="U1", channel="C1", response_url="https://r"):
+    return {
+        "type": "block_actions",
+        "user": {"id": user},
+        "channel": {"id": channel},
+        "response_url": response_url,
+        "actions": [{"action_id": action_id, "value": value}],
+    }
+
+
+def test_parse_interaction_extracts_first_action():
+    from services.slack_bot import interactivity as inter, blocks
+    payload = _block_actions_payload(blocks.ACTION_STOP, blocks.encode_value({"chat_id": "s1"}))
+    it = inter.parse_interaction(payload)
+    assert it.action_id == blocks.ACTION_STOP
+    assert it.slack_user_id == "U1"
+    assert it.channel_id == "C1"
+    assert it.response_url == "https://r"
+    assert it.value == {"chat_id": "s1"}
+
+
+def test_parse_interaction_no_actions_yields_empty_action_id():
+    from services.slack_bot import interactivity as inter
+    it = inter.parse_interaction({"type": "block_actions", "user": {"id": "U1"}, "actions": []})
+    assert it.action_id == ""
+    assert it.value == {}
+
+
+def test_dispatch_routes_on_action_id(monkeypatch):
+    from services.slack_bot import interactivity as inter, blocks
+    seen = []
+    async def fake_stop(app, it): seen.append(("stop", it.action_id))
+    monkeypatch.setattr(inter, "_on_stop", fake_stop)
+    it = inter.parse_interaction(_block_actions_payload(blocks.ACTION_STOP, blocks.encode_value({})))
+    asyncio.run(inter.dispatch_interaction(object(), it))
+    assert seen == [("stop", blocks.ACTION_STOP)]
+
+
+def test_dispatch_unknown_action_is_noop():
+    from services.slack_bot import interactivity as inter
+    it = inter.parse_interaction(_block_actions_payload("agnes_unknown", "{}"))
+    asyncio.run(inter.dispatch_interaction(object(), it))  # no raise
