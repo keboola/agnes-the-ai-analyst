@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.61.0] — 2026-06-03
+
 ### Added
 - Seed-driven connector framework foundation (A1.1 of the connector-skills refactor).
   - `src/_bundled_seed/` snapshot of the OSS workspace seed ships inside the wheel and serves as the fallback when no Initial Workspace Template is configured. Resolution chain: operator IWT clone first, bundled snapshot second.
@@ -98,6 +100,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
     (`resource_grants.fanout_system_for_group` was reviewed and left as-is:
   insert-only / idempotent, and the PG sibling is likewise per-insert — no
   drop-to-empty window.)
+- **Dependency bumps (4 Dependabot PRs consolidated):**
+  - `actions/checkout` v4 → v6 (Node 24 runtime, no behaviour change for our usage). Supersedes #500.
+  - `actions/setup-python` v5 → v6 (Node 24 runtime; requires GHA runner ≥ v2.327.1 — GitHub-hosted `ubuntu-latest` is well past). Supersedes #502.
+  - `google-github-actions/auth` v2 → v3 (used in `release.yml` for the Artifact Registry mirror auth step). Supersedes #501.
+  - `e2b` Python lib upper-bound widened from `<2.0.0` to `<3.0.0` (lets the resolver pick up the v2 line as the e2b SDK ships it; runtime API surface that `app/chat/e2b_provider.py` uses is unchanged). Supersedes #503.
 
 ## [0.60.0] — 2026-06-02
 
