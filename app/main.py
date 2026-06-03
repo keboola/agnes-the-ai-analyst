@@ -735,11 +735,13 @@ async def lifespan(app):
     # --- end CHAT-INIT -------------------------------------------------------
 
     # --- SLACK SOCKET MODE (optional inbound transport) ----------------------
+    # Boot-safety boundary: a Slack misconfig (bad transport value, preflight
+    # raising, etc.) must NEVER crash app startup. The helper self-guards
+    # start(); this covers everything before it.
     try:
         await _start_slack_socket_transport(app)
     except Exception:
         logger.exception("Slack Socket Mode wiring failed (non-fatal)")
-        app.state.slack_socket_dispatcher = None
     # --- end SLACK SOCKET MODE -----------------------------------------------
 
     yield
