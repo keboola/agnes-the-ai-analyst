@@ -1,0 +1,5 @@
+{
+  "name": "revenue-explorer",
+  "version": "1.0.0",
+  "description": "Answer revenue questions over the demo orders dataset — no SQL required."
+}

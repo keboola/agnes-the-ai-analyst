@@ -1,0 +1,20 @@
+{
+  "name": "demo",
+  "owner": {
+    "name": "Demo Marketplace"
+  },
+  "plugins": [
+    {
+      "name": "revenue-explorer",
+      "version": "1.0.0",
+      "description": "Answer revenue questions over the demo orders dataset — no SQL required.",
+      "source": "./plugins/revenue-explorer"
+    },
+    {
+      "name": "cohort-helper",
+      "version": "1.0.0",
+      "description": "Group demo customers into cohorts and track repeat purchases.",
+      "source": "./plugins/cohort-helper"
+    }
+  ]
+}

@@ -23,3 +23,25 @@ def test_data_package_fixture_valid():
 def test_marketplace_metadata_present():
     md = ROOT / "marketplace" / ".claude-plugin" / "marketplace-metadata.json"
     assert json.loads(md.read_text())["plugins"]
+
+
+def test_marketplace_manifest_present_and_matches_enrichment():
+    """The authoritative Claude Code manifest must exist with a non-empty
+    ``plugins`` array, and its plugin names must match the enrichment file's
+    plugin keys. ``read_plugins`` reads only this file — a missing/empty
+    manifest serves zero plugins regardless of the enrichment metadata.
+    """
+    cp = ROOT / "marketplace" / ".claude-plugin"
+    manifest = json.loads((cp / "marketplace.json").read_text())
+    plugins = manifest["plugins"]
+    assert isinstance(plugins, list) and plugins
+    manifest_names = {p["name"] for p in plugins}
+
+    enrichment = json.loads((cp / "marketplace-metadata.json").read_text())
+    assert manifest_names == set(enrichment["plugins"].keys())
+
+    # Every plugin's source dir must exist on disk so the served plugin
+    # resolves to real content.
+    for p in plugins:
+        src_rel = p["source"].lstrip("./")
+        assert (ROOT / "marketplace" / src_rel).is_dir()
