@@ -29,6 +29,8 @@ fallback solved a problem we don't have.
 from __future__ import annotations
 
 import logging
+import os
+import time
 from typing import Optional
 
 import duckdb
@@ -141,6 +143,40 @@ def can_access(
     )
 
 
+def has_explicit_grant(
+    user_id: str,
+    resource_type: str,
+    resource_id: str,
+    conn: duckdb.DuckDBPyConnection,
+) -> bool:
+    """True iff one of the user's groups holds an explicit ``resource_grant``
+    for ``(resource_type, resource_id)``.
+
+    Unlike :func:`can_access`, this does **not** short-circuit for the Admin
+    god-mode group and does **not** apply internal-table implicit grants — it
+    reports only what was explicitly granted to a group the user belongs to.
+
+    Use it for UI affordances that should reflect actual rollout state rather
+    than *effective* access: e.g. hiding the cloud-chat nav link until chat is
+    granted to a group, even for admins (who can still reach the page by URL,
+    since the route guard uses :func:`can_access` and admins keep god-mode
+    there). Never use it as a security gate — that is :func:`can_access`'s job.
+    """
+    group_ids = _user_group_ids(user_id, conn)
+    if not group_ids:
+        return False
+    placeholders = ",".join(["?"] * len(group_ids))
+    row = conn.execute(
+        f"""SELECT 1 FROM resource_grants
+            WHERE group_id IN ({placeholders})
+              AND resource_type = ?
+              AND resource_id = ?
+            LIMIT 1""",
+        [*group_ids, resource_type, resource_id],
+    ).fetchone()
+    return row is not None
+
+
 # ---------------------------------------------------------------------------
 # FastAPI dependencies
 # ---------------------------------------------------------------------------
@@ -215,3 +251,46 @@ def require_resource_access(
         return user
 
     return dep
+
+
+def mint_session_jwt(user_email: str, chat_id: str, *, ttl_seconds: int = 3600) -> str:
+    """Mint a short-lived service JWT scoped to one chat session.
+
+    Used by ChatManager._spawn_runner to inject AGNES_TOKEN into the
+    subprocess env. The token is verified by the existing get_current_user
+    dependency (app/auth/pat_resolver.py calls UserRepository.get_by_id on
+    the ``sub`` claim), so ``sub`` MUST be the user's UUID — not the email.
+
+    Secret is read from the ``JWT_SECRET_KEY`` environment variable —
+    the same key used by the rest of the auth layer (see app/auth/jwt.py).
+    """
+    import jwt  # PyJWT — already a project dependency
+    from src.db import get_system_db
+    from src.repositories.users import UserRepository
+
+    conn = get_system_db()
+    try:
+        row = UserRepository(conn).get_by_email(user_email)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    if not row:
+        raise ValueError(f"mint_session_jwt: user not found: {user_email!r}")
+    user_id = row["id"]
+
+    now = int(time.time())
+    payload = {
+        "sub": user_id,
+        "iat": now,
+        "exp": now + ttl_seconds,
+        "scope": "chat",
+        "chat_session_id": chat_id,
+        "email": user_email,
+    }
+    secret = os.environ.get(
+        "JWT_SECRET_KEY",
+        "test-jwt-secret-key-minimum-32-chars!!",
+    )
+    return jwt.encode(payload, secret, algorithm="HS256")

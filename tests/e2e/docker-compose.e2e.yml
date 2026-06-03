@@ -1,0 +1,49 @@
+# docker-compose.e2e.yml — Linux Agnes server for the cloud-chat E2E suite.
+# Brought up by the `e2e_agnes` fixture in conftest.py and by
+# .github/workflows/e2e-e2b.yml.
+#
+# Under the E2B-provider model this is just a plain FastAPI app — no
+# NET_ADMIN cap, no nsjail build chain, no host-uid mapping. Chat
+# sandboxes run in E2B's cloud microVMs, not on this host.
+#
+# Usage:
+#   ANTHROPIC_API_KEY=sk-ant-... E2B_API_KEY=sk-e2b-... \
+#     docker compose -f tests/e2e/docker-compose.e2e.yml up --build
+# Tear down:
+#   docker compose -f tests/e2e/docker-compose.e2e.yml down -v
+
+services:
+  agnes:
+    build:
+      # Build context is repo root so the COPY in Dockerfile.e2e picks up
+      # the full source tree.
+      context: ../..
+      dockerfile: tests/e2e/Dockerfile.e2e
+    environment:
+      # 32+ chars — required by the production JWT secret check.
+      JWT_SECRET_KEY: "e2e-secret-at-least-32-chars-long-aaaa"
+      # Anthropic key — runner calls Anthropic directly from inside the
+      # E2B microVM. Container fails fast if the host doesn't export it.
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY before running E2E}"
+      # E2B account key — Agnes mints sandboxes via the SDK against this
+      # account. The smoke suite that actually spawns sandboxes also
+      # gates on AGNES_E2E_E2B=1 on the host.
+      E2B_API_KEY: "${E2B_API_KEY:-}"
+      # The in-sandbox `agnes` CLI calls the Agnes REST API at this URL.
+      AGNES_INTERNAL_URL: "http://localhost:8000"
+      # Optional: set AGNES_E2E_FAKE_AGENT=1 on the host to flip the
+      # runner into deterministic-echo mode (no Anthropic dependency).
+      AGNES_RUNNER_FAKE_AGENT: "${AGNES_E2E_FAKE_AGENT:-}"
+      DATA_DIR: "/data"
+    ports:
+      - "8000:8000"
+    volumes:
+      - agnes_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+
+volumes:
+  agnes_data:

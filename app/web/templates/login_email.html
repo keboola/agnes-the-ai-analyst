@@ -1,13 +1,11 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 
 {% block title %}Sign in with Email - Data Analyst Portal{% endblock %}
 
 {% block content %}
-{# Design-system component macros — Sign In, Forgot Password, Request
-   Access, and the Google OAuth button all render via `ds.button`.
-   The `.auth-tabs` tab strip stays page-local (heavier login-page
-   variant; system.md flags it as a future `.tab-strip--heavy`). #}
-{% import "_components.html" as ds %}
+{# Sign In / Forgot Password / Request Access / Google OAuth render via
+   `ds.button` (auto-imported by base_ds). The `.auth-tabs` tab strip stays
+   page-local (heavier login-page variant). #}
 <div class="login-container">
     <div class="login-card">
         <h2>External User Access</h2>

@@ -1,12 +1,7 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}Submission {{ sub.id[:8] }} — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{# Design-system component macros — 5 detail-page action buttons
-   (Override+publish / Rescan / Download bundle / Retry LLM / Delete)
-   render via `ds.button`. Page-local chrome (.det-back, .badge status
-   pills, dl/dd metadata grid) stays as-is. #}
-{% import "_components.html" as ds %}
+{% block head_extra %}
 <style>
   /* Width + padding come from .page-shell (style-custom.css) — same
      1280px container as /dashboard, /marketplace, /admin/* peers. */
@@ -114,8 +109,12 @@
 
 
 </style>
+{% endblock %}
 
-<div class="det-page page-shell">
+{% block content %}
+{# 5 detail-page action buttons render via `ds.button` (auto-imported by
+   base_ds). Page-local chrome (.det-back, .badge pills, dl/dd grid) stays. #}
+<div class="det-page">
   <a class="det-back" href="/admin/store/submissions">← Back to all submissions</a>
 
   {% if sub.status in ['pending_inline','pending_llm'] %}

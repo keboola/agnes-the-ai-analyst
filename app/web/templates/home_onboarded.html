@@ -1,15 +1,9 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 
 {% block title %}Home — {{ instance_name or "AI Data Analyst" }}{% endblock %}
 
-{% block content %}
+{% block head_extra %}
 {% include "_page_chrome.html" %}
-{# Design-system component macros — quick-card grid renders via
-   `ds.panel(href=..., klass='quick-card')`. Note: per router.py this
-   template is a kept fallback; the /home route always serves
-   home_not_onboarded.html. The conversion still has value as a clean
-   example of the panel-as-link pattern. #}
-{% import "_components.html" as ds %}
 <style>
 .home-mock {
     /* Design-system scope — tokens live globally in
@@ -112,7 +106,12 @@
     line-height: 1.55;
 }
 </style>
+{% endblock %}
 
+{% block content %}
+{# quick-card grid renders via `ds.panel(href=..., klass='quick-card')`
+   (ds auto-imported by base_ds). Per router.py this template is a kept
+   fallback; /home serves home_not_onboarded.html. #}
 <div class="home-mock">
     {% set display_name = (user.name or (user.email or "").split("@")[0] or "back") %}
 

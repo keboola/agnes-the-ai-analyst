@@ -130,33 +130,62 @@ class ResourceGrantsPgRepository:
         resource_type: str,
         resource_id: str,
         assigned_by: Optional[str] = None,
+        requirement: Optional[str] = None,
     ) -> str:
+        """Insert a new grant. Returns the assigned id.
+
+        ``requirement`` defaults to the column default (``'available'``) when
+        ``None``. Pass ``'required'`` to create a Required-tier grant in a
+        single round-trip (parity with the DuckDB repo). Rejected if it is
+        anything other than the two enum values.
+        """
+        if requirement is not None and requirement not in ("available", "required"):
+            raise ValueError(
+                f"requirement must be 'available' or 'required', got {requirement!r}"
+            )
         grant_id = str(uuid4())
         per_type_col = _PER_TYPE_COLUMN.get(resource_type)
+
+        cols = ["id", "group_id", "resource_type", "resource_id"]
+        vals = [":id", ":gid", ":rtype", ":rid"]
+        params: Dict[str, Any] = {
+            "id": grant_id, "gid": group_id, "rtype": resource_type,
+            "rid": resource_id, "ab": assigned_by,
+        }
         if per_type_col:
-            sql = sa.text(
-                f"""INSERT INTO resource_grants
-                   (id, group_id, resource_type, resource_id, {per_type_col}, assigned_by)
-                   VALUES (:id, :gid, :rtype, :rid, :rid, :ab)"""
-            )
-        else:
-            sql = sa.text(
-                """INSERT INTO resource_grants
-                   (id, group_id, resource_type, resource_id, assigned_by)
-                   VALUES (:id, :gid, :rtype, :rid, :ab)"""
+            cols.append(per_type_col); vals.append(":rid")
+        cols.append("assigned_by"); vals.append(":ab")
+        if requirement is not None:
+            cols.append("requirement"); vals.append(":req"); params["req"] = requirement
+
+        sql = sa.text(
+            f"INSERT INTO resource_grants ({', '.join(cols)}) VALUES ({', '.join(vals)})"
+        )
+        with self._engine.begin() as conn:
+            conn.execute(sql, params)
+        return grant_id
+
+    def update_requirement(self, grant_id: str, requirement: str) -> Optional[str]:
+        """Update the ``requirement`` enum on a grant. Returns the prior value
+        (None if the grant is missing) so callers can detect transitions
+        (parity with the DuckDB repo).
+        """
+        if requirement not in ("available", "required"):
+            raise ValueError(
+                f"requirement must be 'available' or 'required', got {requirement!r}"
             )
         with self._engine.begin() as conn:
+            before = conn.execute(
+                sa.text("SELECT requirement FROM resource_grants WHERE id = :id"),
+                {"id": grant_id},
+            ).first()
+            if before is None:
+                return None
             conn.execute(
-                sql,
-                {
-                    "id": grant_id,
-                    "gid": group_id,
-                    "rtype": resource_type,
-                    "rid": resource_id,
-                    "ab": assigned_by,
-                },
+                sa.text("UPDATE resource_grants SET requirement = :req WHERE id = :id"),
+                {"req": requirement, "id": grant_id},
             )
-        return grant_id
+        return before[0]
 
     def delete(self, grant_id: str) -> bool:
         with self._engine.begin() as conn:

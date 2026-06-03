@@ -1,47 +1,11 @@
-{% extends "base.html" %}
+{% extends "base_page.html" %}
 {% block title %}Session — {{ username }} / {{ session_file }}{% endblock %}
 
-{% block content %}
-{# Design-system component macros — the 2 header buttons (Next error +
-   Download .jsonl) render via `ds.button`. JS-rendered event cards
-   stay page-local. #}
-{% import "_components.html" as ds %}
-<div class="obs-page page-shell">
+{% set page_hero_eyebrow = "Activity Center" %}
+{% set page_hero_title = "Session transcript" %}
+{% set page_hero_subtitle = "Per-session JSONL viewer." %}
 
-  {% set page_hero_eyebrow = "Activity Center" %}
-
-
-  {% set page_hero_title = "Session transcript" %}
-
-
-  {% set page_hero_subtitle = "Per-session JSONL viewer." %}
-
-
-  {% include "_page_hero.html" %}
-
-
-  <header class="obs-topbar">
-    <div class="obs-topbar-left">
-      <p class="obs-subtitle">
-        <a href="/admin/sessions">← All sessions</a>
-        &nbsp;·&nbsp; <code>{{ username }}/{{ session_file }}</code>
-      </p>
-      <div class="td-meta" id="td-meta"></div>
-    </div>
-    <div class="obs-topbar-right">
-      {{ ds.button('↡ Next error', variant='secondary', size='sm',
-                   type='button', id='td-prev-err', attrs='hidden') }}
-      {{ ds.button('Download .jsonl', variant='secondary', size='sm',
-                   id='td-download',
-                   href='/api/admin/sessions/' ~ username ~ '/' ~ session_file ~ '/download') }}
-    </div>
-  </header>
-
-  <section class="td-events" id="td-events">
-    <div class="obs-empty" id="td-loading">Loading transcript…</div>
-  </section>
-</div>
-
+{% block head_extra %}
 <style>
 .obs-page { font: 14px/1.5 var(--font-sans, system-ui); color: var(--text-primary, #111827); }
 .obs-topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
@@ -88,6 +52,35 @@
   color: var(--text-secondary, #6b7280); margin: 0 0 4px; }
 .obs-empty { padding: 40px 16px; text-align: center; color: var(--text-secondary, #6b7280); }
 </style>
+{% endblock %}
+
+{% block page %}
+{# Design-system component macros — the 2 header buttons (Next error +
+   Download .jsonl) render via `ds.button` (auto-imported by base_ds).
+   JS-rendered event cards stay page-local. #}
+<div class="obs-page">
+
+  <header class="obs-topbar">
+    <div class="obs-topbar-left">
+      <p class="obs-subtitle">
+        <a href="/admin/sessions">← All sessions</a>
+        &nbsp;·&nbsp; <code>{{ username }}/{{ session_file }}</code>
+      </p>
+      <div class="td-meta" id="td-meta"></div>
+    </div>
+    <div class="obs-topbar-right">
+      {{ ds.button('↡ Next error', variant='secondary', size='sm',
+                   type='button', id='td-prev-err', attrs='hidden') }}
+      {{ ds.button('Download .jsonl', variant='secondary', size='sm',
+                   id='td-download',
+                   href='/api/admin/sessions/' ~ username ~ '/' ~ session_file ~ '/download') }}
+    </div>
+  </header>
+
+  <section class="td-events" id="td-events">
+    <div class="obs-empty" id="td-loading">Loading transcript…</div>
+  </section>
+</div>
 
 <script>
 (function() {

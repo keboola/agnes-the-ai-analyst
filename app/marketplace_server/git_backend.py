@@ -47,6 +47,14 @@ FIXED_MESSAGE = b"agnes marketplace snapshot"
 FIXED_ENCODING = b"UTF-8"
 
 
+# Bump when the served tree layout / manifest packaging changes. The on-disk
+# git cache is keyed by the *content* etag (compute_etag), which hashes plugin
+# dirs/versions but NOT the packaging logic — so a code change like the
+# plugin.json sanitization would otherwise keep serving a stale cached repo
+# after deploy. Folding this version into the cache key forces a rebuild.
+_TREE_FORMAT_VERSION = 2
+
+
 def cache_dir() -> Path:
     return get_marketplaces_dir() / "git-cache"
 
@@ -131,7 +139,14 @@ def file_set_for_user(
                 continue
             rel = f.relative_to(plugin_dir).as_posix()
             arc = f"plugins/{prefix}/{rel}"
-            files[arc] = f.read_bytes()
+            data = f.read_bytes()
+            # Mirror the ZIP path: drop plugin.json component keys pointing at
+            # an empty/absent dir so `claude plugin install` doesn't reject the
+            # plugin ("agents: Invalid input"). See packager._collect_members.
+            if rel == ".claude-plugin/plugin.json":
+                from app.marketplace_server.packager import _sanitize_served_plugin_json
+                data = _sanitize_served_plugin_json(data, plugin_dir)
+            files[arc] = data
     return files
 
 
@@ -178,7 +193,7 @@ def ensure_repo_for_user(conn: duckdb.DuckDBPyConnection, user: dict) -> Path:
 
     root = cache_dir()
     root.mkdir(parents=True, exist_ok=True)
-    target = root / f"{etag}.git"
+    target = root / f"{etag}.v{_TREE_FORMAT_VERSION}.git"
     if target.is_dir():
         return target
 

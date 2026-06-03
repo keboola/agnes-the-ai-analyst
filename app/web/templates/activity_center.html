@@ -1,28 +1,23 @@
-{% extends "base.html" %}
+{% extends "base_page.html" %}
 {% block title %}Activity — Admin{% endblock %}
 
 {% block head_extra %}
 <link rel="stylesheet" href="{{ static_url('css/activity_center.css') }}">
 {% endblock %}
 
-{% block content %}
-{# Design-system component macros — 6 `.obs-btn` buttons (Reset,
-   Load more, side-panel close + 3 quick-filter actions) render via
-   `ds.button(variant='secondary', size='sm')`. The 4 `.obs-kpi`
-   clickable cards, `.obs-table` page-local enhancements, `.obs-panel`
-   slide-out, sort-header buttons inside `<th>` cells, `<select>`
-   filters all stay page-local. system.md explicitly carves out the
-   .obs-table page-local enhancements. #}
-{% import "_components.html" as ds %}
-<div class="obs-page page-shell">
+{# Canonical page hero — full container width, matches every other admin
+   page; the controls (time range, auto-refresh) sit in a separate row
+   below so the hero isn't squeezed into a flex column. #}
+{% set page_hero_eyebrow = "Activity Center" %}
+{% set page_hero_title = "Audit log" %}
+{% set page_hero_subtitle = "Every admin and user-mutating action — RBAC writes, sync triggers, marketplace edits, …" %}
 
-  {# Canonical page hero — full container width, matches every other
-     admin page. Controls (time range, auto-refresh) sit below in a
-     separate row so the hero isn't squeezed into a flex column. #}
-  {% set page_hero_eyebrow = "Activity Center" %}
-  {% set page_hero_title = "Audit log" %}
-  {% set page_hero_subtitle = "Every admin and user-mutating action — RBAC writes, sync triggers, marketplace edits, …" %}
-  {% include "_page_hero.html" %}
+{% block page %}
+{# Design-system component macros — the buttons (Reset, Load more, side-panel
+   close + quick-filter actions) render via `ds.button` (auto-imported by
+   base_ds). The `.obs-kpi` cards, `.obs-table` enhancements, `.obs-panel`
+   slide-out, sort-header buttons, `<select>` filters stay page-local. #}
+<div class="obs-page">
 
   <header class="obs-topbar">
     <div class="obs-topbar-left">

@@ -1,11 +1,11 @@
-{% extends "base.html" %}
+{% extends "base_page.html" %}
 {% block title %}Workspace Prompt — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{# Design-system component macros — editor Reset/Save + modal Cancel/
-   Reset render via `ds.button`. `.btn-copy` (page-local Catppuccin
-   dark-surface pill) stays page-local per system.md. #}
-{% import "_components.html" as ds %}
+{% set page_hero_eyebrow = "Agent Experience" %}
+{% set page_hero_title = "Workspace Prompt" %}
+{% set page_hero_subtitle = "CLAUDE.md template injected into each analyst workspace. Overrides the OSS default." %}
+
+{% block head_extra %}
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css"
       integrity="sha512-uf06llspW44/LZpHzHT6qBOIVODjWtv4MxCricRxkzvopAlSWnTf6hpZTFxuuZcuNE9CBQhqE0Seu1CoRk84nQ=="
       crossorigin="anonymous">
@@ -194,15 +194,13 @@
   .toast.success { background: #047857; }
   .toast.error { background: #b91c1c; }
 </style>
+{% endblock %}
 
+{% block page %}
+{# Design-system component macros — editor Reset/Save + modal Cancel/
+   Reset render via `ds.button` (auto-imported by base_ds). `.btn-copy`
+   (page-local Catppuccin dark-surface pill) stays page-local per system.md. #}
 <div class="welcome-page">
-  {% set page_hero_eyebrow = "Agent Experience" %}
-
-  {% set page_hero_title = "Workspace Prompt" %}
-
-  {% set page_hero_subtitle = "CLAUDE.md template injected into each analyst workspace. Overrides the OSS default." %}
-
-  {% include "_page_hero.html" %}
 
   <div class="welcome-toolbar">
     <div>
