@@ -1,7 +1,7 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}Connect Claude Code — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
+{% block head_extra %}
 <style>
   .cowork-help {
     max-width: 680px;
@@ -190,7 +190,9 @@
   }
   .ch-faq .faq-body a { color: var(--ds-primary); }
 </style>
+{% endblock %}
 
+{% block content %}
 <div class="cowork-help">
   <a href="/me/cowork" class="back">
     <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">

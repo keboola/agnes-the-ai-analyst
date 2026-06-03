@@ -1,8 +1,7 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}MCP source detail — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{% import "_components.html" as ds %}
+{% block head_extra %}
 <style>
   .src-toolbar {
     display: flex; justify-content: space-between; align-items: center;
@@ -169,7 +168,9 @@
   .toast.success { background: #047857; }
   .toast.error { background: #b91c1c; }
 </style>
+{% endblock %}
 
+{% block content %}
 <div class="mcp-detail-page">
   <a class="src-back" href="/admin/mcp-sources">&larr; All MCP sources</a>
 
