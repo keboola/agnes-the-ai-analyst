@@ -3190,6 +3190,13 @@ async def chat_page(
         return RedirectResponse("/")
     ctx = _build_context(request, user=user, conn=conn, current_user=user)
     ctx["chat_capabilities"] = _chat_capability_snapshot(conn, user)
+    # Deep link: /chat?session=<id>. We DO NOT validate the id here (no
+    # 404 on unknown/forbidden) — the page always renders and RBAC is
+    # enforced when chat.js calls the session-scoped endpoints
+    # (POST /sessions/{id}/ticket, GET /sessions/{id}/messages), which
+    # carry the existing ownership guards. A bad id fails those calls and
+    # surfaces an error status in the UI; the page itself still renders.
+    ctx["initial_session_id"] = request.query_params.get("session")
     return templates.TemplateResponse(request, "chat.html", ctx)
 
 
