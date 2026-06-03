@@ -232,6 +232,16 @@
           <input id="edit-url-sse" type="url" autocomplete="off">
         </div>
 
+        <label for="edit-scope">Secret scope</label>
+        <select id="edit-scope">
+          <option value="shared">shared (one server-wide secret)</option>
+          <option value="per_user">per_user (each analyst supplies their own)</option>
+        </select>
+
+        <label for="edit-env">Environment variables (KEY=VALUE per line)</label>
+        <textarea id="edit-env" autocomplete="off" placeholder="CRM_API_URL=https://api.example.com&#10;REGION=eu"></textarea>
+        <div class="help" style="font-size:11px; color: var(--text-secondary, #9ca3af); margin-top:4px;">Non-secret env vars passed to the stdio subprocess (KEY=VALUE per line).</div>
+
         <label for="edit-auth-method">Auth method</label>
         <select id="edit-auth-method">
           <option value="">none</option>
@@ -239,8 +249,9 @@
           <option value="header">custom header</option>
         </select>
 
-        <label for="edit-auth-secret-env">Auth secret env var</label>
+        <label for="edit-auth-secret-env" style="margin-top:16px;">Auth secret env var — Advanced (legacy)</label>
         <input id="edit-auth-secret-env" type="text" autocomplete="off">
+        <div class="help" style="font-size:11px; color: var(--text-secondary, #9ca3af); margin-top:4px;">Advanced/legacy: names a host env var holding the secret. Prefer the vault — set the secret value below so no host env var is needed.</div>
 
         <label style="display:inline-flex; align-items:center; gap:6px; margin-top:14px; font-weight:500; color: var(--text-primary, #111827);">
           <input id="edit-enabled" type="checkbox"> Enabled
@@ -316,6 +327,22 @@ function esc(s) {
   return d.innerHTML;
 }
 
+// Parse a KEY=VALUE-per-line textarea into an object. Blank lines and
+// lines without an `=` are skipped; only the first `=` splits the pair.
+function parseEnvText(raw) {
+  const env = {};
+  (raw || "").split("\n").forEach(line => {
+    const t = line.trim();
+    if (!t) return;
+    const i = t.indexOf("=");
+    if (i < 1) return;
+    const k = t.slice(0, i).trim();
+    const v = t.slice(i + 1).trim();
+    if (k) env[k] = v;
+  });
+  return env;
+}
+
 function toast(msg, kind = "") {
   const el = document.createElement("div");
   el.className = "toast " + kind;
@@ -380,6 +407,9 @@ document.getElementById("edit-toggle-btn").addEventListener("click", () => {
   document.getElementById("edit-url-sse").value = source.transport === "sse" ? (source.url || "") : "";
   document.getElementById("edit-auth-method").value = source.auth_method || "";
   document.getElementById("edit-auth-secret-env").value = source.auth_secret_env || "";
+  document.getElementById("edit-scope").value = source.scope || "shared";
+  document.getElementById("edit-env").value =
+    Object.entries(source.env || {}).map(([k, v]) => `${k}=${v}`).join("\n");
   document.getElementById("edit-enabled").checked = source.enabled !== false;
   syncTransportFields("edit");
   document.getElementById("cfg-summary").style.display = "none";
@@ -401,6 +431,8 @@ document.getElementById("edit-save-btn").addEventListener("click", async () => {
     transport,
     auth_method: document.getElementById("edit-auth-method").value || null,
     auth_secret_env: document.getElementById("edit-auth-secret-env").value.trim() || null,
+    scope: document.getElementById("edit-scope").value || "shared",
+    env: parseEnvText(document.getElementById("edit-env").value),
     enabled: document.getElementById("edit-enabled").checked,
   };
   if (transport === "stdio") {
