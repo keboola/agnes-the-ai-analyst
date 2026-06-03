@@ -14,7 +14,8 @@ import time as _time
 from dataclasses import dataclass, field
 from typing import Any
 
-from services.slack_bot import blocks
+from services.slack_bot import blocks, sender
+from services.slack_bot.binding import lookup_user_email
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +83,24 @@ async def dispatch_interaction(app, interaction: Interaction) -> None:
         logger.info("ignoring unrouted interaction action_id=%s", interaction.action_id)
 
 
-async def _on_stop(app, it: Interaction) -> None:  # filled in Task 4
-    raise NotImplementedError
+async def _on_stop(app, it: Interaction) -> None:
+    repo = app.state.chat_repo
+    mgr = app.state.chat_manager
+    clicker_email = lookup_user_email(repo, it.slack_user_id)
+    chat_id = it.value.get("chat_id", "")
+    owner = it.value.get("owner", "")
+    if not clicker_email:
+        await sender.send_ephemeral(
+            it.response_url, "Bind your Slack identity first (DM Agnes to start)."
+        )
+        return
+    if clicker_email != owner:
+        await sender.send_ephemeral(
+            it.response_url,
+            f"This session belongs to <@{it.slack_user_id}>'s owner; only they can stop it.",
+        )
+        return
+    await mgr.cancel(chat_id)  # idempotent; sink strips the button on `cancelled`
 
 
 async def _on_share(app, it: Interaction) -> None:  # filled in Task 6

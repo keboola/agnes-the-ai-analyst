@@ -267,3 +267,57 @@ def test_dispatch_unknown_action_is_noop():
     from services.slack_bot import interactivity as inter
     it = inter.parse_interaction(_block_actions_payload("agnes_unknown", "{}"))
     asyncio.run(inter.dispatch_interaction(object(), it))  # no raise
+
+
+def _stop_app(monkeypatch, *, bound_email):
+    from types import SimpleNamespace
+    import services.slack_bot.interactivity as inter_mod
+    monkeypatch.setattr(inter_mod, "lookup_user_email", lambda repo, uid: bound_email)
+    cancelled = []
+    async def cancel(chat_id): cancelled.append(chat_id)
+    mgr = SimpleNamespace(cancel=cancel, _cancelled=cancelled)
+    repo = SimpleNamespace(_conn=object())
+    app = SimpleNamespace(state=SimpleNamespace(chat_repo=repo, chat_manager=mgr))
+    return app, mgr
+
+
+def test_on_stop_owner_cancels(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    eph = []
+    async def fake_eph(url, text, blocks=None): eph.append(text)
+    monkeypatch.setattr(inter.sender, "send_ephemeral", fake_eph)
+    app, mgr = _stop_app(monkeypatch, bound_email="a@example.com")
+    it = inter.Interaction(action_id=inter.blocks.ACTION_STOP, slack_user_id="U1",
+                           channel_id="D1", response_url="https://r",
+                           value={"chat_id": "s1", "owner": "a@example.com"})
+    asyncio.run(inter._on_stop(app, it))
+    assert mgr._cancelled == ["s1"]
+    assert eph == []
+
+
+def test_on_stop_non_owner_denied(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    eph = []
+    async def fake_eph(url, text, blocks=None): eph.append(text)
+    monkeypatch.setattr(inter.sender, "send_ephemeral", fake_eph)
+    app, mgr = _stop_app(monkeypatch, bound_email="intruder@example.com")
+    it = inter.Interaction(action_id=inter.blocks.ACTION_STOP, slack_user_id="U2",
+                           channel_id="C1", response_url="https://r",
+                           value={"chat_id": "s1", "owner": "a@example.com"})
+    asyncio.run(inter._on_stop(app, it))
+    assert mgr._cancelled == []
+    assert any("belongs to" in t for t in eph)
+
+
+def test_on_stop_unbound_clicker_denied(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    eph = []
+    async def fake_eph(url, text, blocks=None): eph.append(text)
+    monkeypatch.setattr(inter.sender, "send_ephemeral", fake_eph)
+    app, mgr = _stop_app(monkeypatch, bound_email=None)
+    it = inter.Interaction(action_id=inter.blocks.ACTION_STOP, slack_user_id="U9",
+                           channel_id="C1", response_url="https://r",
+                           value={"chat_id": "s1", "owner": "a@example.com"})
+    asyncio.run(inter._on_stop(app, it))
+    assert mgr._cancelled == []
+    assert eph  # some denial ephemeral
