@@ -53,6 +53,14 @@ def workdirs(engine):
     return UserWorkdirPgRepository(engine)
 
 
+@pytest.fixture
+def participants(engine):
+    from src.repositories.chat_session_participants_pg import (
+        ChatSessionParticipantPgRepository,
+    )
+    return ChatSessionParticipantPgRepository(engine)
+
+
 # --- sessions --------------------------------------------------------------
 
 def test_create_and_get_session(sessions):
@@ -238,3 +246,93 @@ def test_workdir_upsert_get_delete(workdirs):
     assert w2.initial_workspace_sha is None
     workdirs.delete_workdir_row("u@x.com")
     assert workdirs.get_workdir("u@x.com") is None
+
+
+# --- v69 co-presence -------------------------------------------------------
+
+def test_session_flags_default_false(sessions):
+    s = sessions.create_session(user_email="u@x.com", surface=Surface.WEB)
+    assert s.is_co_session is False
+    assert s.ephemeral is False
+    assert sessions.get_session(s.id).is_co_session is False
+
+
+def test_sender_email_round_trip(sessions, messages):
+    s = sessions.create_session(user_email="o@x.com", surface=Surface.WEB)
+    messages.append_message(
+        session_id=s.id, role="user", content="hi", sender_email="b@x.com"
+    )
+    got = messages.list_messages(s.id)[0]
+    assert got.sender_email == "b@x.com"
+
+
+def test_participant_add_list_role_remove(sessions, participants):
+    s = sessions.create_session(user_email="o@x.com", surface=Surface.WEB)
+    participants.add_session_participant(
+        session_id=s.id, user_email="o@x.com", user_id="u-o", role="owner"
+    )
+    participants.add_session_participant(
+        session_id=s.id, user_email="c@x.com", user_id="u-c", role="collaborator"
+    )
+    active = participants.get_session_participants(s.id)
+    assert {p.user_email for p in active} == {"o@x.com", "c@x.com"}
+    participants.update_participant_role(s.id, "c@x.com", "owner")
+    assert all(p.role == "owner" for p in participants.get_session_participants(s.id) if p.user_email == "c@x.com")
+    participants.remove_participant(s.id, "c@x.com")
+    assert {p.user_email for p in participants.get_session_participants(s.id)} == {"o@x.com"}
+
+
+def test_list_sessions_for_participant(sessions, participants):
+    s = sessions.create_session(user_email="o@x.com", surface=Surface.WEB)
+    participants.add_session_participant(
+        session_id=s.id, user_email="c@x.com", user_id="u-c", role="collaborator"
+    )
+    found = participants.list_sessions_for_participant("c@x.com")
+    assert s.id in {x.id for x in found}
+
+
+def test_fork_session_as_co_session_pg(sessions, participants, messages):
+    s0 = sessions.create_session(user_email="o@x.com", surface=Surface.WEB)
+    s1 = participants.fork_session_as_co_session(
+        s0.id, owner_email="o@x.com", owner_user_id="u-o",
+        invitee_email="c@x.com", invitee_user_id="u-c", seed_summary="prior context",
+    )
+    assert sessions.get_session(s0.id).is_co_session is False  # source untouched
+    assert s1.is_co_session is True and s1.ephemeral is True
+    parts = participants.get_session_participants(s1.id)
+    assert {(p.user_email, p.role) for p in parts} == {
+        ("o@x.com", "owner"), ("c@x.com", "collaborator")
+    }
+    seeded = messages.list_messages(s1.id)
+    assert seeded and seeded[0].content == "prior context"  # summary, not raw clone
+    # rollup maintained: the seeded system message bumped message_count.
+    assert sessions.get_session(s1.id).message_count == 1
+
+
+def test_hard_delete_cascades_participants(sessions, participants, engine):
+    s = sessions.create_session(user_email="gone@x.com", surface=Surface.WEB)
+    participants.add_session_participant(
+        session_id=s.id, user_email="gone@x.com", user_id="u-g", role="owner"
+    )
+    sessions.hard_delete_user_sessions("gone@x.com")
+    with engine.connect() as conn:
+        remaining = conn.execute(
+            sa.text("SELECT COUNT(*) FROM chat_session_participants WHERE session_id = :sid"),
+            {"sid": s.id},
+        ).scalar()
+    assert remaining == 0  # ON DELETE CASCADE
+
+
+def test_co_session_coexists_with_owner_other_surfaces(sessions, participants):
+    """A co-session for an owner does not collide with that owner's existing
+    web / slack_dm / slack_thread sessions."""
+    web = sessions.create_session(user_email="o@x.com", surface=Surface.WEB)
+    dm = sessions.create_session(
+        user_email="o@x.com", surface=Surface.SLACK_DM, slack_channel_id="D1"
+    )
+    co = participants.fork_session_as_co_session(
+        web.id, owner_email="o@x.com", owner_user_id="u-o",
+        invitee_email="c@x.com", invitee_user_id="u-c",
+    )
+    ids = {s.id for s in sessions.list_sessions("o@x.com")}
+    assert {web.id, dm.id, co.id} <= ids
