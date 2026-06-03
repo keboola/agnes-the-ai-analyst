@@ -169,6 +169,44 @@ def test_encrypt_secret_allowed_with_key(monkeypatch):
     assert v.decrypt_secret(v.encrypt_secret("s3cr3t")) == "s3cr3t"
 
 
+def test_source_serialization_includes_has_vault_secret(seeded_app):
+    _seed_source()
+    client = seeded_app["client"]
+    headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+    # before: no vault secret
+    assert (
+        client.get("/api/admin/mcp-sources/src_v", headers=headers).json()[
+            "has_vault_secret"
+        ]
+        is False
+    )
+    client.put(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers=headers,
+        json={"value": "tok"},
+    )
+    assert (
+        client.get("/api/admin/mcp-sources/src_v", headers=headers).json()[
+            "has_vault_secret"
+        ]
+        is True
+    )
+
+
+def test_list_includes_has_vault_secret(seeded_app):
+    _seed_source()
+    client = seeded_app["client"]
+    headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+    client.put(
+        "/api/admin/mcp-sources/src_v/secret",
+        headers=headers,
+        json={"value": "tok"},
+    )
+    rows = client.get("/api/admin/mcp-sources", headers=headers).json()
+    row = next(r for r in rows if r["id"] == "src_v")
+    assert row["has_vault_secret"] is True
+
+
 def test_client_lookup_uses_vault_over_env(seeded_app, monkeypatch):
     """connectors/mcp/client._lookup_secret_for_source should prefer the
     vault row over the env-var named in auth_secret_env."""
