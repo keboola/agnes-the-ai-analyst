@@ -251,7 +251,11 @@ class ChatManager:
             participant_emails=emails,
         )
         self._live[chat_id] = live
-        await ws.send_json({"type": "ready"})
+        if is_primary:
+            # A non-primary ws is seated via add_sink (which sends its own
+            # "ready" after replaying history); sending "ready" here to a ws
+            # that was never added to live.sinks would leave it half-initialized.
+            await ws.send_json({"type": "ready"})
 
         pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
         wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))

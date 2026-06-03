@@ -83,7 +83,11 @@ async def slack_interactivity(request: Request):
     if not secret or not verify_slack_signature(secret, ts, sig, body):
         raise HTTPException(401, "bad_signature")
     form = {k: v[0] for k, v in parse_qs(body.decode()).items()}
-    interaction = parse_interaction(json.loads(form["payload"]))
+    raw_payload = form.get("payload")
+    if not raw_payload:
+        # Signed but malformed (no payload field) → graceful 400, not a 500.
+        raise HTTPException(400, "missing_payload")
+    interaction = parse_interaction(json.loads(raw_payload))
     _schedule(_run_logged(dispatch_interaction(request.app, interaction)))
     return Response(status_code=200)                  # empty 200 ack; message unchanged
 

@@ -4829,14 +4829,23 @@ def _v69_to_v70(conn: duckdb.DuckDBPyConnection) -> None:
         r[1]
         for r in conn.execute("PRAGMA table_info('chat_sessions')").fetchall()
     }
+    # These are added NULLABLE (DEFAULT FALSE), even though _SYSTEM_SCHEMA
+    # (fresh install) and the Alembic PG migration declare them NOT NULL.
+    # DuckDB cannot promote them: `ALTER COLUMN ... SET NOT NULL` on
+    # chat_sessions raises DependencyException because the table is referenced
+    # by foreign keys (chat_messages, chat_session_participants); and the
+    # combined `ADD COLUMN ... NOT NULL DEFAULT` form is unsupported too. The
+    # DEFAULT FALSE materializes a concrete False for every existing row and
+    # the backfill below makes that explicit, so NO NULL is ever observed and
+    # every reader coerces via bool() — the only difference from PG/fresh is
+    # nullability *metadata*, not behavior. Closing it would require a full
+    # table rebuild (drop/recreate FKs), which is not worth the risk.
     if "is_co_session" not in sess_cols:
-        conn.execute(
-            "ALTER TABLE chat_sessions ADD COLUMN is_co_session BOOLEAN DEFAULT FALSE"
-        )
+        conn.execute("ALTER TABLE chat_sessions ADD COLUMN is_co_session BOOLEAN DEFAULT FALSE")
+        conn.execute("UPDATE chat_sessions SET is_co_session = FALSE WHERE is_co_session IS NULL")
     if "ephemeral" not in sess_cols:
-        conn.execute(
-            "ALTER TABLE chat_sessions ADD COLUMN ephemeral BOOLEAN DEFAULT FALSE"
-        )
+        conn.execute("ALTER TABLE chat_sessions ADD COLUMN ephemeral BOOLEAN DEFAULT FALSE")
+        conn.execute("UPDATE chat_sessions SET ephemeral = FALSE WHERE ephemeral IS NULL")
     msg_cols = {
         r[1]
         for r in conn.execute("PRAGMA table_info('chat_messages')").fetchall()

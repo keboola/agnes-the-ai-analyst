@@ -54,8 +54,12 @@ async def co_session_messages(
     user=Depends(get_current_user),
     conn=Depends(_get_db),
 ):
-    """List messages for a co-session.  Accessible to any live participant."""
+    """List messages for a co-session.  Accessible to any live participant
+    who STILL holds CHAT access (membership alone is not enough — a revoked
+    CHAT grant must take effect immediately, even mid-session)."""
     deny_principal(user)
+    if not can_access(user["id"], ResourceType.CHAT.value, "chat", conn):
+        raise HTTPException(403, "no chat access")
     repo = _get_repo(request)
     s = repo.get_session(session_id)
     if s is None:
