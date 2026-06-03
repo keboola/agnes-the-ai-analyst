@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- Slack channel mentions: `@agnes` in an allowlisted channel now opens a public in-thread session owned by the mention starter, gated by a new `slack_channel` resource type (default-deny; admins enable a channel by granting `(Everyone, slack_channel, <channel_id>)` on /admin/access). Denials are ephemeral.
 - **Slack Socket Mode transport (optional).** A second inbound Slack
   transport selectable per instance via `chat.slack.transport: http|socket`
   in `instance.yaml` (or the `SLACK_TRANSPORT` env var; default `http`).
