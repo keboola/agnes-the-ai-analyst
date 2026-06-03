@@ -64,17 +64,11 @@ def _grant(conn, *, group_id: str, marketplace: str, plugin: str) -> None:
 
 
 class TestResolveAllowedPlugins:
-    def test_admin_strict_mode_filters_through_grants(self, db_conn):
-        # ``admin_bypass=False`` is the pre-v62 strict semantic: admin is
-        # just one of the user's groups, no god-mode shortcut for the
-        # marketplace feed. Without grants on Admin (or another of their
-        # groups), an admin sees nothing; with grants, they see exactly
-        # what those grants allow.
-        #
-        # The DEFAULT semantic (``admin_bypass=True``) now matches the
-        # install endpoint's ``can_access`` god-mode — admins see every
-        # plugin as eligible without explicit grants. The strict mode
-        # remains available for "explicit grant graph" introspection.
+    def test_admin_filtered_through_grants_like_anyone_else(self, db_conn):
+        # Admin is just one of the user's groups — no god-mode shortcut for
+        # the marketplace feed. Without grants on Admin (or another of their
+        # groups), an admin sees nothing; with grants, they see exactly what
+        # those grants allow.
         from src.marketplace_filter import resolve_allowed_plugins
         t = datetime.now(timezone.utc)
         _register_marketplace(db_conn, id="mkt-a", registered_at=t,
@@ -86,38 +80,15 @@ class TestResolveAllowedPlugins:
         _add_member(db_conn, user_id="u-admin", group_id=admin_gid)
 
         admin = {"id": "u-admin"}
-        # Without any grants, strict-mode admin sees zero plugins.
-        assert resolve_allowed_plugins(db_conn, admin, admin_bypass=False) == []
+        # Without any grants admin sees zero plugins.
+        assert resolve_allowed_plugins(db_conn, admin) == []
 
         # Grant Admin two of the three plugins; admin now sees exactly those.
         _grant(db_conn, group_id=admin_gid, marketplace="mkt-a", plugin="p1")
         _grant(db_conn, group_id=admin_gid, marketplace="mkt-b", plugin="p3")
-        result = resolve_allowed_plugins(db_conn, admin, admin_bypass=False)
+        result = resolve_allowed_plugins(db_conn, admin)
         prefixed = {p["prefixed_name"] for p in result}
         assert prefixed == {"mkt-a-p1", "mkt-b-p3"}
-
-    def test_admin_default_bypass_returns_all_plugins(self, db_conn):
-        # Default ``admin_bypass=True``: admin sees every plugin from every
-        # registered marketplace, mirroring ``can_access``'s god-mode at
-        # the install endpoint. Without this parity, an admin could
-        # subscribe via the install endpoint but the eligibility filter
-        # would drop their subscription — the symptom that originally
-        # surfaced this bug in foundryai-prod.
-        from src.marketplace_filter import resolve_allowed_plugins
-        t = datetime.now(timezone.utc)
-        _register_marketplace(db_conn, id="mkt-a", registered_at=t,
-            plugins=[{"name": "p1", "version": "1.0"}])
-        _register_marketplace(db_conn, id="mkt-b", registered_at=t,
-            plugins=[{"name": "p2", "version": "2.0"}, {"name": "p3", "version": "3.0"}])
-        _make_user(db_conn, user_id="u-admin3", email="admin3@x")
-        admin_gid = db_conn.execute("SELECT id FROM user_groups WHERE name='Admin'").fetchone()[0]
-        _add_member(db_conn, user_id="u-admin3", group_id=admin_gid)
-
-        # No grants on Admin group at all — bypass-default still returns
-        # the full set.
-        result = resolve_allowed_plugins(db_conn, {"id": "u-admin3"})
-        prefixed = {p["prefixed_name"] for p in result}
-        assert prefixed == {"mkt-a-p1", "mkt-b-p2", "mkt-b-p3"}
 
     def test_everyone_grants_require_explicit_membership(self, db_conn):
         # Auto-Everyone removal: a freshly-created user is no longer
