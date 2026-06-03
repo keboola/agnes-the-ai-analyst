@@ -24,8 +24,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   Postgres repo which was already atomic via `engine.begin()`. The
   per-`INSERT` `try/except ConstraintException` is replaced with `ON CONFLICT
   (user_id, group_id) DO NOTHING` so an admin/system_seed membership on the
-  same pair survives the refresh without aborting the transaction. Cross-
-  engine contract coverage added in `tests/db_pg/test_rbac_contract.py`.
+  same pair survives the refresh without aborting the transaction. Two
+  concurrent logins for the same user can now collide on the shared DuckDB
+  connection (optimistic concurrency raises `Conflict on tuple deletion!`
+  rather than blocking like Postgres), so the rebuild retries on
+  `TransactionException` instead of letting the fail-soft OAuth caller
+  silently drop a refresh. Cross-engine contract coverage added in
+  `tests/db_pg/test_rbac_contract.py`; DuckDB-specific reader-isolation and
+  retry coverage in `tests/test_group_sync_atomicity.py`.
 
 ## [0.60.0] — 2026-06-02
 
