@@ -183,3 +183,55 @@ def test_startup_script_chowns_env_to_agnes_applier():
         "reviewer's recommendation — don't rely on the bootstrap "
         "unit's later run to fix ownership)."
     )
+
+
+def test_dockerfile_ships_every_startup_installed_ops_unit():
+    """Regression: the customer-instance startup-script ``install``s ops units
+    from ``$APP_DIR`` — which is populated by ``docker cp`` of the image's
+    ``/opt/agnes-host/``. Every unit the startup-script installs MUST therefore
+    be shipped by the Dockerfile into ``/opt/agnes-host/``, or a fresh VM boot
+    dies under ``set -e`` with ``install: cannot stat '.../<unit>'``.
+
+    Caught in the wild: ``agnes-state-applier-bootstrap.service`` was added
+    both as a committed unit and to the startup-script's install list, but
+    never added to the Dockerfile COPY list — so it shipped in no image and
+    every fresh postgres-path VM failed to boot."""
+    import re
+    from pathlib import Path
+
+    tpl = Path("infra/modules/customer-instance/startup-script.sh.tpl").read_text()
+    dockerfile = Path("Dockerfile").read_text()
+    installed = set(re.findall(
+        r'install[^\n]*"\$APP_DIR/(agnes-state-applier[^"]+)"', tpl,
+    ))
+    # Sanity for the test itself — the bootstrap unit is the known case.
+    assert "agnes-state-applier-bootstrap.service" in installed, (
+        "expected the startup-script to install the bootstrap unit from "
+        "$APP_DIR; did the install path change?"
+    )
+    for unit in sorted(installed):
+        assert f"scripts/ops/{unit}" in dockerfile, (
+            f"Dockerfile must COPY scripts/ops/{unit} into /opt/agnes-host/ — "
+            f"the startup-script installs it from $APP_DIR, so an image that "
+            f"doesn't ship it breaks every fresh VM boot."
+        )
+
+
+def test_compose_postgres_migrate_services_carry_prebuilt_image():
+    """Regression: the ``migrate`` and ``data-migrate`` services in the
+    postgres overlay must declare an ``image:`` (the pulled GHCR image), not
+    only ``build: .``. Production VMs are sourceless — a build-only service
+    makes ``docker compose up`` fail with ``failed to read dockerfile`` and
+    breaks the side-car/cloud boot path. Mirrors the app/scheduler
+    build+image split."""
+    import yaml
+    from pathlib import Path
+
+    compose = yaml.safe_load(Path("docker-compose.postgres.yml").read_text())
+    for svc in ("migrate", "data-migrate"):
+        spec = compose["services"][svc]
+        assert "image" in spec and "agnes-the-ai-analyst" in spec["image"], (
+            f"{svc} must declare a prebuilt image: so sourceless prod VMs use "
+            f"the pulled image instead of attempting a build (got "
+            f"image={spec.get('image')!r})"
+        )
