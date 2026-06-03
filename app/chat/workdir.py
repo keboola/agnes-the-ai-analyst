@@ -164,7 +164,10 @@ class WorkdirManager:
         )
         logger.info("workdir initialized: user=%s template_sha=%s", user_email, template_sha)
 
-    def prepare_session_dir(self, user_email: str, chat_id: str) -> Path:
+    def prepare_session_dir(
+        self, user_email: str, chat_id: str,
+        *, include_personal_override: bool = False,
+    ) -> Path:
         sessions_root = self.user_sessions_root(user_email)
         sessions_root.mkdir(parents=True, exist_ok=True)
         sdir = sessions_root / chat_id
@@ -173,7 +176,10 @@ class WorkdirManager:
         # claude-agent-sdk resolves .claude/{skills,plugins,agents,commands,hooks}
         # against the per-user workspace.
         ws = self.user_workspace(user_email)
-        for entry in (".claude", "CLAUDE.md", "CLAUDE.local.md", "snapshots", "scripts"):
+        entries = [".claude", "CLAUDE.md", "snapshots", "scripts"]
+        if include_personal_override:
+            entries.append("CLAUDE.local.md")
+        for entry in entries:
             link = sdir / entry
             target = ws / entry
             if not target.exists():
@@ -182,6 +188,40 @@ class WorkdirManager:
                 link.symlink_to(target)
         (sdir / "work").mkdir(exist_ok=True)
         return sdir
+
+    def prepare_ephemeral_session_dir(
+        self,
+        chat_id: str,
+        participant_emails: list[str],
+        intersection: "dict[str, frozenset[str]]",
+    ) -> Path:
+        """Fresh co-session workspace. NO symlinks to any personal workspace,
+        NO CLAUDE.local.md in any form, fresh empty memory/, shared work/.
+        Only intersection-filtered .claude/skills entries are copied in."""
+        import shutil
+        root = self._data_dir / "ephemeral_sessions" / chat_id
+        if root.exists():
+            shutil.rmtree(root)
+        (root / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
+        (root / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
+        (root / "memory").mkdir(exist_ok=True)
+        (root / "work").mkdir(exist_ok=True)
+        rendered = None
+        if self._render_workspace_prompt is not None and participant_emails:
+            try:
+                rendered = self._render_workspace_prompt(participant_emails[0])
+            except Exception:
+                logger.exception("ephemeral CLAUDE.md render failed for %s", chat_id)
+        (root / "CLAUDE.md").write_text(rendered or "# Co-drive session\n", encoding="utf-8")
+        allowed = intersection.get("marketplace_plugin", frozenset())
+        src_root = self._bundled_template_dir / ".claude" / "skills"
+        if src_root.exists():
+            for plug in allowed:
+                src = src_root / plug
+                if src.exists():
+                    shutil.copytree(src, root / ".claude" / "skills" / plug,
+                                    dirs_exist_ok=True)
+        return root
 
     def purge_user(self, user_email: str) -> int:
         """GDPR hard-delete. Returns file count removed."""
