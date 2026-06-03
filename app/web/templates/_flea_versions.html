@@ -141,11 +141,12 @@
 <script>
 async function restoreVersion(versionNo) {
   const currentVersionNo = {{ entity.version_no | tojson }};
-  const ok = confirm(
-    `Restore version ${versionNo}?\n\n` +
-    `This will create a new version (v${currentVersionNo + 1}) with v${versionNo}'s ` +
-    `bundle and re-run security checks. The current version stays in history.`
-  );
+  const ok = await confirmModal({
+    title: `Restore version ${versionNo}?`,
+    message: `This will create a new version (v${currentVersionNo + 1}) with v${versionNo}'s `
+      + `bundle and re-run security checks. The current version stays in history.`,
+    danger: false,
+  });
   if (!ok) return;
   const r = await fetch(
     `/api/store/entities/{{ entity.id }}/versions/${versionNo}/restore`,
@@ -203,7 +204,7 @@ async function restoreVersion(versionNo) {
       }
     }
   } catch (_) {}
-  alert(msg);
+  await alertModal(msg);
 }
 </script>
 {% endif %}

@@ -843,7 +843,7 @@ document.addEventListener("keydown", e => {
   }
 });
 
-function confirmModal({ title, sub, meta, okLabel = "Revoke token" }) {
+function confirmTokenRevoke({ title, sub, meta, okLabel = "Revoke token" }) {
   document.getElementById("confirm-title").textContent = title;
   document.getElementById("confirm-text").textContent = sub;
   const metaEl = document.getElementById("confirm-meta");
@@ -1051,7 +1051,7 @@ async function revokeToken({ id, name, owner, prefix }) {
     "Owner": owner,
     "Prefix": (prefix || "") + "…",
   };
-  const confirmed = await confirmModal({
+  const confirmed = await confirmTokenRevoke({
     title: "Revoke this token?",
     sub: "This cannot be undone and will immediately sign out any session using this token.",
     meta,

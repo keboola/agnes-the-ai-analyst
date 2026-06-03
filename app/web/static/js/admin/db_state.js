@@ -177,14 +177,14 @@ const DBState = {
   async handleTransitionClick(target) {
     let cloudUrl = null;
     if (target === 'cloud') {
-      cloudUrl = prompt('Cloud PG connection string (postgresql+psycopg://user:pass@host:5432/db):');
+      cloudUrl = await promptModal('Cloud PG connection string (postgresql+psycopg://user:pass@host:5432/db):');
       if (!cloudUrl) return;
     }
     try {
       const { job_id } = await this.startMigration(target, cloudUrl);
       this.startPolling(job_id);
     } catch (e) {
-      alert(`Migration failed to start: ${e.message}`);
+      await alertModal(`Migration failed to start: ${e.message}`);
     }
   },
 
@@ -222,9 +222,9 @@ const DBState = {
     document.getElementById('db-cancel-btn')?.addEventListener('click', async () => {
       try {
         await this.cancelJob(jobId);
-        alert('Cancelled');
+        await alertModal('Cancelled');
       } catch (e) {
-        alert(`Cancel failed: ${e.message}`);
+        await alertModal(`Cancel failed: ${e.message}`);
       }
     });
   },
