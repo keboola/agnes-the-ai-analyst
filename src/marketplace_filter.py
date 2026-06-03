@@ -284,14 +284,56 @@ def resolve_user_marketplace(
     if not user_id:
         return []
 
-    admin = resolve_allowed_plugins(conn, user)
+    eligible = resolve_allowed_plugins(conn, user)
+
+    # Admin god-mode parity. ``app.auth.access.can_access`` short-circuits
+    # to True for users in the Admin group, which means the install
+    # endpoint (``require_resource_access`` → ``can_access``) accepts an
+    # admin's subscribe call against ANY ``marketplace_plugins`` row —
+    # no explicit ``resource_grant`` required. Without the matching
+    # bypass here the admin's subscription rows would land in
+    # ``user_curated_subscriptions`` but never survive the
+    # ``(rbac ∩ subscriptions)`` intersection below, so the served
+    # ``/marketplace.git/`` clone would be empty for the very admin who
+    # installed the plugin. Match the install-side semantic: admins
+    # bypass the eligibility filter while non-admins still need
+    # explicit grants. ``resolve_allowed_plugins`` keeps its strict
+    # semantic — it is the answer to "which plugins is this user
+    # *eligible* to install", not "which plugins should we ship to this
+    # user's stack", and the existing test pin still holds.
+    from app.auth.access import is_user_admin
+
+    if is_user_admin(user_id, conn):
+        root = get_marketplaces_dir()
+        rows = conn.execute(
+            "SELECT mp.marketplace_id, mp.name, mp.version, mp.raw "
+            "FROM marketplace_plugins mp "
+            "JOIN marketplace_registry mr ON mr.id = mp.marketplace_id "
+            "ORDER BY mr.registered_at, mp.name"
+        ).fetchall()
+        eligible = []
+        for marketplace_id, name, version, raw in rows:
+            slug = marketplace_id
+            plugin_dir = root / slug / "plugins" / name
+            eligible.append(
+                {
+                    "marketplace_id": marketplace_id,
+                    "marketplace_slug": slug,
+                    "original_name": name,
+                    "prefixed_name": _prefixed_name(slug, name),
+                    "manifest_name": resolve_manifest_name(plugin_dir, fallback=name),
+                    "version": version,
+                    "raw": _resolve_raw(raw),
+                    "plugin_dir": plugin_dir,
+                }
+            )
 
     # Model B (v28+): RBAC grant is only eligibility — the user must explicitly
     # subscribe via /marketplace for a curated plugin to enter their served set.
     # Pre-v28 the filter was (rbac ∖ opt_outs); now it's (rbac ∩ subscriptions).
     subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user_id)
     admin = [
-        p for p in admin
+        p for p in eligible
         if (p["marketplace_id"], p["original_name"]) in subs
     ]
     for p in admin:

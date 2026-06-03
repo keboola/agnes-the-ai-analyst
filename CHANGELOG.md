@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Admin-installed curated plugins were invisible in the served marketplace clone.** `POST /api/marketplace/curated/<m>/<p>/install`'s `require_resource_access` gate calls `app.auth.access.can_access`, which short-circuits to True for any user in the Admin group regardless of explicit `resource_grants` — admin god-mode lets an admin subscribe to ANY `marketplace_plugins` row. The aggregate `resolve_user_marketplace` filter then composed `(rbac ∩ subscriptions)` strictly through `resolve_allowed_plugins`, which has no admin bypass (deliberate per `test_admin_filtered_through_grants_like_anyone_else`). Net result: admin clicks "Add to stack" → `agnes marketplace search` reports `installed: true` → `~/.agnes/marketplace/.claude-plugin/marketplace.json` from `/marketplace.git/` has only plugins admin's group explicitly granted, omitting everything admin subscribed via god-mode. `agnes refresh-marketplace` runs cleanly against the stale aggregate, never sees the new subscription, never installs it into Claude Code. Fix scoped to `resolve_user_marketplace`: when the caller is in the Admin group, the eligibility source is widened to ALL `marketplace_plugins` rows (matching the install endpoint's `can_access` semantic). `resolve_allowed_plugins` stays strict, so the existing test pin still holds and non-admin users still need explicit grants. Two regression tests in `TestResolveUserMarketplace`: `test_admin_subscriptions_surface_without_explicit_grants` confirms the bypass; `test_non_admin_still_needs_explicit_grant` confirms non-admins are unaffected.
+
 ## [0.61.5] — 2026-06-03
 
 ### Added
