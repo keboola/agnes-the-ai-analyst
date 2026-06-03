@@ -91,6 +91,39 @@ asynchronously (ephemerally) via the command's `response_url`. Under
 Socket Mode the commands arrive over the socket instead of the HTTP
 Request URL — no manifest `url:` is needed in that mode.
 
+### Manifest stanzas: HTTP vs Socket Mode
+
+Two transports, two manifest shapes. Pick the one matching your
+`chat.slack.transport` setting. Replace `<your-host>` with your public
+Agnes hostname.
+
+**HTTP (default).** Slack delivers events, slash commands and interactivity
+over HTTPS to your public endpoints:
+
+```yaml
+settings:
+  event_subscriptions:
+    request_url: "https://<your-host>/api/slack/events"
+    bot_events: [app_mention, message.im]
+  interactivity:
+    is_enabled: true
+    request_url: "https://<your-host>/api/slack/interactivity"
+  socket_mode_enabled: false
+```
+
+**Socket Mode (optional).** All three event classes arrive over one
+WebSocket; no public `request_url` is needed — interactivity routes through
+the same `dispatch_interaction`:
+
+```yaml
+settings:
+  event_subscriptions:
+    bot_events: [app_mention, message.im]
+  interactivity:
+    is_enabled: true
+  socket_mode_enabled: true
+```
+
 ## Cost & limits
 
 Per-user defaults (configurable in `/admin/server-config`):
