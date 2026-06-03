@@ -627,6 +627,13 @@ def test_mention_happy_path_creates_thread_and_sends(monkeypatch):
     assert mgr.created[0].slack_thread_ts == "9.1"
     assert mgr.attached and mgr.attached[0][0] == "sess_new"
     assert mgr.sent and mgr.sent[0][1] == "revenue?"
+    # The mention-path sink must carry the starter's owner + web_base so the
+    # owner-gated Stop button and Continue-on-web link work on thread sessions
+    # (regression: the sink was previously built without owner/web_base, which
+    # made the Stop button encode an empty owner and always deny).
+    sink = mgr.attached[0][1]
+    assert sink._owner == "u@x"
+    assert sink._web_base == "https://example.com"
 
 
 def test_mention_ownership_reject_ephemeral(monkeypatch):

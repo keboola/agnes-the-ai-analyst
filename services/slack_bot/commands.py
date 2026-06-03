@@ -173,7 +173,10 @@ async def _soft_archive_dm_for_button(app, owner_email: str, channel_id: str) ->
     repo = app.state.chat_repo
     mgr = app.state.chat_manager
     existing = repo.get_slack_dm_session(channel_id)
-    if existing is None:
+    # Defense-in-depth: never archive a session this owner doesn't own, even
+    # if the caller already owner-gated. The button value is signature-verified
+    # but the resolved session is the source of truth for ownership.
+    if existing is None or existing.user_email != owner_email:
         return
     try:
         await mgr.kill(existing.id, reason="new_session_button")

@@ -103,11 +103,14 @@ async def update_message(channel: str, ts: str, text: str, blocks: list[dict]) -
         logger.error("SLACK_BOT_TOKEN missing — cannot update")
         return
     async with httpx.AsyncClient(timeout=10) as client:
-        await client.post(
+        resp = await client.post(
             "https://slack.com/api/chat.update",
             headers={"Authorization": f"Bearer {token}"},
             json={"channel": channel, "ts": ts, "text": text, "blocks": blocks},
         )
+    data = resp.json()
+    if data.get("ok") is False:
+        logger.warning("chat.update failed: %s", data.get("error"))
 
 
 async def post_channel_message(channel: str, text: str) -> None:

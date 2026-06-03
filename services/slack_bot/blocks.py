@@ -12,7 +12,8 @@ from typing import Any
 
 # Single action_id namespace; the dispatcher routes on these.
 ACTION_STOP = "agnes_stop"
-ACTION_CONTINUE_WEB = "agnes_continue_web"
+# Continue-on-web is a pure link button (carries a url, no action_id) — Slack
+# never POSTs link clicks, so it deliberately has no action constant here.
 ACTION_SHARE_CHANNEL = "agnes_share_channel"
 ACTION_NEW_SESSION = "agnes_new_session"
 

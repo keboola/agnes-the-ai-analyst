@@ -1,6 +1,18 @@
 """Tests for Slack Block Kit interactivity (Phase 3)."""
 import asyncio
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clear_share_answers():
+    """Isolate the in-memory share-answer TTL map between tests so test order
+    can't leak a stored token (no longer relies on per-helper .clear() calls)."""
+    from services.slack_bot import interactivity as inter
+    inter._SHARE_ANSWERS.clear()
+    yield
+    inter._SHARE_ANSWERS.clear()
+
 
 def test_schedule_keeps_strong_ref_until_done():
     from services.slack_bot import events as ev
@@ -129,6 +141,41 @@ def test_soft_archive_dm_noop_when_no_session(monkeypatch):
     monkeypatch.setattr(cmd_mod, "open_im", fake_open_im)
     asyncio.run(cmd._soft_archive_dm(app, "U1"))
     assert killed == [] and archived == []
+
+
+def test_soft_archive_dm_for_button_owner_match_kills_and_archives():
+    from types import SimpleNamespace
+    from services.slack_bot import commands as cmd
+
+    killed, archived = [], []
+    async def kill(sid, reason=None): killed.append(sid)
+    mgr = SimpleNamespace(kill=kill)
+    repo = SimpleNamespace(
+        get_slack_dm_session=lambda channel: SimpleNamespace(id="s1", user_email="a@example.com"),
+        archive_session=lambda sid: archived.append(sid),
+    )
+    app = SimpleNamespace(state=SimpleNamespace(chat_manager=mgr, chat_repo=repo))
+    asyncio.run(cmd._soft_archive_dm_for_button(app, "a@example.com", "D1"))
+    assert killed == ["s1"]
+    assert archived == ["s1"]
+
+
+def test_soft_archive_dm_for_button_owner_mismatch_is_noop():
+    from types import SimpleNamespace
+    from services.slack_bot import commands as cmd
+
+    killed, archived = [], []
+    async def kill(sid, reason=None): killed.append(sid)
+    mgr = SimpleNamespace(kill=kill)
+    # Resolved session is owned by someone else — must NOT be touched.
+    repo = SimpleNamespace(
+        get_slack_dm_session=lambda channel: SimpleNamespace(id="s1", user_email="owner@example.com"),
+        archive_session=lambda sid: archived.append(sid),
+    )
+    app = SimpleNamespace(state=SimpleNamespace(chat_manager=mgr, chat_repo=repo))
+    asyncio.run(cmd._soft_archive_dm_for_button(app, "intruder@example.com", "D1"))
+    assert killed == []
+    assert archived == []
 
 
 def test_value_codec_roundtrip():
@@ -306,7 +353,9 @@ def test_on_stop_non_owner_denied(monkeypatch):
                            value={"chat_id": "s1", "owner": "a@example.com"})
     asyncio.run(inter._on_stop(app, it))
     assert mgr._cancelled == []
-    assert any("belongs to" in t for t in eph)
+    assert any("owner" in t for t in eph)
+    # The denial must NOT leak the clicker's Slack id (incoherent reference).
+    assert not any("<@" in t for t in eph)
 
 
 def test_on_stop_unbound_clicker_denied(monkeypatch):

@@ -99,7 +99,7 @@ async def _on_stop(app, it: Interaction) -> None:
     if clicker_email != owner:
         await sender.send_ephemeral(
             it.response_url,
-            f"This session belongs to <@{it.slack_user_id}>'s owner; only they can stop it.",
+            "Only the session owner can stop it.",
         )
         return
     await mgr.cancel(chat_id)  # idempotent; sink strips the button on `cancelled`

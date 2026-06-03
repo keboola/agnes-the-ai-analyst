@@ -238,7 +238,10 @@ async def _handle_mention(app, event: dict) -> None:
 
     # 8. Attach (NOT awaited — keep the 3s ack budget).
     if not _is_attached(mgr, session.id):
-        sink = SlackSinkBridge(channel=channel, thread_ts=thread_ts, chat_id=session.id)
+        sink = SlackSinkBridge(
+            channel=channel, thread_ts=thread_ts, chat_id=session.id,
+            owner=user_email, web_base=getattr(app.state, "public_url", ""),
+        )
         _schedule(mgr.attach(session.id, sink))
         await asyncio.sleep(0.1)
 
