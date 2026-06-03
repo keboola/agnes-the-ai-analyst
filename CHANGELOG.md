@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.1] — 2026-06-04
+
 ### Internal
 - Made `tests/test_cache_warmup.py::test_list_remote_rows_filters_to_bigquery_source_type`
   deterministic by patching the `table_registry_repo()` factory the code calls
