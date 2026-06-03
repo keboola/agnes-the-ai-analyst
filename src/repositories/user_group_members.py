@@ -122,24 +122,42 @@ class UserGroupMembersRepository:
         INSERTs one row per ``group_ids``. Admin and system_seed rows are
         untouched. Called from the OAuth callback on every login so the
         membership reflects the current Cloud Identity state.
+
+        Wrapped in a single transaction so concurrent readers never observe
+        the post-DELETE / pre-INSERT window where the user has *no*
+        google_sync groups. ``get_system_db()`` hands every caller a cursor
+        on one shared connection, so a non-atomic rebuild leaks an empty
+        intermediate state to anything reading membership mid-refresh — e.g.
+        the marketplace git endpoint resolving a user's served plugin set,
+        which would transiently drop every plugin granted via a google_sync
+        group until the re-INSERTs commit. Mirrors the PG repo's
+        ``self._engine.begin()`` atomicity (cross-engine parity).
         """
-        self.conn.execute(
-            "DELETE FROM user_group_members WHERE user_id = ? AND source = 'google_sync'",
-            [user_id],
-        )
-        for group_id in group_ids:
-            try:
+        self.conn.execute("BEGIN")
+        try:
+            self.conn.execute(
+                "DELETE FROM user_group_members "
+                "WHERE user_id = ? AND source = 'google_sync'",
+                [user_id],
+            )
+            for group_id in group_ids:
+                # ON CONFLICT DO NOTHING: an Admin / system_seed row may
+                # already own this (user_id, group_id) pair — the user is
+                # a member through a higher-priority source, leave it. Using
+                # the conflict clause instead of catching ConstraintException
+                # keeps the surrounding transaction alive (a raised
+                # constraint error would otherwise abort it). Matches PG.
                 self.conn.execute(
                     """INSERT INTO user_group_members
                        (user_id, group_id, source, added_by)
-                       VALUES (?, ?, 'google_sync', ?)""",
+                       VALUES (?, ?, 'google_sync', ?)
+                       ON CONFLICT (user_id, group_id) DO NOTHING""",
                     [user_id, group_id, added_by],
                 )
-            except duckdb.ConstraintException:
-                # Admin or system_seed row already present for this pair —
-                # leave it alone, the user is already a member through a
-                # higher-priority source.
-                pass
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
 
     def remove_user_from_all_groups(self, user_id: str) -> int:
         """Hard delete every membership for a user. Used on user deletion.

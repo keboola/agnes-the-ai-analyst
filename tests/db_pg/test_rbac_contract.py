@@ -208,6 +208,55 @@ def test_list_groups_for_user_returns_joined_groups(rbac_repos):
     assert set(group_ids) == {g1["id"], g2["id"]}
 
 
+def test_replace_google_sync_groups_sets_final_membership(rbac_repos):
+    """google_sync refresh is authoritative for that source on both engines."""
+    repos, _, _ = rbac_repos
+    users = repos["users"]
+    groups = repos["groups"]
+    members = repos["members"]
+
+    users.create(id="gs1", email="erin@example.com", name="Erin")
+    g1 = groups.create(name="gs-finance", created_by="admin@x.com")
+    g2 = groups.create(name="gs-curator", created_by="admin@x.com")
+    g3 = groups.create(name="gs-legal", created_by="admin@x.com")
+
+    members.replace_google_sync_groups("gs1", [g1["id"], g2["id"]])
+    assert set(members.list_groups_for_user("gs1")) == {g1["id"], g2["id"]}
+
+    # Re-running is authoritative: drops g1, keeps g2, adds g3 — never an
+    # empty intermediate (the rebuild is wrapped in one transaction so a
+    # concurrent reader can't observe the post-DELETE / pre-INSERT gap).
+    members.replace_google_sync_groups("gs1", [g2["id"], g3["id"]])
+    assert set(members.list_groups_for_user("gs1")) == {g2["id"], g3["id"]}
+
+
+def test_replace_google_sync_preserves_higher_priority_source(rbac_repos):
+    """An admin/system_seed membership on the same (user, group) pair must
+    survive a google_sync refresh — ON CONFLICT DO NOTHING keeps the existing
+    higher-priority row instead of erroring or downgrading it."""
+    repos, _, _ = rbac_repos
+    users = repos["users"]
+    groups = repos["groups"]
+    members = repos["members"]
+
+    users.create(id="gs2", email="frank@example.com", name="Frank")
+    admin_grp = groups.create(name="gs-admin-pin", created_by="admin@x.com")
+    sync_grp = groups.create(name="gs-sync-only", created_by="admin@x.com")
+
+    members.add_member("gs2", admin_grp["id"], source="admin", added_by="admin@x.com")
+
+    # google_sync also reports the admin-pinned group → must not error or
+    # duplicate; the admin row stays. The sync-only group is added.
+    members.replace_google_sync_groups("gs2", [admin_grp["id"], sync_grp["id"]])
+    assert set(members.list_groups_for_user("gs2")) == {admin_grp["id"], sync_grp["id"]}
+
+    # A later refresh that no longer lists the admin-pinned group must NOT
+    # remove it — it's owned by source='admin', not 'google_sync'.
+    members.replace_google_sync_groups("gs2", [sync_grp["id"]])
+    assert members.has_membership("gs2", admin_grp["id"])
+    assert set(members.list_groups_for_user("gs2")) == {admin_grp["id"], sync_grp["id"]}
+
+
 def test_system_group_rename_raises(rbac_repos):
     """Both engines must protect system groups from rename."""
     repos, _, _ = rbac_repos

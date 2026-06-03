@@ -10,6 +10,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Marketplace transiently drops plugins during Google group sync.** The
+  DuckDB `user_group_members.replace_google_sync_groups` rebuilt a user's
+  synced memberships as a non-transactional `DELETE` + per-group `INSERT` on
+  the shared singleton connection. Between the `DELETE` and the re-`INSERT`s
+  the user briefly had *zero* `google_sync` groups, so any concurrent read of
+  their membership — notably the `/marketplace.git/` endpoint resolving a
+  served plugin set for `agnes refresh-marketplace` — saw a partial group set
+  and dropped every plugin granted via a synced group, self-healing only once
+  the inserts committed. Now wrapped in a single transaction (DuckDB MVCC
+  isolates concurrent readers from the intermediate state), matching the
+  Postgres repo which was already atomic via `engine.begin()`. The
+  per-`INSERT` `try/except ConstraintException` is replaced with `ON CONFLICT
+  (user_id, group_id) DO NOTHING` so an admin/system_seed membership on the
+  same pair survives the refresh without aborting the transaction. Cross-
+  engine contract coverage added in `tests/db_pg/test_rbac_contract.py`.
+
 ## [0.60.0] — 2026-06-02
 
 ### Internal
