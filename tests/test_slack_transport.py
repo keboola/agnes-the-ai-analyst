@@ -276,3 +276,31 @@ def test_socket_dispatcher_ignores_non_event_callback(monkeypatch):
     asyncio.run(disp._on_request(FakeClient(), FakeReq()))
     assert acked == ["env-2"]
     assert dispatched == []
+
+
+def test_socket_gate_ok_when_all_conditions_met(monkeypatch):
+    from services.slack_bot import socket_mode_client as smc
+    monkeypatch.setattr(smc, "_slack_sdk_importable", lambda: True)
+    ok, reason = smc.socket_mode_preflight(
+        workers=1, app_token="xapp-abc", bot_token="xoxb-def",
+    )
+    assert ok is True
+    assert reason == ""
+
+
+@pytest.mark.parametrize("workers,app_tok,bot_tok,sdk,needle", [
+    (2, "xapp-a", "xoxb-b", True, "UVICORN_WORKERS"),     # multi-worker
+    (1, "", "xoxb-b", True, "SLACK_APP_TOKEN"),           # missing app token
+    (1, "xoxb-wrong", "xoxb-b", True, "xapp-"),           # app token wrong prefix
+    (1, "xapp-a", "", True, "SLACK_BOT_TOKEN"),           # missing bot token
+    (1, "xapp-a", "xapp-wrong", True, "xoxb-"),           # bot token wrong prefix
+    (1, "xapp-a", "xoxb-b", False, "slack-socket"),       # sdk not importable
+])
+def test_socket_gate_fails_closed(monkeypatch, workers, app_tok, bot_tok, sdk, needle):
+    from services.slack_bot import socket_mode_client as smc
+    monkeypatch.setattr(smc, "_slack_sdk_importable", lambda: sdk)
+    ok, reason = smc.socket_mode_preflight(
+        workers=workers, app_token=app_tok, bot_token=bot_tok,
+    )
+    assert ok is False
+    assert needle in reason

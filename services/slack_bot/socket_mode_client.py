@@ -19,6 +19,45 @@ from services.slack_bot.events import _run_logged, _schedule, dispatch_event
 logger = logging.getLogger(__name__)
 
 
+def _slack_sdk_importable() -> bool:
+    """True iff the optional slack_sdk dep is installed. Isolated so the
+    preflight gate is unit-testable without the package present."""
+    try:
+        import slack_sdk  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def socket_mode_preflight(
+    *, workers: int, app_token: str, bot_token: str,
+) -> tuple[bool, str]:
+    """Fail-closed gate for the socket transport.
+
+    Returns (ok, reason). On any failure the lifespan caller logs `reason`
+    and disables Slack — it never starts a dead WS or crashes the app.
+    """
+    if workers > 1:
+        return False, (
+            "Socket Mode requires a single worker (one WS; N workers "
+            "fracture dedup) but UVICORN_WORKERS > 1"
+        )
+    if not app_token:
+        return False, "SLACK_APP_TOKEN missing (required for Socket Mode)"
+    if not app_token.startswith("xapp-"):
+        return False, "SLACK_APP_TOKEN must be an app-level token (xapp- prefix)"
+    if not bot_token:
+        return False, "SLACK_BOT_TOKEN missing (required for Socket Mode)"
+    if not bot_token.startswith("xoxb-"):
+        return False, "SLACK_BOT_TOKEN must be a bot token (xoxb- prefix)"
+    if not _slack_sdk_importable():
+        return False, (
+            "Socket Mode requires the 'slack-socket' extra — install with: "
+            "pip install '.[slack-socket]'"
+        )
+    return True, ""
+
+
 class SocketModeImportError(RuntimeError):
     """Raised when transport=socket but slack_sdk is not importable."""
 
