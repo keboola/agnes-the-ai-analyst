@@ -306,6 +306,41 @@ def test_slack_dm_assistant_message_reaches_thread(monkeypatch):
     ), sent
 
 
+class TestChannelAllowlist:
+    def _everyone_gid(self, conn):
+        return conn.execute(
+            "SELECT id FROM user_groups WHERE name = 'Everyone'"
+        ).fetchone()[0]
+
+    def test_default_deny(self, conn):
+        from services.slack_bot.binding import is_channel_allowlisted
+        assert is_channel_allowlisted(conn, "C_NEW") is False
+
+    def test_true_after_everyone_grant(self, conn):
+        from services.slack_bot.binding import is_channel_allowlisted
+        gid = self._everyone_gid(conn)
+        conn.execute(
+            "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
+            "VALUES ('rg_a', ?, 'slack_channel', 'C_OK')",
+            [gid],
+        )
+        assert is_channel_allowlisted(conn, "C_OK") is True
+
+    def test_admin_grant_does_not_open_channel(self, conn):
+        """A grant to the Admin group (not Everyone) must NOT allowlist —
+        proves we do not use can_access (no admin short-circuit)."""
+        from services.slack_bot.binding import is_channel_allowlisted
+        admin_gid = conn.execute(
+            "SELECT id FROM user_groups WHERE name = 'Admin'"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
+            "VALUES ('rg_admin', ?, 'slack_channel', 'C_ADMIN')",
+            [admin_gid],
+        )
+        assert is_channel_allowlisted(conn, "C_ADMIN") is False
+
+
 def test_slack_app_mention_emits_log_record(caplog):
     """`app_mention` events must produce an INFO log so operators can see
     that the bot is receiving channel mentions even though channel scope

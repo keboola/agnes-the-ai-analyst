@@ -60,6 +60,27 @@ def redeem_verification_code(
     return True
 
 
+def is_channel_allowlisted(conn: duckdb.DuckDBPyConnection, channel_id: str) -> bool:
+    """True iff the Everyone group holds (slack_channel, channel_id).
+
+    Direct grant lookup — deliberately does NOT use ``can_access`` so the
+    Admin god-mode short-circuit cannot auto-open a channel. Channel openness
+    is a property of the channel (an Everyone grant), not of the mentioning
+    user's group. Default-deny: no grant → False.
+    """
+    row = conn.execute(
+        """SELECT 1
+           FROM resource_grants rg
+           JOIN user_groups ug ON ug.id = rg.group_id
+           WHERE ug.name = 'Everyone'
+             AND rg.resource_type = 'slack_channel'
+             AND rg.resource_id = ?
+           LIMIT 1""",
+        [channel_id],
+    ).fetchone()
+    return row is not None
+
+
 def lookup_user_email(repo, slack_user_id: str) -> Optional[str]:
     row = repo._conn.execute(
         "SELECT email FROM users WHERE slack_user_id = ?", [slack_user_id]
