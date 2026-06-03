@@ -232,6 +232,7 @@ def test_socket_dispatcher_acks_envelope_before_scheduling(monkeypatch):
         req = FakeReq()
         await disp._on_request(FakeClient(), req)
         import asyncio
+        # two yields: one to enqueue the _schedule task, one to run the _run_logged body
         await asyncio.sleep(0)
         await asyncio.sleep(0)
 

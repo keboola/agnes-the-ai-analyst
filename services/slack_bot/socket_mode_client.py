@@ -32,6 +32,8 @@ class SocketModeDispatcher:
 
     async def _on_request(self, client, req) -> None:
         # 1. ACK FIRST (<3s) so Slack never retries / disconnects.
+        # Lazy + cached: _on_request is only ever registered as a listener inside
+        # start(), after slack_sdk imported successfully — so this never hits ImportError.
         from slack_sdk.socket_mode.response import SocketModeResponse
 
         await client.send_socket_mode_response(
@@ -59,6 +61,11 @@ class SocketModeDispatcher:
 
         self._client = SocketModeClient(
             app_token=self._app_token,
+            # web_client=None → slack_sdk builds an UNAUTHENTICATED AsyncWebClient.
+            # Fine for Phase 0: inbound event receipt only; outbound replies use
+            # SLACK_BOT_TOKEN from env (sender.py). self._bot_token is collected now
+            # and gets wired here (AsyncWebClient(token=self._bot_token)) when Web API
+            # calls are needed in a later phase.
             web_client=None,
         )
         self._client.socket_mode_request_listeners.append(self._on_request)
