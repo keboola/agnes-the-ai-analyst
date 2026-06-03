@@ -143,6 +143,39 @@ def can_access(
     )
 
 
+def _allowed_ids_for_user(
+    user_id: str,
+    resource_type: str,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
+) -> frozenset[str]:
+    """Set of resource_ids the user is granted for ``resource_type``.
+
+    Deliberately does NOT apply the Admin god-mode short-circuit and does
+    NOT add internal-table implicit grants — it reports only what was
+    explicitly granted to a group the user belongs to. This is the single
+    no-short-circuit grant primitive that both ``can_access`` (union/admin
+    path) and ``compute_grant_intersection`` build on, so an admin-leak
+    cannot reappear by drift.
+
+    Routes through the repository factory (same split as ``can_access``) so
+    DuckDB and Postgres behave identically — never raw SQL on ``conn``.
+    """
+    group_ids = _user_group_ids(user_id, conn=conn)
+    if not group_ids:
+        return frozenset()
+    from src.repositories import use_pg, resource_grants_repo
+    if conn is not None and not use_pg():
+        from src.repositories.resource_grants import ResourceGrantsRepository
+        rows = ResourceGrantsRepository(conn).list_for_groups(
+            list(group_ids), resource_type,
+        )
+    else:
+        rows = resource_grants_repo().list_for_groups(
+            list(group_ids), resource_type,
+        )
+    return frozenset(r["resource_id"] for r in rows)
+
+
 def has_explicit_grant(
     user_id: str,
     resource_type: str,
