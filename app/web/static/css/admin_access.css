@@ -96,7 +96,7 @@
   border-bottom: 1px solid var(--border, #e5e7eb);
   border-left: 4px solid var(--primary);
   background: linear-gradient(to right,
-    rgba(46, 168, 119, 0.10), rgba(46, 168, 119, 0.02));
+    color-mix(in srgb, var(--ds-primary) 10%, transparent), color-mix(in srgb, var(--ds-primary) 2%, transparent));
 }
 .rt-section:nth-child(4n+2) > .rt-section-head {
   border-left-color: #10b981;

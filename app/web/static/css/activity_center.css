@@ -44,8 +44,8 @@
 .obs-live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ds-text-disabled); transition: background 0.2s; }
 .obs-live input:checked ~ .obs-live-dot { background: var(--ds-primary); animation: obs-pulse 2s ease-in-out infinite; }
 @keyframes obs-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(46, 168, 119, 0.6); }
-  50%      { box-shadow: 0 0 0 4px rgba(46, 168, 119, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ds-primary) 60%, transparent); }
+  50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--ds-primary) 0%, transparent); }
 }
 
 /* Saved views dropdown -------------------------------------------------- */

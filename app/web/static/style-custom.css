@@ -91,8 +91,10 @@
     --shadow-card: 0 1px 3px 0 rgba(15, 27, 58, 0.06), 0 1px 2px -1px rgba(15, 27, 58, 0.05);
     --shadow-elevated: 0 8px 24px rgba(15, 27, 58, 0.14);
 
-    /* Focus + interaction */
-    --focus-ring: 0 0 0 3px rgba(46, 168, 119, 0.25);
+    /* Focus + interaction — alpha brand-green below uses color-mix on
+       var(--ds-primary) so it follows the active theme (light/blue/dark);
+       these were hardcoded brand-green rgba() literals (#497 §5). */
+    --focus-ring: 0 0 0 3px color-mix(in srgb, var(--ds-primary) 25%, transparent);
     --transition-fast: 120ms ease;
     --transition-base: 200ms ease;
     --transition-slow: 320ms ease;
@@ -255,7 +257,7 @@ nav {
 
 .btn-primary:hover {
     background-color: var(--ds-primary-dark);
-    box-shadow: 0 2px 8px rgba(46, 168, 119, 0.3);
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--ds-primary) 30%, transparent);
 }
 
 .btn-primary:active {
@@ -1641,7 +1643,7 @@ footer {
 }
 
 .badge-admin-v2 {
-    background: rgba(46, 168, 119, 0.1);
+    background: color-mix(in srgb, var(--ds-primary) 10%, transparent);
     color: var(--primary);
 }
 
@@ -1807,7 +1809,7 @@ footer {
 .flash-info-v2 {
     background: var(--primary-light);
     color: var(--primary);
-    border: 1px solid rgba(46, 168, 119, 0.3);
+    border: 1px solid color-mix(in srgb, var(--ds-primary) 30%, transparent);
 }
 
 /* Footer */
@@ -1945,10 +1947,10 @@ footer {
 
 .category-tag.finance { background: rgba(16, 183, 127, 0.1); color: #0d9668; }
 .category-tag.hr { background: rgba(139, 92, 246, 0.1); color: #7c3aed; }
-.category-tag.sales { background: rgba(46, 168, 119, 0.1); color: var(--primary); }
+.category-tag.sales { background: color-mix(in srgb, var(--ds-primary) 10%, transparent); color: var(--primary); }
 .category-tag.telemetry { background: rgba(245, 159, 10, 0.1); color: #b45309; }
 .category-tag.support { background: rgba(234, 88, 12, 0.1); color: #EA580C; }
-.category-tag.revenue { background: rgba(46, 168, 119, 0.1); color: var(--primary); }
+.category-tag.revenue { background: color-mix(in srgb, var(--ds-primary) 10%, transparent); color: var(--primary); }
 .category-tag.customers { background: rgba(139, 92, 246, 0.1); color: #7c3aed; }
 .category-tag.marketing { background: rgba(245, 159, 10, 0.1); color: #b45309; }
 
@@ -3899,7 +3901,7 @@ a.news-cta:hover { background: #0056A3; }
 .modal-btn.primary:hover {
     background-color: var(--ds-primary-dark);
     border-color: var(--ds-primary-dark);
-    box-shadow: 0 2px 8px rgba(46, 168, 119, 0.3);
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--ds-primary) 30%, transparent);
 }
 
 .btn-secondary {
@@ -4984,9 +4986,9 @@ details.section-card > summary {
     font-family: var(--font-mono);
     font-size: var(--text-sm);
     font-weight: 600;
-    background: rgba(46, 168, 119, 0.10);
+    background: color-mix(in srgb, var(--ds-primary) 10%, transparent);
     color: var(--primary);
-    border: 1px solid rgba(46, 168, 119, 0.25);
+    border: 1px solid color-mix(in srgb, var(--ds-primary) 25%, transparent);
 }
 .role-chip.is-core { background: rgba(16, 185, 129, 0.10); color: #047857; border-color: rgba(16, 185, 129, 0.25); }
 .grant-list, .group-roles-list {
@@ -5024,7 +5026,7 @@ details.section-card > summary {
     color: var(--text-secondary);
     font-weight: 600;
 }
-.grant-row .grant-source.source-direct { background: rgba(46, 168, 119, 0.12); color: var(--primary); }
+.grant-row .grant-source.source-direct { background: color-mix(in srgb, var(--ds-primary) 12%, transparent); color: var(--primary); }
 .grant-row .grant-source.source-auto { background: rgba(245, 158, 11, 0.12); color: #b45309; }
 .grant-row .grant-meta {
     font-size: var(--text-sm);
