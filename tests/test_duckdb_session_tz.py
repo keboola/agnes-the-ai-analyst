@@ -120,6 +120,7 @@ def test_no_bare_duckdb_connect_in_production_code():
         "tests/db_pg/test_memory_domain_suggestions_contract.py",
         "tests/db_pg/test_memory_domains_contract.py",
         "tests/db_pg/test_migrate_users_idempotent.py",
+        "tests/db_pg/test_ported_methods_contract.py",
         "tests/db_pg/test_rbac_contract.py",
         "tests/db_pg/test_recipes_contract.py",
         "tests/db_pg/test_schema_parity.py",

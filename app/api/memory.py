@@ -19,6 +19,7 @@ from src.repositories import (
     audit_repo,
     knowledge_repo,
     memory_domains_repo,
+    usage_repo,
 )
 logger = logging.getLogger(__name__)
 
@@ -660,11 +661,10 @@ async def dismiss_item(
     # membership so /admin/telemetry can correlate dismissals with the
     # domain they came from.
     try:
-        from src.repositories.usage import UsageRepository
         domain_ids = [
             d["id"] for d in memory_domains_repo().list_domains_of_item(item_id)
         ]
-        UsageRepository(conn).emit_server_event(
+        usage_repo().emit_server_event(
             event_type="memory.dismiss",
             user_id=user["id"],
             username=user.get("email") or user["id"],
@@ -697,8 +697,7 @@ async def undismiss_item(
     # body), so no return value needed; telemetry is the only side effect
     # we still want.
     try:
-        from src.repositories.usage import UsageRepository
-        UsageRepository(conn).emit_server_event(
+        usage_repo().emit_server_event(
             event_type="memory.undismiss",
             user_id=user["id"],
             username=user.get("email") or user["id"],

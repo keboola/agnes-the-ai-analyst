@@ -42,6 +42,7 @@ from src.repositories import (
     sync_settings_repo,
     sync_state_repo,
     table_registry_repo,
+    usage_repo,
     user_group_members_repo,
     user_groups_repo,
     users_repo,
@@ -525,10 +526,10 @@ def _build_context(
     # lets them reach /chat by URL (the route guard uses can_access). This is
     # UX only — the hard gate is on the route + API.
     #
-    # Computed on EVERY page, not just routes that thread a `conn`. Most routes
-    # call _build_context with only `user=`, so when conn is absent we open a
-    # short-lived system-db cursor (cheap — shared underlying connection) and
-    # close it. Defaults False when chat is disabled or there's no user.
+    # Computed on EVERY page. `has_explicit_grant` is backend-aware (it routes
+    # through the repo factory), so no connection is threaded here — it reads
+    # the active backend itself. Defaults False when chat is disabled or
+    # there's no user.
     ctx["can_chat"] = False
     try:
         _cc = getattr(request.app.state, "chat_config", None)
@@ -536,22 +537,9 @@ def _build_context(
             from app.auth.access import has_explicit_grant
             from app.resource_types import ResourceType
 
-            _conn = conn
-            _own_conn = False
-            if _conn is None:
-                from src.db import get_system_db
-
-                _conn = get_system_db()
-                _own_conn = True
-            try:
-                ctx["can_chat"] = bool(
-                    has_explicit_grant(
-                        user["id"], ResourceType.CHAT.value, "chat", _conn
-                    )
-                )
-            finally:
-                if _own_conn:
-                    _conn.close()
+            ctx["can_chat"] = bool(
+                has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat")
+            )
     except Exception:
         ctx["can_chat"] = False
     # Flex all extra context values for template compatibility
@@ -823,13 +811,15 @@ async def me_cowork_page(
     """User-facing AI Cowork page: setup bundle, MCP connection info, and available tools."""
     from app.api.mcp_passthrough import _visible_passthrough_tools
     from app.api.v2_marketplace import _accessible_plugins, _skills_for_plugin
-    from src.repositories.mcp_sources import MCPSourceRepository
+    from src.repositories import mcp_sources_repo
 
+    # Backend-aware reads (mcp_sources / tool grants live in Postgres on a PG
+    # instance) — a raw DuckDB conn here showed no MCP tools on Cowork.
     source_names = {
         s["id"]: s["name"]
-        for s in MCPSourceRepository(conn).list_all(enabled_only=True)
+        for s in mcp_sources_repo().list_all(enabled_only=True)
     }
-    raw_tools = _visible_passthrough_tools(user, conn)
+    raw_tools = _visible_passthrough_tools(user)
     passthrough_tools = []
     for t in raw_tools:
         sname = source_names.get(t["source_id"])
@@ -841,7 +831,7 @@ async def me_cowork_page(
             })
 
     skills = []
-    for plugin in _accessible_plugins(conn, user):
+    for plugin in _accessible_plugins(user):
         skills.extend(_skills_for_plugin(plugin["marketplace_id"], plugin["name"]))
 
     static_tools = [
@@ -1160,7 +1150,6 @@ async def catalog_package_detail(
     from app.services.stack_resolver import StackResolver
     from src.repositories.sync_state import SyncStateRepository
     from src.repositories.table_registry import TableRegistryRepository
-    from src.repositories.usage import UsageRepository
 
     pkg_repo = data_packages_repo()
     pkg = pkg_repo.get_by_slug(slug)
@@ -1176,7 +1165,7 @@ async def catalog_package_detail(
     # passed as ?source=…; default 'direct' for typed/bookmarked navigation.
     source_hint = request.query_params.get("source", "direct")
     try:
-        UsageRepository(conn).emit_server_event(
+        usage_repo().emit_server_event(
             event_type="data_package.view",
             user_id=user["id"],
             username=user.get("email") or user["id"],
@@ -1621,7 +1610,6 @@ async def memory_domain_detail(
     from app.auth.access import can_access
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from src.repositories.usage import UsageRepository
 
     domains_repo = memory_domains_repo()
     repo = knowledge_repo()
@@ -1634,7 +1622,7 @@ async def memory_domain_detail(
 
     source_hint = request.query_params.get("source", "direct")
     try:
-        UsageRepository(conn).emit_server_event(
+        usage_repo().emit_server_event(
             event_type="memory_domain.view",
             user_id=user["id"],
             username=user.get("email") or user["id"],
