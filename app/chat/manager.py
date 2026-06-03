@@ -273,12 +273,15 @@ class ChatManager:
         live = self._live.get(chat_id)
         if live is None or live.state == SessionState.DEAD:
             raise SessionNotFound(chat_id)
-        # SR-9: membership re-verify — only live participants may join.
-        parts = self._repo.get_session_participants(chat_id)
-        if not any(p.user_email == participant_email and p.left_at is None for p in parts):
-            raise PermissionError(
-                f"{participant_email} is not a live participant of {chat_id}"
-            )
+        # SR-9: for co-sessions, membership re-verify — only live participants
+        # may join. Non-co-session add_sink (e.g. Slack cross-surface) bypasses
+        # this check because participant rows don't exist for single-user sessions.
+        if live.participant_emails:  # truthy only for co-sessions
+            parts = self._repo.get_session_participants(chat_id)
+            if not any(p.user_email == participant_email and p.left_at is None for p in parts):
+                raise PermissionError(
+                    f"{participant_email} is not a live participant of {chat_id}"
+                )
         for msg in self._repo.list_messages(chat_id):
             await sink.send_json({
                 "type": "assistant_message" if msg.role == "assistant" else "user_msg",
