@@ -116,6 +116,15 @@ def test_delete_clears_vault(seeded_app):
         conn.close()
 
 
+def test_health_reports_vault_key_configured(seeded_app, monkeypatch):
+    from cryptography.fernet import Fernet
+    client = seeded_app["client"]
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+    assert client.get("/api/health").json()["vault_key_configured"] is True
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    assert client.get("/api/health").json()["vault_key_configured"] is False
+
+
 def test_set_secret_returns_409_without_vault_key(seeded_app, monkeypatch):
     _seed_source()
     monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
