@@ -41,7 +41,11 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from app.secrets_vault import SharedSecretsRepository, VaultKeyNotConfiguredError
+from app.secrets_vault import (
+    PerUserSecretsRepository,
+    SharedSecretsRepository,
+    VaultKeyNotConfiguredError,
+)
 from connectors.mcp import classifier as mcp_classifier
 from connectors.mcp import extractor as mcp_extractor
 from src.repositories import mcp_sources_repo, tool_registry_repo
@@ -490,6 +494,12 @@ async def delete_mcp_source(
     tool_count = len(tool_repo.list_for_source(source_id))
     tool_repo.delete_for_source(source_id)
     src_repo.delete(source_id)
+    # Clean up vault secrets so a deleted source leaves no orphaned encrypted
+    # blobs — the shared secret plus any per-user rows. (Devin Review on #530.)
+    SharedSecretsRepository(conn).delete(source_id)
+    pu_secrets = PerUserSecretsRepository(conn)
+    for uid in pu_secrets.list_for_source(source_id):
+        pu_secrets.delete(source_id, uid)
     _audit(
         conn,
         user["id"],

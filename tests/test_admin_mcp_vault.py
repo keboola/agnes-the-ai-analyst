@@ -116,6 +116,28 @@ def test_delete_clears_vault(seeded_app):
         conn.close()
 
 
+def test_delete_source_also_clears_vault_secret(seeded_app):
+    """Deleting the SOURCE must not leave an orphaned encrypted secret row."""
+    _seed_source()
+    client = seeded_app["client"]
+    hdr = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+    client.put("/api/admin/mcp-sources/src_v/secret", headers=hdr, json={"value": "orphan-me"})
+    conn = get_system_db()
+    try:
+        assert SharedSecretsRepository(conn).has("src_v") is True
+    finally:
+        conn.close()
+
+    r = client.delete("/api/admin/mcp-sources/src_v", headers=hdr)
+    assert r.status_code == 204
+
+    conn = get_system_db()
+    try:
+        assert SharedSecretsRepository(conn).has("src_v") is False
+    finally:
+        conn.close()
+
+
 def test_health_reports_vault_key_configured(seeded_app, monkeypatch):
     from cryptography.fernet import Fernet
     client = seeded_app["client"]
