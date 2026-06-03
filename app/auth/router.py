@@ -12,7 +12,7 @@ from argon2.exceptions import VerifyMismatchError
 
 from app.auth.jwt import create_access_token
 from app.auth.access import is_user_admin
-from app.auth.dependencies import _get_db
+from app.auth.dependencies import _get_db, get_current_user
 from app.auth.rate_limit import limiter as _rate_limiter
 from src.db import SYSTEM_ADMIN_GROUP
 
@@ -192,4 +192,103 @@ async def bootstrap(
         user_id=user_id,
         email=body.email,
         role="admin",
+    )
+
+
+class RefreshGroupsResponse(BaseModel):
+    """Response shape for ``POST /auth/refresh-groups``.
+
+    ``applied``: True iff the synced membership set was rewritten. False when
+    ``soft_failed`` (transient Admin SDK failure / empty fetch — previous
+    snapshot preserved) or ``denied`` (prefix filter excluded every fetched
+    group — caller has no eligible group on this instance).
+
+    ``added``/``removed``: diff of synced (``source='google_sync'``) rows
+    versus the snapshot before the call. Admin- and seed-sourced rows are
+    untouched and excluded from the diff. Reported as group display names
+    (Workspace email for synced rows, ``Admin``/``Everyone`` for mapped
+    system rows).
+
+    ``current``: every group name the caller is in **after** the refresh
+    across all sources (admin, seed, google_sync). Useful for the CLI to
+    show the user where their access stands.
+    """
+
+    applied: bool
+    denied: bool = False
+    soft_failed: bool = False
+    fetched: list[str] = []
+    added: list[str] = []
+    removed: list[str] = []
+    current: list[str] = []
+
+
+@router.post("/refresh-groups", response_model=RefreshGroupsResponse)
+@_rate_limiter.limit("5/minute")
+async def refresh_groups(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Re-sync the caller's Workspace group memberships against the Admin SDK.
+
+    Hot path the OSS callback covers via the browser OAuth round-trip; this
+    endpoint is the CLI / PAT counterpart so a user who's been added to a
+    new Workspace group between their last browser sign-ins can refresh
+    without re-logging in. Reuses the same write path as the OAuth
+    callback (``app.auth.group_sync.apply_user_groups``), so policy
+    (prefix filter, admin/everyone mapping, fail-soft on empty fetch)
+    stays consistent.
+
+    Returns the diff of synced rows + the post-refresh group set so the
+    caller can see exactly what changed. Rate-limited at 5/min/user —
+    refreshing is cheap on our side but each call costs a Workspace Admin
+    SDK quota unit.
+    """
+    from app.auth.group_sync import apply_user_groups
+
+    def _synced_names() -> set[str]:
+        rows = conn.execute(
+            "SELECT g.name FROM user_group_members m "
+            "JOIN user_groups g ON g.id = m.group_id "
+            "WHERE m.user_id = ? AND m.source = 'google_sync'",
+            [user["id"]],
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def _all_names() -> list[str]:
+        rows = conn.execute(
+            "SELECT g.name FROM user_group_members m "
+            "JOIN user_groups g ON g.id = m.group_id "
+            "WHERE m.user_id = ? ORDER BY g.name",
+            [user["id"]],
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    before = _synced_names()
+    result = apply_user_groups(user["id"], user["email"], conn)
+    after = _synced_names() if result.applied else before
+
+    added = sorted(after - before)
+    removed = sorted(before - after)
+    current = _all_names()
+
+    _audit(
+        user["id"],
+        "auth.refresh_groups",
+        result=(
+            "applied" if result.applied
+            else "denied" if result.denied
+            else "soft_failed"
+        ),
+    )
+
+    return RefreshGroupsResponse(
+        applied=result.applied,
+        denied=result.denied,
+        soft_failed=result.soft_failed,
+        fetched=result.fetched,
+        added=added,
+        removed=removed,
+        current=current,
     )

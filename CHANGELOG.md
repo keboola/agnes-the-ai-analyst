@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **`agnes auth refresh-groups` + `POST /auth/refresh-groups`** — re-sync the caller's Google Workspace group memberships against the live Admin SDK without a browser sign-in. Closes the gap that drove a recurring class of "I'm in the new group but Agnes can't see my access" tickets: previously the `user_group_members.source='google_sync'` snapshot refreshed *only* in the browser OAuth callback (`app/auth/group_sync.fetch_user_groups`), so CLI/PAT users (`agnes refresh-marketplace`, `agnes pull`, `/api/marketplace/*`) saw a frozen view of their groups until they re-signed-in on the dashboard. The new endpoint reuses the OAuth-callback write path (prefix filter, admin/everyone mapping, `replace_google_sync_groups`) via the extracted `apply_user_groups` helper, so policy stays single-sourced. Rate-limited at 5/min/user (Admin SDK quota guardrail). Response reports `added`/`removed`/`current` so the CLI shows exactly what changed.
+
+### Internal
+- **Extracted `app.auth.group_sync.apply_user_groups(user_id, email, conn) -> SyncResult`** from the OAuth callback's inline sync block (`app/auth/providers/google.py`), so the callback and the new refresh endpoint write the snapshot through one implementation. Cuts ~70 LoC of duplication and removes the OAuth-only assumption baked into the previous shape. Behavior preserved end-to-end (verified by the existing prefix/system-mapping/idempotency suite).
+
 ## [0.61.5] — 2026-06-03
 
 ### Added
