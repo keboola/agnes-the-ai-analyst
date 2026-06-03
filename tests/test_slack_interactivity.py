@@ -142,3 +142,46 @@ def test_decode_value_rejects_garbage():
     from services.slack_bot import blocks
     assert blocks.decode_value("not-json") == {}
     assert blocks.decode_value("") == {}
+
+
+def test_stop_button_blocks_shape():
+    from services.slack_bot import blocks
+    bs = blocks.stop_button_blocks(text="working...", chat_id="sess-1", owner="a@example.com")
+    section = next(b for b in bs if b["type"] == "section")
+    assert section["text"]["text"] == "working..."
+    actions = next(b for b in bs if b["type"] == "actions")
+    btn = actions["elements"][0]
+    assert btn["action_id"] == blocks.ACTION_STOP
+    assert blocks.decode_value(btn["value"]) == {"chat_id": "sess-1", "owner": "a@example.com"}
+
+
+def test_continue_on_web_block_is_link_only():
+    from services.slack_bot import blocks
+    block = blocks.continue_on_web_block(web_base="https://host.example", chat_id="sess-1")
+    btn = block["elements"][0]
+    assert btn["url"] == "https://host.example/chat?session=sess-1"
+    # Pure link button: no action_id callback (Slack never POSTs link clicks).
+    assert "action_id" not in btn
+
+
+def test_continue_on_web_block_none_when_no_web_base():
+    from services.slack_bot import blocks
+    # No public_url configured → no deep-link button rather than a broken URL.
+    assert blocks.continue_on_web_block(web_base="", chat_id="sess-1") is None
+
+
+def test_share_to_channel_blocks_carry_token():
+    from services.slack_bot import blocks
+    bs = blocks.share_to_channel_blocks(channel_id="C123", token="tok-abc")
+    actions = next(b for b in bs if b["type"] == "actions")
+    btn = actions["elements"][0]
+    assert btn["action_id"] == blocks.ACTION_SHARE_CHANNEL
+    assert blocks.decode_value(btn["value"]) == {"channel_id": "C123", "token": "tok-abc"}
+
+
+def test_new_session_block_carries_owner_and_channel():
+    from services.slack_bot import blocks
+    block = blocks.new_session_block(channel_id="D1", owner="a@example.com")
+    btn = block["elements"][0]
+    assert btn["action_id"] == blocks.ACTION_NEW_SESSION
+    assert blocks.decode_value(btn["value"]) == {"channel_id": "D1", "owner": "a@example.com"}
