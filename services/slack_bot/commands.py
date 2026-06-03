@@ -20,7 +20,7 @@ from services.slack_bot.sink import EphemeralCommandSink
 
 logger = logging.getLogger(__name__)
 
-_BG_TASKS: set = set()
+_BG_TASKS: set[asyncio.Task] = set()
 
 
 def _schedule(coro) -> None:

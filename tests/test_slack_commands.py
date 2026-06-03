@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
 
@@ -244,6 +243,28 @@ def test_agnes_cap_hit_ephemeral(monkeypatch):
     assert eph and "/agnes-new" in eph[0][1]
 
 
+def test_agnes_skips_ephemeral_when_session_already_attached(monkeypatch):
+    """When a permanent sink (web/DM) is already pumping the resolved DM
+    session, /agnes must inject the user turn but post NOTHING to
+    response_url — the persistent sink keeps streaming the answer."""
+    from types import SimpleNamespace
+    app, cmds = _agnes_app(monkeypatch)
+    mgr = app.state.chat_manager
+    # The session create_session returns is keyed "dm-1"; report it as live.
+    mgr.list_live = lambda: [SimpleNamespace(chat_id="dm-1")]
+    eph: list = []
+    async def fake_eph(url, text, blocks=None): eph.append((url, text))
+    monkeypatch.setattr(cmds, "send_ephemeral", fake_eph)
+
+    cmd = {"command": "/agnes", "text": "what is mrr", "user_id": "U1",
+           "channel_id": "C_PUBLIC", "response_url": "https://r/9"}
+    __import__("asyncio").run(cmds.dispatch_command(app, cmd))
+
+    assert mgr._sent == [("dm-1", "what is mrr")]  # message injected
+    assert eph == []                                # no ephemeral posted
+    assert mgr._attached == []                      # no new sink attached
+
+
 def test_agnes_new_archives_existing(monkeypatch):
     app, cmds = _agnes_app(monkeypatch)
     mgr = app.state.chat_manager
@@ -409,4 +430,5 @@ def test_ephemeral_command_sink_forwards_error(monkeypatch):
 
     asyncio.run(_run())
     assert len(sent) == 1
+    assert sent[0][1].startswith(":warning:")  # intact emoji (leading colon)
     assert "rate_limit" in sent[0][1] and "slow down" in sent[0][1]

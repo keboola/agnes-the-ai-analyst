@@ -10,6 +10,10 @@ from pydantic import BaseModel
 from urllib.parse import parse_qs
 
 from app.auth.dependencies import get_current_user
+# events' and commands' _run_logged/_schedule are INCOMPATIBLE variants:
+# events' _run_logged takes on_failure=(callback); commands' takes
+# response_url= and itself posts the recovery ephemeral. The commands pair
+# is aliased _cmd_* so the two can't be accidentally cross-used.
 from services.slack_bot.commands import (
     _help_body,
     _run_logged as _cmd_run_logged,

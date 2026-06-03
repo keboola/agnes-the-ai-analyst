@@ -120,6 +120,7 @@ def test_slack_sink_forwards_error_and_cancelled(monkeypatch):
 
     asyncio.run(_run())
     assert len(sent) == 2
+    assert sent[0][2].startswith(":warning:")  # intact emoji (leading colon)
     assert "daily_budget" in sent[0][2]
     assert "exhausted" in sent[0][2]
     assert "stopped" in sent[1][2]

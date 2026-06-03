@@ -46,9 +46,10 @@ class SlackSinkBridge:
         elif t == "error":
             kind = data.get("kind", "")
             msg = data.get("message", "")
-            await send_thread_reply(
-                self._channel, self._thread_ts, f":warning: {kind}: {msg}".strip(": ")
-            )
+            parts = [p for p in (kind, msg) if p]
+            detail = ": ".join(parts)
+            text = f":warning: {detail}" if detail else ":warning:"
+            await send_thread_reply(self._channel, self._thread_ts, text)
         elif t == "cancelled":
             await send_thread_reply(self._channel, self._thread_ts, "_(stopped)_")
         # ready, runner_ready, token, tool_call, tool_result, done: silently ignored
@@ -96,9 +97,10 @@ class EphemeralCommandSink:
             kind = data.get("kind", "")
             msg = data.get("message", "")
             self._delivered = True
-            await send_ephemeral(
-                self._response_url, f":warning: {kind}: {msg}".strip(": ")
-            )
+            parts = [p for p in (kind, msg) if p]
+            detail = ": ".join(parts)
+            text = f":warning: {detail}" if detail else ":warning:"
+            await send_ephemeral(self._response_url, text)
         elif t == "cancelled":
             self._delivered = True
             await send_ephemeral(self._response_url, "_(stopped)_")
