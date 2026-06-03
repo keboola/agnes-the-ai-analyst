@@ -144,14 +144,20 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     # (test-isolation / DuckDB-mode), same pattern as app/auth/access.py — NOT a
     # raw backend-split. On Postgres these route through the factory.
     "app/services/stack_resolver.py": {"DataPackagesRepository", "MemoryDomainsRepository", "ResourceGrantsRepository", "UserGroupMembersRepository", "UserGroupsRepository", "UserStackSubscriptionsRepository"},
-    "app/chat/persistence.py": {"ChatMessagePgRepository", "ChatSessionPgRepository", "UserWorkdirPgRepository"},
+    "app/chat/persistence.py": {"ChatMessagePgRepository", "ChatSessionPgRepository", "ChatSessionParticipantPgRepository", "UserWorkdirPgRepository"},
     "app/main.py": {"UserGroupMembersRepository", "UserRepository"},
     # app/web/router.py — migrated to table_registry_repo()/sync_state_repo()
     # (catalog detail pages); entry removed as the residual shrank.
     "cli/commands/admin_data_semantics.py": {"BqMetadataCacheRepository", "ColumnMetadataRepository", "DataPackagesRepository", "MetricRepository", "TableRegistryRepository"},
+    "services/slack_bot/commands.py": {"UserRepository"},
     "services/slack_bot/events.py": {"UserRepository"},
     "src/catalog_export.py": {"TableRegistryRepository"},
     "src/claude_md.py": {"ClaudeMdTemplateRepository"},
+    # grant_intersection.py — internal helper that materializes the live
+    # SessionPrincipal grant set from raw rows; resolves the participant
+    # identity via UserRepository at construct-time. Co-drive co-presence
+    # (#528). Followup tracks moving this through users_repo().
+    "src/grant_intersection.py": {"UserRepository"},
     "src/orchestrator.py": {"SyncStateRepository", "TableRegistryRepository", "ViewOwnershipRepository"},
     "src/profiler.py": {"MetricRepository"},
     "src/store_guardrails/purge.py": {"StoreEntitiesRepository", "StoreSubmissionsRepository"},
@@ -173,6 +179,10 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     "app/api/v2_sample.py",
     "app/auth/access.py",
     "app/auth/dependencies.py",
+    # pat_resolver.py — co-session JWT path resolves the principal-set
+    # against a fresh system_db handle inside its own try/finally.
+    # Co-drive co-presence (#528). Followup: route through factory.
+    "app/auth/pat_resolver.py",
     "app/auth/providers/google.py",
     "app/auth/providers/password.py",
     "app/auth/router.py",
