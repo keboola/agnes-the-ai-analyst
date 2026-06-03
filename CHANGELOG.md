@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.61.4] — 2026-06-03
+
 ### Changed
 - **Migrated the 7 remaining `base.html` leaf pages onto the design-system base (`base_ds`).** `admin_tables`, `admin_database`, `admin_sync`, `admin_mcp_sources`, `admin_mcp_source_detail`, `admin_mcp_tool_grants`, `cowork_help` — pages added on `main` *after* the #481 batch (Cowork + Universal MCP #474, db-state #455). Each is an extends-swap onto `base_ds` with its per-page component CSS moved into `{% block head_extra %}` and the redundant `_components.html` import dropped (`base_ds` auto-imports `ds`); every hero is kept in place (faithful — no visual change, render-verified). Only the 7 intentionally-bespoke templates (the catalog/marketplace `*_detail` card-heroes, the dead `admin_scheduler_runs` redirect, and the `_message` partial) now remain on `base.html`. Migration-tail follow-up to #482.
 
