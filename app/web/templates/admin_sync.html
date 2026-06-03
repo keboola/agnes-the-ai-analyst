@@ -1,8 +1,7 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}Sync — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{% import "_components.html" as ds %}
+{% block head_extra %}
 <style>
   .sync-toolbar {
     display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;
@@ -59,7 +58,9 @@
   .toast.success { background: #047857; }
   .toast.error   { background: #b91c1c; }
 </style>
+{% endblock %}
 
+{% block content %}
 <div>
   {% set page_hero_eyebrow = "Data Pipeline" %}
   {% set page_hero_title = "Sync" %}

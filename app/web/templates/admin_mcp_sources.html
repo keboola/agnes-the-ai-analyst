@@ -1,11 +1,10 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}MCP Sources — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
+{% block head_extra %}
 {# Design-system component macros — toolbar "+ Add MCP source" + modal
    buttons render via `ds.button`. JS-generated per-row `.icon-btn`
    actions stay page-local, mirroring admin_marketplaces.html. #}
-{% import "_components.html" as ds %}
 <style>
   .mcp-toolbar {
     display: flex; justify-content: space-between; align-items: center;
@@ -117,7 +116,9 @@
   .toast.success { background: #047857; }
   .toast.error { background: #b91c1c; }
 </style>
+{% endblock %}
 
+{% block content %}
 <div class="mcp-sources-page">
   {% set page_hero_eyebrow = "Agent Experience" %}
   {% set page_hero_title = "MCP Sources" %}
