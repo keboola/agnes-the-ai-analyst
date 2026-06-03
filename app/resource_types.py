@@ -386,13 +386,18 @@ def _slack_channel_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     id (e.g. ``C0123ABCD``) into the create-grant form on /admin/access; that
     writes ``(Everyone, slack_channel, <channel_id>)``. We project the distinct
     granted channel ids so the admin UI can list what is currently enabled.
-    Empty allowlist → no block (default-deny).
+    Scoped to the ``Everyone`` group to mirror enforcement
+    (``is_channel_allowlisted`` only honors Everyone) — an accidental grant to
+    another group does not falsely show a channel as enabled. Empty allowlist
+    → no block (default-deny).
     """
     rows = conn.execute(
-        """SELECT DISTINCT resource_id
-           FROM resource_grants
-           WHERE resource_type = 'slack_channel'
-           ORDER BY resource_id"""
+        """SELECT DISTINCT rg.resource_id
+           FROM resource_grants rg
+           JOIN user_groups ug ON ug.id = rg.group_id
+           WHERE ug.name = 'Everyone'
+             AND rg.resource_type = 'slack_channel'
+           ORDER BY rg.resource_id"""
     ).fetchall()
     if not rows:
         return []

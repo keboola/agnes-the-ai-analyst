@@ -256,6 +256,23 @@ class TestSlackChannelBlocks:
         )
         assert _slack_channel_blocks(system_conn) == []
 
+    def test_admin_group_grant_not_listed(self, system_conn):
+        """A slack_channel grant to a non-Everyone group (Admin) must NOT
+        appear in the projection — mirrors enforcement, which only honors
+        the Everyone group (see binding.is_channel_allowlisted)."""
+        from app.resource_types import _slack_channel_blocks
+        admin_gid = system_conn.execute(
+            "SELECT id FROM user_groups WHERE name = 'Admin'"
+        ).fetchone()[0]
+        system_conn.execute(
+            "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
+            "VALUES ('rg_sc_adm', ?, 'slack_channel', 'C_ADM')",
+            [admin_gid],
+        )
+        blocks = _slack_channel_blocks(system_conn)
+        items = [it for b in blocks for it in b["items"]]
+        assert not any(it["resource_id"] == "C_ADM" for it in items)
+
 
 class TestTableGrantsAlwaysOn:
     """v19+ — the env-gate AGNES_ENABLE_TABLE_GRANTS was removed; TABLE is

@@ -530,6 +530,18 @@ def test_mention_bot_loop_guard_returns_silently(monkeypatch):
     assert posts == [] and mgr.created == []
 
 
+def test_mention_self_user_loop_guard_returns_silently(monkeypatch):
+    import asyncio
+    import services.slack_bot.events as ev
+    posts = []
+    monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: posts.append(a))
+    conn = duckdb.connect(":memory:"); _ensure_schema(conn)
+    mgr = _FakeMgr()
+    app = _FakeApp(conn=conn, mgr=mgr)
+    asyncio.run(ev._handle_mention(app, {"channel": "C1", "ts": "1.0", "user": "U07BOT", "text": "<@U07BOT> hi"}))
+    assert posts == [] and mgr.created == []
+
+
 def test_mention_not_allowlisted_ephemeral_deny(monkeypatch):
     import asyncio
     import services.slack_bot.events as ev

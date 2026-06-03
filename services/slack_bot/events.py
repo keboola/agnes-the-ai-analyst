@@ -167,6 +167,8 @@ async def _handle_mention(app, event: dict) -> None:
     thread_ts = event.get("thread_ts") or event["ts"]
     slack_user_id = event.get("user")
     text = event.get("text", "")
+    if not slack_user_id:
+        return
     repo = app.state.chat_repo
     conn = repo._conn
 
@@ -233,7 +235,7 @@ async def _handle_mention(app, event: dict) -> None:
     # 8. Attach (NOT awaited — keep the 3s ack budget).
     if not _is_attached(mgr, session.id):
         sink = SlackSinkBridge(channel=channel, thread_ts=thread_ts, chat_id=session.id)
-        asyncio.create_task(mgr.attach(session.id, sink))
+        _schedule(mgr.attach(session.id, sink))
         await asyncio.sleep(0.1)
 
     # 9. Inject the user turn. send_user_message(chat_id, text) — no sender_email
