@@ -31,9 +31,10 @@ class SlackSinkBridge:
     something happened.
     """
 
-    def __init__(self, *, channel: str, thread_ts: str) -> None:
+    def __init__(self, *, channel: str, thread_ts: str, chat_id: str | None = None) -> None:
         self._channel = channel
         self._thread_ts = thread_ts
+        self._chat_id = chat_id
         self._closed = asyncio.Event()
 
     async def send_json(self, data: dict) -> None:

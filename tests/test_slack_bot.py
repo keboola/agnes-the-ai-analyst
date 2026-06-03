@@ -306,6 +306,15 @@ def test_slack_dm_assistant_message_reaches_thread(monkeypatch):
     ), sent
 
 
+class TestSinkBridgeChatId:
+    def test_chat_id_stored_and_optional(self):
+        from services.slack_bot.sink import SlackSinkBridge
+        b1 = SlackSinkBridge(channel="C1", thread_ts="111.0", chat_id="sess_1")
+        assert b1._chat_id == "sess_1"
+        b2 = SlackSinkBridge(channel="C1", thread_ts="111.0")
+        assert b2._chat_id is None
+
+
 class TestResolveBotUserId:
     def test_returns_user_id_on_ok(self, monkeypatch):
         import asyncio
