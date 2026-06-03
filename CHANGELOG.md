@@ -101,6 +101,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   standard step-lede size instead of the previous 13px chip.
 
 ### Fixed
+- `/home` "Mark me as onboarded" (and the offboard strip) now take effect
+  on reload. Authenticated, state-dependent HTML pages were served with no
+  `Cache-Control`, so after the button POSTed `/api/me/onboarded` the
+  `window.location.reload()` could re-render the browser-cached
+  pre-action document — the setup section never hid and the click looked
+  broken. Dynamic HTML responses now carry `Cache-Control: no-store`
+  (non-HTML assets keep their own caching policy untouched).
 - Google Workspace connector prompt's Step 8 verify no longer asks
   Claude to parse a row count out of `gws drive files list` / `gws
   chat spaces list` JSON. Claude would improvise a `python3 -c 'f"…

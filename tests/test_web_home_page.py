@@ -233,6 +233,26 @@ def test_home_no_auto_transition_after_post_until_reload(fresh_db):
     assert 'class="install-block"' not in post.text
 
 
+def test_home_sends_no_store_cache_control(fresh_db):
+    """/home renders the setup view vs. the nav hub off users.onboarded, so
+    the response MUST carry Cache-Control: no-store. Without it a browser can
+    serve the stale pre-POST document on window.location.reload() after the
+    "Mark me as onboarded" button fires — the setup section never hides and
+    the action looks broken. Regression guard for that fix."""
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn, onboarded=False)
+    finally:
+        conn.close()
+        close_system_db()
+
+    resp = _client().get("/home", cookies={"access_token": sess})
+    assert resp.status_code == 200
+    assert resp.headers.get("cache-control") == "no-store"
+
+
 # ── GWS Email-admin button render tests (admin_email knob coverage) ────────
 
 

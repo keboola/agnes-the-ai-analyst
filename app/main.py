@@ -422,6 +422,20 @@ def create_app() -> FastAPI:
         if request.url.path.startswith("/api/"):
             response.headers["X-Agnes-Latest-Version"] = APP_VERSION
             response.headers["X-Agnes-Min-Version"] = MIN_COMPAT_CLI_VERSION
+        # Authenticated, state-dependent HTML pages must never be served from
+        # the browser/bfcache/disk cache. /home is the canonical case: it
+        # renders the setup view vs. the nav hub off users.onboarded, so an
+        # action that flips server state (POST /api/me/onboarded via the
+        # "Mark me as onboarded" button) followed by window.location.reload()
+        # would re-render the *stale* pre-action document — the setup section
+        # never hides and the click looks broken. Stamp no-store on HTML
+        # responses that haven't already declared a caching policy. Non-HTML
+        # assets (css/js/images, parquet downloads, the immutable
+        # store/marketplace media endpoints) carry their own Cache-Control and
+        # are left untouched.
+        ctype = response.headers.get("content-type", "")
+        if ctype.startswith("text/html") and "cache-control" not in response.headers:
+            response.headers["Cache-Control"] = "no-store"
         return response
 
     # FastAPI debug toolbar — only when DEBUG=1 in env. Injects per-request
