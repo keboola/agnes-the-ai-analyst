@@ -251,7 +251,11 @@ class KnowledgePgRepository:
                 keys = []
                 for i, d in enumerate(granted_domains):
                     k = f"gd_{i}"; keys.append(f":{k}"); params[k] = d
-                visibility.append(f"domain IN ({','.join(keys)})")
+                visibility.append(
+                    "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                    "WHERE kid.item_id = knowledge_items.id "
+                    f"AND kid.domain_id IN ({','.join(keys)}))"
+                )
             sql_parts.append(" AND (" + " OR ".join(visibility) + ")")
         if hide_dismissed and dismissed_by_user:
             sql_parts.append(
@@ -422,7 +426,11 @@ class KnowledgePgRepository:
                 keys = []
                 for i, d in enumerate(granted_domains):
                     k = f"gd_{i}"; keys.append(f":{k}"); params[k] = d
-                vis.append(f"domain IN ({','.join(keys)})")
+                vis.append(
+                    "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                    "WHERE kid.item_id = knowledge_items.id "
+                    f"AND kid.domain_id IN ({','.join(keys)}))"
+                )
             parts.append(" AND (" + " OR ".join(vis) + ")")
         if hide_dismissed and dismissed_by_user:
             parts.append(
