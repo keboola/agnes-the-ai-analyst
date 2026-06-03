@@ -292,6 +292,35 @@ def test_agnes_new_no_existing_still_confirms(monkeypatch):
     assert eph  # always confirms
 
 
+def test_agnes_status_reports_count_and_cap(monkeypatch):
+    app, cmds = _agnes_app(monkeypatch)
+    mgr = app.state.chat_manager
+    mgr.active_count_for_user = lambda email: 2
+    mgr._config = __import__("types").SimpleNamespace(concurrency_per_user=3)
+    eph: list = []
+    async def fake_eph(url, text, blocks=None): eph.append((url, text))
+    monkeypatch.setattr(cmds, "send_ephemeral", fake_eph)
+
+    cmd = {"command": "/agnes-status", "text": "", "user_id": "U1",
+           "channel_id": "C1", "response_url": "https://r/7"}
+    __import__("asyncio").run(cmds.dispatch_command(app, cmd))
+    assert eph
+    body = eph[0][1]
+    assert "2" in body and "3" in body
+    assert "https://agnes.example.com/chat" in body
+
+
+def test_agnes_status_unbound_gets_code(monkeypatch):
+    app, cmds = _agnes_app(monkeypatch, bound=False)
+    eph: list = []
+    async def fake_eph(url, text, blocks=None): eph.append((url, text))
+    monkeypatch.setattr(cmds, "send_ephemeral", fake_eph)
+    cmd = {"command": "/agnes-status", "text": "", "user_id": "U_NEW",
+           "channel_id": "C1", "response_url": "https://r/8"}
+    __import__("asyncio").run(cmds.dispatch_command(app, cmd))
+    assert eph and "6-digit" in eph[0][1]
+
+
 def test_ephemeral_command_sink_forwards_first_assistant_message(monkeypatch):
     from services.slack_bot import sink as sink_mod
 

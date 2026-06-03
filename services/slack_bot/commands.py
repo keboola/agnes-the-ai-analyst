@@ -174,5 +174,31 @@ async def _cmd_new(app, cmd: dict) -> None:
         await send_ephemeral(response_url, "No active Agnes session to archive — your next `/agnes` starts fresh.")
 
 
-async def _cmd_status(app, cmd: dict) -> None:  # implemented in Task 8
-    raise NotImplementedError
+async def _cmd_status(app, cmd: dict) -> None:
+    repo = app.state.chat_repo
+    mgr = app.state.chat_manager
+    slack_user_id = cmd.get("user_id", "")
+    response_url = cmd.get("response_url", "")
+
+    user_email = lookup_user_email(repo, slack_user_id)
+    if user_email is None:
+        code = issue_verification_code(repo._conn, slack_user_id=slack_user_id)
+        public_url = getattr(app.state, "public_url", "")
+        setup_link = f"{public_url}/setup?slack=1" if public_url else "/setup?slack=1"
+        await send_ephemeral(
+            response_url,
+            "Bind your Slack identity to Agnes first:\n"
+            f"1. Visit {setup_link} while logged in.\n"
+            f"2. Paste this 6-digit code: *{code}* (expires in 10 minutes).",
+        )
+        return
+
+    active = mgr.active_count_for_user(user_email)
+    cap = mgr._config.concurrency_per_user
+    public_url = getattr(app.state, "public_url", "")
+    chat_link = f"{public_url}/chat" if public_url else "/chat"
+    await send_ephemeral(
+        response_url,
+        f"*Agnes status* — active sessions: *{active}* / {cap}\n"
+        f"Open the full chat UI: {chat_link}",
+    )
