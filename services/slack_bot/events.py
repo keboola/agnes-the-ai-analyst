@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any, Awaitable, Callable, Coroutine, Optional
 
 from services.slack_bot.binding import issue_verification_code, lookup_user_email
@@ -71,6 +72,20 @@ async def dispatch_event(app, event: dict[str, Any]) -> None:
         await _handle_dm(app, event)
     elif etype == "app_mention":
         await _handle_mention(app, event)
+
+
+def _strip_bot_mention(text: str, bot_user_id: str | None) -> str:
+    """Remove the bot's own ``<@ID>`` / ``<@ID|label>`` mention token(s) from
+    an app_mention text body and return the trimmed remainder.
+
+    ``bot_user_id`` None (not yet resolved) → just trim — never echo the raw
+    ``<@…>`` token into the runner.
+    """
+    if not text:
+        return ""
+    if bot_user_id:
+        text = re.sub(rf"<@{re.escape(bot_user_id)}(?:\|[^>]*)?>", "", text)
+    return text.strip()
 
 
 def _is_attached(mgr, chat_id: str) -> bool:

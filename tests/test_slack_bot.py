@@ -306,6 +306,24 @@ def test_slack_dm_assistant_message_reaches_thread(monkeypatch):
     ), sent
 
 
+class TestStripBotMention:
+    def test_strips_leading_mention(self):
+        from services.slack_bot.events import _strip_bot_mention
+        assert _strip_bot_mention("<@U07BOT> what is revenue?", "U07BOT") == "what is revenue?"
+
+    def test_strips_mid_text_mention(self):
+        from services.slack_bot.events import _strip_bot_mention
+        assert _strip_bot_mention("hey <@U07BOT> hello", "U07BOT") == "hey  hello".strip()
+
+    def test_no_bot_id_returns_trimmed(self):
+        from services.slack_bot.events import _strip_bot_mention
+        assert _strip_bot_mention("  hello  ", None) == "hello"
+
+    def test_handles_angle_with_label(self):
+        from services.slack_bot.events import _strip_bot_mention
+        assert _strip_bot_mention("<@U07BOT|agnes> hi", "U07BOT") == "hi"
+
+
 class TestChannelAllowlist:
     def _everyone_gid(self, conn):
         return conn.execute(
