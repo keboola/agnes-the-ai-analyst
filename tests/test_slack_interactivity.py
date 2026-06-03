@@ -321,3 +321,24 @@ def test_on_stop_unbound_clicker_denied(monkeypatch):
     asyncio.run(inter._on_stop(app, it))
     assert mgr._cancelled == []
     assert eph  # some denial ephemeral
+
+
+def test_share_token_store_and_get(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    inter._SHARE_ANSWERS.clear()
+    tok = inter.store_share_answer("a long answer body")
+    assert isinstance(tok, str) and tok
+    assert inter.get_share_answer(tok) == "a long answer body"
+
+
+def test_share_token_expires(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    inter._SHARE_ANSWERS.clear()
+    monkeypatch.setattr(inter, "_SHARE_TTL_SECONDS", -1)
+    tok = inter.store_share_answer("body")
+    assert inter.get_share_answer(tok) is None
+
+
+def test_share_token_missing_returns_none():
+    from services.slack_bot import interactivity as inter
+    assert inter.get_share_answer("nope") is None
