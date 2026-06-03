@@ -44,12 +44,13 @@ from app.auth.dependencies import _get_db
 from app.secrets_vault import SharedSecretsRepository
 from connectors.mcp import classifier as mcp_classifier
 from connectors.mcp import extractor as mcp_extractor
+from src.repositories import mcp_sources_repo, tool_registry_repo
 from src.repositories.audit import AuditRepository
-from src.repositories.mcp_sources import MCPSourceRepository
+from src.repositories.mcp_sources import MCPSourceRepository  # noqa: F401  # kept for type-only imports + tests that monkeypatch the symbol
 from src.repositories.tool_registry import (
     MATERIALIZE,
     PASSTHROUGH,
-    ToolRegistryRepository,
+    ToolRegistryRepository,  # noqa: F401  # kept for type-only imports + tests that monkeypatch the symbol
 )
 
 logger = logging.getLogger(__name__)
@@ -346,7 +347,7 @@ async def create_mcp_source(
     name = (payload.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
-    repo = MCPSourceRepository(conn)
+    repo = mcp_sources_repo()
     if repo.get_by_name(name) is not None:
         raise HTTPException(status_code=409, detail="name_exists")
     source_id = str(uuid.uuid4())
@@ -384,7 +385,7 @@ async def list_mcp_sources(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = MCPSourceRepository(conn)
+    repo = mcp_sources_repo()
     rows = repo.list_all(enabled_only=enabled_only)
     return [_serialize_source(r) for r in rows]
 
@@ -396,11 +397,11 @@ async def get_mcp_source(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Detail view — includes the list of tools registered against this source."""
-    repo = MCPSourceRepository(conn)
+    repo = mcp_sources_repo()
     src = repo.get(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
-    tools_repo = ToolRegistryRepository(conn)
+    tools_repo = tool_registry_repo()
     tools = tools_repo.list_for_source(source_id)
     out = _serialize_source(src)
     out["tools"] = [_serialize_tool(t) for t in tools]
@@ -415,7 +416,7 @@ async def update_mcp_source(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Partial update. Audit row carries before/after for the changed fields."""
-    repo = MCPSourceRepository(conn)
+    repo = mcp_sources_repo()
     existing = repo.get(source_id)
     if not existing:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
@@ -457,11 +458,11 @@ async def delete_mcp_source(
     """Hard delete — cascades to ``tool_registry`` + ``tool_grants`` for this
     source via :py:meth:`ToolRegistryRepository.delete_for_source` (which
     deletes grants per tool before the registry row)."""
-    src_repo = MCPSourceRepository(conn)
+    src_repo = mcp_sources_repo()
     existing = src_repo.get(source_id)
     if not existing:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
-    tool_repo = ToolRegistryRepository(conn)
+    tool_repo = tool_registry_repo()
     tool_count = len(tool_repo.list_for_source(source_id))
     tool_repo.delete_for_source(source_id)
     src_repo.delete(source_id)
@@ -498,7 +499,7 @@ async def set_mcp_source_secret(
     ``auth_secret_env`` lookup if the vault has no row, so an operator
     can roll out the vault without a flag-day rewrite of source rows.
     """
-    src_repo = MCPSourceRepository(conn)
+    src_repo = mcp_sources_repo()
     if not src_repo.get(source_id):
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     if not body.value:
@@ -518,7 +519,7 @@ async def delete_mcp_source_secret(
 ):
     """Drop the vault row for ``source_id``. Source then falls back to
     its ``auth_secret_env`` env-var, or to anonymous if neither is set."""
-    src_repo = MCPSourceRepository(conn)
+    src_repo = mcp_sources_repo()
     if not src_repo.get(source_id):
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     SharedSecretsRepository(conn).delete(source_id)
@@ -540,7 +541,7 @@ async def introspect_mcp_source(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Live-connect to the source and list its tools verbatim."""
-    src_repo = MCPSourceRepository(conn)
+    src_repo = mcp_sources_repo()
     src = src_repo.get(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
@@ -570,7 +571,7 @@ async def classify_mcp_source(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Introspect + run heuristic classifier; return per-tool proposals."""
-    src_repo = MCPSourceRepository(conn)
+    src_repo = mcp_sources_repo()
     src = src_repo.get(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
@@ -612,7 +613,7 @@ async def test_mcp_source(
 ):
     """Lightweight connectivity probe. Returns ``{ok, tool_count, error}``;
     HTTP 200 even on connect failure so the UI can render the diagnostic."""
-    src_repo = MCPSourceRepository(conn)
+    src_repo = mcp_sources_repo()
     src = src_repo.get(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
@@ -644,7 +645,7 @@ async def materialize_mcp_source(
     Returns the extractor's summary dict (source_name, extract_duckdb path,
     tables, errors). Use the SyncOrchestrator's next rebuild to attach.
     """
-    src_repo = MCPSourceRepository(conn)
+    src_repo = mcp_sources_repo()
     src = src_repo.get(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
@@ -697,11 +698,11 @@ async def create_mcp_tool(
     The repo enforces mode-specific rules (e.g. materialize requires
     ``schedule``); we surface those as 400s.
     """
-    src_repo = MCPSourceRepository(conn)
+    src_repo = mcp_sources_repo()
     if not src_repo.get(payload.source_id):
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     tool_id = payload.tool_id or str(uuid.uuid4())
-    repo = ToolRegistryRepository(conn)
+    repo = tool_registry_repo()
     if repo.get(tool_id) is not None:
         raise HTTPException(status_code=409, detail="tool_id_exists")
     try:
@@ -745,7 +746,7 @@ async def list_mcp_tools(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List all tools, optionally restricted to one source."""
-    repo = ToolRegistryRepository(conn)
+    repo = tool_registry_repo()
     rows = repo.list_for_source(source_id) if source_id else repo.list_all()
     return [_serialize_tool(r) for r in rows]
 
@@ -757,7 +758,7 @@ async def get_mcp_tool(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Detail view — includes the list of group_ids granted access."""
-    repo = ToolRegistryRepository(conn)
+    repo = tool_registry_repo()
     row = repo.get(tool_id)
     if not row:
         raise HTTPException(status_code=404, detail="mcp_tool_not_found")
@@ -774,14 +775,14 @@ async def update_mcp_tool(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Partial update. Audit row carries before/after for changed fields."""
-    repo = ToolRegistryRepository(conn)
+    repo = tool_registry_repo()
     existing = repo.get(tool_id)
     if not existing:
         raise HTTPException(status_code=404, detail="mcp_tool_not_found")
 
     # If source_id is being changed, validate the new source exists.
     if payload.source_id and payload.source_id != existing.get("source_id"):
-        if not MCPSourceRepository(conn).get(payload.source_id):
+        if not mcp_sources_repo().get(payload.source_id):
             raise HTTPException(status_code=404, detail="mcp_source_not_found")
 
     merged = _merge_tool_patch(existing, payload)
@@ -818,7 +819,7 @@ async def delete_mcp_tool(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Hard delete — cascades grants via the repo."""
-    repo = ToolRegistryRepository(conn)
+    repo = tool_registry_repo()
     existing = repo.get(tool_id)
     if not existing:
         raise HTTPException(status_code=404, detail="mcp_tool_not_found")
@@ -850,7 +851,7 @@ async def add_mcp_tool_grant(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Grant a user group access to the tool. Idempotent (ON CONFLICT DO NOTHING)."""
-    repo = ToolRegistryRepository(conn)
+    repo = tool_registry_repo()
     if not repo.get(tool_id):
         raise HTTPException(status_code=404, detail="mcp_tool_not_found")
     group_id = (payload.group_id or "").strip()
@@ -884,7 +885,7 @@ async def remove_mcp_tool_grant(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Revoke a group grant. Idempotent (DELETE missing row is a no-op)."""
-    repo = ToolRegistryRepository(conn)
+    repo = tool_registry_repo()
     if not repo.get(tool_id):
         raise HTTPException(status_code=404, detail="mcp_tool_not_found")
     repo.remove_grant(tool_id, group_id)

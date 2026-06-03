@@ -38,7 +38,20 @@ _current_token: contextvars.ContextVar[str] = contextvars.ContextVar(
 
 # Internal base URL for self-calls. Stays on HTTP/localhost since the MCP
 # server runs inside the same process/container as Agnes.
-_BASE = os.environ.get("AGNES_BASE_URL", "http://localhost:8000").rstrip("/")
+#
+# Devin Review on #474 flagged that reusing ``AGNES_BASE_URL`` (the
+# public-facing hostname operators set so Cowork VMs can reach Agnes)
+# made every self-call here round-trip through the public proxy
+# (TLS + reverse-proxy + DNS), adding latency and breaking when the
+# external URL isn't resolvable from inside the container (e.g. when
+# the reverse proxy is air-gapped from internal traffic). Use a
+# dedicated ``AGNES_MCP_INTERNAL_URL`` instead, defaulting to
+# ``http://localhost:8000`` — the right shape for self-calls in the
+# single-container deploy. Operators running Agnes split across
+# multiple pods can point this at the in-cluster service URL.
+_BASE = os.environ.get(
+    "AGNES_MCP_INTERNAL_URL", "http://localhost:8000"
+).rstrip("/")
 
 mcp = FastMCP(
     "Agnes",
