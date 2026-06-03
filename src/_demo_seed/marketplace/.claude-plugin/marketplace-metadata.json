@@ -1,0 +1,64 @@
+{
+  "plugins": {
+    "revenue-explorer": {
+      "category": "Data & Analytics",
+      "display_name": "Revenue Explorer",
+      "tagline": "Answer revenue questions over the demo orders dataset — no SQL required.",
+      "description": "**Revenue Explorer** turns plain-English revenue questions into queries over the demo `orders_demo` table:\n\n- Total revenue and average order value over a date range.\n- Revenue trend by day, week, or month.\n- Top order days and outliers.\n\nEvery read runs locally against the bundled synthetic dataset — zero cost, zero risk.",
+      "use_cases": [
+        {
+          "title": "Revenue over time",
+          "description": "Aggregate revenue across a date range.",
+          "prompt": "What was total revenue per month over the last 120 days?"
+        },
+        {
+          "title": "Average order value",
+          "description": "Compute AOV and spot trends.",
+          "prompt": "What is the average order value, and how has it changed?"
+        }
+      ],
+      "skills": {
+        "revenue-explorer": {
+          "display_name": "Revenue Explorer",
+          "tagline": "Summarise revenue and order value over a date range.",
+          "description": "Aggregate the demo orders table into revenue, order count, and average order value, optionally grouped by time period.",
+          "invocation": "/revenue-explorer:revenue-explorer <period>",
+          "when_to_use": "Use when you have a revenue question over the demo orders dataset and want an answer without writing SQL.",
+          "doc_links": [
+            { "name": "Skill", "path": "skills/revenue-explorer/SKILL.md" }
+          ]
+        }
+      }
+    },
+    "cohort-helper": {
+      "category": "Data & Analytics",
+      "display_name": "Cohort Helper",
+      "tagline": "Group demo customers into cohorts and track repeat purchases.",
+      "description": "**Cohort Helper** joins `orders_demo` to `customers_demo` to build simple cohorts:\n\n- Customers grouped by first-order month or country.\n- Repeat-purchase rates per cohort.\n- Cohort comparison over time.\n\nAll analysis is local against the bundled synthetic dataset.",
+      "use_cases": [
+        {
+          "title": "Repeat purchasers",
+          "description": "Find customers with more than one order.",
+          "prompt": "How many customers placed more than one order?"
+        },
+        {
+          "title": "Cohort by country",
+          "description": "Compare order behaviour across countries.",
+          "prompt": "Which countries have the highest repeat-purchase rate?"
+        }
+      ],
+      "skills": {
+        "cohort-helper": {
+          "display_name": "Cohort Helper",
+          "tagline": "Build customer cohorts and measure repeat purchases.",
+          "description": "Join the demo orders and customers tables to group customers into cohorts and compute repeat-purchase metrics.",
+          "invocation": "/cohort-helper:cohort-helper <dimension>",
+          "when_to_use": "Use when you want to segment demo customers into cohorts and compare their behaviour.",
+          "doc_links": [
+            { "name": "Skill", "path": "skills/cohort-helper/SKILL.md" }
+          ]
+        }
+      }
+    }
+  }
+}

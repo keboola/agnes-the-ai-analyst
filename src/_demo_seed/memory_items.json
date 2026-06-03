@@ -1,0 +1,282 @@
+{
+  "domains": [
+    {
+      "slug": "finance",
+      "name": "Finance",
+      "description": "Revenue, billing, and unit-economics definitions: MRR, ARR, churn, CAC, and revenue recognition rules.",
+      "icon": "💰",
+      "color": "#10b981"
+    },
+    {
+      "slug": "engineering",
+      "name": "Engineering",
+      "description": "API contracts, performance SLAs, deployment process, and reliability/error-budget conventions.",
+      "icon": "🛠️",
+      "color": "#6366f1"
+    },
+    {
+      "slug": "product",
+      "name": "Product",
+      "description": "Product analytics and engagement metrics: NPS, adoption, trial conversion, DAU/MAU.",
+      "icon": "📦",
+      "color": "#f59e0b"
+    },
+    {
+      "slug": "data",
+      "name": "Data",
+      "description": "Warehouse schemas, ETL scheduling, PII handling, and data-retention/soft-delete patterns.",
+      "icon": "📊",
+      "color": "#0ea5e9"
+    },
+    {
+      "slug": "operations",
+      "name": "Operations",
+      "description": "Incident severity, customer health scoring, and support SLAs.",
+      "icon": "⚙️",
+      "color": "#ef4444"
+    },
+    {
+      "slug": "infrastructure",
+      "name": "Infrastructure",
+      "description": "Auto-scaling, backups, disaster recovery, and environment-refresh conventions.",
+      "icon": "🗄️",
+      "color": "#8b5cf6"
+    }
+  ],
+  "items": [
+    {
+      "id": "demo-mem-001",
+      "title": "Monthly Recurring Revenue (MRR) includes only",
+      "content": "Monthly Recurring Revenue (MRR) includes only recurring subscription charges. One-time fees, usage overages, and professional services revenue are excluded. MRR = SUM(active_subscriptions.monthly_amount) where subscription.status = 'active'.",
+      "category": "finance",
+      "domain": "finance",
+      "status": "approved",
+      "mandated": true
+    },
+    {
+      "id": "demo-mem-002",
+      "title": "Our official churn metric is MRR",
+      "content": "Our official churn metric is MRR churn, not logo churn. Churn Rate = MRR lost from cancelled/downgraded subscriptions / Total MRR at period start. A customer downgrading from Enterprise to Starter counts as partial churn.",
+      "category": "finance",
+      "domain": "finance",
+      "status": "approved",
+      "mandated": true
+    },
+    {
+      "id": "demo-mem-003",
+      "title": "Annual Recurring Revenue (ARR) = MRR",
+      "content": "Annual Recurring Revenue (ARR) = MRR * 12, but only for customers on annual or multi-year contracts. Month-to-month customers are excluded from ARR reporting to investors.",
+      "category": "finance",
+      "domain": "finance",
+      "status": "approved",
+      "mandated": true
+    },
+    {
+      "id": "demo-mem-004",
+      "title": "Revenue is recognized ratably over the",
+      "content": "Revenue is recognized ratably over the contract period per ASC 606. Upfront payments create deferred revenue. Professional services revenue is recognized upon delivery milestone completion.",
+      "category": "finance",
+      "domain": "finance",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-005",
+      "title": "Customer Acquisition Cost (CAC) = (Sales",
+      "content": "Customer Acquisition Cost (CAC) = (Sales + Marketing spend) / New customers acquired. Excludes organic/referral customers. Payback period target is under 18 months.",
+      "category": "finance",
+      "domain": "finance",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-006",
+      "title": "Net Promoter Score is calculated on",
+      "content": "Net Promoter Score is calculated on a rolling 90-day window of survey responses. Only responses from active customers are included. Target NPS is 50+. Detractors (0-6), Passives (7-8), Promoters (9-10).",
+      "category": "product",
+      "domain": "product",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-007",
+      "title": "A feature is considered 'adopted' by",
+      "content": "A feature is considered 'adopted' by a user when they use it on 3+ distinct days within a 7-day window. Single usage events count as 'tried' not 'adopted'.",
+      "category": "product",
+      "domain": "product",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-008",
+      "title": "Free trial lasts 14 days. Conversion",
+      "content": "Free trial lasts 14 days. Conversion is attributed to the trial if payment occurs within 7 days after trial expiry. After 7 days post-expiry, it counts as a re-engagement conversion.",
+      "category": "product",
+      "domain": "product",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-009",
+      "title": "Daily Active Users / Monthly Active",
+      "content": "Daily Active Users / Monthly Active Users ratio measures stickiness. Our target is 40% for the core product. Mobile app DAU/MAU is tracked separately. An 'active' user must perform a meaningful action (not just login).",
+      "category": "product",
+      "domain": "product",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-010",
+      "title": "Public API is rate-limited at 1000",
+      "content": "Public API is rate-limited at 1000 requests per minute per tenant API key. Burst allowance is 50 requests. Rate limit headers (X-RateLimit-Remaining, X-RateLimit-Reset) are included in every response.",
+      "category": "engineering",
+      "domain": "engineering",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-011",
+      "title": "All user-facing database queries must complete",
+      "content": "All user-facing database queries must complete within 500ms at p95. Queries exceeding this threshold trigger an alert in Datadog. Background/batch queries have a 30-second timeout.",
+      "category": "engineering",
+      "domain": "engineering",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-012",
+      "title": "Production deployments require at least two",
+      "content": "Production deployments require at least two code review approvals. Hotfixes can proceed with one approval from a senior engineer plus post-deploy review within 24 hours.",
+      "category": "engineering",
+      "domain": "engineering",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-013",
+      "title": "Our SLA guarantees 99.9% uptime (43.8",
+      "content": "Our SLA guarantees 99.9% uptime (43.8 minutes downtime/month). Error budget is tracked weekly. When budget is exhausted, feature releases are frozen until reliability improves.",
+      "category": "engineering",
+      "domain": "engineering",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-014",
+      "title": "The orders table uses order_id (UUID)",
+      "content": "The orders table uses order_id (UUID) as primary key. Each row represents a single order event. Amendments create new rows with same customer_id and a parent_order_id reference. Status enum: draft, confirmed, fulfilled, cancelled, refunded.",
+      "category": "data",
+      "domain": "data",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-015",
+      "title": "Main ETL pipeline is scheduled at",
+      "content": "Main ETL pipeline is scheduled at 03:00 UTC. Data lands in the warehouse by 04:30 UTC. Downstream dashboards refresh at 05:00 UTC. If pipeline fails, on-call is paged after 30-minute retry window.",
+      "category": "data",
+      "domain": "data",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-016",
+      "title": "All PII columns (email, phone, address",
+      "content": "All PII columns (email, phone, address, SSN) must be SHA-256 hashed in the analytics/reporting layer. Raw PII is only accessible in the raw/staging layer with explicit IAM permissions. Hashing uses a project-wide salt stored in Secret Manager.",
+      "category": "data",
+      "domain": "data",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-017",
+      "title": "All business entities use soft-delete (deleted_at",
+      "content": "All business entities use soft-delete (deleted_at timestamp). Hard deletes are only for GDPR erasure requests. Soft-deleted records are excluded from analytics views but retained in raw tables for 7 years.",
+      "category": "data",
+      "domain": "data",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-018",
+      "title": "S1: Full outage, all hands on",
+      "content": "S1: Full outage, all hands on deck, 15-min response. S2: Major feature broken, 30-min response. S3: Minor degradation, next business day. S4: Cosmetic/low-impact, scheduled sprint work. S1/S2 require post-mortems within 48 hours.",
+      "category": "operations",
+      "domain": "operations",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-019",
+      "title": "Health Score (0-100) = 0.3 *",
+      "content": "Health Score (0-100) = 0.3 * usage_score + 0.25 * support_score + 0.2 * engagement_score + 0.15 * payment_score + 0.1 * growth_score. Accounts below 40 are flagged for CSM intervention. Recalculated weekly.",
+      "category": "operations",
+      "domain": "operations",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-020",
+      "title": "Tier 1 tickets: 4-hour first response",
+      "content": "Tier 1 tickets: 4-hour first response, 24-hour resolution target. Tier 2: 2-hour first response, 8-hour resolution. Enterprise/S1: 30-minute first response, 4-hour resolution. SLA compliance target is 95%.",
+      "category": "operations",
+      "domain": "operations",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-021",
+      "title": "Kubernetes HPA scales up when average",
+      "content": "Kubernetes HPA scales up when average CPU exceeds 70% for 3 minutes. Scale-down happens at 30% CPU sustained for 10 minutes. Min replicas: 3, Max replicas: 50. Memory-based scaling triggers at 80%.",
+      "category": "infrastructure",
+      "domain": "infrastructure",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-022",
+      "title": "Database backups: daily snapshots retained for",
+      "content": "Database backups: daily snapshots retained for 30 days, weekly snapshots retained for 1 year. Point-in-time recovery available for last 7 days. Backup integrity verified monthly via restore test.",
+      "category": "infrastructure",
+      "domain": "infrastructure",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-023",
+      "title": "Staging database is refreshed every Monday",
+      "content": "Staging database is refreshed every Monday at 02:00 UTC from a sanitized production snapshot. PII is anonymized during refresh. Staging SSL certs are managed separately from production.",
+      "category": "infrastructure",
+      "domain": "infrastructure",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-024",
+      "title": "When calculating gross margin, cloud provider",
+      "content": "When calculating gross margin, cloud provider credits (AWS/GCP) should be excluded from COGS. This gives a more accurate picture of sustainable unit economics. Credits are temporary and distort margins.",
+      "category": "finance",
+      "domain": "finance",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-025",
+      "title": "User sessions should timeout after 30",
+      "content": "User sessions should timeout after 30 minutes of inactivity. This balances security with usability. Refresh tokens extend active sessions. OAuth sessions follow the IdP's timeout.",
+      "category": "engineering",
+      "domain": "engineering",
+      "status": "approved",
+      "mandated": false
+    },
+    {
+      "id": "demo-mem-026",
+      "title": "Proposing a new 'Weekly Active Teams'",
+      "content": "Proposing a new 'Weekly Active Teams' metric: a team is 'active' if 2+ members performed a meaningful action in the last 7 days. This better captures B2B engagement than individual DAU.",
+      "category": "product",
+      "domain": "product",
+      "status": "approved",
+      "mandated": false
+    }
+  ]
+}

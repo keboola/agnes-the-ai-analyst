@@ -1,0 +1,24 @@
+{
+  "slug": "ecommerce-analytics",
+  "name": "E-commerce Analytics",
+  "description": "Synthetic e-commerce dataset for the demo instance: orders and customers. Use it to explore revenue trends, repeat-purchase behaviour, and customer geography without touching any real data source.",
+  "icon": "🛒",
+  "color": "#0ea5e9",
+  "status": "prod",
+  "when_to_use": [
+    "Analysing order volume, revenue, or average order value over time.",
+    "Segmenting customers by country or purchase behaviour.",
+    "Joining orders to customers to study repeat purchases and cohorts.",
+    "Demoing Agnes querying against a small, self-contained dataset."
+  ],
+  "example_questions": [
+    "What was total revenue per month over the last 120 days?",
+    "Which countries have the highest average order value?",
+    "How many customers placed more than one order?",
+    "What is the daily order count trend?"
+  ],
+  "tables": [
+    "orders_demo",
+    "customers_demo"
+  ]
+}
