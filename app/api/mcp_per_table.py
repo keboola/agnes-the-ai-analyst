@@ -30,10 +30,10 @@ import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.auth.access import can_access
 from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
 from src.db import get_analytics_db
+from src.rbac import can_access_table
 from src.repositories.table_registry import TableRegistryRepository
 
 logger = logging.getLogger(__name__)
@@ -98,7 +98,7 @@ async def query_table(
     table = tables_repo.get(table_id)
     if table is None:
         raise HTTPException(status_code=404, detail="table_not_found")
-    if not can_access(user["id"], ResourceType.TABLE.value, table_id, conn):
+    if not can_access_table(user, table_id, conn):
         raise HTTPException(status_code=403, detail=f"no grant on table {table_id!r}")
 
     # The orchestrator creates views in analytics.duckdb under the
