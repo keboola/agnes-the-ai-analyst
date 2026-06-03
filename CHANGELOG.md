@@ -52,6 +52,53 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `.github/workflows/check-bundled-seed.yml` content-diff step replaced the broken `diff -r <bundle> <(tar -cf - …)` pattern (process substitution yields a pseudo-file, not a directory — `diff -r` errored silently and a fallback full-tree diff ran without exit propagation, so the check was decorative) with staging the shipped sub-trees into a sibling directory and running directory-to-directory `diff -r --exclude='.source_ref'`. Strict content-match warns today; flips to hard-fail in a follow-up once forks confirm clean diffs.
 - `src/_bundled_seed/.source_ref` repointed at the new public reference seed — [`keboola/agnes-infra-template`](https://github.com/keboola/agnes-infra-template) `@4171aa89` (main) — alongside `scripts/sync_bundled_seed.sh` default `SOURCE_URL` and `docs/seed-repo-contract.md` § 1 + § 10 references. The template repo doubles as the Terraform skeleton; its `workspace/`, `install-prompt/`, `.claude-plugin/`, and `plugins/` sub-trees are now the canonical seed-content source.
 
+### Fixed (RBAC / atomicity sweep — merged from origin/main)
+- **Marketplace transiently drops plugins during Google group sync.** The
+  DuckDB `user_group_members.replace_google_sync_groups` rebuilt a user's
+  synced memberships as a non-transactional `DELETE` + per-group `INSERT` on
+  the shared singleton connection. Between the `DELETE` and the re-`INSERT`s
+  the user briefly had *zero* `google_sync` groups, so any concurrent read of
+  their membership — notably the `/marketplace.git/` endpoint resolving a
+  served plugin set for `agnes refresh-marketplace` — saw a partial group set
+  and dropped every plugin granted via a synced group, self-healing only once
+  the inserts committed. Now wrapped in a single transaction (DuckDB MVCC
+  isolates concurrent readers from the intermediate state), matching the
+  Postgres repo which was already atomic via `engine.begin()`. The
+  per-`INSERT` `try/except ConstraintException` is replaced with `ON CONFLICT
+  (user_id, group_id) DO NOTHING` so an admin/system_seed membership on the
+  same pair survives the refresh without aborting the transaction. Two
+  concurrent logins for the same user can now collide on the shared DuckDB
+  connection (optimistic concurrency raises `Conflict on tuple deletion!`
+  rather than blocking like Postgres), so the rebuild retries on
+  `TransactionException` instead of letting the fail-soft OAuth caller
+  silently drop a refresh. Cross-engine contract coverage added in
+  `tests/db_pg/test_rbac_contract.py`; DuckDB-specific reader-isolation and
+  retry coverage in `tests/test_group_sync_atomicity.py`.
+- **Knowledge-domain junction rewrites were non-atomic (same bug class).** A
+  sweep for the pattern above found two more DuckDB repo methods rewriting the
+  `knowledge_item_domains` junction as DELETE-then-INSERT on the shared
+  singleton connection, where the Postgres siblings were already atomic:
+  `MemoryDomainsRepository.replace_domains_for_item` and the domain-routing
+  path in `KnowledgeRepository.update`. A concurrent reader could see an item
+  momentarily domain-less (breaking domain-scoped RBAC reads), and an unknown
+  slug mid-rewrite left a half-applied edit — in `update` it even committed
+  the scalar column change while failing the domain swap. Both now wrap the
+  rewrite in a transaction (the FTS index rebuild in `update` stays *after*
+  commit — `PRAGMA create_fts_index` is catalog DDL that can't run inside a
+  transaction). Coverage in `tests/test_memory_atomicity.py`.
+- **Cascade/reconcile rewrites made atomic (same bug class).** Two more
+  multi-statement DuckDB repo mutations now run in a single transaction to
+  match their already-atomic Postgres siblings:
+  `ToolRegistryRepository.delete` (the `tool_grants` → `tool_registry` cascade,
+  which otherwise leaves a reader observing grants whose parent tool is gone)
+  and `ViewOwnershipRepository.reconcile` (the read + multi-row drop, where a
+  partial mid-loop state could let another source transiently appear to claim
+  a not-yet-released view name). Coverage in
+  `tests/test_repo_cascade_atomicity.py`.
+    (`resource_grants.fanout_system_for_group` was reviewed and left as-is:
+  insert-only / idempotent, and the PG sibling is likewise per-insert — no
+  drop-to-empty window.)
+
 ## [0.60.0] — 2026-06-02
 
 ### Internal

@@ -84,19 +84,33 @@ class ViewOwnershipRepository:
         let a different source claim it without operator intervention.
         """
         live = set(current_pairs)
-        all_rows = self.conn.execute(
-            "SELECT source_name, view_name FROM view_ownership"
-        ).fetchall()
-        dropped = [
-            (src, view) for src, view in all_rows
-            if (src, view) not in live
-        ]
-        for src, view in dropped:
-            self.conn.execute(
-                "DELETE FROM view_ownership "
-                "WHERE source_name = ? AND view_name = ?",
-                [src, view],
-            )
+        # One transaction over the read + the multi-row drop so a concurrent
+        # reader sees the full ownership set or the fully-reconciled set, never
+        # a partial mid-loop state (a half-dropped set could let another source
+        # transiently appear to claim a not-yet-released name). Matches the PG
+        # sibling's single ``engine.begin()``.
+        self.conn.execute("BEGIN")
+        try:
+            all_rows = self.conn.execute(
+                "SELECT source_name, view_name FROM view_ownership"
+            ).fetchall()
+            dropped = [
+                (src, view) for src, view in all_rows
+                if (src, view) not in live
+            ]
+            for src, view in dropped:
+                self.conn.execute(
+                    "DELETE FROM view_ownership "
+                    "WHERE source_name = ? AND view_name = ?",
+                    [src, view],
+                )
+            self.conn.execute("COMMIT")
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
         return dropped
 
     def list_for_source(self, source_name: str) -> List[str]:
