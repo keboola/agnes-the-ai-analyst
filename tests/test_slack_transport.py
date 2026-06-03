@@ -134,7 +134,6 @@ def test_slack_config_default_transport_http():
     ("", "http"),             # empty -> http
 ])
 def test_load_chat_config_parses_slack_transport(tmp_path, raw_transport, expected, caplog):
-    import logging
     from app.chat.config import load_chat_config
     yaml_path = tmp_path / "instance.yaml"
     yaml_path.write_text(
@@ -154,5 +153,16 @@ def test_load_chat_config_missing_slack_block_defaults_http(tmp_path):
     from app.chat.config import load_chat_config
     yaml_path = tmp_path / "instance.yaml"
     yaml_path.write_text("chat:\n  enabled: true\n")
+    cfg = load_chat_config(yaml_path)
+    assert cfg.slack.transport == "http"
+
+
+@pytest.mark.parametrize("scalar", ["socket", "true", "123"])
+def test_load_chat_config_scalar_slack_block_defaults_http(tmp_path, scalar):
+    """A non-mapping `slack:` value (operator shorthand) must not crash startup;
+    it falls back to the default transport."""
+    from app.chat.config import load_chat_config
+    yaml_path = tmp_path / "instance.yaml"
+    yaml_path.write_text(f"chat:\n  enabled: true\n  slack: {scalar}\n")
     cfg = load_chat_config(yaml_path)
     assert cfg.slack.transport == "http"

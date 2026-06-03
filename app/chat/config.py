@@ -62,7 +62,8 @@ class ChatConfig:
 
 
 def _parse_slack_config(raw_chat: dict) -> SlackConfig:
-    raw_slack = raw_chat.get("slack", {}) or {}
+    _s = raw_chat.get("slack")
+    raw_slack = _s if isinstance(_s, dict) else {}
     raw_value = raw_slack.get("transport", "http")
     transport = str(raw_value).strip().lower() if raw_value is not None else ""
     if transport not in ("http", "socket"):
