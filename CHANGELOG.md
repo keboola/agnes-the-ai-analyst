@@ -10,6 +10,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **Slack Socket Mode transport (optional).** A second inbound Slack
+  transport selectable per instance via `chat.slack.transport: http|socket`
+  in `instance.yaml` (or the `SLACK_TRANSPORT` env var; default `http`).
+  Socket Mode delivers events over an outbound WebSocket — no public webhook
+  URL required. Both transports funnel through the existing event dispatcher
+  (no forked handler logic). Requires the new `slack-socket` extra
+  (`pip install '.[slack-socket]'`), a single worker (`UVICORN_WORKERS=1`),
+  and an `xapp-`/`xoxb-` token pair; all gates fail closed (log + disable
+  Slack, never crash, never start a dead WS). Two manifest stanzas documented
+  in `docs/slack-manifest-http.md` and `docs/slack-manifest-socket.md`.
+
+### Fixed
+- **Slack events: ack-then-async.** `POST /api/slack/events` now schedules the
+  (slow, sandbox-spawning) event dispatch and returns the `200` ack
+  immediately instead of awaiting it. The previous `await` blew Slack's 3s
+  ack budget on the first DM (E2B spawn > 3s), triggering Slack retries that
+  could race a duplicate chat session. A failure inside the detached dispatch
+  is logged (and surfaced via the best-effort recovery seam) rather than
+  retried by Slack.
+
 ## [0.60.0] — 2026-06-02
 
 ### Internal
