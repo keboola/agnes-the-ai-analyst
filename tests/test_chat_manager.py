@@ -14,7 +14,7 @@ import pytest
 from src.db import _ensure_schema
 
 from app.chat.config import ChatConfig
-from app.chat.manager import ChatManager, ConcurrencyCapHit
+from app.chat.manager import ChatManager, ConcurrencyCapHit, SinkEntry
 from app.chat.persistence import ChatRepository
 from app.chat.types import SessionState, Surface
 from app.chat.workdir import WorkdirManager
@@ -366,9 +366,10 @@ def test_send_user_message_rejects_when_rate_limit_exceeded(tmp_path):
         ws.send_json = AsyncMock()
         mgr._live[s.id] = LiveSession(
             chat_id=s.id, user_email="u@x", state=SessionState.ACTIVE,
-            handle=FakeHandle(), ws=ws,
+            handle=FakeHandle(),
             started_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
+            sinks=[SinkEntry(participant_email="u@x", sink=ws)],
         )
         # 3 messages allowed
         for i in range(3):
@@ -420,9 +421,10 @@ def test_send_user_message_rejects_when_session_tokens_exhausted(tmp_path):
         ws.send_json = AsyncMock()
         mgr._live[s.id] = LiveSession(
             chat_id=s.id, user_email="u@x", state=SessionState.ACTIVE,
-            handle=FakeHandle(), ws=ws,
+            handle=FakeHandle(),
             started_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
+            sinks=[SinkEntry(participant_email="u@x", sink=ws)],
         )
         with pytest.raises(RuntimeError, match="max_session_tokens_exhausted"):
             await mgr.send_user_message(s.id, "next")
@@ -471,9 +473,10 @@ def test_idle_reaper_kills_sessions_older_than_max_session_seconds(tmp_path):
         # Inject an "old" live session — started > max_session_seconds ago.
         mgr._live[s.id] = LiveSession(
             chat_id=s.id, user_email="u@x", state=SessionState.ACTIVE,
-            handle=None, ws=ws,
+            handle=None,
             started_at=now - timedelta(seconds=5),
             last_activity=now,
+            sinks=[SinkEntry(participant_email="u@x", sink=ws)],
         )
 
         await mgr._reap_once()  # single sweep; no sleep loop
@@ -582,9 +585,10 @@ def test_daily_tokens_cached_per_user(tmp_path):
         ws.send_json = AsyncMock()
         mgr._live[s.id] = LiveSession(
             chat_id=s.id, user_email="u@x", state=SessionState.ACTIVE,
-            handle=FakeHandle(), ws=ws,
+            handle=FakeHandle(),
             started_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
+            sinks=[SinkEntry(participant_email="u@x", sink=ws)],
         )
         with patch.object(repo, "daily_anthropic_tokens", wraps=repo.daily_anthropic_tokens) as mock_fn:
             await mgr.send_user_message(s.id, "msg1")
@@ -646,3 +650,19 @@ def test_double_crash_dies_after_three(manager: ChatManager):
             attach_task.cancel()
 
     asyncio.run(go())
+
+
+def test_active_count_for_user_matches_private(monkeypatch):
+    from types import SimpleNamespace
+    from app.chat.manager import ChatManager
+    from app.chat.types import SessionState
+
+    mgr = ChatManager.__new__(ChatManager)  # bypass __init__; we set only _live
+    mgr._live = {
+        "a": SimpleNamespace(user_email="x@e.com", state=SessionState.ACTIVE),
+        "b": SimpleNamespace(user_email="x@e.com", state=SessionState.IDLE),
+        "c": SimpleNamespace(user_email="y@e.com", state=SessionState.ACTIVE),
+        "d": SimpleNamespace(user_email="x@e.com", state=SessionState.DEAD),
+    }
+    assert mgr.active_count_for_user("x@e.com") == 2
+    assert mgr.active_count_for_user("x@e.com") == mgr._active_count_for_user("x@e.com")

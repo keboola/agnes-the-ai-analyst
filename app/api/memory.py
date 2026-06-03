@@ -11,7 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
-from app.auth.access import require_admin, is_user_admin, can_access
+from app.auth.access import require_admin, is_user_admin, can_access, can_access_session
+from app.auth.session_principal import SessionPrincipal
 from src.repositories.knowledge import KnowledgeRepository
 from src.repositories.audit import AuditRepository
 
@@ -62,14 +63,20 @@ _BULK_UPDATE_ALLOWED = frozenset({
 })
 
 
-def _is_privileged_viewer(user: dict, conn: duckdb.DuckDBPyConnection) -> bool:
+def _is_privileged_viewer(user, conn: duckdb.DuckDBPyConnection) -> bool:
     """Admins (members of the Admin system group, per RBAC v13) are the
     privileged viewer tier. Pre-v13 the schema also had a km_admin role; v13
     collapsed the role hierarchy into groups, so the corporate-memory admin
     capability now lives on top of plain admin membership. Module authors
     needing a finer-grained gate (curator-only, etc.) should add a
     ``ResourceType.CORPORATE_MEMORY_ADMIN`` resource type and gate with
-    ``require_resource_access`` instead of extending this helper."""
+    ``require_resource_access`` instead of extending this helper.
+
+    A SessionPrincipal is NEVER a privileged viewer — co-sessions never
+    hold admin authority.
+    """
+    if isinstance(user, SessionPrincipal):
+        return False
     user_id = user.get("id")
     if not user_id:
         return False
@@ -77,7 +84,7 @@ def _is_privileged_viewer(user: dict, conn: duckdb.DuckDBPyConnection) -> bool:
 
 
 def _effective_groups(
-    user: dict, conn: duckdb.DuckDBPyConnection
+    user, conn: duckdb.DuckDBPyConnection
 ) -> Optional[List[str]]:
     """Audience-filter group list for the caller, or ``None`` for admins
     (no filter — see all items regardless of audience).
@@ -86,7 +93,15 @@ def _effective_groups(
     Pre-v13 this read ``users.groups`` JSON; that column was dropped in v13
     and the membership is now materialized in ``user_group_members`` with a
     ``source`` discriminator (admin / google_sync / system_seed).
+
+    For a SessionPrincipal the result is always a non-None list (never admin)
+    and audience-filtering is skipped (empty list → no audience filter applied,
+    which is safe because MEMORY_DOMAIN grants gate the actual domain access).
     """
+    if isinstance(user, SessionPrincipal):
+        # Co-sessions are never admins; use no audience restriction
+        # (items are already filtered by granted_domains from the intersection).
+        return []
     if _is_privileged_viewer(user, conn):
         return None
     user_id = user.get("id")
@@ -102,7 +117,7 @@ def _effective_groups(
 
 
 def _caller_granted_memory_domains(
-    user: dict,
+    user,
     conn: duckdb.DuckDBPyConnection,
 ) -> Optional[List[str]]:
     """Domains the caller has been granted access to via resource_grants.
@@ -117,7 +132,13 @@ def _caller_granted_memory_domains(
     of grants — same convention as ``_effective_groups``). Returns an
     empty list when the caller has no grants — the SQL EXISTS-join collapses
     in that case, preserving pre-RBAC behaviour.
+
+    For a SessionPrincipal, returns the intersection's memory_domain set
+    (never None — co-sessions never receive admin god-mode).
     """
+    if isinstance(user, SessionPrincipal):
+        from app.resource_types import ResourceType
+        return list(user.intersection.get(ResourceType.MEMORY_DOMAIN.value, frozenset()))
     if _is_privileged_viewer(user, conn):
         return None
     user_id = user.get("id")
@@ -1597,7 +1618,11 @@ def _build_per_domain_markdown(
     dom = repo.get_by_slug(slug)
     if not dom:
         raise HTTPException(status_code=404, detail="memory_domain_not_found")
-    if not can_access(user["id"], "memory_domain", dom["id"], conn):
+    if isinstance(user, SessionPrincipal):
+        allowed = can_access_session(user, "memory_domain", dom["id"])
+    else:
+        allowed = can_access(user["id"], "memory_domain", dom["id"], conn)
+    if not allowed:
         raise HTTPException(status_code=403, detail="no_grant")
 
     # Pull items the same way the manifest md5 helper does — id order,
@@ -1688,7 +1713,9 @@ async def get_bundle(
     # items are exempted by the EXISTS subquery's status guard inside
     # ``list_items``; the user's dismissal row for a then-approved item is
     # silently ignored if/when the item is later mandated.
-    dismissed_by_user_id = user["id"]
+    # A SessionPrincipal has no dict .get("id"); use None so no user-specific
+    # dismissal is applied (co-sessions don't track per-user dismissals).
+    dismissed_by_user_id = None if isinstance(user, SessionPrincipal) else user["id"]
     # v49: Required tier rides on is_required boolean. Was statuses=['mandatory'].
     mandatory = repo.list_items(
         is_required=True,

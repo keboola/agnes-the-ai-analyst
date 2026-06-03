@@ -48,6 +48,7 @@ class ResourceType(StrEnum):
     MEMORY_ITEM = "memory_item"
     RECIPE = "recipe"
     CHAT = "chat"
+    SLACK_CHANNEL = "slack_channel"
 
 
 # Shape returned by ``list_blocks`` delegates. Kept as plain ``dict`` to keep
@@ -373,6 +374,49 @@ def _chat_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
 
 
 # ---------------------------------------------------------------------------
+# Slack channel allowlist projection
+# ---------------------------------------------------------------------------
+
+
+def _slack_channel_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
+    """Project the per-channel mention allowlist.
+
+    There is **no domain table** — the ``resource_grants`` rows themselves are
+    the allowlist. An admin enables Agnes in a channel by pasting its channel
+    id (e.g. ``C0123ABCD``) into the create-grant form on /admin/access; that
+    writes ``(Everyone, slack_channel, <channel_id>)``. We project the distinct
+    granted channel ids so the admin UI can list what is currently enabled.
+    Scoped to the ``Everyone`` group to mirror enforcement
+    (``is_channel_allowlisted`` only honors Everyone) — an accidental grant to
+    another group does not falsely show a channel as enabled. Empty allowlist
+    → no block (default-deny).
+    """
+    rows = conn.execute(
+        """SELECT DISTINCT rg.resource_id
+           FROM resource_grants rg
+           JOIN user_groups ug ON ug.id = rg.group_id
+           WHERE ug.name = 'Everyone'
+             AND rg.resource_type = 'slack_channel'
+           ORDER BY rg.resource_id"""
+    ).fetchall()
+    if not rows:
+        return []
+    return [{
+        "id": "slack_channels",
+        "name": "Slack channels",
+        "items": [
+            {
+                "resource_id": r[0],
+                "name": r[0],
+                "category": "slack_channel",
+                "description": "Channel where @agnes mentions are answered.",
+            }
+            for r in rows
+        ],
+    }]
+
+
+# ---------------------------------------------------------------------------
 # Registry — the one place that gets edited when adding a new resource type
 # ---------------------------------------------------------------------------
 
@@ -439,6 +483,17 @@ RESOURCE_TYPES: dict[ResourceType, ResourceTypeSpec] = {
         ),
         id_format="chat",
         list_blocks=_chat_blocks,
+    ),
+    ResourceType.SLACK_CHANNEL: ResourceTypeSpec(
+        key=ResourceType.SLACK_CHANNEL,
+        display_name="Slack channels",
+        description=(
+            "A Slack channel where @agnes mentions are answered. Grant "
+            "(Everyone, slack_channel, <channel_id>) to enable Agnes there; "
+            "with no grant the channel is silent (default-deny)."
+        ),
+        id_format="<channel_id>",
+        list_blocks=_slack_channel_blocks,
     ),
 }
 

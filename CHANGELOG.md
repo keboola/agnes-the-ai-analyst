@@ -10,6 +10,134 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.0] — 2026-06-03
+
+### Added
+- Web chat: a non-interactive "Slack" pill in the `/chat` sidebar marks sessions that originated from Slack (`slack_dm` / `slack_thread`), and `/chat?session=<id>` now deep-links straight into a session on page load. Both are client-side renders that degrade gracefully on older servers; the deep link is a one-shot, RBAC-guarded by the existing session-scoped endpoints (an unknown/forbidden id lands on an empty chat with an error status rather than leaking data).
+- **Slack Block Kit interactivity.** Bot DM replies now carry interactive
+  buttons, delivered via a new signature-verified `POST /api/slack/interactivity`
+  endpoint (ack-then-async, empty 200): **Stop** (owner-gated, cancels the live
+  turn), **Continue on web** (deep link to `/chat?session=<id>`), and **New
+  session** (owner-gated soft-archive, shared path with `/agnes-new`). The Stop
+  button is posted on the first assistant turn and stripped when the turn ends
+  (`done`), errors, or is cancelled. A **Share to channel** consumer is also
+  added (promotes an answer to a public in-thread post — allowlist re-checked at
+  click time, audited as `slack_share`); its producer attaches with the slash
+  `/agnes` ephemeral surface in a later change. New leaf `blocks.py` builders +
+  `interactivity.py` parser/router; `sender.py` gains block/update/channel/
+  ephemeral/`response_url` primitives; `binding.py` gains a per-channel
+  allowlist check; the Slack events webhook now acks-then-processes. Manifest
+  enables interactivity and documents HTTP vs Socket Mode stanzas.
+- Slack slash commands: `/agnes <question>` (runs on your persistent DM session so the answer also appears on web `/chat`), `/agnes-new` (archive the current DM session), `/agnes-status` (active session count vs cap + a `/chat` deep link), and `/agnes help`. New signature-verified `POST /api/slack/commands` endpoint acks within 3 s and delivers answers asynchronously via Slack `response_url`.
+- Slack channel mentions: `@agnes` in an allowlisted channel now opens a public in-thread session owned by the mention starter, gated by a new `slack_channel` resource type (default-deny; admins enable a channel by granting `(Everyone, slack_channel, <channel_id>)` on /admin/access). Denials are ephemeral.
+- **Slack Socket Mode transport (optional).** A second inbound Slack
+  transport selectable per instance via `chat.slack.transport: http|socket`
+  in `instance.yaml` (or the `SLACK_TRANSPORT` env var; default `http`).
+  Socket Mode delivers events over an outbound WebSocket — no public webhook
+  URL required. Both transports funnel through the existing event dispatcher
+  (no forked handler logic). Requires the new `slack-socket` extra
+  (`pip install '.[slack-socket]'`), a single worker (`UVICORN_WORKERS=1`),
+  and an `xapp-`/`xoxb-` token pair; all gates fail closed (log + disable
+  Slack, never crash, never start a dead WS). Two manifest stanzas documented
+  in `docs/slack-manifest-http.md` and `docs/slack-manifest-socket.md`.
+
+### Fixed
+- **Co-drive co-presence (Phase 5b) — security/functional hardening.**
+  Six adversarial-review findings addressed:
+  - `GET /api/memory/bundle` now handles `SessionPrincipal` callers correctly:
+    the `?domain=` path uses `can_access_session` (intersection-gated), the
+    non-domain path resolves granted domains from the intersection, and neither
+    path crashes on `user["id"]` for co-session tokens. Shared domains → 200;
+    owner-only domains → 403; previously both → 500.
+  - `POST /api/mcp/query-table/{id}` replaced `can_access(user["id"], ...)` with
+    the principal-aware `can_access_table(user, ...)` chokepoint. Co-session
+    tokens on single-participant tables now correctly return 403 instead of 500.
+  - `POST /api/query` internal-table path (`_run_internal_query`) now applies the
+    same `SessionPrincipal` shim as `v2_sample.py`: is_admin=False and an
+    empty-identity filter so internal queries by co-session tokens return 0 rows
+    instead of crashing.
+  - `prepare_ephemeral_session_dir` no longer calls `render_workspace_prompt` for
+    co-drive sessions. The owner-scoped CLAUDE.md render leaked owner-specific
+    catalog metadata (`{{tables}}`, `{{marketplaces}}`) into the shared ephemeral
+    workspace. The static "# Co-drive session" header is always used instead.
+  - Added `WebSocket /api/chat/sessions/{id}/join` route for co-drive live join:
+    consumes a short-lived per-participant ticket, re-verifies membership (SR-9),
+    calls `mgr.add_sink(session_id, ws, participant_email)`, and streams frames.
+    `POST /api/chat/{id}/join-ticket` now issues via `_TICKETS` (carrying the
+    participant email) instead of a co_session JWT. Both `ws_stream` and
+    `ws_join` thread `sender_email` into every `send_user_message` call so
+    per-sender budgets (SR-10) and departed-participant replay-skip (SR-11) work.
+  - Slack binding brute-force protection rebuilt as a **per-caller redeem
+    rate-limit**. The prior per-code attempt counter was dead code (a wrong
+    guess matches no code row), and an earlier global `UPDATE ... SET
+    attempts = attempts + 1` (no WHERE clause) was a cross-user DoS. The redeem
+    path now counts FAILED attempts per redeeming `user_email` in a sliding
+    10-minute window (lazy `slack_binding_redeem_log` table, mirroring the
+    issuance log); the 6th failed attempt raises `BindingThrottled` before the
+    code is even inspected — bounding brute force of the 1M-PIN space against a
+    victim's live code while isolating callers from one another (no cross-user
+    eviction). A successful bind clears the caller's attempt history.
+    `POST /api/slack/bind` maps `BindingThrottled` to **429** (not 500). Audit
+    params use `json.dumps` to prevent JSON injection via crafted Slack IDs.
+- **Slack events: ack-then-async.** `POST /api/slack/events` now schedules the
+  (slow, sandbox-spawning) event dispatch and returns the `200` ack
+  immediately instead of awaiting it. The previous `await` blew Slack's 3s
+  ack budget on the first DM (E2B spawn > 3s), triggering Slack retries that
+  could race a duplicate chat session. A failure inside the detached dispatch
+  is logged (and surfaced via the best-effort recovery seam) rather than
+  retried by Slack.
+
+### Added (continued)
+- Live co-drive co-presence authorization: a co-session authorizes against the
+  intersection of all live participants' grants (`SessionPrincipal`,
+  `compute_grant_intersection`, `can_access_session`) with no admin
+  short-circuit; the co-session JWT carries no participant identity (read live
+  from `chat_session_participants`); fork-on-invite, membership-gated join,
+  atomic leave teardown with respawn under the narrowed intersection,
+  per-sender budgets/rate-limits/caps, and an ephemeral workspace that never
+  mounts a personal directory or `CLAUDE.local.md`. Invite/join/leave/fork
+  endpoints are RBAC-gated; every fork is audited.
+- Co-presence web surface: a Co-drive pill, participant-avatar cluster,
+  per-message sender attribution, and Invite/Fork affordances, driven by a new
+  `session_participants` WebSocket frame (all co fields optional → graceful
+  degradation on older servers).
+
+### Changed
+- `can_access_table`, `get_accessible_tables`, `StackResolver.stack`, and the
+  sync manifest builder now accept either a user dict or a `SessionPrincipal`,
+  so every audited data-read path (`/api/data`, `/api/catalog`,
+  `/api/sync/manifest`, `/api/v2/{scan,sample,schema}`) authorizes a
+  co-session against the live intersection; settings-mutation and
+  stack-management endpoints hard-deny a `SessionPrincipal`.
+- Slack binding: at most one active verification code per Slack user, issuance
+  throttling, per-code attempt lockout, and an audit entry on every redeem.
+
+### Security
+- A single-user token aimed at an `is_co_session` session is rejected
+  (`invalid_token`) at the resolver, independent of minter correctness.
+- `require_admin` hard-denies a `SessionPrincipal` before any admin check.
+
+### Internal
+- **DuckDB schema → v69 + Postgres parity (co-drive foundation).** Additive
+  migration `_v68_to_v69` in `src/db.py` (matching Alembic `0016_cloud_chat_v69`)
+  adds `chat_sessions.is_co_session` / `ephemeral` (BOOLEAN DEFAULT FALSE),
+  `chat_messages.sender_email` (nullable, backfilled to the session owner for
+  existing user turns), and the `chat_session_participants` table. DuckDB
+  `ChatRepository` deletes participant rows before sessions on hard-delete
+  (no `ON DELETE CASCADE`); PG uses the FK cascade. New repo methods
+  (`add_session_participant`, `get_session_participants`, `remove_participant`,
+  `update_participant_role`, `list_sessions_for_participant`,
+  `fork_session_as_co_session`) ship on both backends with cross-engine
+  contract tests.
+- **`ChatManager` multi-sink fan-out.** `LiveSession.ws` is now
+  `sinks: list[SinkEntry]`; runner frames broadcast to every sink while
+  persistence/audit stay singular. `attach` gains a `*, is_primary=True`
+  parameter; `add_sink` replays persisted history before appending a
+  late-joining sink. `send_user_message` accepts `sender_email` and serializes
+  the stdin write+drain under a per-session `_stdin_lock` so concurrent turns
+  can't interleave partial JSON lines. New `ChatManager.active_count_for_user`
+  wrapper.
+
 ## [0.64.0] — 2026-06-03
 
 ### Added

@@ -1,0 +1,730 @@
+"""Tests for Slack Block Kit interactivity (Phase 3)."""
+import asyncio
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clear_share_answers():
+    """Isolate the in-memory share-answer TTL map between tests so test order
+    can't leak a stored token (no longer relies on per-helper .clear() calls)."""
+    from services.slack_bot import interactivity as inter
+    inter._SHARE_ANSWERS.clear()
+    yield
+    inter._SHARE_ANSWERS.clear()
+
+
+def test_schedule_keeps_strong_ref_until_done():
+    from services.slack_bot import events as ev
+
+    ran = []
+    async def work():
+        ran.append(True)
+
+    async def _drive():
+        ev._schedule(work())
+        # Give the scheduled task a turn to run.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    asyncio.run(_drive())
+    assert ran == [True]
+
+
+def test_run_logged_swallows_exceptions():
+    from services.slack_bot import events as ev
+
+    async def boom():
+        raise ValueError("kaboom")
+
+    # Must NOT raise — _run_logged is the only recovery path post-ack.
+    asyncio.run(ev._run_logged(boom()))
+
+
+class _FakeResp:
+    def __init__(self, data): self._data = data
+    def json(self): return self._data
+
+
+class _FakeClient:
+    """Captures (url, json) of each post; returns canned ts for postMessage."""
+    def __init__(self, *a, **k): self.calls = []
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+    async def post(self, url, headers=None, json=None):
+        self.calls.append((url, json))
+        return _FakeResp({"ok": True, "ts": "9.9"})
+
+
+def _patch_client(monkeypatch):
+    captured = {}
+    def factory(*a, **k):
+        captured["client"] = _FakeClient()
+        return captured["client"]
+    import services.slack_bot.sender as snd
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setattr(snd.httpx, "AsyncClient", factory)
+    return captured
+
+
+def test_send_ephemeral_posts_to_response_url(monkeypatch):
+    import services.slack_bot.sender as snd
+    cap = _patch_client(monkeypatch)
+    asyncio.run(snd.send_ephemeral("https://hooks.example/r", "nope"))
+    url, body = cap["client"].calls[0]
+    assert url == "https://hooks.example/r"
+    assert body["response_type"] == "ephemeral"
+    assert body["text"] == "nope"
+
+
+def test_is_channel_allowlisted_default_deny_and_grant(tmp_path):
+    import duckdb
+    from services.slack_bot.binding import is_channel_allowlisted
+    conn = duckdb.connect()
+    # Real schema: resource_grants uses group_id FK to user_groups.id
+    conn.execute(
+        "CREATE TABLE user_groups ("
+        " id VARCHAR PRIMARY KEY, name VARCHAR, is_system BOOLEAN)"
+    )
+    conn.execute(
+        "CREATE TABLE resource_grants ("
+        " id VARCHAR, group_id VARCHAR, resource_type VARCHAR, resource_id VARCHAR)"
+    )
+    conn.execute("INSERT INTO user_groups VALUES ('g1', 'Everyone', TRUE)")
+    # default-deny
+    assert is_channel_allowlisted(conn, "C1") is False
+    # Everyone grant flips it on
+    conn.execute(
+        "INSERT INTO resource_grants VALUES ('r1', 'g1', 'slack_channel', 'C1')"
+    )
+    assert is_channel_allowlisted(conn, "C1") is True
+    # other channels stay denied
+    assert is_channel_allowlisted(conn, "C2") is False
+
+
+def test_soft_archive_dm_kills_and_archives_existing(monkeypatch):
+    from types import SimpleNamespace
+    from services.slack_bot import commands as cmd
+
+    killed, archived = [], []
+    async def kill(sid, reason=None): killed.append(sid)
+    mgr = SimpleNamespace(kill=kill)
+    repo = SimpleNamespace(
+        get_slack_dm_session=lambda channel: SimpleNamespace(id="s1"),
+        archive_session=lambda sid: archived.append(sid),
+    )
+    app = SimpleNamespace(state=SimpleNamespace(chat_manager=mgr, chat_repo=repo))
+    # The existing _soft_archive_dm(app, slack_user_id) resolves the IM channel via open_im.
+    # We patch open_im so it returns a channel id.
+    import services.slack_bot.commands as cmd_mod
+    async def fake_open_im(uid): return "D1"
+    monkeypatch.setattr(cmd_mod, "open_im", fake_open_im)
+    asyncio.run(cmd._soft_archive_dm(app, "U1"))
+    assert killed == ["s1"]
+    assert archived == ["s1"]
+
+
+def test_soft_archive_dm_noop_when_no_session(monkeypatch):
+    from types import SimpleNamespace
+    from services.slack_bot import commands as cmd
+
+    killed, archived = [], []
+    async def kill(sid, reason=None): killed.append(sid)
+    mgr = SimpleNamespace(kill=kill)
+    repo = SimpleNamespace(
+        get_slack_dm_session=lambda channel: None,
+        archive_session=lambda sid: archived.append(sid),
+    )
+    app = SimpleNamespace(state=SimpleNamespace(chat_manager=mgr, chat_repo=repo))
+    import services.slack_bot.commands as cmd_mod
+    async def fake_open_im(uid): return "D1"
+    monkeypatch.setattr(cmd_mod, "open_im", fake_open_im)
+    asyncio.run(cmd._soft_archive_dm(app, "U1"))
+    assert killed == [] and archived == []
+
+
+def test_soft_archive_dm_for_button_owner_match_kills_and_archives():
+    from types import SimpleNamespace
+    from services.slack_bot import commands as cmd
+
+    killed, archived = [], []
+    async def kill(sid, reason=None): killed.append(sid)
+    mgr = SimpleNamespace(kill=kill)
+    repo = SimpleNamespace(
+        get_slack_dm_session=lambda channel: SimpleNamespace(id="s1", user_email="a@example.com"),
+        archive_session=lambda sid: archived.append(sid),
+    )
+    app = SimpleNamespace(state=SimpleNamespace(chat_manager=mgr, chat_repo=repo))
+    asyncio.run(cmd._soft_archive_dm_for_button(app, "a@example.com", "D1"))
+    assert killed == ["s1"]
+    assert archived == ["s1"]
+
+
+def test_soft_archive_dm_for_button_owner_mismatch_is_noop():
+    from types import SimpleNamespace
+    from services.slack_bot import commands as cmd
+
+    killed, archived = [], []
+    async def kill(sid, reason=None): killed.append(sid)
+    mgr = SimpleNamespace(kill=kill)
+    # Resolved session is owned by someone else — must NOT be touched.
+    repo = SimpleNamespace(
+        get_slack_dm_session=lambda channel: SimpleNamespace(id="s1", user_email="owner@example.com"),
+        archive_session=lambda sid: archived.append(sid),
+    )
+    app = SimpleNamespace(state=SimpleNamespace(chat_manager=mgr, chat_repo=repo))
+    asyncio.run(cmd._soft_archive_dm_for_button(app, "intruder@example.com", "D1"))
+    assert killed == []
+    assert archived == []
+
+
+def test_value_codec_roundtrip():
+    from services.slack_bot import blocks
+    v = blocks.encode_value({"chat_id": "sess-1", "owner": "a@example.com"})
+    assert isinstance(v, str)
+    assert blocks.decode_value(v) == {"chat_id": "sess-1", "owner": "a@example.com"}
+
+
+def test_decode_value_rejects_garbage():
+    from services.slack_bot import blocks
+    assert blocks.decode_value("not-json") == {}
+    assert blocks.decode_value("") == {}
+
+
+def test_stop_button_blocks_shape():
+    from services.slack_bot import blocks
+    bs = blocks.stop_button_blocks(text="working...", chat_id="sess-1", owner="a@example.com")
+    section = next(b for b in bs if b["type"] == "section")
+    assert section["text"]["text"] == "working..."
+    actions = next(b for b in bs if b["type"] == "actions")
+    btn = actions["elements"][0]
+    assert btn["action_id"] == blocks.ACTION_STOP
+    assert blocks.decode_value(btn["value"]) == {"chat_id": "sess-1", "owner": "a@example.com"}
+
+
+def test_continue_on_web_block_is_link_only():
+    from services.slack_bot import blocks
+    block = blocks.continue_on_web_block(web_base="https://host.example", chat_id="sess-1")
+    btn = block["elements"][0]
+    assert btn["url"] == "https://host.example/chat?session=sess-1"
+    # Pure link button: no action_id callback (Slack never POSTs link clicks).
+    assert "action_id" not in btn
+
+
+def test_continue_on_web_block_none_when_no_web_base():
+    from services.slack_bot import blocks
+    # No public_url configured → no deep-link button rather than a broken URL.
+    assert blocks.continue_on_web_block(web_base="", chat_id="sess-1") is None
+
+
+def test_share_to_channel_blocks_carry_token():
+    from services.slack_bot import blocks
+    bs = blocks.share_to_channel_blocks(channel_id="C123", token="tok-abc")
+    actions = next(b for b in bs if b["type"] == "actions")
+    btn = actions["elements"][0]
+    assert btn["action_id"] == blocks.ACTION_SHARE_CHANNEL
+    assert blocks.decode_value(btn["value"]) == {"channel_id": "C123", "token": "tok-abc"}
+
+
+def test_new_session_block_carries_owner_and_channel():
+    from services.slack_bot import blocks
+    block = blocks.new_session_block(channel_id="D1", owner="a@example.com")
+    btn = block["elements"][0]
+    assert btn["action_id"] == blocks.ACTION_NEW_SESSION
+    assert blocks.decode_value(btn["value"]) == {"channel_id": "D1", "owner": "a@example.com"}
+
+
+def test_post_thread_reply_with_blocks_returns_ts(monkeypatch):
+    import services.slack_bot.sender as snd
+    cap = _patch_client(monkeypatch)
+    ts = asyncio.run(snd.post_thread_reply_with_blocks("C1", "1.1", "hi", [{"type": "x"}]))
+    assert ts == "9.9"
+    url, body = cap["client"].calls[0]
+    assert url.endswith("/chat.postMessage")
+    assert body["channel"] == "C1" and body["thread_ts"] == "1.1"
+    assert body["blocks"] == [{"type": "x"}] and body["text"] == "hi"
+
+
+def test_update_message_calls_chat_update(monkeypatch):
+    import services.slack_bot.sender as snd
+    cap = _patch_client(monkeypatch)
+    asyncio.run(snd.update_message("C1", "9.9", "final", []))
+    url, body = cap["client"].calls[0]
+    assert url.endswith("/chat.update")
+    assert body == {"channel": "C1", "ts": "9.9", "text": "final", "blocks": []}
+
+
+def test_post_channel_message_omits_thread_ts(monkeypatch):
+    import services.slack_bot.sender as snd
+    cap = _patch_client(monkeypatch)
+    asyncio.run(snd.post_channel_message("C1", "public answer"))
+    url, body = cap["client"].calls[0]
+    assert url.endswith("/chat.postMessage")
+    assert body == {"channel": "C1", "text": "public answer"}
+
+
+def test_respond_via_response_url_posts_body(monkeypatch):
+    import services.slack_bot.sender as snd
+    cap = _patch_client(monkeypatch)
+    asyncio.run(snd.respond_via_response_url("https://hooks.example/r", {"delete_original": True}))
+    url, body = cap["client"].calls[0]
+    assert url == "https://hooks.example/r"
+    assert body == {"delete_original": True}
+
+
+def _block_actions_payload(action_id, value, *, user="U1", channel="C1", response_url="https://r"):
+    return {
+        "type": "block_actions",
+        "user": {"id": user},
+        "channel": {"id": channel},
+        "response_url": response_url,
+        "actions": [{"action_id": action_id, "value": value}],
+    }
+
+
+def test_parse_interaction_extracts_first_action():
+    from services.slack_bot import interactivity as inter, blocks
+    payload = _block_actions_payload(blocks.ACTION_STOP, blocks.encode_value({"chat_id": "s1"}))
+    it = inter.parse_interaction(payload)
+    assert it.action_id == blocks.ACTION_STOP
+    assert it.slack_user_id == "U1"
+    assert it.channel_id == "C1"
+    assert it.response_url == "https://r"
+    assert it.value == {"chat_id": "s1"}
+
+
+def test_parse_interaction_no_actions_yields_empty_action_id():
+    from services.slack_bot import interactivity as inter
+    it = inter.parse_interaction({"type": "block_actions", "user": {"id": "U1"}, "actions": []})
+    assert it.action_id == ""
+    assert it.value == {}
+
+
+def test_dispatch_routes_on_action_id(monkeypatch):
+    from services.slack_bot import interactivity as inter, blocks
+    seen = []
+    async def fake_stop(app, it): seen.append(("stop", it.action_id))
+    monkeypatch.setattr(inter, "_on_stop", fake_stop)
+    it = inter.parse_interaction(_block_actions_payload(blocks.ACTION_STOP, blocks.encode_value({})))
+    asyncio.run(inter.dispatch_interaction(object(), it))
+    assert seen == [("stop", blocks.ACTION_STOP)]
+
+
+def test_dispatch_unknown_action_is_noop():
+    from services.slack_bot import interactivity as inter
+    it = inter.parse_interaction(_block_actions_payload("agnes_unknown", "{}"))
+    asyncio.run(inter.dispatch_interaction(object(), it))  # no raise
+
+
+def _stop_app(monkeypatch, *, bound_email):
+    from types import SimpleNamespace
+    import services.slack_bot.interactivity as inter_mod
+    monkeypatch.setattr(inter_mod, "lookup_user_email", lambda repo, uid: bound_email)
+    cancelled = []
+    async def cancel(chat_id): cancelled.append(chat_id)
+    mgr = SimpleNamespace(cancel=cancel, _cancelled=cancelled)
+    repo = SimpleNamespace(_conn=object())
+    app = SimpleNamespace(state=SimpleNamespace(chat_repo=repo, chat_manager=mgr))
+    return app, mgr
+
+
+def test_on_stop_owner_cancels(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    eph = []
+    async def fake_eph(url, text, blocks=None): eph.append(text)
+    monkeypatch.setattr(inter.sender, "send_ephemeral", fake_eph)
+    app, mgr = _stop_app(monkeypatch, bound_email="a@example.com")
+    it = inter.Interaction(action_id=inter.blocks.ACTION_STOP, slack_user_id="U1",
+                           channel_id="D1", response_url="https://r",
+                           value={"chat_id": "s1", "owner": "a@example.com"})
+    asyncio.run(inter._on_stop(app, it))
+    assert mgr._cancelled == ["s1"]
+    assert eph == []
+
+
+def test_on_stop_non_owner_denied(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    eph = []
+    async def fake_eph(url, text, blocks=None): eph.append(text)
+    monkeypatch.setattr(inter.sender, "send_ephemeral", fake_eph)
+    app, mgr = _stop_app(monkeypatch, bound_email="intruder@example.com")
+    it = inter.Interaction(action_id=inter.blocks.ACTION_STOP, slack_user_id="U2",
+                           channel_id="C1", response_url="https://r",
+                           value={"chat_id": "s1", "owner": "a@example.com"})
+    asyncio.run(inter._on_stop(app, it))
+    assert mgr._cancelled == []
+    assert any("owner" in t for t in eph)
+    # The denial must NOT leak the clicker's Slack id (incoherent reference).
+    assert not any("<@" in t for t in eph)
+
+
+def test_on_stop_unbound_clicker_denied(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    eph = []
+    async def fake_eph(url, text, blocks=None): eph.append(text)
+    monkeypatch.setattr(inter.sender, "send_ephemeral", fake_eph)
+    app, mgr = _stop_app(monkeypatch, bound_email=None)
+    it = inter.Interaction(action_id=inter.blocks.ACTION_STOP, slack_user_id="U9",
+                           channel_id="C1", response_url="https://r",
+                           value={"chat_id": "s1", "owner": "a@example.com"})
+    asyncio.run(inter._on_stop(app, it))
+    assert mgr._cancelled == []
+    assert eph  # some denial ephemeral
+
+
+def test_share_token_store_and_get(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    inter._SHARE_ANSWERS.clear()
+    tok = inter.store_share_answer("a long answer body")
+    assert isinstance(tok, str) and tok
+    assert inter.get_share_answer(tok) == "a long answer body"
+
+
+def test_share_token_expires(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    inter._SHARE_ANSWERS.clear()
+    monkeypatch.setattr(inter, "_SHARE_TTL_SECONDS", -1)
+    tok = inter.store_share_answer("body")
+    assert inter.get_share_answer(tok) is None
+
+
+def test_share_token_missing_returns_none():
+    from services.slack_bot import interactivity as inter
+    assert inter.get_share_answer("nope") is None
+
+
+def _share_app(monkeypatch, *, bound_email, allowlisted, body="shared body"):
+    from types import SimpleNamespace
+    import services.slack_bot.interactivity as inter_mod
+    monkeypatch.setattr(inter_mod, "lookup_user_email", lambda repo, uid: bound_email)
+    monkeypatch.setattr(inter_mod, "is_channel_allowlisted", lambda conn, ch: allowlisted)
+    audits = []
+    monkeypatch.setattr(inter_mod, "write_audit", lambda conn, **kw: audits.append(kw))
+    posts, clears = [], []
+    async def fake_post(ch, text): posts.append((ch, text))
+    async def fake_resp(url, b): clears.append((url, b))
+    monkeypatch.setattr(inter_mod.sender, "post_channel_message", fake_post)
+    monkeypatch.setattr(inter_mod.sender, "respond_via_response_url", fake_resp)
+    eph = []
+    async def fake_eph(url, text, blocks=None): eph.append(text)
+    monkeypatch.setattr(inter_mod.sender, "send_ephemeral", fake_eph)
+    inter_mod._SHARE_ANSWERS.clear()
+    tok = inter_mod.store_share_answer(body)
+    repo = SimpleNamespace(_conn=object())
+    app = SimpleNamespace(state=SimpleNamespace(chat_repo=repo))
+    return app, tok, SimpleNamespace(posts=posts, clears=clears, audits=audits, eph=eph)
+
+
+def test_on_share_allowlisted_posts_clears_and_audits(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    app, tok, rec = _share_app(monkeypatch, bound_email="a@example.com", allowlisted=True)
+    it = inter.Interaction(action_id=inter.blocks.ACTION_SHARE_CHANNEL, slack_user_id="U1",
+                           channel_id="C1", response_url="https://r",
+                           value={"channel_id": "C1", "token": tok})
+    asyncio.run(inter._on_share(app, it))
+    assert rec.posts == [("C1", "shared body")]
+    assert rec.clears and rec.clears[0][1].get("delete_original") is True
+    assert len(rec.audits) == 1 and rec.audits[0]["action"] == "slack_share"
+    assert rec.audits[0]["user_email"] == "a@example.com"
+
+
+def test_on_share_not_allowlisted_never_posts(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    app, tok, rec = _share_app(monkeypatch, bound_email="a@example.com", allowlisted=False)
+    it = inter.Interaction(action_id=inter.blocks.ACTION_SHARE_CHANNEL, slack_user_id="U1",
+                           channel_id="C1", response_url="https://r",
+                           value={"channel_id": "C1", "token": tok})
+    asyncio.run(inter._on_share(app, it))
+    assert rec.posts == []
+    assert rec.audits == []
+    assert rec.eph  # denial ephemeral
+
+
+def test_on_share_unbound_never_posts(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    app, tok, rec = _share_app(monkeypatch, bound_email=None, allowlisted=True)
+    it = inter.Interaction(action_id=inter.blocks.ACTION_SHARE_CHANNEL, slack_user_id="U9",
+                           channel_id="C1", response_url="https://r",
+                           value={"channel_id": "C1", "token": tok})
+    asyncio.run(inter._on_share(app, it))
+    assert rec.posts == [] and rec.audits == [] and rec.eph
+
+
+def test_on_share_expired_token_no_post(monkeypatch):
+    from services.slack_bot import interactivity as inter
+    app, _tok, rec = _share_app(monkeypatch, bound_email="a@example.com", allowlisted=True)
+    it = inter.Interaction(action_id=inter.blocks.ACTION_SHARE_CHANNEL, slack_user_id="U1",
+                           channel_id="C1", response_url="https://r",
+                           value={"channel_id": "C1", "token": "missing"})
+    asyncio.run(inter._on_share(app, it))
+    assert rec.posts == [] and rec.audits == []
+    assert rec.eph  # "expired" ephemeral
+
+
+def test_on_new_session_owner_archives(monkeypatch):
+    from types import SimpleNamespace
+    from services.slack_bot import interactivity as inter
+    monkeypatch.setattr(inter, "lookup_user_email", lambda repo, uid: "a@example.com")
+    archived = []
+    async def fake_archive(app, owner, ch): archived.append((owner, ch))
+    monkeypatch.setattr(inter, "_soft_archive_dm", fake_archive)
+    eph = []
+    async def fake_eph(url, text, blocks=None): eph.append(text)
+    monkeypatch.setattr(inter.sender, "send_ephemeral", fake_eph)
+    app = SimpleNamespace(state=SimpleNamespace(chat_repo=SimpleNamespace(_conn=object())))
+    it = inter.Interaction(action_id=inter.blocks.ACTION_NEW_SESSION, slack_user_id="U1",
+                           channel_id="D1", response_url="https://r",
+                           value={"channel_id": "D1", "owner": "a@example.com"})
+    asyncio.run(inter._on_new_session(app, it))
+    assert archived == [("a@example.com", "D1")]
+    assert eph  # confirmation ephemeral
+
+
+def test_on_new_session_non_owner_denied(monkeypatch):
+    from types import SimpleNamespace
+    from services.slack_bot import interactivity as inter
+    monkeypatch.setattr(inter, "lookup_user_email", lambda repo, uid: "intruder@example.com")
+    archived = []
+    async def fake_archive(app, owner, ch): archived.append((owner, ch))
+    monkeypatch.setattr(inter, "_soft_archive_dm", fake_archive)
+    eph = []
+    async def fake_eph(url, text, blocks=None): eph.append(text)
+    monkeypatch.setattr(inter.sender, "send_ephemeral", fake_eph)
+    app = SimpleNamespace(state=SimpleNamespace(chat_repo=SimpleNamespace(_conn=object())))
+    it = inter.Interaction(action_id=inter.blocks.ACTION_NEW_SESSION, slack_user_id="U2",
+                           channel_id="D1", response_url="https://r",
+                           value={"channel_id": "D1", "owner": "a@example.com"})
+    asyncio.run(inter._on_new_session(app, it))
+    assert archived == []
+    assert any("belongs to" in t or "only" in t.lower() for t in eph)
+
+
+def test_sink_emits_all_buttons_then_strips_on_cancelled(monkeypatch):
+    from services.slack_bot import sink as sink_mod, blocks
+
+    posts, updates = [], []
+    async def fake_post_blocks(ch, ts, text, bs):
+        posts.append((ch, ts, text, bs))
+        return "msg-1"
+    async def fake_update(ch, ts, text, bs):
+        updates.append((ch, ts, text, bs))
+    monkeypatch.setattr(sink_mod, "post_thread_reply_with_blocks", fake_post_blocks)
+    monkeypatch.setattr(sink_mod, "update_message", fake_update)
+
+    async def _run():
+        bridge = sink_mod.SlackSinkBridge(
+            channel="D1", thread_ts="1.1", chat_id="s1",
+            owner="a@example.com", web_base="https://host.example",
+        )
+        await bridge.send_json({"type": "assistant_message", "content": "thinking..."})
+        await bridge.send_json({"type": "cancelled"})
+        await bridge.close()
+
+    asyncio.run(_run())
+    assert len(posts) == 1
+    emitted = posts[0][3]
+    action_ids = [
+        e["action_id"]
+        for b in emitted if b["type"] == "actions"
+        for e in b["elements"] if "action_id" in e
+    ]
+    # Stop + New-session carry callbacks; Continue-on-web is a link (no action_id).
+    assert blocks.ACTION_STOP in action_ids
+    assert blocks.ACTION_NEW_SESSION in action_ids
+    has_link = any(
+        e.get("url", "").endswith("/chat?session=s1")
+        for b in emitted if b["type"] == "actions" for e in b["elements"]
+    )
+    assert has_link
+    # cancelled stripped the buttons via chat.update (blocks == []).
+    assert updates and updates[-1][1] == "msg-1" and updates[-1][3] == []
+
+
+def test_sink_strips_buttons_on_done(monkeypatch):
+    """Happy path: turn-end `done` frame strips the Stop button (primary
+    spec requirement 'removes it at turn end'). runner.py emits {'type':'done'}."""
+    from services.slack_bot import sink as sink_mod
+
+    updates = []
+    async def fake_post_blocks(ch, ts, text, bs):
+        return "msg-1"
+    async def fake_update(ch, ts, text, bs):
+        updates.append((ch, ts, text, bs))
+    monkeypatch.setattr(sink_mod, "post_thread_reply_with_blocks", fake_post_blocks)
+    monkeypatch.setattr(sink_mod, "update_message", fake_update)
+
+    async def _run():
+        bridge = sink_mod.SlackSinkBridge(
+            channel="D1", thread_ts="1.1", chat_id="s1", owner="a@example.com", web_base="",
+        )
+        await bridge.send_json({"type": "assistant_message", "content": "answer"})
+        await bridge.send_json({"type": "done"})
+        await bridge.close()
+
+    asyncio.run(_run())
+    assert updates == [("D1", "msg-1", "answer", [])]
+
+
+def test_sink_without_chat_id_keeps_plain_behavior(monkeypatch):
+    """Back-compat: no chat_id → plain send_thread_reply, no blocks."""
+    from services.slack_bot import sink as sink_mod
+    sent = []
+    async def fake_send(ch, ts, text): sent.append((ch, ts, text))
+    monkeypatch.setattr(sink_mod, "send_thread_reply", fake_send)
+
+    async def _run():
+        bridge = sink_mod.SlackSinkBridge(channel="D1", thread_ts="1.1")
+        await bridge.send_json({"type": "assistant_message", "content": "hello"})
+        await bridge.close()
+
+    asyncio.run(_run())
+    assert sent == [("D1", "1.1", "hello")]
+
+
+def _signed_form_request(monkeypatch, payload_json, *, good_sig=True):
+    """Build a signed urlencoded interactivity (body, ts, sig)."""
+    import hashlib, hmac, time
+    from urllib.parse import urlencode
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "shh")
+    body = urlencode({"payload": payload_json}).encode()
+    ts = str(int(time.time()))
+    base = b"v0:" + ts.encode() + b":" + body
+    sig = "v0=" + hmac.new(b"shh", base, hashlib.sha256).hexdigest()
+    if not good_sig:
+        sig = "v0=deadbeef"
+    return body, ts, sig
+
+
+def test_interactivity_endpoint_bad_signature_401(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.api.slack import router
+    app = FastAPI()
+    app.include_router(router)
+    body, ts, sig = _signed_form_request(monkeypatch, "{}", good_sig=False)
+    client = TestClient(app)
+    r = client.post("/api/slack/interactivity", content=body,
+                    headers={"X-Slack-Request-Timestamp": ts, "X-Slack-Signature": sig,
+                             "Content-Type": "application/x-www-form-urlencoded"})
+    assert r.status_code == 401
+
+
+def test_stop_then_cancelled_strips_button_integration(monkeypatch):
+    """Join _on_stop and the sink: owner clicks Stop → cancel() broadcasts a
+    `cancelled` frame to the sink → sink strips the Stop button. Drives both
+    halves through one fake live session rather than mocking each in isolation."""
+    from types import SimpleNamespace
+    from services.slack_bot import interactivity as inter, sink as sink_mod
+
+    # --- sink half: capture the button post + the strip update ---
+    updates = []
+    async def fake_post_blocks(ch, ts, text, bs):
+        return "msg-1"
+    async def fake_update(ch, ts, text, bs):
+        updates.append((ch, ts, text, bs))
+    monkeypatch.setattr(sink_mod, "post_thread_reply_with_blocks", fake_post_blocks)
+    monkeypatch.setattr(sink_mod, "update_message", fake_update)
+    async def fake_send_reply(ch, ts, text):  # for the "_(stopped)_" line
+        pass
+    monkeypatch.setattr(sink_mod, "send_thread_reply", fake_send_reply)
+
+    # --- manager half: cancel() forwards a `cancelled` frame to the bound sink ---
+    class FakeManager:
+        def __init__(self): self.sink = None
+        async def cancel(self, chat_id):
+            await self.sink.send_json({"type": "cancelled"})
+
+    monkeypatch.setattr(inter, "lookup_user_email", lambda repo, uid: "a@example.com")
+    mgr = FakeManager()
+    app = SimpleNamespace(state=SimpleNamespace(
+        chat_repo=SimpleNamespace(_conn=object()), chat_manager=mgr))
+
+    async def _run():
+        bridge = sink_mod.SlackSinkBridge(
+            channel="D1", thread_ts="1.1", chat_id="s1", owner="a@example.com", web_base="",
+        )
+        mgr.sink = bridge
+        # post a turn so there's a button to strip
+        await bridge.send_json({"type": "assistant_message", "content": "working"})
+        it = inter.Interaction(action_id=inter.blocks.ACTION_STOP, slack_user_id="U1",
+                               channel_id="D1", response_url="https://r",
+                               value={"chat_id": "s1", "owner": "a@example.com"})
+        await inter._on_stop(app, it)
+
+    asyncio.run(_run())
+    # cancel() -> cancelled frame -> button stripped (blocks == [])
+    assert updates == [("D1", "msg-1", "working", [])]
+
+
+def test_interactivity_endpoint_does_not_block_on_slow_handler(monkeypatch):
+    import json, time
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import app.api.slack as slack_api
+
+    async def slow_dispatch(app, interaction):
+        await asyncio.sleep(5)  # > Slack's 3s budget
+    # Use the real _schedule (create_task) so the slow handler runs detached;
+    # the test asserts the response returns long before the 5s sleep completes.
+    monkeypatch.setattr(slack_api, "dispatch_interaction", slow_dispatch)
+
+    app = FastAPI()
+    app.include_router(slack_api.router)
+    from services.slack_bot import blocks
+    payload = json.dumps({
+        "type": "block_actions", "user": {"id": "U1"}, "channel": {"id": "C1"},
+        "response_url": "https://r",
+        "actions": [{"action_id": blocks.ACTION_STOP, "value": "{}"}],
+    })
+    body, ts, sig = _signed_form_request(monkeypatch, payload, good_sig=True)
+    t0 = time.monotonic()
+    r = TestClient(app).post("/api/slack/interactivity", content=body,
+                             headers={"X-Slack-Request-Timestamp": ts, "X-Slack-Signature": sig,
+                                      "Content-Type": "application/x-www-form-urlencoded"})
+    elapsed = time.monotonic() - t0
+    assert r.status_code == 200
+    assert elapsed < 3.0, f"endpoint blocked {elapsed:.2f}s on slow handler"
+
+
+def test_interactivity_endpoint_acks_and_schedules(monkeypatch):
+    import json
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import app.api.slack as slack_api
+
+    scheduled = []
+    # Drain the scheduled wrapper coroutine to completion.
+    # asyncio.new_event_loop().run_until_complete fails when TestClient already
+    # runs an event loop (anyio backend). Instead run it in a background thread
+    # with its own loop so neither coroutine leaks a 'never awaited' warning.
+    import threading
+    def _drain(coro):
+        scheduled.append(coro)
+        done = threading.Event()
+        def _run():
+            asyncio.new_event_loop().run_until_complete(coro)
+            done.set()
+        threading.Thread(target=_run, daemon=True).start()
+        done.wait(timeout=5)
+    monkeypatch.setattr(slack_api, "_schedule", _drain)
+    dispatched = []
+    async def fake_dispatch(app, interaction):
+        dispatched.append(interaction.action_id)
+    monkeypatch.setattr(slack_api, "dispatch_interaction", fake_dispatch)
+
+    app = FastAPI()
+    app.include_router(slack_api.router)
+    from services.slack_bot import blocks
+    payload = json.dumps({
+        "type": "block_actions", "user": {"id": "U1"}, "channel": {"id": "C1"},
+        "response_url": "https://r",
+        "actions": [{"action_id": blocks.ACTION_STOP, "value": blocks.encode_value({"chat_id": "s1"})}],
+    })
+    body, ts, sig = _signed_form_request(monkeypatch, payload, good_sig=True)
+    r = TestClient(app).post("/api/slack/interactivity", content=body,
+                             headers={"X-Slack-Request-Timestamp": ts, "X-Slack-Signature": sig,
+                                      "Content-Type": "application/x-www-form-urlencoded"})
+    assert r.status_code == 200
+    assert r.content in (b"", b"null")  # empty 200 ack
+    assert len(scheduled) == 1          # exactly one dispatch scheduled
+    assert dispatched == [blocks.ACTION_STOP]  # inner coroutine ran to completion

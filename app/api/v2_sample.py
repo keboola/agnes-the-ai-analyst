@@ -118,14 +118,23 @@ def build_sample(
         )
         from src.db import _get_state_dir
         from app.auth.access import is_user_admin as _is_admin
+        from app.auth.session_principal import SessionPrincipal
         if table_id not in INTERNAL_TABLES_BY_ID:
             raise FileNotFoundError(table_id)
         internal_def = INTERNAL_TABLES_BY_ID[table_id]
         # is_user_admin takes (user_id, conn) — earlier draft passed the
         # whole user dict and crashed with TypeError on first request
         # (review #278/2). Same fix as app/api/query.py:_run_internal_query.
-        is_admin = _is_admin(user.get("id"), conn) if user.get("id") else False
-        where_clause = build_filter_clause(internal_def, user, is_admin)
+        # A SessionPrincipal has no .get("id") — treat co-session as non-admin
+        # for internal row-level filter. build_filter_clause expects a dict
+        # so pass a shim when user is a principal.
+        if isinstance(user, SessionPrincipal):
+            is_admin = False
+            user_dict_shim = {"id": "", "email": ""}
+        else:
+            is_admin = _is_admin(user.get("id"), conn) if user.get("id") else False
+            user_dict_shim = user
+        where_clause = build_filter_clause(internal_def, user_dict_shim, is_admin)
         # Reuse the shared system.duckdb connection via cursor — opening a
         # parallel handle to the same file is rejected process-wide
         # (DuckDB serialises file handles, even for ATTACH). The SELECT is

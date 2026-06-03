@@ -1,11 +1,24 @@
 """Chat feature config (loaded from instance.yaml `chat:` block)."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import yaml
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SlackConfig:
+    # "http" (default, Events API webhook) | "socket" (Socket Mode WS).
+    # Unknown values are normalized to "http" at parse time with a warning.
+    # Tokens (SLACK_BOT_TOKEN / SLACK_APP_TOKEN / SLACK_SIGNING_SECRET) are
+    # deliberately NOT stored here — read from env at use site so they never
+    # leak into a frozen-config echo (e.g. /admin/server-config).
+    transport: str = "http"
 
 
 @dataclass(frozen=True)
@@ -45,6 +58,21 @@ class ChatConfig:
     # (an empty placeholder plugin contributes nothing). Independent of the
     # always-on plugin.json sanitization in the marketplace packager.
     bootstrap_marketplace: bool = False
+    slack: "SlackConfig" = field(default_factory=SlackConfig)
+
+
+def _parse_slack_config(raw_chat: dict) -> SlackConfig:
+    _s = raw_chat.get("slack")
+    raw_slack = _s if isinstance(_s, dict) else {}
+    raw_value = raw_slack.get("transport", "http")
+    transport = str(raw_value).strip().lower() if raw_value is not None else ""
+    if transport not in ("http", "socket"):
+        logger.warning(
+            "unknown slack transport %r in chat.slack.transport — "
+            "falling back to 'http'", transport,
+        )
+        transport = "http"
+    return SlackConfig(transport=transport)
 
 
 def load_chat_config(instance_yaml: Path) -> ChatConfig:
@@ -69,4 +97,5 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         e2b_workspace_max_bytes=int(raw.get("e2b_workspace_max_bytes", 100 * 1024 * 1024)),
         e2b_kill_on_ws_disconnect=bool(raw.get("e2b_kill_on_ws_disconnect", True)),
         bootstrap_marketplace=bool(raw.get("bootstrap_marketplace", False)),
+        slack=_parse_slack_config(raw),
     )
