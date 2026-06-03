@@ -40,6 +40,37 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   in `docs/slack-manifest-http.md` and `docs/slack-manifest-socket.md`.
 
 ### Fixed
+- **Co-drive co-presence (Phase 5b) — security/functional hardening.**
+  Six adversarial-review findings addressed:
+  - `GET /api/memory/bundle` now handles `SessionPrincipal` callers correctly:
+    the `?domain=` path uses `can_access_session` (intersection-gated), the
+    non-domain path resolves granted domains from the intersection, and neither
+    path crashes on `user["id"]` for co-session tokens. Shared domains → 200;
+    owner-only domains → 403; previously both → 500.
+  - `POST /api/mcp/query-table/{id}` replaced `can_access(user["id"], ...)` with
+    the principal-aware `can_access_table(user, ...)` chokepoint. Co-session
+    tokens on single-participant tables now correctly return 403 instead of 500.
+  - `POST /api/query` internal-table path (`_run_internal_query`) now applies the
+    same `SessionPrincipal` shim as `v2_sample.py`: is_admin=False and an
+    empty-identity filter so internal queries by co-session tokens return 0 rows
+    instead of crashing.
+  - `prepare_ephemeral_session_dir` no longer calls `render_workspace_prompt` for
+    co-drive sessions. The owner-scoped CLAUDE.md render leaked owner-specific
+    catalog metadata (`{{tables}}`, `{{marketplaces}}`) into the shared ephemeral
+    workspace. The static "# Co-drive session" header is always used instead.
+  - Added `WebSocket /api/chat/sessions/{id}/join` route for co-drive live join:
+    consumes a short-lived per-participant ticket, re-verifies membership (SR-9),
+    calls `mgr.add_sink(session_id, ws, participant_email)`, and streams frames.
+    `POST /api/chat/{id}/join-ticket` now issues via `_TICKETS` (carrying the
+    participant email) instead of a co_session JWT. Both `ws_stream` and
+    `ws_join` thread `sender_email` into every `send_user_message` call so
+    per-sender budgets (SR-10) and departed-participant replay-skip (SR-11) work.
+  - Slack binding `redeem_verification_code`: removed the `UPDATE ... SET
+    attempts = attempts + 1` with NO WHERE clause that incremented all users'
+    codes on every wrong guess (cross-user DoS). Wrong guesses against a
+    non-existent code are now no-ops. Audit params changed from f-string
+    interpolation to `json.dumps` to prevent JSON injection via crafted
+    Slack user IDs.
 - **Slack events: ack-then-async.** `POST /api/slack/events` now schedules the
   (slow, sandbox-spawning) event dispatch and returns the `200` ack
   immediately instead of awaiting it. The previous `await` blew Slack's 3s
