@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.64.0] — 2026-06-03
+
+### Added
+- MCP source secrets are now fully manageable from the admin UI: set/rotate/clear a vault-stored secret (encrypted at rest), an `env` (`KEY=VALUE`) field and a `scope` selector on the source form, and a secret-status indicator — no host environment variable required. The legacy `auth_secret_env` (host-env) path is relabelled "Advanced (legacy)" and still works. Storing a secret with no `AGNES_VAULT_KEY` set now returns `409` (outside `LOCAL_DEV_MODE`) instead of silently using an ephemeral key that loses the value on restart; a set-but-invalid key still raises a clear config error. `GET /api/health` now reports `vault_key_configured`, source serialization includes a `has_vault_secret` boolean, and `AGNES_VAULT_KEY` is documented in `config/.env.template`. Deleting a source now also removes its vault secrets (shared + per-user) so no orphaned encrypted rows are left behind.
+
 ## [0.63.1] — 2026-06-03
 
 ### Fixed
