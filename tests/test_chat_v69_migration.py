@@ -68,3 +68,18 @@ def test_v68_db_migrates_to_v69_with_backfill(tmp_path):
     assert user_sender == "owner@x.com"
     assert asst_sender is None
     conn.close()
+
+
+def test_dataclass_defaults_and_participant():
+    from app.chat.types import ChatMessage, ChatSession, SessionParticipant
+    import inspect
+
+    sig = inspect.signature(ChatSession)
+    assert sig.parameters["is_co_session"].default is False
+    assert sig.parameters["ephemeral"].default is False
+    assert inspect.signature(ChatMessage).parameters["sender_email"].default is None
+    p = SessionParticipant(
+        id="p1", session_id="s1", user_email="a@x.com", user_id="u1",
+        role="owner", joined_at=None, left_at=None,
+    )
+    assert p.role == "owner" and p.left_at is None
