@@ -634,6 +634,24 @@ code {
     border: 1px solid var(--border);
 }
 
+/* Operator brand lockup above the Sign In heading. The card has a light
+   `--card-bg`, so a colored wordmark SVG (the typical operator logo) reads
+   well here. Constrain height and let width scale so any aspect ratio fits;
+   `svg { display: block }` drops the inline-baseline gap under the lockup. */
+.login-card-logo {
+    margin-bottom: 24px;
+    display: flex;
+    justify-content: center;
+}
+
+.login-card-logo svg,
+.login-card-logo img {
+    display: block;
+    height: 36px;
+    width: auto;
+    max-width: 100%;
+}
+
 .login-card h2 {
     margin-bottom: 12px;
     font-size: 1.75rem;

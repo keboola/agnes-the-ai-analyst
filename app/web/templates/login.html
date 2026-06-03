@@ -97,6 +97,14 @@
         <!-- Right: Login Card -->
         <div class="login-card-wrapper">
             <div class="login-card">
+                {# Operator brand lockup. Renders the configured instance logo
+                   (AGNES_INSTANCE_LOGO_SVG env > instance.logo_svg YAML) above
+                   the Sign In heading — same `config.LOGO_SVG` slot the app
+                   header uses. Empty default keeps the OSS vendor-neutral:
+                   no logo renders unless an operator sets one. #}
+                {% if config.LOGO_SVG %}
+                <div class="login-card-logo">{{ config.LOGO_SVG | safe }}</div>
+                {% endif %}
                 <h2>Sign In</h2>
                 <p class="login-description">
                     Access your AI data analysis workspace
