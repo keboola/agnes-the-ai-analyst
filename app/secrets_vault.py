@@ -106,8 +106,11 @@ def encrypt_secret(value: str) -> bytes:
 
     Refuses to encrypt under the ephemeral key outside LOCAL_DEV_MODE — a
     secret stored that way is lost on restart, so we fail loudly instead.
+    Only the *unset* case is guarded here; a key that is set-but-invalid
+    falls through to ``_get_fernet()`` which raises a clearer config error.
     """
-    if not vault_key_configured() and not _is_local_dev_mode():
+    key_unset = not os.environ.get(_ENV_KEY_NAME, "").strip()
+    if key_unset and not _is_local_dev_mode():
         raise VaultKeyNotConfiguredError(
             f"{_ENV_KEY_NAME} must be set before storing secrets — otherwise "
             "they are unrecoverable after restart."
