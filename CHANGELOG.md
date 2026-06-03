@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- MCP **sources** can now carry per-source non-secret environment variables (`env`, a `{VAR: value}` map) passed to the spawned **stdio** subprocess — e.g. a base API URL the upstream server needs alongside its `auth_secret_env` secret (which overlays `env`). New optional field on `POST/PUT /api/admin/mcp-sources` and a new nullable `mcp_sources.env` column (DuckDB `_v68_to_v69` + Alembic `0016`). Backward-compatible: existing sources (`env` NULL) behave exactly as before.
+
 ## [0.62.1] — 2026-06-03
 
 ### Fixed
