@@ -117,3 +117,42 @@ def test_schedule_keeps_strong_reference_until_done():
         assert task not in ev._BACKGROUND_TASKS  # discarded on completion
 
     asyncio.run(_run())
+
+
+def test_slack_config_default_transport_http():
+    from app.chat.config import ChatConfig, SlackConfig
+    cfg = ChatConfig()
+    assert isinstance(cfg.slack, SlackConfig)
+    assert cfg.slack.transport == "http"
+
+
+@pytest.mark.parametrize("raw_transport,expected", [
+    ("http", "http"),
+    ("socket", "socket"),
+    ("SOCKET", "socket"),     # case-insensitive
+    ("websocket", "http"),    # unknown -> http
+    ("", "http"),             # empty -> http
+])
+def test_load_chat_config_parses_slack_transport(tmp_path, raw_transport, expected, caplog):
+    import logging
+    from app.chat.config import load_chat_config
+    yaml_path = tmp_path / "instance.yaml"
+    yaml_path.write_text(
+        "chat:\n"
+        "  enabled: true\n"
+        "  slack:\n"
+        f"    transport: {raw_transport!r}\n"
+    )
+    caplog.set_level(logging.WARNING, logger="app.chat.config")
+    cfg = load_chat_config(yaml_path)
+    assert cfg.slack.transport == expected
+    if raw_transport.lower() not in ("http", "socket"):
+        assert any("unknown slack transport" in r.message for r in caplog.records)
+
+
+def test_load_chat_config_missing_slack_block_defaults_http(tmp_path):
+    from app.chat.config import load_chat_config
+    yaml_path = tmp_path / "instance.yaml"
+    yaml_path.write_text("chat:\n  enabled: true\n")
+    cfg = load_chat_config(yaml_path)
+    assert cfg.slack.transport == "http"
