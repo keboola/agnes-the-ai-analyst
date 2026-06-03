@@ -20,11 +20,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Backend-split guard caught two new residual sites the chat/Slack work landed:
   `app/chat/persistence.py`'s 4th PG repo (`ChatSessionParticipantPgRepository`)
   and `src/grant_intersection.py` are recognized as legit (gated PG dispatch /
-  `not use_pg()` escape hatch); the genuine backend-split sites
-  (`services/slack_bot/commands.py`, `app/auth/pat_resolver.py`) are pinned as
-  residual to keep the ratchet honest until they're routed through the factory.
+  `not use_pg()` escape hatch); the Slack bot handlers stay grandfathered as a
+  coherent DuckDB-conn unit (full Slack-identity-on-Postgres migration is a
+  separate subsystem effort), and `app/auth/pat_resolver.py` is now routed
+  through the factory (see Fixed below) and dropped from the residual list.
 
 ### Fixed
+- **Postgres backend: co-session tokens failed closed on a PG instance.**
+  Co-session token resolution (`pat_resolver.resolve_token_to_user`) read
+  `chat_session_participants` / `chat_sessions` off the always-DuckDB system
+  connection — empty on Postgres, so every co-session token was rejected with
+  `invalid_token`. It now reads the live participant set + `is_co_session` flag
+  through the repo factory (`chat_session_participants_repo()` /
+  `chat_session_repo()`), and `compute_grant_intersection` resolves participant
+  identities through the factory too. A new `chat_session_participants_repo()`
+  factory backs the participant reads. Pinned by a both-backends parity test
+  (`tests/db_pg/test_parity_co_session_resolution.py`).
 - **Postgres backend: the sync pipeline served no data on a PG instance.**
   `SyncOrchestrator.rebuild()` read the table registry, wrote `sync_state`, and
   read/reconciled `view_ownership` through a raw `get_system_db()` (always
