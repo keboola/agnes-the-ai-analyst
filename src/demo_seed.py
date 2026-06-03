@@ -6,6 +6,7 @@ All seeders are idempotent — safe to call on every boot.
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -204,3 +205,17 @@ def seed_marketplace(conn) -> None:
         registered_by="system",
     )
     log.info("seed_marketplace: registered baked demo marketplace (%s)", LOCAL_MARKETPLACE_URL)
+
+
+def seed_demo(conn) -> None:
+    """Idempotent, soft-fail demo seeder. Gated by SEED_DEMO. Each sub-step is
+    wrapped so one failure never blocks serving (matches _maybe_rebuild_on_boot)."""
+    if os.environ.get("SEED_DEMO", "").lower() not in ("1", "true"):
+        return
+    for name, fn in (("metrics", seed_metrics), ("memory", seed_memory),
+                     ("data_package", seed_data_package), ("marketplace", seed_marketplace)):
+        try:
+            fn(conn)
+        except Exception:
+            log.exception("demo seed step %s failed (non-fatal)", name)
+    log.info("SEED_DEMO: demo content seeded")

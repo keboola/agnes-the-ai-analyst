@@ -514,6 +514,16 @@ async def lifespan(app):
         except Exception:
             pass  # never block startup on a logging convenience
 
+    # Seed bundled demo content (SEED_DEMO-gated). Runs after the on-boot
+    # rebuild (which populates table_registry) and the admin seed, so the demo
+    # data package can resolve its tables. Soft-fail: never blocks serving.
+    try:
+        from src.demo_seed import seed_demo
+        from src.db import get_system_db
+        seed_demo(get_system_db())
+    except Exception:
+        logger.exception("SEED_DEMO seeding failed (non-fatal)")
+
     # Construct the PostHog client up front so its background flush thread
     # starts before the first request — and so a missing/invalid key fails
     # loud at boot rather than on first capture. No-op when disabled.
