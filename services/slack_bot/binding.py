@@ -6,8 +6,12 @@ they paste it at /setup while logged in to bind the IDs.
 SR-12 hardening:
 - One active code per slack_user_id (DELETE prior on re-issue).
 - Issuance throttle: at most _MAX_ISSUE_PER_WINDOW issues per 10 minutes.
-- Per-code attempt lockout: after _MAX_REDEEM_ATTEMPTS wrong guesses,
-  the outstanding code is voided and further attempts are rejected.
+- Per-caller redeem throttle: at most _MAX_REDEEM_ATTEMPTS failed redeem
+  attempts per redeeming user_email per 10-minute window; a 6th failed
+  attempt raises BindingThrottled. This bounds brute-forcing the 1M PIN
+  space against a victim's live code without the cross-user DoS a global
+  per-code counter would cause (a wrong guess matches no code row, so a
+  per-code counter is dead code — see the redeem-log pattern below).
 - Every successful bind is audited (best-effort).
 - Co-drive note: re-binding updates users.slack_user_id but NEVER rewrites
   chat_session_participants.user_id — a participant's identity is pinned at
@@ -23,12 +27,15 @@ from typing import Optional
 import duckdb
 
 _CODE_TTL_SECONDS = 10 * 60
-_MAX_ISSUE_PER_WINDOW = 3   # max codes issued in a 10-minute sliding window
-_MAX_REDEEM_ATTEMPTS = 5    # wrong guesses before the outstanding code is voided
+_MAX_ISSUE_PER_WINDOW = 3      # max codes issued in a 10-minute sliding window
+_MAX_REDEEM_ATTEMPTS = 5      # max FAILED redeem attempts per caller per window
+_REDEEM_WINDOW_SECONDS = 10 * 60  # sliding window for the redeem throttle
 
 
 class BindingThrottled(Exception):
-    """Raised by issue_verification_code when the issuance rate limit is hit."""
+    """Raised by issue_verification_code (issuance rate limit) or
+    redeem_verification_code (per-caller redeem rate limit) when the caller
+    has exceeded the allowed attempts in the sliding window."""
 
 
 def _ensure_table(conn: duckdb.DuckDBPyConnection) -> None:
@@ -45,6 +52,18 @@ def _ensure_table(conn: duckdb.DuckDBPyConnection) -> None:
         "CREATE TABLE IF NOT EXISTS slack_binding_issue_log ("
         " slack_user_id VARCHAR NOT NULL,"
         " issued_at TIMESTAMP NOT NULL"
+        ")"
+    )
+    # Redeem-log for the per-caller redeem throttle: one row per FAILED
+    # redeem attempt, keyed on the redeeming user_email. Mirrors the
+    # issue-log pattern. Lazily created here (no migration needed) — same
+    # convention as slack_binding_codes / slack_binding_issue_log, DuckDB-only
+    # by design (these binding tables are not part of the dual-backend repo
+    # layer; they're connection-local lazy tables).
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS slack_binding_redeem_log ("
+        " user_email VARCHAR NOT NULL,"
+        " attempted_at TIMESTAMP NOT NULL"
         ")"
     )
     # users table is assumed to exist; add a nullable slack_user_id column
@@ -91,44 +110,66 @@ def redeem_verification_code(
 ) -> bool:
     """Redeem a verification code to bind user_email to the Slack user.
 
-    SR-12 lockout: each wrong guess increments attempts on every outstanding
-    code.  Once attempts >= _MAX_REDEEM_ATTEMPTS, the code is deleted and
-    further correct-code attempts return False (code no longer exists).
+    SR-12 per-caller redeem throttle: before checking the code, count this
+    caller's FAILED redeem attempts in the last _REDEEM_WINDOW_SECONDS. If
+    they have already reached _MAX_REDEEM_ATTEMPTS, raise BindingThrottled
+    WITHOUT inspecting the code (so a locked-out caller can't even probe
+    whether a guessed code exists). Each failed match (wrong/expired code)
+    records an attempt row; a successful bind clears the caller's attempts.
+
+    Why per-caller and not per-code: a wrong guess matches no row in
+    slack_binding_codes, so a per-code attempt counter never increments and
+    is dead code. A global per-code increment would let any caller evict
+    every user's outstanding code (cross-user DoS). Keying the throttle on
+    the redeeming user_email bounds brute-forcing the 1M PIN space against a
+    victim's live code while isolating callers from each other.
+
+    Returns True on a successful bind, False on a wrong/expired code.
+    Raises BindingThrottled when the caller is rate-limited.
 
     Audit: every successful bind writes to audit_log (best-effort; failure
     is swallowed so a missing audit table never blocks the bind).
     """
     _ensure_table(conn)
+
+    # Per-caller redeem throttle — count FAILED attempts in the sliding window.
+    recent_failures = conn.execute(
+        "SELECT count(*) FROM slack_binding_redeem_log WHERE user_email = ? "
+        "AND attempted_at > current_timestamp - INTERVAL '10 minutes'",
+        [user_email],
+    ).fetchone()[0]
+    if recent_failures >= _MAX_REDEEM_ATTEMPTS:
+        # Locked out — do NOT inspect the code (no probing of code existence).
+        raise BindingThrottled(user_email)
+
+    def _record_failure() -> None:
+        conn.execute(
+            "INSERT INTO slack_binding_redeem_log(user_email, attempted_at) "
+            "VALUES (?, current_timestamp)",
+            [user_email],
+        )
+
     row = conn.execute(
-        "SELECT slack_user_id, issued_at, attempts FROM slack_binding_codes WHERE code = ?",
+        "SELECT slack_user_id, issued_at FROM slack_binding_codes WHERE code = ?",
         [code],
     ).fetchone()
     if not row:
-        # Wrong code — increment attempts only on the specific code that was
-        # supplied (WHERE code = ?) so a wrong guess for one user never
-        # touches another user's outstanding code (SR-12: per-victim scope).
-        # The code doesn't exist, so this UPDATE is a no-op — which is correct:
-        # the unknown code gets silently discarded (don't leak timing info about
-        # valid codes by differentiating "wrong code" vs "wrong guess on known code").
-        # We DO still evict any codes that reached the ceiling to clean up state.
-        conn.execute(
-            "DELETE FROM slack_binding_codes WHERE attempts >= ?",
-            [_MAX_REDEEM_ATTEMPTS],
-        )
+        # Wrong code — record a failed attempt against this caller's window.
+        _record_failure()
         return False
-    slack_user_id, issued_at, attempts = row
-    # Check lockout BEFORE TTL so a locked-out code returns False cleanly.
-    if attempts >= _MAX_REDEEM_ATTEMPTS:
-        conn.execute("DELETE FROM slack_binding_codes WHERE code = ?", [code])
-        return False
+    slack_user_id, issued_at = row
     # DuckDB returns naive datetimes in local time (current_timestamp semantics)
     now = datetime.now()
     if (now - issued_at).total_seconds() > _CODE_TTL_SECONDS:
         conn.execute("DELETE FROM slack_binding_codes WHERE code = ?", [code])
+        _record_failure()
         return False
     # Bind: write slack_user_id to the user row.
     conn.execute("UPDATE users SET slack_user_id = ? WHERE email = ?", [slack_user_id, user_email])
     conn.execute("DELETE FROM slack_binding_codes WHERE code = ?", [code])
+    # Success — clear this caller's failed-attempt history so a future
+    # legitimate re-bind isn't penalised by earlier typos.
+    conn.execute("DELETE FROM slack_binding_redeem_log WHERE user_email = ?", [user_email])
     # Audit (best-effort — missing audit_log table or factory not initialised
     # must never block the bind itself).
     # Use json.dumps for the params value — f-string interpolation of

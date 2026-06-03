@@ -1,9 +1,12 @@
-"""FIX 6: binding wrong-code increment scope + audit escaping (SR-12).
+"""SR-12: per-caller redeem rate-limit + audit escaping.
 
 Tests:
-- Wrong guesses against user A's code do NOT increment/evict user B's code
-- Lockout is per-victim (A locked out does not affect B)
-- Audit params use json.dumps (no f-string injection)
+- Brute-force locks out the redeeming caller (per-caller throttle) and the
+  victim's code is NOT consumable by brute force.
+- The throttle is per-caller: a locked-out caller A does NOT affect caller B
+  redeeming their own code (no cross-user DoS / eviction).
+- Wrong guesses against one user's code do NOT evict another user's code.
+- Audit params use json.dumps (no f-string injection).
 """
 from __future__ import annotations
 
@@ -11,6 +14,8 @@ import json
 
 import duckdb
 import pytest
+
+from services.slack_bot.binding import BindingThrottled
 
 
 @pytest.fixture
@@ -22,60 +27,71 @@ def conn():
     return c
 
 
-def test_wrong_guess_does_not_increment_other_users_code(conn):
-    """SR-12: wrong guess for A's code must NOT increment B's code attempts."""
-    from services.slack_bot.binding import issue_verification_code, redeem_verification_code
+def test_redeem_brute_force_locks_out_caller(conn):
+    """5 wrong redeems by caller A → 6th raises BindingThrottled.
 
-    # Issue codes for two different Slack users
-    code_a = issue_verification_code(conn, slack_user_id="UA")
-    code_b = issue_verification_code(conn, slack_user_id="UB")
-
-    # Make 4 wrong guesses (below the lockout threshold of 5)
-    for _ in range(4):
-        redeem_verification_code(conn, user_email="a@example.com", code="000000")
-
-    # B's code attempts must still be 0
-    row = conn.execute(
-        "SELECT attempts FROM slack_binding_codes WHERE slack_user_id = 'UB'"
-    ).fetchone()
-    assert row is not None, "UB's code disappeared (cross-user eviction)"
-    attempts_b = row[0]
-    assert attempts_b == 0, (
-        f"UB's code was incremented by A's wrong guesses: attempts={attempts_b}"
-    )
-
-
-def test_lockout_is_per_victim(conn):
-    """SR-12: wrong guesses with a non-existent code do not evict other users' codes.
-
-    Previously, any wrong guess incremented ALL codes' attempts globally —
-    an attacker could spam bogus codes to force-expire every outstanding code.
-    After the fix, the wrong-guess path does not touch any existing codes.
-    Both A and B can still redeem their codes after A's wrong guesses.
+    Crucially, the victim's live code is NOT consumable by brute force:
+    after the caller is locked out, even submitting the *correct* code
+    raises (the throttle short-circuits before inspecting the code), so
+    the brute-forcer cannot link the victim's Slack identity.
     """
     from services.slack_bot.binding import issue_verification_code, redeem_verification_code
 
+    # Victim's live code (belongs to Slack user UV).
+    victim_code = issue_verification_code(conn, slack_user_id="UV")
+
+    # Attacker A makes _MAX_REDEEM_ATTEMPTS (5) wrong guesses.
+    for _ in range(5):
+        assert redeem_verification_code(conn, user_email="a@example.com", code="000000") is False
+
+    # 6th attempt — even with the CORRECT code — is locked out.
+    with pytest.raises(BindingThrottled):
+        redeem_verification_code(conn, user_email="a@example.com", code=victim_code)
+
+    # The victim's code must NOT have been consumed by the brute force.
+    row = conn.execute(
+        "SELECT code FROM slack_binding_codes WHERE slack_user_id = 'UV'"
+    ).fetchone()
+    assert row is not None and row[0] == victim_code, (
+        "Victim's code was consumed/evicted by brute force"
+    )
+
+
+def test_redeem_throttle_is_per_caller(conn):
+    """Caller A locked out does NOT affect caller B redeeming their own code."""
+    from services.slack_bot.binding import issue_verification_code, redeem_verification_code
+
+    code_b = issue_verification_code(conn, slack_user_id="UB")
+
+    # Lock out caller A with 5 wrong guesses.
+    for _ in range(5):
+        assert redeem_verification_code(conn, user_email="a@example.com", code="000000") is False
+    with pytest.raises(BindingThrottled):
+        redeem_verification_code(conn, user_email="a@example.com", code="111111")
+
+    # Caller B is unaffected — they can redeem their own valid code.
+    result = redeem_verification_code(conn, user_email="b@example.com", code=code_b)
+    assert result is True, f"Caller B was wrongly throttled by A's lockout: {result}"
+
+
+def test_wrong_guess_does_not_evict_other_users_code(conn):
+    """A caller's wrong guesses must NOT evict another user's outstanding code."""
+    from services.slack_bot.binding import issue_verification_code, redeem_verification_code
+
     code_a = issue_verification_code(conn, slack_user_id="UA")
     code_b = issue_verification_code(conn, slack_user_id="UB")
 
-    # Multiple wrong guesses with a non-existent code
-    for _ in range(5):
+    # Caller A makes 4 wrong guesses (below the lockout threshold).
+    for _ in range(4):
         redeem_verification_code(conn, user_email="a@example.com", code="000000")
 
-    # A's code must still exist (not evicted by wrong-guess DoS)
-    row_a = conn.execute(
-        "SELECT code FROM slack_binding_codes WHERE slack_user_id = 'UA'"
-    ).fetchone()
-    assert row_a is not None, "A's code was evicted by wrong guesses (should not be)"
-
-    # B's code must still be redeemable
-    row_b = conn.execute(
-        "SELECT code FROM slack_binding_codes WHERE slack_user_id = 'UB'"
-    ).fetchone()
-    assert row_b is not None, "B's code was evicted by A's wrong guesses (cross-user DoS)"
-
-    result = redeem_verification_code(conn, user_email="b@example.com", code=code_b)
-    assert result is True, f"B's code was not redeemable after wrong guesses: {result}"
+    # Both codes must still exist (no cross-user eviction).
+    assert conn.execute(
+        "SELECT 1 FROM slack_binding_codes WHERE code = ?", [code_a]
+    ).fetchone() is not None, "A's code was evicted by wrong guesses"
+    assert conn.execute(
+        "SELECT 1 FROM slack_binding_codes WHERE code = ?", [code_b]
+    ).fetchone() is not None, "B's code was evicted by A's wrong guesses (cross-user DoS)"
 
 
 def test_audit_params_are_safe_json_not_fstring(conn):

@@ -94,9 +94,17 @@ class BindBody(BaseModel):
 
 @router.post("/bind")
 async def bind_slack(body: BindBody, request: Request, user: dict = Depends(get_current_user)):
-    from services.slack_bot.binding import redeem_verification_code
+    from services.slack_bot.binding import redeem_verification_code, BindingThrottled
     repo = request.app.state.chat_repo
-    ok = redeem_verification_code(repo._conn, user_email=user["email"], code=body.code)
+    try:
+        ok = redeem_verification_code(repo._conn, user_email=user["email"], code=body.code)
+    except BindingThrottled:
+        # Per-caller redeem rate-limit hit — too many failed attempts in the
+        # window. 429 (not 500) with a clear, non-leaky message.
+        raise HTTPException(
+            429,
+            "too_many_attempts: too many failed code attempts; wait a few minutes and try again",
+        )
     if not ok:
         raise HTTPException(400, "invalid_or_expired_code")
     return {"ok": True}

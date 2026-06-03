@@ -353,3 +353,17 @@ def test_f10_invalid_signature_is_rejected(slack_app):
     headers = _slack_headers(body, "wrong-secret")
     r = client.post("/api/slack/events", data=body, headers=headers)
     assert r.status_code == 401
+
+
+def test_bind_brute_force_returns_429(slack_app):
+    """POST /api/slack/bind returns 429 (not 500) once the per-caller redeem
+    throttle is hit — the BindingThrottled exception is mapped, not leaked."""
+    client, _conn, _state, _captured = slack_app
+    # _MAX_REDEEM_ATTEMPTS wrong guesses → 400 each (invalid code).
+    from services.slack_bot.binding import _MAX_REDEEM_ATTEMPTS
+    for _ in range(_MAX_REDEEM_ATTEMPTS):
+        r = client.post("/api/slack/bind", json={"code": "000000"})
+        assert r.status_code == 400, r.text
+    # Next attempt is throttled → 429, not 500.
+    r = client.post("/api/slack/bind", json={"code": "000000"})
+    assert r.status_code == 429, r.text

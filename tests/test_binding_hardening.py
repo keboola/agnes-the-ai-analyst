@@ -3,7 +3,8 @@
 Covers:
 - One active code per slack_user_id (DELETE prior on re-issue)
 - Issuance throttle (max 3 per 10 minutes)
-- Per-code attempt lockout on redeem (max 5 wrong attempts → locked)
+- Per-caller redeem throttle (max 5 failed redeems per caller per window →
+  6th raises BindingThrottled, even with the correct code)
 - Audit logged on successful redeem
 """
 import duckdb
@@ -35,19 +36,24 @@ def test_issuance_throttle(conn):
 
 
 def test_attempt_lockout_on_redeem(conn):
-    """Wrong guesses with a non-existent code do NOT affect the real code.
+    """Per-caller redeem throttle: 5 failed guesses lock out the caller.
 
-    SR-12 fix: the old behaviour incremented ALL codes' attempts on every
-    wrong guess, enabling a cross-user DoS (any user could exhaust all
-    outstanding codes by spamming a bogus code).  After the fix, wrong
-    guesses against a non-existent code are no-ops; the real code remains
-    redeemable.
+    The 6th attempt raises BindingThrottled even when the submitted code is
+    correct — this is the brute-force protection. The throttle is keyed on
+    the redeeming caller (user_email), not on a per-code counter (a wrong
+    guess matches no code row, so a per-code counter would be dead code),
+    and it never evicts another user's code (no cross-user DoS).
     """
-    from services.slack_bot.binding import issue_verification_code, redeem_verification_code
+    from services.slack_bot.binding import (
+        issue_verification_code, redeem_verification_code, BindingThrottled,
+    )
     real = issue_verification_code(conn, slack_user_id="U1")
     for _ in range(5):
         assert redeem_verification_code(conn, user_email="a@example.com", code="000000") is False
-    # Real code must still be redeemable — wrong guesses are scoped to the
-    # submitted code (which doesn't exist), so U1's code is untouched.
-    result = redeem_verification_code(conn, user_email="a@example.com", code=real)
-    assert result is True, "Real code was locked out by wrong-guess DoS (regression)"
+    # 6th attempt is locked out — even the correct code raises rather than binds.
+    with pytest.raises(BindingThrottled):
+        redeem_verification_code(conn, user_email="a@example.com", code=real)
+    # The victim's code was not consumed by the brute force.
+    assert conn.execute(
+        "SELECT 1 FROM slack_binding_codes WHERE code = ?", [real]
+    ).fetchone() is not None

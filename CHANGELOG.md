@@ -65,12 +65,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
     participant email) instead of a co_session JWT. Both `ws_stream` and
     `ws_join` thread `sender_email` into every `send_user_message` call so
     per-sender budgets (SR-10) and departed-participant replay-skip (SR-11) work.
-  - Slack binding `redeem_verification_code`: removed the `UPDATE ... SET
-    attempts = attempts + 1` with NO WHERE clause that incremented all users'
-    codes on every wrong guess (cross-user DoS). Wrong guesses against a
-    non-existent code are now no-ops. Audit params changed from f-string
-    interpolation to `json.dumps` to prevent JSON injection via crafted
-    Slack user IDs.
+  - Slack binding brute-force protection rebuilt as a **per-caller redeem
+    rate-limit**. The prior per-code attempt counter was dead code (a wrong
+    guess matches no code row), and an earlier global `UPDATE ... SET
+    attempts = attempts + 1` (no WHERE clause) was a cross-user DoS. The redeem
+    path now counts FAILED attempts per redeeming `user_email` in a sliding
+    10-minute window (lazy `slack_binding_redeem_log` table, mirroring the
+    issuance log); the 6th failed attempt raises `BindingThrottled` before the
+    code is even inspected — bounding brute force of the 1M-PIN space against a
+    victim's live code while isolating callers from one another (no cross-user
+    eviction). A successful bind clears the caller's attempt history.
+    `POST /api/slack/bind` maps `BindingThrottled` to **429** (not 500). Audit
+    params use `json.dumps` to prevent JSON injection via crafted Slack IDs.
 - **Slack events: ack-then-async.** `POST /api/slack/events` now schedules the
   (slow, sandbox-spawning) event dispatch and returns the `200` ack
   immediately instead of awaiting it. The previous `await` blew Slack's 3s
