@@ -138,8 +138,20 @@ def co_manager_live(tmp_path):
     """ChatManager with a fake live co-session pre-inserted into _live.
 
     Returns (mgr, live, owner_email, collab_email).
+    Uses rate_messages_per_hour=5 so per-sender rate tests can pre-fill the window.
     """
-    mgr = _make_manager(tmp_path)
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = _make_repo(conn)
+    wdm = _make_workdir_mgr(tmp_path, repo)
+    provider = MagicMock()
+    provider.spawn = AsyncMock()
+    mgr = ChatManager(
+        provider=provider,
+        workdir_mgr=wdm,
+        repo=repo,
+        config=ChatConfig(enabled=True, concurrency_per_user=5, rate_messages_per_hour=5),
+    )
     repo = mgr._repo
     s0 = repo.create_session(user_email="a@example.com", surface=Surface.WEB)
     co = repo.fork_session_as_co_session(
@@ -198,7 +210,7 @@ def test_co_session_spawn_uses_co_jwt_no_seed_fallback(monkeypatch, co_manager, 
 
 def test_capped_collaborator_rejected_owner_passes(co_manager_live):
     mgr, live, owner, collab = co_manager_live
-    mgr._config.rate_messages_per_hour = 5
+    # Config already has rate_messages_per_hour=5 (set in fixture)
     mgr._user_msg_window[collab] = mgr._deque_cls([time.monotonic()] * 5)
 
     async def _run():

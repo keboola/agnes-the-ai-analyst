@@ -177,12 +177,15 @@ class ChatManager:
         return created
 
     def _active_count_for_user(self, user_email: str) -> int:
-        return sum(
-            1
-            for s in self._live.values()
-            if s.user_email == user_email
-            and s.state in (SessionState.NEW, SessionState.ACTIVE, SessionState.IDLE)
-        )
+        n = 0
+        for s in self._live.values():
+            if s.state not in (SessionState.NEW, SessionState.ACTIVE, SessionState.IDLE):
+                continue
+            # Count the session against both the owner and every live participant
+            # in co-sessions, so the concurrency cap applies to all co-drivers.
+            if s.user_email == user_email or user_email in s.participant_emails:
+                n += 1
+        return n
 
     def active_count_for_user(self, user_email: str) -> int:
         """Public wrapper over the private cap predicate so callers
@@ -505,8 +508,11 @@ class ChatManager:
         live = self._live.get(chat_id)
         if live is None or live.handle is None or live.state == SessionState.DEAD:
             raise SessionNotFound(chat_id)
+        # SR-10: key all per-user budget/rate checks on the actual SENDER,
+        # not the session owner — each co-driver has their own daily/rate window.
+        sender = sender_email or live.user_email
         # Enforce daily Anthropic spend cap (result is TTL-cached — see _cached_daily_tokens)
-        tokens_in, tokens_out = self._cached_daily_tokens(live.user_email)
+        tokens_in, tokens_out = self._cached_daily_tokens(sender)
         spent_usd = (
             tokens_in * _PRICE_IN_PER_MTOK / 1_000_000
             + tokens_out * _PRICE_OUT_PER_MTOK / 1_000_000
@@ -537,14 +543,11 @@ class ChatManager:
                 ),
             })
             raise RuntimeError("max_session_tokens_exhausted")
-        # Per-user sliding-window message-rate cap. Trim entries older than
-        # one hour, then check the count.  Anti-abuse knob; previously dead
-        # config in instance.yaml.
+        # Per-user sliding-window message-rate cap keyed on the SENDER (SR-10).
+        # Trim entries older than one hour, then check the count.
         import time as _time
         now_mono = _time.monotonic()
-        window = self._user_msg_window.setdefault(
-            live.user_email, self._deque_cls(),
-        )
+        window = self._user_msg_window.setdefault(sender, self._deque_cls())
         while window and (now_mono - window[0]) > 3600:
             window.popleft()
         if len(window) >= self._config.rate_messages_per_hour:
