@@ -83,6 +83,55 @@ def test_ephemeral_command_sink_forwards_first_assistant_message(monkeypatch):
     assert sent == [("https://r/1", "answer")]
 
 
+def test_help_body_is_nonempty_and_lists_commands():
+    from services.slack_bot.commands import _help_body
+    body = _help_body()
+    assert "/agnes" in body
+    assert "/agnes-new" in body
+    assert "/agnes-status" in body
+
+
+def test_dispatch_command_routes_unknown_to_noop():
+    """Unknown command must not raise — log + return."""
+    from services.slack_bot import commands as cmds
+
+    cmd = {"command": "/nope", "text": "", "user_id": "U1",
+           "channel_id": "C1", "response_url": "https://r/x"}
+
+    # Should complete without raising.
+    asyncio.run(cmds.dispatch_command(app=object(), cmd=cmd))
+
+
+def test_run_logged_swallows_and_posts_ephemeral(monkeypatch):
+    """_run_logged must not propagate; it posts a best-effort ephemeral."""
+    from services.slack_bot import commands as cmds
+
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send(url, text, blocks=None):
+        sent.append((url, text))
+
+    monkeypatch.setattr(cmds, "send_ephemeral", fake_send)
+
+    async def _boom():
+        raise RuntimeError("kaboom")
+
+    # Completes without raising; posts to the response_url it was given.
+    asyncio.run(cmds._run_logged(_boom(), response_url="https://r/err"))
+    assert sent and sent[0][0] == "https://r/err"
+    assert "went wrong" in sent[0][1].lower()
+
+
+def test_run_logged_no_response_url_still_swallows(monkeypatch):
+    from services.slack_bot import commands as cmds
+
+    async def _boom():
+        raise RuntimeError("kaboom")
+
+    # No response_url → nothing posted, but still no raise.
+    asyncio.run(cmds._run_logged(_boom(), response_url=None))
+
+
 def test_ephemeral_command_sink_forwards_error(monkeypatch):
     from services.slack_bot import sink as sink_mod
 
