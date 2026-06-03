@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+- Made `tests/test_cache_warmup.py::test_list_remote_rows_filters_to_bigquery_source_type`
+  deterministic by patching the `table_registry_repo()` factory the code calls
+  rather than the underlying class + `get_system_db` — the old patch could be
+  bypassed under xdist sharding when an `AGNES_DB_URL` from another shard flipped
+  `use_pg()`. Also dropped a vestigial `get_system_db()` call in
+  `cache_warmup._list_remote_rows` (rows already come from the factory).
+
 ### Fixed
 - **Postgres backend: admin telemetry, the stack resolver, and per-user MCP
   secrets now work on a PG instance.** Three more clusters that read system
