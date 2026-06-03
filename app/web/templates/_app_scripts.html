@@ -5,8 +5,8 @@
     <!-- window.confirmModal / alertModal / promptModal — design-system
          replacements for native confirm()/alert()/prompt() (#497 §1).
          Defined here alongside the other end-of-<body> app globals (e.g.
-         showUndoToast below). Page scripts in {% block content %} parse
-         before this loads, so by contract modals are only ever called from
+         showUndoToast below). The page's content block parses before this
+         loads, so by contract modals are only ever called from
          event handlers (click/change/keydown/DOMContentLoaded) — never at
          top-level parse time — by which point the globals are defined. -->
     <script src="{{ static_url('js/modal.js') }}"></script>
