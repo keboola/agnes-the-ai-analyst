@@ -129,3 +129,16 @@ def test_soft_archive_dm_noop_when_no_session(monkeypatch):
     monkeypatch.setattr(cmd_mod, "open_im", fake_open_im)
     asyncio.run(cmd._soft_archive_dm(app, "U1"))
     assert killed == [] and archived == []
+
+
+def test_value_codec_roundtrip():
+    from services.slack_bot import blocks
+    v = blocks.encode_value({"chat_id": "sess-1", "owner": "a@example.com"})
+    assert isinstance(v, str)
+    assert blocks.decode_value(v) == {"chat_id": "sess-1", "owner": "a@example.com"}
+
+
+def test_decode_value_rejects_garbage():
+    from services.slack_bot import blocks
+    assert blocks.decode_value("not-json") == {}
+    assert blocks.decode_value("") == {}
