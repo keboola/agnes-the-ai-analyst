@@ -181,7 +181,7 @@ def has_explicit_grant(
     user_id: str,
     resource_type: str,
     resource_id: str,
-    conn: duckdb.DuckDBPyConnection,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
 ) -> bool:
     """True iff one of the user's groups holds an explicit ``resource_grant``
     for ``(resource_type, resource_id)``.
@@ -195,20 +195,25 @@ def has_explicit_grant(
     granted to a group, even for admins (who can still reach the page by URL,
     since the route guard uses :func:`can_access` and admins keep god-mode
     there). Never use it as a security gate — that is :func:`can_access`'s job.
+
+    ``conn`` honored only in DuckDB-backend mode (test isolation); routes
+    through the global factory otherwise — same backend-split rule as
+    :func:`can_access`. (Previously this ran a raw ``conn.execute`` against
+    ``resource_grants``, which read the stale/empty DuckDB table on a
+    Postgres-backed instance and hid the nav link even when chat was granted.)
     """
-    group_ids = _user_group_ids(user_id, conn)
+    group_ids = _user_group_ids(user_id, conn=conn)
     if not group_ids:
         return False
-    placeholders = ",".join(["?"] * len(group_ids))
-    row = conn.execute(
-        f"""SELECT 1 FROM resource_grants
-            WHERE group_id IN ({placeholders})
-              AND resource_type = ?
-              AND resource_id = ?
-            LIMIT 1""",
-        [*group_ids, resource_type, resource_id],
-    ).fetchone()
-    return row is not None
+    from src.repositories import use_pg, resource_grants_repo
+    if conn is not None and not use_pg():
+        from src.repositories.resource_grants import ResourceGrantsRepository
+        return ResourceGrantsRepository(conn).has_grant(
+            list(group_ids), resource_type, resource_id,
+        )
+    return resource_grants_repo().has_grant(
+        list(group_ids), resource_type, resource_id,
+    )
 
 
 def can_access_session(
