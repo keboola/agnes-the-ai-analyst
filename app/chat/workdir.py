@@ -206,13 +206,15 @@ class WorkdirManager:
         (root / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
         (root / "memory").mkdir(exist_ok=True)
         (root / "work").mkdir(exist_ok=True)
-        rendered = None
-        if self._render_workspace_prompt is not None and participant_emails:
-            try:
-                rendered = self._render_workspace_prompt(participant_emails[0])
-            except Exception:
-                logger.exception("ephemeral CLAUDE.md render failed for %s", chat_id)
-        (root / "CLAUDE.md").write_text(rendered or "# Co-drive session\n", encoding="utf-8")
+        # FIX 4 (H1): do NOT render the owner-scoped workspace prompt for the
+        # ephemeral co-drive path. The render_workspace_prompt callable is
+        # bound to a single user's identity (participant_emails[0] was the
+        # owner), so calling it would leak owner-scoped catalog metadata
+        # ({{tables}}, {{marketplaces}}) into the shared CLAUDE.md even when
+        # those resources are not in the intersection. Analysts use
+        # `agnes catalog` for discovery, which is intersection-gated. The
+        # static "# Co-drive session" header is always safe.
+        (root / "CLAUDE.md").write_text("# Co-drive session\n", encoding="utf-8")
         allowed = intersection.get("marketplace_plugin", frozenset())
         src_root = self._bundled_template_dir / ".claude" / "skills"
         if src_root.exists():
