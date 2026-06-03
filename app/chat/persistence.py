@@ -548,6 +548,47 @@ class ChatRepository:
         assert fetched is not None
         return fetched
 
+    def fork_co_session_to_private(
+        self,
+        *,
+        source_session_id: str,
+        owner_email: str,
+    ) -> str:
+        """Fork a co-session into a private non-ephemeral session for ``owner_email``.
+
+        Copies every message from the co-session (governed by the caller's own
+        grants). The new session is a normal web session (is_co_session=FALSE,
+        ephemeral=FALSE). Returns the new session id.
+
+        DuckDB ordering: create session first, then copy messages, so a partial
+        failure leaves at most a GC-able empty session.
+        """
+        if self._participants_pg is not None:
+            return self._participants_pg.fork_co_session_to_private(
+                source_session_id=source_session_id, owner_email=owner_email,
+            )
+        chat_id = _gen_id("chat")
+        now = datetime.now(timezone.utc)
+        self._conn.execute(
+            "INSERT INTO chat_sessions "
+            "(id, user_email, surface, slack_channel_id, slack_thread_ts, title, "
+            "started_at, last_message_at, message_count, archived, is_co_session, ephemeral) "
+            "VALUES (?, ?, 'web', NULL, NULL, NULL, ?, NULL, 0, FALSE, FALSE, FALSE)",
+            [chat_id, owner_email, now],
+        )
+        for msg in self.list_messages(source_session_id):
+            self.append_message(
+                session_id=chat_id,
+                role=msg.role,
+                content=msg.content,
+                tool_calls=msg.tool_calls,
+                tokens_in=msg.tokens_in,
+                tokens_out=msg.tokens_out,
+                model=msg.model,
+                sender_email=msg.sender_email,
+            )
+        return chat_id
+
     # --- workdirs ----------------------------------------------------------
 
     def get_workdir(self, user_email: str) -> Optional[UserWorkdir]:

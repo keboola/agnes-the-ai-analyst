@@ -191,3 +191,65 @@ class ChatSessionParticipantPgRepository:
             ).mappings().first()
         assert row is not None
         return _row_to_session(row)
+
+    def fork_co_session_to_private(
+        self,
+        *,
+        source_session_id: str,
+        owner_email: str,
+    ) -> str:
+        """Atomic fork of a co-session to a private non-ephemeral session.
+
+        All messages from the co-session are copied within a single transaction
+        (governed by the caller's own grants). Returns the new session id.
+        """
+        from src.repositories.chat_messages_pg import ChatMessagePgRepository
+
+        msg_repo = ChatMessagePgRepository(self._engine)
+        source_msgs = msg_repo.list_messages(source_session_id)
+
+        chat_id = _gen_id("chat")
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "INSERT INTO chat_sessions "
+                    "(id, user_email, surface, slack_channel_id, slack_thread_ts, title, "
+                    "started_at, last_message_at, message_count, archived, is_co_session, ephemeral) "
+                    "VALUES (:id, :ue, 'web', NULL, NULL, NULL, :now, NULL, 0, FALSE, FALSE, FALSE)"
+                ),
+                {"id": chat_id, "ue": owner_email, "now": now},
+            )
+            import json
+            for msg in source_msgs:
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO chat_messages "
+                        "(id, session_id, role, content, tool_calls, tokens_in, tokens_out, "
+                        "model, sender_email, created_at) "
+                        "VALUES (:id, :sid, :role, :content, :tc, :tin, :tout, :model, :se, :ca)"
+                    ),
+                    {
+                        "id": _gen_id("msg"),
+                        "sid": chat_id,
+                        "role": msg.role,
+                        "content": msg.content,
+                        "tc": json.dumps(msg.tool_calls) if msg.tool_calls else None,
+                        "tin": msg.tokens_in,
+                        "tout": msg.tokens_out,
+                        "model": msg.model,
+                        "se": msg.sender_email,
+                        "ca": msg.created_at,
+                    },
+                )
+            # Maintain PG rollup columns (no DuckDB FK/index bug here).
+            msg_count = len(source_msgs)
+            if msg_count > 0:
+                conn.execute(
+                    sa.text(
+                        "UPDATE chat_sessions SET message_count = :n, last_message_at = :now "
+                        "WHERE id = :id"
+                    ),
+                    {"n": msg_count, "now": now, "id": chat_id},
+                )
+        return chat_id

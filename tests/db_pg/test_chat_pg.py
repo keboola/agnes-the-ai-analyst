@@ -336,3 +336,44 @@ def test_co_session_coexists_with_owner_other_surfaces(sessions, participants):
     )
     ids = {s.id for s in sessions.list_sessions("o@x.com")}
     assert {web.id, dm.id, co.id} <= ids
+
+
+# --- Task 9: fork_session_as_co_session contract + fork_co_session_to_private ---
+
+
+def test_fork_session_as_co_session_no_messages_copied(sessions, participants, messages):
+    """SR-8: fork_session_as_co_session must NOT copy transcript messages."""
+    s0 = sessions.create_session(user_email="a@example.com", surface=Surface.WEB)
+    messages.append_message(session_id=s0.id, role="user", content="secret data")
+    s1 = participants.fork_session_as_co_session(
+        s0.id,
+        owner_email="a@example.com", owner_user_id="ua",
+        invitee_email="b@example.com", invitee_user_id="ub",
+    )
+    assert s1.is_co_session is True and s1.ephemeral is True
+    # SR-8: no transcript blind-clone
+    assert messages.list_messages(s1.id) == []
+    again = sessions.get_session(s0.id)
+    assert again.is_co_session is False and again.ephemeral is False
+    rows = participants.get_session_participants(s1.id)
+    by_role = {r.role: r for r in rows}
+    assert by_role["owner"].user_id == "ua"
+    assert by_role["collaborator"].user_id == "ub"
+
+
+def test_fork_co_session_to_private_copies_transcript(sessions, participants, messages):
+    """fork_co_session_to_private: fresh private session with co-session transcript."""
+    s0 = sessions.create_session(user_email="a@example.com", surface=Surface.WEB)
+    s1 = participants.fork_session_as_co_session(
+        s0.id,
+        owner_email="a@example.com", owner_user_id="ua",
+        invitee_email="b@example.com", invitee_user_id="ub",
+    )
+    messages.append_message(session_id=s1.id, role="assistant", content="hi from co")
+    priv_id = participants.fork_co_session_to_private(
+        source_session_id=s1.id, owner_email="b@example.com",
+    )
+    priv = sessions.get_session(priv_id)
+    assert priv.is_co_session is False and priv.ephemeral is False
+    assert priv.user_email == "b@example.com"
+    assert any(m.content == "hi from co" for m in messages.list_messages(priv_id))
