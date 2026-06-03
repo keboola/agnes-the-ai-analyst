@@ -61,6 +61,62 @@ class MarketplacePluginsRepository:
         ).fetchall()
         return {r[0]: int(r[1]) for r in rows}
 
+    def list_granted_for_groups(
+        self, group_ids: Iterable[str],
+    ) -> List[Dict[str, Any]]:
+        """Distinct plugins granted to any of ``group_ids`` via
+        ``resource_grants``, ordered by parent marketplace registration
+        time then plugin name.
+
+        Used by ``src.marketplace_filter.resolve_allowed_plugins`` —
+        the resolver behind the served Claude Code marketplace
+        (``/marketplace.git/``, ``/marketplace.zip``). Returns a list of
+        ``{marketplace_id, name, version, raw}`` dicts (``raw`` is parsed
+        JSON, matching ``list_for_marketplace`` semantics) where each
+        plugin appears exactly once even if multiple groups grant it.
+
+        Joins ``marketplace_registry`` so the ORDER BY uses the parent
+        marketplace's registration time — deterministic across machines,
+        gives the served marketplace a stable ETag / git commit SHA as
+        long as the underlying content is unchanged.
+        """
+        gids = list(group_ids)
+        if not gids:
+            return []
+        placeholders = ",".join(["?"] * len(gids))
+        # Postgres strict-standard SQL requires every ``ORDER BY``
+        # expression to appear in the ``SELECT DISTINCT`` list — DuckDB
+        # accepts the loose form too. Pulling ``mr.registered_at`` into
+        # the projection keeps both engines happy; the column is dropped
+        # from the returned dict.
+        rows = self.conn.execute(
+            "SELECT DISTINCT mp.marketplace_id, mp.name, mp.version, mp.raw, "
+            "       mr.registered_at "
+            "FROM resource_grants rg "
+            "JOIN marketplace_plugins mp "
+            "  ON mp.marketplace_id || '/' || mp.name = rg.resource_id "
+            "JOIN marketplace_registry mr ON mr.id = mp.marketplace_id "
+            f"WHERE rg.group_id IN ({placeholders}) "
+            "  AND rg.resource_type = 'marketplace_plugin' "
+            "ORDER BY mr.registered_at, mp.name",
+            list(gids),
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for marketplace_id, name, version, raw, _registered_at in rows:
+            parsed_raw: Any = raw
+            if isinstance(raw, str):
+                try:
+                    parsed_raw = json.loads(raw)
+                except (ValueError, TypeError):
+                    parsed_raw = {}
+            out.append({
+                "marketplace_id": marketplace_id,
+                "name": name,
+                "version": version,
+                "raw": parsed_raw if isinstance(parsed_raw, dict) else {},
+            })
+        return out
+
     def list_with_filters(
         self,
         *,

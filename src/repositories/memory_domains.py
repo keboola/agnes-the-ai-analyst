@@ -272,29 +272,44 @@ class MemoryDomainsRepository:
         ``ValueError`` — admin must pre-create domains via the dedicated CRUD
         endpoint. Returns the resolved ``memory_domains.id`` set written.
         """
-        # Resolve all slugs first so we don't half-write on a typo.
-        if not slugs:
+        # Wrapped in one transaction so a concurrent reader never sees the
+        # empty post-DELETE / pre-INSERT window (an item would momentarily
+        # appear domain-less, breaking domain-scoped RBAC reads). Mirrors the
+        # PG sibling's ``self._engine.begin()`` atomicity. The slug resolution
+        # SELECT stays inside the txn; an unknown slug raises and rolls back
+        # so nothing half-writes.
+        self.conn.execute("BEGIN")
+        try:
+            if not slugs:
+                self.conn.execute(
+                    "DELETE FROM knowledge_item_domains WHERE item_id = ?",
+                    [item_id],
+                )
+                self.conn.execute("COMMIT")
+                return []
+            placeholders = ",".join(["?"] * len(slugs))
+            rows = self.conn.execute(
+                f"SELECT slug, id FROM memory_domains WHERE slug IN ({placeholders})",
+                list(slugs),
+            ).fetchall()
+            resolved = {r[0]: r[1] for r in rows}
+            missing = [s for s in slugs if s not in resolved]
+            if missing:
+                raise ValueError(f"Unknown memory domain slug(s): {missing}")
             self.conn.execute(
-                "DELETE FROM knowledge_item_domains WHERE item_id = ?",
-                [item_id],
+                "DELETE FROM knowledge_item_domains WHERE item_id = ?", [item_id]
             )
-            return []
-        placeholders = ",".join(["?"] * len(slugs))
-        rows = self.conn.execute(
-            f"SELECT slug, id FROM memory_domains WHERE slug IN ({placeholders})",
-            list(slugs),
-        ).fetchall()
-        resolved = {r[0]: r[1] for r in rows}
-        missing = [s for s in slugs if s not in resolved]
-        if missing:
-            raise ValueError(f"Unknown memory domain slug(s): {missing}")
-        self.conn.execute(
-            "DELETE FROM knowledge_item_domains WHERE item_id = ?", [item_id]
-        )
-        for slug, did in resolved.items():
-            self.conn.execute(
-                "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) "
-                "VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-                [item_id, did, added_by],
-            )
-        return list(resolved.values())
+            for slug, did in resolved.items():
+                self.conn.execute(
+                    "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) "
+                    "VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+                    [item_id, did, added_by],
+                )
+            self.conn.execute("COMMIT")
+            return list(resolved.values())
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise

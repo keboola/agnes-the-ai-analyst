@@ -1710,7 +1710,7 @@ async function iwSync() {
 }
 
 async function iwDelete() {
-  if (!confirm("Remove Initial Workspace Template? This restores the default `agnes init` flow. The on-disk working copy is also wiped.")) {
+  if (!(await confirmModal("Remove Initial Workspace Template? This restores the default `agnes init` flow. The on-disk working copy is also wiped."))) {
     return;
   }
   try {

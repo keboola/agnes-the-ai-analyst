@@ -136,6 +136,181 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   can't interleave partial JSON lines. New `ChatManager.active_count_for_user`
   wrapper.
 
+## [0.63.0] — 2026-06-03
+
+### Added
+- MCP **sources** can now carry per-source non-secret environment variables (`env`, a `{VAR: value}` map) passed to the spawned **stdio** subprocess — e.g. a base API URL the upstream server needs alongside its `auth_secret_env` secret (which overlays `env`). New optional field on `POST/PUT /api/admin/mcp-sources` and a new nullable `mcp_sources.env` column (DuckDB `_v68_to_v69` + Alembic `0016`). Backward-compatible: existing sources (`env` NULL) behave exactly as before.
+
+## [0.62.4] — 2026-06-03
+
+### Fixed
+- **Fresh customer-instance VMs on the Postgres/cloud path now boot.** Two gaps broke first-boot for any VM whose startup-script engages the Postgres overlay (existing DuckDB-only fleets were unaffected): (1) the `Dockerfile` never copied `agnes-state-applier-bootstrap.service` into `/opt/agnes-host/`, so the startup-script's `install` of it failed under `set -e` (`install: cannot stat …`); (2) the `migrate` and `data-migrate` services in `docker-compose.postgres.yml` declared only `build: .`, so `docker compose up` tried to build them on the sourceless VM and failed with `failed to read dockerfile`. The Dockerfile now ships the bootstrap unit, and both one-shot services carry an `image:` (the pulled GHCR image) alongside `build` — mirroring the app/scheduler split. Regression tests assert every startup-script-installed ops unit is shipped by the Dockerfile and that the overlay's migrate services carry a prebuilt image. (#524)
+
+
+## [0.62.3] — 2026-06-03
+
+### Fixed
+- `Dockerfile.demo` pins `ENV DATA_DIR=/data` so the baked demo extract (written to the absolute `/data/extracts/demo` at build time) is found by the boot-time rebuild. The app default `DATA_DIR=./data` is relative to the `/app` workdir, so without this the demo tables (`orders_demo`, `customers_demo`) silently never loaded and the demo catalog came up empty. (#525)
+
+## [0.62.2] — 2026-06-03
+
+### Fixed
+- **Served Claude Code marketplace was missing every plugin on Postgres-backed deployments.** `src/marketplace_filter.py:resolve_allowed_plugins` ran the `resource_grants ⋈ marketplace_plugins ⋈ marketplace_registry` JOIN as raw `conn.execute` against the DuckDB-typed connection. On a `db-state-machine` CLOUD / SIDE_CAR instance the rows live in Postgres — the raw SQL hit an empty DuckDB table and the JOIN returned 0 rows, so `/marketplace.git/` and `/marketplace.zip` served only plugins from marketplaces ingested *before* the PG cutover (typically the seed `grpn-foundryai` set). `agnes marketplace search` still reported `installed: true` on the missing plugins because the curated tab reads `user_curated_subscriptions` through the repo factory and that *was* PG-routed — divergent UX signals that matched the field tickets exactly. Routed `resolve_allowed_plugins`, `resolve_user_groups`, and the subscription / store-install reads in `resolve_user_marketplace` through the repo factory (`marketplace_plugins_repo().list_granted_for_groups`, `user_groups_repo().list_names_by_ids`, `user_curated_subscriptions_repo`, `user_store_installs_repo`) so the served set, the marketplace search results, and the My Stack page all read the same source of truth on either backend. (#522)
+
+### Internal
+- New cross-engine contract test (`tests/db_pg/test_marketplace_plugins_grants_contract.py`) parametrises `list_granted_for_groups` + `list_names_by_ids` over both DuckDB and Postgres backends — pins the JOIN shape (DISTINCT + ORDER BY parity with PG's stricter standard), the registered-at + name ordering, the marketplace_registry INNER-JOIN filter (orphan plugins drop), and the empty-input short-circuit. Catches the routing regression that drove this PR and prevents it from reappearing on either side. (#522)
+
+## [0.62.1] — 2026-06-03
+
+### Fixed
+- MCP passthrough tools that declare no input parameters (e.g. canned-view tools such as a pipeline summary) no longer fail with a `kwargs` validation error. Empty-schema tools now register a parameterless signature in both the server-hosted (`app/api/mcp/tools_generator.py`) and CLI stdio (`cli/mcp/_dynamic_passthrough.py`) MCP servers, instead of a `**kwargs` wrapper that FastMCP rendered as a required field (so the only valid — empty — call was rejected).
+
+## [0.62.0] — 2026-06-03
+
+### Added
+- **`agnes auth refresh-groups` + `POST /auth/refresh-groups`** — re-sync the caller's Google Workspace group memberships against the live Admin SDK without a browser sign-in. Closes the gap that drove a recurring class of "I'm in the new group but Agnes can't see my access" tickets: previously the `user_group_members.source='google_sync'` snapshot refreshed *only* in the browser OAuth callback (`app/auth/group_sync.fetch_user_groups`), so CLI/PAT users (`agnes refresh-marketplace`, `agnes pull`, `/api/marketplace/*`) saw a frozen view of their groups until they re-signed-in on the dashboard. The new endpoint reuses the OAuth-callback write path (prefix filter, admin/everyone mapping, `replace_google_sync_groups`) via the extracted `apply_user_groups` helper, so policy stays single-sourced. Rate-limited at 5/min/IP (slowapi default key — matches the `/token` and `/bootstrap` pattern in the same router; refreshing is cheap on our side but each call costs a Workspace Admin SDK quota unit, so the limit guards the upstream quota). Response reports `added` / `removed` / `current` so the CLI shows exactly what changed. The diff-computation read path goes through `user_group_members_repo().list_groups_with_meta_for_user()` so the response is correct on both DuckDB and Postgres state backends (Devin Review caught the original raw-SQL drift); a new `tests/db_pg/test_user_group_members_contract.py` pins down the read shape across both engines. (#520)
+
+### Internal
+- **Extracted `app.auth.group_sync.apply_user_groups(user_id, email, conn) -> SyncResult`** from the OAuth callback's inline sync block (`app/auth/providers/google.py`), so the callback and the new refresh endpoint write the snapshot through one implementation. Cuts ~70 LoC of duplication and removes the OAuth-only assumption baked into the previous shape. Behavior preserved end-to-end (verified by the existing prefix/system-mapping/idempotency suite). The extracted function preserves the pre-extraction OAuth callback's fail-soft contract: a transient `ug_repo.ensure()` / `get_by_name()` hiccup (DuckDB write lock, PG connection drop) downgrades to `soft_failed=True` rather than raising — without this, the OAuth callback would turn a transient DB hiccup into `/login?error=oauth_failed` (user locked out) and the refresh endpoint into HTTP 500. The denied case (`denied=True`) deliberately preserves existing `source='google_sync'` rows rather than wiping RBAC on a prefix-policy mismatch that may be transient (operator-typo in `PREFIX_ENV` / Admin SDK propagation lag). Both contracts documented on the function's docstring. (#520)
+
+## [0.61.6] — 2026-06-03
+
+### Fixed
+- `/home` "Mark me as onboarded" (and `agnes init`) now takes effect on a
+  Postgres-backed instance. The route read `users.onboarded` with a raw
+  `conn.execute` against DuckDB while `POST /api/me/onboarded` writes through
+  the backend-aware `users_repo()` — so on a `db-state-machine` CLOUD /
+  SIDE_CAR instance the flag was written to Postgres but read back from the
+  stale DuckDB row, leaving the setup panel visible forever regardless of
+  reloads or cache. `/home` now reads `onboarded` through `users_repo()` so
+  the read and write share the active backend. (#518)
+- Marketplace **My Stack** tab returned HTTP 500 on the Postgres state backend — the `user_store_installs` PG repo's `list_for_user` omitted `title` / `tagline` / `synthetic_name` from its SELECT, which the flea-card builder (`_flea_to_item`) reads directly (`entity["synthetic_name"]` → `KeyError`). Brought the PG projection to parity with the DuckDB repo and added a cross-engine contract test. (#517)
+
+## [0.61.5] — 2026-06-03
+
+### Added
+- The configured instance logo (`AGNES_INSTANCE_LOGO_SVG` env > `instance.logo_svg` YAML) now renders on the `/login` Sign In card, above the heading — previously the logo only surfaced in the app header. Empty default keeps the OSS vendor-neutral: no logo renders unless an operator sets one.
+
+## [0.61.4] — 2026-06-03
+
+### Changed
+- **Migrated the 7 remaining `base.html` leaf pages onto the design-system base (`base_ds`).** `admin_tables`, `admin_database`, `admin_sync`, `admin_mcp_sources`, `admin_mcp_source_detail`, `admin_mcp_tool_grants`, `cowork_help` — pages added on `main` *after* the #481 batch (Cowork + Universal MCP #474, db-state #455). Each is an extends-swap onto `base_ds` with its per-page component CSS moved into `{% block head_extra %}` and the redundant `_components.html` import dropped (`base_ds` auto-imports `ds`); every hero is kept in place (faithful — no visual change, render-verified). Only the 7 intentionally-bespoke templates (the catalog/marketplace `*_detail` card-heroes, the dead `admin_scheduler_runs` redirect, and the `_message` partial) now remain on `base.html`. Migration-tail follow-up to #482.
+
+## [0.61.3] — 2026-06-03
+
+### Changed
+- Brand-green tints, focus rings, and shadows across the static CSS (`style-custom.css`, `home.css`, `dashboard.css`, `marketplace.css`, `activity_center.css`, `admin_access.css`) now derive from the `--ds-primary` theme token via `color-mix` instead of hardcoded green, so they follow the active theme (light/blue/dark). No visual change in the default theme. (#497)
+
+## [0.61.2] — 2026-06-03
+
+### Changed
+- Confirmation, alert, and input dialogs across the web UI now render as styled in-app modals instead of native browser `confirm()` / `alert()` / `prompt()` pop-ups — design-system look (rounded corners + brand colours), non–event-loop-blocking, with focus trap, Esc/backdrop dismissal, and keyboard-friendly Enter-to-confirm. Helpers live in `app/web/static/js/modal.js` (`confirmModal()` / `alertModal()` / `promptModal()`), CSS in `app/web/static/style-custom.css`, autoloaded via `_app_scripts.html`. Touches 22 templates + `admin/db_state.js`; covers regular pages and the admin surface (`admin_tables`, `admin_corporate_memory`, `admin_store_submission_detail`, `admin_user_detail`, etc.). The Devin Review on #508 caught a `window.confirm` slip in `home_not_onboarded.html` (the prior audit regex matched bare `confirm(` but not the `window.`-prefixed form); converted in this PR. Also fixes a name collision where `admin_tokens.html` / `_profile_tokens.html` defined a page-local `confirmModal` element id that shadowed the helper. (#497)
+
+## [0.61.1] — 2026-06-03
+
+### Fixed
+- **`app/api/mcp_http.py:_BASE` no longer reuses `AGNES_BASE_URL` for self-calls.** The MCP HTTP server makes server-side self-calls into Agnes for `catalog` / `schema` / `describe` / `query` / `skills`. Reusing the public-facing `AGNES_BASE_URL` made every tool round-trip through the reverse proxy (added TLS + DNS + proxy latency, broke when the external URL wasn't resolvable from inside the container). The base URL is now read from a dedicated `AGNES_MCP_INTERNAL_URL` env var (default `http://localhost:8000`). Operators running Agnes split across multiple pods can point the var at the in-cluster service URL. (Devin Review on #474.)
+- **`app/api/admin_mcp.py` adopts the `mcp_sources_repo()` / `tool_registry_repo()` factory functions across all 15 handler sites.** Direct `MCPSourceRepository(conn)` / `ToolRegistryRepository(conn)` instantiations skipped the dual-backend factory, so a Postgres-backed (side-car / cloud) deploy was reading MCP source / tool data from the wrong place. The `audit_log` path keeps the conn dependency intact since it's a per-router helper; only the MCP repository constructions were swapped. (Devin Review on #474.)
+
+### Internal
+- **Cross-engine contract tests for the MCP repository pairs.** New `tests/db_pg/test_mcp_sources_contract.py` (11 tests) + `tests/db_pg/test_tool_registry_contract.py` (8 tests) parametrise over `[duckdb, pg]` (sister of `test_data_packages_contract.py`) so DuckDB and Postgres implementations of `mcp_sources` + `tool_registry` upsert / get / get_by_name / list / delete + their validators are exercised against the same call sites. Closes the third Devin Review follow-up on #474 (cross-engine contract tests for the 3 new repository pairs landed by Cowork + MCP); the `setup_tokens` pair (the third) has narrower API surface and is exercised end-to-end through the existing Cowork bundle setup tests.
+
+## [0.61.0] — 2026-06-03
+
+### Added
+- Seed-driven connector framework foundation (A1.1 of the connector-skills refactor).
+  - `src/_bundled_seed/` snapshot of the OSS workspace seed ships inside the wheel and serves as the fallback when no Initial Workspace Template is configured. Resolution chain: operator IWT clone first, bundled snapshot second.
+  - `src/connectors_manifest.py` scans seed-resident `workspace/.claude/skills/connector-*/SKILL.md` files, parses the `connector:` YAML frontmatter block, validates with length caps + HTML stripping + type checks, caches by source signature + file hash.
+  - `GET /api/connectors/manifest` returns the validated manifest with a `source` flag (`iwt` | `bundled`).
+  - `GET /api/connectors/params` returns per-tenant runtime params keyed by connector slug from the `connectors:` overlay in `instance.yaml`. Values will flow into `<workspace>/.claude/agnes/.env` via `agnes init` (wiring lands in A1.3).
+  - `src/initial_workspace.py` gains `is_configured()`, `bundled_seed_path()`, `resolve_seed_file()`, `seed_owns()`, and `list_seed_files()` helpers so the renderer (A1.2) and admin-editor gates (A1.3) can reach into the seed without re-implementing tier selection.
+  - `scripts/sync_bundled_seed.sh` clones the OSS seed at a given ref into `src/_bundled_seed/` and writes `.source_ref` provenance.
+  - `.github/workflows/check-bundled-seed.yml` verifies the bundled snapshot's `.source_ref` SHA exists at `source_url`.
+
+### Added
+- A1.3 — admin-editor gating, `.env.agnes` writer, sync render dry-run, smoke `/home` assertion, seed-repo-contract doc.
+  - `/admin/workspace-prompt` and `/admin/agent-prompt` flip into read-only mode when the corresponding seed file is present in the IWT clone (`workspace/CLAUDE.md` and `install-prompt/template.md.tmpl` respectively). `GET` returns the seed file content with `source: "seed"`. `PUT`/`DELETE` return `409` with `kind: iwt_seed_owns_template` and a `hint` naming the seed file.
+  - `agnes init` writes `<workspace>/.claude/agnes/.env` atomically (temp-file + `os.replace` + `chmod 600` + dotenv quoting + `content_sha256` header) with operator-provisioned per-tenant values fetched from `GET /api/connectors/params`. Globals override per-connector keys on collision. Failure is best-effort — seed skills fall back to interactive prompts.
+  - `POST /api/admin/initial-workspace/sync` response carries a `render_dry_run` block: `ok`, `scaffolding_source`, `connectors_found`, `connectors`, `warnings`, `errors`. Operator sees parse failures inline in the admin UI's sync modal — never ships a broken seed silently.
+  - `scripts/smoke-test.sh` asserts `/home` renders with the three bundled connector slugs and that `POST /api/admin/initial-workspace/sync` returns the typed `not_configured` error contract.
+  - `config/instance.yaml.example` documents `initial_workspace:` and `connectors:` blocks for seed authors + per-tenant param overlays.
+  - **NEW** `docs/seed-repo-contract.md` — full contract for seed authors: directory layout, per-file admin-editor ownership, connector frontmatter schema, template placeholders, tile render shape, sync flow, CI lint snippet, versioning, OSS reference seed, vendor-agnostic naming guidance for forks.
+  - `docs/initial-workspace-override.md` cross-links to the new contract doc.
+
+### Changed
+- Install-prompt renderer (`app/web/setup_instructions.py`) now sources connector content from the seed manifest + per-skill SKILL.md bodies instead of hardcoded Python strings (A1.2 of the connector-skills refactor).
+  - `app/web/connector_prompts.py` retired and deleted. The asana / atlassian / gws prompts moved to `workspace/.claude/skills/connector-*/SKILL.md` inside the seed (operator IWT clone or bundled snapshot fallback). Adding a fourth connector now requires only a new `connector-X/SKILL.md` in the seed — no Agnes code change.
+  - `resolve_lines()` / `render_setup_instructions()` accept `connector_manifest: list[ConnectorEntry]` instead of `connector_prompts: dict[str, str]`. `None` triggers a fresh `load_manifest()` call; `[]` intentionally renders no connectors step (was previously rehydrated silently).
+  - Finale Confirm-step bullets list connector names dynamically from the manifest, so a fourth connector flows through to the summary text automatically.
+  - **BREAKING for behaviour**: operator-baked Atlassian base URL (`atlassian_prompt(base_url=...)`) and operator-baked GWS OAuth client (literal `client_id` / `client_secret` substituted into the rendered HTML) are no longer applied at render time. Operator-side values flow into `<workspace>/.claude/agnes/.env` via `agnes init` (A1.3 work) and the seed skills read them at install time.
+- Connectors now render in alphabetical order by display_name (Asana, Atlassian (Jira / Confluence), Google Workspace) — was previously asana → gws → atlassian (registry order).
+
+### Fixed
+- `_dotenv_quote` newline injection — a value carrying embedded `\n` / `\r` (e.g. a YAML multi-line `connectors:` overlay key) used to land as a literal end-of-line inside the quoted form and could shadow legitimate keys further down the file; the writer now escapes both to the two-char `\n` / `\r` sequence inside the quoted value.
+- Windows compat for `write_agnes_env` — `os.fchmod` raising `AttributeError` on Windows (no fchmod surface) or `OSError` on exotic filesystems no longer aborts the writer; chmod is treated as best-effort (NTFS / SMB ACLs cover perms). The `tempfile.mkstemp` fd is closed in `finally` so a chmod failure mid-write can't leak the integer fd, and a tmp-file unlink in the outer except handles orphan cleanup.
+- Sub-letter indexing in the install-prompt connector tiles — letters now stay tight `a/b/c` even when one manifest entry fails to load its SKILL.md body; previously skipped entries left the next tile lettered `a/c`.
+- Install-prompt step 8 → step 9 off-by-one — the AI was told `continue to step 10` after the connector asks, bypassing step 9 (Restart Claude Code). The step-10 Confirm summary then ran against plugins / MCP servers / SessionStart hooks that hadn't actually loaded, producing false-negative ❌ lines despite a successful install. Caught by Devin Review on the sibling [`keboola/agnes-infra-template#2`](https://github.com/keboola/agnes-infra-template/pull/2) PR where the same template ships verbatim.
+- Atomic IWT snapshot in `src/initial_workspace.py` — `seed_owns`, `resolve_seed_file`, and `list_seed_files` now go through a single `_iwt_snapshot()` helper that reads `instance.yaml` configuration + the on-disk clone presence in one shot. Previously each function did the two reads separately, opening a window where an admin clicking "unset URL" mid-request could land the admin editors in a state contradicting `instance.yaml`'s source of truth.
+- `/api/connectors/params` allowlist filter — the per-tenant `connectors:` overlay is now filtered against the seed-derived manifest before being emitted; operator typos (e.g. `connector-atlasian:` instead of `connector-atlassian:`) are dropped and logged at WARNING instead of polluting the analyst's `.env` with a junk slug. `globals:` is non-slug-scoped and bypasses the allowlist (unchanged behavior). Contract documented in `docs/seed-repo-contract.md` § 4.1.
+
+### Internal
+- Manifest cache invalidates from `POST /api/admin/initial-workspace/sync` after a successful clone update, so freshly-synced seed content surfaces on the next render scan without a process restart.
+- `tests/snapshots/install_prompt_default.txt` snapshot regression guard catches unintended drift in the renderer output as a single targeted diff rather than dozens of substring assertions.
+- `.github/workflows/check-bundled-seed.yml` content-diff step replaced the broken `diff -r <bundle> <(tar -cf - …)` pattern (process substitution yields a pseudo-file, not a directory — `diff -r` errored silently and a fallback full-tree diff ran without exit propagation, so the check was decorative) with staging the shipped sub-trees into a sibling directory and running directory-to-directory `diff -r --exclude='.source_ref'`. Strict content-match warns today; flips to hard-fail in a follow-up once forks confirm clean diffs.
+- `src/_bundled_seed/.source_ref` repointed at the new public reference seed — [`keboola/agnes-infra-template`](https://github.com/keboola/agnes-infra-template) `@4171aa89` (main) — alongside `scripts/sync_bundled_seed.sh` default `SOURCE_URL` and `docs/seed-repo-contract.md` § 1 + § 10 references. The template repo doubles as the Terraform skeleton; its `workspace/`, `install-prompt/`, `.claude-plugin/`, and `plugins/` sub-trees are now the canonical seed-content source.
+
+### Fixed (RBAC / atomicity sweep — merged from origin/main)
+- **Marketplace transiently drops plugins during Google group sync.** The
+  DuckDB `user_group_members.replace_google_sync_groups` rebuilt a user's
+  synced memberships as a non-transactional `DELETE` + per-group `INSERT` on
+  the shared singleton connection. Between the `DELETE` and the re-`INSERT`s
+  the user briefly had *zero* `google_sync` groups, so any concurrent read of
+  their membership — notably the `/marketplace.git/` endpoint resolving a
+  served plugin set for `agnes refresh-marketplace` — saw a partial group set
+  and dropped every plugin granted via a synced group, self-healing only once
+  the inserts committed. Now wrapped in a single transaction (DuckDB MVCC
+  isolates concurrent readers from the intermediate state), matching the
+  Postgres repo which was already atomic via `engine.begin()`. The
+  per-`INSERT` `try/except ConstraintException` is replaced with `ON CONFLICT
+  (user_id, group_id) DO NOTHING` so an admin/system_seed membership on the
+  same pair survives the refresh without aborting the transaction. Two
+  concurrent logins for the same user can now collide on the shared DuckDB
+  connection (optimistic concurrency raises `Conflict on tuple deletion!`
+  rather than blocking like Postgres), so the rebuild retries on
+  `TransactionException` instead of letting the fail-soft OAuth caller
+  silently drop a refresh. Cross-engine contract coverage added in
+  `tests/db_pg/test_rbac_contract.py`; DuckDB-specific reader-isolation and
+  retry coverage in `tests/test_group_sync_atomicity.py`.
+- **Knowledge-domain junction rewrites were non-atomic (same bug class).** A
+  sweep for the pattern above found two more DuckDB repo methods rewriting the
+  `knowledge_item_domains` junction as DELETE-then-INSERT on the shared
+  singleton connection, where the Postgres siblings were already atomic:
+  `MemoryDomainsRepository.replace_domains_for_item` and the domain-routing
+  path in `KnowledgeRepository.update`. A concurrent reader could see an item
+  momentarily domain-less (breaking domain-scoped RBAC reads), and an unknown
+  slug mid-rewrite left a half-applied edit — in `update` it even committed
+  the scalar column change while failing the domain swap. Both now wrap the
+  rewrite in a transaction (the FTS index rebuild in `update` stays *after*
+  commit — `PRAGMA create_fts_index` is catalog DDL that can't run inside a
+  transaction). Coverage in `tests/test_memory_atomicity.py`.
+- **Cascade/reconcile rewrites made atomic (same bug class).** Two more
+  multi-statement DuckDB repo mutations now run in a single transaction to
+  match their already-atomic Postgres siblings:
+  `ToolRegistryRepository.delete` (the `tool_grants` → `tool_registry` cascade,
+  which otherwise leaves a reader observing grants whose parent tool is gone)
+  and `ViewOwnershipRepository.reconcile` (the read + multi-row drop, where a
+  partial mid-loop state could let another source transiently appear to claim
+  a not-yet-released view name). Coverage in
+  `tests/test_repo_cascade_atomicity.py`.
+    (`resource_grants.fanout_system_for_group` was reviewed and left as-is:
+  insert-only / idempotent, and the PG sibling is likewise per-insert — no
+  drop-to-empty window.)
+- **Dependency bumps (4 Dependabot PRs consolidated):**
+  - `actions/checkout` v4 → v6 (Node 24 runtime, no behaviour change for our usage). Supersedes #500.
+  - `actions/setup-python` v5 → v6 (Node 24 runtime; requires GHA runner ≥ v2.327.1 — GitHub-hosted `ubuntu-latest` is well past). Supersedes #502.
+  - `google-github-actions/auth` v2 → v3 (used in `release.yml` for the Artifact Registry mirror auth step). Supersedes #501.
+  - `e2b` Python lib upper-bound widened from `<2.0.0` to `<3.0.0` (lets the resolver pick up the v2 line as the e2b SDK ships it; runtime API surface that `app/chat/e2b_provider.py` uses is unchanged). Supersedes #503.
+
 ## [0.60.0] — 2026-06-02
 
 ### Internal

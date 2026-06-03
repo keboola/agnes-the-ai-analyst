@@ -148,8 +148,21 @@ class ToolRegistryRepository:
         return row is not None
 
     def delete(self, tool_id: str) -> None:
-        self.conn.execute("DELETE FROM tool_grants WHERE tool_id = ?", [tool_id])
-        self.conn.execute("DELETE FROM tool_registry WHERE tool_id = ?", [tool_id])
+        # One transaction so a concurrent reader never sees the orphan window
+        # between the two cascade deletes (tool_grants rows whose parent
+        # tool_registry row is already gone). Matches the PG sibling's single
+        # ``engine.begin()``.
+        self.conn.execute("BEGIN")
+        try:
+            self.conn.execute("DELETE FROM tool_grants WHERE tool_id = ?", [tool_id])
+            self.conn.execute("DELETE FROM tool_registry WHERE tool_id = ?", [tool_id])
+            self.conn.execute("COMMIT")
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
     def delete_for_source(self, source_id: str) -> None:
         tool_ids = [r[0] for r in self.conn.execute(

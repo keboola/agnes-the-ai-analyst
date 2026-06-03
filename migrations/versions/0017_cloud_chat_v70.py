@@ -1,6 +1,6 @@
-"""Live co-drive foundation (DuckDB v69 parity).
+"""Live co-drive foundation (DuckDB v70 parity).
 
-Additive-only, reaching the same endpoint as DuckDB ``_v68_to_v69``:
+Additive-only, reaching the same endpoint as DuckDB ``_v69_to_v70``:
   - chat_sessions.is_co_session / ephemeral (BOOLEAN NOT NULL DEFAULT FALSE)
   - chat_messages.sender_email (VARCHAR, nullable; backfilled to the owner
     for existing role='user' rows)
@@ -8,8 +8,8 @@ Additive-only, reaching the same endpoint as DuckDB ``_v68_to_v69``:
     a constraint the DuckDB side cannot express — DuckDB deletes child
     participant rows by hand in ChatRepository.hard_delete_user_sessions).
 
-Revision ID: 0016_cloud_chat_v69
-Revises: 0015_cloud_chat_v68
+Revision ID: 0017_cloud_chat_v70
+Revises: 0016_mcp_source_env_v69
 Create Date: 2026-06-03
 """
 from __future__ import annotations
@@ -19,8 +19,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0016_cloud_chat_v69"
-down_revision: Union[str, None] = "0015_cloud_chat_v68"
+revision: str = "0017_cloud_chat_v70"
+down_revision: Union[str, None] = "0016_mcp_source_env_v69"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

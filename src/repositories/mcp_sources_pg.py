@@ -19,7 +19,7 @@ class MCPSourcePgRepository:
     @staticmethod
     def _decode_row(row: Dict[str, Any]) -> Dict[str, Any]:
         d = dict(row)
-        for k in ("args",):
+        for k in ("args", "env"):
             if d.get(k) is not None and isinstance(d[k], str):
                 try:
                     d[k] = json.loads(d[k])
@@ -35,6 +35,7 @@ class MCPSourcePgRepository:
         transport: str,
         command: Optional[str] = None,
         args: Optional[List[str]] = None,
+        env: Optional[Dict[str, str]] = None,
         url: Optional[str] = None,
         auth_method: Optional[str] = None,
         auth_secret_env: Optional[str] = None,
@@ -52,13 +53,14 @@ class MCPSourcePgRepository:
 
         now = datetime.now(timezone.utc)
         args_json = json.dumps(args) if args is not None else None
+        env_json = json.dumps(env) if env is not None else None
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
                     """INSERT INTO mcp_sources
-                       (id, name, transport, command, args, url, auth_method,
+                       (id, name, transport, command, args, env, url, auth_method,
                         auth_secret_env, enabled, scope, created_at, updated_at)
-                       VALUES (:id, :name, :transport, :command, :args, :url,
+                       VALUES (:id, :name, :transport, :command, :args, :env, :url,
                                :auth_method, :auth_secret_env, :enabled, :scope,
                                :now, :now)
                        ON CONFLICT (id) DO UPDATE SET
@@ -66,6 +68,7 @@ class MCPSourcePgRepository:
                            transport       = EXCLUDED.transport,
                            command         = EXCLUDED.command,
                            args            = EXCLUDED.args,
+                           env             = EXCLUDED.env,
                            url             = EXCLUDED.url,
                            auth_method     = EXCLUDED.auth_method,
                            auth_secret_env = EXCLUDED.auth_secret_env,
@@ -75,7 +78,7 @@ class MCPSourcePgRepository:
                 ),
                 {
                     "id": id, "name": name, "transport": transport,
-                    "command": command, "args": args_json, "url": url,
+                    "command": command, "args": args_json, "env": env_json, "url": url,
                     "auth_method": auth_method, "auth_secret_env": auth_secret_env,
                     "enabled": enabled, "scope": scope, "now": now,
                 },

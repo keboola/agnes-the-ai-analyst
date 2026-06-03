@@ -778,10 +778,10 @@
       const b = document.getElementById(id);
       if (!b) return;
       b.addEventListener('click', async () => {
-        if (!confirm(opts.confirm)) return;
+        if (!(await confirmModal(opts.confirm))) return;
         const url = `/api/store/entities/${encodeURIComponent(root.dataset.entityId)}${opts.hard ? '?hard=true' : ''}`;
         const r = await fetch(url, {method: 'DELETE'});
-        if (!r.ok) { alert((opts.hard ? 'Hard delete' : 'Archive') + ' failed (' + r.status + ')'); return; }
+        if (!r.ok) { await alertModal((opts.hard ? 'Hard delete' : 'Archive') + ' failed (' + r.status + ')'); return; }
         window.location = '/marketplace?tab=flea';
       });
     }
@@ -1213,7 +1213,7 @@
     if (installBtnEl) {
       installBtnEl.addEventListener('click', async () => {
         const r = await fetch(installURL, { method: 'POST' });
-        if (!r.ok) { alert('Add failed (' + r.status + ')'); return; }
+        if (!r.ok) { await alertModal('Add failed (' + r.status + ')'); return; }
         actions.innerHTML = renderInstallActionsHtml(true);
         bindInstallActions();
         setHintTitle('added');
@@ -1224,7 +1224,7 @@
     if (removeBtnEl) {
       removeBtnEl.addEventListener('click', async () => {
         const r = await fetch(installURL, { method: 'DELETE' });
-        if (!r.ok) { alert('Remove failed (' + r.status + ')'); return; }
+        if (!r.ok) { await alertModal('Remove failed (' + r.status + ')'); return; }
         actions.innerHTML = renderInstallActionsHtml(false);
         bindInstallActions();
         setHintTitle('removed');

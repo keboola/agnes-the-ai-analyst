@@ -54,7 +54,20 @@ class StoreEntitiesPgRepository:
         doc_paths: Optional[List[str]] = None,
         file_size: int = 0,
         visibility_status: str = "pending",
+        title: Optional[str] = None,
+        tagline: Optional[str] = None,
+        synthetic_name: Optional[str] = None,
     ) -> Dict[str, Any]:
+        # v49 phase-1 parity with the DuckDB repo: title and synthetic_name fall
+        # back to derived values when the caller doesn't supply them, so the
+        # columns are never NULL for entities created by tests/utilities.
+        # Production (POST /api/store/entities) passes them explicitly.
+        if not title:
+            from src.store_naming import humanize_name
+
+            title = humanize_name(name) or name or "Untitled"
+        if not synthetic_name:
+            synthetic_name = f"{name}-by-{owner_username}"
         now = datetime.now(timezone.utc)
         v1_entry = {
             "n": 1,
@@ -73,10 +86,12 @@ class StoreEntitiesPgRepository:
                          category, version, photo_path, video_url, doc_paths,
                          file_size, install_count, visibility_status,
                          version_no, version_history,
+                         title, tagline, synthetic_name,
                          created_at, updated_at)
                     VALUES (:id, :ou, :un, :t, :n, :d, :c, :v, :pp, :vu,
                             CAST(:dp AS JSONB), :fs, 0, :vs, 1,
-                            CAST(:vh AS JSONB), :now, :now)"""
+                            CAST(:vh AS JSONB), :title, :tagline, :sname,
+                            :now, :now)"""
                 ),
                 {
                     "id": id, "ou": owner_user_id, "un": owner_username,
@@ -85,6 +100,7 @@ class StoreEntitiesPgRepository:
                     "dp": json.dumps(doc_paths or []),
                     "fs": int(file_size), "vs": visibility_status,
                     "vh": json.dumps([v1_entry]),
+                    "title": title, "tagline": tagline, "sname": synthetic_name,
                     "now": now,
                 },
             )
@@ -362,6 +378,9 @@ class StoreEntitiesPgRepository:
         video_url: Optional[str] = None,
         doc_paths: Optional[List[str]] = None,
         file_size: Optional[int] = None,
+        title: Optional[str] = None,
+        tagline: Optional[str] = None,
+        synthetic_name: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         sets: List[str] = []
         params: Dict[str, Any] = {"id": id}
@@ -382,6 +401,14 @@ class StoreEntitiesPgRepository:
             params["doc_paths"] = json.dumps(doc_paths)
         if file_size is not None:
             sets.append("file_size = :file_size"); params["file_size"] = int(file_size)
+        if title is not None:
+            sets.append("title = :title"); params["title"] = title
+        if tagline is not None:
+            # empty string clears tagline (parity with the DuckDB repo)
+            sets.append("tagline = :tagline"); params["tagline"] = tagline or None
+        if synthetic_name is not None:
+            sets.append("synthetic_name = :synthetic_name")
+            params["synthetic_name"] = synthetic_name
         if not sets:
             return self.get(id)
         sets.append("updated_at = :updated_at")

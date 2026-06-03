@@ -222,9 +222,11 @@ def test_connectors_section_removed_from_home(fresh_db):
     body2 = _client().get("/home", cookies={"access_token": sess2}).text
     assert 'class="connector-tiles"' not in body2
     assert 'data-section="connectors"' not in body2
-    # Lead-paragraph mentions the three connector families so the
-    # benefit isn't lost when the dedicated section disappears.
-    assert "Asana, Google Workspace, Atlassian" in body2
+    # The install-prompt's finale step lists the configured connectors
+    # by display_name — sourced from the seed manifest. Bundled snapshot
+    # ships Asana, Atlassian (Jira / Confluence), Google Workspace (the
+    # alphabetical sort order ``load_manifest`` enforces).
+    assert "Asana, Atlassian (Jira / Confluence), Google Workspace" in body2
 
 
 def test_minimize_toggle_no_longer_rendered(fresh_db):
@@ -286,6 +288,48 @@ def test_home_no_auto_transition_after_post_until_reload(fresh_db):
     # only setup-flow remnant. Use either as the nav-hub view marker.
     assert_element(post.text, "div", class_="offboard-strip")
     assert 'class="install-block"' not in post.text
+
+
+def test_home_reads_onboarded_through_repo_factory_not_raw_duckdb(fresh_db, monkeypatch):
+    """/home must read `onboarded` through `users_repo()`, not a raw
+    `conn.execute` against DuckDB.
+
+    Regression: on a Postgres-backed instance (db-state-machine CLOUD /
+    SIDE_CAR state) POST /api/me/onboarded writes the flag to Postgres via
+    `users_repo()`, but /home was reading it back with a raw DuckDB query
+    on the request `conn`. The DuckDB row stays frozen at its pre-migration
+    value, so the "Mark me as onboarded" button flips Postgres yet /home
+    renders the setup view forever — independent of any browser cache.
+
+    Simulate the split without a live Postgres: the DuckDB row says
+    onboarded=FALSE, but the repo factory reports TRUE (the real backend).
+    /home must honor the repo (show the nav hub), proving it no longer
+    reads the stale raw-DuckDB value."""
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        uid, sess = _make_user_and_session(conn, onboarded=False)
+    finally:
+        conn.close()
+        close_system_db()
+
+    import app.web.router as router
+
+    class _FakeUsersRepo:
+        def get_by_id(self, user_id):
+            # Mirrors the active (e.g. Postgres) backend's truth, which
+            # diverges from the stale DuckDB row.
+            return {"id": user_id, "email": "u@example.com", "onboarded": True}
+
+    monkeypatch.setattr(router, "users_repo", lambda: _FakeUsersRepo())
+
+    resp = _client().get("/home", cookies={"access_token": sess})
+    assert resp.status_code == 200
+    # Honors the repo (onboarded=True) → nav-hub view, not the stale
+    # DuckDB FALSE → setup view.
+    assert_element(resp.text, "div", class_="offboard-strip")
+    assert 'class="install-block"' not in resp.text
 
 
 # ── GWS Email-admin button render tests (admin_email knob coverage) ────────

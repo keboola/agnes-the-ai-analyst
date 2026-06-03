@@ -1,8 +1,7 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}MCP tool grants — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{% import "_components.html" as ds %}
+{% block head_extra %}
 <style>
   .gr-back { font-size: 12px; color: var(--text-secondary, #6b7280); text-decoration: none; margin-bottom: 8px; display: inline-block; }
   .gr-back:hover { color: var(--ds-primary); }
@@ -95,7 +94,9 @@
   .toast.success { background: #047857; }
   .toast.error { background: #b91c1c; }
 </style>
+{% endblock %}
 
+{% block content %}
 <div class="mcp-grants-page">
   <a class="gr-back" id="gr-back-link" href="/admin/mcp-sources">&larr; Back to MCP sources</a>
 

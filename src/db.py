@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 69
+SCHEMA_VERSION = 70
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -4798,12 +4798,25 @@ def _v67_to_v68(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def _v68_to_v69(conn: duckdb.DuckDBPyConnection) -> None:
-    """v69: live co-drive foundation — co-session flags + participants table.
+    """v69: per-source non-secret env vars for stdio MCP sources.
+
+    Adds ``mcp_sources.env`` — a JSON object of ``{VAR: value}`` passed to
+    the spawned stdio subprocess (the ``auth_secret_env`` secret overlays
+    it). NULL on existing rows preserves the prior single-secret behavior.
+    """
+    conn.execute(
+        "ALTER TABLE mcp_sources ADD COLUMN IF NOT EXISTS env VARCHAR"
+    )
+    conn.execute("UPDATE schema_version SET version = 69")
+
+
+def _v69_to_v70(conn: duckdb.DuckDBPyConnection) -> None:
+    """v70: live co-drive foundation — co-session flags + participants table.
 
     Additive-only and forward-safe on populated prod DBs:
     - chat_sessions.is_co_session / ephemeral (BOOLEAN NOT NULL DEFAULT FALSE)
     - chat_messages.sender_email (VARCHAR, nullable; backfilled to the
-      session owner for existing role='user' rows — every pre-v69 session
+      session owner for existing role='user' rows — every pre-v70 session
       is single-principal)
     - chat_session_participants table + index
 
@@ -4830,7 +4843,7 @@ def _v68_to_v69(conn: duckdb.DuckDBPyConnection) -> None:
     }
     if "sender_email" not in msg_cols:
         conn.execute("ALTER TABLE chat_messages ADD COLUMN sender_email VARCHAR")
-        # Backfill: pre-v69 user turns are owned by the session's user_email.
+        # Backfill: pre-v70 user turns are owned by the session's user_email.
         conn.execute(
             "UPDATE chat_messages SET sender_email = ("
             "  SELECT s.user_email FROM chat_sessions s WHERE s.id = chat_messages.session_id"
@@ -4852,7 +4865,7 @@ def _v68_to_v69(conn: duckdb.DuckDBPyConnection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_chat_session_participants_user "
         "ON chat_session_participants(user_email, session_id)"
     )
-    conn.execute("UPDATE schema_version SET version = 69")
+    conn.execute("UPDATE schema_version SET version = 70")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -5168,10 +5181,13 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # user_workdirs + indexes. _SYSTEM_SCHEMA already creates them on
             # fresh installs via CREATE TABLE/INDEX IF NOT EXISTS (no-op here).
             _v67_to_v68(conn)
-            # v68→v69: live co-drive foundation — co-session flags +
+            # v68→v69: mcp_sources.env — per-source non-secret env vars for
+            # the spawned stdio subprocess. ADD COLUMN IF NOT EXISTS (no-op here).
+            _v68_to_v69(conn)
+            # v69→v70: live co-drive foundation — co-session flags +
             # chat_session_participants. Additive; _SYSTEM_SCHEMA builds it
             # on fresh installs (no-op here).
-            _v68_to_v69(conn)
+            _v69_to_v70(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5363,6 +5379,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v67_to_v68(conn)
             if current < 69:
                 _v68_to_v69(conn)
+            if current < 70:
+                _v69_to_v70(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

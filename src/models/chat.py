@@ -1,9 +1,9 @@
-"""SQLAlchemy models for the cloud-chat cluster (DuckDB v69 parity).
+"""SQLAlchemy models for the cloud-chat cluster (DuckDB v70 parity).
 
 Mirrors:
-  - chat_sessions              (src/db.py v69)
-  - chat_messages              (src/db.py v69)
-  - chat_session_participants  (src/db.py v69)
+  - chat_sessions              (src/db.py v68 base + v70 co-presence columns)
+  - chat_messages              (src/db.py v68 base + v70 sender_email)
+  - chat_session_participants  (src/db.py v70)
   - user_workdirs              (src/db.py v68)
 
 The DuckDB side (DuckDB 1.5.x) cannot express three constraints that the
@@ -132,7 +132,7 @@ class ChatMessage(Base):
 
 
 class ChatSessionParticipant(Base):
-    """Live membership for co-drive sessions (v69)."""
+    """Live membership for co-drive sessions (v70)."""
     __tablename__ = "chat_session_participants"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
