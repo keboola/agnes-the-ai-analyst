@@ -65,6 +65,12 @@ class LiveSession:
     # (and removes the previous one from `tasks`) so the per-session task
     # list does not grow unboundedly across crashes.
     current_pump: Optional[asyncio.Task] = None
+    # Latest crash-respawn wait task (_wait_for_exit_and_respawn). A co-session
+    # leave (_respawn_co_runner) cancels this BEFORE killing the old handle and
+    # starts a fresh one bound to the new session_dir — otherwise the running
+    # wait task would observe the intentional kill as a crash and respawn a
+    # second time (double-respawn race).
+    current_wait: Optional[asyncio.Task] = None
     # Set to True once an auto-title task has been scheduled for this
     # session — guarantees we only fire Haiku once per live session
     # even if the user sends a second turn while the first one is
@@ -251,6 +257,7 @@ class ChatManager:
         wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
         live.tasks = [pump_task, wait_task]
         live.current_pump = pump_task
+        live.current_wait = wait_task
 
         try:
             await asyncio.gather(*live.tasks, return_exceptions=True)
@@ -634,6 +641,21 @@ class ChatManager:
         session_dir = self._workdir_mgr.prepare_ephemeral_session_dir(
             live.chat_id, live.participant_emails, inter,
         )
+        # Cancel the crash-respawn wait task BEFORE killing the handle: this
+        # respawn is intentional, and a running _wait_for_exit_and_respawn
+        # would otherwise see the kill's non-zero exit as a crash and respawn
+        # a second time (double-respawn race → multiple concurrent runners).
+        # A fresh wait task bound to the new session_dir is started below.
+        old_wait = live.current_wait
+        if old_wait is not None and not old_wait.done():
+            old_wait.cancel()
+            try:
+                await old_wait
+            except (asyncio.CancelledError, Exception):
+                pass
+        if old_wait is not None and old_wait in live.tasks:
+            live.tasks.remove(old_wait)
+        live.current_wait = None
         if live.handle is not None:
             try:
                 await live.handle.kill()
@@ -668,6 +690,12 @@ class ChatManager:
         new_pump = asyncio.create_task(self._pump_subprocess_to_ws(live))
         live.current_pump = new_pump
         live.tasks.append(new_pump)
+        # Start a fresh crash-respawn watcher bound to the NEW handle and the
+        # NEW (narrowed-intersection) session_dir, so a genuine later crash
+        # respawns with the correct workspace — not the pre-leave wider one.
+        new_wait = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
+        live.current_wait = new_wait
+        live.tasks.append(new_wait)
 
     async def cancel(self, chat_id: str) -> None:
         live = self._live.get(chat_id)

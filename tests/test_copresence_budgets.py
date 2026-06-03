@@ -259,3 +259,72 @@ def test_add_sink_rejects_non_participant(co_manager_live):
             await mgr.add_sink(live.chat_id, _Sink(), "stranger@example.com")
 
     asyncio.run(_run())
+
+
+class _BlockingHandle:
+    """Handle whose wait() blocks until kill(), then returns a non-zero rc —
+    so a parked _wait_for_exit_and_respawn would treat the kill as a crash."""
+    def __init__(self):
+        self._killed = asyncio.Event()
+        self.stdin = self
+        self.syncs_workspace = True
+    def write(self, data: bytes): pass
+    async def drain(self): pass
+    @property
+    def stdout(self): return self
+    async def readline(self): return b""
+    async def wait(self):
+        await self._killed.wait()
+        return 137
+    async def kill(self, grace_sec: float = 5.0):
+        self._killed.set()
+
+
+def test_leave_does_not_double_respawn(co_manager_live, monkeypatch, tmp_path):
+    """Regression: a collaborator leave triggers exactly ONE intentional
+    respawn. The running crash-respawn wait task must be cancelled before the
+    old handle is killed, otherwise it sees the kill as a crash and respawns a
+    second time (double-respawn race → multiple concurrent runners)."""
+    mgr, live, owner, collab = co_manager_live
+    live.handle = _BlockingHandle()
+
+    spawned: list = []
+
+    async def fake_spawn(session, session_dir):
+        h = _BlockingHandle()
+        spawned.append(h)
+        return h
+
+    monkeypatch.setattr(mgr, "_spawn_runner", fake_spawn)
+    monkeypatch.setattr(
+        mgr._workdir_mgr, "prepare_ephemeral_session_dir",
+        lambda *a, **k: tmp_path / "co_dir",
+    )
+
+    async def _run():
+        # Mimic attach(): a live crash-respawn wait task parked on handle.wait().
+        wait_task = asyncio.create_task(
+            mgr._wait_for_exit_and_respawn(live, tmp_path / "orig_dir")
+        )
+        live.current_wait = wait_task
+        live.tasks = [wait_task]
+        await asyncio.sleep(0)  # let it park on the blocking wait()
+
+        await mgr.leave_session(live.chat_id, collab)
+        # Give any errant crash-driven respawn a chance to fire if the bug exists.
+        await asyncio.sleep(0.05)
+
+        # The original wait task must have been cancelled by the respawn.
+        assert wait_task.done()
+        # Teardown so the fresh wait task / pump don't leak.
+        live.state = SessionState.DEAD
+        if live.handle is not None:
+            await live.handle.kill()
+        for t in list(live.tasks):
+            t.cancel()
+        await asyncio.gather(*live.tasks, return_exceptions=True)
+
+    asyncio.run(_run())
+
+    assert len(spawned) == 1, f"expected exactly one respawn, got {len(spawned)}"
+    assert live.crash_count == 0
