@@ -530,3 +530,75 @@ def test_sink_without_chat_id_keeps_plain_behavior(monkeypatch):
 
     asyncio.run(_run())
     assert sent == [("D1", "1.1", "hello")]
+
+
+def _signed_form_request(monkeypatch, payload_json, *, good_sig=True):
+    """Build a signed urlencoded interactivity (body, ts, sig)."""
+    import hashlib, hmac, time
+    from urllib.parse import urlencode
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "shh")
+    body = urlencode({"payload": payload_json}).encode()
+    ts = str(int(time.time()))
+    base = b"v0:" + ts.encode() + b":" + body
+    sig = "v0=" + hmac.new(b"shh", base, hashlib.sha256).hexdigest()
+    if not good_sig:
+        sig = "v0=deadbeef"
+    return body, ts, sig
+
+
+def test_interactivity_endpoint_bad_signature_401(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.api.slack import router
+    app = FastAPI()
+    app.include_router(router)
+    body, ts, sig = _signed_form_request(monkeypatch, "{}", good_sig=False)
+    client = TestClient(app)
+    r = client.post("/api/slack/interactivity", content=body,
+                    headers={"X-Slack-Request-Timestamp": ts, "X-Slack-Signature": sig,
+                             "Content-Type": "application/x-www-form-urlencoded"})
+    assert r.status_code == 401
+
+
+def test_interactivity_endpoint_acks_and_schedules(monkeypatch):
+    import json
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import app.api.slack as slack_api
+
+    scheduled = []
+    # Drain the scheduled wrapper coroutine to completion.
+    # asyncio.new_event_loop().run_until_complete fails when TestClient already
+    # runs an event loop (anyio backend). Instead run it in a background thread
+    # with its own loop so neither coroutine leaks a 'never awaited' warning.
+    import threading
+    def _drain(coro):
+        scheduled.append(coro)
+        done = threading.Event()
+        def _run():
+            asyncio.new_event_loop().run_until_complete(coro)
+            done.set()
+        threading.Thread(target=_run, daemon=True).start()
+        done.wait(timeout=5)
+    monkeypatch.setattr(slack_api, "_schedule", _drain)
+    dispatched = []
+    async def fake_dispatch(app, interaction):
+        dispatched.append(interaction.action_id)
+    monkeypatch.setattr(slack_api, "dispatch_interaction", fake_dispatch)
+
+    app = FastAPI()
+    app.include_router(slack_api.router)
+    from services.slack_bot import blocks
+    payload = json.dumps({
+        "type": "block_actions", "user": {"id": "U1"}, "channel": {"id": "C1"},
+        "response_url": "https://r",
+        "actions": [{"action_id": blocks.ACTION_STOP, "value": blocks.encode_value({"chat_id": "s1"})}],
+    })
+    body, ts, sig = _signed_form_request(monkeypatch, payload, good_sig=True)
+    r = TestClient(app).post("/api/slack/interactivity", content=body,
+                             headers={"X-Slack-Request-Timestamp": ts, "X-Slack-Signature": sig,
+                                      "Content-Type": "application/x-www-form-urlencoded"})
+    assert r.status_code == 200
+    assert r.content in (b"", b"null")  # empty 200 ack
+    assert len(scheduled) == 1          # exactly one dispatch scheduled
+    assert dispatched == [blocks.ACTION_STOP]  # inner coroutine ran to completion

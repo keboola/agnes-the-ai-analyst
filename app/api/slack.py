@@ -1,10 +1,11 @@
 """Slack Events webhook + identity binding endpoint."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from urllib.parse import parse_qs
@@ -21,6 +22,7 @@ from services.slack_bot.commands import (
     dispatch_command,
 )
 from services.slack_bot.events import _run_logged, _schedule, dispatch_event
+from services.slack_bot.interactivity import dispatch_interaction, parse_interaction
 from services.slack_bot.sigverify import verify_slack_signature
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,20 @@ async def slack_commands(request: Request):
     _cmd_schedule(_cmd_run_logged(dispatch_command(request.app, form),
                                   response_url=form.get("response_url")))
     return {"response_type": "ephemeral", "text": "_Working on it…_"}
+
+
+@router.post("/interactivity")
+async def slack_interactivity(request: Request):
+    body = await request.body()                       # raw bytes — Slack signs these
+    ts = request.headers.get("X-Slack-Request-Timestamp", "")
+    sig = request.headers.get("X-Slack-Signature", "")
+    secret = os.environ.get("SLACK_SIGNING_SECRET", "")
+    if not secret or not verify_slack_signature(secret, ts, sig, body):
+        raise HTTPException(401, "bad_signature")
+    form = {k: v[0] for k, v in parse_qs(body.decode()).items()}
+    interaction = parse_interaction(json.loads(form["payload"]))
+    _schedule(_run_logged(dispatch_interaction(request.app, interaction)))
+    return Response(status_code=200)                  # empty 200 ack; message unchanged
 
 
 class BindBody(BaseModel):
