@@ -50,13 +50,18 @@ def test_ephemeral_dir_has_no_claude_local_and_only_intersection_plugins(tmp_pat
     assert present == {"pluginX"}
 
 
-def test_prepare_session_dir_no_claude_local_by_default(tmp_path):
+def test_prepare_session_dir_includes_claude_local_md_by_default(tmp_path):
+    """A regular per-user session symlinks the personal CLAUDE.local.md by
+    default (include_personal_override=True). Co-drive sessions exclude it by
+    using prepare_ephemeral_session_dir (asserted in the ephemeral test above),
+    NOT by gating prepare_session_dir — gating it broke regular sessions."""
     mgr = _mgr(tmp_path)
     # Create the workspace dir structure needed
     ws = mgr.user_workspace("a@example.com")
     (ws / ".claude").mkdir(parents=True, exist_ok=True)
     (ws / "CLAUDE.md").write_text("# hi", encoding="utf-8")
-    # Also create a CLAUDE.local.md in the workspace to verify it is NOT linked
+    # CLAUDE.local.md must be linked into a regular session (it's a documented
+    # user override that `agnes push` syncs and CLAUDE.md references).
     (ws / "CLAUDE.local.md").write_text("personal override", encoding="utf-8")
     sdir = Path(mgr.prepare_session_dir("a@example.com", "chat_personal"))
-    assert not (sdir / "CLAUDE.local.md").exists()
+    assert (sdir / "CLAUDE.local.md").exists()
