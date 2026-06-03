@@ -216,3 +216,27 @@ def test_seed_is_summary_not_raw_clone(co_api_secret):
     assert msgs.status_code == 200, msgs.text
     joined = " ".join(m.get("content", "") for m in msgs.json())
     assert "SECRET_ROW_VALUE" not in joined
+
+
+def test_leave_rejects_non_participant(co_api_joined, monkeypatch):
+    """A non-participant who knows a co-session id must NOT be able to call
+    leave (which would trigger _respawn_co_runner → DoS the real
+    participants). The membership gate returns 403 before leave_session runs."""
+    client, s1, collab_hdr, stranger_hdr = co_api_joined
+    # Spy: leave_session must never be invoked for the stranger.
+    from app.chat.manager import ChatManager
+    called = []
+    monkeypatch.setattr(
+        ChatManager, "leave_session",
+        lambda self, sid, email: called.append((sid, email)),
+        raising=False,
+    )
+    r = client.post(f"/api/chat/{s1}/leave", headers=stranger_hdr)
+    assert r.status_code == 403, r.text
+    assert called == []  # respawn path never reached
+
+
+def test_leave_unknown_session_404(co_api_joined):
+    client, s1, collab_hdr, stranger_hdr = co_api_joined
+    r = client.post("/api/chat/does-not-exist/leave", headers=collab_hdr)
+    assert r.status_code == 404, r.text

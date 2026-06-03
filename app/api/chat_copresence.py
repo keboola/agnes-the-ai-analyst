@@ -177,11 +177,25 @@ async def leave(
     deny_principal(user)
     repo = _get_repo(request)
     s = repo.get_session(session_id)
-    mgr = _get_manager(request)
-    if s and s.user_email == user["email"]:
-        await mgr.kill(session_id, reason="owner_leave")
+    if s is None:
+        raise HTTPException(404, "session not found")
+    # Resolve the manager only inside the authorized branches — an
+    # unauthorized caller is rejected before we touch chat state.
+    if s.user_email == user["email"]:
+        # Owner leaving ends the co-session entirely.
+        await _get_manager(request).kill(session_id, reason="owner_leave")
+    elif s.is_co_session:
+        # A collaborator may leave only if they are a LIVE participant.
+        # Without this gate any authenticated caller who knows a co-session
+        # id could trigger leave_session → _respawn_co_runner repeatedly and
+        # DoS the real participants (the runner restart fires even when
+        # remove_participant matches no row).
+        parts = repo.get_session_participants(session_id)
+        if not any(p.user_email == user["email"] and p.left_at is None for p in parts):
+            raise HTTPException(403, "not a participant of this session")
+        await _get_manager(request).leave_session(session_id, user["email"])
     else:
-        await mgr.leave_session(session_id, user["email"])
+        raise HTTPException(403, "not a participant of this session")
     return {"ok": True}
 
 
