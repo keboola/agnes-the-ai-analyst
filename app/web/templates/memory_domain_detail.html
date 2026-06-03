@@ -267,14 +267,14 @@
     const r = await api('POST', '/api/stack/subscribe',
       { resource_type: 'memory_domain', resource_id: domId });
     if (r.ok) location.reload();
-    else { alert('Failed to add'); addBtn.disabled = false; }
+    else { await alertModal('Failed to add'); addBtn.disabled = false; }
   });
   if (removeBtn) removeBtn.addEventListener('click', async () => {
     removeBtn.disabled = true;
     const r = await api('DELETE',
       '/api/stack/subscription/memory_domain/' + encodeURIComponent(domId));
     if (r.ok) location.reload();
-    else { alert('Failed to remove'); removeBtn.disabled = false; }
+    else { await alertModal('Failed to remove'); removeBtn.disabled = false; }
   });
 
   // Per-item votes. Route is POST /api/memory/{id}/vote — the extra

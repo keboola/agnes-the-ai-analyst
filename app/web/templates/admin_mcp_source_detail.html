@@ -689,7 +689,7 @@ document.getElementById("registered-tbody").addEventListener("click", async (e) 
   const act = btn.dataset.act;
   const id = btn.dataset.id;
   if (act === "delete-tool") {
-    if (!confirm(`Delete "${btn.dataset.name}"? The tool will be removed from the registry.`)) return;
+    if (!(await confirmModal(`Delete "${btn.dataset.name}"? The tool will be removed from the registry.`))) return;
     btn.disabled = true;
     try {
       const r = await fetch(`${TOOLS_API}/${encodeURIComponent(id)}`, { method: "DELETE", credentials: "include" });

@@ -1216,7 +1216,7 @@
 
   installBtn.addEventListener('click', async () => {
     const r = await fetch(installURL, { method: 'POST' });
-    if (!r.ok) { alert('Add failed (' + r.status + ')'); return; }
+    if (!r.ok) { await alertModal('Add failed (' + r.status + ')'); return; }
     renderInstallState(true);
     setHintTitle('added');
     showHint();
@@ -1224,7 +1224,7 @@
 
   removeBtn.addEventListener('click', async () => {
     const r = await fetch(installURL, { method: 'DELETE' });
-    if (!r.ok) { alert('Remove failed (' + r.status + ')'); return; }
+    if (!r.ok) { await alertModal('Remove failed (' + r.status + ')'); return; }
     renderInstallState(false);
     setHintTitle('removed');
     showHint();
@@ -1243,11 +1243,11 @@
     const btn = document.getElementById(id);
     if (!btn || root.dataset.source !== 'flea' || !root.dataset.entityId) return;
     btn.addEventListener('click', async () => {
-      if (!confirm(opts.confirm)) return;
+      if (!(await confirmModal(opts.confirm))) return;
       const url = `/api/store/entities/${encodeURIComponent(root.dataset.entityId)}${opts.hard ? '?hard=true' : ''}`;
       const r = await fetch(url, { method: 'DELETE' });
       if (!r.ok) {
-        alert((opts.hard ? 'Hard delete' : 'Archive') + ' failed (' + r.status + ')');
+        await alertModal((opts.hard ? 'Hard delete' : 'Archive') + ' failed (' + r.status + ')');
         return;
       }
       window.location = '/marketplace?tab=flea';

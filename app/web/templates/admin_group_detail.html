@@ -365,7 +365,7 @@ if (addBtnEl && addEmailEl) {
 }
 
 async function removeMember(userId, label) {
-  if (!confirm(`Remove ${label} from this group?`)) return;
+  if (!(await confirmModal(`Remove ${label} from this group?`))) return;
   const r = await fetch(`${MEMBERS_API}/${encodeURIComponent(userId)}`, {
     method: "DELETE", credentials: "include",
   });
@@ -412,7 +412,7 @@ if (editBtn) {
 const delBtn = document.getElementById("delete-group-btn");
 if (delBtn) {
   delBtn.addEventListener("click", async () => {
-    if (!confirm(`Delete group "${root.dataset.groupName}" and all its members + grants?`)) return;
+    if (!(await confirmModal(`Delete group "${root.dataset.groupName}" and all its members + grants?`))) return;
     const r = await fetch(GROUP_API, { method: "DELETE", credentials: "include" });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));

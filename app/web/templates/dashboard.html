@@ -429,7 +429,7 @@
 
     async function unlinkChannel(channel) {
         const label = channel === 'telegram' ? 'Telegram' : 'macOS App';
-        if (!confirm(`Unlink ${label}? You will stop receiving notifications.`)) return;
+        if (!(await confirmModal(`Unlink ${label}? You will stop receiving notifications.`))) return;
         try {
             const resp = await fetch(`/api/${channel}/unlink`, {
                 method: 'POST',
@@ -439,11 +439,11 @@
                 location.reload();
             } else {
                 const data = await resp.json();
-                alert(data.error || 'Failed to unlink.');
+                await alertModal(data.error || 'Failed to unlink.');
             }
         } catch (e) {
             console.error('Unlink failed:', e);
-            alert('Failed to unlink. Please try again.');
+            await alertModal('Failed to unlink. Please try again.');
         }
     }
 

@@ -2,6 +2,10 @@
          See app/web/static/js/datetime.js and the design spec at
          docs/superpowers/specs/2026-05-26-frontend-timezone-fix-design.md. -->
     <script src="{{ static_url('js/datetime.js') }}" defer></script>
+    <!-- window.confirmModal / alertModal / promptModal — design-system
+         replacements for native confirm()/alert()/prompt() (#497 §1).
+         Loaded synchronously so these globals exist before page scripts run. -->
+    <script src="{{ static_url('js/modal.js') }}"></script>
     <script>
       // v54 global undo-toast — surfaced by admin delete handlers. The
       // toast carries an Undo button that POSTs to a restore URL, so

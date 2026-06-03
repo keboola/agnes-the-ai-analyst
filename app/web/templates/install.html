@@ -1057,7 +1057,7 @@
                     errEl.textContent = 'Setup failed: ' + (err && err.message ? err.message : err);
                     errEl.style.display = 'block';
                 } else {
-                    alert('Setup failed: ' + (err && err.message ? err.message : err));
+                    await alertModal('Setup failed: ' + (err && err.message ? err.message : err));
                 }
             }
         };
