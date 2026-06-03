@@ -4357,11 +4357,10 @@ async def admin_rescan_store_submission(
     if not inline.passed:
         # Re-failed inline. Hide the entity (was approved or pending);
         # admin can either fix the bundle (PUT to recreate) or override.
-        subs.conn.execute(
-            "UPDATE store_submissions SET inline_checks = ?, llm_findings = NULL, "
-            "status = 'blocked_inline', updated_at = current_timestamp "
-            "WHERE id = ?",
-            [__import__("json").dumps(inline.to_response_dict()), submission_id],
+        subs.set_inline_result(
+            submission_id,
+            inline_checks=inline.to_response_dict(),
+            status="blocked_inline",
         )
         ents.set_visibility(entity_id, "hidden")
         audit_repo().log(
@@ -4383,11 +4382,10 @@ async def admin_rescan_store_submission(
     schedule_async_llm = guardrails_enabled and provider_ready
     guardrails_on = hold_for_review  # retained for audit-log compat
     new_status = "pending_llm" if hold_for_review else "approved"
-    subs.conn.execute(
-        "UPDATE store_submissions SET inline_checks = ?, llm_findings = NULL, "
-        "status = ?, updated_at = current_timestamp "
-        "WHERE id = ?",
-        [__import__("json").dumps(inline.to_response_dict()), new_status, submission_id],
+    subs.set_inline_result(
+        submission_id,
+        inline_checks=inline.to_response_dict(),
+        status=new_status,
     )
     if hold_for_review:
         ents.set_visibility(entity_id, "pending")

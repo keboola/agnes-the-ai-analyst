@@ -307,15 +307,13 @@ def _badges_for(pkg: Dict[str, Any], conn: duckdb.DuckDBPyConnection) -> List[st
     created_by = pkg.get("created_by")
     if created_by:
         try:
-            row = conn.execute(
-                "SELECT 1 FROM user_group_members ugm "
-                "JOIN user_groups ug ON ug.id = ugm.group_id "
-                "JOIN users u ON u.id = ugm.user_id "
-                "WHERE ug.name = 'Admin' "
-                "  AND (u.email = ? OR u.id = ?) LIMIT 1",
-                [created_by, created_by],
-            ).fetchone()
-            if row:
+            # Backend-aware: resolve the creator + Admin membership through the
+            # factory (RBAC lives in the active backend). created_by may be a
+            # user_id or an email.
+            from app.auth.access import is_user_admin
+            from src.repositories import users_repo
+            u = users_repo().get_by_id(created_by) or users_repo().get_by_email(created_by)
+            if u and is_user_admin(u["id"]):
                 badges.append("curated")
         except Exception:
             logger.warning("badge curated lookup failed for %s", created_by)

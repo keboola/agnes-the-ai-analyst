@@ -46,6 +46,21 @@ class MarketplacePluginsRepository:
         columns = [d[0] for d in self.conn.description]
         return [self._row_to_dict(columns, r) for r in rows]
 
+    def get(self, marketplace_id: str, name: str) -> Optional[Dict[str, Any]]:
+        """Fetch a single plugin row by (marketplace_id, name), or None.
+
+        Used by the curated install/uninstall existence + is_system checks so
+        they go through the backend-aware factory instead of a raw DuckDB read.
+        """
+        row = self.conn.execute(
+            "SELECT * FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",
+            [marketplace_id, name],
+        ).fetchone()
+        if not row:
+            return None
+        columns = [d[0] for d in self.conn.description]
+        return self._row_to_dict(columns, row)
+
     def list_all(self) -> List[Dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT * FROM marketplace_plugins ORDER BY marketplace_id, name"
