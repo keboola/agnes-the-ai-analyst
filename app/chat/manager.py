@@ -78,6 +78,10 @@ class LiveSession:
     # turns can never interleave partial JSON lines on the shared stdin
     # (spec §6.2).
     _stdin_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Live participant emails for co-sessions. Populated by attach() from
+    # chat_session_participants WHERE left_at IS NULL; updated by leave_session()
+    # when a participant leaves. Empty for non-co sessions.
+    participant_emails: list[str] = field(default_factory=list)
 
 
 class ChatManager:
@@ -203,8 +207,20 @@ class ChatManager:
         if session is None:
             raise SessionNotFound(chat_id)
 
-        self._workdir_mgr.ensure_user_workdir(session.user_email)
-        session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, chat_id)
+        if session.is_co_session:
+            # SR-6: co-sessions get a fresh ephemeral workspace — never a
+            # personal directory, never CLAUDE.local.md.
+            parts = self._repo.get_session_participants(chat_id)
+            emails = [p.user_email for p in parts if p.left_at is None]
+            from src.grant_intersection import compute_grant_intersection
+            inter = compute_grant_intersection(emails, self._repo._conn)
+            session_dir = self._workdir_mgr.prepare_ephemeral_session_dir(
+                chat_id, emails, inter,
+            )
+        else:
+            emails = [session.user_email]
+            self._workdir_mgr.ensure_user_workdir(session.user_email)
+            session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, chat_id)
 
         handle = await self._spawn_runner(session, session_dir)
         # 5a seats the primary sink unconditionally. is_primary is part of
@@ -222,6 +238,7 @@ class ChatManager:
                 [SinkEntry(participant_email=session.user_email, sink=ws)]
                 if is_primary else []
             ),
+            participant_emails=emails,
         )
         self._live[chat_id] = live
         await ws.send_json({"type": "ready"})
@@ -258,18 +275,24 @@ class ChatManager:
         await sink.send_json({"type": "ready"})
 
     async def _spawn_runner(self, session: ChatSession, session_dir: Path):
-        from app.auth.access import mint_session_jwt
-        try:
-            token = mint_session_jwt(session.user_email, session.id)
-        except ValueError:
-            # User not found in DB (e.g. deleted mid-session) — fall back to
-            # the env-seed so the runner at least starts; it will fail auth
-            # on its first API call and surface a clear error to the user.
-            logger.warning(
-                "_spawn_runner: mint_session_jwt failed for %s; using AGNES_SESSION_JWT_SEED fallback",
-                session.user_email,
-            )
-            token = os.environ.get("AGNES_SESSION_JWT_SEED", "")
+        from app.auth.access import mint_session_jwt, mint_co_session_jwt
+        if session.is_co_session:
+            # SR-5: NO seed fallback for co-sessions. A mint failure re-raises
+            # and aborts the spawn — never inject a seed token (which carries no
+            # co claims and could resolve to admin via the normal user path).
+            token = mint_co_session_jwt(session.id)
+        else:
+            try:
+                token = mint_session_jwt(session.user_email, session.id)
+            except ValueError:
+                # User not found in DB (e.g. deleted mid-session) — fall back to
+                # the env-seed so the runner at least starts; it will fail auth
+                # on its first API call and surface a clear error to the user.
+                logger.warning(
+                    "_spawn_runner: mint_session_jwt failed for %s; using AGNES_SESSION_JWT_SEED fallback",
+                    session.user_email,
+                )
+                token = os.environ.get("AGNES_SESSION_JWT_SEED", "")
         env = {
             "AGNES_TOKEN": token,
             # The agnes CLI inside the sandbox reads its server URL from
