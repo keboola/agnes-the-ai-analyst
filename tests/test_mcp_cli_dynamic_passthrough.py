@@ -150,3 +150,40 @@ def test_registered_kwargs_fallback_for_unsafe_prop_names():
             {"arguments": {"some-thing": "x"}},
         )
     ]
+
+
+def _noarg_tool_list():
+    return [
+        {
+            "tool_id": "test-upstream.ping",
+            "source_id": "src_test",
+            "source_name": "test-upstream",
+            "exposed_name": "ping",
+            "description": "No-arg tool.",
+            "input_schema": {"type": "object", "properties": {}},
+        },
+    ]
+
+
+def test_registered_noarg_tool_has_no_kwargs_param():
+    """Tools with an empty input schema (no properties) must register a
+    parameterless callable — NOT a ``**kwargs`` wrapper, which FastMCP
+    renders as a required ``kwargs`` field that breaks the only valid
+    (empty) call."""
+    mcp_inst = _fresh_mcp()
+    with patch("cli.mcp._dynamic_passthrough.api_get_json", return_value=_noarg_tool_list()):
+        register_passthrough_tools(mcp_inst)
+
+    tool = mcp_inst._tool_manager.get_tool("test-upstream.ping")
+    assert tool is not None
+    # ``Tool.parameters`` is overwritten with the upstream input_schema after
+    # registration, so it always looks clean. The schema FastMCP *actually*
+    # validates incoming calls against is derived from the synthesized
+    # function signature (``fn_metadata.arg_model``) — that's where the
+    # ``**kwargs`` wrapper leaks a required ``kwargs`` field and breaks the
+    # only valid (empty) call. Assert on the real validation model.
+    schema = tool.fn_metadata.arg_model.model_json_schema()
+    props = (schema or {}).get("properties") or {}
+    required = (schema or {}).get("required") or []
+    assert "kwargs" not in props, f"unexpected kwargs param: {schema}"
+    assert "kwargs" not in required
