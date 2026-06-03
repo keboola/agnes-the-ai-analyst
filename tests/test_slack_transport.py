@@ -193,3 +193,85 @@ def test_get_slack_transport_unknown_value_falls_back_http(monkeypatch):
     import app.instance_config as ic
     monkeypatch.setenv("SLACK_TRANSPORT", "carrier-pigeon")
     assert ic.get_slack_transport() == "http"
+
+
+def test_socket_dispatcher_acks_envelope_before_scheduling(monkeypatch):
+    """_on_request must call send_socket_mode_response(envelope_id) BEFORE
+    it schedules the dispatch, and dispatch_event must receive the exact
+    payload["event"] dict (byte-identical to the HTTP extraction)."""
+    from services.slack_bot.socket_mode_client import SocketModeDispatcher
+
+    order: list[str] = []
+    dispatched: list[dict] = []
+
+    class FakeClient:
+        async def send_socket_mode_response(self, resp):
+            order.append(f"ack:{resp.envelope_id}")
+
+    class FakeReq:
+        def __init__(self):
+            self.type = "events_api"
+            self.envelope_id = "env-1"
+            self.payload = {
+                "type": "event_callback",
+                "event": {"type": "app_mention", "channel": "C1",
+                          "ts": "1.1", "user": "U1", "text": "<@A> hi"},
+            }
+
+    async def fake_dispatch(app, event):
+        order.append("dispatch")
+        dispatched.append(event)
+
+    import services.slack_bot.socket_mode_client as smc
+    monkeypatch.setattr(smc, "dispatch_event", fake_dispatch)
+
+    app = object()
+    disp = SocketModeDispatcher(app=app, app_token="xapp-x", bot_token="xoxb-y")
+
+    async def _run():
+        req = FakeReq()
+        await disp._on_request(FakeClient(), req)
+        import asyncio
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    import asyncio
+    asyncio.run(_run())
+
+    assert order[0] == "ack:env-1", order      # ack happens first
+    assert "dispatch" in order
+    assert order.index("ack:env-1") < order.index("dispatch")
+    assert dispatched == [
+        {"type": "app_mention", "channel": "C1", "ts": "1.1",
+         "user": "U1", "text": "<@A> hi"}
+    ]
+
+
+def test_socket_dispatcher_ignores_non_event_callback(monkeypatch):
+    """A non-event_callback payload (e.g. a hello) is still acked but not
+    dispatched (slash/interactivity routing is a later phase)."""
+    from services.slack_bot.socket_mode_client import SocketModeDispatcher
+
+    acked: list[str] = []
+    dispatched: list[dict] = []
+
+    class FakeClient:
+        async def send_socket_mode_response(self, resp):
+            acked.append(resp.envelope_id)
+
+    class FakeReq:
+        type = "events_api"
+        envelope_id = "env-2"
+        payload = {"type": "hello"}
+
+    async def fake_dispatch(app, event):
+        dispatched.append(event)
+
+    import asyncio
+    import services.slack_bot.socket_mode_client as smc
+    monkeypatch.setattr(smc, "dispatch_event", fake_dispatch)
+
+    disp = SocketModeDispatcher(app=object(), app_token="xapp-x", bot_token="xoxb-y")
+    asyncio.run(disp._on_request(FakeClient(), FakeReq()))
+    assert acked == ["env-2"]
+    assert dispatched == []
