@@ -9,5 +9,15 @@ FROM ${BASE}
 ENV DEMO_EXTRACT_DIR=/data/extracts/demo
 RUN python scripts/build_demo_extract.py
 
+# Bake the bundled mini-marketplace so the demo instance serves it without any
+# git fetch. src/demo_seed.py registers a marketplace row pointing at
+# local:///marketplaces/demo, and the nightly sync skips local: URLs.
+RUN mkdir -p /data/marketplaces \
+    && cp -r /app/src/_demo_seed/marketplace /data/marketplaces/demo
+
 # A baked-data instance has no scheduler — build views at boot.
-ENV AGNES_REBUILD_ON_BOOT=1
+# SEED_DEMO=1 turns on the idempotent demo-content boot hook (metrics,
+# corporate memory, example data package, baked marketplace) — see
+# src/demo_seed.py::seed_demo.
+ENV AGNES_REBUILD_ON_BOOT=1 \
+    SEED_DEMO=1
