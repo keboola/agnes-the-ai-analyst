@@ -1040,7 +1040,7 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
 
 @router.get("/manifest")
 async def sync_manifest(
-    user: dict = Depends(get_current_user),
+    user=Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Return hash-based manifest of all synced data, filtered per user.

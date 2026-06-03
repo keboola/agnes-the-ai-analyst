@@ -42,6 +42,130 @@ def test_get_accessible_tables_with_principal_returns_list_not_none(rbac_conn):
         assert t.registry_id in result
 
 
+from fastapi.testclient import TestClient
+
+
+def _seed_co_app_base(conn):
+    """Seed two users, register tables, return (ua_id, ub_id, co_session_id)."""
+    from src.db import SYSTEM_ADMIN_GROUP
+    from src.repositories.users import UserRepository
+    from src.repositories.user_groups import UserGroupsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.table_registry import TableRegistryRepository
+    from app.chat.persistence import ChatRepository
+    from app.chat.types import Surface
+
+    UserRepository(conn).create(id="ua", email="a@example.com", name="A")
+    UserRepository(conn).create(id="ub", email="b@example.com", name="B")
+
+    # Register tables in table_registry
+    reg = TableRegistryRepository(conn)
+    reg.register(id="t1", name="t1", source_type="keboola")
+    reg.register(id="t2", name="t2", source_type="keboola")
+
+    # Create a co-session with both participants
+    repo = ChatRepository(conn)
+    s0 = repo.create_session(user_email="a@example.com", surface=Surface.WEB)
+    s1 = repo.fork_session_as_co_session(
+        s0.id,
+        owner_email="a@example.com", owner_user_id="ua",
+        invitee_email="b@example.com", invitee_user_id="ub",
+    )
+    return s1.id
+
+
+def _grant_table_direct(conn, table_id, user_id, group_name):
+    """Grant a direct table grant to a user via a new group."""
+    from src.repositories.user_groups import UserGroupsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.resource_grants import ResourceGrantsRepository
+
+    groups = UserGroupsRepository(conn)
+    grp = groups.get_by_name(group_name)
+    if not grp:
+        grp = groups.create(name=group_name, description="test", created_by="test")
+    members = UserGroupMembersRepository(conn)
+    if not members.has_membership(user_id, grp["id"]):
+        members.add_member(user_id, grp["id"], source="admin", added_by="test")
+    grants = ResourceGrantsRepository(conn)
+    if not grants.has_grant([grp["id"]], "table", table_id):
+        grants.create(
+            group_id=grp["id"],
+            resource_type="table",
+            resource_id=table_id,
+            assigned_by="test",
+            requirement="required",
+        )
+
+
+@pytest.fixture
+def co_app(e2e_env):
+    """App fixture: co-session where only ua holds table t1. t1 -> 403 for the co token."""
+    from src.db import get_system_db
+    from app.main import create_app
+    conn = get_system_db()
+    co_id = _seed_co_app_base(conn)
+    # Only ua gets direct table grant for t1 -> t1 not in intersection
+    _grant_table_direct(conn, "t1", "ua", "g-t1-only-a")
+    conn.close()
+    app = create_app()
+    client = TestClient(app, raise_server_exceptions=False)
+    yield client, co_id
+
+
+@pytest.fixture
+def co_app_shared(e2e_env):
+    """App fixture: co-session where BOTH ua and ub hold table t2. t2 -> 200."""
+    from src.db import get_system_db
+    from app.main import create_app
+    conn = get_system_db()
+    co_id = _seed_co_app_base(conn)
+    # Both ua and ub get direct table grants for t2 -> t2 in intersection
+    _grant_table_direct(conn, "t2", "ua", "g-t2-both-a")
+    _grant_table_direct(conn, "t2", "ub", "g-t2-both-b")
+    conn.close()
+    app = create_app()
+    client = TestClient(app, raise_server_exceptions=False)
+    yield client, co_id
+
+
+def test_co_token_403_on_single_participant_table(co_app):
+    client, co_id = co_app  # app wired to a DuckDB where only A holds t1
+    from app.auth.access import mint_co_session_jwt
+    hdr = {"Authorization": f"Bearer {mint_co_session_jwt(co_id)}"}
+
+    # /api/data check-access for t1 (A-only) -> 403
+    assert client.get("/api/data/t1/check-access", headers=hdr).status_code == 403
+    # /api/v2/scan for t1 -> 403 (ScanRequest: table_id only, no `sql`)
+    assert client.post("/api/v2/scan", json={"table_id": "t1"}, headers=hdr).status_code == 403
+    # /api/v2/sample + /api/v2/schema for t1 -> 403
+    assert client.get("/api/v2/sample/t1", headers=hdr).status_code == 403
+    assert client.get("/api/v2/schema/t1", headers=hdr).status_code == 403
+    # /api/catalog/tables must NOT include t1
+    cat = client.get("/api/catalog/tables", headers=hdr)
+    assert cat.status_code == 200
+    assert all(t.get("id") != "t1" for t in cat.json().get("tables", []))
+    # /api/sync/manifest must NOT list t1
+    man = client.get("/api/sync/manifest", headers=hdr)
+    assert man.status_code == 200
+    man_data = man.json()
+    # Check direct_tables and data_packages sections
+    all_table_ids = (
+        [t.get("id") for t in man_data.get("direct_tables", [])]
+        + [t.get("id") for pkg in man_data.get("data_packages", []) for t in pkg.get("tables", [])]
+        + list(man_data.get("tables", {}).keys())
+    )
+    assert "t1" not in all_table_ids
+
+
+def test_co_token_200_on_shared_table(co_app_shared):
+    client, co_id = co_app_shared  # both A and B hold t2 via direct grants
+    from app.auth.access import mint_co_session_jwt
+    hdr = {"Authorization": f"Bearer {mint_co_session_jwt(co_id)}"}
+    assert client.get("/api/data/t2/check-access", headers=hdr).status_code == 204
+
+
 def test_stack_resolver_with_session_principal(rbac_conn):
     from app.services.stack_resolver import StackResolver
     from app.resource_types import ResourceType
