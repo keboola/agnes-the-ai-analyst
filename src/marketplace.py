@@ -190,7 +190,7 @@ def _refresh_plugin_cache(slug: str, commit_sha: str | None = None) -> int:
         internal_doc_url,
         mirrored_url,
     )
-    from src.repositories.marketplace_plugins import MarketplacePluginsRepository
+    from src.repositories import marketplace_plugins_repo
 
     # Cache-busting fingerprint baked into every served cover-photo URL.
     # 8 hex chars from the cloned repo's git HEAD — same upstream state →
@@ -360,27 +360,21 @@ def _refresh_plugin_cache(slug: str, commit_sha: str | None = None) -> int:
 
         enriched.append(merged)
 
-    conn = _get_conn()
+    # Backend-aware write — on a Postgres-backed instance the rows must land
+    # in Postgres, where the marketplace_plugins_repo() readers (UI + RBAC
+    # fanout) look. A raw DuckDB write here is invisible to them → empty
+    # marketplace on PG.
     try:
-        count = MarketplacePluginsRepository(conn).replace_for_marketplace(slug, enriched)
+        count = marketplace_plugins_repo().replace_for_marketplace(slug, enriched)
     except Exception as e:  # noqa: BLE001
         logger.warning("marketplace %s: plugin cache write failed: %s", slug, e)
         return 0
-    finally:
-        conn.close()
 
     # v46: attribution tables removed. `MarketplaceItemLookup` resolves
     # skill/agent/command identifiers at usage-event write time by
     # prefix-splitting on `:` and matching the prefix against this same
     # `marketplace_plugins` table — no separate mapping pass needed here.
     return count
-
-
-def _get_conn():
-    """Lazy import to avoid circular deps with src.db at module load."""
-    from src.db import get_system_db
-
-    return get_system_db()
 
 
 def sync_one(marketplace_id: str) -> Dict[str, Any]:
@@ -390,36 +384,34 @@ def sync_one(marketplace_id: str) -> Dict[str, Any]:
         MarketplaceNotFound: if the id isn't registered.
         RuntimeError: if the git operation failed (token-redacted).
     """
-    from src.repositories.marketplace_registry import MarketplaceRegistryRepository
+    from src.repositories import marketplace_registry_repo
 
-    conn = _get_conn()
-    try:
-        repo = MarketplaceRegistryRepository(conn)
-        spec = repo.get(marketplace_id)
-        if not spec:
-            raise MarketplaceNotFound(marketplace_id)
+    # Backend-aware: registry rows live in Postgres on a PG instance. A raw
+    # DuckDB read here returns an empty registry → "not found" / silent no-sync.
+    repo = marketplace_registry_repo()
+    spec = repo.get(marketplace_id)
+    if not spec:
+        raise MarketplaceNotFound(marketplace_id)
 
-        with _lock:
-            try:
-                result = _sync_spec(spec)
-                repo.update_sync_status(
-                    marketplace_id,
-                    commit_sha=result["commit"],
-                    synced_at=datetime.now(timezone.utc),
-                )
-                result["plugin_count"] = _refresh_plugin_cache(
-                    marketplace_id, commit_sha=result["commit"],
-                )
-                return result
-            except (RuntimeError, ValueError) as e:
-                repo.update_sync_status(
-                    marketplace_id,
-                    synced_at=datetime.now(timezone.utc),
-                    error=str(e),
-                )
-                raise
-    finally:
-        conn.close()
+    with _lock:
+        try:
+            result = _sync_spec(spec)
+            repo.update_sync_status(
+                marketplace_id,
+                commit_sha=result["commit"],
+                synced_at=datetime.now(timezone.utc),
+            )
+            result["plugin_count"] = _refresh_plugin_cache(
+                marketplace_id, commit_sha=result["commit"],
+            )
+            return result
+        except (RuntimeError, ValueError) as e:
+            repo.update_sync_status(
+                marketplace_id,
+                synced_at=datetime.now(timezone.utc),
+                error=str(e),
+            )
+            raise
 
 
 def sync_marketplaces() -> Dict[str, Any]:
@@ -427,14 +419,13 @@ def sync_marketplaces() -> Dict[str, Any]:
 
     One failure does not abort the rest; errors are collected per entry.
     """
-    from src.repositories.marketplace_registry import MarketplaceRegistryRepository
+    from src.repositories import marketplace_registry_repo
 
-    conn = _get_conn()
-    try:
-        repo = MarketplaceRegistryRepository(conn)
-        specs = repo.list_all()
-    finally:
-        conn.close()
+    # Backend-aware: on a PG instance the registry lives in Postgres. Reading it
+    # through a raw DuckDB conn returned an empty list → "nothing to sync" → the
+    # nightly sync silently never ran on Postgres-backed instances.
+    repo = marketplace_registry_repo()
+    specs = repo.list_all()
 
     if not specs:
         logger.info("No marketplaces registered; nothing to sync.")
@@ -448,16 +439,11 @@ def sync_marketplaces() -> Dict[str, Any]:
             slug = spec.get("id", "")
             try:
                 result = _sync_spec(spec)
-                # Persist success per entry on its own connection (short-lived).
-                conn = _get_conn()
-                try:
-                    MarketplaceRegistryRepository(conn).update_sync_status(
-                        slug,
-                        commit_sha=result["commit"],
-                        synced_at=datetime.now(timezone.utc),
-                    )
-                finally:
-                    conn.close()
+                repo.update_sync_status(
+                    slug,
+                    commit_sha=result["commit"],
+                    synced_at=datetime.now(timezone.utc),
+                )
                 result["plugin_count"] = _refresh_plugin_cache(
                     slug, commit_sha=result["commit"],
                 )
@@ -466,15 +452,11 @@ def sync_marketplaces() -> Dict[str, Any]:
                 err = {"id": slug, "error": str(e)}
                 errors.append(err)
                 logger.error("marketplace %s sync failed: %s", slug, e)
-                conn = _get_conn()
-                try:
-                    MarketplaceRegistryRepository(conn).update_sync_status(
-                        slug,
-                        synced_at=datetime.now(timezone.utc),
-                        error=str(e),
-                    )
-                finally:
-                    conn.close()
+                repo.update_sync_status(
+                    slug,
+                    synced_at=datetime.now(timezone.utc),
+                    error=str(e),
+                )
 
     # Drop cached etags so the next /marketplace.zip request re-hashes against
     # the freshly-synced content rather than waiting for TTL expiry. Late

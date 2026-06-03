@@ -19,6 +19,7 @@ from src.repositories import (
     audit_repo,
     knowledge_repo,
     memory_domains_repo,
+    usage_repo,
 )
 logger = logging.getLogger(__name__)
 
@@ -415,83 +416,30 @@ async def get_stats(
     groups = _effective_groups(user, conn)
     granted_domains = _caller_granted_memory_domains(user, conn)
 
-    where_clauses: List[str] = []
-    params: list = []
-    if not is_priv:
-        # Personal-item privacy: non-privileged callers see no personal items
-        # in the aggregate, even their own. /my-contributions is the canonical
-        # surface for a user's personal contributions; including them here
-        # would make /api/memory/stats.total disagree with the count visible
-        # via GET /api/memory (which forces exclude_personal=True for non-
-        # admins regardless of source_user).
-        where_clauses.append("(is_personal IS NULL OR is_personal = FALSE)")
-
-    if groups is not None:
-        # Mirror the visibility composition KnowledgeRepository.list_items
-        # uses: audience match OR MEMORY_DOMAIN grant. Without this the
-        # stats `total` diverges from the list endpoint's `total_count` for
-        # non-admin users with grants. v49: granted_domains values are
-        # ``memory_domains.id`` and resolve via the junction EXISTS subquery.
-        visibility = ["audience IS NULL", "audience = 'all'"]
-        if groups:
-            placeholders = ",".join(["?"] * len(groups))
-            visibility.append(f"audience IN ({placeholders})")
-            params.extend(groups)
-        if granted_domains:
-            domain_placeholders = ",".join(["?"] * len(granted_domains))
-            visibility.append(
-                "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
-                "WHERE kid.item_id = knowledge_items.id "
-                f"AND kid.domain_id IN ({domain_placeholders}))"
-            )
-            params.extend(granted_domains)
-        where_clauses.append("(" + " OR ".join(visibility) + ")")
-
-    where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
-
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM knowledge_items{where_sql}", params
-    ).fetchone()[0] or 0
-
-    by_status_rows = conn.execute(
-        f"SELECT COALESCE(status, 'unknown') AS s, COUNT(*) "
-        f"FROM knowledge_items{where_sql} GROUP BY s",
-        params,
-    ).fetchall()
-    by_status = {r[0]: r[1] for r in by_status_rows}
-
-    cat_rows = conn.execute(
-        f"SELECT DISTINCT category FROM knowledge_items{where_sql} "
-        f"{'AND' if where_sql else 'WHERE'} category IS NOT NULL",
-        params,
-    ).fetchall()
-    categories = sorted(r[0] for r in cat_rows if r[0])
-
-    # v49: domain lives in the junction. LEFT JOIN to surface 'unset' bucket
-    # for items without any domain row, matching the pre-v49 COALESCE behavior.
-    by_domain_rows = conn.execute(
-        "SELECT COALESCE(md.slug, 'unset') AS d, COUNT(*) "
-        "FROM knowledge_items "
-        "LEFT JOIN knowledge_item_domains kid ON kid.item_id = knowledge_items.id "
-        "LEFT JOIN memory_domains md ON md.id = kid.domain_id"
-        + (where_sql or "")
-        + " GROUP BY d",
-        params,
-    ).fetchall()
-    by_domain = {r[0]: r[1] for r in by_domain_rows}
-
-    by_source_rows = conn.execute(
-        f"SELECT COALESCE(source_type, 'unknown') AS st, COUNT(*) "
-        f"FROM knowledge_items{where_sql} GROUP BY st",
-        params,
-    ).fetchall()
-    by_source_type = {r[0]: r[1] for r in by_source_rows}
-
-    # by_tag + by_audience extend stats for the chip-filter UI (issue #62).
-    # The repo helpers honor the same audience + personal-item filters this
-    # endpoint applies above.
     repo = knowledge_repo()
     exclude_personal_for_caller = not is_priv
+
+    # Backend-aware: total + breakdowns go through the repo factory so a
+    # Postgres-backed instance counts PG state (was raw conn.execute on the
+    # always-DuckDB _get_db connection). The repo methods build the same
+    # audience-OR-MEMORY_DOMAIN visibility filter internally.
+    total = repo.count_items(
+        exclude_personal=exclude_personal_for_caller,
+        user_groups=groups,
+        granted_domains=granted_domains,
+    )
+    breakdown = repo.stats_breakdown(
+        exclude_personal=exclude_personal_for_caller,
+        user_groups=groups,
+        granted_domains=granted_domains,
+    )
+    by_status = breakdown["by_status"]
+    categories = breakdown["categories"]
+    by_domain = breakdown["by_domain"]
+    by_source_type = breakdown["by_source_type"]
+
+    # by_tag + by_audience extend stats for the chip-filter UI (issue #62).
+    # The repo helpers honor the same audience + personal-item filters.
     by_tag = repo.count_by_tag(
         exclude_personal=exclude_personal_for_caller,
         user_groups=groups,
@@ -660,11 +608,10 @@ async def dismiss_item(
     # membership so /admin/telemetry can correlate dismissals with the
     # domain they came from.
     try:
-        from src.repositories.usage import UsageRepository
         domain_ids = [
             d["id"] for d in memory_domains_repo().list_domains_of_item(item_id)
         ]
-        UsageRepository(conn).emit_server_event(
+        usage_repo().emit_server_event(
             event_type="memory.dismiss",
             user_id=user["id"],
             username=user.get("email") or user["id"],
@@ -697,8 +644,7 @@ async def undismiss_item(
     # body), so no return value needed; telemetry is the only side effect
     # we still want.
     try:
-        from src.repositories.usage import UsageRepository
-        UsageRepository(conn).emit_server_event(
+        usage_repo().emit_server_event(
             event_type="memory.undismiss",
             user_id=user["id"],
             username=user.get("email") or user["id"],

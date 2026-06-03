@@ -20,15 +20,12 @@ until scope flips.
 from __future__ import annotations
 
 import logging
-from typing import Dict
 
-import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.auth.dependencies import _get_db, get_current_user
-from app.secrets_vault import PerUserSecretsRepository
-from src.repositories.mcp_sources import MCPSourceRepository
+from app.auth.dependencies import get_current_user
+from src.repositories import mcp_sources_repo, per_user_secrets_repo
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +46,6 @@ async def set_my_secret(
     source_id: str,
     body: MySecretBody,
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Store (or rotate) the caller's per-user secret for this source.
 
@@ -59,40 +55,34 @@ async def set_my_secret(
     """
     if not body.value:
         raise HTTPException(status_code=400, detail="secret value required")
-    src_repo = MCPSourceRepository(conn)
-    if not src_repo.get(source_id):
+    if not mcp_sources_repo().get(source_id):
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
-    PerUserSecretsRepository(conn).upsert(source_id, user["id"], body.value)
+    per_user_secrets_repo().upsert(source_id, user["id"], body.value)
 
 
 @router.delete("/{source_id}/my-secret", status_code=204)
 async def delete_my_secret(
     source_id: str,
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Drop the caller's per-user secret. For ``scope='per_user'``
     sources the next call falls through to the shared vault path."""
-    src_repo = MCPSourceRepository(conn)
-    if not src_repo.get(source_id):
+    if not mcp_sources_repo().get(source_id):
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
-    PerUserSecretsRepository(conn).delete(source_id, user["id"])
+    per_user_secrets_repo().delete(source_id, user["id"])
 
 
 @router.get("/{source_id}/my-secret", response_model=HasSecretResponse)
 async def get_my_secret_status(
     source_id: str,
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ) -> HasSecretResponse:
     """Return ``has_secret: bool`` for the caller + the source's scope so
     a UI can show "Connect your <source>" or "Connected"."""
-    src_repo = MCPSourceRepository(conn)
-    source = src_repo.get(source_id)
+    source = mcp_sources_repo().get(source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
-    repo = PerUserSecretsRepository(conn)
     return HasSecretResponse(
-        has_secret=repo.has(source_id, user["id"]),
+        has_secret=per_user_secrets_repo().has(source_id, user["id"]),
         source_scope=(source.get("scope") or "shared"),
     )
