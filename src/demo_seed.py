@@ -11,6 +11,7 @@ from typing import Optional
 
 from src.repositories.data_packages import DataPackagesRepository
 from src.repositories.knowledge import KnowledgeRepository
+from src.repositories.marketplace_registry import MarketplaceRegistryRepository
 from src.repositories.memory_domains import MemoryDomainsRepository
 from src.repositories.metrics import MetricRepository
 
@@ -19,6 +20,12 @@ log = logging.getLogger(__name__)
 _METRICS_DIR = Path(__file__).resolve().parent.parent / "docs" / "metrics"
 _MEMORY_FIXTURE = Path(__file__).resolve().parent / "_demo_seed" / "memory_items.json"
 _DATA_PACKAGE_FIXTURE = Path(__file__).resolve().parent / "_demo_seed" / "data_package.json"
+
+# Sentinel URL for the baked, git-free demo marketplace. The dir is copied into
+# the image at ${DATA_DIR}/marketplaces/demo (see Dockerfile.demo), so there is
+# nothing to clone. The nightly sync skips any row whose URL starts with
+# ``local:`` so the baked working copy is never re-fetched or clobbered.
+LOCAL_MARKETPLACE_URL = "local:///marketplaces/demo"
 
 
 def seed_metrics(conn) -> int:
@@ -177,3 +184,23 @@ def seed_data_package(conn) -> Optional[str]:
         _DATA_PACKAGE_FIXTURE,
     )
     return pkg_id
+
+
+def seed_marketplace(conn) -> None:
+    """Register the baked, git-free demo marketplace.
+
+    Idempotent across boots: ``MarketplaceRegistryRepository.register`` upserts
+    on the ``id`` (``INSERT ... ON CONFLICT (id) DO UPDATE``), so re-running
+    updates rather than duplicating. The URL is the ``local:`` sentinel
+    (``LOCAL_MARKETPLACE_URL``); the nightly sync skips ``local:`` rows so the
+    baked working copy under ``${DATA_DIR}/marketplaces/demo`` is never
+    re-fetched or clobbered.
+    """
+    MarketplaceRegistryRepository(conn).register(
+        id="demo",
+        name="Demo Marketplace",
+        url=LOCAL_MARKETPLACE_URL,
+        description="Sample plugins bundled with the demo instance.",
+        registered_by="system",
+    )
+    log.info("seed_marketplace: registered baked demo marketplace (%s)", LOCAL_MARKETPLACE_URL)

@@ -101,6 +101,15 @@ def _sync_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
     if not url:
         raise ValueError(f"marketplace {slug!r}: url is required")
 
+    # Baked, git-free marketplaces (url ``local:...``) ship inside the image and
+    # have no remote to clone or fetch. Short-circuit before any git invocation
+    # so the on-disk working copy is never touched; the caller still refreshes
+    # the plugin cache from the baked manifest.
+    if url.startswith("local:"):
+        logger.info("marketplace %s is local (%s) -> skipping git sync", slug, url)
+        return {"id": slug, "name": name, "action": "local", "commit": None,
+                "path": str(get_marketplaces_dir() / slug)}
+
     target = get_marketplaces_dir() / slug
     auth_url = _authenticated_url(url, token)
     is_git = (target / ".git").is_dir()
