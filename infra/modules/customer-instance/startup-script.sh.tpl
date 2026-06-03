@@ -273,6 +273,22 @@ if [ -n "$EXISTING_AGNES_TEMP_DIR" ]; then
     AGNES_TEMP_DIR_LINE="AGNES_TEMP_DIR=\"$EXISTING_AGNES_TEMP_DIR\""
 fi
 
+# Select the docker-compose overlay set from the persisted backend state.
+# instance.yaml is written above only when absent, so a VM an operator migrated
+# to side_car / cloud keeps that backend across reboots. The on-VM Postgres
+# side-car overlay is engaged ONLY for backend=side_car; duckdb and cloud run
+# the baseline (cloud reaches managed Postgres via instance.yaml::database.url,
+# not the side-car). Mirrors agnes-state-applier.sh's overlay selection.
+# Without this, a reboot of a cloud/duckdb instance re-engaged the side-car and
+# ran the one-shot `migrate` against it, which fails and blocks app startup via
+# depends_on.
+PERSISTED_BACKEND=$(sed -n 's/^[[:space:]]*backend:[[:space:]]*//p' "$INSTANCE_YAML" 2>/dev/null | tr -d '"' | head -1)
+if [ "$PERSISTED_BACKEND" = "side_car" ]; then
+    COMPOSE_FILE_VALUE="docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:docker-compose.host-mount.yml:docker-compose.postgres-host-mount.yml"
+else
+    COMPOSE_FILE_VALUE="docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml"
+fi
+
 cat > "$APP_DIR/.env" <<ENVEOF
 JWT_SECRET_KEY=$JWT_KEY
 DATA_DIR=$DATA_MNT
@@ -295,7 +311,7 @@ ${env_name}=$${${env_name}}
 %{ endfor ~}
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 DATABASE_URL=postgresql+psycopg://agnes:$POSTGRES_PASSWORD@postgres:5432/agnes
-COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:docker-compose.host-mount.yml:docker-compose.postgres-host-mount.yml
+COMPOSE_FILE=$COMPOSE_FILE_VALUE
 $CADDY_TLS_LINE
 $AGNES_TEMP_DIR_LINE
 ENVEOF

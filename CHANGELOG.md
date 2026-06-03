@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **A cloud/DuckDB-backend VM now reboots cleanly instead of hanging on a side-car migration.** The `customer-instance` startup-script baked the Postgres side-car overlay (`docker-compose.postgres.yml` + `…-host-mount.yml`) into the `.env` `COMPOSE_FILE` unconditionally — so a reboot of a `backend: cloud` (or `duckdb`) instance re-engaged the side-car and ran the one-shot `migrate` service against it, which fails (`failed to resolve host 'postgres'`) and blocks `app`/`scheduler` startup via `depends_on`. The startup-script now selects the overlay set from the persisted `instance.yaml` backend — side-car overlay only for `backend=side_car`; `duckdb`/`cloud` run the baseline (cloud reaches managed Postgres via `instance.yaml::database.url`) — mirroring `agnes-state-applier.sh`. Regression test added.
+
 ## [0.63.0] — 2026-06-03
 
 ### Added
