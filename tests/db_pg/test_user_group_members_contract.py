@@ -165,9 +165,11 @@ def test_list_groups_with_meta_ordering_system_groups_first(repos):
     ug, members, users, _, _ = repos
     users.create(id="u-2", email="bob@example.com", name="Bob")
 
-    # System groups exist via _ensure_schema seed; fetch their ids.
-    sys_admin = ug.get_by_name(SYSTEM_ADMIN_GROUP)
-    sys_everyone = ug.get_by_name(SYSTEM_EVERYONE_GROUP)
+    # DuckDB's `_ensure_schema` seeds system groups; the PG alembic
+    # baseline doesn't. Use `ensure_system` (idempotent get-or-create
+    # with is_system=True) so the test works on both engines.
+    sys_admin = ug.ensure_system(SYSTEM_ADMIN_GROUP, "System admins")
+    sys_everyone = ug.ensure_system(SYSTEM_EVERYONE_GROUP, "Everyone")
     assert sys_admin and sys_everyone
 
     custom_b = ug.ensure("b-custom@example.com")
