@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- `SEED_DEMO=1` boot hook seeds a demo instance idempotently on every boot — imports the bundled business metrics, ~26 corporate-memory items across 6 domains, an example "E-commerce Analytics" data package over the baked demo tables, and a baked sample marketplace (the marketplace sync skips `local:` URLs so the baked copy is never re-fetched). Off by default; content is generic/synthetic. Enabled in `Dockerfile.demo`.
+
 ### Fixed
 - `/home` "Mark me as onboarded" (and `agnes init`) now takes effect on a
   Postgres-backed instance. The route read `users.onboarded` with a raw
