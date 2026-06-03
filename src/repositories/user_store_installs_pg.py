@@ -48,6 +48,7 @@ class UserStoreInstallsPgRepository:
                            se.photo_path, se.video_url, se.file_size,
                            se.install_count, se.created_at, se.updated_at,
                            se.visibility_status,
+                           se.title, se.tagline, se.synthetic_name,
                            usi.installed_at
                        FROM user_store_installs usi
                        JOIN store_entities se ON se.id = usi.entity_id

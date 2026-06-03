@@ -19,6 +19,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   stale DuckDB row, leaving the setup panel visible forever regardless of
   reloads or cache. `/home` now reads `onboarded` through `users_repo()` so
   the read and write share the active backend.
+- Marketplace **My Stack** tab returned HTTP 500 on the Postgres state backend — the `user_store_installs` PG repo's `list_for_user` omitted `title` / `tagline` / `synthetic_name` from its SELECT, which the flea-card builder (`_flea_to_item`) reads directly (`entity["synthetic_name"]` → `KeyError`). Brought the PG projection to parity with the DuckDB repo and added a cross-engine contract test.
 
 ## [0.61.5] — 2026-06-03
 
