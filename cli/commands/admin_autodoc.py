@@ -63,73 +63,70 @@ def autodoc_tables(
     existing description is never clobbered.
     """
     from connectors.llm.exceptions import LLMError
-    from src.db import get_system_db
-    from src.repositories.profiles import ProfileRepository
-    from src.repositories.table_registry import TableRegistryRepository
+    from src.repositories import profile_repo, table_registry_repo
     from src.table_autodoc import generate_description
 
-    conn = get_system_db()
-    try:
-        reg = TableRegistryRepository(conn)
-        profiles = ProfileRepository(conn)
+    # Backend-aware repos (DuckDB or Postgres) — see CLAUDE.md dual-backend
+    # discipline. set_description() and the profile reads must hit the active
+    # backend, not a raw DuckDB connection.
+    reg = table_registry_repo()
+    profiles = profile_repo()
 
-        rows = reg.list_all()
-        if table:
-            rows = [r for r in rows if r.get("id") == table]
-            if not rows:
-                typer.echo(f"No registered table with id {table!r}.", err=True)
-                raise typer.Exit(1)
-
-        targets = [r for r in rows if not (r.get("description") or "").strip()]
-        if not targets:
-            typer.echo("All matching tables already have descriptions. Nothing to do.")
-            return
-        if limit:
-            targets = targets[:limit]
-
-        try:
-            extractor = _build_extractor()
-        except ValueError as e:
-            typer.echo(f"Error: {e}", err=True)
+    rows = reg.list_all()
+    if table:
+        rows = [r for r in rows if r.get("id") == table]
+        if not rows:
+            typer.echo(f"No registered table with id {table!r}.", err=True)
             raise typer.Exit(1)
 
-        described = 0
-        skipped = 0
-        for r in targets:
-            tid = r["id"]
-            profile = profiles.get(tid)
-            if not profile or not (profile.get("sample_rows") or profile.get("columns")):
-                typer.echo(
-                    f"  skip {tid}: no profile/sample data yet (sync + profile first)",
-                    err=True,
-                )
-                skipped += 1
-                continue
-            try:
-                desc = generate_description(
-                    extractor,
-                    r.get("name") or tid,
-                    profile.get("columns"),
-                    profile.get("sample_rows"),
-                    source=r.get("source_type"),
-                )
-            except LLMError as e:
-                typer.echo(f"  skip {tid}: LLM error: {e}", err=True)
-                skipped += 1
-                continue
-            if not desc:
-                typer.echo(f"  skip {tid}: model returned an empty description", err=True)
-                skipped += 1
-                continue
+    targets = [r for r in rows if not (r.get("description") or "").strip()]
+    if not targets:
+        typer.echo("All matching tables already have descriptions. Nothing to do.")
+        return
+    if limit:
+        targets = targets[:limit]
 
-            if dry_run:
-                typer.echo(f"\n[{tid}] (dry-run, not saved)\n  {desc}")
-            else:
-                reg.set_description(tid, desc)
-                typer.echo(f"  ✓ {tid}: {desc}")
-            described += 1
+    try:
+        extractor = _build_extractor()
+    except ValueError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
 
-        verb = "would describe" if dry_run else "described"
-        typer.echo(f"\n{verb} {described} table(s); skipped {skipped}.")
-    finally:
-        conn.close()
+    described = 0
+    skipped = 0
+    for r in targets:
+        tid = r["id"]
+        profile = profiles.get(tid)
+        if not profile or not (profile.get("sample_rows") or profile.get("columns")):
+            typer.echo(
+                f"  skip {tid}: no profile/sample data yet (sync + profile first)",
+                err=True,
+            )
+            skipped += 1
+            continue
+        try:
+            desc = generate_description(
+                extractor,
+                r.get("name") or tid,
+                profile.get("columns"),
+                profile.get("sample_rows"),
+                source=r.get("source_type"),
+            )
+        except LLMError as e:
+            typer.echo(f"  skip {tid}: LLM error: {e}", err=True)
+            skipped += 1
+            continue
+        if not desc:
+            typer.echo(f"  skip {tid}: model returned an empty description", err=True)
+            skipped += 1
+            continue
+
+        if dry_run:
+            typer.echo(f"\n[{tid}] (dry-run, not saved)\n  {desc}")
+        else:
+            reg.set_description(tid, desc)
+            typer.echo(f"  ✓ {tid}: {desc}")
+        described += 1
+
+    verb = "would describe" if dry_run else "described"
+    typer.echo(f"\n{verb} {described} table(s); skipped {skipped}.")

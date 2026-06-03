@@ -1,10 +1,9 @@
 """Postgres-backed column metadata repository.
 
-Mirrors ``src/repositories/column_metadata.py``. ``import_proposal`` is
-intentionally NOT ported here — that helper is a backend-agnostic I/O
-wrapper around ``save()`` and belongs in a shared file outside the
-repository class. Callers should call ``save()`` directly until the
-helper is moved.
+Mirrors ``src/repositories/column_metadata.py``. ``import_proposal`` — a
+backend-agnostic I/O wrapper around ``save()`` — is provided by the shared
+``ColumnMetadataImportMixin`` so DuckDB and PG share one implementation
+(see #499/#513 drift class).
 """
 from __future__ import annotations
 
@@ -14,8 +13,10 @@ from typing import Any, Dict, List, Optional
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
+from src.repositories._orchestration_mixins import ColumnMetadataImportMixin
 
-class ColumnMetadataPgRepository:
+
+class ColumnMetadataPgRepository(ColumnMetadataImportMixin):
     def __init__(self, engine: Engine):
         self._engine = engine
 

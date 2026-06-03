@@ -1,13 +1,14 @@
 """Repository for column metadata."""
 
-import json
 from datetime import datetime, timezone
 from typing import Any, Optional, List, Dict
 
 import duckdb
 
+from src.repositories._orchestration_mixins import ColumnMetadataImportMixin
 
-class ColumnMetadataRepository:
+
+class ColumnMetadataRepository(ColumnMetadataImportMixin):
     def __init__(self, conn: duckdb.DuckDBPyConnection):
         self.conn = conn
 
@@ -71,37 +72,5 @@ class ColumnMetadataRepository:
         )
         return True
 
-    def import_proposal(self, proposal_path: str) -> int:
-        """Import a proposal JSON file.
-
-        Format:
-            {
-                "tables": {
-                    "orders": {
-                        "columns": {
-                            "id": {"basetype": "STRING", "description": "...", "confidence": "high"}
-                        }
-                    }
-                }
-            }
-
-        Sets source="ai_enrichment". Returns count of columns imported.
-        """
-        with open(proposal_path, "r", encoding="utf-8") as f:
-            proposal = json.load(f)
-
-        count = 0
-        tables = proposal.get("tables", {})
-        for table_id, table_data in tables.items():
-            columns = table_data.get("columns", {})
-            for column_name, col_data in columns.items():
-                self.save(
-                    table_id=table_id,
-                    column_name=column_name,
-                    basetype=col_data.get("basetype"),
-                    description=col_data.get("description"),
-                    confidence=col_data.get("confidence", "high"),
-                    source="ai_enrichment",
-                )
-                count += 1
-        return count
+    # import_proposal() lives in ColumnMetadataImportMixin — shared with the
+    # PG repo so it can't drift (uses only self.save()).

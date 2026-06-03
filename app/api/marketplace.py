@@ -1930,10 +1930,9 @@ async def curated_install(
     ``marketplace_plugins``; otherwise 404. The RBAC guard already ensured
     the caller is allowed to install.
     """
-    exists = conn.execute(
-        "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    ).fetchone()
+    # Backend-aware: marketplace_plugins lives in Postgres on a PG-backed
+    # instance; a raw DuckDB read here would 404 every plugin that exists.
+    exists = marketplace_plugins_repo().get(marketplace_id, plugin_name)
     if not exists:
         raise HTTPException(status_code=404, detail="plugin_not_found")
     inserted = user_curated_subscriptions_repo().subscribe(
@@ -1962,12 +1961,10 @@ async def curated_uninstall(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     # v39: system plugins are mandatory for every user — refuse uninstall.
-    sys_row = conn.execute(
-        "SELECT is_system FROM marketplace_plugins "
-        "WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    ).fetchone()
-    if sys_row and bool(sys_row[0]):
+    # Backend-aware read (see curated_install) — raw DuckDB would miss the
+    # is_system flag on a Postgres-backed instance.
+    plugin = marketplace_plugins_repo().get(marketplace_id, plugin_name)
+    if plugin and bool(plugin.get("is_system")):
         raise HTTPException(
             status_code=409,
             detail="cannot_uninstall_system_plugin",
