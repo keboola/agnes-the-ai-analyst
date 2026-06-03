@@ -40,3 +40,22 @@ def test_get_accessible_tables_with_principal_returns_list_not_none(rbac_conn):
     from connectors.internal.access import INTERNAL_TABLES
     for t in INTERNAL_TABLES:
         assert t.registry_id in result
+
+
+def test_stack_resolver_with_session_principal(rbac_conn):
+    from app.services.stack_resolver import StackResolver
+    from app.resource_types import ResourceType
+    from app.auth.session_principal import SessionPrincipal
+    # Seed a data package "pkgA" with required columns
+    rbac_conn.execute(
+        "INSERT INTO data_packages(id, slug, name, created_by) VALUES "
+        "('pkgA', 'pkg-a', 'Pkg A', 'test')"
+    )
+    p = SessionPrincipal(
+        session_id="chat_1",
+        participant_user_ids=["ua", "ub"],
+        participant_emails=["a@example.com", "b@example.com"],
+        intersection={ResourceType.DATA_PACKAGE.value: frozenset({"pkgA"})},
+    )
+    entries = StackResolver(rbac_conn).stack(p, ResourceType.DATA_PACKAGE)
+    assert {e.id for e in entries} == {"pkgA"}

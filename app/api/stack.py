@@ -97,7 +97,7 @@ def _emit_event(
 @router.get("")
 async def list_stack(
     type: str,
-    user: dict = Depends(get_current_user),
+    user=Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Return the user's effective stack for the given resource type.
@@ -106,6 +106,9 @@ async def list_stack(
     always count as in_stack; available entries only if the user has a
     subscription row.
     """
+    from app.auth.session_principal import SessionPrincipal
+    if isinstance(user, SessionPrincipal):
+        raise HTTPException(403, "co_session cannot manage stack")
     rt = _validate_type(type)
     resolver = StackResolver(conn)
     items = [

@@ -140,14 +140,27 @@ class StackResolver:
     # -- Public API --------------------------------------------------------
 
     def stack(
-        self, user_id: str, resource_type: ResourceType
+        self, user_id_or_principal, resource_type: ResourceType
     ) -> List[ResourceEntry]:
         """The user's effective stack — required ∪ (subscribed ∩ available)
         for regular users; admin (god-mode) gets ALL their subscriptions
         regardless of group grants, because admins legitimately POST
         /api/stack/subscribe without first granting themselves a group.
         Filtering admin's subscriptions through the available-grant join
-        was the "Add to stack worked but My Stack stays empty" bug."""
+        was the "Add to stack worked but My Stack stays empty" bug.
+
+        Also accepts a ``SessionPrincipal``: returns only the resources whose
+        ids are in the co-session's intersection (no admin path, no subscription
+        lookup). Every returned entry is marked ``in_stack=True``.
+        """
+        from app.auth.session_principal import SessionPrincipal
+        if isinstance(user_id_or_principal, SessionPrincipal):
+            ids = user_id_or_principal.intersection.get(resource_type.value, frozenset())
+            entries = self._fetch_entries(resource_type, set(ids), set(ids))
+            for e in entries:
+                e.in_stack = True
+            return entries
+        user_id = user_id_or_principal
         groups = self._user_group_ids(user_id)
         required_ids, available_ids = self._grants(groups, resource_type)
         raw_subscribed = self._subscribed_ids(user_id, resource_type)
