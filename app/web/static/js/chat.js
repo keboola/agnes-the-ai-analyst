@@ -5,6 +5,12 @@ let ws = null;
 let currentChatId = null;
 let inFlightToolCalls = new Map();
 
+// §5.3 Co-presence: the current user's email for per-message sender attribution.
+// Sourced from <body data-user-email="..."> set by the server-rendered template.
+// Empty string for unauthenticated / anonymous views — co-presence degrades
+// gracefully (no attribution rendered) in that case.
+const currentUserEmail = document.body.dataset.userEmail || "";
+
 // --- Cross-surface deep link (/chat?session=<id>) ------------------------
 // chat.html's <body data-initial-session="<id>"> hook carries an optional
 // session id from the ?session= query param. We open it ONCE on boot,
@@ -497,6 +503,12 @@ function handleFrame(frame) {
     case "done":
       $("cancel-btn").hidden = true;
       break;
+    case "session_participants":
+      // §5.3 Co-presence: full re-render of the participant roster.
+      // Co fields are optional — an older server that never sends this frame
+      // degrades gracefully (renderParticipants with empty list is a no-op).
+      renderParticipants(frame.participants || []);
+      break;
   }
 }
 
@@ -687,6 +699,17 @@ function renderMessage(m) {
   body.innerHTML = marked.parse(m.content || "");
   enhanceCodeBlocks(body);
   enhanceTables(body);
+
+  // §5.3 Co-presence: per-message sender attribution for foreign senders.
+  // sender_email is an optional co-drive field — single-user sessions never
+  // populate it, so this is a no-op for ordinary sessions.
+  if (m.sender_email && m.sender_email !== currentUserEmail) {
+    const who = document.createElement("div");
+    who.className = "msg-sender-attr";
+    who.textContent = m.sender_email;
+    who.style.cssText = "font-size:var(--ds-text-xs,0.75rem);color:var(--ds-text-secondary);margin-bottom:2px;";
+    bubble.insertBefore(who, body);
+  }
 
   if (m.tool_calls && m.tool_calls.length) {
     for (const tc of m.tool_calls) {
@@ -1704,6 +1727,80 @@ function closePalette() {
     el.addEventListener("click", closePalette);
   });
 })();
+
+// ---------------------------------------------------------------------------
+// §5.3 Co-presence surface — pill, avatar cluster, invite/fork affordances
+// ---------------------------------------------------------------------------
+
+/** Full re-render of the co-presence host element.
+ *
+ *  Self-healing: called on every ``session_participants`` WebSocket frame so
+ *  the roster is always current. Co fields are optional — if the server never
+ *  sends this frame the host stays empty and the single-user UI is unchanged.
+ */
+function renderParticipants(participants) {
+  const host = $("co-presence");
+  if (!host) return;
+  host.innerHTML = "";
+  if (!participants.length) return;
+  renderCoPresence(host, participants);
+}
+
+/** Render the co-drive pill, avatar cluster, and invite/fork button into host. */
+function renderCoPresence(host, participants) {
+  // Co-drive pill — styled via inline var(--ds-*) tokens so no raw hex is
+  // introduced. chat.css is the canonical place for layout rules.
+  const pill = document.createElement("span");
+  pill.className = "co-drive-pill";
+  pill.textContent = "Co-drive";
+  pill.style.cssText = (
+    "display:inline-flex;align-items:center;gap:4px;" +
+    "padding:2px 8px;border-radius:var(--ds-radius-sm,4px);" +
+    "background:var(--ds-surface-accent,var(--ds-surface-dim));" +
+    "color:var(--ds-text-primary);font-size:var(--ds-text-xs,0.75rem);"
+  );
+  host.appendChild(pill);
+
+  // Participant avatar cluster — one initial per participant.
+  const cluster = document.createElement("div");
+  cluster.className = "participant-avatars";
+  cluster.style.cssText = "display:inline-flex;gap:4px;margin-left:6px;";
+  for (const p of participants) {
+    const a = document.createElement("span");
+    a.className = "participant-avatar";
+    a.title = p.email || "";
+    a.textContent = (p.email || "?").charAt(0).toUpperCase();
+    a.style.cssText = (
+      "display:inline-flex;align-items:center;justify-content:center;" +
+      "width:24px;height:24px;border-radius:50%;" +
+      "background:var(--ds-surface-accent,var(--ds-border));" +
+      "color:var(--ds-text-primary);font-size:var(--ds-text-xs,0.75rem);" +
+      "border:1px solid var(--ds-border);"
+    );
+    cluster.appendChild(a);
+  }
+  host.appendChild(cluster);
+
+  // Invite (owner) or Fork (collaborator) action button.
+  const isOwner = participants.some(
+    (p) => p.email === currentUserEmail && p.role === "owner",
+  );
+  const btn = document.createElement("button");
+  btn.className = "co-presence-action";
+  btn.style.cssText = (
+    "margin-left:6px;padding:2px 8px;border-radius:var(--ds-radius-sm,4px);" +
+    "border:1px solid var(--ds-border);background:var(--ds-surface);" +
+    "color:var(--ds-text-primary);cursor:pointer;font-size:var(--ds-text-xs,0.75rem);"
+  );
+  if (isOwner) {
+    btn.textContent = "Invite";
+    btn.dataset.action = "invite";
+  } else {
+    btn.textContent = "Fork";
+    btn.dataset.action = "fork";
+  }
+  host.appendChild(btn);
+}
 
 (async () => {
   renderCapabilities();
