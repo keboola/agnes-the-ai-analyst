@@ -195,6 +195,17 @@ class TableRegistryPgRepository:
                 {"id": table_id},
             )
 
+    def set_description(self, table_id: str, description: str) -> None:
+        """Set only the ``description`` column, leaving every other field
+        untouched (unlike ``register()``'s full upsert). Used by the LLM
+        auto-doc tool (#399) to backfill descriptions without disturbing
+        sync-strategy / partition / docs columns."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("UPDATE table_registry SET description = :d WHERE id = :id"),
+                {"d": description, "id": table_id},
+            )
+
     def get(self, table_id: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
             row = conn.execute(

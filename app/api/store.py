@@ -531,17 +531,18 @@ def _to_iso(value: Any) -> Optional[str]:
     return str(value)
 
 
-def _resolve_owner_display(
-    conn: duckdb.DuckDBPyConnection, user_id: str
-) -> Optional[str]:
-    row = conn.execute(
-        "SELECT name, email FROM users WHERE id = ?", [user_id]
-    ).fetchone()
+def _resolve_owner_display(user_id: str) -> Optional[str]:
+    # Backend-aware: owner rows live in the active backend (Postgres on a PG
+    # instance), so resolve through the factory rather than a raw DuckDB conn.
+    from src.repositories import users_repo
+
+    row = users_repo().get_by_id(user_id)
     if not row:
         return None
-    name, email = row
+    name = row.get("name")
     if name and str(name).strip():
         return str(name).strip()
+    email = row.get("email")
     return str(email) if email else None
 
 
@@ -565,7 +566,7 @@ def _entity_to_response(
         version=entity["version"],
         owner_user_id=entity["owner_user_id"],
         owner_username=entity["owner_username"],
-        owner_display_name=_resolve_owner_display(conn, entity["owner_user_id"]),
+        owner_display_name=_resolve_owner_display(entity["owner_user_id"]),
         install_count=int(entity.get("install_count") or 0),
         file_size=int(entity.get("file_size") or 0),
         photo_url=photo_url,
@@ -1114,35 +1115,37 @@ async def list_owners(
     the public dropdown until at least one is approved). Admin sees
     every owner regardless of state.
     """
-    if is_user_admin(user["id"], conn):
-        where_sql = ""
-        params: list = []
-    else:
-        # 'approved' is the public set. Owners of only-archived /
-        # only-pending / only-blocked entries don't appear in the
-        # public dropdown — they have nothing to filter to.
-        where_sql = "WHERE se.visibility_status = 'approved'"
-        params = []
-    rows = conn.execute(
-        f"""SELECT
-               se.owner_user_id,
-               COALESCE(NULLIF(TRIM(u.name), ''), u.email, se.owner_username) AS display_name,
-               COUNT(*) AS entity_count
-           FROM store_entities se
-           LEFT JOIN users u ON u.id = se.owner_user_id
-           {where_sql}
-           GROUP BY se.owner_user_id, display_name
-           ORDER BY display_name""",
-        params,
-    ).fetchall()
-    return [
-        OwnerOption(
-            user_id=r[0],
-            display_name=str(r[1]),
-            entity_count=int(r[2]),
-        )
-        for r in rows
-    ]
+    # Backend-aware: aggregate owners from the factory-backed entity list +
+    # resolve display names through users_repo(), instead of a raw DuckDB
+    # JOIN (which was empty on a Postgres instance).
+    from src.repositories import store_entities_repo, users_repo
+
+    visibility = None if is_user_admin(user["id"]) else ["approved"]
+    items, _ = store_entities_repo().list(visibility_status=visibility, limit=100_000)
+
+    counts: Dict[str, int] = {}
+    fallback_username: Dict[str, str] = {}
+    for e in items:
+        oid = e.get("owner_user_id")
+        if not oid:
+            continue
+        counts[oid] = counts.get(oid, 0) + 1
+        fallback_username.setdefault(oid, e.get("owner_username") or "")
+
+    owners: List[OwnerOption] = []
+    for oid, cnt in counts.items():
+        u = users_repo().get_by_id(oid)
+        name = (u or {}).get("name")
+        if name and str(name).strip():
+            display = str(name).strip()
+        elif u and u.get("email"):
+            display = str(u["email"])
+        else:
+            display = fallback_username.get(oid) or oid
+        owners.append(OwnerOption(user_id=oid, display_name=display, entity_count=cnt))
+
+    owners.sort(key=lambda o: o.display_name)
+    return owners
 
 
 @router.get("/entities", response_model=StoreEntityListResponse)

@@ -39,6 +39,22 @@ class MarketplacePluginsPgRepository:
             ).mappings().all()
         return [self._normalize_row(dict(r)) for r in rows]
 
+    def get(self, marketplace_id: str, name: str) -> Optional[Dict[str, Any]]:
+        """Fetch a single plugin row by (marketplace_id, name), or None.
+
+        Parity with the DuckDB repo — backs the curated install/uninstall
+        existence + is_system checks through the factory.
+        """
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    "SELECT * FROM marketplace_plugins "
+                    "WHERE marketplace_id = :m AND name = :n"
+                ),
+                {"m": marketplace_id, "n": name},
+            ).mappings().first()
+        return self._normalize_row(dict(row)) if row else None
+
     def list_all(self) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
             rows = conn.execute(

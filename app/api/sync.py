@@ -30,6 +30,7 @@ from src.repositories import (
     sync_settings_repo,
     sync_state_repo,
     table_registry_repo,
+    usage_repo,
 )
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
@@ -1073,8 +1074,7 @@ async def sync_manifest(
     # v49 Section 9.2 — emit a server-side ``sync.pull_started`` event so
     # /admin/telemetry can count distinct pulls per user per day. Best-effort.
     try:
-        from src.repositories.usage import UsageRepository
-        UsageRepository(conn).emit_server_event(
+        usage_repo().emit_server_event(
             event_type="sync.pull_started",
             user_id=user["id"],
             username=user.get("email") or user["id"],
@@ -1136,8 +1136,7 @@ async def pull_confirm(
             props[f"{section}_removed"] = section_payload.removed
 
     try:
-        from src.repositories.usage import UsageRepository
-        UsageRepository(conn).emit_server_event(
+        usage_repo().emit_server_event(
             event_type="sync.pull_completed",
             user_id=user["id"],
             username=user.get("email") or user["id"],

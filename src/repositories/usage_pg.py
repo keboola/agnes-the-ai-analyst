@@ -7,10 +7,14 @@ Mirrors ``src/repositories/usage.py``. ``INSERT OR IGNORE`` becomes
 from __future__ import annotations
 
 import json
-from typing import Any
+import uuid
+from datetime import date, datetime, timezone
+from typing import Any, Dict, List, Optional
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
+
+from src.repositories.usage import _slow_actions_from_raw
 
 
 _EVENT_COLS = [
@@ -22,9 +26,235 @@ _EVENT_COLS = [
 ]
 
 
+_SESSION_SORT_KEYS = {
+    "started_at": "started_at", "ended_at": "ended_at",
+    "tool_calls": "tool_calls", "tool_errors": "tool_errors",
+    "active_seconds": "active_seconds", "username": "username",
+    "primary_model": "primary_model",
+}
+
+_SESSION_COLS = [
+    "session_file", "session_id", "username",
+    "started_at", "ended_at", "active_seconds", "wall_seconds",
+    "user_messages", "assistant_messages",
+    "tool_calls", "tool_errors",
+    "skill_invocations", "subagent_dispatches",
+    "mcp_calls", "slash_commands",
+    "distinct_tools", "distinct_skills", "primary_model",
+]
+
+
 class UsagePgRepository:
     def __init__(self, engine: Engine):
         self._engine = engine
+
+    # ------------------------------------------------------------------
+    # telemetry aggregate reads (Postgres).  Mirrors UsageRepository.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _events_where(filters: dict) -> tuple[str, dict]:
+        where = ["occurred_at >= :since"]
+        params: dict = {"since": filters["since"]}
+        if filters.get("username"):
+            where.append("username = :username"); params["username"] = filters["username"]
+        if filters.get("tool_name"):
+            where.append("tool_name = :tool_name"); params["tool_name"] = filters["tool_name"]
+        if filters.get("source"):
+            where.append("source = :source"); params["source"] = filters["source"]
+        if filters.get("event_type"):
+            where.append("event_type = :event_type"); params["event_type"] = filters["event_type"]
+        if filters.get("only_errors"):
+            where.append("is_error = TRUE")
+        if filters.get("q"):
+            where.append(
+                "(tool_name LIKE :q OR skill_name LIKE :q OR subagent_type LIKE :q "
+                "OR command_name LIKE :q)"
+            )
+            params["q"] = f"%{filters['q']}%"
+        return " AND ".join(where), params
+
+    def summary_top_tools(self, cutoff: datetime, limit: int = 10) -> List[dict]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """SELECT tool_name, source, COUNT(*) AS n
+                       FROM usage_events
+                       WHERE occurred_at >= :cutoff AND tool_name IS NOT NULL
+                       GROUP BY tool_name, source ORDER BY n DESC LIMIT :lim"""
+                ),
+                {"cutoff": cutoff, "lim": limit},
+            ).fetchall()
+        return [
+            {"tool_name": r[0], "source": r[1], "invocations": int(r[2])}
+            for r in rows
+        ]
+
+    def summary_top_users(self, cutoff: datetime, limit: int = 10) -> List[dict]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """SELECT username, COUNT(*) AS n FROM usage_events
+                       WHERE occurred_at >= :cutoff
+                       GROUP BY username ORDER BY n DESC LIMIT :lim"""
+                ),
+                {"cutoff": cutoff, "lim": limit},
+            ).fetchall()
+        return [{"username": r[0], "tool_calls": int(r[1])} for r in rows]
+
+    def summary_error_rate(self, cutoff: datetime, limit: int = 10) -> List[dict]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """SELECT tool_name, COUNT(*) AS n,
+                              SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS err
+                       FROM usage_events
+                       WHERE occurred_at >= :cutoff AND tool_name IS NOT NULL
+                       GROUP BY tool_name HAVING COUNT(*) > 0
+                       ORDER BY n DESC LIMIT :lim"""
+                ),
+                {"cutoff": cutoff, "lim": limit},
+            ).fetchall()
+        return [
+            {"tool_name": r[0], "invocations": int(r[1]), "errors": int(r[2]),
+             "rate": float(r[2]) / float(r[1]) if r[1] else 0.0}
+            for r in rows
+        ]
+
+    def summary_dau(self, start_date: date) -> Dict[date, int]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """SELECT CAST(occurred_at AS DATE) AS day,
+                              COUNT(DISTINCT username) AS n
+                       FROM usage_events
+                       WHERE CAST(occurred_at AS DATE) >= :start
+                       GROUP BY day ORDER BY day"""
+                ),
+                {"start": start_date},
+            ).fetchall()
+        return {r[0]: int(r[1]) for r in rows}
+
+    def summary_slow_actions(self, cutoff: datetime, limit: int = 10) -> List[dict]:
+        # PG has no approx_quantile; pull raw durations and reuse the shared
+        # Python percentile helper so DuckDB and PG return identical shapes.
+        with self._engine.connect() as conn:
+            raw = conn.execute(
+                sa.text(
+                    """SELECT action, duration_ms FROM audit_log
+                       WHERE timestamp >= :cutoff
+                         AND duration_ms IS NOT NULL AND duration_ms > 0"""
+                ),
+                {"cutoff": cutoff},
+            ).fetchall()
+        return _slow_actions_from_raw([(r[0], r[1]) for r in raw], limit)
+
+    def telemetry_facets(self, since: datetime) -> dict:
+        def _facet(col: str, lim: int) -> list:
+            with self._engine.connect() as conn:
+                rows = conn.execute(
+                    sa.text(
+                        f"SELECT {col}, COUNT(*) AS n FROM usage_events "
+                        f"WHERE occurred_at >= :since AND {col} IS NOT NULL "
+                        f"GROUP BY {col} ORDER BY n DESC LIMIT :lim"
+                    ),
+                    {"since": since, "lim": lim},
+                ).fetchall()
+            return [{"value": r[0], "count": r[1]} for r in rows]
+
+        return {
+            "users":       _facet("username", 50),
+            "tools":       _facet("tool_name", 50),
+            "sources":     _facet("source", 20),
+            "event_types": _facet("event_type", 20),
+        }
+
+    def telemetry_kpis(self, filters: dict) -> dict:
+        where_sql, params = self._events_where(filters)
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    f"""SELECT COUNT(*),
+                              COUNT(DISTINCT username),
+                              COUNT(DISTINCT tool_name),
+                              SUM(CASE WHEN is_error THEN 1 ELSE 0 END)
+                       FROM usage_events WHERE {where_sql}"""
+                ),
+                params,
+            ).fetchone()
+        total, users, tools, errors = (int(x or 0) for x in row)
+        return {"events_total": total, "distinct_users": users,
+                "distinct_tools": tools, "errors": errors}
+
+    # ------------------------------------------------------------------
+    # session summary aggregate reads (Postgres).
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _sessions_where(filters: dict) -> tuple[str, dict]:
+        where = ["started_at >= :since"]
+        params: dict = {"since": filters["since"]}
+        if filters.get("username"):
+            where.append("username = :username"); params["username"] = filters["username"]
+        if filters.get("model"):
+            where.append("primary_model = :model"); params["model"] = filters["model"]
+        if filters.get("only_errors"):
+            where.append("tool_errors > 0")
+        if filters.get("q"):
+            where.append("(session_id LIKE :q OR session_file LIKE :q)")
+            params["q"] = f"%{filters['q']}%"
+        return " AND ".join(where), params
+
+    def sessions_count(self, filters: dict) -> int:
+        where_sql, params = self._sessions_where(filters)
+        with self._engine.connect() as conn:
+            v = conn.execute(
+                sa.text(f"SELECT COUNT(*) FROM usage_session_summary WHERE {where_sql}"),
+                params,
+            ).scalar()
+        return int(v or 0)
+
+    def sessions_list(self, filters: dict, *, sort_col: str, direction: str,
+                      limit: int, offset: int) -> List[dict]:
+        where_sql, params = self._sessions_where(filters)
+        col = _SESSION_SORT_KEYS.get(sort_col, "started_at")
+        direction = "ASC" if direction.upper() == "ASC" else "DESC"
+        params = dict(params, lim=limit, off=offset)
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    f"""SELECT {','.join(_SESSION_COLS)}
+                       FROM usage_session_summary WHERE {where_sql}
+                       ORDER BY {col} {direction}
+                       LIMIT :lim OFFSET :off"""
+                ),
+                params,
+            ).fetchall()
+        return [dict(zip(_SESSION_COLS, r)) for r in rows]
+
+    def sessions_kpis(self, filters: dict) -> dict:
+        where_sql, params = self._sessions_where(filters)
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    f"""SELECT COUNT(*),
+                              COUNT(DISTINCT username),
+                              SUM(CASE WHEN tool_errors > 0 THEN 1 ELSE 0 END),
+                              SUM(tool_calls),
+                              SUM(tool_errors)
+                       FROM usage_session_summary WHERE {where_sql}"""
+                ),
+                params,
+            ).fetchone()
+        sessions_total, users, error_sessions, tool_calls_total, tool_errors_total = (
+            int(x or 0) for x in row
+        )
+        return {
+            "sessions_total": sessions_total, "distinct_users": users,
+            "error_sessions": error_sessions,
+            "tool_calls_total": tool_calls_total,
+            "tool_errors_total": tool_errors_total,
+        }
 
     def upsert_events(self, rows: list[dict], *, processor_version: int) -> int:
         if not rows:
@@ -46,6 +276,48 @@ class UsagePgRepository:
                 params["processor_version"] = processor_version
                 conn.execute(sa.text(sql), params)
         return len(rows)
+
+    def emit_server_event(
+        self,
+        *,
+        event_type: str,
+        user_id: Optional[str],
+        username: str = "",
+        props: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Insert one synthetic usage_events row for a server-side product event.
+
+        Mirrors ``UsageRepository.emit_server_event`` (DuckDB). ``props`` is
+        serialized into the ``friction_tags`` JSONB column via
+        ``CAST(:friction_tags AS JSONB)`` (the project's PG-JSONB write
+        convention); ``session_id`` / ``session_file`` are server-synthetic so
+        the NOT NULL constraints stay satisfied.
+        """
+        event_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    """INSERT INTO usage_events
+                       (id, session_id, session_file, username, event_type,
+                        is_error, source, occurred_at, processor_version,
+                        friction_tags, user_id)
+                       VALUES (:id, :session_id, :session_file, :username, :event_type,
+                               FALSE, 'server', :occurred_at, 1,
+                               CAST(:friction_tags AS JSONB), :user_id)"""
+                ),
+                {
+                    "id": event_id,
+                    "session_id": f"server-{event_id[:8]}",
+                    "session_file": f"server/{event_type}.jsonl",
+                    "username": username or (user_id or "anonymous"),
+                    "event_type": event_type,
+                    "occurred_at": now,
+                    "friction_tags": json.dumps(props) if props else None,
+                    "user_id": user_id,
+                },
+            )
+        return event_id
 
     def upsert_summary(self, summary: dict, *, processor_version: int) -> None:
         with self._engine.begin() as conn:
