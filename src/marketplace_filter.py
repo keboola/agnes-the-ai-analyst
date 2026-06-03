@@ -100,7 +100,10 @@ def resolve_manifest_name(plugin_dir: Path, fallback: str) -> str:
 
 
 def resolve_allowed_plugins(
-    conn: duckdb.DuckDBPyConnection, user: dict
+    conn: duckdb.DuckDBPyConnection,
+    user: dict,
+    *,
+    admin_bypass: bool = True,
 ) -> List[dict]:
     """Return the distinct, prefixed plugin list this user is allowed to install.
 
@@ -129,17 +132,60 @@ def resolve_allowed_plugins(
     Ordering is deterministic: by marketplace registration time, then plugin
     name — so ETag / git commit hash stay stable as long as the underlying
     content is unchanged.
+
+    ``admin_bypass`` (default True) matches the contract of
+    ``app.auth.access.can_access``: when the caller is in the Admin group,
+    EVERY ``marketplace_plugins`` row is returned regardless of explicit
+    ``resource_grants``. Without this, admin god-mode at the install
+    endpoint (``require_resource_access`` → ``can_access``) is asymmetric
+    with the served set / My-Stack composer — admin can subscribe via
+    god-mode but the eligibility filter drops the subscription, leaving
+    the plugin invisible everywhere except the raw subscription table.
+    Pass ``admin_bypass=False`` only when the caller specifically wants
+    the "explicit grant graph" semantic (no god-mode), e.g. unit tests
+    pinning the pre-bypass behavior.
     """
     user_id = user.get("id")
     root = get_marketplaces_dir()
 
-    # Distinct (marketplace_id, plugin_name) across all of the user's
-    # groups. If two groups grant the same plugin, it still appears
-    # once. Admin is treated as a regular group — admins get only the
-    # plugins their groups have been granted.
     group_ids = _user_group_ids(user_id, conn) if user_id else set()
     if not group_ids:
         return []
+
+    # Admin god-mode parity. ``app.auth.access.can_access`` returns True
+    # for any user in the Admin group regardless of explicit
+    # ``resource_grants``. Match that contract here so the install
+    # endpoint + the aggregate + the My-Stack views all agree on what
+    # admin can see. Short-circuit BEFORE the strict SQL so we save the
+    # JOIN cost on the hot path.
+    if admin_bypass and user_id:
+        from app.auth.access import is_user_admin
+
+        if is_user_admin(user_id, conn):
+            rows = conn.execute(
+                "SELECT mp.marketplace_id, mp.name, mp.version, mp.raw "
+                "FROM marketplace_plugins mp "
+                "JOIN marketplace_registry mr ON mr.id = mp.marketplace_id "
+                "ORDER BY mr.registered_at, mp.name"
+            ).fetchall()
+            return [
+                {
+                    "marketplace_id": marketplace_id,
+                    "marketplace_slug": marketplace_id,
+                    "original_name": name,
+                    "prefixed_name": _prefixed_name(marketplace_id, name),
+                    "manifest_name": resolve_manifest_name(
+                        root / marketplace_id / "plugins" / name, fallback=name,
+                    ),
+                    "version": version,
+                    "raw": _resolve_raw(raw),
+                    "plugin_dir": root / marketplace_id / "plugins" / name,
+                }
+                for marketplace_id, name, version, raw in rows
+            ]
+
+    # Distinct (marketplace_id, plugin_name) across all of the user's
+    # groups. If two groups grant the same plugin, it still appears once.
     placeholders = ",".join(["?"] * len(group_ids))
     sql = (
         "SELECT DISTINCT mp.marketplace_id, mp.name, mp.version, mp.raw "
@@ -284,49 +330,12 @@ def resolve_user_marketplace(
     if not user_id:
         return []
 
+    # admin_bypass=True (default) widens eligibility to ALL
+    # marketplace_plugins for admins, matching the install endpoint's
+    # ``can_access`` god-mode semantic. Without it, admin subscriptions
+    # made via the god-mode install path get filtered out here and the
+    # served set ships empty.
     eligible = resolve_allowed_plugins(conn, user)
-
-    # Admin god-mode parity. ``app.auth.access.can_access`` short-circuits
-    # to True for users in the Admin group, which means the install
-    # endpoint (``require_resource_access`` → ``can_access``) accepts an
-    # admin's subscribe call against ANY ``marketplace_plugins`` row —
-    # no explicit ``resource_grant`` required. Without the matching
-    # bypass here the admin's subscription rows would land in
-    # ``user_curated_subscriptions`` but never survive the
-    # ``(rbac ∩ subscriptions)`` intersection below, so the served
-    # ``/marketplace.git/`` clone would be empty for the very admin who
-    # installed the plugin. Match the install-side semantic: admins
-    # bypass the eligibility filter while non-admins still need
-    # explicit grants. ``resolve_allowed_plugins`` keeps its strict
-    # semantic — it is the answer to "which plugins is this user
-    # *eligible* to install", not "which plugins should we ship to this
-    # user's stack", and the existing test pin still holds.
-    from app.auth.access import is_user_admin
-
-    if is_user_admin(user_id, conn):
-        root = get_marketplaces_dir()
-        rows = conn.execute(
-            "SELECT mp.marketplace_id, mp.name, mp.version, mp.raw "
-            "FROM marketplace_plugins mp "
-            "JOIN marketplace_registry mr ON mr.id = mp.marketplace_id "
-            "ORDER BY mr.registered_at, mp.name"
-        ).fetchall()
-        eligible = []
-        for marketplace_id, name, version, raw in rows:
-            slug = marketplace_id
-            plugin_dir = root / slug / "plugins" / name
-            eligible.append(
-                {
-                    "marketplace_id": marketplace_id,
-                    "marketplace_slug": slug,
-                    "original_name": name,
-                    "prefixed_name": _prefixed_name(slug, name),
-                    "manifest_name": resolve_manifest_name(plugin_dir, fallback=name),
-                    "version": version,
-                    "raw": _resolve_raw(raw),
-                    "plugin_dir": plugin_dir,
-                }
-            )
 
     # Model B (v28+): RBAC grant is only eligibility — the user must explicitly
     # subscribe via /marketplace for a curated plugin to enter their served set.
