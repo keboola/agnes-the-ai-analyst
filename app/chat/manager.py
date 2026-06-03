@@ -183,7 +183,8 @@ class ChatManager:
                 continue
             # Count the session against both the owner and every live participant
             # in co-sessions, so the concurrency cap applies to all co-drivers.
-            if s.user_email == user_email or user_email in s.participant_emails:
+            co_emails = getattr(s, "participant_emails", [])
+            if s.user_email == user_email or user_email in co_emails:
                 n += 1
         return n
 
