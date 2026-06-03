@@ -116,6 +116,35 @@ def test_delete_clears_vault(seeded_app):
         conn.close()
 
 
+def test_encrypt_secret_blocked_without_key_in_prod(monkeypatch):
+    import app.secrets_vault as v
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+    v._reset_ephemeral_key_for_tests()
+    assert v.vault_key_configured() is False
+    with pytest.raises(v.VaultKeyNotConfiguredError):
+        v.encrypt_secret("s3cr3t")
+
+
+def test_encrypt_secret_allowed_in_local_dev_without_key(monkeypatch):
+    import app.secrets_vault as v
+    monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_DEV_MODE", "1")
+    v._reset_ephemeral_key_for_tests()
+    token = v.encrypt_secret("s3cr3t")           # ephemeral OK in local dev
+    assert v.decrypt_secret(token) == "s3cr3t"
+
+
+def test_encrypt_secret_allowed_with_key(monkeypatch):
+    import app.secrets_vault as v
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+    monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+    v._reset_ephemeral_key_for_tests()
+    assert v.vault_key_configured() is True
+    assert v.decrypt_secret(v.encrypt_secret("s3cr3t")) == "s3cr3t"
+
+
 def test_client_lookup_uses_vault_over_env(seeded_app, monkeypatch):
     """connectors/mcp/client._lookup_secret_for_source should prefer the
     vault row over the env-var named in auth_secret_env."""
