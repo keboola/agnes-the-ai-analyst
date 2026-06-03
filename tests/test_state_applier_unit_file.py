@@ -217,6 +217,38 @@ def test_dockerfile_ships_every_startup_installed_ops_unit():
         )
 
 
+def test_startup_script_selects_compose_overlay_by_backend():
+    """Regression (bug #3): the startup-script must pick the docker-compose
+    overlay set from the persisted ``instance.yaml`` backend, NOT bake the
+    Postgres side-car overlay into the ``.env`` ``COMPOSE_FILE`` line
+    unconditionally.
+
+    Caught in the wild: on a `backend: cloud` VM, a reboot re-engaged the
+    side-car overlay and ran the one-shot ``migrate`` service against the
+    side-car Postgres, which failed (`failed to resolve host 'postgres'`) and
+    blocked ``app``/``scheduler`` startup via ``depends_on``. The startup-script
+    must mirror agnes-state-applier.sh: side-car overlay only for
+    ``backend=side_car``; duckdb and cloud run the baseline."""
+    from pathlib import Path
+
+    tpl = Path("infra/modules/customer-instance/startup-script.sh.tpl").read_text()
+    assert "COMPOSE_FILE=$COMPOSE_FILE_VALUE" in tpl, (
+        "startup-script must write COMPOSE_FILE from the computed per-backend "
+        "value, not a hardcoded overlay list"
+    )
+    assert "PERSISTED_BACKEND" in tpl and '= "side_car"' in tpl, (
+        "startup-script must read the persisted backend and gate the side-car "
+        "overlay on backend=side_car"
+    )
+    assert (
+        "COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml"
+        not in tpl
+    ), (
+        "the Postgres side-car overlay must not be baked into the COMPOSE_FILE "
+        ".env line unconditionally — it belongs only in the side_car branch"
+    )
+
+
 def test_compose_postgres_migrate_services_carry_prebuilt_image():
     """Regression: the ``migrate`` and ``data-migrate`` services in the
     postgres overlay must declare an ``image:`` (the pulled GHCR image), not
