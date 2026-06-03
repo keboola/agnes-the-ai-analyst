@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Coroutine, Optional
 
 from services.slack_bot.binding import issue_verification_code, lookup_user_email
 from services.slack_bot.sender import send_thread_reply
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
-def _schedule(coro) -> asyncio.Task:
+def _schedule(coro: "Coroutine[Any, Any, Any]") -> asyncio.Task:
     """Schedule a coroutine on the running loop, retaining a strong ref.
 
     Used at every transport's dispatch call site (HTTP endpoint + Socket
@@ -31,7 +31,7 @@ def _schedule(coro) -> asyncio.Task:
 
 
 async def _run_logged(
-    coro,
+    coro: "Coroutine[Any, Any, Any]",
     *,
     on_failure: Optional[Callable[[BaseException], Awaitable[None]]] = None,
 ) -> None:
@@ -127,7 +127,7 @@ async def _handle_dm(app, event: dict) -> None:
     # the user actually sees the answer in Slack.
     if not _is_attached(mgr, session.id):
         sink = SlackSinkBridge(channel=channel, thread_ts=thread_ts)
-        asyncio.create_task(mgr.attach(session.id, sink))
+        _schedule(mgr.attach(session.id, sink))
         # Give attach() a beat to set up the pump and emit `ready` before
         # we feed the user message into the runner stdin.
         await asyncio.sleep(0.1)
