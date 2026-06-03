@@ -169,6 +169,33 @@ class StoreSubmissionsPgRepository:
             row = conn.execute(sa.text(sql), params).first()
         return row is not None
 
+    def set_inline_result(
+        self,
+        id: str,
+        *,
+        inline_checks: Optional[Dict[str, Any]],
+        status: str,
+    ) -> None:
+        """Parity with the DuckDB repo — admin rescan writeback (replace
+        inline_checks, clear llm_findings, set status), unconditional."""
+        if status not in VALID_STATUSES:
+            raise ValueError(f"invalid submission status: {status!r}")
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "UPDATE store_submissions "
+                    "   SET inline_checks = CAST(:ic AS JSONB), llm_findings = NULL, "
+                    "       status = :status, updated_at = :now "
+                    " WHERE id = :id"
+                ),
+                {
+                    "ic": json.dumps(inline_checks) if inline_checks is not None else None,
+                    "status": status,
+                    "now": datetime.now(timezone.utc),
+                    "id": id,
+                },
+            )
+
     def set_override(
         self,
         id: str,

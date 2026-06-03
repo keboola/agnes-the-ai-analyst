@@ -897,11 +897,10 @@ async def add_mcp_tool_grant(
     group_id = (payload.group_id or "").strip()
     if not group_id:
         raise HTTPException(status_code=400, detail="group_id is required")
-    # Validate the group exists so we don't dangle FK-less rows.
-    row = conn.execute(
-        "SELECT id FROM user_groups WHERE id = ?", [group_id]
-    ).fetchone()
-    if not row:
+    # Validate the group exists so we don't dangle FK-less rows. Backend-aware:
+    # user_groups lives in the active backend (Postgres on a PG instance).
+    from src.repositories import user_groups_repo
+    if not user_groups_repo().get(group_id):
         raise HTTPException(status_code=404, detail="user_group_not_found")
     try:
         repo.add_grant(tool_id, group_id)

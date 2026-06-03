@@ -233,6 +233,36 @@ class StoreSubmissionsRepository:
             rowcount = 0
         return rowcount > 0
 
+    def set_inline_result(
+        self,
+        id: str,
+        *,
+        inline_checks: Optional[Dict[str, Any]],
+        status: str,
+    ) -> None:
+        """Admin rescan writeback: replace ``inline_checks``, clear any prior
+        ``llm_findings``, and set ``status``.
+
+        Unconditional (admin-triggered), unlike ``update_status`` which guards
+        terminal states with a CAS — a rescan must be able to flip an already
+        'approved' row back to 'blocked_inline'. Backs the /admin store rescan
+        route on both backends (was a raw ``subs.conn.execute`` that broke on PG).
+        """
+        if status not in VALID_STATUSES:
+            raise ValueError(f"invalid submission status: {status!r}")
+        self.conn.execute(
+            "UPDATE store_submissions "
+            "   SET inline_checks = ?, llm_findings = NULL, "
+            "       status = ?, updated_at = ? "
+            " WHERE id = ?",
+            [
+                json.dumps(inline_checks) if inline_checks is not None else None,
+                status,
+                datetime.now(timezone.utc),
+                id,
+            ],
+        )
+
     def set_override(
         self,
         id: str,

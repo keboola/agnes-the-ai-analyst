@@ -42,6 +42,7 @@ from src.repositories import (
     sync_settings_repo,
     sync_state_repo,
     table_registry_repo,
+    usage_repo,
     user_group_members_repo,
     user_groups_repo,
     users_repo,
@@ -525,10 +526,10 @@ def _build_context(
     # lets them reach /chat by URL (the route guard uses can_access). This is
     # UX only — the hard gate is on the route + API.
     #
-    # Computed on EVERY page, not just routes that thread a `conn`. Most routes
-    # call _build_context with only `user=`, so when conn is absent we open a
-    # short-lived system-db cursor (cheap — shared underlying connection) and
-    # close it. Defaults False when chat is disabled or there's no user.
+    # Computed on EVERY page. `has_explicit_grant` is backend-aware (it routes
+    # through the repo factory), so no connection is threaded here — it reads
+    # the active backend itself. Defaults False when chat is disabled or
+    # there's no user.
     ctx["can_chat"] = False
     try:
         _cc = getattr(request.app.state, "chat_config", None)
@@ -536,22 +537,9 @@ def _build_context(
             from app.auth.access import has_explicit_grant
             from app.resource_types import ResourceType
 
-            _conn = conn
-            _own_conn = False
-            if _conn is None:
-                from src.db import get_system_db
-
-                _conn = get_system_db()
-                _own_conn = True
-            try:
-                ctx["can_chat"] = bool(
-                    has_explicit_grant(
-                        user["id"], ResourceType.CHAT.value, "chat", _conn
-                    )
-                )
-            finally:
-                if _own_conn:
-                    _conn.close()
+            ctx["can_chat"] = bool(
+                has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat")
+            )
     except Exception:
         ctx["can_chat"] = False
     # Flex all extra context values for template compatibility
@@ -823,13 +811,15 @@ async def me_cowork_page(
     """User-facing AI Cowork page: setup bundle, MCP connection info, and available tools."""
     from app.api.mcp_passthrough import _visible_passthrough_tools
     from app.api.v2_marketplace import _accessible_plugins, _skills_for_plugin
-    from src.repositories.mcp_sources import MCPSourceRepository
+    from src.repositories import mcp_sources_repo
 
+    # Backend-aware reads (mcp_sources / tool grants live in Postgres on a PG
+    # instance) — a raw DuckDB conn here showed no MCP tools on Cowork.
     source_names = {
         s["id"]: s["name"]
-        for s in MCPSourceRepository(conn).list_all(enabled_only=True)
+        for s in mcp_sources_repo().list_all(enabled_only=True)
     }
-    raw_tools = _visible_passthrough_tools(user, conn)
+    raw_tools = _visible_passthrough_tools(user)
     passthrough_tools = []
     for t in raw_tools:
         sname = source_names.get(t["source_id"])
@@ -841,7 +831,7 @@ async def me_cowork_page(
             })
 
     skills = []
-    for plugin in _accessible_plugins(conn, user):
+    for plugin in _accessible_plugins(user):
         skills.extend(_skills_for_plugin(plugin["marketplace_id"], plugin["name"]))
 
     static_tools = [
@@ -1158,9 +1148,6 @@ async def catalog_package_detail(
     from app.auth.access import can_access
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from src.repositories.sync_state import SyncStateRepository
-    from src.repositories.table_registry import TableRegistryRepository
-    from src.repositories.usage import UsageRepository
 
     pkg_repo = data_packages_repo()
     pkg = pkg_repo.get_by_slug(slug)
@@ -1176,7 +1163,7 @@ async def catalog_package_detail(
     # passed as ?source=…; default 'direct' for typed/bookmarked navigation.
     source_hint = request.query_params.get("source", "direct")
     try:
-        UsageRepository(conn).emit_server_event(
+        usage_repo().emit_server_event(
             event_type="data_package.view",
             user_id=user["id"],
             username=user.get("email") or user["id"],
@@ -1201,8 +1188,8 @@ async def catalog_package_detail(
     # gotchas) feed the collapsible per-table extended-detail section
     # on the package page; description carries the ≤200 char card-line.
     table_rows = pkg_repo.list_tables(pkg["id"])
-    table_repo = TableRegistryRepository(conn)
-    sync_states = {s["table_id"]: s for s in SyncStateRepository(conn).get_all_states()}
+    table_repo = table_registry_repo()
+    sync_states = {s["table_id"]: s for s in sync_state_repo().get_all_states()}
     tables = []
     for tr in table_rows:
         full = table_repo.get(tr["id"]) or {}
@@ -1233,14 +1220,13 @@ async def catalog_package_detail(
     badges: list[str] = []
     created_by = pkg.get("created_by")
     if created_by:
-        admin_match = conn.execute(
-            "SELECT 1 FROM user_group_members ugm "
-            "JOIN user_groups ug ON ug.id = ugm.group_id "
-            "JOIN users u ON u.id = ugm.user_id "
-            "WHERE ug.name = 'Admin' AND (u.email = ? OR u.id = ?) LIMIT 1",
-            [created_by, created_by],
-        ).fetchone()
-        if admin_match:
+        # Backend-aware (mirrors data_packages._badges_for): resolve creator +
+        # Admin membership through the factory, not a raw DuckDB conn — the
+        # JOIN was empty on a Postgres instance so the badge silently vanished.
+        # is_user_admin is module-imported (line 20); no local import (would
+        # shadow it and break the earlier access check in this function).
+        u = users_repo().get_by_id(created_by) or users_repo().get_by_email(created_by)
+        if u and is_user_admin(u["id"]):
             badges.append("curated")
     created_at = pkg.get("created_at")
     if isinstance(created_at, datetime):
@@ -1281,10 +1267,8 @@ async def catalog_table_detail(
     """
     from app.auth.access import can_access
     from app.resource_types import ResourceType
-    from src.repositories.sync_state import SyncStateRepository
-    from src.repositories.table_registry import TableRegistryRepository
 
-    table_repo = TableRegistryRepository(conn)
+    table_repo = table_registry_repo()
     table = table_repo.get(table_id)
     if not table:
         raise HTTPException(status_code=404, detail="table_not_found")
@@ -1361,7 +1345,7 @@ async def catalog_table_detail(
         except Exception:
             logger.warning("schema introspection fallback failed for %s", table_id)
 
-    last_sync_state = SyncStateRepository(conn).get_table_state(table_id) or {}
+    last_sync_state = sync_state_repo().get_table_state(table_id) or {}
 
     def _fmt_bytes(n):
         if n is None or n <= 0:
@@ -1411,7 +1395,6 @@ async def catalog_recipe_detail(
     """
     from app.auth.access import can_access
     from app.resource_types import ResourceType
-    from src.repositories.table_registry import TableRegistryRepository
 
     recipe = recipes_repo().get_by_slug(slug)
     if not recipe:
@@ -1423,7 +1406,7 @@ async def catalog_recipe_detail(
         if not can_access(user["id"], ResourceType.RECIPE.value, recipe["id"], conn):
             raise HTTPException(status_code=404, detail="recipe_not_found")
 
-    table_repo = TableRegistryRepository(conn)
+    table_repo = table_registry_repo()
     related_tables = []
     for tid in (recipe.get("related_table_ids") or []):
         full = table_repo.get(tid)
@@ -1621,7 +1604,6 @@ async def memory_domain_detail(
     from app.auth.access import can_access
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
-    from src.repositories.usage import UsageRepository
 
     domains_repo = memory_domains_repo()
     repo = knowledge_repo()
@@ -1634,7 +1616,7 @@ async def memory_domain_detail(
 
     source_hint = request.query_params.get("source", "direct")
     try:
-        UsageRepository(conn).emit_server_event(
+        usage_repo().emit_server_event(
             event_type="memory_domain.view",
             user_id=user["id"],
             username=user.get("email") or user["id"],
@@ -3216,12 +3198,11 @@ def _chat_capability_snapshot(
     fetch races. JSON gets embedded by the template via ``| tojson``.
     """
     from src.rbac import can_access_table
-    from src.repositories.table_registry import TableRegistryRepository
     from src.marketplace_filter import resolve_allowed_plugins
 
     by_source: dict[str, int] = {}
     try:
-        all_tables = TableRegistryRepository(conn).list_all()
+        all_tables = table_registry_repo().list_all()
         for t in all_tables:
             if not can_access_table(user, t["id"], conn):
                 continue
