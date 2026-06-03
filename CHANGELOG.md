@@ -44,6 +44,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   rewrite in a transaction (the FTS index rebuild in `update` stays *after*
   commit — `PRAGMA create_fts_index` is catalog DDL that can't run inside a
   transaction). Coverage in `tests/test_memory_atomicity.py`.
+- **Cascade/reconcile rewrites made atomic (same bug class).** Two more
+  multi-statement DuckDB repo mutations now run in a single transaction to
+  match their already-atomic Postgres siblings:
+  `ToolRegistryRepository.delete` (the `tool_grants` → `tool_registry` cascade,
+  which otherwise leaves a reader observing grants whose parent tool is gone)
+  and `ViewOwnershipRepository.reconcile` (the read + multi-row drop, where a
+  partial mid-loop state could let another source transiently appear to claim
+  a not-yet-released view name). Coverage in
+  `tests/test_repo_cascade_atomicity.py`.
+    (`resource_grants.fanout_system_for_group` was reviewed and left as-is:
+  insert-only / idempotent, and the PG sibling is likewise per-insert — no
+  drop-to-empty window.)
 
 ## [0.60.0] — 2026-06-02
 
