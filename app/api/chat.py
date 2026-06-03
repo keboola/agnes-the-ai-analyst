@@ -211,7 +211,11 @@ async def ws_stream(ws: WebSocket, chat_id: str, ticket: str):
                     text = frame.get("text", "")
                     for _ in range(60):  # up to 30 s total at 0.5 s ticks
                         try:
-                            await mgr.send_user_message(chat_id_v, text)
+                            # Thread sender_email so per-sender budgets (SR-10)
+                            # and departed-participant replay-skip (SR-11) work.
+                            await mgr.send_user_message(
+                                chat_id_v, text, sender_email=user_email
+                            )
                             break
                         except SessionNotFound:
                             await asyncio.sleep(0.5)
@@ -230,5 +234,83 @@ async def ws_stream(ws: WebSocket, chat_id: str, ticket: str):
         attach_task = asyncio.create_task(mgr.attach(chat_id_v, ws))
         await reader_loop()
         attach_task.cancel()
+    except SessionNotFound:
+        await ws.close(code=4404, reason="session_not_found")
+
+
+@router.websocket("/sessions/{session_id}/join")
+async def ws_join(ws: WebSocket, session_id: str, ticket: str):
+    """WebSocket join route for co-drive participants.
+
+    A participant who obtained a ticket via POST /api/chat/{id}/join-ticket
+    connects here to join a live co-session.  The route:
+
+      1. Consumes the short-lived opaque ticket (same _TICKETS mechanism as
+         ws_stream) to recover (session_id, participant_email).
+      2. Re-verifies that the email is a live (left_at IS NULL) participant
+         of the session (SR-9: membership re-verified at WS connect time,
+         not just at ticket issuance).
+      3. Calls mgr.add_sink(session_id, ws, participant_email), which
+         replays persisted history to the joiner and then fans out new
+         frames to them alongside the primary sink.
+
+    This is the ONLY path that calls add_sink for web co-drive joiners.
+    The primary owner always connects via ws_stream (which calls attach).
+    """
+    consumed = _consume_ticket(ticket)
+    if consumed is None or consumed[0] != session_id:
+        await ws.close(code=4401, reason="invalid_or_expired_ticket")
+        return
+    _session_id_v, participant_email = consumed
+
+    mgr: ChatManager = ws.app.state.chat_manager
+    repo = ws.app.state.chat_repo
+
+    # SR-9: re-verify live participant membership at WS connect time.
+    # The ticket was issued at join-ticket time (SR-9 verified there too),
+    # but the participant may have left between ticket issuance and WS connect.
+    parts = repo.get_session_participants(session_id)
+    if not any(p.user_email == participant_email and p.left_at is None for p in parts):
+        await ws.close(code=4403, reason="not_a_live_participant")
+        return
+
+    await ws.accept()
+
+    async def joiner_reader_loop() -> None:
+        try:
+            while True:
+                frame = await ws.receive_json()
+                kind = frame.get("type")
+                if kind == "user_msg":
+                    text = frame.get("text", "")
+                    for _ in range(60):
+                        try:
+                            # Thread sender_email so per-sender budgets (SR-10)
+                            # and departed-participant replay-skip (SR-11) work.
+                            await mgr.send_user_message(
+                                session_id, text, sender_email=participant_email
+                            )
+                            break
+                        except SessionNotFound:
+                            await asyncio.sleep(0.5)
+                    else:
+                        await ws.send_json({
+                            "type": "error",
+                            "kind": "runner_not_ready",
+                            "message": "Runner did not become ready within 30 s.",
+                        })
+                elif kind == "cancel":
+                    await mgr.cancel(session_id)
+        except WebSocketDisconnect:
+            return
+
+    try:
+        # add_sink replays history and appends the joiner to live.sinks.
+        # SR-9: raises PermissionError if participant left between accept()
+        # and add_sink(); close with 4403 in that case.
+        await mgr.add_sink(session_id, ws, participant_email)
+        await joiner_reader_loop()
+    except PermissionError:
+        await ws.close(code=4403, reason="not_a_live_participant")
     except SessionNotFound:
         await ws.close(code=4404, reason="session_not_found")

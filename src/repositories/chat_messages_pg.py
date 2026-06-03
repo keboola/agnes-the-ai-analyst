@@ -52,6 +52,7 @@ class ChatMessagePgRepository:
         tokens_in: Optional[int] = None,
         tokens_out: Optional[int] = None,
         model: Optional[str] = None,
+        sender_email: Optional[str] = None,
     ) -> ChatMessage:
         msg_id = _gen_id("msg")
         now = datetime.now(timezone.utc)
@@ -60,10 +61,10 @@ class ChatMessagePgRepository:
                 sa.text(
                     "INSERT INTO chat_messages "
                     "(id, session_id, role, content, tool_calls, tokens_in, "
-                    "tokens_out, model, created_at) "
+                    "tokens_out, model, sender_email, created_at) "
                     "VALUES (:id, :session_id, :role, :content, "
                     "CAST(:tool_calls AS JSONB), :tokens_in, :tokens_out, "
-                    ":model, :created_at)"
+                    ":model, :sender_email, :created_at)"
                 ),
                 {
                     "id": msg_id,
@@ -74,6 +75,7 @@ class ChatMessagePgRepository:
                     "tokens_in": tokens_in,
                     "tokens_out": tokens_out,
                     "model": model,
+                    "sender_email": sender_email,
                     "created_at": now,
                 },
             )
@@ -95,6 +97,7 @@ class ChatMessagePgRepository:
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             model=model,
+            sender_email=sender_email,
             created_at=now,
         )
 
@@ -110,7 +113,7 @@ class ChatMessagePgRepository:
                 ).scalar()
             sql = (
                 "SELECT id, session_id, role, content, tool_calls, tokens_in, "
-                "tokens_out, model, created_at FROM chat_messages "
+                "tokens_out, model, sender_email, created_at FROM chat_messages "
                 "WHERE session_id = :session_id"
             )
             params: dict = {"session_id": session_id}
@@ -130,6 +133,7 @@ class ChatMessagePgRepository:
                 tokens_in=r["tokens_in"],
                 tokens_out=r["tokens_out"],
                 model=r["model"],
+                sender_email=r["sender_email"],
                 created_at=r["created_at"],
             )
             for r in rows

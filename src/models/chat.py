@@ -1,9 +1,10 @@
-"""SQLAlchemy models for the cloud-chat cluster (DuckDB v68 parity).
+"""SQLAlchemy models for the cloud-chat cluster (DuckDB v70 parity).
 
 Mirrors:
-  - chat_sessions   (src/db.py v68)
-  - chat_messages   (src/db.py v68)
-  - user_workdirs   (src/db.py v68)
+  - chat_sessions              (src/db.py v68 base + v70 co-presence columns)
+  - chat_messages              (src/db.py v68 base + v70 sender_email)
+  - chat_session_participants  (src/db.py v70)
+  - user_workdirs              (src/db.py v68)
 
 The DuckDB side (DuckDB 1.5.x) cannot express three constraints that the
 Postgres schema carries here, because PG has no such limitations:
@@ -11,6 +12,11 @@ Postgres schema carries here, because PG has no such limitations:
   - ``chat_messages.session_id`` FK → ``chat_sessions.id`` with
     ``ON DELETE CASCADE``. On DuckDB the FK is a plain reference and
     ``ChatRepository.hard_delete_user_sessions`` deletes child messages
+    by hand before the parent.
+
+  - ``chat_session_participants.session_id`` FK → ``chat_sessions.id`` with
+    ``ON DELETE CASCADE``. On DuckDB the FK is a plain reference and
+    ``ChatRepository.hard_delete_user_sessions`` deletes participant rows
     by hand before the parent.
 
   - Per-surface partial unique indexes enforcing the Slack DM / thread
@@ -37,6 +43,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -67,6 +74,12 @@ class ChatSession(Base):
         Integer, server_default=text("0"), nullable=False
     )
     archived: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("FALSE"), nullable=False
+    )
+    is_co_session: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("FALSE"), nullable=False
+    )
+    ephemeral: Mapped[bool] = mapped_column(
         Boolean, server_default=text("FALSE"), nullable=False
     )
 
@@ -106,6 +119,7 @@ class ChatMessage(Base):
     tokens_in: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tokens_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
     model: Mapped[str | None] = mapped_column(String, nullable=True)
+    sender_email: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=text("CURRENT_TIMESTAMP"),
@@ -114,6 +128,34 @@ class ChatMessage(Base):
 
     __table_args__ = (
         Index("idx_chat_messages_session", "session_id", "created_at"),
+    )
+
+
+class ChatSessionParticipant(Base):
+    """Live membership for co-drive sessions (v70)."""
+    __tablename__ = "chat_session_participants"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_email: Mapped[str] = mapped_column(String, nullable=False)
+    user_id: Mapped[str] = mapped_column(String, nullable=False)
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    joined_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    left_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index("idx_chat_session_participants_user", "user_email", "session_id"),
+        UniqueConstraint("session_id", "user_email", name="uq_participant_session_user"),
     )
 
 

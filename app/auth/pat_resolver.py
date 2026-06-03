@@ -77,6 +77,45 @@ def resolve_token_to_user(
     if not payload:
         return None, "invalid_token"
 
+    typ = payload.get("typ")
+    co_session_id = payload.get("chat_session_id")
+
+    if typ == "co_session" or co_session_id:
+        from src.db import get_system_db
+        sconn = get_system_db()
+        try:
+            if typ == "co_session":
+                from src.grant_intersection import compute_grant_intersection
+                from app.auth.session_principal import SessionPrincipal
+                rows = sconn.execute(
+                    "SELECT user_id, user_email FROM chat_session_participants "
+                    "WHERE session_id = ? AND left_at IS NULL",
+                    [co_session_id],
+                ).fetchall()
+                if not rows:
+                    return None, "invalid_token"  # no live participants -> deny
+                emails = [r[1] for r in rows]
+                principal = SessionPrincipal(
+                    session_id=co_session_id,
+                    participant_user_ids=[r[0] for r in rows],
+                    participant_emails=emails,
+                    intersection=compute_grant_intersection(emails, sconn),
+                )
+                return principal, None
+            # Defense-in-depth (SR-3): a plain single-user token that names a
+            # co-session must never drive it, regardless of _spawn_runner.
+            row = sconn.execute(
+                "SELECT is_co_session FROM chat_sessions WHERE id = ?",
+                [co_session_id],
+            ).fetchone()
+            if row and bool(row[0]):
+                return None, "invalid_token"  # FAIL CLOSED
+        finally:
+            try:
+                sconn.close()
+            except Exception:
+                pass
+
     from src.repositories import users_repo, access_token_repo
     user = users_repo().get_by_id(payload.get("sub", ""))
     if not user:

@@ -102,6 +102,9 @@ async def list_stack(
     always count as in_stack; available entries only if the user has a
     subscription row.
     """
+    from app.auth.session_principal import SessionPrincipal
+    if isinstance(user, SessionPrincipal):
+        raise HTTPException(403, "co_session cannot manage stack")
     rt = _validate_type(type)
     resolver = StackResolver()
     items = [
