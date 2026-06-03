@@ -244,7 +244,10 @@ async def get_current_user(
         )
 
     from app.auth.pat_resolver import resolve_token_to_user
+    from app.auth.session_principal import SessionPrincipal
     user, reason = resolve_token_to_user(conn, token, request)
+    if isinstance(user, SessionPrincipal):
+        return user
     if user:
         _attach_admin_flag(user, conn)
         # Propagate token kind so audit helpers can tag client_kind correctly.
