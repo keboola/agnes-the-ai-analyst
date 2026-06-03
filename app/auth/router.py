@@ -241,29 +241,38 @@ async def refresh_groups(
     stays consistent.
 
     Returns the diff of synced rows + the post-refresh group set so the
-    caller can see exactly what changed. Rate-limited at 5/min/user —
-    refreshing is cheap on our side but each call costs a Workspace Admin
-    SDK quota unit.
+    caller can see exactly what changed. Rate-limited at 5/min/IP — the
+    slowapi default key is the request's remote IP, not the authenticated
+    user, so a shared-NAT / VPN scenario divides the budget across users
+    on the same egress. Matches the pattern of the other rate-limited
+    endpoints in this router (``/token``, ``/bootstrap``). Refreshing is
+    cheap on our side but each call costs a Workspace Admin SDK quota
+    unit, so the limit guards the upstream quota.
     """
     from app.auth.group_sync import apply_user_groups
 
+    # Read the membership graph through the repo factory so the diff
+    # computation runs against the active backend — `user_group_members_repo()`
+    # routes to Postgres when `use_pg()` is True, matching where
+    # `apply_user_groups` writes (it uses the same factory internally).
+    # The `conn` dependency is a DuckDB cursor for legacy callers, but it's
+    # not what we want for the read-back here; using it would produce a
+    # `before == after` (both empty/stale) and a lying response on PG.
+    # See PR #520 Devin review for the original drift report.
+    members_repo = user_group_members_repo()
+
     def _synced_names() -> set[str]:
-        rows = conn.execute(
-            "SELECT g.name FROM user_group_members m "
-            "JOIN user_groups g ON g.id = m.group_id "
-            "WHERE m.user_id = ? AND m.source = 'google_sync'",
-            [user["id"]],
-        ).fetchall()
-        return {r[0] for r in rows}
+        return {
+            row["name"]
+            for row in members_repo.list_groups_with_meta_for_user(user["id"])
+            if row["source"] == "google_sync"
+        }
 
     def _all_names() -> list[str]:
-        rows = conn.execute(
-            "SELECT g.name FROM user_group_members m "
-            "JOIN user_groups g ON g.id = m.group_id "
-            "WHERE m.user_id = ? ORDER BY g.name",
-            [user["id"]],
-        ).fetchall()
-        return [r[0] for r in rows]
+        return sorted(
+            row["name"]
+            for row in members_repo.list_groups_with_meta_for_user(user["id"])
+        )
 
     before = _synced_names()
     result = apply_user_groups(user["id"], user["email"], conn)
