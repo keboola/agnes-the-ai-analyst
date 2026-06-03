@@ -162,6 +162,26 @@ async def _soft_archive_dm(app, slack_user_id: str) -> bool:
     return True
 
 
+async def _soft_archive_dm_for_button(app, owner_email: str, channel_id: str) -> None:
+    """Soft-archive an owner's live DM session by email + channel_id.
+
+    Used by the New-session button (interactivity phase) which already has
+    the owner email resolved; unlike _soft_archive_dm it does not need to
+    call open_im because the channel_id comes directly from the button value.
+    No-op when there is no live/active session for that channel.
+    """
+    repo = app.state.chat_repo
+    mgr = app.state.chat_manager
+    existing = repo.get_slack_dm_session(channel_id)
+    if existing is None:
+        return
+    try:
+        await mgr.kill(existing.id, reason="new_session_button")
+    except Exception:
+        logger.exception("kill failed for %s during New-session button", existing.id)
+    repo.archive_session(existing.id)
+
+
 async def _cmd_new(app, cmd: dict) -> None:
     slack_user_id = cmd.get("user_id", "")
     response_url = cmd.get("response_url", "")
