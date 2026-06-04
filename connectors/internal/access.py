@@ -164,6 +164,43 @@ def build_filter_clause(table: InternalTable, user: dict[str, Any], is_admin: bo
     return f"WHERE {table.filter_column} = '{safe}'"
 
 
+def sample_internal_rows(
+    table: InternalTable, where_clause: str, n: int
+) -> list[dict[str, Any]]:
+    """Read up to ``n`` rows from an internal table's physical source on the
+    ACTIVE state backend (DuckDB or Postgres), applying the RBAC ``where_clause``.
+
+    Internal-table rows live in the state backend; reading them off a raw
+    DuckDB connection returns nothing on a Postgres instance (the catalog
+    ``/sample`` preview then shows an empty table). Dispatching on ``use_pg()``
+    keeps the preview correct on either backend.
+
+    ``where_clause`` comes from :func:`build_filter_clause` — an ANSI
+    ``WHERE col = '<escaped>'`` (single quotes doubled, value regex-validated),
+    so the same statement runs unchanged on DuckDB and Postgres. The Postgres
+    path uses ``exec_driver_sql`` (raw DBAPI) so SQLAlchemy never reinterprets a
+    ``:token`` in the literal as a bind parameter.
+    """
+    n = max(1, int(n))
+    sql = f"SELECT * FROM {table.source_table} {where_clause} LIMIT {n}"
+
+    from src.repositories import use_pg
+
+    if use_pg():
+        from src.db_pg import get_engine
+
+        with get_engine().connect() as conn:
+            return [dict(r) for r in conn.exec_driver_sql(sql).mappings().all()]
+
+    from src.db import get_system_db
+
+    cur = get_system_db().cursor()
+    try:
+        return cur.execute(sql).fetchdf().to_dict(orient="records")
+    finally:
+        cur.close()
+
+
 # ---------------------------------------------------------------------------
 # Query execution
 # ---------------------------------------------------------------------------
