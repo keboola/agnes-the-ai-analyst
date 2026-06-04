@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Postgres backend: `agnes query` against internal tables returned nothing.**
+  The internal-table SQL feature (analyst SQL over `agnes_telemetry` /
+  `agnes_audit` / `agnes_sessions`) ran the query in DuckDB against the system
+  file, so on a Postgres instance — where those rows live in PG — the same query
+  returned an empty result instead of the data DuckDB would show. It now runs in
+  an in-memory DuckDB with the Postgres database ATTACHed (DuckDB `postgres`
+  extension, read-only, streamed — no row materialisation) and points the
+  `agnes_*` CTEs at the attached tables, so an analyst's arbitrary DuckDB SQL
+  behaves identically on both backends. RBAC scoping is unchanged; the non-admin
+  base-table denylist also rejects Postgres-catalog-qualified references, and a
+  hard guard blocks any non-admin reference to the attach catalog. Pinned by a
+  both-backends parity test (`tests/db_pg/test_parity_internal_query.py`).
+
 ## [0.65.4] — 2026-06-04
 
 ### Fixed

@@ -241,6 +241,35 @@ def find_internal_refs(sql: str) -> list[str]:
     return [t.registry_id for t in INTERNAL_TABLES if t.registry_id.lower() in found]
 
 
+def _pg_attached_duckdb():
+    """Fresh in-memory DuckDB with the Postgres state DB ATTACHed read-only as
+    ``pgsys`` (via the postgres extension). Lets an analyst's arbitrary DuckDB
+    SQL run against PG-resident internal tables with identical semantics — the
+    postgres extension streams rows from PG, so nothing is materialised in
+    memory. Returns ``(connection, close_callable)``.
+    """
+    from src.db import _open_duckdb
+    from src.db_pg import _resolve_url
+
+    url = _resolve_url()
+    # DuckDB's postgres ATTACH wants a libpq URL, not the SQLAlchemy +driver one.
+    for prefix in ("postgresql+psycopg://", "postgresql+psycopg2://", "postgres+psycopg://"):
+        if url.startswith(prefix):
+            url = "postgresql://" + url[len(prefix):]
+            break
+    # _open_duckdb pins the session (and cursors) to UTC — keeps timestamps
+    # streamed from Postgres rendering identically to the DuckDB path.
+    conn = _open_duckdb(":memory:")
+    try:
+        conn.execute("INSTALL postgres")
+    except Exception:
+        logger.debug("postgres extension already installed / install skipped")
+    conn.execute("LOAD postgres")
+    safe_url = url.replace("'", "''")
+    conn.execute(f"ATTACH '{safe_url}' AS pgsys (TYPE postgres, READ_ONLY)")
+    return conn, conn.close
+
+
 def execute_internal_query(
     system_db_path: str,
     user: dict[str, Any],
@@ -283,6 +312,15 @@ def execute_internal_query(
     # Lazy import to avoid a hard cycle (src.db imports go via repositories
     # which then end up importing access in some test paths).
     from src.db import get_system_db
+    from src.repositories import use_pg
+
+    # On a Postgres-backed instance the internal source tables live in PG, not
+    # the DuckDB system file. To keep the analyst's arbitrary DuckDB SQL behaving
+    # identically on both backends we still execute it in DuckDB, but over an
+    # in-memory handle with the Postgres database ATTACHed (DuckDB's postgres
+    # extension streams from PG — no row materialisation), and point the agnes_*
+    # CTEs at the attached tables. ``pg`` selects that path.
+    pg = use_pg()
 
     # Non-admins are NOT allowed to reference any system.duckdb table
     # outside the registered agnes_* aliases. The CTE wrapper only
@@ -299,21 +337,45 @@ def execute_internal_query(
     # raw rows, and the filter clause is empty for them anyway.
     if not is_admin:
         stripped = _strip_sql_noise(sql)
+        # The denylist (derived from the DuckDB system schema, which mirrors PG)
+        # rejects any base-table name — including a Postgres-catalog-qualified
+        # form like ``pgsys.public.users`` (the bare ``users`` token still sits
+        # between word boundaries). On the PG path also reject any reference to
+        # the attach catalog itself, so a non-admin can't reach Postgres system
+        # catalogs (``pgsys.pg_catalog.*``) whose names aren't in the denylist.
         sensitive = _sensitive_table_reference(stripped, get_system_db())
         if sensitive is not None:
             raise InternalAccessError(
                 f"non-admin SQL cannot reference table {sensitive!r}; query one of the agnes_* aliases instead"
             )
+        if pg and re.search(r"\bpgsys\b", stripped, re.IGNORECASE):
+            raise InternalAccessError(
+                "non-admin SQL cannot reference the attached database; query one of the agnes_* aliases instead"
+            )
     cte_parts = []
     for table_id in refs:
         table = INTERNAL_TABLES_BY_ID[table_id]
         where_clause = build_filter_clause(table, user, is_admin)
-        cte_parts.append(f"{table.registry_id} AS (SELECT * FROM {table.source_table} {where_clause})")
+        # On PG, the agnes_* alias resolves to the ATTACHed Postgres table.
+        src_ref = f'pgsys.public."{table.source_table}"' if pg else table.source_table
+        cte_parts.append(f"{table.registry_id} AS (SELECT * FROM {src_ref} {where_clause})")
     cte_prefix = "WITH " + ", ".join(cte_parts)
     wrapped = f"{cte_prefix} SELECT * FROM ({sql}) AS _agnes_user_query"
 
-    conn = get_system_db()
-    cursor = conn.cursor()
+    if pg:
+        conn, _close = _pg_attached_duckdb()
+        cursor = conn.cursor()
+
+        def _cleanup() -> None:
+            try:
+                cursor.close()
+            finally:
+                _close()
+    else:
+        conn = get_system_db()
+        cursor = conn.cursor()
+        _cleanup = cursor.close
+
     try:
         rows = cursor.execute(wrapped).fetchmany(limit + 1)
         cols = [d[0] for d in cursor.description] if cursor.description else []
@@ -321,7 +383,7 @@ def execute_internal_query(
         return cols, rows[:limit], truncated
     finally:
         try:
-            cursor.close()
+            _cleanup()
         except Exception:
             logger.exception("close() failed on internal-query cursor")
 
