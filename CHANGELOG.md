@@ -85,8 +85,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   module is already fully factory-routed, so the `Depends(_get_db)` / passed
   connection was dead. `bq_metadata_refresh.py` and `query.py` drop out of the
   backend-split guard's `get_system_db` residual list.
-<<<<<<< HEAD
-=======
+
 ## [0.65.4] — 2026-06-04
 
 ### Fixed
@@ -128,7 +127,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   against an inline column instead of the v49 `knowledge_item_domains` junction
   (matching the DuckDB sibling), so a non-admin's domain-granted memory items
   were invisible/miscounted on Postgres.
->>>>>>> origin/main
 
 ## [0.65.2] — 2026-06-04
 
