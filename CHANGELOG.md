@@ -10,6 +10,28 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Postgres backend: deleting an MCP source leaked its per-user secrets.**
+  `DELETE /api/admin/mcp-sources/{id}` purged per-user vault rows via a raw
+  `PerUserSecretsRepository(conn)` off the always-DuckDB connection. Per-user
+  secrets were migrated to Postgres (#530), so on a PG instance the rows
+  survived the delete — orphaned encrypted blobs, the exact thing the cleanup
+  was added to prevent. Now routed through `per_user_secrets_repo()`.
+- **Postgres backend: the "this is a VIEW" cost-guard hint never fired.**
+  `query._view_targets_in` (which enriches the `remote_scan_too_large` error
+  with a "LIMIT doesn't push into a view body" note) joined `bq_metadata_cache`
+  against `table_registry` on the always-DuckDB connection — empty on a PG
+  instance, so the hint silently never appeared. Now resolved through
+  `table_registry_repo()` + `bq_metadata_cache_repo()`. Both fixes pinned by
+  both-backends parity tests in `tests/db_pg/`.
+
+### Internal
+- Dropped vestigial `conn` parameters from `app/api/bq_metadata_refresh.py`
+  (`refresh_one`, `_list_remote_bq_rows`, and the three endpoint handlers) — the
+  module is already fully factory-routed, so the `Depends(_get_db)` / passed
+  connection was dead. `bq_metadata_refresh.py` and `query.py` drop out of the
+  backend-split guard's `get_system_db` residual list.
+
 ## [0.65.2] — 2026-06-04
 
 ### Changed

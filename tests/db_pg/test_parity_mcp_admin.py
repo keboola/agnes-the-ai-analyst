@@ -12,6 +12,8 @@ seeded row on BOTH backends; a handler that reads through a raw DuckDB conn
 """
 from __future__ import annotations
 
+import pytest
+
 
 def _auth(seeded_app_both, who="admin"):
     return {"Authorization": f"Bearer {seeded_app_both[f'{who}_token']}"}
@@ -168,4 +170,48 @@ def test_add_mcp_tool_grant_finds_factory_seeded_group(seeded_app_both):
     assert gid in detail.json().get("grants", []), (
         f"[{seeded_app_both['backend']}] grant not reflected in tool detail: "
         f"{detail.json()}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/admin/mcp-sources/{id} — per-user secret cleanup.
+#
+# The delete handler purges the source's vault secrets so no orphaned encrypted
+# blobs survive. Per-user secrets were migrated to Postgres (#530), but the
+# cleanup used a raw ``PerUserSecretsRepository(conn)`` off the always-DuckDB
+# connection — so on a PG instance the per-user rows were NOT deleted and
+# leaked. The fix routes the cleanup through ``per_user_secrets_repo()``.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _vault_key(monkeypatch):
+    """Storing a per-user secret requires a configured Fernet vault key."""
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode("ascii"))
+
+
+def test_delete_source_clears_per_user_secret_on_both_backends(
+    seeded_app_both, _vault_key
+):
+    from src.repositories import per_user_secrets_repo
+
+    sid = _seed_source(name="del_cleanup_src")
+    # Seed a per-user secret through the factory (lands in the active backend).
+    per_user_secrets_repo().upsert(sid, "analyst1", "to-be-purged")
+    assert per_user_secrets_repo().has(sid, "analyst1") is True
+
+    r = seeded_app_both["client"].delete(
+        f"/api/admin/mcp-sources/{sid}", headers=_auth(seeded_app_both)
+    )
+    assert r.status_code == 204, (
+        f"[{seeded_app_both['backend']}] DELETE mcp-sources/{{id}} returned "
+        f"{r.status_code}: {r.text}"
+    )
+
+    assert per_user_secrets_repo().has(sid, "analyst1") is False, (
+        f"[{seeded_app_both['backend']}] per-user secret survived source delete "
+        f"— the cleanup deleted off a raw DuckDB conn instead of "
+        f"per_user_secrets_repo(), orphaning the row on Postgres."
     )
