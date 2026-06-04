@@ -47,7 +47,7 @@ def require_table_access(
 
 
 def can_access_table(
-    user: dict,
+    user,  # dict | SessionPrincipal
     table_id: str,
     conn: Optional[duckdb.DuckDBPyConnection] = None,
 ) -> bool:
@@ -60,7 +60,7 @@ def can_access_table(
          caller's rows). Admin gets the unscoped view; non-admin gets their
          own rows.
       2. Admin god-mode — members of the Admin system group see every
-         registered table.
+         registered table (dict users only; SessionPrincipal is never admin).
       3. **Stack-gated**: the table must belong to at least one data
          package in the user's stack (required ∪ subscribed). Per-table
          resource_grants alone NO LONGER grant analyst visibility — the
@@ -70,13 +70,21 @@ def can_access_table(
          ``resource_grants`` are a no-op for analysts (still consulted
          for backwards-compat fallback inside admin-only flows).
     """
-    user_id = user.get("id")
-    if not user_id:
-        return False
-
     from connectors.internal.access import is_internal_table
     if is_internal_table(table_id):
         return True
+
+    from app.auth.session_principal import SessionPrincipal
+    if isinstance(user, SessionPrincipal):
+        from app.auth.access import can_access_session
+        from app.resource_types import ResourceType
+        # Co-session: intersection membership, no admin short-circuit, no
+        # personal stack. The intersection is the sole authority.
+        return can_access_session(user, ResourceType.TABLE.value, table_id)
+
+    user_id = user.get("id")
+    if not user_id:
+        return False
 
     should_close = False
     if conn is None:
@@ -108,7 +116,7 @@ def can_access_table(
 
 
 def get_accessible_tables(
-    user: dict,
+    user,  # dict | SessionPrincipal
     conn: Optional[duckdb.DuckDBPyConnection] = None,
 ) -> Optional[list[str]]:
     """List of table IDs the user can read. ``None`` means "all" (admin).
@@ -119,7 +127,20 @@ def get_accessible_tables(
         (required ∪ subscribed).
     Per-table ``resource_grants(group, 'table', …)`` rows are NO LONGER
     consulted for analyst visibility — see :func:`can_access_table`.
+
+    For a ``SessionPrincipal``, returns the intersection table-ids plus
+    internal tables (never ``None`` — no admin god-mode for a co-session).
     """
+    from app.auth.session_principal import SessionPrincipal
+    if isinstance(user, SessionPrincipal):
+        from app.resource_types import ResourceType
+        from connectors.internal.access import INTERNAL_TABLES
+        result = list(user.intersection.get(ResourceType.TABLE.value, frozenset()))
+        for t in INTERNAL_TABLES:
+            if t.registry_id not in result:
+                result.append(t.registry_id)
+        return result
+
     user_id = user.get("id")
     if not user_id:
         return []

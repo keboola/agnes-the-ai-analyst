@@ -30,6 +30,7 @@ from src.repositories import (
     sync_settings_repo,
     sync_state_repo,
     table_registry_repo,
+    usage_repo,
 )
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
@@ -783,7 +784,7 @@ def _table_manifest_entry(state: dict, reg: dict) -> dict:
 
 
 def _build_data_packages_section(
-    conn, user: dict, registry_by_name: dict, states_by_table_id: dict
+    conn, user, registry_by_name: dict, states_by_table_id: dict
 ) -> tuple[list, set]:
     """Build the ``data_packages`` array per Section 5.1 of the design.
 
@@ -793,9 +794,11 @@ def _build_data_packages_section(
     """
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
+    from app.auth.session_principal import SessionPrincipal
 
     resolver = StackResolver(conn)
-    pkg_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
+    stack_subject = user if isinstance(user, SessionPrincipal) else user["id"]
+    pkg_entries = resolver.stack(stack_subject, ResourceType.DATA_PACKAGE)
     if not pkg_entries:
         return [], set()
     repo = data_packages_repo()
@@ -835,7 +838,7 @@ def _build_data_packages_section(
     return out, packaged_table_ids
 
 
-def _build_memory_domains_section(conn, user: dict) -> list:
+def _build_memory_domains_section(conn, user) -> list:
     """Build the ``memory_domains`` array per Section 5.1.
 
     Each entry carries a per-domain ``md5`` derived from the concatenated
@@ -849,9 +852,11 @@ def _build_memory_domains_section(conn, user: dict) -> list:
     """
     from app.resource_types import ResourceType
     from app.services.stack_resolver import StackResolver
+    from app.auth.session_principal import SessionPrincipal
 
     resolver = StackResolver(conn)
-    dom_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
+    stack_subject = user if isinstance(user, SessionPrincipal) else user["id"]
+    dom_entries = resolver.stack(stack_subject, ResourceType.MEMORY_DOMAIN)
     if not dom_entries:
         return []
     repo = memory_domains_repo()
@@ -1036,7 +1041,7 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
 
 @router.get("/manifest")
 async def sync_manifest(
-    user: dict = Depends(get_current_user),
+    user=Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Return hash-based manifest of all synced data, filtered per user.
@@ -1048,40 +1053,41 @@ async def sync_manifest(
     a browser session) also count; cheap and accurate enough for a
     homepage card.
     """
-    try:
-        conn.execute(
-            "UPDATE users SET last_pull_at = current_timestamp WHERE id = ?",
-            [user["id"]],
-        )
-        # Also emit an audit_log row so /me/stats Sync activity has a
-        # timeline of pulls (the column UPDATE only retains the most
-        # recent one). Action `manifest.fetch` covers both `agnes pull`
-        # via PAT and browser-driven manifest peeks; clients can
-        # disambiguate via client_kind.
-        audit_repo().log(
-            user_id=user["id"],
-            action="manifest.fetch",
-            resource="manifest",
-            result="ok",
-            client_kind="api",
-        )
-    except Exception:
-        # Never block a pull because the stamp UPDATE / audit row hit a
-        # transient issue (locked WAL, partial migration window). The
-        # manifest itself is the load-bearing payload.
-        pass
-    # v49 Section 9.2 — emit a server-side ``sync.pull_started`` event so
-    # /admin/telemetry can count distinct pulls per user per day. Best-effort.
-    try:
-        from src.repositories.usage import UsageRepository
-        UsageRepository(conn).emit_server_event(
-            event_type="sync.pull_started",
-            user_id=user["id"],
-            username=user.get("email") or user["id"],
-            props={"client_kind": client_kind_from_user(user)},
-        )
-    except Exception:
-        pass
+    from app.auth.session_principal import SessionPrincipal
+    if not isinstance(user, SessionPrincipal):
+        try:
+            conn.execute(
+                "UPDATE users SET last_pull_at = current_timestamp WHERE id = ?",
+                [user["id"]],
+            )
+            # Also emit an audit_log row so /me/stats Sync activity has a
+            # timeline of pulls (the column UPDATE only retains the most
+            # recent one). Action `manifest.fetch` covers both `agnes pull`
+            # via PAT and browser-driven manifest peeks; clients can
+            # disambiguate via client_kind.
+            audit_repo().log(
+                user_id=user["id"],
+                action="manifest.fetch",
+                resource="manifest",
+                result="ok",
+                client_kind="api",
+            )
+        except Exception:
+            # Never block a pull because the stamp UPDATE / audit row hit a
+            # transient issue (locked WAL, partial migration window). The
+            # manifest itself is the load-bearing payload.
+            pass
+        # v49 Section 9.2 — emit a server-side ``sync.pull_started`` event so
+        # /admin/telemetry can count distinct pulls per user per day. Best-effort.
+        try:
+            usage_repo().emit_server_event(
+                event_type="sync.pull_started",
+                user_id=user["id"],
+                username=user.get("email") or user["id"],
+                props={"client_kind": client_kind_from_user(user)},
+            )
+        except Exception:
+            pass
     return _build_manifest_for_user(conn, user)
 
 
@@ -1136,8 +1142,7 @@ async def pull_confirm(
             props[f"{section}_removed"] = section_payload.removed
 
     try:
-        from src.repositories.usage import UsageRepository
-        UsageRepository(conn).emit_server_event(
+        usage_repo().emit_server_event(
             event_type="sync.pull_completed",
             user_id=user["id"],
             username=user.get("email") or user["id"],
@@ -1312,7 +1317,7 @@ async def get_sync_settings(
 @router.post("/settings")
 async def update_sync_settings(
     request: SyncSettingsUpdate,
-    user: dict = Depends(get_current_user),
+    user=Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Update user's dataset sync settings.
@@ -1322,6 +1327,9 @@ async def update_sync_settings(
     user_sync_settings layer is per-user preference, not authorization —
     the gate stops users from enabling sync on tables they cannot read.
     """
+    from app.auth.session_principal import SessionPrincipal
+    if isinstance(user, SessionPrincipal):
+        raise HTTPException(403, "co_session cannot mutate user settings")
     from app.auth.access import can_access
     from app.resource_types import ResourceType
 
@@ -1358,7 +1366,7 @@ async def get_table_subscriptions(
 @router.post("/table-subscriptions")
 async def update_table_subscriptions(
     request: TableSubscriptionUpdate,
-    user: dict = Depends(get_current_user),
+    user=Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Update per-table subscription preferences.
@@ -1367,6 +1375,9 @@ async def update_table_subscriptions(
     to when the user holds a resource_grants row for it (or is Admin). This
     prevents an authenticated user from subscribing to tables they cannot read.
     """
+    from app.auth.session_principal import SessionPrincipal
+    if isinstance(user, SessionPrincipal):
+        raise HTTPException(403, "co_session cannot mutate user settings")
     from app.auth.access import can_access
     from app.resource_types import ResourceType
 

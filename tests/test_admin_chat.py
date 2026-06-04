@@ -138,7 +138,7 @@ def test_admin_lists_active_sessions(api_client: TestClient, logged_in_admin):
     from datetime import datetime, timezone
     from unittest.mock import MagicMock
 
-    from app.chat.manager import LiveSession
+    from app.chat.manager import LiveSession, SinkEntry
     from app.chat.types import SessionState
 
     # First create a session so we have a real chat_id in the repo.
@@ -153,9 +153,9 @@ def test_admin_lists_active_sessions(api_client: TestClient, logged_in_admin):
         user_email="admin@test.com",
         state=SessionState.ACTIVE,
         handle=None,
-        ws=MagicMock(),
         started_at=now,
         last_activity=now,
+        sinks=[SinkEntry(participant_email="admin@test.com", sink=MagicMock())],
     )
 
     r = api_client.get("/admin/chat")

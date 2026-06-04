@@ -125,8 +125,6 @@ async def _warm_catalog_caches_bg(
 
 def _list_remote_rows() -> list[dict]:
     """Snapshot of registry rows that need a warmup pass."""
-    from src.db import get_system_db
-    conn = get_system_db()
     rows = table_registry_repo().list_all()
     return [
         r for r in rows

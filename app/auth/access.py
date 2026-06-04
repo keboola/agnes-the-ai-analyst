@@ -37,6 +37,7 @@ import duckdb
 from fastapi import Depends, HTTPException, Request, status
 
 from app.auth.dependencies import _get_db, get_current_user
+from app.auth.session_principal import SessionPrincipal
 from app.resource_types import ResourceType
 from src.db import SYSTEM_ADMIN_GROUP
 
@@ -143,11 +144,44 @@ def can_access(
     )
 
 
+def _allowed_ids_for_user(
+    user_id: str,
+    resource_type: str,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
+) -> frozenset[str]:
+    """Set of resource_ids the user is granted for ``resource_type``.
+
+    Deliberately does NOT apply the Admin god-mode short-circuit and does
+    NOT add internal-table implicit grants — it reports only what was
+    explicitly granted to a group the user belongs to. This is the single
+    no-short-circuit grant primitive that both ``can_access`` (union/admin
+    path) and ``compute_grant_intersection`` build on, so an admin-leak
+    cannot reappear by drift.
+
+    Routes through the repository factory (same split as ``can_access``) so
+    DuckDB and Postgres behave identically — never raw SQL on ``conn``.
+    """
+    group_ids = _user_group_ids(user_id, conn=conn)
+    if not group_ids:
+        return frozenset()
+    from src.repositories import use_pg, resource_grants_repo
+    if conn is not None and not use_pg():
+        from src.repositories.resource_grants import ResourceGrantsRepository
+        rows = ResourceGrantsRepository(conn).list_for_groups(
+            list(group_ids), resource_type,
+        )
+    else:
+        rows = resource_grants_repo().list_for_groups(
+            list(group_ids), resource_type,
+        )
+    return frozenset(r["resource_id"] for r in rows)
+
+
 def has_explicit_grant(
     user_id: str,
     resource_type: str,
     resource_id: str,
-    conn: duckdb.DuckDBPyConnection,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
 ) -> bool:
     """True iff one of the user's groups holds an explicit ``resource_grant``
     for ``(resource_type, resource_id)``.
@@ -161,20 +195,36 @@ def has_explicit_grant(
     granted to a group, even for admins (who can still reach the page by URL,
     since the route guard uses :func:`can_access` and admins keep god-mode
     there). Never use it as a security gate — that is :func:`can_access`'s job.
+
+    ``conn`` honored only in DuckDB-backend mode (test isolation); routes
+    through the global factory otherwise — same backend-split rule as
+    :func:`can_access`. (Previously this ran a raw ``conn.execute`` against
+    ``resource_grants``, which read the stale/empty DuckDB table on a
+    Postgres-backed instance and hid the nav link even when chat was granted.)
     """
-    group_ids = _user_group_ids(user_id, conn)
+    group_ids = _user_group_ids(user_id, conn=conn)
     if not group_ids:
         return False
-    placeholders = ",".join(["?"] * len(group_ids))
-    row = conn.execute(
-        f"""SELECT 1 FROM resource_grants
-            WHERE group_id IN ({placeholders})
-              AND resource_type = ?
-              AND resource_id = ?
-            LIMIT 1""",
-        [*group_ids, resource_type, resource_id],
-    ).fetchone()
-    return row is not None
+    from src.repositories import use_pg, resource_grants_repo
+    if conn is not None and not use_pg():
+        from src.repositories.resource_grants import ResourceGrantsRepository
+        return ResourceGrantsRepository(conn).has_grant(
+            list(group_ids), resource_type, resource_id,
+        )
+    return resource_grants_repo().has_grant(
+        list(group_ids), resource_type, resource_id,
+    )
+
+
+def can_access_session(
+    principal: "SessionPrincipal",
+    resource_type: str,
+    resource_id: str,
+) -> bool:
+    """Co-session access: membership in the live intersection. Must NOT call
+    is_user_admin / can_access (PR checklist item) — the SessionPrincipal's
+    ``intersection`` was already built without the admin short-circuit."""
+    return resource_id in principal.intersection.get(resource_type, frozenset())
 
 
 # ---------------------------------------------------------------------------
@@ -183,16 +233,24 @@ def has_explicit_grant(
 
 
 async def require_admin(
-    user: dict = Depends(get_current_user),
+    user=Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-) -> dict:
+):
     """Dependency: require user is in the Admin group. Raises 403 otherwise.
 
     Replaces the v9 ``require_role(Role.ADMIN)`` and
     ``require_internal_role("core.admin")`` thin wrappers. Same calling
     convention as before — endpoints write ``Depends(require_admin)`` (no
     parens) and receive the user dict.
+
+    A ``SessionPrincipal`` (co-session runner token) is HARD-DENIED before
+    any ``is_user_admin`` check — co-sessions never hold admin authority.
     """
+    if isinstance(user, SessionPrincipal):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
     if not is_user_admin(user["id"], conn):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -225,9 +283,9 @@ def require_resource_access(
 
     async def dep(
         request: Request,
-        user: dict = Depends(get_current_user),
+        user=Depends(get_current_user),
         conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-    ) -> dict:
+    ):
         try:
             resource_id = path_template.format(**request.path_params)
         except KeyError as e:
@@ -240,12 +298,15 @@ def require_resource_access(
                     f"{path_template!r} references missing path_param {e}"
                 ),
             )
-        if not can_access(user["id"], resource_type.value, resource_id, conn):
+        if isinstance(user, SessionPrincipal):
+            allowed = can_access_session(user, resource_type.value, resource_id)
+        else:
+            allowed = can_access(user["id"], resource_type.value, resource_id, conn)
+        if not allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=(
-                    f"Access denied to {resource_type.value} "
-                    f"{resource_id!r}"
+                    f"Access denied to {resource_type.value} {resource_id!r}"
                 ),
             )
         return user
@@ -294,3 +355,23 @@ def mint_session_jwt(user_email: str, chat_id: str, *, ttl_seconds: int = 3600) 
         "test-jwt-secret-key-minimum-32-chars!!",
     )
     return jwt.encode(payload, secret, algorithm="HS256")
+
+
+def mint_co_session_jwt(session_id: str, *, ttl: int = 3600) -> str:
+    """Mint a co-session runner token. Carries ONLY chat_session_id +
+    typ='co_session' + a synthetic sub (never a user UUID). No participant
+    email list is baked in (SR-4) — the resolver reads chat_session_participants
+    live as the sole source of truth, eliminating the stale-grant replay window.
+
+    Encoded with the canonical auth secret (app/auth/jwt) so verify_token
+    decodes it in every env.
+    """
+    from datetime import timedelta
+    from app.auth.jwt import create_access_token
+    return create_access_token(
+        user_id=f"session:{session_id}",
+        email="",  # no real identity; resolver never reads this
+        expires_delta=timedelta(seconds=ttl),
+        typ="co_session",
+        extra_claims={"chat_session_id": session_id},
+    )

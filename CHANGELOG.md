@@ -10,8 +10,282 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.2] — 2026-06-04
+
 ### Changed
 - Refreshed the `/login` feature panel to match the product pillars shown on `/home`: **Data packages**, **Marketplace** (plugins, skills, and agents in one card), **MCP**, **Memory**, and a **Use it anywhere** card for the cloud surfaces (Cowork, web chat, Slack). Replaces the stale, aspirational cards (*Unified Data Access / Instant Automation / Smart Notifications / Performance Intelligence*) with descriptions that reflect what the platform actually does, and adds a `BETA` badge to every capability except the mature Data packages core. The panel subtitle is realigned with the `/home` hero copy, and the cards are tightened so the full set fits without scrolling. Adds a "Made by Keboola" attribution with the Keboola wordmark at the foot of the brand panel.
+
+## [0.65.1] — 2026-06-04
+
+### Internal
+- Made `tests/test_cache_warmup.py::test_list_remote_rows_filters_to_bigquery_source_type`
+  deterministic by patching the `table_registry_repo()` factory the code calls
+  rather than the underlying class + `get_system_db` — the old patch could be
+  bypassed under xdist sharding when an `AGNES_DB_URL` from another shard flipped
+  `use_pg()`. Also dropped a vestigial `get_system_db()` call in
+  `cache_warmup._list_remote_rows` (rows already come from the factory).
+- Backend-split guard caught two new residual sites the chat/Slack work landed:
+  `app/chat/persistence.py`'s 4th PG repo (`ChatSessionParticipantPgRepository`)
+  and `src/grant_intersection.py` are recognized as legit (gated PG dispatch /
+  `not use_pg()` escape hatch); the genuine backend-split sites
+  (`services/slack_bot/commands.py`, `app/auth/pat_resolver.py`) are pinned as
+  residual to keep the ratchet honest until they're routed through the factory.
+
+### Fixed
+- **Postgres backend: admin telemetry, the stack resolver, and per-user MCP
+  secrets now work on a PG instance.** Three more clusters that read system
+  state off a raw DuckDB connection: the `/api/admin/telemetry/*` +
+  `/api/admin/sessions/*` aggregates (now via new `usage_repo()` methods on both
+  backends), the `/api/stack` resolver (`StackResolver` routes every read/write
+  through the repo factory, keeping a `not use_pg()` DuckDB escape hatch for
+  test isolation), and `GET/PUT/DELETE /api/mcp/sources/{id}/my-secret` (new
+  `per_user_secrets_repo()` factory + Postgres `PerUserSecretsPgRepository`,
+  sharing the same Fernet vault helpers). Also brought `resource_grants_pg`
+  `list_for_groups`/`get` to parity with DuckDB by adding the `requirement`
+  column. Each pinned by a both-backends parity test in `tests/db_pg/`.
+- **Postgres backend: more endpoint reads routed through the repo factory.**
+  An app-level parity harness (`seeded_app_both`, runs each test against DuckDB
+  and real Postgres) surfaced several endpoints that read system state off a
+  raw DuckDB connection and so returned empty/stale data on a PG instance —
+  now fixed: `GET /api/memory/stats` (total + by_status/categories/by_domain/
+  by_source_type via a new `knowledge_repo().stats_breakdown()` + `count_items`),
+  `GET /api/store/owners` and the store entity `owner_display_name`
+  (via `store_entities_repo()` + `users_repo()`), the cowork setup-token /
+  exchange endpoints (`setup_tokens_repo()`/`users_repo()`/`access_token_repo()`),
+  the MCP tool-grant group check (`user_groups_repo()`), and the data-package
+  `curated` badge (RBAC via the factory). New parity tests in `tests/db_pg/`
+  pin each on both backends.
+- **Postgres backend: catalog detail pages 404'd / rendered empty.** The web
+  catalog detail routes (`/catalog/p/{slug}`, `/catalog/t/{table_id}`,
+  `/catalog/r/{slug}`) and the `/chat` capability panel read `table_registry` /
+  `sync_state` through a raw DuckDB `conn`, so on a Postgres instance a
+  registered table's detail page returned 404 (and package/recipe pages showed
+  no tables, no sync timestamps). Routed through `table_registry_repo()` /
+  `sync_state_repo()`. Found and pinned by a new app-level backend-parity test
+  harness (`tests/db_pg/test_endpoints_backend_parity.py`) that exercises
+  endpoints against a real Postgres backend via `seeded_app_both`.
+- **Postgres backend: MCP passthrough tools broke on a PG instance.** The
+  passthrough helper `_visible_passthrough_tools` and the `/api/mcp/passthrough`
+  routes (`list` + `invoke`) plus the `/me/cowork` page read `mcp_sources` /
+  `tool_registry` / RBAC grants off a raw DuckDB connection. On a Postgres
+  instance those tables are empty, so the Cowork page showed no MCP tools and
+  `POST /tools/{id}/call` 404'd ("passthrough tool not found") / 409'd for tools
+  that exist. All reads now go through the repo factory (`tool_registry_repo()`,
+  `mcp_sources_repo()`, `is_user_admin` / `_user_group_ids` without a conn); one
+  backend-aware `_visible_passthrough_tools` fixes every caller.
+- **Postgres backend: cloud-chat nav link hidden even when granted.**
+  `has_explicit_grant` (powers the `/chat` nav-link visibility) ran a raw
+  `conn.execute` against `resource_grants` instead of the backend-aware
+  factory, so on a Postgres instance it read the stale/empty DuckDB table and
+  the link stayed hidden for users who actually had the grant. It now mirrors
+  `can_access` (routes through `resource_grants_repo()`, honoring a passed conn
+  only in DuckDB mode), and the nav-link caller no longer opens a throwaway
+  DuckDB cursor. Cosmetic (UI affordance only — the route/API gate was never
+  affected). Follow-up to the marketplace/RBAC backend-split sweep.
+- **Postgres backend: store submission rescan crashed.** The `/admin` store
+  submission rescan route reached into the factory repo's private DuckDB
+  connection (`subs.conn.execute("UPDATE store_submissions …")`). On a
+  Postgres-backed instance `store_submissions_repo()` returns the PG repo,
+  which has no `.conn` attribute → `AttributeError`. Replaced both raw writes
+  with a new `set_inline_result(id, inline_checks=…, status=…)` method on both
+  the DuckDB and PG repos (cross-engine contract test added).
+- **Postgres backend: the entire marketplace was empty on a PG instance.** The
+  nightly marketplace ingestion in `src/marketplace.py` ran on a raw DuckDB
+  connection (`_get_conn()` → `get_system_db()`): `sync_marketplaces()` read the
+  registry from DuckDB → empty on a PG instance → "nothing to sync", so the sync
+  silently never ran; and `_refresh_plugin_cache()` wrote `marketplace_plugins`
+  rows into the DuckDB file the factory-backed readers (`/marketplace` UI, RBAC
+  fanout) never read. `sync_one` / `sync_marketplaces` / `_refresh_plugin_cache`
+  now go through `marketplace_registry_repo()` / `marketplace_plugins_repo()`.
+  The read side `GET /api/v2/marketplace/skills` (`_accessible_plugins`) had the
+  same defect — it read plugins AND resolved RBAC group membership off a DuckDB
+  conn; it now uses the factory and lets `is_user_admin` / `_user_group_ids`
+  fall back to the active backend.
+- **Postgres backend: curated plugin install/uninstall 404'd / mis-gated.** On a
+  Postgres-backed instance, `POST /api/marketplace/curated/{id}/{name}/install`
+  checked plugin existence with a raw `conn.execute` against DuckDB (`conn` from
+  `Depends(_get_db)` is always DuckDB), while the plugins actually live in
+  Postgres — so every curated plugin appeared not to exist and install raised
+  404 `plugin_not_found`; nobody could install a curated plugin on a PG instance.
+  The uninstall twin read `is_system` the same raw way (mis-gating the
+  system-plugin uninstall guard). Both now read through `marketplace_plugins_repo()`
+  via a new `get(marketplace_id, name)` method added to both the DuckDB and PG
+  repos (with a cross-engine contract test).
+- **Postgres backend: repository method-parity drift (same class as #499/#513).**
+  Several public methods lived on a DuckDB repo but were missing from the
+  `_pg` sibling, so calls that work on a DuckDB dev box crash once a
+  Postgres-backed (CLOUD / SIDE_CAR) instance is live:
+  - `agnes admin metrics import` / `export` (the documented starter-pack
+    command) and the column-metadata proposal import `AttributeError`-crashed
+    on Postgres — `metric_repo()` / `column_metadata_repo()` resolved to the
+    PG repo, which lacked `import_from_yaml` / `export_to_yaml` /
+    `import_proposal`. These backend-agnostic helpers now live in a shared
+    mixin used by both backends, so they can't drift again.
+  - The LLM table auto-doc writeback (`agnes admin … autodoc`) and server-side
+    telemetry events (`data_package.view`, `memory_domain.view`,
+    `memory.dismiss`/`undismiss`, `sync.pull_*`) constructed their repos with a
+    raw DuckDB connection, so on a Postgres instance the writes silently landed
+    in the unused DuckDB file. `set_description` / `emit_server_event` are now
+    implemented on the PG repo and these callers go through the backend-aware
+    repo factory.
+
+### Internal
+- New cross-engine guard `tests/db_pg/test_repo_method_parity.py` — a static
+  (AST) check that every public method (and its parameters) on a DuckDB
+  repository also exists on its `_pg` sibling, with a documented allow-list for
+  intentional asymmetries. Turns the #499/#513 "method missing on PG" drift
+  class from a production-only discovery into a CI failure on the PR that
+  introduces it. Sister to the existing `test_schema_parity.py` (column drift).
+  Behavioural coverage for the methods ported in this change lives in
+  `tests/db_pg/test_ported_methods_contract.py` (parametrised over both
+  backends).
+- New ratchet guard `tests/test_backend_split_guard.py` — enumerates every
+  current direct backend-aware repo instantiation (`XRepository(conn)`, #513)
+  and every non-infra `get_system_db()` caller (#518), pins them in an
+  allow-list, and fails CI when a NEW one appears. Companion stale-entry checks
+  force an entry's removal once its site is migrated to the factory, so the
+  allow-list always reflects the live residual (it cannot silently hide work) —
+  shrinking it to the legitimately-DuckDB-only sites is the mechanical
+  definition of "the DuckDB→Postgres migration is finished". Meta-tests assert
+  the detector flags a planted violation and ignores the factory-call form.
+
+## [0.65.0] — 2026-06-03
+
+### Added
+- Web chat: a non-interactive "Slack" pill in the `/chat` sidebar marks sessions that originated from Slack (`slack_dm` / `slack_thread`), and `/chat?session=<id>` now deep-links straight into a session on page load. Both are client-side renders that degrade gracefully on older servers; the deep link is a one-shot, RBAC-guarded by the existing session-scoped endpoints (an unknown/forbidden id lands on an empty chat with an error status rather than leaking data).
+- **Slack Block Kit interactivity.** Bot DM replies now carry interactive
+  buttons, delivered via a new signature-verified `POST /api/slack/interactivity`
+  endpoint (ack-then-async, empty 200): **Stop** (owner-gated, cancels the live
+  turn), **Continue on web** (deep link to `/chat?session=<id>`), and **New
+  session** (owner-gated soft-archive, shared path with `/agnes-new`). The Stop
+  button is posted on the first assistant turn and stripped when the turn ends
+  (`done`), errors, or is cancelled. A **Share to channel** consumer is also
+  added (promotes an answer to a public in-thread post — allowlist re-checked at
+  click time, audited as `slack_share`); its producer attaches with the slash
+  `/agnes` ephemeral surface in a later change. New leaf `blocks.py` builders +
+  `interactivity.py` parser/router; `sender.py` gains block/update/channel/
+  ephemeral/`response_url` primitives; `binding.py` gains a per-channel
+  allowlist check; the Slack events webhook now acks-then-processes. Manifest
+  enables interactivity and documents HTTP vs Socket Mode stanzas.
+- Slack slash commands: `/agnes <question>` (runs on your persistent DM session so the answer also appears on web `/chat`), `/agnes-new` (archive the current DM session), `/agnes-status` (active session count vs cap + a `/chat` deep link), and `/agnes help`. New signature-verified `POST /api/slack/commands` endpoint acks within 3 s and delivers answers asynchronously via Slack `response_url`.
+- Slack channel mentions: `@agnes` in an allowlisted channel now opens a public in-thread session owned by the mention starter, gated by a new `slack_channel` resource type (default-deny; admins enable a channel by granting `(Everyone, slack_channel, <channel_id>)` on /admin/access). Denials are ephemeral.
+- **Slack Socket Mode transport (optional).** A second inbound Slack
+  transport selectable per instance via `chat.slack.transport: http|socket`
+  in `instance.yaml` (or the `SLACK_TRANSPORT` env var; default `http`).
+  Socket Mode delivers events over an outbound WebSocket — no public webhook
+  URL required. Both transports funnel through the existing event dispatcher
+  (no forked handler logic). Requires the new `slack-socket` extra
+  (`pip install '.[slack-socket]'`), a single worker (`UVICORN_WORKERS=1`),
+  and an `xapp-`/`xoxb-` token pair; all gates fail closed (log + disable
+  Slack, never crash, never start a dead WS). Two manifest stanzas documented
+  in `docs/slack-manifest-http.md` and `docs/slack-manifest-socket.md`.
+
+### Fixed
+- **Co-drive co-presence (Phase 5b) — security/functional hardening.**
+  Six adversarial-review findings addressed:
+  - `GET /api/memory/bundle` now handles `SessionPrincipal` callers correctly:
+    the `?domain=` path uses `can_access_session` (intersection-gated), the
+    non-domain path resolves granted domains from the intersection, and neither
+    path crashes on `user["id"]` for co-session tokens. Shared domains → 200;
+    owner-only domains → 403; previously both → 500.
+  - `POST /api/mcp/query-table/{id}` replaced `can_access(user["id"], ...)` with
+    the principal-aware `can_access_table(user, ...)` chokepoint. Co-session
+    tokens on single-participant tables now correctly return 403 instead of 500.
+  - `POST /api/query` internal-table path (`_run_internal_query`) now applies the
+    same `SessionPrincipal` shim as `v2_sample.py`: is_admin=False and an
+    empty-identity filter so internal queries by co-session tokens return 0 rows
+    instead of crashing.
+  - `prepare_ephemeral_session_dir` no longer calls `render_workspace_prompt` for
+    co-drive sessions. The owner-scoped CLAUDE.md render leaked owner-specific
+    catalog metadata (`{{tables}}`, `{{marketplaces}}`) into the shared ephemeral
+    workspace. The static "# Co-drive session" header is always used instead.
+  - Added `WebSocket /api/chat/sessions/{id}/join` route for co-drive live join:
+    consumes a short-lived per-participant ticket, re-verifies membership (SR-9),
+    calls `mgr.add_sink(session_id, ws, participant_email)`, and streams frames.
+    `POST /api/chat/{id}/join-ticket` now issues via `_TICKETS` (carrying the
+    participant email) instead of a co_session JWT. Both `ws_stream` and
+    `ws_join` thread `sender_email` into every `send_user_message` call so
+    per-sender budgets (SR-10) and departed-participant replay-skip (SR-11) work.
+  - Slack binding brute-force protection rebuilt as a **per-caller redeem
+    rate-limit**. The prior per-code attempt counter was dead code (a wrong
+    guess matches no code row), and an earlier global `UPDATE ... SET
+    attempts = attempts + 1` (no WHERE clause) was a cross-user DoS. The redeem
+    path now counts FAILED attempts per redeeming `user_email` in a sliding
+    10-minute window (lazy `slack_binding_redeem_log` table, mirroring the
+    issuance log); the 6th failed attempt raises `BindingThrottled` before the
+    code is even inspected — bounding brute force of the 1M-PIN space against a
+    victim's live code while isolating callers from one another (no cross-user
+    eviction). A successful bind clears the caller's attempt history.
+    `POST /api/slack/bind` maps `BindingThrottled` to **429** (not 500). Audit
+    params use `json.dumps` to prevent JSON injection via crafted Slack IDs.
+- **Slack events: ack-then-async.** `POST /api/slack/events` now schedules the
+  (slow, sandbox-spawning) event dispatch and returns the `200` ack
+  immediately instead of awaiting it. The previous `await` blew Slack's 3s
+  ack budget on the first DM (E2B spawn > 3s), triggering Slack retries that
+  could race a duplicate chat session. A failure inside the detached dispatch
+  is logged (and surfaced via the best-effort recovery seam) rather than
+  retried by Slack.
+
+### Added (continued)
+- Live co-drive co-presence authorization: a co-session authorizes against the
+  intersection of all live participants' grants (`SessionPrincipal`,
+  `compute_grant_intersection`, `can_access_session`) with no admin
+  short-circuit; the co-session JWT carries no participant identity (read live
+  from `chat_session_participants`); fork-on-invite, membership-gated join,
+  atomic leave teardown with respawn under the narrowed intersection,
+  per-sender budgets/rate-limits/caps, and an ephemeral workspace that never
+  mounts a personal directory or `CLAUDE.local.md`. Invite/join/leave/fork
+  endpoints are RBAC-gated; every fork is audited.
+- Co-presence web surface: a Co-drive pill, participant-avatar cluster,
+  per-message sender attribution, and Invite/Fork affordances, driven by a new
+  `session_participants` WebSocket frame (all co fields optional → graceful
+  degradation on older servers).
+
+### Changed
+- `can_access_table`, `get_accessible_tables`, `StackResolver.stack`, and the
+  sync manifest builder now accept either a user dict or a `SessionPrincipal`,
+  so every audited data-read path (`/api/data`, `/api/catalog`,
+  `/api/sync/manifest`, `/api/v2/{scan,sample,schema}`) authorizes a
+  co-session against the live intersection; settings-mutation and
+  stack-management endpoints hard-deny a `SessionPrincipal`.
+- Slack binding: at most one active verification code per Slack user, issuance
+  throttling, per-code attempt lockout, and an audit entry on every redeem.
+
+### Security
+- A single-user token aimed at an `is_co_session` session is rejected
+  (`invalid_token`) at the resolver, independent of minter correctness.
+- `require_admin` hard-denies a `SessionPrincipal` before any admin check.
+
+### Internal
+- **DuckDB schema → v69 + Postgres parity (co-drive foundation).** Additive
+  migration `_v68_to_v69` in `src/db.py` (matching Alembic `0016_cloud_chat_v69`)
+  adds `chat_sessions.is_co_session` / `ephemeral` (BOOLEAN DEFAULT FALSE),
+  `chat_messages.sender_email` (nullable, backfilled to the session owner for
+  existing user turns), and the `chat_session_participants` table. DuckDB
+  `ChatRepository` deletes participant rows before sessions on hard-delete
+  (no `ON DELETE CASCADE`); PG uses the FK cascade. New repo methods
+  (`add_session_participant`, `get_session_participants`, `remove_participant`,
+  `update_participant_role`, `list_sessions_for_participant`,
+  `fork_session_as_co_session`) ship on both backends with cross-engine
+  contract tests.
+- **`ChatManager` multi-sink fan-out.** `LiveSession.ws` is now
+  `sinks: list[SinkEntry]`; runner frames broadcast to every sink while
+  persistence/audit stay singular. `attach` gains a `*, is_primary=True`
+  parameter; `add_sink` replays persisted history before appending a
+  late-joining sink. `send_user_message` accepts `sender_email` and serializes
+  the stdin write+drain under a per-session `_stdin_lock` so concurrent turns
+  can't interleave partial JSON lines. New `ChatManager.active_count_for_user`
+  wrapper.
+
+## [0.64.0] — 2026-06-03
+
+### Added
+- MCP source secrets are now fully manageable from the admin UI: set/rotate/clear a vault-stored secret (encrypted at rest), an `env` (`KEY=VALUE`) field and a `scope` selector on the source form, and a secret-status indicator — no host environment variable required. The legacy `auth_secret_env` (host-env) path is relabelled "Advanced (legacy)" and still works. Storing a secret with no `AGNES_VAULT_KEY` set now returns `409` (outside `LOCAL_DEV_MODE`) instead of silently using an ephemeral key that loses the value on restart; a set-but-invalid key still raises a clear config error. `GET /api/health` now reports `vault_key_configured`, source serialization includes a `has_vault_secret` boolean, and `AGNES_VAULT_KEY` is documented in `config/.env.template`. Deleting a source now also removes its vault secrets (shared + per-user) so no orphaned encrypted rows are left behind.
+
+## [0.63.1] — 2026-06-03
+
+### Fixed
+- **A cloud/DuckDB-backend VM now reboots cleanly instead of hanging on a side-car migration.** The `customer-instance` startup-script baked the Postgres side-car overlay (`docker-compose.postgres.yml` + `…-host-mount.yml`) into the `.env` `COMPOSE_FILE` unconditionally — so a reboot of a `backend: cloud` (or `duckdb`) instance re-engaged the side-car and ran the one-shot `migrate` service against it, which fails (`failed to resolve host 'postgres'`) and blocks `app`/`scheduler` startup via `depends_on`. The startup-script now selects the overlay set from the persisted `instance.yaml` backend — side-car overlay only for `backend=side_car`; `duckdb`/`cloud` run the baseline (cloud reaches managed Postgres via `instance.yaml::database.url`) — mirroring `agnes-state-applier.sh`. Regression test added.
 
 ## [0.63.0] — 2026-06-03
 

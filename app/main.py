@@ -280,8 +280,14 @@ from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import make_git_wsgi_app
 from app.web.router import router as web_router
 from app.api.chat import router as chat_router
+from app.api.chat_copresence import router as chat_copresence_router
 from app.api.slack import router as slack_router
 from app.api.admin_chat import router as admin_chat_router
+from app.instance_config import get_slack_transport
+from services.slack_bot.socket_mode_client import (
+    SocketModeDispatcher,
+    socket_mode_preflight,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -305,6 +311,36 @@ def _maybe_rebuild_on_boot() -> bool:
     except Exception:
         logger.exception("AGNES_REBUILD_ON_BOOT rebuild failed (non-fatal)")
         return False
+
+
+async def _start_slack_socket_transport(app) -> None:
+    """If chat.slack.transport=socket, start one Socket Mode WS behind
+    fail-closed gates. On any miss -> log + leave Slack HTTP-only; never
+    crash and never start a dead WS. Stashed on app.state for shutdown."""
+    app.state.slack_socket_dispatcher = None
+    if get_slack_transport() != "socket":
+        return
+    app_token = os.environ.get("SLACK_APP_TOKEN", "")
+    bot_token = os.environ.get("SLACK_BOT_TOKEN", "")
+    try:
+        workers = int(os.environ.get("UVICORN_WORKERS", "1"))
+    except ValueError:
+        workers = 1
+    ok, reason = socket_mode_preflight(
+        workers=workers, app_token=app_token, bot_token=bot_token,
+    )
+    if not ok:
+        logger.error("Slack Socket Mode disabled: %s", reason)
+        return
+    try:
+        dispatcher = SocketModeDispatcher(
+            app=app, app_token=app_token, bot_token=bot_token,
+        )
+        await dispatcher.start()
+        app.state.slack_socket_dispatcher = dispatcher
+    except Exception:
+        logger.exception("Slack Socket Mode disabled: start() failed")
+        app.state.slack_socket_dispatcher = None
 
 
 @asynccontextmanager
@@ -700,7 +736,34 @@ async def lifespan(app):
         app.state.chat_manager = None
     # --- end CHAT-INIT -------------------------------------------------------
 
+    # --- SLACK-INIT: resolve bot user id once (mention loop-guard / strip) ---
+    app.state.slack_bot_user_id = None
+    try:
+        from services.slack_bot.identity import resolve_bot_user_id
+        app.state.slack_bot_user_id = await resolve_bot_user_id()
+        if app.state.slack_bot_user_id:
+            logger.info("slack bot user id resolved: %s", app.state.slack_bot_user_id)
+    except Exception:
+        logger.exception("SLACK-INIT failed (non-fatal); bot user id unresolved")
+    # --- end SLACK-INIT ------------------------------------------------------
+
+    # --- SLACK SOCKET MODE (optional inbound transport) ----------------------
+    # Boot-safety boundary: a Slack misconfig (bad transport value, preflight
+    # raising, etc.) must NEVER crash app startup. The helper self-guards
+    # start(); this covers everything before it.
+    try:
+        await _start_slack_socket_transport(app)
+    except Exception:
+        logger.exception("Slack Socket Mode wiring failed (non-fatal)")
+    # --- end SLACK SOCKET MODE -----------------------------------------------
+
     yield
+    _socket_disp = getattr(app.state, "slack_socket_dispatcher", None)
+    if _socket_disp is not None:
+        try:
+            await _socket_disp.stop()
+        except Exception:
+            logger.exception("Slack Socket Mode shutdown failed")
     try:
         from src.observability import get_posthog
         get_posthog().shutdown()
@@ -1122,6 +1185,7 @@ def create_app() -> FastAPI:
     app.include_router(db_state_router)
     app.include_router(marketplace_server_router)
     app.include_router(chat_router)
+    app.include_router(chat_copresence_router)
     app.include_router(slack_router)
     app.include_router(admin_chat_router)
 

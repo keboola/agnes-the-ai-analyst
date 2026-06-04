@@ -14,6 +14,7 @@ import duckdb
 
 from app.auth.access import is_user_admin
 from app.auth.dependencies import get_current_user, _get_db
+from app.auth.session_principal import SessionPrincipal
 from app.instance_config import get_value
 from connectors.internal.access import (
     InternalAccessError,
@@ -280,7 +281,19 @@ def _run_internal_query(
     system_db_path = str(_get_state_dir() / "system.duckdb")
     # is_user_admin takes (user_id, conn) — passing the dict raises
     # TypeError, which is exactly the regression review #278/1 caught.
-    is_admin = is_user_admin(user.get("id"), conn) if user.get("id") else False
+    # A SessionPrincipal has no .get("id") — treat co-session as non-admin
+    # for internal row-level filter. build_filter_clause expects a dict
+    # so pass a shim when user is a principal (mirrors v2_sample.py:131-137).
+    # The shim id "session.none" passes the safe-identifier regex but never
+    # matches a real user_id; the email local-part "session.none" similarly
+    # passes the username regex but matches no real session. Together the
+    # filter yields zero rows for every internal table — correct behaviour
+    # (co-sessions should not see any single user's internal rows).
+    if isinstance(user, SessionPrincipal):
+        is_admin = False
+        user = {"id": "session.none", "email": "session.none@internal"}
+    else:
+        is_admin = is_user_admin(user.get("id"), conn) if user.get("id") else False
     try:
         columns, rows, truncated = execute_internal_query(
             system_db_path=system_db_path,

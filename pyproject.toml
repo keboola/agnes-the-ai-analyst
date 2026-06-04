@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.63.0"
+version = "0.65.2"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -154,6 +154,13 @@ observability = [
     # Already in base dependencies — listed here so operators who want to
     # be explicit can `pip install -e ".[observability]"` and signal intent.
     "posthog>=3.7.0",
+]
+slack-socket = [
+    # Socket Mode (optional inbound transport). Imported lazily inside
+    # SocketModeDispatcher.start() — never at module top — so HTTP-only
+    # deployments need not install it. A missing import is a fail-closed
+    # gate at lifespan init (logs + disables Slack, never a dead WS).
+    "slack_sdk>=3.27",
 ]
 dev = [
     "pytest>=9.0.0",

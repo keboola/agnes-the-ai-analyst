@@ -167,6 +167,23 @@ def get_data_source_type() -> str:
     return os.environ.get("DATA_SOURCE", get_value("data_source", "type", default="local"))
 
 
+def get_slack_transport() -> str:
+    """Inbound Slack transport for this instance: "http" (default) | "socket".
+
+    Resolution: ``SLACK_TRANSPORT`` env (Terraform-friendly, overrides
+    everything) > ``chat.slack.transport`` in instance.yaml > default
+    ``"http"``. Unknown values fall back to ``"http"`` so a typo never
+    starts a dead Socket Mode WS. Mirrors :func:`get_data_source_type`.
+    """
+    raw = os.environ.get("SLACK_TRANSPORT") or get_value(
+        "chat", "slack", "transport", default="http"
+    )
+    value = (raw or "http").strip().lower()
+    if value not in ("http", "socket"):
+        return "http"
+    return value
+
+
 def get_home_route() -> str:
     """Path that ``/`` redirects to for an authenticated user.
 

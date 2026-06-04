@@ -5,6 +5,39 @@ let ws = null;
 let currentChatId = null;
 let inFlightToolCalls = new Map();
 
+// §5.3 Co-presence: the current user's email for per-message sender attribution.
+// Sourced from <body data-user-email="..."> set by the server-rendered template.
+// Empty string for unauthenticated / anonymous views — co-presence degrades
+// gracefully (no attribution rendered) in that case.
+const currentUserEmail = document.body.dataset.userEmail || "";
+
+// --- Cross-surface deep link (/chat?session=<id>) ------------------------
+// chat.html's <body data-initial-session="<id>"> hook carries an optional
+// session id from the ?session= query param. We open it ONCE on boot,
+// after the sidebar cache is populated, and only if the user hasn't
+// already navigated into a session (``!currentChatId``). Consumed once
+// (set to null) so a later loadSidebar() refresh can't re-hijack the view.
+// On an unknown / forbidden id, openSession proceeds (it sets currentChatId
+// and clears the message pane) but its session-scoped endpoint calls
+// (GET /sessions/{id}/messages, POST /sessions/{id}/ticket) fail their RBAC
+// guards and surface a status message via setStatus — no page crash, no
+// data leak; the view simply lands on an empty "Untitled chat" with an
+// error status. (This is not a clean no-op: a bad deep link leaves the UI
+// in an empty/error state, which is acceptable and RBAC-safe.)
+let _initialSessionId = (document.body.dataset.initialSession || "").trim() || null;
+
+/** Open the deep-linked session exactly once on boot. No-op if there's no
+ *  deep link, if the user already opened a session, or after first use. */
+function _maybeOpenInitialSession() {
+  if (!_initialSessionId || currentChatId) return;
+  const id = _initialSessionId;
+  _initialSessionId = null;            // consume once — refreshes can't re-fire
+  requestAnimationFrame(() => {
+    if (currentChatId) return;          // re-check: a click may have raced in
+    openSession(id);
+  });
+}
+
 // Promise that resolves on the first ``ready`` / ``runner_ready`` frame from
 // the server after we open a WebSocket. ``ws.readyState === 1`` (the TCP/HTTP
 // handshake) does NOT mean the server-side ``ChatManager.attach`` has finished
@@ -247,6 +280,21 @@ function _makeSidebarItem(s) {
   label.textContent = s.title || "Untitled chat";
   li.appendChild(label);
 
+  // Cross-surface origin pill. Slack-originated sessions (slack_dm /
+  // slack_thread) get a small, non-interactive "Slack" text pill so the
+  // user can tell at a glance which conversations came in over Slack vs
+  // the web composer. Text, not a brand icon — no asset bundled, satisfies
+  // the design-system contract. Unknown / undefined surface → no pill
+  // (fail-closed: an older server that doesn't emit `surface` shows the
+  // plain web style).
+  if (s.surface === "slack_dm" || s.surface === "slack_thread") {
+    const badge = document.createElement("span");
+    badge.className = "cloud-chat-surface-badge";
+    badge.textContent = "Slack";
+    badge.setAttribute("aria-hidden", "true");  // label already names the row
+    li.appendChild(badge);
+  }
+
   const del = document.createElement("button");
   del.type = "button";
   del.className = "cloud-chat-list-del";
@@ -455,6 +503,12 @@ function handleFrame(frame) {
     case "done":
       $("cancel-btn").hidden = true;
       break;
+    case "session_participants":
+      // §5.3 Co-presence: full re-render of the participant roster.
+      // Co fields are optional — an older server that never sends this frame
+      // degrades gracefully (renderParticipants with empty list is a no-op).
+      renderParticipants(frame.participants || []);
+      break;
   }
 }
 
@@ -645,6 +699,17 @@ function renderMessage(m) {
   body.innerHTML = marked.parse(m.content || "");
   enhanceCodeBlocks(body);
   enhanceTables(body);
+
+  // §5.3 Co-presence: per-message sender attribution for foreign senders.
+  // sender_email is an optional co-drive field — single-user sessions never
+  // populate it, so this is a no-op for ordinary sessions.
+  if (m.sender_email && m.sender_email !== currentUserEmail) {
+    const who = document.createElement("div");
+    who.className = "msg-sender-attr";
+    who.textContent = m.sender_email;
+    who.style.cssText = "font-size:var(--ds-text-xs,0.75rem);color:var(--ds-text-secondary);margin-bottom:2px;";
+    bubble.insertBefore(who, body);
+  }
 
   if (m.tool_calls && m.tool_calls.length) {
     for (const tc of m.tool_calls) {
@@ -1663,9 +1728,86 @@ function closePalette() {
   });
 })();
 
+// ---------------------------------------------------------------------------
+// §5.3 Co-presence surface — pill, avatar cluster, invite/fork affordances
+// ---------------------------------------------------------------------------
+
+/** Full re-render of the co-presence host element.
+ *
+ *  Self-healing: called on every ``session_participants`` WebSocket frame so
+ *  the roster is always current. Co fields are optional — if the server never
+ *  sends this frame the host stays empty and the single-user UI is unchanged.
+ */
+function renderParticipants(participants) {
+  const host = $("co-presence");
+  if (!host) return;
+  host.innerHTML = "";
+  if (!participants.length) return;
+  renderCoPresence(host, participants);
+}
+
+/** Render the co-drive pill, avatar cluster, and invite/fork button into host. */
+function renderCoPresence(host, participants) {
+  // Co-drive pill — styled via inline var(--ds-*) tokens so no raw hex is
+  // introduced. chat.css is the canonical place for layout rules.
+  const pill = document.createElement("span");
+  pill.className = "co-drive-pill";
+  pill.textContent = "Co-drive";
+  pill.style.cssText = (
+    "display:inline-flex;align-items:center;gap:4px;" +
+    "padding:2px 8px;border-radius:var(--ds-radius-sm,4px);" +
+    "background:var(--ds-surface-accent,var(--ds-surface-dim));" +
+    "color:var(--ds-text-primary);font-size:var(--ds-text-xs,0.75rem);"
+  );
+  host.appendChild(pill);
+
+  // Participant avatar cluster — one initial per participant.
+  const cluster = document.createElement("div");
+  cluster.className = "participant-avatars";
+  cluster.style.cssText = "display:inline-flex;gap:4px;margin-left:6px;";
+  for (const p of participants) {
+    const a = document.createElement("span");
+    a.className = "participant-avatar";
+    a.title = p.email || "";
+    a.textContent = (p.email || "?").charAt(0).toUpperCase();
+    a.style.cssText = (
+      "display:inline-flex;align-items:center;justify-content:center;" +
+      "width:24px;height:24px;border-radius:50%;" +
+      "background:var(--ds-surface-accent,var(--ds-border));" +
+      "color:var(--ds-text-primary);font-size:var(--ds-text-xs,0.75rem);" +
+      "border:1px solid var(--ds-border);"
+    );
+    cluster.appendChild(a);
+  }
+  host.appendChild(cluster);
+
+  // Invite (owner) or Fork (collaborator) action button.
+  const isOwner = participants.some(
+    (p) => p.email === currentUserEmail && p.role === "owner",
+  );
+  const btn = document.createElement("button");
+  btn.className = "co-presence-action";
+  btn.style.cssText = (
+    "margin-left:6px;padding:2px 8px;border-radius:var(--ds-radius-sm,4px);" +
+    "border:1px solid var(--ds-border);background:var(--ds-surface);" +
+    "color:var(--ds-text-primary);cursor:pointer;font-size:var(--ds-text-xs,0.75rem);"
+  );
+  if (isOwner) {
+    btn.textContent = "Invite";
+    btn.dataset.action = "invite";
+  } else {
+    btn.textContent = "Fork";
+    btn.dataset.action = "fork";
+  }
+  host.appendChild(btn);
+}
+
 (async () => {
   renderCapabilities();
   wireSuggestionButtons();
   autosizeComposer();
   await loadSidebar();
+  // Sidebar cache (_sessionsCache) is now populated so openSession can
+  // resolve the title; fire the one-shot deep-link open.
+  _maybeOpenInitialSession();
 })();

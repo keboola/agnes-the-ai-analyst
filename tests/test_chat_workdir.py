@@ -78,6 +78,22 @@ def test_session_dir_creates_subtree(workdir_mgr: WorkdirManager):
     assert sdir.parent.name == "sessions"
 
 
+def test_regular_session_includes_claude_local_md(workdir_mgr: WorkdirManager):
+    """Regression: a regular per-user session must symlink the analyst's
+    personal CLAUDE.local.md by default (include_personal_override defaults
+    to True). Co-sessions exclude it via prepare_ephemeral_session_dir."""
+    workdir_mgr.ensure_user_workdir("u@x")
+    ws = workdir_mgr.user_workspace("u@x")
+    (ws / "CLAUDE.local.md").write_text("# personal override\n")
+
+    sdir = workdir_mgr.prepare_session_dir("u@x", "chat_local")
+
+    link = sdir / "CLAUDE.local.md"
+    assert link.exists(), "regular session must include CLAUDE.local.md"
+    assert link.is_symlink()
+    assert link.resolve() == (ws / "CLAUDE.local.md").resolve()
+
+
 def test_purge_user_removes_root(workdir_mgr: WorkdirManager):
     workdir_mgr.ensure_user_workdir("u@x")
     n = workdir_mgr.purge_user("u@x")

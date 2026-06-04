@@ -19,16 +19,15 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth.access import require_admin
-from app.auth.dependencies import _get_db
 from app.api.admin_user_sessions import _SESSION_FILE_RE, _session_data_dir
 from services.session_pipeline.lib import parse_jsonl
 
 from src.repositories import (
     audit_repo,
+    usage_repo,
 )
 logger = logging.getLogger(__name__)
 
@@ -43,41 +42,9 @@ def _window_since(since_minutes: int) -> datetime:
     return datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
 
 
-def _build_where(
-    since: datetime,
-    username: Optional[str],
-    model: Optional[str],
-    only_errors: bool,
-    q: Optional[str],
-) -> tuple[str, list[Any]]:
-    where = ["started_at >= ?"]
-    params: list[Any] = [since]
-    if username:
-        where.append("username = ?"); params.append(username)
-    if model:
-        where.append("primary_model = ?"); params.append(model)
-    if only_errors:
-        where.append("tool_errors > 0")
-    if q:
-        where.append("(session_id LIKE ? OR session_file LIKE ?)")
-        like = f"%{q}%"
-        params.extend([like, like])
-    return " AND ".join(where), params
-
-
 # ---------------------------------------------------------------------------
 # GET /api/admin/sessions/list
 # ---------------------------------------------------------------------------
-
-_VALID_SORT_KEYS = {
-    "started_at": "started_at",
-    "ended_at":   "ended_at",
-    "tool_calls": "tool_calls",
-    "tool_errors": "tool_errors",
-    "active_seconds": "active_seconds",
-    "username": "username",
-    "primary_model": "primary_model",
-}
 
 
 @router.get("/list")
@@ -91,44 +58,22 @@ def list_sessions(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0, le=50000),
     _user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     since = _window_since(since_minutes)
-    where_sql, params = _build_where(since, username, model, only_errors, q)
-
+    filters = {
+        "since": since, "username": username, "model": model,
+        "only_errors": only_errors, "q": q,
+    }
     sort_col, _, sort_dir = sort.partition(":")
-    col = _VALID_SORT_KEYS.get(sort_col, "started_at")
     direction = "ASC" if (sort_dir or "desc").lower() == "asc" else "DESC"
 
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM usage_session_summary WHERE {where_sql}",
-        params,
-    ).fetchone()[0]
-    rows = conn.execute(
-        f"""SELECT session_file, session_id, username,
-                  started_at, ended_at, active_seconds, wall_seconds,
-                  user_messages, assistant_messages,
-                  tool_calls, tool_errors,
-                  skill_invocations, subagent_dispatches,
-                  mcp_calls, slash_commands,
-                  distinct_tools, distinct_skills, primary_model
-           FROM usage_session_summary WHERE {where_sql}
-           ORDER BY {col} {direction}
-           LIMIT ? OFFSET ?""",
-        params + [limit, offset],
-    ).fetchall()
-    cols = [
-        "session_file","session_id","username",
-        "started_at","ended_at","active_seconds","wall_seconds",
-        "user_messages","assistant_messages",
-        "tool_calls","tool_errors",
-        "skill_invocations","subagent_dispatches",
-        "mcp_calls","slash_commands",
-        "distinct_tools","distinct_skills","primary_model",
-    ]
+    repo = usage_repo()
+    total = repo.sessions_count(filters)
+    rows = repo.sessions_list(
+        filters, sort_col=sort_col, direction=direction, limit=limit, offset=offset,
+    )
     out = []
-    for r in rows:
-        d = dict(zip(cols, r))
+    for d in rows:
         for k in ("started_at", "ended_at"):
             v = d.get(k)
             if isinstance(v, datetime):
@@ -164,29 +109,20 @@ def kpis(
     only_errors: bool = False,
     q: Optional[str] = None,
     _user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     since = _window_since(since_minutes)
-    where_sql, params = _build_where(since, username, model, only_errors, q)
-    row = conn.execute(
-        f"""SELECT COUNT(*),
-                  COUNT(DISTINCT username),
-                  SUM(CASE WHEN tool_errors > 0 THEN 1 ELSE 0 END),
-                  SUM(tool_calls),
-                  SUM(tool_errors)
-           FROM usage_session_summary WHERE {where_sql}""",
-        params,
-    ).fetchone()
-    sessions_total, users, error_sessions, tool_calls_total, tool_errors_total = (
-        int(x or 0) for x in row
-    )
-    error_rate = (tool_errors_total / tool_calls_total) if tool_calls_total else 0.0
+    k = usage_repo().sessions_kpis({
+        "since": since, "username": username, "model": model,
+        "only_errors": only_errors, "q": q,
+    })
+    tool_calls_total = k["tool_calls_total"]
+    error_rate = (k["tool_errors_total"] / tool_calls_total) if tool_calls_total else 0.0
     return {
-        "sessions_total":  sessions_total,
-        "distinct_users":  users,
-        "error_sessions":  error_sessions,
+        "sessions_total":  k["sessions_total"],
+        "distinct_users":  k["distinct_users"],
+        "error_sessions":  k["error_sessions"],
         "tool_calls_total": tool_calls_total,
-        "tool_errors_total": tool_errors_total,
+        "tool_errors_total": k["tool_errors_total"],
         "tool_error_rate": round(error_rate, 4),
     }
 
@@ -195,25 +131,9 @@ def kpis(
 def facets(
     since_minutes: int = Query(default=10080, ge=1, le=525600),
     _user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     since = _window_since(since_minutes)
-    users = conn.execute(
-        "SELECT username, COUNT(*) AS n FROM usage_session_summary "
-        "WHERE started_at >= ? AND username IS NOT NULL "
-        "GROUP BY username ORDER BY n DESC LIMIT 50",
-        [since],
-    ).fetchall()
-    models = conn.execute(
-        "SELECT primary_model, COUNT(*) AS n FROM usage_session_summary "
-        "WHERE started_at >= ? AND primary_model IS NOT NULL "
-        "GROUP BY primary_model ORDER BY n DESC LIMIT 30",
-        [since],
-    ).fetchall()
-    return {
-        "users":  [{"value": r[0], "count": r[1]} for r in users],
-        "models": [{"value": r[0], "count": r[1]} for r in models],
-    }
+    return usage_repo().sessions_facets(since)
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +250,6 @@ def download(
     username: str,
     session_file: str,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Stream a single JSONL straight from disk. Path-safety guarded the
     same way as ``/transcript``. Audit-logged."""
@@ -369,27 +288,16 @@ def transcript(
     username: str,
     session_file: str,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     path = _safe_session_path(username, session_file)
     turns = parse_jsonl(path)
     events = _render_transcript(turns)
 
-    summary_row = conn.execute(
-        "SELECT session_id, started_at, ended_at, active_seconds, wall_seconds, "
-        "user_messages, assistant_messages, tool_calls, tool_errors, "
-        "primary_model FROM usage_session_summary WHERE session_file = ?",
-        [f"{username}/{session_file}"],
-    ).fetchone()
+    summary_data = usage_repo().get_session_summary(f"{username}/{session_file}")
     summary: dict[str, Any] = {}
-    if summary_row:
-        keys = (
-            "session_id","started_at","ended_at","active_seconds","wall_seconds",
-            "user_messages","assistant_messages","tool_calls","tool_errors",
-            "primary_model",
-        )
-        summary = dict(zip(keys, summary_row))
-        for k in ("started_at","ended_at"):
+    if summary_data:
+        summary = summary_data
+        for k in ("started_at", "ended_at"):
             v = summary.get(k)
             if isinstance(v, datetime):
                 summary[k] = v.isoformat()
