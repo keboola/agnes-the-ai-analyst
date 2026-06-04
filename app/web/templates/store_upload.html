@@ -328,18 +328,11 @@
 
 {% block content %}
 <div class="upload-page">
-  <section class="page-header page-header--hero upload-hero">
-    <div class="page-header__main">
-      <div class="page-header__eyebrow">Store</div>
-      <h1 class="page-header__title">Upload an entity</h1>
-      <p class="page-header__subtitle">
-        Share a skill, agent, or plugin with everyone on this instance.
-        Display name will be suffixed with
-        <code>-by-{{ session.user.email.split('@')[0] }}</code>
-        so it doesn't collide.
-      </p>
-    </div>
-  </section>
+  {% set page_hero_eyebrow = "Store" %}
+  {% set page_hero_title = "Upload an entity" %}
+  {% set page_hero_subtitle %}Share a skill, agent, or plugin with everyone on this instance. Display name will be suffixed with <code>-by-{{ session.user.email.split('@')[0] }}</code> so it doesn't collide.{% endset %}
+  {% set page_hero_class = "upload-hero" %}
+  {% include "_page_hero.html" %}
 
   <div class="progress">
     <div class="seg is-done" id="seg-1"></div>
