@@ -18,6 +18,18 @@
 }
 .cowork-prereq a { color: var(--ds-primary); }
 
+.cowork-skills-note {
+  background: #f5f3ff;
+  border: 1px solid #c7d2fe;
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--ds-text-secondary);
+  line-height: var(--leading-normal);
+  margin-bottom: var(--space-5);
+}
+.cowork-skills-note strong { color: var(--ds-text-primary); }
+
 .cowork-steps {
   list-style: none;
   margin: 0 0 var(--space-5);
@@ -245,6 +257,14 @@
       <li>Open <strong>Claude Desktop</strong> → <strong>Cowork</strong> → <strong>New project</strong> → <strong>Use an existing folder</strong> → select the unzipped folder</li>
       <li>Agnes configures automatically at session start</li>
     </ol>
+
+    <div class="cowork-skills-note">
+      <strong>About skills:</strong> your Agnes skills load automatically when you
+      open the folder — Claude can use them in chat right away. They will
+      <strong>not</strong> appear in Cowork's <em>Customize&nbsp;→&nbsp;Skills</em>
+      list (a Cowork UI limitation, not a problem). To confirm a skill works,
+      just ask Claude to use it — e.g. <em>“use the develop-component skill”</em>.
+    </div>
 
     <div class="cowork-action-row">
       <button id="cowork-download-btn" class="btn btn-primary" type="button">
