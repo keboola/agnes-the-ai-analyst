@@ -241,6 +241,71 @@ def find_internal_refs(sql: str) -> list[str]:
     return [t.registry_id for t in INTERNAL_TABLES if t.registry_id.lower() in found]
 
 
+# Safety cap on how many rows a single internal source table may materialise
+# into the ephemeral DuckDB on the Postgres path. Non-admin queries are
+# RBAC-scoped to the caller's own rows (tiny); only an admin's unscoped query
+# over a high-volume table (usage_events) can approach this. Exceeding it
+# raises rather than risking an OOM — the one accepted behavioural divergence
+# from DuckDB, and only at extreme scale.
+_PG_MATERIALIZE_ROW_CAP = 1_000_000
+
+
+def _materialized_internal_duckdb(refs, user, is_admin):
+    """Build a fresh in-memory DuckDB holding ONLY the referenced internal
+    source tables, each populated with the caller's RBAC-filtered rows read
+    from Postgres. Returns ``(connection, close_callable)``.
+
+    Security by construction: the postgres extension is NOT loaded and nothing
+    is ATTACHed, so the postgres TVFs (``postgres_query`` / ``postgres_scan`` /
+    ``postgres_execute``) that would bypass the string-stripping guards are
+    simply unavailable. Only the (already-filtered) ``agnes_*`` source tables
+    exist — base tables like ``users`` are absent (a bare reference errors), and
+    because the filter is applied during materialisation, a user CTE that
+    shadows an ``agnes_*`` alias still reads only the caller's rows.
+    """
+    import pandas as pd  # noqa: F401 — referenced by name in the DuckDB scan
+
+    from src.db import _open_duckdb
+    from src.db_pg import get_engine
+
+    conn = _open_duckdb(":memory:")
+    try:
+        engine = get_engine()
+        with engine.connect() as pg:
+            for table_id in refs:
+                table = INTERNAL_TABLES_BY_ID[table_id]
+                where_clause = build_filter_clause(table, user, is_admin)
+                q = (
+                    f'SELECT * FROM "{table.source_table}" {where_clause} '
+                    f"LIMIT {_PG_MATERIALIZE_ROW_CAP + 1}"
+                )
+                result = pg.exec_driver_sql(q)
+                col_names = list(result.keys())
+                fetched = result.mappings().all()
+                if len(fetched) > _PG_MATERIALIZE_ROW_CAP:
+                    raise InternalAccessError(
+                        f"internal query over {table.source_table!r} exceeds the "
+                        f"{_PG_MATERIALIZE_ROW_CAP}-row materialisation cap on Postgres; "
+                        f"add a more selective WHERE clause"
+                    )
+                # Empty result → keep the column names so the user SQL's column
+                # references still resolve (COUNT/GROUP BY return empty).
+                src_df = (
+                    pd.DataFrame(list(fetched))
+                    if fetched
+                    else pd.DataFrame(columns=col_names)
+                )
+                conn.register("_pg_src_df", src_df)
+                conn.execute(
+                    f'CREATE TABLE "{table.source_table}" AS SELECT * FROM _pg_src_df'
+                )
+                conn.unregister("_pg_src_df")
+        return conn, conn.close
+    except Exception:
+        conn.close()
+        raise
+
+
 def execute_internal_query(
     system_db_path: str,
     user: dict[str, Any],
@@ -283,6 +348,15 @@ def execute_internal_query(
     # Lazy import to avoid a hard cycle (src.db imports go via repositories
     # which then end up importing access in some test paths).
     from src.db import get_system_db
+    from src.repositories import use_pg
+
+    # On a Postgres-backed instance the internal source tables live in PG, not
+    # the DuckDB system file. To keep the analyst's arbitrary DuckDB SQL behaving
+    # identically on both backends we still execute it in DuckDB, but over an
+    # in-memory handle with the Postgres database ATTACHed (DuckDB's postgres
+    # extension streams from PG — no row materialisation), and point the agnes_*
+    # CTEs at the attached tables. ``pg`` selects that path.
+    pg = use_pg()
 
     # Non-admins are NOT allowed to reference any system.duckdb table
     # outside the registered agnes_* aliases. The CTE wrapper only
@@ -308,12 +382,28 @@ def execute_internal_query(
     for table_id in refs:
         table = INTERNAL_TABLES_BY_ID[table_id]
         where_clause = build_filter_clause(table, user, is_admin)
+        # Identical on both backends: the agnes_* alias selects from the source
+        # table. On PG that table is a per-request DuckDB copy holding only the
+        # caller's RBAC-filtered rows (built by _materialized_internal_duckdb),
+        # so the boundary is the materialisation, not this CTE.
         cte_parts.append(f"{table.registry_id} AS (SELECT * FROM {table.source_table} {where_clause})")
     cte_prefix = "WITH " + ", ".join(cte_parts)
     wrapped = f"{cte_prefix} SELECT * FROM ({sql}) AS _agnes_user_query"
 
-    conn = get_system_db()
-    cursor = conn.cursor()
+    if pg:
+        conn, _close = _materialized_internal_duckdb(refs, user, is_admin)
+        cursor = conn.cursor()
+
+        def _cleanup() -> None:
+            try:
+                cursor.close()
+            finally:
+                _close()
+    else:
+        conn = get_system_db()
+        cursor = conn.cursor()
+        _cleanup = cursor.close
+
     try:
         rows = cursor.execute(wrapped).fetchmany(limit + 1)
         cols = [d[0] for d in cursor.description] if cursor.description else []
@@ -321,7 +411,7 @@ def execute_internal_query(
         return cols, rows[:limit], truncated
     finally:
         try:
-            cursor.close()
+            _cleanup()
         except Exception:
             logger.exception("close() failed on internal-query cursor")
 
