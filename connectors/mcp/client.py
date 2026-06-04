@@ -100,26 +100,22 @@ def _lookup_secret_for_source(
             # Local import avoids dragging the vault module into the
             # connector's import surface — keeps stdio MCP startup fast
             # when no DB is around (tests, headless POC scripts).
-            from src.db import get_system_db
-            from app.secrets_vault import (
-                PerUserSecretsRepository,
-                SharedSecretsRepository,
-            )
+            #
+            # Route through the repo factory: per-user secrets live in the
+            # active state backend (Postgres once migrated, #530). Reading them
+            # off a raw always-DuckDB connection meant an analyst's own
+            # credential was invisible at forward time on a PG instance, so the
+            # call silently fell through to the shared/env path.
+            from src.repositories import per_user_secrets_repo, shared_secrets_repo
 
-            conn = get_system_db()
-            try:
-                if scope == "per_user" and caller_user_id:
-                    value = PerUserSecretsRepository(conn).get(
-                        source_id, caller_user_id
-                    )
-                    if value:
-                        return value
-                # Either scope='shared', or per_user with no row → shared fallback
-                value = SharedSecretsRepository(conn).get(source_id)
+            if scope == "per_user" and caller_user_id:
+                value = per_user_secrets_repo().get(source_id, caller_user_id)
                 if value:
                     return value
-            finally:
-                conn.close()
+            # Either scope='shared', or per_user with no row → shared fallback
+            value = shared_secrets_repo().get(source_id)
+            if value:
+                return value
         except Exception:
             # System DB unavailable (test fixtures, fresh setup before
             # migration) — silently fall through to the env-var path.
