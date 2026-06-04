@@ -380,6 +380,22 @@ def _run_sync(tables: Optional[List[str]] = None):
         source_type = get_data_source_type()
         data_dir = _get_data_dir()
 
+        # Reclaim orphaned `kbc-export-*` staging dirs left behind when a
+        # previous sync worker was hard-killed mid-export (SIGKILL / OOM /
+        # auto-upgrade container recreate) so TemporaryDirectory.__exit__
+        # never ran. Runs here — under `_sync_lock`, before any new scratch
+        # is created — so it can never race a live in-flight export from this
+        # process (and the age-gate covers any other container). Best-effort:
+        # a sweep failure must never block the sync itself.
+        try:
+            from connectors.keboola.storage_api import sweep_orphaned_scratch
+            sweep_orphaned_scratch()
+        except Exception as _sweep_exc:  # pragma: no cover - defensive
+            print(
+                f"[SYNC] orphaned-scratch sweep skipped: {_sweep_exc}",
+                file=_sys.stderr, flush=True,
+            )
+
         # Read table configs in main process (has shared DuckDB connection)
         sys_conn = get_system_db()
         # Track whether the REGISTRY (not the post-filter list) was empty.

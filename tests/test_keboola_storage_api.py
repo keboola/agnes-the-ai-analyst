@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import time
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -23,6 +24,7 @@ from connectors.keboola.storage_api import (
     KeboolaStorageClient,
     StorageApiError,
     get_temp_root,
+    sweep_orphaned_scratch,
 )
 
 
@@ -518,6 +520,82 @@ class TestParquetPath:
         }, dest)
 
         assert dest.read_bytes() == b"PAR1\x00\x00\x00binary"
+
+
+# ---- sweep_orphaned_scratch ------------------------------------------------
+
+class TestSweepOrphanedScratch:
+    """Orphaned ``kbc-export-*`` staging dirs are left behind only when a
+    sync worker is hard-killed (SIGKILL/OOM/auto-upgrade container recreate)
+    mid-export, so ``TemporaryDirectory.__exit__`` never ran. The sweep
+    reclaims them on the next sync; age-gating protects an in-flight export.
+    """
+
+    def _mk_dir(self, parent: Path, name: str, age_seconds: float) -> Path:
+        d = parent / name
+        d.mkdir()
+        (d / "slice0.parquet").write_bytes(b"PAR1junk")
+        old = time.time() - age_seconds
+        import os as _os
+        _os.utime(d, (old, old))
+        return d
+
+    def test_removes_old_scratch_dirs(self, tmp_path):
+        old = self._mk_dir(tmp_path, "kbc-export-foo-abc123", age_seconds=7200)
+        removed = sweep_orphaned_scratch(root=str(tmp_path), max_age_seconds=3600)
+        assert removed == 1
+        assert not old.exists()
+
+    def test_removes_old_slice_dirs(self, tmp_path):
+        """`kbc-slice-*` dirs (the sliced-CSV download path in
+        `_download_sliced`) orphan on the same hard-kill and are swept too."""
+        old = self._mk_dir(tmp_path, "kbc-slice-xyz789", age_seconds=7200)
+        removed = sweep_orphaned_scratch(root=str(tmp_path), max_age_seconds=3600)
+        assert removed == 1
+        assert not old.exists()
+
+    def test_keeps_fresh_scratch_dir(self, tmp_path):
+        """A dir younger than the threshold may belong to a concurrent
+        in-flight export — never sweep it."""
+        fresh = self._mk_dir(tmp_path, "kbc-export-bar-def456", age_seconds=10)
+        removed = sweep_orphaned_scratch(root=str(tmp_path), max_age_seconds=3600)
+        assert removed == 0
+        assert fresh.exists()
+
+    def test_ignores_non_scratch_entries(self, tmp_path):
+        """Only ``kbc-export-*`` dirs are swept; unrelated files/dirs in the
+        temp root (the data disk also holds extracts/, state/, etc.) are
+        never touched even when old."""
+        keep_dir = self._mk_dir(tmp_path, "extracts", age_seconds=7200)
+        keep_file = tmp_path / "kbc-export-not-a-dir.txt"
+        keep_file.write_text("x")
+        old_file = time.time() - 7200
+        import os as _os
+        _os.utime(keep_file, (old_file, old_file))
+
+        removed = sweep_orphaned_scratch(root=str(tmp_path), max_age_seconds=3600)
+        assert removed == 0
+        assert keep_dir.exists()
+        assert keep_file.exists()
+
+    def test_none_root_is_noop(self):
+        """No temp root configured (AGNES_TEMP_DIR unset) → nothing to sweep."""
+        assert sweep_orphaned_scratch(root=None, max_age_seconds=3600) == 0
+
+    def test_missing_root_is_noop(self, tmp_path):
+        assert sweep_orphaned_scratch(
+            root=str(tmp_path / "does-not-exist"), max_age_seconds=3600
+        ) == 0
+
+    def test_max_age_from_env_default(self, tmp_path, monkeypatch):
+        """Threshold falls back to AGNES_SCRATCH_MAX_AGE_SEC when not passed."""
+        monkeypatch.setenv("AGNES_SCRATCH_MAX_AGE_SEC", "100")
+        old = self._mk_dir(tmp_path, "kbc-export-baz-ghi789", age_seconds=200)
+        fresh = self._mk_dir(tmp_path, "kbc-export-qux-jkl012", age_seconds=10)
+        removed = sweep_orphaned_scratch(root=str(tmp_path))
+        assert removed == 1
+        assert not old.exists()
+        assert fresh.exists()
 
 
 # ---- get_table_info --------------------------------------------------------

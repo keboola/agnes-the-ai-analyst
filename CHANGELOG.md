@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.20] — 2026-06-04
+
+### Fixed
+- The Keboola sync now sweeps orphaned `kbc-export-*` / `kbc-slice-*` staging dirs from the temp root (`AGNES_TEMP_DIR`) at the start of every run. These dirs are normally removed by `TemporaryDirectory` on any return — including the disk-full path — so the only way they survive is a hard kill (SIGKILL / OOM / container recreate) mid-export. Without a sweep they accumulated on the data disk until it filled and *every* subsequent sync failed with `No space left on device`, a self-reinforcing failure that needed a manual `rm` to break. The sweep is age-gated (`AGNES_SCRATCH_MAX_AGE_SEC`, default 1h) so a concurrent in-flight export is never deleted, and runs under the sync lock before any new scratch is created.
 ## [0.65.19] — 2026-06-04
 
 ### Internal
