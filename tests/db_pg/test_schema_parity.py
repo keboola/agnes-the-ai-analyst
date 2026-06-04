@@ -134,3 +134,62 @@ def test_no_pg_only_required_columns(tmp_path):
         pytest.fail(
             "PG schema has NOT NULL columns absent from DuckDB:\n" + "\n".join(errors)
         )
+
+
+def test_alembic_head_materializes_every_model(pg_engine_with_schema):
+    """The alembic chain must actually CREATE every table+column in
+    ``Base.metadata`` — not just be column-compatible with the models.
+
+    The two tests above compare DuckDB ↔ SQLAlchemy *models*. They do NOT
+    catch a table/column that lives in ``src/models/*.py`` (and so in
+    ``Base.metadata``) but that no alembic revision creates. That drift is
+    invisible to the model-vs-DuckDB checks yet fatal in production: the
+    compose ``migrate`` one-shot runs ``alembic upgrade head`` (reaches head
+    happily — the missing table simply isn't in any revision), then the
+    ``data-migrate`` one-shot iterates ``Base.metadata.sorted_tables`` and
+    copies each into PG. A table present in metadata but absent from the
+    alembic-built schema raises ``psycopg.errors.UndefinedTable``
+    (``relation "X" does not exist``) mid-copy → ``data-migrate`` exits
+    non-zero → ``app``/``scheduler`` (which gate on it via
+    ``service_completed_successfully``) never boot. A schema gap thus wedges
+    the whole instance at startup with an opaque error.
+
+    This locks the dual-backend-discipline invariant from CLAUDE.md — "an
+    alembic migration for PG must reach the same schema endpoint as the
+    models" — by diffing the alembic-head schema against ``Base.metadata``
+    at table and column grain.
+    """
+    import sqlalchemy as sa
+    import src.models  # noqa: F401 — registers every model
+    from src.db_pg import Base
+
+    inspector = sa.inspect(pg_engine_with_schema)
+    pg_tables = set(inspector.get_table_names())
+
+    errors: list[str] = []
+    for table in Base.metadata.sorted_tables:
+        if table.name not in pg_tables:
+            errors.append(
+                f"  Table '{table.name}' is in Base.metadata but NO alembic "
+                f"revision creates it"
+            )
+            continue
+        pg_cols = {c["name"] for c in inspector.get_columns(table.name)}
+        missing = {c.name for c in table.columns} - pg_cols
+        if missing:
+            errors.append(
+                f"  Table '{table.name}': alembic-built schema is missing "
+                f"columns {sorted(missing)} present on the model"
+            )
+
+    if errors:
+        pytest.fail(
+            "Base.metadata has tables/columns the alembic chain never creates "
+            "(would wedge `data-migrate` → app boot on a fresh Postgres "
+            "instance):\n"
+            + "\n".join(errors)
+            + "\n\nFix: add an alembic revision under migrations/versions/ that "
+            "creates the missing table/column (and the matching DuckDB "
+            "_vN_to_v(N+1) step in src/db.py — both ladders must reach the "
+            "same endpoint)."
+        )

@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+- Added a schema-parity gate (`tests/db_pg/test_schema_parity.py::test_alembic_head_materializes_every_model`)
+  asserting the alembic chain CREATES every table and column in
+  `Base.metadata`. The existing parity tests compare DuckDB ↔ SQLAlchemy
+  *models*; none checked that the alembic *revisions* actually build the full
+  model schema. A table in `src/models/` with a DuckDB `_vN` step but no
+  alembic revision passed every existing check yet shipped a Postgres image
+  where `alembic upgrade head` (the compose `migrate` one-shot) reached head
+  without creating it — then the `data-migrate` one-shot, which copies every
+  `Base.metadata` table, failed mid-copy with `relation "X" does not exist`,
+  and `app`/`scheduler` (gated on `data-migrate` exiting 0) never booted. The
+  gate locks the dual-backend-discipline invariant so that drift is caught at
+  CI instead of wedging a customer instance at startup.
+
 ## [0.65.13] — 2026-06-04
 
 ### Internal
