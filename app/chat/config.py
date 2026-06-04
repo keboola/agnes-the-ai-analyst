@@ -16,8 +16,9 @@ class SlackConfig:
     # "http" (default, Events API webhook) | "socket" (Socket Mode WS).
     # Unknown values are normalized to "http" at parse time with a warning.
     # Tokens (SLACK_BOT_TOKEN / SLACK_APP_TOKEN / SLACK_SIGNING_SECRET) are
-    # deliberately NOT stored here — read from env at use site so they never
-    # leak into a frozen-config echo (e.g. /admin/server-config).
+    # deliberately NOT stored here — resolved at use site via slack_secret
+    # (env > vault) so they never leak into a frozen-config echo (e.g.
+    # /admin/server-config).
     transport: str = "http"
 
 
