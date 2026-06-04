@@ -86,6 +86,7 @@ __all__ = [
     "mcp_sources_repo",
     "per_user_secrets_repo",
     "shared_secrets_repo",
+    "system_secrets_repo",
     "tool_registry_repo",
     "setup_tokens_repo",
     # Cloud chat
@@ -494,6 +495,14 @@ def shared_secrets_repo() -> Any:
         return SharedSecretsPgRepository(_pg_engine())
     from app.secrets_vault import SharedSecretsRepository
     return SharedSecretsRepository(get_system_db())
+
+
+def system_secrets_repo() -> Any:
+    if use_pg():
+        from src.repositories.secrets_vault_pg import SystemSecretsPgRepository
+        return SystemSecretsPgRepository(_pg_engine())
+    from app.secrets_vault import SystemSecretsRepository
+    return SystemSecretsRepository(get_system_db())
 
 
 def tool_registry_repo() -> Any:
