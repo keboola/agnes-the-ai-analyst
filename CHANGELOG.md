@@ -10,8 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.66.0] — 2026-06-04
+
 ### Added
-- Slack bot tokens (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_SIGNING_SECRET`) can now be set, rotated, and cleared from the admin UI (`/admin/server-config` → Slack bot secrets), stored encrypted in the server vault. Environment variables still take precedence, so Terraform-managed deployments are unaffected. Requires `AGNES_VAULT_KEY` on the server.
+- Slack bot tokens (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_SIGNING_SECRET`) can now be set, rotated, and cleared from the admin UI (`/admin/server-config` → Slack bot secrets), stored encrypted in the server vault. Environment variables still take precedence, so Terraform-managed deployments are unaffected. Requires `AGNES_VAULT_KEY` on the server. (#550)
 
 ## [0.65.20] — 2026-06-04
 
