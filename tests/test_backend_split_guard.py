@@ -148,7 +148,10 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     # ChatRepository.__init__ instantiates the *Pg repos only under `use_pg()`
     # and dispatches every method through them — not a backend-split.
     "app/chat/persistence.py": {"ChatMessagePgRepository", "ChatSessionPgRepository", "UserWorkdirPgRepository", "ChatSessionParticipantPgRepository"},
-    "app/main.py": {"UserGroupMembersRepository", "UserRepository"},
+    # main.py lifespan seed-admin: group membership now routes through
+    # user_group_members_repo() (factory); only the UserRepository read at the
+    # cowork-bundle path remains a direct DuckDB instantiation.
+    "app/main.py": {"UserRepository"},
     # Sanctioned `if conn is not None and not use_pg(): UserRepository(conn) else:
     # users_repo()` escape hatch (same pattern as app/auth/access.py). On Postgres
     # the read routes through the factory.
