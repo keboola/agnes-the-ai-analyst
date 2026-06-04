@@ -1,0 +1,16 @@
+{# OS-aware "auto" theme resolver. When the server renders
+   `data-theme="auto"` (instance.theme: auto), resolve light vs the dark
+   palette from the OS `prefers-color-scheme`, and live-update if it
+   changes mid-session. Runs inline in <head> before first paint, so
+   there's no light→dark flash. For any explicit theme (blue/navy/dark)
+   this is a no-op. Keep this include ABOVE the stylesheet links. #}
+<script>
+  (function () {
+    var el = document.documentElement;
+    if (el.dataset.theme !== 'auto') return;
+    var mq = window.matchMedia('(prefers-color-scheme: dark)');
+    var apply = function () { el.dataset.theme = mq.matches ? 'dark' : 'auto'; };
+    apply();
+    if (mq.addEventListener) mq.addEventListener('change', apply);
+  })();
+</script>

@@ -282,4 +282,13 @@
 
     /* Focus-ring colour stays the brand primary — same green dot on
        dark surfaces reads as "interactive" identically to light. */
+
+    /* Old --ds-info-* / --ds-warn-* vocab → the dark accent tints; the
+       light pastel bgs (#eef3ff etc.) wash out body text on dark. */
+    --ds-info-bg: var(--ds-accent-info-bg);
+    --ds-info-ink: var(--ds-accent-info-ink);
+    --ds-info-line: var(--ds-accent-info-line);
+    --ds-warn-bg: var(--ds-accent-warn-bg);
+    --ds-warn-ink: var(--ds-accent-warn-ink);
+    --ds-warn-line: var(--ds-accent-warn-line);
 }

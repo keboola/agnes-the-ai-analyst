@@ -278,6 +278,12 @@ def get_instance_theme() -> str:
       - ``navy``   — darker palette opted into via server config.
                      Dark navy hero gradient, mint-green CTAs +
                      eyebrow accents.
+      - ``dark``   — full dark surface palette (navy-tinted dark
+                     stack, pale-ink text); see ``[data-theme="dark"]``
+                     in ``design-tokens.css``.
+      - ``auto``   — light by default, flips to the ``dark`` palette
+                     when the user's OS prefers dark (resolved
+                     client-side in ``_theme_resolve.html``).
 
     Resolution: ``AGNES_INSTANCE_THEME`` env var
     (Terraform-friendly) > ``instance.theme`` in instance.yaml >
@@ -290,7 +296,7 @@ def get_instance_theme() -> str:
     if not isinstance(raw, str):
         return "blue"
     value = raw.strip().lower()
-    if value not in ("navy", "blue"):
+    if value not in ("navy", "blue", "dark", "auto"):
         return "blue"
     return value
 
