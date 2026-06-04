@@ -1,59 +1,50 @@
-"""Differential sweep: every param-free GET endpoint must return the SAME
-HTTP status on DuckDB and Postgres, given identical seeded state.
+"""Cross-backend GET status-parity sweep.
 
-A status that differs between backends (e.g. 200 on DuckDB, 500 on Postgres)
-is the signature of a backend-split bug on an endpoint no targeted parity test
-covers. This sweeps the whole live route table, so it catches divergences the
-hand-written cluster tests miss.
+Every parameter-free GET route is hit with a seeded admin token on DuckDB and on
+Postgres (identical seed) and the HTTP status must match. A status that differs
+between backends (e.g. 200 vs 302, or 200 vs 500) is the signature of a handler
+that reads state off a raw ``Depends(_get_db)`` connection — the backend-split
+class the static ``test_backend_split_guard.py`` ratchet can't see.
+
+This found ``/first-time-setup`` returning 200 on PG vs 302 on DuckDB (the
+wizard counted users off the always-DuckDB connection); that specific fix has a
+dedicated regression test in ``test_first_time_setup_parity.py``.
+
+Single test, both backends collected in-process — see ``_parity_sweep_util`` for
+why (the older parametrized-fixture + module-dict pattern was dead under
+``pytest -n auto``).
 """
 from __future__ import annotations
 
-_STATUS: dict[str, dict[str, int]] = {}
+from ._parity_sweep_util import (
+    build_seeded_client,
+    collect_statuses,
+    diff_statuses,
+)
 
-# Paths to skip: intentional-throw debug routes + streaming/SSE (would hang).
-_SKIP = {"/api/debug/throw", "/_debug/throw/exc"}
-
-
-def _is_sweepable(route) -> bool:
-    methods = getattr(route, "methods", None) or set()
-    path = getattr(route, "path", "") or ""
-    if "GET" not in methods or "{" in path or path in _SKIP:
-        return False
-    if "stream" in path or "sse" in path or path.endswith("/events"):
-        return False
-    return True
+# Intentional-throw debug routes + streaming/SSE (would hang) — never swept.
+_SKIP_SUBSTR = ("throw", "stream", "sse", "/events")
 
 
-def test_collect_get_statuses(seeded_app_both):
-    backend = seeded_app_both["backend"]
-    client = seeded_app_both["client"]
-    auth = {"Authorization": f"Bearer {seeded_app_both['admin_token']}"}
-    seen: dict[str, int] = {}
-    for route in client.app.routes:
-        if not _is_sweepable(route):
-            continue
-        path = route.path
-        try:
-            r = client.get(path, headers=auth, follow_redirects=False)
-            seen[path] = r.status_code
-        except Exception as exc:  # noqa: BLE001 — record, don't abort the sweep
-            seen[path] = -1  # transport-level failure
-            seen[f"{path}::exc"] = type(exc).__name__  # type: ignore[assignment]
-    _STATUS[backend] = seen
-
-
-def test_get_status_is_identical_across_backends():
-    assert {"duckdb", "pg"} <= set(_STATUS), (
-        f"sweep didn't run on both backends: {set(_STATUS)}"
+def test_get_status_is_identical_across_backends(tmp_path, monkeypatch, pg_engine):
+    duck_client, duck_token = build_seeded_client(
+        "duckdb", tmp_path / "duck", monkeypatch, pg_engine
     )
-    duck, pg = _STATUS["duckdb"], _STATUS["pg"]
-    paths = {p for p in (set(duck) | set(pg)) if "::exc" not in p}
-    divergences = {
-        p: (duck.get(p), pg.get(p)) for p in paths if duck.get(p) != pg.get(p)
-    }
+    duck = collect_statuses(
+        duck_client, duck_token, methods={"GET"}, skip_substr=_SKIP_SUBSTR
+    )
+
+    pg_client, pg_token = build_seeded_client(
+        "pg", tmp_path / "pg", monkeypatch, pg_engine
+    )
+    pg = collect_statuses(
+        pg_client, pg_token, methods={"GET"}, skip_substr=_SKIP_SUBSTR
+    )
+
+    divergences = diff_statuses(duck, pg)
     assert not divergences, (
         "GET status diverges between DuckDB and Postgres (backend-split):\n"
         + "\n".join(
-            f"  {p}: duck={d} pg={g}" for p, (d, g) in sorted(divergences.items())
+            f"  {k}: duck={d} pg={g}" for k, (d, g) in sorted(divergences.items())
         )
     )
