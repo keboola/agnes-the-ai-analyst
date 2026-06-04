@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.6] — 2026-06-04
+
 ### Fixed
 - **Postgres backend: catalog `/sample` preview was empty for internal tables.**
   The preview for an internal source (`agnes_audit` / `agnes_sessions` /
