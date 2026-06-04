@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.16] — 2026-06-04
+
+### Changed
+- The registered/discovered MCP tools tables (`/admin/mcp-sources/…`) now use the canonical `.ds-table` class instead of bespoke `tools-table` styles; the key-value config summary stays bespoke. (#497)
 ### Internal
 - Added a schema-parity gate (`tests/db_pg/test_schema_parity.py::test_alembic_head_materializes_every_model`)
   asserting the alembic chain CREATES every table and column in
