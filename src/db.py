@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 70
+SCHEMA_VERSION = 71
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -82,7 +82,14 @@ CREATE TABLE IF NOT EXISTS users (
     -- so `agnes pull` (and the SessionStart hook that wraps it) imprints
     -- the user's last sync time. Powers the /home status frame's "Last
     -- sync" card.
-    last_pull_at TIMESTAMP
+    last_pull_at TIMESTAMP,
+    -- v71: Slack identity binding. NULL until the analyst redeems a
+    -- /agnes verification code; maps a Slack user_id to this account so the
+    -- Slack bot can resolve who is talking. Formalized in the schema (was a
+    -- lazy ALTER in services/slack_bot/binding.py) so it lives in the active
+    -- state backend — the binding broke on Postgres when it only existed in
+    -- the DuckDB system file.
+    slack_user_id VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS sync_state (
@@ -4877,6 +4884,24 @@ def _v69_to_v70(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 70")
 
 
+def _v70_to_v71(conn: duckdb.DuckDBPyConnection) -> None:
+    """v71: formalize ``users.slack_user_id`` into the schema.
+
+    Previously this column was lazily ``ALTER``-ed in
+    ``services/slack_bot/binding.py`` only when the Slack bot ran — so it
+    existed only in the DuckDB system file and never on a Postgres instance,
+    which broke Slack identity binding on Postgres (the binding was written to
+    a DuckDB ``users`` table the factory-backed reads never consult). Adding it
+    to the schema lets the binding route through ``users_repo()`` on either
+    backend. Additive + nullable; idempotent (the lazy ALTER may already have
+    added it on existing DuckDB instances).
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "slack_user_id" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN slack_user_id VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 71")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -5197,6 +5222,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # chat_session_participants. Additive; _SYSTEM_SCHEMA builds it
             # on fresh installs (no-op here).
             _v69_to_v70(conn)
+            # v70→v71: formalize users.slack_user_id. _SYSTEM_SCHEMA already
+            # creates it on fresh installs (no-op here).
+            _v70_to_v71(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5390,6 +5418,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v68_to_v69(conn)
             if current < 70:
                 _v69_to_v70(conn)
+            if current < 71:
+                _v70_to_v71(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

@@ -24,6 +24,15 @@ class UserRepository:
         result = self.conn.execute("SELECT * FROM users WHERE email = ?", [email]).fetchone()
         return self._row_to_dict(result)
 
+    def get_by_slack_user_id(self, slack_user_id: str) -> Optional[Dict[str, Any]]:
+        """Resolve the account bound to a Slack ``user_id`` (NULL until the
+        analyst redeems a /agnes verification code). Used by the Slack bot to
+        map an incoming Slack identity to an Agnes user."""
+        result = self.conn.execute(
+            "SELECT * FROM users WHERE slack_user_id = ?", [slack_user_id]
+        ).fetchone()
+        return self._row_to_dict(result)
+
     def list_all(self) -> List[Dict[str, Any]]:
         """Return EVERY user row. Used by bootstrap-lock + startup
         warning paths that need to inspect the whole table (see
@@ -103,6 +112,9 @@ class UserRepository:
             "onboarded",
             # v44: per-user pull timestamp — bumped on /api/sync/manifest.
             "last_pull_at",
+            # v71: Slack identity binding — set when the analyst redeems a
+            # /agnes verification code (services/slack_bot/binding.py).
+            "slack_user_id",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
