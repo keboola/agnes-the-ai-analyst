@@ -201,9 +201,15 @@ variable "notification_channel_ids" {
 }
 
 variable "runtime_secrets" {
-  description = "Names of existing Secret Manager secrets the VM needs to read at runtime (e.g. Keboola Storage token). VM SA gets scoped secretAccessor on each."
+  description = "Names of existing Secret Manager secrets the VM needs to read at runtime (e.g. Keboola Storage token). VM SA gets scoped secretAccessor on each. Use this for secrets the startup script handles explicitly (KEBOOLA_STORAGE_TOKEN, GOOGLE_CLIENT_ID/SECRET — names are hardcoded in startup-script.sh.tpl). For new app-level secrets (E2B_API_KEY, ANTHROPIC_API_KEY, SLACK_*), prefer `runtime_secret_env` below."
   type        = list(string)
   default     = ["keboola-storage-token"]
+}
+
+variable "runtime_secret_env" {
+  description = "Map of Secret Manager secret name to env var name to inject into /opt/agnes/.env. Module auto-grants secretAccessor and the startup script fetches each via gcloud secrets versions access latest --secret=<key> and writes a line <env_var>=<fetched> to .env. Missing/403 -> empty string (silent), so production deploys can roll out a secret name before the value lands. Example map: e2b-api-key -> E2B_API_KEY, anthropic-api-key -> ANTHROPIC_API_KEY."
+  type        = map(string)
+  default     = {}
 }
 
 variable "firewall_ssh_source_ranges" {

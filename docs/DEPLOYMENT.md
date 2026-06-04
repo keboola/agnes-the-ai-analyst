@@ -211,10 +211,54 @@ status. The endpoint requires admin auth (the sidecar's
 | TLS | Caddy + corp cert, auto-rotated from URL | Caddy + corp cert, manual or user-scripted rotation |
 | Best for | Multi-tenant SaaS, production | Single-instance self-host, learning |
 
+## Cloud-chat host requirements
+
+Agnes can serve a zero-install web chat and Slack DM bot at `/chat`. The
+sandboxed runner lives in an E2B ephemeral microVM; the Agnes host only
+needs RAM/CPU for the FastAPI app, ChatManager state, DuckDB, and any
+open WebSockets.
+
+**Full operator guide:** [`cloud-chat.md`](cloud-chat.md)
+
+### Agnes server floor
+
+Per-sandbox compute is billed by E2B (not by the Agnes host). The Agnes
+server itself needs only:
+
+- 2 GB RAM (FastAPI + ChatManager + chat_repo + WS connections)
+- 1 vCPU for small teams; bump if you regularly host 50+ concurrent WS
+  clients
+
+There is no per-session RAM/CPU floor for the host any more — that
+moved to the E2B template (`e2b.toml`).
+
+### E2B account
+
+1. Create an E2B account at https://e2b.dev and copy the API key from
+   the dashboard.
+2. Build the chat sandbox template: `e2b auth login` followed by
+   `e2b template build` inside
+   `app/initial_workspace_default/e2b-template/` (see that directory's
+   README for the full walkthrough).
+3. Set `E2B_API_KEY` in the Agnes server environment.
+4. Put the returned template id into `chat.e2b_template_id` in
+   `instance.yaml`.
+
+Sandbox billing is visible in the operator's E2B dashboard. Agnes does
+not yet surface per-session E2B cost in its own admin UI.
+
+### Single-worker constraint
+
+ChatManager state is in-memory. Agnes refuses to enable chat when
+`UVICORN_WORKERS > 1` — ensure your Docker Compose / systemd /
+Terraform unit launches a single uvicorn worker when `chat.enabled:
+true`. HA support is a future spec.
+
 ## Related documentation
 
 - [`ONBOARDING.md`](ONBOARDING.md) — end-to-end Terraform onboarding checklist
 - [`CONFIGURATION.md`](CONFIGURATION.md) — `instance.yaml`, env vars, per-instance config
 - [`architecture.md`](architecture.md) — internal architecture (orchestrator, extractors, DB layout)
 - [`QUICKSTART.md`](QUICKSTART.md) — local development setup
+- [`cloud-chat.md`](cloud-chat.md) — cloud-hosted Claude Code (`/chat` + Slack)
 - [`superpowers/specs/2026-04-21-multi-customer-deployment-spec.md`](superpowers/specs/2026-04-21-multi-customer-deployment-spec.md) — design rationale for the multi-customer model

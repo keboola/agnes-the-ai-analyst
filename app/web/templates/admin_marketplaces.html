@@ -1,12 +1,13 @@
-{% extends "base.html" %}
+{% extends "base_page.html" %}
 {% block title %}Curated Marketplaces — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{# Design-system component macros — toolbar "+ Add marketplace" + all
-   6 modal action sets render via `ds.button`. JS-generated per-row
-   `.icon-btn` actions stay page-local. #}
-{% import "_components.html" as ds %}
-<style>  .marketplaces-toolbar {
+{% set page_hero_eyebrow = "Agent Experience" %}
+{% set page_hero_title = "Curated Marketplaces" %}
+{% set page_hero_subtitle = "Admin-managed git repos cloned nightly. Synced plugins surface in the Claude Code marketplace feed." %}
+
+{% block head_extra %}
+<style>
+  .marketplaces-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
   }
@@ -212,15 +213,13 @@
   .toast.success { background: #047857; }
   .toast.error { background: #b91c1c; }
 </style>
+{% endblock %}
 
+{% block page %}
+{# Design-system component macros — toolbar "+ Add marketplace" + all 6 modal
+   action sets render via `ds.button` (auto-imported by base_ds). JS-generated
+   per-row `.icon-btn` actions stay page-local. #}
 <div class="marketplaces-page">
-  {% set page_hero_eyebrow = "Agent Experience" %}
-
-  {% set page_hero_title = "Curated Marketplaces" %}
-
-  {% set page_hero_subtitle = "Admin-managed git repos cloned nightly. Synced plugins surface in the Claude Code marketplace feed." %}
-
-  {% include "_page_hero.html" %}
 
   <div class="marketplaces-toolbar">
     <input id="mp-search" type="search" class="search-input" placeholder="Filter by slug, name, or URL…" autocomplete="off">

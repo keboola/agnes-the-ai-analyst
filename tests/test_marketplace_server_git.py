@@ -196,8 +196,9 @@ class TestGitSmartHttp:
         # Exactly one bare repo must have appeared.
         entries = [p for p in cache.iterdir() if p.is_dir() and p.name.endswith(".git")]
         assert len(entries) == 1
-        # Name is the ETag (16 hex chars) + ".git"
-        assert len(entries[0].name) == 16 + len(".git")
+        # Name is the 16-hex ETag + a packaging-format version suffix + ".git"
+        import re
+        assert re.fullmatch(r"[0-9a-f]{16}\.v\d+\.git", entries[0].name), entries[0].name
 
     def test_admin_and_analyst_get_different_repos(self, git_env):
         """Different RBAC views → different content hashes → different bare repos."""

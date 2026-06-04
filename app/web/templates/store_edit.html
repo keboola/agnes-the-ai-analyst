@@ -1,11 +1,7 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}Edit {{ entity.name | store_display_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{# Design-system component macros — Save submit + Cancel anchor render
-   via `ds.button`. Bespoke file-picker buttons (#photo-pick, #zip-pick)
-   stay page-local — they're inline-form chrome with custom styling. #}
-{% import "_components.html" as ds %}
+{% block head_extra %}
 <style>
   .edit-back { font-size: 13px; color: var(--text-secondary, #6b7280); text-decoration: none; }
   .edit-back:hover { color: var(--text, #111827); text-decoration: underline; }
@@ -89,8 +85,13 @@
     overflow: hidden; text-overflow: ellipsis;
   }
 </style>
+{% endblock %}
 
-<div class="page-shell">
+{% block content %}
+{# Save submit + Cancel anchor render via `ds.button` (auto-imported by
+   base_ds). Bespoke file-picker buttons (#photo-pick, #zip-pick) stay
+   page-local — inline-form chrome with custom styling. #}
+<div>
   <p style="margin: 8px 0;">
     <a class="edit-back" href="/marketplace/flea/{{ entity.id }}">← Back to detail</a>
   </p>

@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 
 {% block title %}Setup — {{ instance_name or "AI Data Analyst" }}{% endblock %}
 
@@ -12,8 +12,8 @@
    me as offboarded" button + the cta-modal "Got it" close button.
    Setup-wizard chrome (.install-hero, .install-block, .os-tabs,
    .home-overview, .what-is, .session-step, .cta-modal, .home-news)
-   stays page-local — home.css carries all page-scoped styles. #}
-{% import "_components.html" as ds %}
+   stays page-local — home.css carries all page-scoped styles
+   (ds auto-imported by base_ds). #}
 
 <div class="home-mock">
 

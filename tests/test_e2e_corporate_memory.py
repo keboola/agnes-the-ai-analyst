@@ -23,8 +23,13 @@ from pathlib import Path
 
 import pytest
 
-# Skip entire module if playwright is not installed
-playwright = pytest.importorskip("playwright")
+# Skip the entire module unless the pytest-playwright PLUGIN is installed —
+# this module uses its `page` fixture. Gating on the `playwright` library
+# alone is insufficient: cloud-chat added `playwright` to the dev deps (for
+# tests/e2e/test_chat_web.py, which builds its own page fixture from
+# `sync_playwright`), which would un-skip this module while `pytest_playwright`
+# stays absent → `fixture 'page' not found`. Gate on the actual provider.
+pytest.importorskip("pytest_playwright")
 
 
 def _find_free_port() -> int:

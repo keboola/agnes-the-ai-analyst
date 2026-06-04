@@ -1,0 +1,213 @@
+{% extends 'base_ds.html' %}
+
+{# Cloud chat page. Extends the canonical Agnes design-system base so
+   the Agnes top nav, footer, and shared design tokens (colors, type,
+   spacing) all render around the chat shell. The chat-specific layout
+   (sidebar + main panel) lives inside `block content`, scoped by
+   `.cloud-chat-shell` so its CSS doesn't bleed into other pages.
+
+   ``body_attrs`` adds ``.chat-page-body`` so chat.css can collapse the
+   container's vertical padding + the footer's height. Without that, the
+   chat-shell's ``height: calc(100dvh - …)`` always overshoots and the
+   page scrolls a few pixels — annoying because the chat-thread already
+   owns the inner scroll. See chat.css for the offset math. #}
+
+{% block title %}Chat — {{ config.INSTANCE_NAME or 'Agnes' }}{% endblock %}
+
+{% block body_attrs %}class="chat-page-body" data-user-email="{{ current_user.email }}"{% endblock %}
+
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ static_url('css/chat.css') }}" />
+  <link rel="stylesheet" href="/static/vendor/highlight.min.css" />
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/highlight.min.js"></script>
+  {# Anti-FOUC: pre-paint the persisted sidebar-collapsed state before
+     first render so a mini-mode user doesn't see the full sidebar flash
+     while chat.js boots. #}
+  <script>
+    (function () {
+      try {
+        // Pre-paint sidebar-collapsed state. The chat shell isn't in
+        // the DOM yet, so we stamp <html data-chat-sidebar="mini">
+        // and let chat.css's selectors target either the shell
+        // (after parse) or the html attribute as a transitional
+        // signal. chat.js promotes this to a class on the shell once
+        // the page is interactive.
+        var c = localStorage.getItem("agnes-chat-sidebar-collapsed");
+        if (c === "1") {
+          document.documentElement.setAttribute("data-chat-sidebar", "mini");
+        }
+      } catch (_) { /* private mode / storage disabled — no-op */ }
+    })();
+  </script>
+{% endblock %}
+
+{# Use full container so the chat shell can stretch edge-to-edge —
+   chat is an "app surface" not a content page, so the 1400px ceiling
+   that other admin pages get would just leave wasted gutters around
+   the sidebar. ``container_modifier`` is a block (not a var) in
+   base_ds.html, so ``{% set %}`` would silently no-op — must be a
+   ``{% block %}`` override. #}
+{% block container_modifier %}container--full{% endblock %}
+
+{% block content %}
+{# Toast notification stack — non-blocking feedback for copy /
+   delete / etc. Lives outside the chat shell so its z-index can
+   reach over everything else. JS appends nodes here and removes
+   them after a brief timeout (or earlier on dismiss click). #}
+<div id="chat-toasts" class="cloud-chat-toasts" aria-live="polite" aria-atomic="false"></div>
+
+{# Cmd+K command palette — opens via Cmd/Ctrl+K from anywhere on the
+   page. Lives outside the chat shell so its overlay z-index can sit
+   above everything else without fighting the shell's overflow rules. #}
+<div id="chat-palette" class="cloud-chat-palette" hidden
+     role="dialog" aria-modal="true" aria-label="Switch conversation">
+  <div class="cloud-chat-palette-backdrop" data-palette-close></div>
+  <div class="cloud-chat-palette-panel">
+    <header class="cloud-chat-palette-head">
+      <svg class="cloud-chat-palette-search-icon" viewBox="0 0 16 16"
+           aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6"
+           stroke-linecap="round">
+        <circle cx="7" cy="7" r="4.5"/>
+        <path d="M10.5 10.5L14 14"/>
+      </svg>
+      <input type="text" id="chat-palette-input"
+             class="cloud-chat-palette-input"
+             placeholder="Search conversations…"
+             aria-label="Search conversations"
+             autocomplete="off" spellcheck="false" />
+      <kbd class="cloud-chat-palette-hint">esc</kbd>
+    </header>
+    <ul id="chat-palette-results" class="cloud-chat-palette-results"
+        role="listbox" aria-label="Conversations"></ul>
+    <footer class="cloud-chat-palette-foot">
+      <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+      <span><kbd>↵</kbd> open</span>
+      <span><kbd>esc</kbd> close</span>
+    </footer>
+  </div>
+</div>
+
+<div class="cloud-chat-shell">
+  <aside class="cloud-chat-sidebar" aria-label="Conversations">
+    <header class="cloud-chat-sidebar-header">
+      {# Collapse toggle — the sidebar can shrink to a ~56px rail that
+         shows just the +New chat icon, conversation initials, and the
+         theme toggle. State persists in ``localStorage["agnes-chat-
+         sidebar-collapsed"]`` so the user's preference survives
+         reloads. The aria-expanded flag mirrors the visible state so
+         screen readers report it correctly. #}
+      <button type="button" id="chat-sidebar-toggle"
+              class="btn btn-ghost btn-sm cloud-chat-sidebar-toggle"
+              aria-label="Collapse sidebar"
+              aria-expanded="true">
+        <svg class="cloud-chat-sidebar-toggle-icon" viewBox="0 0 16 16"
+             width="14" height="14" aria-hidden="true"
+             fill="none" stroke="currentColor" stroke-width="1.6"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h11"/>
+        </svg>
+      </button>
+      <span class="cloud-chat-sidebar-title">Conversations</span>
+      <button type="button" id="new-chat"
+              class="btn btn-primary btn-sm cloud-chat-new-btn"
+              aria-label="Start a new chat">
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+        <span class="cloud-chat-new-btn-label">New chat</span>
+      </button>
+    </header>
+    <ul id="chat-list" class="cloud-chat-list" role="list"></ul>
+    <p id="cloud-chat-empty-state" class="cloud-chat-sidebar-empty">No conversations yet.</p>
+  </aside>
+
+  <section class="cloud-chat-main">
+    {# Active conversation header. JS toggles ``hidden`` based on
+       whether we're in an empty-state shell (no current chat) or
+       inside a thread. Title text is updated from openSession() and
+       newChat() so the user can always see which conversation they're
+       in even when scrolled mid-thread. #}
+    <header id="chat-thread-header" class="cloud-chat-thread-header" hidden>
+      <h2 id="chat-thread-title" class="cloud-chat-thread-title">Untitled chat</h2>
+    </header>
+
+    <div id="chat-status" class="cloud-chat-status" aria-live="polite"></div>
+
+    {# Empty-state capability panel. JS hides this as soon as the first
+       user message is sent or a previous session is opened from the
+       sidebar. Counts (tables, plugins, snapshots) are loaded
+       asynchronously by chat.js so we don't block the page render on
+       slow catalog reads. #}
+    <aside id="chat-capabilities" class="cloud-chat-capabilities">
+      <header class="cloud-chat-capabilities-header">
+        <h2>What can I help you with?</h2>
+        <p>I'm the Agnes data agent. I run inside an isolated sandbox with the full <code>agnes</code> CLI and your per-user workspace. Ask me anything about your data.</p>
+      </header>
+      <div class="cloud-chat-capabilities-grid">
+        <div class="ds-card cloud-chat-cap-card" data-card="data">
+          <h3>📊 Your data</h3>
+          <p id="cap-data-summary">Loading catalog…</p>
+          <ul id="cap-data-sources"></ul>
+        </div>
+
+        <div class="ds-card cloud-chat-cap-card" data-card="tools">
+          <h3>🧰 Built-in tools</h3>
+          <ul>
+            <li><code>agnes catalog</code> — list tables you can query</li>
+            <li><code>agnes schema &lt;table&gt;</code> — see column types</li>
+            <li><code>agnes describe &lt;table&gt;</code> — peek at example rows</li>
+            <li><code>agnes query "SELECT …"</code> — run SQL locally</li>
+            <li><code>agnes query --remote</code> — push down to BigQuery</li>
+            <li><code>agnes snapshot create</code> — materialize a filtered slice</li>
+          </ul>
+        </div>
+
+        <div class="ds-card cloud-chat-cap-card" data-card="marketplace">
+          <h3>🧩 Marketplace &amp; skills</h3>
+          <p id="cap-marketplace-summary">Loading plugins…</p>
+          <ul id="cap-marketplace-list"></ul>
+        </div>
+
+        <div class="ds-card cloud-chat-cap-card" data-card="examples">
+          <h3>💡 Try asking</h3>
+          <ul class="cloud-chat-cap-examples">
+            <li><button type="button" class="btn btn-secondary btn-sm cloud-chat-cap-suggest" data-prompt="What tables do I have access to in Agnes?">What tables do I have access to?</button></li>
+            <li><button type="button" class="btn btn-secondary btn-sm cloud-chat-cap-suggest" data-prompt="Show me 5 example rows from the largest table I have access to.">Show me example rows</button></li>
+            <li><button type="button" class="btn btn-secondary btn-sm cloud-chat-cap-suggest" data-prompt="Count rows per region in the sales table (or whichever table has a region column).">Count rows per region</button></li>
+            <li><button type="button" class="btn btn-secondary btn-sm cloud-chat-cap-suggest" data-prompt="What's our revenue trend over the last 6 months? Use whatever sales-related tables you find in the catalog.">Revenue trend, 6 months</button></li>
+          </ul>
+        </div>
+      </div>
+
+      <footer class="cloud-chat-capabilities-footer">
+        <p>RBAC: I see only the tables your <strong>{{ current_user.email }}</strong> account has access to. Try <code>agnes catalog</code> if you want the explicit list.</p>
+      </footer>
+    </aside>
+
+    <div id="chat-messages" class="cloud-chat-messages" aria-live="polite"></div>
+    <form id="chat-form" class="cloud-chat-form">
+      <textarea id="chat-input" class="cloud-chat-input" placeholder="Ask Agnes…" rows="2"></textarea>
+      <div class="cloud-chat-form-actions">
+        <button type="button" id="cancel-btn"
+                class="btn btn-danger cloud-chat-stop-btn" hidden>Stop</button>
+        <button type="submit"
+                class="btn btn-primary cloud-chat-send-btn">Send</button>
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+  {# Server-side RBAC-filtered capability snapshot. The previous shape
+     fetched /api/catalog + /api/marketplaces from JS, but the catalog
+     URL was wrong (real endpoint is /api/catalog/tables) and
+     /api/marketplaces is admin-only — non-admin users always saw
+     "unavailable" / "no plugins". Embedding here makes the panel
+     render synchronously with the page, no auth races. #}
+  <script id="chat-capabilities-data" type="application/json">
+    {{ chat_capabilities | tojson }}
+  </script>
+  <script type="module" src="/static/js/chat.js"></script>
+{% endblock %}

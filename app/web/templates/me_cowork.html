@@ -1,0 +1,504 @@
+{% extends "base_ds.html" %}
+{% block title %}AI Cowork — {{ instance_brand }}{% endblock %}
+
+{% import "_components.html" as ds %}
+
+{% block head_extra %}
+<style>
+/* Page-local styles — layout via .profile-page + .section-card from style-custom.css */
+
+.cowork-prereq {
+  background: var(--ds-surface-dim);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--ds-text-secondary);
+  line-height: var(--leading-normal);
+  margin-bottom: var(--space-5);
+}
+.cowork-prereq a { color: var(--ds-primary); }
+
+.cowork-skills-note {
+  background: #f5f3ff;
+  border: 1px solid #c7d2fe;
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--ds-text-secondary);
+  line-height: var(--leading-normal);
+  margin-bottom: var(--space-5);
+}
+.cowork-skills-note strong { color: var(--ds-text-primary); }
+
+.cowork-steps {
+  list-style: none;
+  margin: 0 0 var(--space-5);
+  padding: 0;
+  counter-reset: cowork-step;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.cowork-steps li {
+  counter-increment: cowork-step;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--ds-text-primary);
+}
+.cowork-steps li::before {
+  content: counter(cowork-step);
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--ds-primary);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+
+.cowork-action-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-5);
+}
+
+.cowork-status { font-size: var(--text-sm); color: var(--ds-text-secondary); }
+.cowork-status.is-error { color: var(--ds-accent-danger-ink); }
+.cowork-status.is-success { color: var(--ds-accent-success-ink); }
+
+.cowork-token-limit-warn {
+  display: none;
+  font-size: var(--text-xs);
+  color: var(--ds-accent-warn-ink);
+  background: var(--ds-accent-warn-bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  margin-top: var(--space-3);
+}
+.cowork-token-limit-warn.visible { display: block; }
+
+.cowork-prompt-box {
+  background: var(--ds-surface-dim);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+}
+.cowork-prompt-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--ds-text-muted);
+  margin-bottom: var(--space-2);
+}
+.cowork-prompt-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.cowork-prompt-code {
+  flex: 1;
+  font-family: var(--ds-font-mono, monospace);
+  font-size: var(--text-sm);
+  color: var(--ds-text-primary);
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  display: block;
+}
+.cowork-prompt-hint {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--ds-text-muted);
+}
+
+/* Tools grid inside collapsible sections */
+.cowork-tools-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-3);
+}
+.cowork-tool-card {
+  background: var(--ds-surface-dim);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+}
+.cowork-tool-card.is-passthrough { border-color: #c7d2fe; background: #f5f3ff; }
+.cowork-tool-card .tool-name {
+  font-family: var(--ds-font-mono, monospace);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--ds-primary);
+  margin-bottom: var(--space-1);
+}
+.cowork-tool-card.is-passthrough .tool-name { color: #5b21b6; }
+.cowork-tool-card .tool-desc {
+  font-size: var(--text-xs);
+  color: var(--ds-text-secondary);
+  line-height: var(--leading-normal);
+  margin: 0;
+}
+.cowork-tool-card .tool-source {
+  margin-top: var(--space-2);
+  font-size: 11px;
+  color: var(--ds-text-muted);
+}
+
+/* Skills */
+.cowork-skills-list { display: flex; flex-direction: column; gap: var(--space-2); }
+.cowork-skill-card {
+  background: var(--ds-surface-dim);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+.cowork-skill-inv {
+  flex-shrink: 0;
+  font-family: var(--ds-font-mono, monospace);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ds-accent-success-ink);
+  background: var(--ds-accent-success-bg);
+  border-radius: var(--radius-md);
+  padding: 2px 7px;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+.cowork-skill-inv.no-inv {
+  color: var(--ds-accent-warn-ink);
+  background: var(--ds-accent-warn-bg);
+}
+.cowork-skill-body .skill-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--ds-text-primary);
+  margin: 0 0 2px;
+}
+.cowork-skill-body .skill-desc {
+  font-size: var(--text-xs);
+  color: var(--ds-text-secondary);
+  margin: 0;
+  line-height: var(--leading-normal);
+}
+.cowork-skill-body .skill-plugin {
+  margin-top: var(--space-1);
+  font-size: 11px;
+  color: var(--ds-text-muted);
+}
+
+/* Connection meta */
+.cowork-conn-grid { display: flex; flex-wrap: wrap; gap: var(--space-5); }
+.cowork-conn-item .label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--ds-text-muted);
+  margin-bottom: var(--space-1);
+}
+.cowork-conn-item .value {
+  font-family: var(--ds-font-mono, monospace);
+  font-size: var(--text-sm);
+  color: var(--ds-text-primary);
+}
+
+/* Empty state */
+.cowork-empty {
+  text-align: center;
+  padding: var(--space-7) var(--space-4);
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm);
+  border: 1px dashed var(--ds-border);
+  border-radius: var(--radius-lg);
+}
+.cowork-empty .big {
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--ds-text-primary);
+  margin-bottom: var(--space-1);
+}
+</style>
+{% endblock %}
+
+{% block content %}
+{% set page_hero_eyebrow = "My account" %}
+{% set page_hero_title = "AI Cowork" %}
+{% set page_hero_subtitle = "Connect Claude Code to your Agnes data — no terminal needed." %}
+{% include "_page_hero.html" %}
+
+<div class="profile-page">
+
+  {# ── Setup ──────────────────────────────────────────────────────────── #}
+  {% call ds.panel(title='Setup', tag='section',
+                   klass='section-card',
+                   attrs='aria-label="Cowork setup"') %}
+    <div class="cowork-prereq">
+      Requires <a href="https://claude.ai/download" target="_blank" rel="noopener">Claude Desktop</a>.
+      The bundle expires in 24 hours and is single-use.
+      <a href="/help/cowork" style="margin-left:8px;">Setup guide</a>
+    </div>
+
+    <ol class="cowork-steps">
+      <li>Click <strong>Download Setup Bundle</strong> below</li>
+      <li>Unzip the downloaded file</li>
+      <li>Open <strong>Claude Desktop</strong> → <strong>Cowork</strong> → <strong>New project</strong> → <strong>Use an existing folder</strong> → select the unzipped folder</li>
+      <li>Agnes configures automatically at session start</li>
+    </ol>
+
+    <div class="cowork-skills-note">
+      <strong>About skills:</strong> your Agnes skills load automatically when you
+      open the folder — Claude can use them in chat right away. They will
+      <strong>not</strong> appear in Cowork's <em>Customize&nbsp;→&nbsp;Skills</em>
+      list (a Cowork UI limitation, not a problem). To confirm a skill works,
+      just ask Claude to use it — e.g. <em>“use the develop-component skill”</em>.
+    </div>
+
+    <div class="cowork-action-row">
+      <button id="cowork-download-btn" class="btn btn-primary" type="button">
+        <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" style="margin-right:6px;">
+          <path d="M10 2a1 1 0 011 1v9.586l2.293-2.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L9 12.586V3a1 1 0 011-1z"/>
+          <path d="M3 15a1 1 0 011 1h12a1 1 0 110 2H4a1 1 0 01-1-1v-1a1 1 0 011-1z"/>
+        </svg>
+        Download Setup Bundle
+      </button>
+      <span id="cowork-status" class="cowork-status" aria-live="polite"></span>
+    </div>
+
+    <div id="cowork-token-limit-warn" class="cowork-token-limit-warn">
+      You have reached the limit of active setup bundles. Old bundles expire after 24 hours,
+      or you can revoke them below.
+    </div>
+
+    <div class="cowork-prompt-box">
+      <div class="cowork-prompt-label">Your first message in Cowork</div>
+      <div class="cowork-prompt-row">
+        <code id="cowork-first-prompt" class="cowork-prompt-code">Run setup.py and show me what data I have access to</code>
+        <button id="cowork-copy-btn" class="btn btn-secondary btn-sm" type="button">Copy</button>
+      </div>
+      <div class="cowork-prompt-hint">After the first session, restart Claude Desktop once to activate MCP tools.</div>
+    </div>
+
+    <details id="cowork-active-tokens" style="display:none; margin-top:var(--space-4); font-size:var(--text-sm);">
+      <summary style="cursor:pointer; color:var(--ds-text-secondary); list-style:none; user-select:none;">
+        Active setup bundles
+      </summary>
+      <ul id="cowork-token-list" style="list-style:none; padding:0; margin:var(--space-2) 0 0; font-size:var(--text-xs); display:flex; flex-direction:column; gap:var(--space-2);"></ul>
+    </details>
+  {% endcall %}
+
+  {# ── Connection — collapsible ─────────────────────────────────────── #}
+  <details class="ds-card section-card" aria-label="Connection">
+    <summary>Connection</summary>
+    <div style="margin-top:var(--space-4);">
+      <div class="cowork-conn-grid">
+        <div class="cowork-conn-item">
+          <div class="label">MCP endpoint</div>
+          <div class="value">{{ server_url }}/api/mcp/sse</div>
+        </div>
+        <div class="cowork-conn-item">
+          <div class="label">Transport</div>
+          <div class="value">SSE (HTTP)</div>
+        </div>
+      </div>
+    </div>
+  </details>
+
+  {# ── Agnes tools — collapsible ────────────────────────────────────── #}
+  <details class="ds-card section-card" aria-label="Agnes tools">
+    <summary>Agnes tools <span class="badge badge--info" style="margin-left:6px;">{{ static_tools | length }}</span></summary>
+    <div style="margin-top:var(--space-4);">
+      <div class="cowork-tools-grid">
+        {% for t in static_tools %}
+        <div class="cowork-tool-card">
+          <div class="tool-name">{{ t.name }}</div>
+          <p class="tool-desc">{{ t.description }}</p>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </details>
+
+  {# ── Passthrough tools — collapsible ──────────────────────────────── #}
+  <details class="ds-card section-card" aria-label="Passthrough tools">
+    <summary>Passthrough tools <span class="badge {% if passthrough_tools %}badge--info{% endif %}" style="margin-left:6px;">{{ passthrough_tools | length }}</span></summary>
+    <div style="margin-top:var(--space-4);">
+      {% if passthrough_tools %}
+      <div class="cowork-tools-grid">
+        {% for t in passthrough_tools %}
+        <div class="cowork-tool-card is-passthrough">
+          <div class="tool-name">{{ t.exposed_name }}</div>
+          <p class="tool-desc">{{ t.description or '—' }}</p>
+          <div class="tool-source">via {{ t.source_name }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="cowork-empty">
+        <div class="big">No passthrough tools</div>
+        No external MCP sources have been connected and granted to your account.
+        {% if is_admin %}<br><a href="/admin/mcp-sources">Configure MCP sources</a>{% endif %}
+      </div>
+      {% endif %}
+    </div>
+  </details>
+
+  {# ── Marketplace skills — collapsible ─────────────────────────────── #}
+  <details class="ds-card section-card" aria-label="Marketplace skills">
+    <summary>Marketplace skills <span class="badge {% if skills %}badge--info{% endif %}" style="margin-left:6px;">{{ skills | length }}</span></summary>
+    <div style="margin-top:var(--space-4);">
+      {% if skills %}
+      <div class="cowork-skills-list">
+        {% for s in skills %}
+        <div class="cowork-skill-card">
+          <div class="cowork-skill-inv {% if not s.invocation %}no-inv{% endif %}">
+            {{ s.invocation or 'no invocation' }}
+          </div>
+          <div class="cowork-skill-body">
+            <div class="skill-name">{{ s.name }}</div>
+            {% if s.description %}<p class="skill-desc">{{ s.description }}</p>{% endif %}
+            <div class="skill-plugin">{{ s.marketplace_id }} / {{ s.plugin_name }}</div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="cowork-empty">
+        <div class="big">No skills assigned</div>
+        Ask your admin to grant your group access to a marketplace plugin that contains skills.
+      </div>
+      {% endif %}
+    </div>
+  </details>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const btn       = document.getElementById('cowork-download-btn');
+  const statusEl  = document.getElementById('cowork-status');
+  const limitWarn = document.getElementById('cowork-token-limit-warn');
+  const activeSection = document.getElementById('cowork-active-tokens');
+  const tokenList = document.getElementById('cowork-token-list');
+  const copyBtn   = document.getElementById('cowork-copy-btn');
+  const firstPrompt = document.getElementById('cowork-first-prompt');
+
+  function setStatus(msg, type) {
+    statusEl.textContent = msg;
+    statusEl.className = 'cowork-status' + (type ? ' is-' + type : '');
+  }
+
+  if (copyBtn && firstPrompt) {
+    copyBtn.addEventListener('click', function () {
+      navigator.clipboard.writeText(firstPrompt.textContent.trim()).then(function () {
+        copyBtn.textContent = 'Copied!';
+        copyBtn.classList.add('copied');
+        setTimeout(function () { copyBtn.textContent = 'Copy'; copyBtn.classList.remove('copied'); }, 1800);
+      });
+    });
+  }
+
+  function renderTokens(tokens) {
+    if (!tokens || tokens.length === 0) {
+      activeSection.style.display = 'none';
+      limitWarn.classList.remove('visible');
+      return;
+    }
+    activeSection.style.display = '';
+    if (tokens.length >= 5) limitWarn.classList.add('visible');
+    else limitWarn.classList.remove('visible');
+
+    tokenList.innerHTML = '';
+    tokens.forEach(function (t) {
+      var li = document.createElement('li');
+      li.style.cssText = 'display:flex;align-items:center;gap:8px;';
+      var exp = new Date(t.expires_at).toLocaleString();
+      li.innerHTML = '<span style="color:var(--ds-text-secondary)">Expires ' + exp + '</span>'
+        + '<button data-id="' + t.id + '" class="btn btn-ghost btn-sm" style="margin-left:auto;color:var(--ds-accent-danger-ink);" type="button">Revoke</button>';
+      li.querySelector('button').addEventListener('click', function () { revokeToken(t.id, li); });
+      tokenList.appendChild(li);
+    });
+  }
+
+  function revokeToken(id, li) {
+    fetch('/api/user/setup-tokens/' + id, { method: 'DELETE', credentials: 'include' })
+      .then(function (r) {
+        if (r.ok || r.status === 204) {
+          li.remove();
+          if (tokenList.children.length === 0) activeSection.style.display = 'none';
+          limitWarn.classList.remove('visible');
+        }
+      }).catch(function () {});
+  }
+
+  function loadTokens() {
+    fetch('/api/user/setup-tokens', { credentials: 'include' })
+      .then(function (r) { return r.ok ? r.json() : []; })
+      .then(renderTokens)
+      .catch(function () {});
+  }
+
+  btn.addEventListener('click', function () {
+    btn.disabled = true;
+    setStatus('Generating bundle…', '');
+
+    fetch('/api/user/cowork-bundle', { method: 'POST', credentials: 'include' })
+      .then(function (resp) {
+        if (!resp.ok) {
+          return resp.json().then(function (d) {
+            throw new Error((d && d.detail && d.detail.hint) || ('Error ' + resp.status));
+          });
+        }
+        var cd = resp.headers.get('Content-Disposition') || '';
+        var m = cd.match(/filename="([^"]+)"/);
+        var filename = m ? m[1] : 'agnes-cowork-setup.zip';
+        return resp.blob().then(function (blob) {
+          return _saveBlob(blob, filename);
+        }).then(function (saved) {
+          setStatus(saved ? 'Bundle saved — expires in 24 h.' : 'Bundle downloaded — expires in 24 h.', 'success');
+          loadTokens();
+        });
+      })
+      .catch(function (err) {
+        if (err && err.name === 'AbortError') { setStatus('', ''); }
+        else { setStatus(err.message || 'Failed to generate bundle.', 'error'); }
+      })
+      .finally(function () { btn.disabled = false; });
+
+    function _saveBlob(blob, filename) {
+      if (typeof window.showSaveFilePicker === 'function') {
+        return window.showSaveFilePicker({
+          suggestedName: filename,
+          types: [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }],
+        }).then(function (h) { return h.createWritable(); })
+          .then(function (w) { return w.write(blob).then(function () { return w.close(); }); })
+          .then(function () { return true; });
+      }
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      return Promise.resolve(false);
+    }
+  });
+
+  loadTokens();
+})();
+</script>
+{% endblock %}

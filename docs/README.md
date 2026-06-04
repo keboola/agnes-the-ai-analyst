@@ -41,6 +41,8 @@ Deploying, configuring, and running an Agnes instance.
 - [`curated-marketplace-format.md`](curated-marketplace-format.md) — authoring `marketplace-metadata.json` for curated marketplaces
 - [`observability.md`](observability.md) — PostHog integration (exceptions, tracing, session replay)
 - [`operator/news-content-guide.md`](operator/news-content-guide.md) — editorial guidelines for in-app news content
+- [Cloud-hosted Claude Code](cloud-chat.md) — zero-install web + Slack
+  surfaces with the full Agnes harness.
 
 ## For developers
 

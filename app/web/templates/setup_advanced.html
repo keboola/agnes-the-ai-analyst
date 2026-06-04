@@ -1,8 +1,8 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 
 {% block title %}Advanced setup — {{ instance_name or "AI Data Analyst" }}{% endblock %}
 
-{% block content %}
+{% block head_extra %}
 {% include "_page_chrome.html" %}
 <style>
 .advanced-mock {
@@ -276,7 +276,9 @@
     background: rgba(255, 255, 255, 0.20);
 }
 </style>
+{% endblock %}
 
+{% block content %}
 <div class="advanced-mock">
 
     <div class="ad-hero">

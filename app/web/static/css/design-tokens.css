@@ -186,3 +186,100 @@
     --ds-text-inverse:  #ffffff;
     --ds-text-link:     var(--ds-primary);
 }
+
+/* ─── Theme: dark ──────────────────────────────────────────────────
+   Activated by ``<html data-theme="dark">``. Overrides the surface,
+   text, border, and accent tokens so every consumer of ``--ds-*``
+   flips wholesale. The brand-primary green stays the same hue but
+   shifts lighter for AA contrast on dark fills. Page markup and
+   component classes do NOT change between themes.
+
+   Status accent backgrounds use a translucent tint of the line
+   colour instead of a tinted-pastel light surface — pastel
+   backgrounds (success-bg=#dcfce7 etc.) wash out the body text on
+   dark surfaces, while a 14% rgba over the dark page bg reads
+   correctly as "muted info / warn / success / danger" without
+   competing with the body.
+
+   Also overrides the legacy ``--background`` / ``--surface`` family
+   in style-custom.css so the app header, footer, and any page still
+   reading the legacy tokens flip together. The two families are
+   the same surface — splitting them across themes would tear the
+   chrome.
+
+   Known gap: dark mode is the system.md "future brief" — only the
+   surfaces audited by the chat page are guaranteed AA-clean.
+   Other pages may need touch-ups when their templates next change. */
+:root[data-theme="dark"] {
+    /* Brand surface — same hue, lighter for AA contrast on dark fills */
+    --ds-primary: #4ec096;
+    --ds-primary-dark: #2ea877;
+    --ds-primary-light: rgba(78, 192, 150, 0.16);
+    --ds-brand-accent: #76d6ad;
+
+    /* Light surface family flips to a navy-tinted dark stack so the
+       page reads as a single tonal family with the existing hero. */
+    --ds-bg: #0c1224;
+    --ds-surface: #141a30;
+    --ds-surface-dim: #1c2440;
+    --ds-border: #283255;
+    --ds-border-light: #1f2845;
+
+    /* Text — pale-ink hierarchy on dark surfaces. */
+    --ds-text-primary: #f3f6ff;
+    --ds-text-secondary: #b9c1d8;
+    --ds-text-muted: #7d86a3;
+    --ds-text-disabled: #4a5168;
+    --ds-text-inverse: #0e1525;
+
+    /* Status backgrounds: translucent tint of the line colour over
+       the page bg. Inks shift lighter so they read on the tint. */
+    --ds-accent-info-bg:    rgba(79, 124, 242, 0.18);
+    --ds-accent-info-ink:   #a8c1ff;
+    --ds-accent-info-line:  #4f7cf2;
+
+    --ds-accent-warn-bg:    rgba(245, 200, 75, 0.18);
+    --ds-accent-warn-ink:   #ffd970;
+    --ds-accent-warn-line:  #f5c84b;
+
+    --ds-accent-success-bg: rgba(22, 163, 74, 0.20);
+    --ds-accent-success-ink: #86e1a3;
+    --ds-accent-success-line: #16a34a;
+
+    --ds-accent-danger-bg:  rgba(220, 38, 38, 0.22);
+    --ds-accent-danger-ink: #ff9b9b;
+    --ds-accent-danger-line: #dc2626;
+
+    /* Legacy compat shims — these live in style-custom.css and are
+       referenced by the app header, footer, and pages that haven't
+       moved onto ``--ds-*`` yet. Override them here so the chrome
+       flips alongside the design-token surfaces. */
+    --background: var(--ds-bg);
+    --surface: var(--ds-surface);
+    --surface-dim: var(--ds-surface-dim);
+    --border: var(--ds-border);
+    --border-light: var(--ds-border-light);
+    --text-primary: var(--ds-text-primary);
+    --text-secondary: var(--ds-text-secondary);
+    --text-muted: var(--ds-text-muted);
+    --text-disabled: var(--ds-text-disabled);
+    --info-bg: var(--ds-accent-info-bg);
+    --info-ink: var(--ds-accent-info-ink);
+    --info-line: var(--ds-accent-info-line);
+    --warn-bg: var(--ds-accent-warn-bg);
+    --warn-ink: var(--ds-accent-warn-ink);
+    --warn-line: var(--ds-accent-warn-line);
+
+    /* Shadows are mostly invisible on dark surfaces — give them more
+       weight so the depth perception still registers. */
+    --ds-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.25);
+    --ds-shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
+    --ds-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.55);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.25);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
+    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.45);
+    --shadow-elevated: 0 8px 24px rgba(0, 0, 0, 0.55);
+
+    /* Focus-ring colour stays the brand primary — same green dot on
+       dark surfaces reads as "interactive" identically to light. */
+}
