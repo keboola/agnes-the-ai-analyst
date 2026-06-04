@@ -153,18 +153,21 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     # users_repo()` escape hatch (same pattern as app/auth/access.py). On Postgres
     # the read routes through the factory.
     "src/grant_intersection.py": {"UserRepository"},
-    # Residual from #528 (Slack agent expansion): _cmd_agnes reads the user off
-    # `repo._conn` (the DuckDB chat conn) instead of the factory — wrong backend
-    # on PG. Real fix + parity test tracked on the follow-up routing branch.
-    "services/slack_bot/commands.py": {"UserRepository"},
     # app/web/router.py — migrated to table_registry_repo()/sync_state_repo()
     # (catalog detail pages); entry removed as the residual shrank.
     "cli/commands/admin_data_semantics.py": {"BqMetadataCacheRepository", "ColumnMetadataRepository", "DataPackagesRepository", "MetricRepository", "TableRegistryRepository"},
+    # Slack bot: the whole subsystem reads off `repo._conn` (= the DuckDB system
+    # connection that app.state.chat_repo is built on), consistently — user
+    # lookup, verification codes, and bindings all live there. Migrating Slack
+    # identity to the factory is a separate subsystem-wide effort; until then
+    # both handlers stay grandfathered as a coherent DuckDB-conn unit.
+    "services/slack_bot/commands.py": {"UserRepository"},
     "services/slack_bot/events.py": {"UserRepository"},
     "src/catalog_export.py": {"TableRegistryRepository"},
     "src/claude_md.py": {"ClaudeMdTemplateRepository"},
-    "src/orchestrator.py": {"SyncStateRepository", "TableRegistryRepository", "ViewOwnershipRepository"},
-    "src/profiler.py": {"MetricRepository"},
+    # src/orchestrator.py — rebuild/sync_state/view_ownership migrated to the
+    # factory; entry removed.
+    # src/profiler.py — get_table_map migrated to metric_repo(); entry removed.
     "src/store_guardrails/purge.py": {"StoreEntitiesRepository", "StoreSubmissionsRepository"},
     "src/store_guardrails/reaper.py": {"AuditRepository"},
     "src/store_guardrails/runner.py": {"AuditRepository", "StoreEntitiesRepository", "StoreSubmissionsRepository"},
@@ -187,12 +190,9 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     # connectors.internal.access.sample_internal_rows (use_pg() dispatch).
     "app/auth/access.py",
     "app/auth/dependencies.py",
-    # Residual from #528 (co-drive): co-session token resolution reads
-    # chat_session_participants / chat_sessions off get_system_db() (always
-    # DuckDB) — empty on a PG instance, so co-sessions fail closed. Real fix
-    # (route through a dispatching chat repo) + parity test tracked on the
-    # follow-up routing branch.
-    "app/auth/pat_resolver.py",
+    # app/auth/pat_resolver.py — co-session resolution now routes through
+    # chat_session_participants_repo()/chat_session_repo() (factory); entry
+    # removed as the residual shrank.
     "app/auth/providers/google.py",
     "app/auth/providers/password.py",
     "app/auth/router.py",
@@ -204,8 +204,6 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     "cli/commands/admin_metrics.py",
     "services/verification_detector/__main__.py",
     "src/catalog_export.py",
-    "src/orchestrator.py",
-    "src/profiler.py",
     "src/rbac.py",
 }
 
