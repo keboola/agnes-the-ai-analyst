@@ -38,11 +38,10 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth.access import require_admin
-from app.auth.dependencies import _get_db, get_current_user
+from app.auth.dependencies import get_current_user
 
 from src.repositories import (
     bq_metadata_cache_repo,
@@ -115,7 +114,7 @@ def compute_freshness(
 # ─── Single-row refresh primitive ──────────────────────────────────────────
 
 
-def refresh_one(conn: duckdb.DuckDBPyConnection, row: dict[str, Any]) -> dict[str, Any]:
+def refresh_one(row: dict[str, Any]) -> dict[str, Any]:
     """Fetch BQ metadata for one row and UPSERT the result.
 
     Synchronous; safe to call from an anyio thread. Returns a small
@@ -176,7 +175,7 @@ def refresh_one(conn: duckdb.DuckDBPyConnection, row: dict[str, Any]) -> dict[st
     }
 
 
-def _list_remote_bq_rows(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
+def _list_remote_bq_rows() -> list[dict[str, Any]]:
     rows = table_registry_repo().list_all()
     return [
         r for r in rows
@@ -217,7 +216,6 @@ _refresh_state: dict[str, Any] = {"run_id": None, "started_at": None}
 @router.post("/api/admin/run-bq-metadata-refresh")
 async def run_bq_metadata_refresh(
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Refresh metadata for every remote BQ row in the registry.
 
@@ -234,8 +232,6 @@ async def run_bq_metadata_refresh(
     many remote tables doesn't fan out to dozens of parallel BQ jobs.
     """
     import uuid
-
-    from src.db import get_system_db
 
     if _refresh_lock.locked():
         # Issue #256: emit 409 instead of doing 2× BQ work.
@@ -255,14 +251,12 @@ async def run_bq_metadata_refresh(
         _refresh_state["run_id"] = run_id
         _refresh_state["started_at"] = started_at
         try:
-            rows = _list_remote_bq_rows(conn)
+            rows = _list_remote_bq_rows()
             sem = asyncio.Semaphore(_refresh_concurrency())
 
             async def _one(row: dict[str, Any]) -> dict[str, Any]:
                 async with sem:
-                    # Each refresh_one call wants its own cursor; the singleton
-                    # connection accessor returns a fresh cursor each call.
-                    return await asyncio.to_thread(refresh_one, get_system_db(), row)
+                    return await asyncio.to_thread(refresh_one, row)
 
             t0 = time.monotonic()
             results = await asyncio.gather(
@@ -304,7 +298,6 @@ async def run_bq_metadata_refresh(
 async def refresh_one_table(
     table: str = Query(..., description="Registry table_id to refresh"),
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Operator on-demand refresh of one row.
 
@@ -313,8 +306,6 @@ async def refresh_one_table(
     BQ schema change that the operator wants reflected before the next
     scheduled tick.
     """
-    from src.db import get_system_db
-
     row = table_registry_repo().get(table)
     if not row:
         raise HTTPException(status_code=404, detail=f"Unknown table_id: {table}")
@@ -323,13 +314,12 @@ async def refresh_one_table(
             status_code=400,
             detail="Manual metadata refresh is only meaningful for remote BigQuery tables",
         )
-    return await asyncio.to_thread(refresh_one, get_system_db(), row)
+    return await asyncio.to_thread(refresh_one, row)
 
 
 @router.get("/api/v2/metadata-cache/status")
 def metadata_cache_status(
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Per-table cache status. Non-admin — analyst tools rely on this to
     decide whether to trust the catalog's ``rows`` / ``size_bytes`` or

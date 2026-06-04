@@ -167,8 +167,7 @@ def _warm_metadata_sync(row: dict) -> None:
     (the same primitive the scheduler-driven refresh uses).
     """
     from app.api.bq_metadata_refresh import refresh_one
-    from src.db import get_system_db
-    refresh_one(get_system_db(), row)
+    refresh_one(row)
 
 
 def _warm_schema_sync(row: dict) -> None:

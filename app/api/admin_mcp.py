@@ -42,13 +42,16 @@ from pydantic import BaseModel, field_validator
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from app.secrets_vault import (
-    PerUserSecretsRepository,
     SharedSecretsRepository,
     VaultKeyNotConfiguredError,
 )
 from connectors.mcp import classifier as mcp_classifier
 from connectors.mcp import extractor as mcp_extractor
-from src.repositories import mcp_sources_repo, tool_registry_repo
+from src.repositories import (
+    mcp_sources_repo,
+    per_user_secrets_repo,
+    tool_registry_repo,
+)
 from src.repositories.audit import AuditRepository
 from src.repositories.mcp_sources import MCPSourceRepository  # noqa: F401  # kept for type-only imports + tests that monkeypatch the symbol
 from src.repositories.tool_registry import (
@@ -497,7 +500,10 @@ async def delete_mcp_source(
     # Clean up vault secrets so a deleted source leaves no orphaned encrypted
     # blobs — the shared secret plus any per-user rows. (Devin Review on #530.)
     SharedSecretsRepository(conn).delete(source_id)
-    pu_secrets = PerUserSecretsRepository(conn)
+    # Per-user secrets were migrated to Postgres (#530), so they must be dropped
+    # through the factory — a raw PerUserSecretsRepository(conn) deletes from the
+    # always-DuckDB connection and leaves orphaned rows on a PG instance.
+    pu_secrets = per_user_secrets_repo()
     for uid in pu_secrets.list_for_source(source_id):
         pu_secrets.delete(source_id, uid)
     _audit(
