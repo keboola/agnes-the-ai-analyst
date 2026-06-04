@@ -12,6 +12,7 @@
 import warnings as _warnings
 from src.repositories import (
     user_group_members_repo,
+    user_groups_repo,
     users_repo,
 )
 try:
@@ -431,12 +432,30 @@ async def lifespan(app):
     except Exception:
         logger.exception("BQ startup config validation crashed (non-fatal)")
 
+    # Seed the Admin/Everyone system groups into the ACTIVE state backend.
+    # On DuckDB this duplicates src.db._seed_system_groups (idempotent), but
+    # that runs ONLY on a DuckDB connect — nothing seeds these groups on a
+    # Postgres instance, so without this a fresh PG deploy has no Admin group
+    # (require_admin can never pass) and no Everyone group (Everyone-scoped
+    # grants like Required onboarding never surface). ensure_system is
+    # idempotent and routes through the factory, so it is correct on either
+    # backend.
+    try:
+        from src.db import _SYSTEM_GROUPS_SEED
+        _ug_repo = user_groups_repo()
+        for _grp_name, _grp_desc in _SYSTEM_GROUPS_SEED:
+            _ug_repo.ensure_system(_grp_name, _grp_desc)
+    except Exception as e:
+        logger.warning("Could not seed system groups: %s", e)
+
     # Seed admin user (SEED_ADMIN_EMAIL) and add them to the Admin user_group.
     # Optional SEED_ADMIN_PASSWORD lets the seeded user sign in immediately
     # without going through bootstrap; never overwritten if already set.
-    # The Admin/Everyone user_groups themselves are seeded inside
-    # _ensure_schema (src.db._seed_system_groups), so this hook only has to
-    # handle membership for the seed admin.
+    # The Admin/Everyone user_groups were ensured just above (factory →
+    # active backend), so this hook only has to handle membership for the
+    # seed admin — looking the groups up through the factory too, so it gets
+    # the active backend's group ids (a raw DuckDB read returned a DuckDB-only
+    # group id that does not exist on a Postgres instance).
     # Lives in lifespan (worker-only), NOT create_app(): the latter runs
     # in the uvicorn --reload master too, and duckdb >=1.5 holds an
     # exclusive per-process file lock on system.duckdb that would then
@@ -445,9 +464,10 @@ async def lifespan(app):
     seed_email = os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None)
     if seed_email:
         try:
-            from src.db import SYSTEM_ADMIN_GROUP, get_system_db
-            conn = get_system_db()
+            from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
             repo = users_repo()
+            groups_repo = user_groups_repo()
+            members_repo = user_group_members_repo()
             seed_password = os.environ.get("SEED_ADMIN_PASSWORD") or None
             password_hash = None
             if seed_password:
@@ -470,15 +490,14 @@ async def lifespan(app):
                     repo.update(id=user_id, password_hash=password_hash)
                     logger.info("Set password on existing seed admin: %s", seed_email)
             # Make sure the seed admin is actually in the Admin group — this
-            # is what gives them admin access in v12. Idempotent.
-            from src.db import SYSTEM_EVERYONE_GROUP
-            admin_group = conn.execute(
-                "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
-            ).fetchone()
+            # is what gives them admin access in v12. Idempotent. Look the
+            # group up through the factory so we get the ACTIVE backend's id
+            # (raw DuckDB read returned a DuckDB group id absent from Postgres).
+            admin_group = groups_repo.get_by_name(SYSTEM_ADMIN_GROUP)
             if admin_group:
-                user_group_members_repo().add_member(
+                members_repo.add_member(
                     user_id=user_id,
-                    group_id=admin_group[0],
+                    group_id=admin_group["id"],
                     source="system_seed",
                     added_by="app.main:seed_admin",
                 )
@@ -487,18 +506,14 @@ async def lifespan(app):
             # default reference packages). The seed admin not being in
             # Everyone meant their own Required grants didn't surface on
             # /catalog as Required for them, which read as a bug.
-            everyone_group = conn.execute(
-                "SELECT id FROM user_groups WHERE name = ?",
-                [SYSTEM_EVERYONE_GROUP],
-            ).fetchone()
+            everyone_group = groups_repo.get_by_name(SYSTEM_EVERYONE_GROUP)
             if everyone_group:
-                UserGroupMembersRepository(conn).add_member(
+                members_repo.add_member(
                     user_id=user_id,
-                    group_id=everyone_group[0],
+                    group_id=everyone_group["id"],
                     source="system_seed",
                     added_by="app.main:seed_admin",
                 )
-            conn.close()
         except Exception as e:
             logger.warning(f"Could not seed admin: {e}")
 
