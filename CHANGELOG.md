@@ -10,8 +10,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.20] — 2026-06-04
+
 ### Fixed
 - The Keboola sync now sweeps orphaned `kbc-export-*` / `kbc-slice-*` staging dirs from the temp root (`AGNES_TEMP_DIR`) at the start of every run. These dirs are normally removed by `TemporaryDirectory` on any return — including the disk-full path — so the only way they survive is a hard kill (SIGKILL / OOM / container recreate) mid-export. Without a sweep they accumulated on the data disk until it filled and *every* subsequent sync failed with `No space left on device`, a self-reinforcing failure that needed a manual `rm` to break. The sweep is age-gated (`AGNES_SCRATCH_MAX_AGE_SEC`, default 1h) so a concurrent in-flight export is never deleted, and runs under the sync lock before any new scratch is created.
+## [0.65.19] — 2026-06-04
+
+### Internal
+- Repository factory (`src/repositories/__init__.py`) now dispatches through a
+  declarative `_REGISTRY` table (`key -> {backend: (module, class)}`) instead of
+  ~44 hand-written two-way `if use_pg()` functions. Behaviour and the public
+  `<name>_repo()` API are unchanged (per-call backend resolution, lazy imports);
+  the win is that the dispatch logic is backend-count-agnostic, so adding a
+  third backend (e.g. `duckdb_quack`) is a localized change — register a
+  connection-arg provider + fill one column in the table — rather than editing
+  every factory function. New `tests/test_repository_registry.py` locks the
+  table's integrity (every public factory has an entry and vice versa; every
+  repo registers the same set of backends; every registered class is
+  importable) — the structural half of the dual-backend discipline,
+  complementing the method-parity and behavioural-contract suites.
 
 ## [0.65.18] — 2026-06-04
 
