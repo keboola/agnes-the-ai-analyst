@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Windows: `agnes refresh-marketplace` (both `--bootstrap` and the default
+  refresh) crashed with `FileNotFoundError [WinError 2]`.** Every `claude`
+  subprocess call passed the bare command name, but Windows `CreateProcess`
+  doesn't apply `PATHEXT` to a bare name, and the npm-installed `claude` shim
+  (`.cmd`/`.bat`) can't be launched directly even via its fully-resolved path
+  — it must be routed through `cmd.exe`. A new `_claude_base_cmd()` helper now
+  resolves the executable via `shutil.which`, wraps a `.cmd`/`.bat` shim in
+  `cmd /c` on Windows, and every claude invocation site splats its result;
+  when `claude` isn't installed the helper returns `None` and each caller
+  falls back to its existing claude-missing behavior.
+
 ## [0.65.13] — 2026-06-04
 
 ### Internal
