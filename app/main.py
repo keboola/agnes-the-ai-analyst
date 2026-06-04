@@ -240,6 +240,7 @@ from app.api.v2_marketplace import router as v2_marketplace_router
 from app.api.marketplaces import router as marketplaces_router
 from app.api.data_packages import router as data_packages_router
 from app.api.admin_mcp import router as admin_mcp_router
+from app.api.admin_slack_secrets import router as admin_slack_secrets_router
 from app.api.mcp_passthrough import router as mcp_passthrough_router
 from app.api.mcp_per_table import router as mcp_per_table_router
 from app.api.mcp_user_secrets import router as mcp_user_secrets_router
@@ -1164,6 +1165,7 @@ def create_app() -> FastAPI:
     app.include_router(marketplaces_router)
     app.include_router(data_packages_router)
     app.include_router(admin_mcp_router)
+    app.include_router(admin_slack_secrets_router)
     app.include_router(mcp_passthrough_router)
     app.include_router(mcp_user_secrets_router)
     app.include_router(mcp_per_table_router)
