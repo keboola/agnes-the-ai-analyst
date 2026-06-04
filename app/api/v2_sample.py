@@ -148,8 +148,12 @@ def build_sample(
     if source_type == "bigquery" and (row.get("query_mode") or "") != "materialized":
         rows = _fetch_bq_sample(bq, row.get("bucket") or "", row.get("source_table") or table_id, n)
     else:
-        from app.utils import get_data_dir
-        parquet = get_data_dir() / "extracts" / source_type / "data" / f"{table_id}.parquet"
+        # Resolve by source-name-agnostic lookup — the extract directory is not
+        # necessarily the source_type (e.g. the bundled `demo` extract).
+        from app.utils import resolve_local_parquet
+        parquet = resolve_local_parquet(table_id, source_type)
+        if parquet is None:
+            raise FileNotFoundError(table_id)
         c = _open_duckdb(":memory:")
         try:
             df = c.execute(
