@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.18] — 2026-06-04
+
+### Added
+- Dark mode is now reachable. `instance.theme` accepts two new values: `dark` (the full dark surface palette that already shipped in `design-tokens.css` but was unreachable — `get_instance_theme()` only allowed `blue`/`navy`) and `auto` (brand palette in light, flips to the dark palette when the user's OS prefers dark — resolved client-side in `_theme_resolve.html`, inline in `<head>` before first paint so there's no flash). (#497)
+
+### Fixed
+- Dark theme: the legacy `--ds-info-*` / `--ds-warn-*` token vocab now maps to the dark accent tints instead of staying light pastel (which washed out on dark surfaces). (#497)
+- Dark theme: `/first-time-setup` form inputs no longer render white-on-dark — they derive bg/text from `--ds-surface` / `--ds-text-primary` (unchanged in light). (#497)
 ## [0.65.17] — 2026-06-04
 
 ### Changed
