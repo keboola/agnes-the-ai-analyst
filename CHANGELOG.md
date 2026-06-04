@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.19] — 2026-06-04
+
 ### Internal
 - Repository factory (`src/repositories/__init__.py`) now dispatches through a
   declarative `_REGISTRY` table (`key -> {backend: (module, class)}`) instead of
