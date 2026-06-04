@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Optional
 
 import httpx
+
+from services.slack_bot.secrets import slack_secret
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ async def open_im(slack_user_id: str) -> Optional[str]:
     not the DM channel — keying a SLACK_DM session on it would break
     dedup. Returns the IM channel id, or None on missing token / error.
     """
-    token = os.environ.get("SLACK_BOT_TOKEN")
+    token = slack_secret("SLACK_BOT_TOKEN")
     if not token:
         logger.error("SLACK_BOT_TOKEN missing — cannot open IM")
         return None
@@ -61,7 +62,7 @@ async def send_ephemeral_to_user(channel: str, slack_user_id: str, text: str) ->
     Distinct from the Phase-2 ``send_ephemeral(response_url, ...)`` helper —
     that one POSTs to a slash-command response_url, this one calls the Web API.
     """
-    token = os.environ.get("SLACK_BOT_TOKEN")
+    token = slack_secret("SLACK_BOT_TOKEN")
     if not token:
         logger.error("SLACK_BOT_TOKEN missing — cannot post ephemeral")
         return
@@ -79,7 +80,7 @@ async def post_thread_reply_with_blocks(
     """Post a threaded reply with Block Kit blocks; return the message ts
     (so the caller can later chat.update it to strip the buttons), or None
     on failure."""
-    token = os.environ.get("SLACK_BOT_TOKEN")
+    token = slack_secret("SLACK_BOT_TOKEN")
     if not token:
         logger.error("SLACK_BOT_TOKEN missing — cannot reply")
         return None
@@ -98,7 +99,7 @@ async def post_thread_reply_with_blocks(
 
 async def update_message(channel: str, ts: str, text: str, blocks: list[dict]) -> None:
     """Edit an existing message (used to strip the Stop button at turn end)."""
-    token = os.environ.get("SLACK_BOT_TOKEN")
+    token = slack_secret("SLACK_BOT_TOKEN")
     if not token:
         logger.error("SLACK_BOT_TOKEN missing — cannot update")
         return
@@ -115,7 +116,7 @@ async def update_message(channel: str, ts: str, text: str, blocks: list[dict]) -
 
 async def post_channel_message(channel: str, text: str) -> None:
     """Public, non-threaded channel post (Share-to-channel promotion)."""
-    token = os.environ.get("SLACK_BOT_TOKEN")
+    token = slack_secret("SLACK_BOT_TOKEN")
     if not token:
         logger.error("SLACK_BOT_TOKEN missing — cannot post")
         return
@@ -135,7 +136,7 @@ async def respond_via_response_url(response_url: str, body: dict) -> None:
 
 
 async def send_thread_reply(channel: str, thread_ts: str, text: str) -> None:
-    token = os.environ.get("SLACK_BOT_TOKEN")
+    token = slack_secret("SLACK_BOT_TOKEN")
     if not token:
         logger.error("SLACK_BOT_TOKEN missing — cannot reply")
         return

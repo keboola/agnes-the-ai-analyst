@@ -6,9 +6,10 @@ _strip_bot_mention can recognise (and ignore) the bot's own posts.
 from __future__ import annotations
 
 import logging
-import os
 
 import httpx
+
+from services.slack_bot.secrets import slack_secret
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ async def resolve_bot_user_id() -> str | None:
     """Return the bot's Slack user id (``user_id`` from auth.test), or None
     if the token is missing or Slack returns ``ok=false``. Never raises —
     a failure just leaves loop-guard/strip in their None-safe fallback."""
-    token = os.environ.get("SLACK_BOT_TOKEN")
+    token = slack_secret("SLACK_BOT_TOKEN")
     if not token:
         logger.warning("SLACK_BOT_TOKEN missing — cannot resolve bot user id")
         return None
