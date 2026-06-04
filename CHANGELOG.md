@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.13] — 2026-06-04
+
 ### Internal
 - **Fixed the DuckDB/Postgres status-parity sweeps being dead under
   `pytest -n auto`.** `test_get_status_parity_sweep.py` and
