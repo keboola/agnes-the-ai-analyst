@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.9] — 2026-06-04
+
 ### Fixed
 - **Postgres backend: Slack identity binding silently failed.** The
   `users.slack_user_id` column (mapping a Slack user to an Agnes account) was
@@ -37,6 +39,41 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   DuckDB rejects multiple NULLs in a UNIQUE index, which the many unbound users
   would violate; the one-code-per-Slack-user issue flow already prevents
   duplicate bindings.
+## [0.65.8] — 2026-06-04
+
+### Fixed
+- **Postgres backend: per-user MCP credentials were ignored at call time.**
+  When forwarding to an upstream MCP source, `connectors.mcp.client.`
+  `_lookup_secret_for_source` read the caller's per-user secret off a raw
+  always-DuckDB connection. Per-user secrets are stored in Postgres (#530), so
+  on a PG instance the analyst's own credential was never found and the call
+  silently fell through to the shared/env path (wrong identity, or unauthorized).
+  Both the per-user and shared lookups now route through the repo factory
+  (`per_user_secrets_repo()` / `shared_secrets_repo()`). (#537)
+- **Postgres backend: the shared MCP vault lived only in DuckDB.** The
+  server-wide `mcp_secrets` vault had no Postgres repository, so admin-set shared
+  credentials were written to and read from the DuckDB system file even on a PG
+  instance — lost on a DuckDB reset and inconsistent with the PG-resident
+  per-user secrets. Added `SharedSecretsPgRepository` + a `shared_secrets_repo()`
+  factory, and routed the admin MCP source endpoints (`app/api/admin_mcp.py`)
+  through it. The `mcp_secrets` table already exists in the PG schema (migration
+  0014), so no new migration is needed. Both fixes pinned by both-backends
+  parity tests (`tests/db_pg/test_parity_mcp_shared_vault.py`). Closes the
+  deferred follow-up flagged in #530's merge body. (#537)
+
+## [0.65.7] — 2026-06-04
+
+### Fixed
+- **Postgres backend: a fresh instance had no `Admin` / `Everyone` system
+  groups, so admin access and Everyone-scoped grants never worked.** The system
+  groups are seeded by `src.db._seed_system_groups`, which runs only on a DuckDB
+  connect — nothing seeded them on Postgres. The lifespan seed-admin step then
+  looked the `Admin` group up off a raw DuckDB connection, so the membership it
+  wrote referenced a DuckDB-only group id absent from Postgres and granted no
+  admin access. Startup now seeds the system groups through the factory
+  (`user_groups_repo().ensure_system`, idempotent on either backend) and the
+  seed-admin step resolves group ids + writes membership through the factory.
+  Pinned by both-backends parity tests (`tests/db_pg/test_parity_seed_admin_groups.py`). (#536)
 
 ## [0.65.6] — 2026-06-04
 
@@ -49,7 +86,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   which dispatches on `use_pg()` (Postgres via the engine, DuckDB via the system
   connection) while keeping the same RBAC row filter. Pinned by a both-backends
   parity test (`tests/db_pg/test_parity_internal_sample.py`).
-
 ## [0.65.5] — 2026-06-04
 
 ### Fixed
