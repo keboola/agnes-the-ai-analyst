@@ -10,7 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-<<<<<<< HEAD
+## [0.65.7] — 2026-06-04
+
 ### Fixed
 - **Postgres backend: a fresh instance had no `Admin` / `Everyone` system
   groups, so admin access and Everyone-scoped grants never worked.** The system
@@ -21,8 +22,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   admin access. Startup now seeds the system groups through the factory
   (`user_groups_repo().ensure_system`, idempotent on either backend) and the
   seed-admin step resolves group ids + writes membership through the factory.
-  Pinned by both-backends parity tests (`tests/db_pg/test_parity_seed_admin_groups.py`).
-=======
+  Pinned by both-backends parity tests (`tests/db_pg/test_parity_seed_admin_groups.py`). (#536)
+
 ## [0.65.6] — 2026-06-04
 
 ### Fixed
@@ -34,7 +35,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   which dispatches on `use_pg()` (Postgres via the engine, DuckDB via the system
   connection) while keeping the same RBAC row filter. Pinned by a both-backends
   parity test (`tests/db_pg/test_parity_internal_sample.py`).
->>>>>>> origin/main
 
 ## [0.65.5] — 2026-06-04
 
