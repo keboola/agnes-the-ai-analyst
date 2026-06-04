@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.3] — 2026-06-04
+
 ### Fixed
 - **Postgres backend: the sync pipeline served no data on a PG instance.**
   `SyncOrchestrator.rebuild()` read the table registry, wrote `sync_state`, and
@@ -18,16 +20,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   zero analytics views, and wrote sync progress to a DuckDB file the
   factory-backed `/dashboard` never reads. All three now go through the repo
   factory (`table_registry_repo()` / `sync_state_repo()` / `view_ownership_repo()`),
-  so extract → rebuild → serve works on either backend. (Highest-severity
-  remaining split: without it a PG instance serves no data at all.) The profiler's
+  so extract → rebuild → serve works on either backend. The profiler's
   metric-table map (`profiler.get_table_map`) was the same raw-conn pattern and is
-  now `metric_repo()`-routed too.
+  now `metric_repo()`-routed too. (#532)
 - **Postgres backend: memory visibility for non-admins with domain grants.**
   `knowledge_pg`'s `list_items` / `_build_filter_clauses` (and `count_by_tag` /
   `count_by_audience`) resolved `granted_domains` via a stale `domain IN (...)`
   against an inline column instead of the v49 `knowledge_item_domains` junction
   (matching the DuckDB sibling), so a non-admin's domain-granted memory items
-  were invisible/miscounted on Postgres.
+  were invisible/miscounted on Postgres. (#532)
+
+## [0.65.2] — 2026-06-04
+
+### Changed
+- Refreshed the `/login` feature panel to match the product pillars shown on `/home`: **Data packages**, **Marketplace** (plugins, skills, and agents in one card), **MCP**, **Memory**, and a **Use it anywhere** card for the cloud surfaces (Cowork, web chat, Slack). Replaces the stale, aspirational cards (*Unified Data Access / Instant Automation / Smart Notifications / Performance Intelligence*) with descriptions that reflect what the platform actually does, and adds a `BETA` badge to every capability except the mature Data packages core. The panel subtitle is realigned with the `/home` hero copy, and the cards are tightened so the full set fits without scrolling. Adds a "Made by Keboola" attribution with the Keboola wordmark at the foot of the brand panel.
 
 ## [0.65.1] — 2026-06-04
 
