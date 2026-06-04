@@ -891,6 +891,7 @@ def create_app() -> FastAPI:
                     "debug_toolbar.panels.timer.TimerPanel",
                     "debug_toolbar.panels.logging.LoggingPanel",
                     "app.debug.duckdb_panel.DuckDBPanel",
+                    "app.debug.postgres_panel.PostgresPanel",
                 ],
                 jinja_loaders=[FileSystemLoader(str(_debug_templates_dir))],
                 show_toolbar_callback="app.main._toolbar_show_callback",
