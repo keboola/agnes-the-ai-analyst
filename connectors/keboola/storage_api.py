@@ -94,6 +94,79 @@ def get_temp_root() -> Optional[str]:
     return root
 
 
+# Prefix shared with the ``tempfile.TemporaryDirectory(prefix=...)`` calls in
+# connectors/keboola/extractor.py. Anything under the temp root with this
+# prefix is a per-export staging dir owned by the extractor.
+_SCRATCH_PREFIX = "kbc-export-"
+
+
+def sweep_orphaned_scratch(
+    root: Optional[str] = None,
+    max_age_seconds: Optional[float] = None,
+) -> int:
+    """Remove orphaned ``kbc-export-*`` staging dirs and return the count.
+
+    A staging dir is created via ``tempfile.TemporaryDirectory`` (see
+    ``connectors/keboola/extractor.py``), whose ``__exit__`` removes it on
+    *any* normal return — including the ENOSPC / disk-full exception path.
+    The only way a dir survives is a **hard kill** (SIGKILL / OOM / the
+    auto-upgrade ``docker compose up -d`` recreating the container mid-sync —
+    the documented orphan-maker, see ``app/api/sync.py``), where ``__exit__``
+    never runs. Without a sweep these accumulate on the data disk until it
+    fills and *every* subsequent sync fails on ENOSPC — a self-reinforcing
+    failure that otherwise needs a manual ``rm`` to break.
+
+    Age-gated: a dir whose mtime is within ``max_age_seconds`` is left alone
+    so a concurrent in-flight export (e.g. another container) is never swept
+    out from under itself. Threshold defaults to ``AGNES_SCRATCH_MAX_AGE_SEC``
+    (1h) — comfortably longer than any single table export.
+
+    ``root`` defaults to :func:`get_temp_root`; ``None`` (AGNES_TEMP_DIR unset)
+    is a no-op since the system ``/tmp`` is cleared on reboot anyway.
+    """
+    if root is None:
+        root = get_temp_root()
+    if not root:
+        return 0
+    if max_age_seconds is None:
+        max_age_seconds = float(
+            os.environ.get("AGNES_SCRATCH_MAX_AGE_SEC", "3600")
+        )
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return 0
+    now = time.time()
+    removed = 0
+    for entry in entries:
+        if not entry.name.startswith(_SCRATCH_PREFIX):
+            continue
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        try:
+            age = now - entry.stat().st_mtime
+        except OSError:
+            continue
+        if age < max_age_seconds:
+            continue
+        try:
+            shutil.rmtree(entry.path)
+            removed += 1
+            logger.info(
+                "Swept orphaned scratch dir %s (age %.0fs >= %.0fs threshold)",
+                entry.name, age, max_age_seconds,
+            )
+        except OSError as e:
+            logger.warning(
+                "Failed to sweep orphaned scratch %s: %s", entry.path, e
+            )
+    if removed:
+        logger.info(
+            "Orphaned-scratch sweep removed %d dir(s) from %s", removed, root
+        )
+    return removed
+
+
 FILE_TYPE_CSV = "csv"
 FILE_TYPE_PARQUET = "parquet"
 _VALID_FILE_TYPES = {FILE_TYPE_CSV, FILE_TYPE_PARQUET}
