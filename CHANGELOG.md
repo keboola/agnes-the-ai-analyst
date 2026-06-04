@@ -34,7 +34,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   connection" backend-split class that the static `test_backend_split_guard.py`
   ratchet can't see (it only scans `get_system_db()` callers + direct repo
   instantiation). The GET sweep found the `/first-time-setup` divergence above;
-  the mutation sweep is clean (no remaining divergence on that surface).
+  the mutation sweep is clean (no remaining divergence on that surface). Each
+  sweep is a single test that builds both backends in-process and diffs (not a
+  parametrized fixture stashing results in a module-level dict — that pattern is
+  silently dead under `pytest -n auto`, where each xdist worker is a separate
+  process). Comparing statuses (rather than asserting no-5xx) deliberately
+  ignores routes that 5xx identically on both backends in the bare TestClient
+  harness — those aren't backend-split bugs.
+- Added `test_first_time_setup_parity.py` — a focused regression test pinning
+  the `/first-time-setup` 302-redirect-when-users-exist fix on both backends.
 
 ## [0.65.9] — 2026-06-04
 
