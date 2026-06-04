@@ -30,6 +30,16 @@ class UsersPgRepository:
             ).mappings().first()
         return dict(row) if row else None
 
+    def get_by_slack_user_id(self, slack_user_id: str) -> Optional[Dict[str, Any]]:
+        """Resolve the account bound to a Slack ``user_id`` (NULL until the
+        analyst redeems a /agnes verification code)."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text("SELECT * FROM users WHERE slack_user_id = :sid"),
+                {"sid": slack_user_id},
+            ).mappings().first()
+        return dict(row) if row else None
+
     def list_all(self) -> List[Dict[str, Any]]:
         """Exhaustive enumeration of users (no pagination).
 
@@ -85,6 +95,7 @@ class UsersPgRepository:
             "setup_token_created", "reset_token", "reset_token_created",
             "active", "deactivated_at", "deactivated_by",
             "onboarded", "last_pull_at",
+            "slack_user_id",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
