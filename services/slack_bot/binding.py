@@ -162,10 +162,11 @@ def redeem_verification_code(
         _record_failure()
         return False
     slack_user_id, issued_at = row
-    # ``issued_at`` was written with SQL ``current_timestamp``, which is naive
-    # UTC. Compare against naive UTC — ``datetime.now()`` is local time, so on a
-    # host whose timezone is not UTC the TTL was skewed by the UTC offset
-    # (codes expired early on UTC+ hosts, never on UTC- hosts).
+    # ``issued_at`` is stored as naive UTC from Python (see the INSERT in
+    # issue_verification_code); compare against naive UTC here too. The old code
+    # wrote ``issued_at`` with SQL ``current_timestamp`` but compared with
+    # ``datetime.now()`` (local time), so the TTL was skewed by the host's UTC
+    # offset (codes expired early on UTC+ hosts, never on UTC- hosts).
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     if (now - issued_at).total_seconds() > _CODE_TTL_SECONDS:
         conn.execute("DELETE FROM slack_binding_codes WHERE code = ?", [code])
