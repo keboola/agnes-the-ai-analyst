@@ -10,6 +10,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+<<<<<<< HEAD
 ### Fixed
 - **Postgres backend: a fresh instance had no `Admin` / `Everyone` system
   groups, so admin access and Everyone-scoped grants never worked.** The system
@@ -21,6 +22,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   (`user_groups_repo().ensure_system`, idempotent on either backend) and the
   seed-admin step resolves group ids + writes membership through the factory.
   Pinned by both-backends parity tests (`tests/db_pg/test_parity_seed_admin_groups.py`).
+=======
+## [0.65.6] — 2026-06-04
+
+### Fixed
+- **Postgres backend: catalog `/sample` preview was empty for internal tables.**
+  The preview for an internal source (`agnes_audit` / `agnes_sessions` /
+  `agnes_telemetry`) read the physical state table (`audit_log` etc.) off a raw
+  always-DuckDB connection, so on a Postgres instance it returned zero rows. The
+  read now routes through `connectors.internal.access.sample_internal_rows`,
+  which dispatches on `use_pg()` (Postgres via the engine, DuckDB via the system
+  connection) while keeping the same RBAC row filter. Pinned by a both-backends
+  parity test (`tests/db_pg/test_parity_internal_sample.py`).
+>>>>>>> origin/main
 
 ## [0.65.5] — 2026-06-04
 

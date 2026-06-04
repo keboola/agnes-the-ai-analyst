@@ -114,9 +114,8 @@ def build_sample(
     # entirely is the right trade-off.
     if source_type == "internal":
         from connectors.internal.access import (
-            INTERNAL_TABLES_BY_ID, build_filter_clause,
+            INTERNAL_TABLES_BY_ID, build_filter_clause, sample_internal_rows,
         )
-        from src.db import _get_state_dir
         from app.auth.access import is_user_admin as _is_admin
         from app.auth.session_principal import SessionPrincipal
         if table_id not in INTERNAL_TABLES_BY_ID:
@@ -135,20 +134,10 @@ def build_sample(
             is_admin = _is_admin(user.get("id"), conn) if user.get("id") else False
             user_dict_shim = user
         where_clause = build_filter_clause(internal_def, user_dict_shim, is_admin)
-        # Reuse the shared system.duckdb connection via cursor — opening a
-        # parallel handle to the same file is rejected process-wide
-        # (DuckDB serialises file handles, even for ATTACH). The SELECT is
-        # constrained to system.duckdb-resident tables, scoped by the
-        # RBAC clause; no writes happen here.
-        from src.db import get_system_db
-        cur = get_system_db().cursor()
-        try:
-            df = cur.execute(
-                f"SELECT * FROM {internal_def.source_table} {where_clause} LIMIT {n}",
-            ).fetchdf()
-            rows = df.to_dict(orient="records")
-        finally:
-            cur.close()
+        # The source rows live in the active state backend (DuckDB or Postgres);
+        # sample_internal_rows dispatches on use_pg() so the preview is correct
+        # on either — a raw always-DuckDB read returned nothing on Postgres.
+        rows = sample_internal_rows(internal_def, where_clause, n)
         return {"table_id": table_id, "rows": _sanitize_for_json(rows), "source": source_type}
 
     cache_key = f"{table_id}|{n}"
