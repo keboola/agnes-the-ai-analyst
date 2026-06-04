@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.17] — 2026-06-04
+
+### Changed
+- The store-upload page header now renders via the shared `_page_hero.html` partial (which gains an optional `page_hero_class` hook) instead of duplicating the hero markup. (#497)
 ## [0.65.16] — 2026-06-04
 
 ### Changed
