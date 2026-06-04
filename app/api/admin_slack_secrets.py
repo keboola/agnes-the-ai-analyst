@@ -13,18 +13,14 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, Optional
 
-import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.access import require_admin
-from app.auth.dependencies import _get_db
 from app.secrets_vault import VaultKeyNotConfiguredError
 from services.slack_bot.secrets import SLACK_SECRET_NAMES
-from src.repositories import system_secrets_repo
-from src.repositories.audit import AuditRepository
+from src.repositories import audit_repo, system_secrets_repo
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin-slack-secrets"])
@@ -34,16 +30,13 @@ class SlackSecretBody(BaseModel):
     value: str
 
 
-def _audit(
-    conn: duckdb.DuckDBPyConnection,
-    actor_id: str,
-    action: str,
-    resource: str,
-    params: Optional[Dict[str, Any]] = None,
-) -> None:
+def _audit(actor_id: str, action: str, resource: str) -> None:
+    """Best-effort audit row. Params are intentionally empty — the secret
+    value never enters the audit record (mirrors the MCP secret endpoints).
+    Routed through the ``audit_repo()`` factory so it works on either backend."""
     try:
-        AuditRepository(conn).log(
-            user_id=actor_id, action=action, resource=resource, params=params or {}
+        audit_repo().log(
+            user_id=actor_id, action=action, resource=resource, params={}
         )
     except Exception:
         logger.warning("audit log failed for %s/%s", action, resource)
@@ -70,7 +63,6 @@ async def set_slack_secret(
     name: str,
     body: SlackSecretBody,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Store (or rotate) the vault secret for ``name``. Write-only."""
     if name not in SLACK_SECRET_NAMES:
@@ -84,17 +76,16 @@ async def set_slack_secret(
             status_code=409,
             detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
         ) from exc
-    _audit(conn, user["id"], "slack.secret.set", f"slack_secret:{name}", {})
+    _audit(user["id"], "slack.secret.set", f"slack_secret:{name}")
 
 
 @router.delete("/slack-secrets/{name}", status_code=204)
 async def delete_slack_secret(
     name: str,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Drop the vault row for ``name``. Resolution falls back to env / disabled."""
     if name not in SLACK_SECRET_NAMES:
         raise HTTPException(status_code=400, detail="unknown_slack_secret")
     system_secrets_repo().delete(name)
-    _audit(conn, user["id"], "slack.secret.clear", f"slack_secret:{name}", {})
+    _audit(user["id"], "slack.secret.clear", f"slack_secret:{name}")
