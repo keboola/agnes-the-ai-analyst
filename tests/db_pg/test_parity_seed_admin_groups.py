@@ -92,3 +92,21 @@ def test_everyone_membership_resolves_on_both_backends(_env):
         f"[{_env}] seed admin not resolved into Everyone — Everyone-scoped "
         f"grants would not surface for them."
     )
+
+
+def test_ensure_system_creates_absent_group_both_backends(_env):
+    """The fresh-PG bug was that nothing *creates* the system groups on Postgres
+    (Admin/Everyone are protected from deletion + the fixtures pre-seed them, so
+    they can't be removed to simulate empty). Exercise the create path the
+    lifespan relies on directly: ``ensure_system`` on a name that doesn't exist
+    yet must CREATE it (not just promote) as a system group — on both backends."""
+    from src.repositories import user_groups_repo
+
+    repo = user_groups_repo()
+    assert repo.get_by_name("ProbeSysGroup") is None, f"[{_env}] probe group pre-exists"
+
+    repo.ensure_system("ProbeSysGroup", "probe system group")
+
+    grp = repo.get_by_name("ProbeSysGroup")
+    assert grp is not None, f"[{_env}] ensure_system did not create the absent group"
+    assert grp["is_system"] is True, f"[{_env}] created group is not is_system"

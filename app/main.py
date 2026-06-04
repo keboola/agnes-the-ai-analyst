@@ -12,6 +12,7 @@
 import warnings as _warnings
 from src.repositories import (
     user_group_members_repo,
+    user_groups_repo,
     users_repo,
 )
 try:
@@ -441,7 +442,6 @@ async def lifespan(app):
     # backend.
     try:
         from src.db import _SYSTEM_GROUPS_SEED
-        from src.repositories import user_groups_repo
         _ug_repo = user_groups_repo()
         for _grp_name, _grp_desc in _SYSTEM_GROUPS_SEED:
             _ug_repo.ensure_system(_grp_name, _grp_desc)
