@@ -151,7 +151,9 @@ def _collect_marketplace_content(
 ) -> tuple[list[tuple[str, bytes]], list[tuple[str, bytes]]]:
     """Return (skills, agents) lists of (arcname, bytes) from the user's granted plugins.
 
-    Skills land in ``.claude/skills/<name>.md``; agents in ``.claude/agents/<name>.md``.
+    Skills land in ``.claude/skills/<name>/SKILL.md`` (directory format, with
+    any supporting files preserved alongside); agents in
+    ``.claude/agents/<name>.md`` (agents are flat by convention).
     Names are de-duplicated by prefixing the plugin's manifest_name when a
     collision would otherwise occur. Failures are silently swallowed — a
     missing marketplace is not a bundle error.
@@ -194,7 +196,25 @@ def _collect_marketplace_content(
                     continue  # still collides after prefix — skip
                 seen_skill.add(name)
                 filtered = _filter_skill_for_bundle(raw, name)
-                skills.append((f".claude/skills/{name}.md", filtered.encode("utf-8")))
+                # Claude Code loads a skill as a DIRECTORY: the entrypoint must
+                # be ``.claude/skills/<name>/SKILL.md`` (a flat ``<name>.md`` is
+                # never picked up). Emit the rewritten SKILL.md plus every
+                # supporting file (references/, assets/, ...) so the skill
+                # arrives intact and Claude can auto-select it.
+                skills.append(
+                    (f".claude/skills/{name}/SKILL.md", filtered.encode("utf-8"))
+                )
+                for extra in sorted(folder.rglob("*")):
+                    if not extra.is_file() or extra == skill_md:
+                        continue
+                    if ".git" in extra.parts:
+                        continue
+                    try:
+                        data = extra.read_bytes()
+                    except OSError:
+                        continue
+                    rel = extra.relative_to(folder).as_posix()
+                    skills.append((f".claude/skills/{name}/{rel}", data))
 
         agents_dir = plugin_dir / "agents"
         if agents_dir.is_dir():
@@ -280,10 +300,34 @@ def _bundle_mcp_server_py() -> str:
         to the Agnes REST API.
         \"\"\"
         from __future__ import annotations
-        import json, pathlib, re, sys, urllib.error, urllib.request
+        import json, os, pathlib, re, ssl, sys, urllib.error, urllib.request
 
         HERE       = pathlib.Path(__file__).resolve().parent
         CONFIG_DIR = pathlib.Path.home() / ".config" / "agnes"
+
+        # Verified HTTPS that also works on Pythons without a usable system CA
+        # store (notably macOS python.org builds -> CERTIFICATE_VERIFY_FAILED).
+        # The Mozilla CA bundle ships next to this script as cacert.pem (and
+        # setup.py copies it into ~/.config/agnes/). Falls back to the OS trust
+        # store and honours SSL_CERT_FILE. Verification stays ON; the only
+        # opt-out is the explicit AGNES_INSECURE_SKIP_TLS_VERIFY=1 escape hatch.
+        def _ssl_context():
+            if os.environ.get("AGNES_INSECURE_SKIP_TLS_VERIFY") == "1":
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                return ctx
+            for _ca in (os.environ.get("SSL_CERT_FILE"),
+                        str(HERE / "cacert.pem"),
+                        str(CONFIG_DIR / "cacert.pem")):
+                if _ca and pathlib.Path(_ca).exists():
+                    try:
+                        return ssl.create_default_context(cafile=_ca)
+                    except Exception:
+                        pass
+            return ssl.create_default_context()
+
+        _SSL_CTX = _ssl_context()
 
         # ── credentials ──────────────────────────────────────────────────────
 
@@ -333,7 +377,7 @@ def _bundle_mcp_server_py() -> str:
             data = json.dumps(body).encode() if body is not None else None
             req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
             try:
-                with urllib.request.urlopen(req, timeout=timeout) as r:
+                with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
                     return json.loads(r.read())
             except urllib.error.HTTPError as e:
                 try:
@@ -469,10 +513,34 @@ def _bundle_agnes_py() -> str:
           python3 agnes.py skills
         \"\"\"
         from __future__ import annotations
-        import json, pathlib, re, sys, urllib.error, urllib.request
+        import json, os, pathlib, re, ssl, sys, urllib.error, urllib.request
 
         HERE       = pathlib.Path(__file__).resolve().parent
         CONFIG_DIR = pathlib.Path.home() / ".config" / "agnes"
+
+        # Verified HTTPS that also works on Pythons without a usable system CA
+        # store (notably macOS python.org builds -> CERTIFICATE_VERIFY_FAILED).
+        # The Mozilla CA bundle ships next to this script as cacert.pem (and
+        # setup.py copies it into ~/.config/agnes/). Falls back to the OS trust
+        # store and honours SSL_CERT_FILE. Verification stays ON; the only
+        # opt-out is the explicit AGNES_INSECURE_SKIP_TLS_VERIFY=1 escape hatch.
+        def _ssl_context():
+            if os.environ.get("AGNES_INSECURE_SKIP_TLS_VERIFY") == "1":
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                return ctx
+            for _ca in (os.environ.get("SSL_CERT_FILE"),
+                        str(HERE / "cacert.pem"),
+                        str(CONFIG_DIR / "cacert.pem")):
+                if _ca and pathlib.Path(_ca).exists():
+                    try:
+                        return ssl.create_default_context(cafile=_ca)
+                    except Exception:
+                        pass
+            return ssl.create_default_context()
+
+        _SSL_CTX = _ssl_context()
 
         def _load_creds():
             \"\"\"Return (server_url, pat) or raise SystemExit.\"\"\"
@@ -519,7 +587,7 @@ def _bundle_agnes_py() -> str:
             data = json.dumps(body).encode() if body is not None else None
             req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
             try:
-                with urllib.request.urlopen(req, timeout=timeout) as r:
+                with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
                     return json.loads(r.read())
             except urllib.error.HTTPError as e:
                 try:
@@ -614,7 +682,31 @@ def _bundle_setup_py(server_url: str) -> str:
         #!/usr/bin/env python3
         \"\"\"Agnes Cowork one-time setup — no external packages needed.\"\"\"
         from __future__ import annotations
-        import json, os, pathlib, platform, subprocess, sys, urllib.error, urllib.request
+        import json, os, pathlib, platform, ssl, subprocess, sys, urllib.error, urllib.request
+
+        HERE = pathlib.Path(__file__).parent
+        BUNDLE_FILE = HERE / "agnes-bundle.json"
+
+        # Verified HTTPS that also works on Pythons without a usable system CA
+        # store (notably macOS python.org builds -> CERTIFICATE_VERIFY_FAILED).
+        def _ssl_context():
+            if os.environ.get("AGNES_INSECURE_SKIP_TLS_VERIFY") == "1":
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                return ctx
+            _config_dir = pathlib.Path.home() / ".config" / "agnes"
+            for _ca in (os.environ.get("SSL_CERT_FILE"),
+                        str(HERE / "cacert.pem"),
+                        str(_config_dir / "cacert.pem")):
+                if _ca and pathlib.Path(_ca).exists():
+                    try:
+                        return ssl.create_default_context(cafile=_ca)
+                    except Exception:
+                        pass
+            return ssl.create_default_context()
+
+        _SSL_CTX = _ssl_context()
 
         # ── CLI overrides (used from Terminal as fallback) ────────────────────
         _args = sys.argv[1:]
@@ -624,9 +716,6 @@ def _bundle_setup_py(server_url: str) -> str:
 
         _override_server = _flag("--server-url")
         _override_token  = _flag("--token")
-
-        HERE = pathlib.Path(__file__).parent
-        BUNDLE_FILE = HERE / "agnes-bundle.json"
 
         if not BUNDLE_FILE.exists():
             print("ERROR: agnes-bundle.json not found. Download a fresh bundle.")
@@ -654,7 +743,7 @@ def _bundle_setup_py(server_url: str) -> str:
                     headers={{"Content-Type": "application/json"}},
                     method="POST",
                 )
-                with urllib.request.urlopen(req, timeout=15) as r:
+                with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as r:
                     resp = json.loads(r.read())
                 pat = resp.get("access_token", "")
                 user_email = resp.get("user_email", user_email)
@@ -783,6 +872,12 @@ def _bundle_setup_py(server_url: str) -> str:
                 if platform.system() == "Darwin":
                     import subprocess as _sp
                     _sp.run(["xattr", "-c", str(_stable_mcp)], capture_output=True)
+                # Ship the CA bundle next to mcp_server.py so verified TLS works
+                # on machines whose Python lacks a usable system CA store.
+                _bundled_ca = HERE / "cacert.pem"
+                if _bundled_ca.exists():
+                    _shutil.copy2(str(_bundled_ca), str(_stable_dir / "cacert.pem"))
+                    (_stable_dir / "cacert.pem").chmod(0o644)
                 # Write credentials alongside the stable copy so mcp_server.py
                 # can find them even after the bundle folder is deleted.
                 (_stable_dir / ".agnes-creds.json").write_text(
@@ -886,7 +981,7 @@ def _bundle_setup_py(server_url: str) -> str:
                 f"{{server_url}}/api/welcome?server_url={{server_url}}",
                 headers={{"Authorization": f"Bearer {{pat}}"}},
             )
-            with urllib.request.urlopen(req2, timeout=10) as r:
+            with urllib.request.urlopen(req2, timeout=10, context=_SSL_CTX) as r:
                 welcome = json.loads(r.read())
             content = welcome.get("content", "")
             if content:
@@ -981,7 +1076,7 @@ def _bundle_claude_md(server_url: str, user_email: str, expires_at: datetime) ->
 
 
 def _bundle_skill_setup_cowork() -> str:
-    """Return .claude/skills/setup-cowork.md for the bundle.
+    """Return .claude/skills/setup-cowork/SKILL.md content for the bundle.
 
     Invoked by the user as /setup-cowork inside the cowork workspace.
     Guides Claude through: verify connectivity → show available tables →
@@ -1017,6 +1112,20 @@ def _bundle_skill_setup_cowork() -> str:
         Once Claude Desktop is restarted, Agnes tools (`catalog`, `schema`, `query`, etc.)
         are available in every session, including Cowork. No further setup needed.
     """)
+
+
+def _bundle_cacert_pem() -> str:
+    """Return the Mozilla CA bundle (certifi) shipped inside the Cowork ZIP.
+
+    The generated mcp_server.py / agnes.py verify TLS against this file, so
+    Cowork connects from any end-user machine — including macOS python.org
+    builds that lack a usable system CA store (CERTIFICATE_VERIFY_FAILED) —
+    without ever disabling certificate verification.
+    """
+    import certifi
+
+    with open(certifi.where(), encoding="utf-8") as fh:
+        return fh.read()
 
 
 def _skill_explore_data() -> str:
@@ -1077,11 +1186,13 @@ def _skill_new_skill() -> str:
            - body: clear step-by-step instructions Claude follows when the skill is invoked
            - Keep the body focused — one workflow, not a swiss-army knife
         4. Show the draft. Refine until the user is happy.
-        5. Write the file using the Bash tool:
+        5. Write the file using the Bash tool. Claude Code loads a skill as a
+           DIRECTORY, so the entrypoint must be `.claude/skills/<name>/SKILL.md`
+           (a flat `<name>.md` is never picked up):
            ```
            python3 -c "
            import pathlib
-           p = pathlib.Path('.claude/skills/<name>.md')
+           p = pathlib.Path('.claude/skills/<name>/SKILL.md')
            p.parent.mkdir(parents=True, exist_ok=True)
            p.write_text('''<content>''', encoding='utf-8')
            print('Created', p)
@@ -1119,14 +1230,15 @@ def _build_bundle_zip(
         ├── setup.py                  ← one-time setup (writes .agnes-creds.json)
         ├── agnes.py                  ← pure-stdlib CLI; Claude calls via Bash tool
         ├── mcp_server.py             ← stdio MCP proxy (if cowork VM loads it)
+        ├── cacert.pem                ← Mozilla CA bundle (verified TLS on macOS)
         ├── .claude/
         │   ├── settings.json         ← SessionStart hook + mcpServers config
-        │   ├── skills/
-        │   │   ├── setup-cowork.md   ← /setup-cowork — guided onboarding
-        │   │   ├── explore-data.md   ← /explore-data — catalog + describe + suggest
-        │   │   ├── query-data.md     ← /query-data — schema-aware SQL workflow
-        │   │   ├── new-skill.md      ← /new-skill — design + write a new skill
-        │   │   └── <marketplace skills per user's RBAC grants>
+        │   ├── skills/               ← directory-per-skill (<name>/SKILL.md)
+        │   │   ├── setup-cowork/SKILL.md  ← /setup-cowork — guided onboarding
+        │   │   ├── explore-data/SKILL.md  ← /explore-data — catalog + describe + suggest
+        │   │   ├── query-data/SKILL.md    ← /query-data — schema-aware SQL workflow
+        │   │   ├── new-skill/SKILL.md     ← /new-skill — design + write a new skill
+        │   │   └── <marketplace skill>/SKILL.md (+ supporting files), per RBAC grants
         │   └── agents/
         │       └── <marketplace agents per user's RBAC grants>
         └── CLAUDE.md                 ← user + agent guidance (Bash-first)
@@ -1152,12 +1264,15 @@ def _build_bundle_zip(
         zf.writestr(f"{folder_name}/setup.py", _bundle_setup_py(server_url))
         zf.writestr(f"{folder_name}/mcp_server.py", _bundle_mcp_server_py())
         zf.writestr(f"{folder_name}/agnes.py", _bundle_agnes_py())
+        zf.writestr(f"{folder_name}/cacert.pem", _bundle_cacert_pem())
         zf.writestr(f"{folder_name}/.claude/settings.json", _bundle_settings_json(server_url, access_token))
         # Agnes curated skills — always present regardless of marketplace config.
-        zf.writestr(f"{folder_name}/.claude/skills/setup-cowork.md", _bundle_skill_setup_cowork())
-        zf.writestr(f"{folder_name}/.claude/skills/explore-data.md", _skill_explore_data())
-        zf.writestr(f"{folder_name}/.claude/skills/query-data.md", _skill_query_data())
-        zf.writestr(f"{folder_name}/.claude/skills/new-skill.md", _skill_new_skill())
+        # Curated skills ship in directory format so Claude Code loads them:
+        # the entrypoint must be `.claude/skills/<name>/SKILL.md`.
+        zf.writestr(f"{folder_name}/.claude/skills/setup-cowork/SKILL.md", _bundle_skill_setup_cowork())
+        zf.writestr(f"{folder_name}/.claude/skills/explore-data/SKILL.md", _skill_explore_data())
+        zf.writestr(f"{folder_name}/.claude/skills/query-data/SKILL.md", _skill_query_data())
+        zf.writestr(f"{folder_name}/.claude/skills/new-skill/SKILL.md", _skill_new_skill())
         # Marketplace skills + agents from the user's RBAC-granted plugins.
         for arcname, content in (marketplace_skills or []):
             zf.writestr(f"{folder_name}/{arcname}", content)
