@@ -321,8 +321,9 @@ async def _start_slack_socket_transport(app) -> None:
     app.state.slack_socket_dispatcher = None
     if get_slack_transport() != "socket":
         return
-    app_token = os.environ.get("SLACK_APP_TOKEN", "")
-    bot_token = os.environ.get("SLACK_BOT_TOKEN", "")
+    from services.slack_bot.secrets import slack_secret
+    app_token = slack_secret("SLACK_APP_TOKEN") or ""
+    bot_token = slack_secret("SLACK_BOT_TOKEN") or ""
     try:
         workers = int(os.environ.get("UVICORN_WORKERS", "1"))
     except ValueError:
