@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+- Repository factory (`src/repositories/__init__.py`) now dispatches through a
+  declarative `_REGISTRY` table (`key -> {backend: (module, class)}`) instead of
+  ~44 hand-written two-way `if use_pg()` functions. Behaviour and the public
+  `<name>_repo()` API are unchanged (per-call backend resolution, lazy imports);
+  the win is that the dispatch logic is backend-count-agnostic, so adding a
+  third backend (e.g. `duckdb_quack`) is a localized change — register a
+  connection-arg provider + fill one column in the table — rather than editing
+  every factory function. New `tests/test_repository_registry.py` locks the
+  table's integrity (every public factory has an entry and vice versa; every
+  repo registers the same set of backends; every registered class is
+  importable) — the structural half of the dual-backend discipline,
+  complementing the method-parity and behavioural-contract suites.
+
 ## [0.65.18] — 2026-06-04
 
 ### Added
