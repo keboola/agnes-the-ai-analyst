@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.3] — 2026-06-04
+
 ### Fixed
 - **Postgres backend: the sync pipeline served no data on a PG instance.**
   `SyncOrchestrator.rebuild()` read the table registry, wrote `sync_state`, and
