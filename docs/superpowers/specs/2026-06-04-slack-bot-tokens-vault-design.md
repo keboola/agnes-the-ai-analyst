@@ -20,6 +20,12 @@ Resolve each Slack bot secret as **`env > vault > none`**:
 2. **vault** — otherwise, read the value from a new `system_secrets` vault scope, settable from the admin UI.
 3. **none** — if neither is present, behaviour is exactly as today: the feature stays disabled, fail-closed (Socket Mode logs the reason and does not start; signature verification rejects).
 
+## Alternative considered — `.env_overlay` (rejected)
+
+Agnes already has a UI-managed-secret mechanism: `app/secrets.py::persist_overlay_token()` writes a key to `${STATE_DIR}/.env_overlay` (chmod 0600) and sets `os.environ` live; startup loads the overlay via `os.environ.setdefault(...)` so real env (Terraform) wins. `ANTHROPIC_API_KEY`, `E2B_API_KEY`, the marketplace PAT, and the initial-workspace PAT all use it (e.g. `app/api/admin_chat.py::set_chat_secrets`). Routing the Slack tokens through it would need **zero** read-site changes and no DB work at all.
+
+It was rejected here in favour of the vault because the vault gives **encryption at rest** (Fernet) and **live rotation without restart** (the `.env_overlay` Socket Mode token would need a restart, and values sit in plaintext on disk). The trade-off is a larger change surface; that cost is accepted deliberately. This is a conscious divergence from how the comparably-sensitive `ANTHROPIC_API_KEY` is handled today.
+
 ## Non-goals (YAGNI)
 
 - **Not** a generic "manage any system secret from the UI" feature. The `system_secrets` table is generic, but the resolver and UI are hard-limited to the three known Slack token names via an allow-list. Extending to other secrets (SMTP password, OpenMetadata token, etc.) is a future, separate effort and needs no migration.
