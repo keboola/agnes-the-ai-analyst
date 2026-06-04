@@ -10,6 +10,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Postgres backend: the first-time-setup wizard stayed open on a
+  provisioned instance.** `GET /first-time-setup` counted users with a raw
+  `SELECT COUNT(*) FROM users` on the always-DuckDB `_get_db` connection, so on
+  a Postgres instance (users in PG) the count was 0 and the wizard rendered
+  instead of redirecting to `/login` — leaving the setup flow reachable forever.
+  Now counts through `users_repo()`.
+
+### Internal
+- Added `tests/db_pg/test_get_status_parity_sweep.py`: a differential sweep that
+  hits every parameter-free GET route on DuckDB and Postgres with identical
+  seeded state and asserts the HTTP status is identical. Catches the
+  "endpoint reads state off a raw `Depends(_get_db)` connection" backend-split
+  class that the static `test_backend_split_guard.py` ratchet can't see (it only
+  scans `get_system_db()` callers + direct repo instantiation). It found the
+  `/first-time-setup` divergence above.
+
 ## [0.65.6] — 2026-06-04
 
 ### Fixed
