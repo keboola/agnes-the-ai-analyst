@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.14] — 2026-06-04
+
 ### Fixed
 - Cowork bundle now ships skills in Claude Code's directory format
   (`.claude/skills/<name>/SKILL.md`) with supporting files (references/,
@@ -21,6 +23,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   skills installed via its own Customize → Skills UI (upstream limitation,
   anthropics/claude-code#50669), not workspace `.claude/skills/`.
 - **Cowork bundle connects over verified TLS on macOS without manual cert setup.** The generated `mcp_server.py` / `agnes.py` now build their HTTPS `ssl` context from a Mozilla CA bundle shipped in the ZIP as `cacert.pem` (also copied to `~/.config/agnes/` by `setup.py`), falling back to the OS trust store and honouring `SSL_CERT_FILE`. This fixes `CERTIFICATE_VERIFY_FAILED` on Pythons that lack a usable system CA store (notably macOS python.org builds) **without disabling certificate verification**. An explicit opt-out for genuinely broken environments remains via `AGNES_INSECURE_SKIP_TLS_VERIFY=1`.
+## [0.65.13] — 2026-06-04
+
+### Internal
+- **Fixed the DuckDB/Postgres status-parity sweeps being dead under
+  `pytest -n auto`.** `test_get_status_parity_sweep.py` and
+  `test_mutation_status_parity_sweep.py` stashed each backend's results in a
+  module-level dict for a second test to compare — but under `-n auto` (the
+  project's standard runner) each xdist worker is a separate process, so the
+  comparison test saw an empty dict and failed with "sweep didn't run on both
+  backends". Both sweeps now build both backends in a single in-process test
+  and diff inline (shared setup in `_parity_sweep_util.py`); the repo factory
+  reads the backend decision live per call, so flipping `AGNES_DB_URL` between
+  phases re-routes correctly. Kept the cross-backend diff rather than a flat
+  no-5xx assertion, so routes that 5xx identically on both backends in the bare
+  TestClient harness (lifespan-populated `app.state` slots) aren't false
+  positives. Added `test_first_time_setup_parity.py` pinning the
+  `/first-time-setup` 302-redirect-when-users-exist fix per backend.
+
 ## [0.65.12] — 2026-06-04
 
 ### Fixed
