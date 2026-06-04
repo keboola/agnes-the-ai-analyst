@@ -186,7 +186,8 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     "app/api/scripts.py",
     "app/api/sync.py",
     "app/api/upload.py",
-    "app/api/v2_sample.py",
+    # app/api/v2_sample.py — internal-table sampling now routes through
+    # connectors.internal.access.sample_internal_rows (use_pg() dispatch).
     "app/auth/access.py",
     "app/auth/dependencies.py",
     # app/auth/pat_resolver.py — co-session resolution now routes through
