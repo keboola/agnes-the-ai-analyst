@@ -130,13 +130,6 @@
   .cfg-section h3 {
     margin: 0; font-size: 15px; font-weight: 600;
   }
-  .cfg-section h3 .danger-pill {
-    display: inline-block; margin-left: 10px;
-    padding: 2px 8px; border-radius: 999px;
-    background: #b91c1c; color: #fff;
-    font-size: 10px; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.6px; vertical-align: 2px;
-  }
   .cfg-section .section-help {
     font-size: 12px; color: var(--text-secondary, #6b7280); margin-top: 4px;
   }
@@ -170,13 +163,6 @@
     outline: 2px solid var(--ds-primary, #6366f1); outline-offset: -1px;
   }
   .cfg-field input.is-secret { font-family: var(--font-mono, ui-monospace, monospace); }
-  .cfg-field .secret-pill {
-    display: inline-block; margin-left: 8px;
-    padding: 1px 6px; border-radius: 4px;
-    background: #f3f4f6; color: #6b7280;
-    font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
-  }
-
   /* `.cfg-btn` family removed — all buttons on this page now render through
      the canonical `.btn` / `.btn-primary` / `.btn-secondary` / `.btn-danger`
      rules in style-custom.css. Static modal buttons use the `ds.button`
@@ -213,20 +199,8 @@
     letter-spacing: 0.05em;
   }
 
-  /* Confirmation modal — danger-zone gate */
-  .modal-backdrop {
-    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
-    display: none; align-items: center; justify-content: center; z-index: 1000;
-    padding: 16px;
-  }
-  .modal-backdrop.is-open { display: flex; }
-  .modal-card {
-    background: var(--surface, #fff); border-radius: 12px;
-    padding: 24px; width: 100%; max-width: 520px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
-  }
-  .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
-  .modal-card p.sub { margin: 0 0 12px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  /* Confirmation modals use the canonical .modal-* (style-custom.css);
+     only the page-specific diff display below stays local. */
   .modal-card .diff-list {
     background: var(--border-light, #f9fafb); border-radius: 8px;
     padding: 10px 14px; font-family: var(--font-mono, ui-monospace, monospace);
@@ -235,7 +209,6 @@
   .modal-card .diff-row { padding: 4px 0; border-bottom: 1px dashed var(--border, #e5e7eb); }
   .modal-card .diff-row:last-child { border-bottom: none; }
   .modal-card .diff-row .path { color: #b91c1c; font-weight: 600; }
-  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
 </style>
 {% endblock %}
 
@@ -414,7 +387,7 @@
 
 <!-- Danger-zone confirmation modal -->
 <div class="modal-backdrop" id="danger-modal" role="dialog" aria-modal="true" aria-labelledby="danger-title">
-  <div class="modal-card">
+  <div class="modal-card" style="max-width: 520px;">
     <h3 id="danger-title">Confirm danger-zone change</h3>
     <p class="sub" id="danger-sub"></p>
     <div class="diff-list" id="danger-diff"></div>
@@ -752,7 +725,7 @@ function renderNestedField(section, pathSegments, label, value, spec, depth) {
   const fieldId = `f_${section}_${dottedKey.replace(/\W/g, "_")}`;
   const wrapperClass = "cfg-field nested-field" + (isUnset ? " is-unset" : "");
   const arrow = depth > 0 ? "↳ " : "";
-  const secretPill = isSecret ? '<span class="secret-pill">secret</span>' : "";
+  const secretPill = isSecret ? '<span class="badge">secret</span>' : "";
   const hintBlock = spec.hint
     ? `<div class="field-help">${escHtml(spec.hint)}</div>`
     : "";
@@ -891,7 +864,7 @@ function renderSection(section, payload, knownForSection) {
   // placeholders (.is-unset).
   const meta = SECTION_META[section] || { title: section, help: "" };
   const isDanger = DANGER_SECTIONS.has(section);
-  const danger = isDanger ? '<span class="danger-pill">danger</span>' : "";
+  const danger = isDanger ? '<span class="badge badge--danger">danger</span>' : "";
   const populatedKeys = Object.keys(payload || {}).sort();
   const known = knownForSection || {};
   const populatedSet = new Set(populatedKeys);
@@ -1585,8 +1558,8 @@ function iwRender(data) {
     ? `<code>${escHtml(data.last_commit_sha.slice(0, 10))}</code>`
     : '<span style="color: var(--text-secondary, #9ca3af);">never synced</span>';
   const tokenLine = data.has_token
-    ? '<span class="secret-pill" style="background:#dcfce7;color:#166534;border-color:#86efac;">PAT set</span>'
-    : '<span class="secret-pill" style="background:#f3f4f6;color:#6b7280;">no PAT</span>';
+    ? '<span class="badge badge--success">PAT set</span>'
+    : '<span class="badge">no PAT</span>';
   const lastError = data.last_error
     ? `<div class="cfg-field"><label>Last sync error</label><div><div class="cfg-banner error is-visible" style="margin:0;">${escHtml(data.last_error)}</div></div></div>`
     : "";
