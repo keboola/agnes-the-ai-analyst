@@ -1282,30 +1282,26 @@ def _view_targets_in(dry_run_set: list) -> list[str]:
     if not dry_run_set:
         return []
     try:
-        from src.db import get_system_db
-        conn = get_system_db()
-        try:
-            pairs = [(b, t) for b, t, _ in dry_run_set]
-            # Build a parameterized OR of (bucket, source_table) pairs.
-            # DuckDB supports row-tuple IN but keeping it explicit OR
-            # avoids any version-specific syntax surprises.
-            where = " OR ".join(
-                "(tr.bucket = ? AND tr.source_table = ?)" for _ in pairs
-            )
-            params: list = []
-            for b, t in pairs:
-                params.extend([b, t])
-            sql_ = (
-                f"SELECT mc.table_id "
-                f"FROM bq_metadata_cache mc "
-                f"JOIN table_registry tr ON tr.id = mc.table_id "
-                f"WHERE mc.entity_type IN ('VIEW', 'MATERIALIZED VIEW') "
-                f"AND ({where})"
-            )
-            rows = conn.execute(sql_, params).fetchall()
-            return [r[0] for r in rows]
-        finally:
-            conn.close()
+        # Route through the repo factory (backend-agnostic): a raw JOIN on the
+        # always-DuckDB system connection comes back empty on a Postgres
+        # instance, so bq_metadata_cache / table_registry would be invisible and
+        # the VIEW hint would silently never fire.
+        from src.repositories import bq_metadata_cache_repo, table_registry_repo
+
+        wanted = {(b, t) for b, t, _ in dry_run_set}
+        target_ids = {
+            r["id"]
+            for r in table_registry_repo().list_all()
+            if (r.get("bucket"), r.get("source_table")) in wanted
+        }
+        if not target_ids:
+            return []
+        view_types = {"VIEW", "MATERIALIZED VIEW"}
+        return [
+            r["table_id"]
+            for r in bq_metadata_cache_repo().list_all()
+            if r.get("table_id") in target_ids and r.get("entity_type") in view_types
+        ]
     except Exception:
         return []
 

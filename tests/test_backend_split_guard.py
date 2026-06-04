@@ -176,11 +176,13 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
 
 _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     "app/api/admin.py",
-    "app/api/bq_metadata_refresh.py",
+    # app/api/bq_metadata_refresh.py — vestigial conn params removed; the file
+    # is fully factory-routed (bq_metadata_cache_repo / table_registry_repo).
     "app/api/cache_warmup.py",
     "app/api/health.py",
     "app/api/mcp_http.py",
-    "app/api/query.py",
+    # app/api/query.py — the bq-metadata VIEW-hint lookup (_view_targets_in)
+    # now routes through the factory; no remaining get_system_db caller.
     "app/api/scripts.py",
     "app/api/sync.py",
     "app/api/upload.py",

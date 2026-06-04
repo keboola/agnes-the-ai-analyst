@@ -27,6 +27,14 @@ import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+# Ensure every SQLAlchemy model is registered on ``src.db_pg.Base.metadata``
+# before any test runs. Tests that call ``Base.metadata.create_all(pg_engine)``
+# (e.g. ``test_db_state_migrator.py``) need the full model set; without this
+# pre-import they fail on a pytest-xdist worker whose test slice doesn't
+# transitively import ``src.models`` before the first such test runs
+# (`relation "users" does not exist` from a half-populated metadata).
+import src.models  # noqa: F401
+
 
 _VALID_BACKENDS = {"container", "embedded", "pgserver"}
 
