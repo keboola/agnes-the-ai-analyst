@@ -10,6 +10,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Postgres backend: Slack identity binding silently failed.** The
+  `users.slack_user_id` column (mapping a Slack user to an Agnes account) was
+  only ever lazy-`ALTER`-ed into the DuckDB system file by the Slack bot, so it
+  never existed on a Postgres instance — and the bind wrote / the lookup read it
+  through a raw DuckDB connection the factory-backed reads never consult. On a
+  PG instance a redeemed `/agnes` code bound nothing and `/agnes` looped on
+  "bind your identity first". The column is now part of the formal schema
+  (DuckDB schema **v71** / alembic `0018`, additive + nullable, mirrored in the
+  `users` SQLAlchemy model), and `lookup_user_email` / the redeem bind route
+  through `users_repo()` (new `get_by_slack_user_id` + `slack_user_id` on the
+  update allow-list, both backends). Pinned by both-backends parity + contract
+  tests.
+- **Slack verification codes expired immediately on non-UTC hosts.** The redeem
+  TTL check compared a SQL `current_timestamp` (naive UTC) `issued_at` against
+  Python `datetime.now()` (local time), so on a host whose timezone was ahead of
+  UTC every code looked already-expired (and on UTC-behind hosts, never
+  expired). The code now stores and compares `issued_at` in naive UTC on both
+  sides, so the TTL is correct regardless of the server timezone.
+
 ## [0.65.2] — 2026-06-04
 
 ### Changed

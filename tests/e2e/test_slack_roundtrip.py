@@ -45,7 +45,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.db import _ensure_schema
+from src.db import _ensure_schema, get_system_db
 from app.api.slack import router as slack_router
 from app.api.chat import router as chat_router
 from app.auth.dependencies import get_current_user
@@ -79,8 +79,10 @@ def _build_app(
     app.include_router(slack_router)
     app.include_router(chat_router)
 
-    # Bog-standard DuckDB with the schema migration applied + one user row.
-    conn = duckdb.connect(":memory:")
+    # Shared system DuckDB (get_system_db is patched to a per-test in-memory
+    # conn by the _shared_e2e_db autouse fixture) so the factory-routed Slack
+    # binding (users_repo) and this test's inspection see the same rows.
+    conn = get_system_db()
     _ensure_schema(conn)
     conn.execute(
         "INSERT INTO users(id, email, name) VALUES (?, ?, ?)",
@@ -178,6 +180,23 @@ def _slack_headers(body_bytes: bytes, secret: str) -> dict[str, str]:
         "X-Slack-Signature": sig,
         "Content-Type": "application/json",
     }
+
+
+@pytest.fixture(autouse=True)
+def _shared_e2e_db(monkeypatch):
+    """Slack binding now reads/writes through the repo factory; point
+    get_system_db() and the factory at one shared in-memory DuckDB so the
+    bind persists where this test inspects it."""
+    shared = duckdb.connect(":memory:")
+    _ensure_schema(shared)
+    # This module imported get_system_db at module load, so patch that binding
+    # (not just src.db's) plus the repo factory's.
+    monkeypatch.setattr(
+        "tests.e2e.test_slack_roundtrip.get_system_db", lambda: shared, raising=False
+    )
+    monkeypatch.setattr("src.db.get_system_db", lambda: shared)
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: shared)
+    yield shared
 
 
 @pytest.fixture
