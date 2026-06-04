@@ -49,6 +49,7 @@ After creating the app, generate an **app-level token** (`xapp-…`) with the
 - `SLACK_SIGNING_SECRET`
 - `chat.slack.transport: socket` in `instance.yaml` (or `SLACK_TRANSPORT=socket`)
 - Install the optional dependency: `pip install '.[slack-socket]'`
+- These tokens may instead be set from the admin UI (`/admin/server-config` → Slack bot secrets), stored encrypted in the vault (`AGNES_VAULT_KEY` required). Environment variables, if present, take precedence.
 
 ## Constraints
 

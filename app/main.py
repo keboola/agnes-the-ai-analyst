@@ -240,6 +240,7 @@ from app.api.v2_marketplace import router as v2_marketplace_router
 from app.api.marketplaces import router as marketplaces_router
 from app.api.data_packages import router as data_packages_router
 from app.api.admin_mcp import router as admin_mcp_router
+from app.api.admin_slack_secrets import router as admin_slack_secrets_router
 from app.api.mcp_passthrough import router as mcp_passthrough_router
 from app.api.mcp_per_table import router as mcp_per_table_router
 from app.api.mcp_user_secrets import router as mcp_user_secrets_router
@@ -321,8 +322,9 @@ async def _start_slack_socket_transport(app) -> None:
     app.state.slack_socket_dispatcher = None
     if get_slack_transport() != "socket":
         return
-    app_token = os.environ.get("SLACK_APP_TOKEN", "")
-    bot_token = os.environ.get("SLACK_BOT_TOKEN", "")
+    from services.slack_bot.secrets import slack_secret
+    app_token = slack_secret("SLACK_APP_TOKEN") or ""
+    bot_token = slack_secret("SLACK_BOT_TOKEN") or ""
     try:
         workers = int(os.environ.get("UVICORN_WORKERS", "1"))
     except ValueError:
@@ -1163,6 +1165,7 @@ def create_app() -> FastAPI:
     app.include_router(marketplaces_router)
     app.include_router(data_packages_router)
     app.include_router(admin_mcp_router)
+    app.include_router(admin_slack_secrets_router)
     app.include_router(mcp_passthrough_router)
     app.include_router(mcp_user_secrets_router)
     app.include_router(mcp_per_table_router)

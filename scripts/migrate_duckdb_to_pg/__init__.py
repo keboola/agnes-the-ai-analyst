@@ -102,6 +102,7 @@ _PK_COLUMNS: Dict[str, List[str]] = {
     "tool_grants": ["tool_id", "group_id"],
     "mcp_secrets": ["source_id"],
     "mcp_user_secrets": ["source_id", "user_id"],
+    "system_secrets": ["name"],
     "data_package_tools": ["package_id", "tool_id"],
     # v68 cloud-chat tables (chat_sessions / chat_messages use id PK)
     "user_workdirs": ["user_email"],
