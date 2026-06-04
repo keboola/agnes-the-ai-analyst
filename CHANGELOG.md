@@ -10,6 +10,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Postgres backend: `agnes query` against internal tables returned nothing.**
+  The internal-table SQL feature (analyst SQL over `agnes_telemetry` /
+  `agnes_audit` / `agnes_sessions`) ran the query in DuckDB against the system
+  file, so on a Postgres instance — where those rows live in PG — the same query
+  returned an empty result instead of the data DuckDB would show. It now reads
+  the caller's RBAC-filtered rows from Postgres into a per-request in-memory
+  DuckDB (one table per referenced internal source) and runs the analyst's
+  arbitrary DuckDB SQL there, so behaviour is identical on both backends. The
+  postgres extension is deliberately NOT loaded and nothing is ATTACHed, so the
+  `postgres_*` table functions (which take the catalog as a string literal and
+  would slip past identifier guards) are unavailable; and because the filter is
+  applied during materialisation, the materialised table is itself the RBAC
+  boundary — a user CTE that shadows an `agnes_*` alias still reads only the
+  caller's rows. A 1M-row-per-table materialisation cap protects against an
+  admin-unscoped query over a huge table (raises rather than risking an OOM).
+  Pinned by both-backends parity + RBAC-escape tests
+  (`tests/db_pg/test_parity_internal_query.py`).
+
 ## [0.65.5] — 2026-06-04
 
 ### Fixed
