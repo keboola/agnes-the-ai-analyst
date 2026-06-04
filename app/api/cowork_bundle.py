@@ -682,7 +682,31 @@ def _bundle_setup_py(server_url: str) -> str:
         #!/usr/bin/env python3
         \"\"\"Agnes Cowork one-time setup — no external packages needed.\"\"\"
         from __future__ import annotations
-        import json, os, pathlib, platform, subprocess, sys, urllib.error, urllib.request
+        import json, os, pathlib, platform, ssl, subprocess, sys, urllib.error, urllib.request
+
+        HERE = pathlib.Path(__file__).parent
+        BUNDLE_FILE = HERE / "agnes-bundle.json"
+
+        # Verified HTTPS that also works on Pythons without a usable system CA
+        # store (notably macOS python.org builds -> CERTIFICATE_VERIFY_FAILED).
+        def _ssl_context():
+            if os.environ.get("AGNES_INSECURE_SKIP_TLS_VERIFY") == "1":
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                return ctx
+            _config_dir = pathlib.Path.home() / ".config" / "agnes"
+            for _ca in (os.environ.get("SSL_CERT_FILE"),
+                        str(HERE / "cacert.pem"),
+                        str(_config_dir / "cacert.pem")):
+                if _ca and pathlib.Path(_ca).exists():
+                    try:
+                        return ssl.create_default_context(cafile=_ca)
+                    except Exception:
+                        pass
+            return ssl.create_default_context()
+
+        _SSL_CTX = _ssl_context()
 
         # ── CLI overrides (used from Terminal as fallback) ────────────────────
         _args = sys.argv[1:]
@@ -692,9 +716,6 @@ def _bundle_setup_py(server_url: str) -> str:
 
         _override_server = _flag("--server-url")
         _override_token  = _flag("--token")
-
-        HERE = pathlib.Path(__file__).parent
-        BUNDLE_FILE = HERE / "agnes-bundle.json"
 
         if not BUNDLE_FILE.exists():
             print("ERROR: agnes-bundle.json not found. Download a fresh bundle.")
@@ -722,7 +743,7 @@ def _bundle_setup_py(server_url: str) -> str:
                     headers={{"Content-Type": "application/json"}},
                     method="POST",
                 )
-                with urllib.request.urlopen(req, timeout=15) as r:
+                with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as r:
                     resp = json.loads(r.read())
                 pat = resp.get("access_token", "")
                 user_email = resp.get("user_email", user_email)
@@ -960,7 +981,7 @@ def _bundle_setup_py(server_url: str) -> str:
                 f"{{server_url}}/api/welcome?server_url={{server_url}}",
                 headers={{"Authorization": f"Bearer {{pat}}"}},
             )
-            with urllib.request.urlopen(req2, timeout=10) as r:
+            with urllib.request.urlopen(req2, timeout=10, context=_SSL_CTX) as r:
                 welcome = json.loads(r.read())
             content = welcome.get("content", "")
             if content:

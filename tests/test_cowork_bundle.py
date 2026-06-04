@@ -103,15 +103,16 @@ class TestGenerateBundle:
             assert path in names, f"Curated skill missing from bundle: {path}"
 
     def test_bundled_scripts_verify_tls_by_default(self, seeded_app):
-        """mcp_server.py / agnes.py must verify TLS against the bundled CA by
-        default; CERT_NONE is only reachable via the explicit opt-out env var."""
+        """mcp_server.py / agnes.py / setup.py must verify TLS against the
+        bundled CA by default; CERT_NONE is only reachable via the explicit
+        opt-out env var."""
         c = seeded_app["client"]
         resp = c.post("/api/user/cowork-bundle",
                       headers=_auth(seeded_app["analyst_token"]))
         assert resp.status_code == 200
         zf = zipfile.ZipFile(io.BytesIO(resp.content))
         folder = zf.namelist()[0].split("/")[0]
-        for script in ("mcp_server.py", "agnes.py"):
+        for script in ("mcp_server.py", "agnes.py", "setup.py"):
             src = zf.read(f"{folder}/{script}").decode()
             assert "context=_SSL_CTX" in src, f"{script}: urlopen must pass an SSL context"
             assert "cacert.pem" in src, f"{script}: must reference the bundled CA file"
