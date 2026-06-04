@@ -17,7 +17,6 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -25,7 +24,6 @@ from fastapi import APIRouter, Depends
 
 from app.api.v2_cache import TTLCache
 from app.auth.dependencies import _get_db, get_current_user
-from app.utils import get_data_dir as _get_data_dir
 from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
 
@@ -116,17 +114,17 @@ def _materialized_parquet_size_bucket(
     """Size hint for rows whose data is on the server filesystem
     (``local`` or ``materialized``). Cheap ``Path.stat()``; never blocks.
 
-    Layout matches the v2 extract.duckdb contract:
-      ${DATA_DIR}/extracts/<source_type>/data/<table_id>.parquet
+    Resolves the parquet by source-name-agnostic lookup: the extract directory
+    is not necessarily the ``source_type`` (e.g. the bundled `demo` extract
+    registers tables as 'local' but lives under ``extracts/demo/``), so keying
+    the path off ``source_type`` silently lost the size hint for such rows.
     """
     if not source_type:
         return None
     try:
-        path = (
-            Path(_get_data_dir()) / "extracts" / source_type / "data"
-            / f"{table_id}.parquet"
-        )
-        if not path.exists():
+        from app.utils import resolve_local_parquet
+        path = resolve_local_parquet(table_id, source_type)
+        if path is None:
             return None
         return _bucket_size(path.stat().st_size)
     except Exception:
