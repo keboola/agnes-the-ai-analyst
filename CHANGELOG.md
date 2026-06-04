@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 - Dark theme: the legacy `--ds-info-*` / `--ds-warn-*` token vocab now maps to the dark accent tints instead of staying light pastel (which washed out on dark surfaces). (#497)
+- Dark theme: `/first-time-setup` form inputs no longer render white-on-dark — they derive bg/text from `--ds-surface` / `--ds-text-primary` (unchanged in light). (#497)
 
 ## [0.65.12] — 2026-06-04
 
