@@ -41,12 +41,21 @@ class SessionNotFound(Exception):
 
 
 @dataclass
+class SinkEntry:
+    """One output target for a live session's frames. Duck-typed sink:
+    a web WebSocket or a SlackSinkBridge — both expose ``send_json`` and
+    ``close``. ``participant_email`` attributes the sink to a principal so
+    leave/teardown can drop exactly one sink (used by co-drive in 5b)."""
+    participant_email: str
+    sink: object
+
+
+@dataclass
 class LiveSession:
     chat_id: str
     user_email: str
     state: SessionState
     handle: Optional[SandboxHandle]
-    ws: object  # WebSocket; typed loosely to avoid FastAPI import cycle
     started_at: datetime
     last_activity: datetime
     crash_count: int = 0
@@ -56,11 +65,29 @@ class LiveSession:
     # (and removes the previous one from `tasks`) so the per-session task
     # list does not grow unboundedly across crashes.
     current_pump: Optional[asyncio.Task] = None
+    # Latest crash-respawn wait task (_wait_for_exit_and_respawn). A co-session
+    # leave (_respawn_co_runner) cancels this BEFORE killing the old handle and
+    # starts a fresh one bound to the new session_dir — otherwise the running
+    # wait task would observe the intentional kill as a crash and respawn a
+    # second time (double-respawn race).
+    current_wait: Optional[asyncio.Task] = None
     # Set to True once an auto-title task has been scheduled for this
     # session — guarantees we only fire Haiku once per live session
     # even if the user sends a second turn while the first one is
     # still in-flight.
     auto_title_started: bool = False
+    # Output sinks the runner's frames fan out to. One SinkEntry per
+    # attached principal (web WS or SlackSinkBridge). The primary sink is
+    # seated by attach(); add_sink() appends late joiners (co-drive, 5b).
+    sinks: list["SinkEntry"] = field(default_factory=list)
+    # Serializes the stdin write+drain pair so two participants' concurrent
+    # turns can never interleave partial JSON lines on the shared stdin
+    # (spec §6.2).
+    _stdin_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Live participant emails for co-sessions. Populated by attach() from
+    # chat_session_participants WHERE left_at IS NULL; updated by leave_session()
+    # when a participant leaves. Empty for non-co sessions.
+    participant_emails: list[str] = field(default_factory=list)
 
 
 class ChatManager:
@@ -156,12 +183,21 @@ class ChatManager:
         return created
 
     def _active_count_for_user(self, user_email: str) -> int:
-        return sum(
-            1
-            for s in self._live.values()
-            if s.user_email == user_email
-            and s.state in (SessionState.NEW, SessionState.ACTIVE, SessionState.IDLE)
-        )
+        n = 0
+        for s in self._live.values():
+            if s.state not in (SessionState.NEW, SessionState.ACTIVE, SessionState.IDLE):
+                continue
+            # Count the session against both the owner and every live participant
+            # in co-sessions, so the concurrency cap applies to all co-drivers.
+            co_emails = getattr(s, "participant_emails", [])
+            if s.user_email == user_email or user_email in co_emails:
+                n += 1
+        return n
+
+    def active_count_for_user(self, user_email: str) -> int:
+        """Public wrapper over the private cap predicate so callers
+        (e.g. /agnes-status) report exactly what create_session enforces."""
+        return self._active_count_for_user(user_email)
 
     def list_live(self) -> list[LiveSession]:
         return list(self._live.values())
@@ -176,50 +212,115 @@ class ChatManager:
 
     # --- attach + runtime methods (Task 5.2) --------------------------------
 
-    async def attach(self, chat_id: str, ws) -> None:
+    async def attach(self, chat_id: str, ws, *, is_primary: bool = True) -> None:
         session = self._repo.get_session(chat_id)
         if session is None:
             raise SessionNotFound(chat_id)
 
-        self._workdir_mgr.ensure_user_workdir(session.user_email)
-        session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, chat_id)
+        if session.is_co_session:
+            # SR-6: co-sessions get a fresh ephemeral workspace — never a
+            # personal directory, never CLAUDE.local.md.
+            parts = self._repo.get_session_participants(chat_id)
+            emails = [p.user_email for p in parts if p.left_at is None]
+            from src.grant_intersection import compute_grant_intersection
+            inter = compute_grant_intersection(emails, self._repo._conn)
+            session_dir = self._workdir_mgr.prepare_ephemeral_session_dir(
+                chat_id, emails, inter,
+            )
+        else:
+            emails = [session.user_email]
+            self._workdir_mgr.ensure_user_workdir(session.user_email)
+            session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, chat_id)
 
         handle = await self._spawn_runner(session, session_dir)
+        # 5a seats the primary sink unconditionally. is_primary is part of
+        # the spec §6.3 attach contract so 5b co-drive can attach a runner
+        # without a primary seat (it seats collaborators via add_sink); 5a
+        # never passes is_primary=False, so the primary is always present.
         live = LiveSession(
             chat_id=chat_id,
             user_email=session.user_email,
             state=SessionState.ACTIVE,
             handle=handle,
-            ws=ws,
             started_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
+            sinks=(
+                [SinkEntry(participant_email=session.user_email, sink=ws)]
+                if is_primary else []
+            ),
+            participant_emails=emails,
         )
         self._live[chat_id] = live
-        await ws.send_json({"type": "ready"})
+        if is_primary:
+            # A non-primary ws is seated via add_sink (which sends its own
+            # "ready" after replaying history); sending "ready" here to a ws
+            # that was never added to live.sinks would leave it half-initialized.
+            await ws.send_json({"type": "ready"})
 
         pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
         wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
         live.tasks = [pump_task, wait_task]
         live.current_pump = pump_task
+        live.current_wait = wait_task
 
         try:
             await asyncio.gather(*live.tasks, return_exceptions=True)
         finally:
             await self.kill(chat_id, reason="ws_disconnect")
 
+    async def add_sink(self, chat_id: str, sink, participant_email: str) -> None:
+        """Attach an additional output sink to an already-live session.
+
+        SR-9: re-verifies that the participant is still a live (left_at IS NULL)
+        member before appending; raises PermissionError otherwise so a
+        post-leave join attempt is rejected at the door.
+
+        Replays persisted history to the new sink BEFORE appending it to the
+        broadcast list, so a late joiner never misses in-flight frames and
+        never double-receives one (replay + append are serialized here; the
+        pump only ever sees the sink once it's in live.sinks). Sends ``ready``
+        last. Used by single-principal Slack cross-surface attach and (5b)
+        co-drive join."""
+        live = self._live.get(chat_id)
+        if live is None or live.state == SessionState.DEAD:
+            raise SessionNotFound(chat_id)
+        # SR-9: for co-sessions, membership re-verify — only live participants
+        # may join. Non-co-session add_sink (e.g. Slack cross-surface) bypasses
+        # this check because participant rows don't exist for single-user sessions.
+        if live.participant_emails:  # truthy only for co-sessions
+            parts = self._repo.get_session_participants(chat_id)
+            if not any(p.user_email == participant_email and p.left_at is None for p in parts):
+                raise PermissionError(
+                    f"{participant_email} is not a live participant of {chat_id}"
+                )
+        for msg in self._repo.list_messages(chat_id):
+            await sink.send_json({
+                "type": "assistant_message" if msg.role == "assistant" else "user_msg",
+                "content": msg.content,
+                "sender_email": msg.sender_email,
+            })
+        live.sinks.append(SinkEntry(participant_email=participant_email, sink=sink))
+        await sink.send_json({"type": "ready"})
+
     async def _spawn_runner(self, session: ChatSession, session_dir: Path):
-        from app.auth.access import mint_session_jwt
-        try:
-            token = mint_session_jwt(session.user_email, session.id)
-        except ValueError:
-            # User not found in DB (e.g. deleted mid-session) — fall back to
-            # the env-seed so the runner at least starts; it will fail auth
-            # on its first API call and surface a clear error to the user.
-            logger.warning(
-                "_spawn_runner: mint_session_jwt failed for %s; using AGNES_SESSION_JWT_SEED fallback",
-                session.user_email,
-            )
-            token = os.environ.get("AGNES_SESSION_JWT_SEED", "")
+        from app.auth.access import mint_session_jwt, mint_co_session_jwt
+        if session.is_co_session:
+            # SR-5: NO seed fallback for co-sessions. A mint failure re-raises
+            # and aborts the spawn — never inject a seed token (which carries no
+            # co claims and could resolve to admin via the normal user path).
+            token = mint_co_session_jwt(session.id)
+        else:
+            try:
+                token = mint_session_jwt(session.user_email, session.id)
+            except ValueError:
+                # User not found in DB (e.g. deleted mid-session) — fall back to
+                # the env-seed so the runner at least starts; it will fail auth
+                # on its first API call and surface a clear error to the user.
+                logger.warning(
+                    "_spawn_runner: mint_session_jwt failed for %s; using AGNES_SESSION_JWT_SEED fallback",
+                    session.user_email,
+                )
+                token = os.environ.get("AGNES_SESSION_JWT_SEED", "")
         env = {
             "AGNES_TOKEN": token,
             # The agnes CLI inside the sandbox reads its server URL from
@@ -325,11 +426,7 @@ class ChatManager:
             except json.JSONDecodeError:
                 continue
             live.last_activity = datetime.now(timezone.utc)
-            try:
-                await live.ws.send_json(frame)
-            except Exception:
-                logger.warning("ws send failed for %s", live.chat_id)
-                return
+            await self._broadcast(live, frame)
             if frame.get("type") == "assistant_message":
                 self._repo.append_message(
                     session_id=live.chat_id,
@@ -359,6 +456,30 @@ class ChatManager:
                     },
                 )
 
+    async def _broadcast(self, live: LiveSession, frame: dict) -> None:
+        """Send a frame to every sink, snapshotting the list first so a
+        concurrent add/remove can't mutate it mid-iteration. Dead sinks are
+        removed and closed after the loop. A failing sink never aborts the
+        broadcast to the others."""
+        dead: list[SinkEntry] = []
+        for entry in list(live.sinks):
+            try:
+                await entry.sink.send_json(frame)
+            except Exception:
+                logger.warning("sink send failed for %s", live.chat_id)
+                dead.append(entry)
+        for entry in dead:
+            if entry in live.sinks:
+                live.sinks.remove(entry)
+            asyncio.create_task(self._safe_close(entry.sink))
+
+    @staticmethod
+    async def _safe_close(sink) -> None:
+        try:
+            await sink.close()
+        except Exception:
+            pass
+
     async def _wait_for_exit_and_respawn(self, live: LiveSession, session_dir: Path) -> None:
         while True:
             assert live.handle is not None
@@ -367,7 +488,7 @@ class ChatManager:
                 return
             # Crash path
             live.crash_count += 1
-            await live.ws.send_json({
+            await self._broadcast(live, {
                 "type": "error",
                 "kind": "subprocess_crashed",
                 "auto_respawn": live.crash_count < 3,
@@ -381,12 +502,22 @@ class ChatManager:
             new_handle = await self._spawn_runner(session, session_dir)
             live.handle = new_handle
             live.state = SessionState.ACTIVE
-            await live.ws.send_json({"type": "ready"})
-            # Replay last 3 user turns into the new subprocess
+            await self._broadcast(live, {"type": "ready"})
+            # Replay last 3 user turns into the new subprocess.
+            # SR-11: for co-sessions, skip turns authored by a departed
+            # participant and carry sender_email so the runner sees
+            # who sent each message.
             history = self._repo.list_messages(live.chat_id)[-3:]
+            live_emails = set(live.participant_emails) or {live.user_email}
             for msg in history:
-                if msg.role == "user":
-                    payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
+                if msg.role != "user":
+                    continue
+                author = getattr(msg, "sender_email", None) or live.user_email
+                # SR-11: do not replay a departed participant's turn
+                if live.participant_emails and author not in live_emails:
+                    continue
+                payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
+                async with live._stdin_lock:
                     new_handle.stdin.write(payload.encode("utf-8"))
                     await new_handle.stdin.drain()
             # Replace (not append) the per-session pump task so the task
@@ -407,18 +538,21 @@ class ChatManager:
             live.tasks.append(new_pump)
             # Loop back to wait on the new handle.
 
-    async def send_user_message(self, chat_id: str, text: str) -> None:
+    async def send_user_message(self, chat_id: str, text: str, *, sender_email: Optional[str] = None) -> None:
         live = self._live.get(chat_id)
         if live is None or live.handle is None or live.state == SessionState.DEAD:
             raise SessionNotFound(chat_id)
+        # SR-10: key all per-user budget/rate checks on the actual SENDER,
+        # not the session owner — each co-driver has their own daily/rate window.
+        sender = sender_email or live.user_email
         # Enforce daily Anthropic spend cap (result is TTL-cached — see _cached_daily_tokens)
-        tokens_in, tokens_out = self._cached_daily_tokens(live.user_email)
+        tokens_in, tokens_out = self._cached_daily_tokens(sender)
         spent_usd = (
             tokens_in * _PRICE_IN_PER_MTOK / 1_000_000
             + tokens_out * _PRICE_OUT_PER_MTOK / 1_000_000
         )
         if spent_usd >= self._config.daily_anthropic_spend_usd:
-            await live.ws.send_json({
+            await self._broadcast(live, {
                 "type": "error",
                 "kind": "daily_budget",
                 "message": (
@@ -434,7 +568,7 @@ class ChatManager:
         # documented in persistence.py).
         session_tokens = self._repo.session_total_tokens(chat_id)
         if session_tokens >= self._config.max_session_tokens:
-            await live.ws.send_json({
+            await self._broadcast(live, {
                 "type": "error",
                 "kind": "max_session_tokens",
                 "message": (
@@ -443,18 +577,15 @@ class ChatManager:
                 ),
             })
             raise RuntimeError("max_session_tokens_exhausted")
-        # Per-user sliding-window message-rate cap. Trim entries older than
-        # one hour, then check the count.  Anti-abuse knob; previously dead
-        # config in instance.yaml.
+        # Per-user sliding-window message-rate cap keyed on the SENDER (SR-10).
+        # Trim entries older than one hour, then check the count.
         import time as _time
         now_mono = _time.monotonic()
-        window = self._user_msg_window.setdefault(
-            live.user_email, self._deque_cls(),
-        )
+        window = self._user_msg_window.setdefault(sender, self._deque_cls())
         while window and (now_mono - window[0]) > 3600:
             window.popleft()
         if len(window) >= self._config.rate_messages_per_hour:
-            await live.ws.send_json({
+            await self._broadcast(live, {
                 "type": "error",
                 "kind": "rate_limit",
                 "message": (
@@ -464,20 +595,120 @@ class ChatManager:
             })
             raise RuntimeError("rate_limit_exceeded")
         window.append(now_mono)
-        self._repo.append_message(session_id=chat_id, role="user", content=text)
+        self._repo.append_message(
+            session_id=chat_id, role="user", content=text,
+            sender_email=sender_email or live.user_email,
+        )
         payload = json.dumps({"type": "user_msg", "text": text}) + "\n"
-        live.handle.stdin.write(payload.encode("utf-8"))
-        await live.handle.stdin.drain()
+        async with live._stdin_lock:
+            live.handle.stdin.write(payload.encode("utf-8"))
+            await live.handle.stdin.drain()
         live.last_activity = datetime.now(timezone.utc)
         live.state = SessionState.ACTIVE
+
+    async def leave_session(self, chat_id: str, participant_email: str) -> None:
+        """SR-9: atomically stamp left_at, remove+close the leaver's sink,
+        refresh live.participant_emails, then respawn under the narrowed
+        intersection. After this method returns, zero frames will reach the
+        removed sink — the sink is removed from live.sinks BEFORE _broadcast
+        is called again, and we await its close() before returning."""
+        live = self._live.get(chat_id)
+        if live is None:
+            return
+        self._repo.remove_participant(chat_id, participant_email)  # stamps left_at
+        leaving = [s for s in live.sinks if s.participant_email == participant_email]
+        live.sinks = [s for s in live.sinks if s.participant_email != participant_email]
+        for s in leaving:
+            try:
+                await s.sink.close()
+            except Exception:
+                logger.exception("close leaver sink failed for %s", chat_id)
+        parts = self._repo.get_session_participants(chat_id)
+        live.participant_emails = [p.user_email for p in parts if p.left_at is None]
+        await self._respawn_co_runner(live)
+
+    async def _respawn_co_runner(self, live: LiveSession) -> None:
+        """Recompute intersection for remaining participants and re-spawn runner.
+
+        Called after a participant leaves (SR-7). Kills the current handle,
+        rebuilds the ephemeral workspace under the new (narrower) intersection,
+        spawns a fresh runner, and replaces live.current_pump. If no participants
+        remain, kills the session entirely."""
+        if not live.participant_emails:
+            await self.kill(live.chat_id, reason="all_participants_left")
+            return
+        session = self._repo.get_session(live.chat_id)
+        if session is None:
+            return
+        from src.grant_intersection import compute_grant_intersection
+        inter = compute_grant_intersection(live.participant_emails, self._repo._conn)
+        session_dir = self._workdir_mgr.prepare_ephemeral_session_dir(
+            live.chat_id, live.participant_emails, inter,
+        )
+        # Cancel the crash-respawn wait task BEFORE killing the handle: this
+        # respawn is intentional, and a running _wait_for_exit_and_respawn
+        # would otherwise see the kill's non-zero exit as a crash and respawn
+        # a second time (double-respawn race → multiple concurrent runners).
+        # A fresh wait task bound to the new session_dir is started below.
+        old_wait = live.current_wait
+        if old_wait is not None and not old_wait.done():
+            old_wait.cancel()
+            try:
+                await old_wait
+            except (asyncio.CancelledError, Exception):
+                pass
+        if old_wait is not None and old_wait in live.tasks:
+            live.tasks.remove(old_wait)
+        live.current_wait = None
+        if live.handle is not None:
+            try:
+                await live.handle.kill()
+            except Exception:
+                logger.exception("_respawn_co_runner: kill old handle failed")
+        new_handle = await self._spawn_runner(session, session_dir)
+        live.handle = new_handle
+        live.state = SessionState.ACTIVE
+        await self._broadcast(live, {"type": "ready"})
+        # Replay last 3 user turns skipping departed participants (SR-11).
+        history = self._repo.list_messages(live.chat_id)[-3:]
+        live_emails = set(live.participant_emails) or {live.user_email}
+        for msg in history:
+            if msg.role != "user":
+                continue
+            author = getattr(msg, "sender_email", None) or live.user_email
+            if author not in live_emails:
+                continue  # SR-11: do not replay a departed participant's turn
+            payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
+            async with live._stdin_lock:
+                new_handle.stdin.write(payload.encode("utf-8"))
+                await new_handle.stdin.drain()
+        old_pump = live.current_pump
+        if old_pump is not None and not old_pump.done():
+            old_pump.cancel()
+            try:
+                await old_pump
+            except (asyncio.CancelledError, Exception):
+                pass
+        if old_pump is not None and old_pump in live.tasks:
+            live.tasks.remove(old_pump)
+        new_pump = asyncio.create_task(self._pump_subprocess_to_ws(live))
+        live.current_pump = new_pump
+        live.tasks.append(new_pump)
+        # Start a fresh crash-respawn watcher bound to the NEW handle and the
+        # NEW (narrowed-intersection) session_dir, so a genuine later crash
+        # respawns with the correct workspace — not the pre-leave wider one.
+        new_wait = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
+        live.current_wait = new_wait
+        live.tasks.append(new_wait)
 
     async def cancel(self, chat_id: str) -> None:
         live = self._live.get(chat_id)
         if live is None or live.handle is None:
             return
         payload = json.dumps({"type": "cancel"}) + "\n"
-        live.handle.stdin.write(payload.encode("utf-8"))
-        await live.handle.stdin.drain()
+        async with live._stdin_lock:
+            live.handle.stdin.write(payload.encode("utf-8"))
+            await live.handle.stdin.drain()
         # Synthetic tool_result so the agent's conversation history reflects
         # the cancellation (per spec § Lifecycle "On cancellation").  Without
         # this, the next user_msg lands in a dangling tool_call context and
@@ -488,13 +719,13 @@ class ChatManager:
             "tool": "_cancel",
             "result": {"cancelled": True},
         }
-        await live.ws.send_json(synthetic)
+        await self._broadcast(live, synthetic)
         self._repo.append_message(
             session_id=chat_id, role="assistant",
             content="",
             tool_calls=[{"cancelled": True}],
         )
-        await live.ws.send_json({"type": "cancelled"})
+        await self._broadcast(live, {"type": "cancelled"})
 
     async def kill(self, chat_id: str, *, reason: str) -> None:
         live = self._live.pop(chat_id, None)
@@ -556,11 +787,11 @@ class ChatManager:
                 return
             self._repo.set_title(live.chat_id, title)
             # Push the new title to the live WS so the sidebar +
-            # thread header update without a refresh. ws.send_json may
+            # thread header update without a refresh. _broadcast may
             # raise if the socket has dropped — swallow it; the
             # persisted title will surface on the next sidebar load.
             try:
-                await live.ws.send_json({
+                await self._broadcast(live, {
                     "type": "session_renamed",
                     "chat_id": live.chat_id,
                     "title": title,

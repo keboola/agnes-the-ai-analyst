@@ -199,6 +199,7 @@ async def download_workspace(
     local_root: Path,
     *,
     sandbox_root: str = SANDBOX_WORKDIR,
+    skip: bool = False,
 ) -> int:
     """Walk ``sandbox_root`` and write every file back under ``local_root``.
 
@@ -209,6 +210,8 @@ async def download_workspace(
 
     Returns the number of files written.
     """
+    if skip:
+        return 0  # ephemeral co-session: never persist back (SR-6)
     local_root.mkdir(parents=True, exist_ok=True)
     count = 0
 

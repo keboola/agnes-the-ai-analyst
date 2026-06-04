@@ -145,3 +145,23 @@ def test_delete_removes_user(users_repo):
     assert repo.get_by_id("user-1") is not None
     repo.delete("user-1")
     assert repo.get_by_id("user-1") is None
+
+
+def test_set_and_get_by_slack_user_id(users_repo):
+    """v71: the Slack identity binding round-trips identically on both engines
+    (update(slack_user_id=...) + get_by_slack_user_id)."""
+    repo, _, _ = users_repo
+    _make_user(repo)
+
+    # Unbound: no slack_user_id, lookup misses.
+    row = repo.get_by_id("user-1")
+    assert row.get("slack_user_id") is None
+    assert repo.get_by_slack_user_id("U999") is None
+
+    repo.update("user-1", slack_user_id="U999")
+    row = repo.get_by_id("user-1")
+    assert row["slack_user_id"] == "U999"
+
+    bound = repo.get_by_slack_user_id("U999")
+    assert bound is not None
+    assert bound["id"] == "user-1"

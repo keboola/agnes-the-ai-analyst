@@ -69,7 +69,12 @@ def _make_passthrough_callable(
     safe_props = [name for name in props if _safe_ident(name)]
     fallback_kwargs = len(safe_props) != len(props)  # any unsafe key → use **kwargs
 
-    if fallback_kwargs or not safe_props:
+    # NOTE: only the genuine non-identifier case takes the **kwargs wrapper.
+    # An EMPTY schema (no props) must fall through to the synthesized path
+    # below, which emits a valid parameterless ``async def _passthrough():``.
+    # Routing empty schemas here instead makes FastMCP render a *required*
+    # ``kwargs`` field, so the only valid (empty) call 422s.
+    if fallback_kwargs:
         async def _passthrough(**kwargs: Any) -> str:
             result = await call_tool_async(source, original_name, arguments=kwargs)
             if result.is_error:

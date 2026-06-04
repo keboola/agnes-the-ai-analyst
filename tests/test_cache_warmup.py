@@ -126,21 +126,14 @@ def test_list_remote_rows_filters_to_bigquery_source_type(monkeypatch):
     ]
 
     class FakeRepo:
-        def __init__(self, conn):
-            pass
-
         def list_all(self):
             return fake_rows
 
-    class FakeConn:
-        def close(self):
-            pass
-
+    # Patch the factory function the code actually calls — robust to the active
+    # backend (use_pg) and to cross-test AGNES_DB_URL leakage under xdist, which
+    # made patching the underlying class + get_system_db flaky.
     monkeypatch.setattr(
-        "src.repositories.table_registry.TableRegistryRepository", FakeRepo,
-    )
-    monkeypatch.setattr(
-        "src.db.get_system_db", lambda: FakeConn(),
+        "app.api.cache_warmup.table_registry_repo", lambda: FakeRepo(),
     )
 
     result = cache_warmup._list_remote_rows()

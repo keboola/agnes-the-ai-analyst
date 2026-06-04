@@ -67,7 +67,13 @@ services:
       - "127.0.0.1:5432:5432"
 
   migrate:
+    # `build` for local dev; `image` for prod, where the VM is sourceless and
+    # `docker compose up` would otherwise fail with "failed to read dockerfile".
+    # Mirrors the app/scheduler build+image pattern (build in base, image in
+    # the prod path) — when the pulled image is present compose uses it instead
+    # of building.
     build: .
+    image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
     command: alembic upgrade head
     depends_on:
       postgres:
@@ -92,7 +98,9 @@ services:
   # ``scheduler`` block on this exiting 0 so the runtime never observes a
   # partially-migrated PG.
   data-migrate:
+    # build/image split as for `migrate` above — prod uses the pulled image.
     build: .
+    image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
     command: python -m scripts.migrate_duckdb_to_pg --duckdb-path /data/state/system.duckdb
     depends_on:
       postgres:

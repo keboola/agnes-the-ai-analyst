@@ -66,6 +66,25 @@ class TestWebUISmoke:
         resp = web_client.get("/login")
         assert resp.status_code == 200
 
+    def test_login_page_has_no_logo_by_default(self, web_client):
+        # Vendor-neutral default: no operator logo configured → the login card
+        # renders no brand lockup, just the text heading.
+        resp = web_client.get("/login")
+        assert resp.status_code == 200
+        assert "login-card-logo" not in resp.text
+
+    def test_login_page_renders_configured_logo(self, web_client, monkeypatch):
+        # When an operator sets AGNES_INSTANCE_LOGO_SVG, the login card renders
+        # it inline above the Sign In heading (same slot the app header uses).
+        monkeypatch.setenv(
+            "AGNES_INSTANCE_LOGO_SVG",
+            '<svg id="brand-mark" xmlns="http://www.w3.org/2000/svg"></svg>',
+        )
+        resp = web_client.get("/login")
+        assert resp.status_code == 200
+        assert "login-card-logo" in resp.text
+        assert 'id="brand-mark"' in resp.text
+
     def test_dashboard(self, web_client, admin_cookie):
         resp = web_client.get("/dashboard", cookies=admin_cookie)
         assert resp.status_code in (200, 302)

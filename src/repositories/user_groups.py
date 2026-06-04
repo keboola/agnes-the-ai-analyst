@@ -15,7 +15,7 @@ disappear out from under the authorization layer.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 from uuid import uuid4
 
 import duckdb
@@ -57,6 +57,27 @@ class UserGroupsRepository:
             return None
         columns = [d[0] for d in self.conn.description]
         return dict(zip(columns, row))
+
+    def list_names_by_ids(self, group_ids: Iterable[str]) -> List[str]:
+        """Return the names of the listed groups, alphabetically sorted.
+
+        Backs the diagnostic ``resolve_user_groups`` helper in
+        ``src.marketplace_filter`` that surfaces a user's group set in
+        ``/marketplace/info`` and ``.agnes/version.json``. Going through
+        the repo factory (rather than raw SQL on the DuckDB-typed
+        ``conn`` parameter) keeps the lookup correct on Postgres
+        deployments where ``user_groups`` rows live in PG.
+        """
+        gids = list(group_ids)
+        if not gids:
+            return []
+        placeholders = ",".join(["?"] * len(gids))
+        rows = self.conn.execute(
+            f"SELECT name FROM user_groups WHERE id IN ({placeholders}) "
+            f"ORDER BY name",
+            list(gids),
+        ).fetchall()
+        return [r[0] for r in rows]
 
     def create(
         self,

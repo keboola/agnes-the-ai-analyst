@@ -1006,13 +1006,13 @@ wireDropZone(
 // the round-trip.
 const ALLOWED_DOC_EXT = new Set(['.pdf', '.md', '.markdown', '.txt']);
 addDocBtn.addEventListener('click', () => docInput.click());
-docInput.addEventListener('change', () => {
+docInput.addEventListener('change', async () => {
   for (const f of docInput.files) {
     const lower = (f.name || '').toLowerCase();
     const dot = lower.lastIndexOf('.');
     const ext = dot >= 0 ? lower.slice(dot) : '';
     if (!ALLOWED_DOC_EXT.has(ext)) {
-      alert(
+      await alertModal(
         'Unsupported document format: "' + f.name + '". '
         + 'Only PDF (.pdf), Markdown (.md, .markdown), and plain text (.txt) are accepted.'
       );

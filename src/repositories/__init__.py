@@ -84,12 +84,15 @@ __all__ = [
     "user_stack_subscriptions_repo",
     # MCP / Cowork
     "mcp_sources_repo",
+    "per_user_secrets_repo",
+    "shared_secrets_repo",
     "tool_registry_repo",
     "setup_tokens_repo",
     # Cloud chat
     "chat_session_repo",
     "chat_message_repo",
     "user_workdirs_repo",
+    "chat_session_participants_repo",
 ]
 
 
@@ -477,6 +480,22 @@ def mcp_sources_repo() -> Any:
     return MCPSourceRepository(get_system_db())
 
 
+def per_user_secrets_repo() -> Any:
+    if use_pg():
+        from src.repositories.secrets_vault_pg import PerUserSecretsPgRepository
+        return PerUserSecretsPgRepository(_pg_engine())
+    from app.secrets_vault import PerUserSecretsRepository
+    return PerUserSecretsRepository(get_system_db())
+
+
+def shared_secrets_repo() -> Any:
+    if use_pg():
+        from src.repositories.secrets_vault_pg import SharedSecretsPgRepository
+        return SharedSecretsPgRepository(_pg_engine())
+    from app.secrets_vault import SharedSecretsRepository
+    return SharedSecretsRepository(get_system_db())
+
+
 def tool_registry_repo() -> Any:
     if use_pg():
         from src.repositories.tool_registry_pg import ToolRegistryPgRepository
@@ -517,5 +536,15 @@ def user_workdirs_repo() -> Any:
     if use_pg():
         from src.repositories.user_workdirs_pg import UserWorkdirPgRepository
         return UserWorkdirPgRepository(_pg_engine())
+    from app.chat.persistence import ChatRepository
+    return ChatRepository(get_system_db())
+
+
+def chat_session_participants_repo() -> Any:
+    if use_pg():
+        from src.repositories.chat_session_participants_pg import (
+            ChatSessionParticipantPgRepository,
+        )
+        return ChatSessionParticipantPgRepository(_pg_engine())
     from app.chat.persistence import ChatRepository
     return ChatRepository(get_system_db())

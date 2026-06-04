@@ -55,6 +55,7 @@ class MCPSource(Base):
     transport: Mapped[str] = mapped_column(String, nullable=False)
     command: Mapped[str | None] = mapped_column(String, nullable=True)
     args: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    env: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     url: Mapped[str | None] = mapped_column(String, nullable=True)
     auth_method: Mapped[str | None] = mapped_column(String, nullable=True)
     auth_secret_env: Mapped[str | None] = mapped_column(String, nullable=True)

@@ -26,7 +26,6 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -38,10 +37,10 @@ from app.api.mcp_policy import (
     redact_response,
 )
 from app.auth.access import _user_group_ids, is_user_admin
-from app.auth.dependencies import _get_db, get_current_user
+from app.auth.dependencies import get_current_user
 from connectors.mcp.client import call_tool_async
-from src.repositories.mcp_sources import MCPSourceRepository
-from src.repositories.tool_registry import PASSTHROUGH, ToolRegistryRepository
+from src.repositories import mcp_sources_repo, tool_registry_repo
+from src.repositories.tool_registry import PASSTHROUGH
 
 logger = logging.getLogger(__name__)
 
@@ -90,19 +89,21 @@ def _to_dto(tool: Dict[str, Any], source_name: str) -> PassthroughToolDTO:
     )
 
 
-def _visible_passthrough_tools(
-    user: Dict[str, Any],
-    conn: duckdb.DuckDBPyConnection,
-) -> List[Dict[str, Any]]:
+def _visible_passthrough_tools(user: Dict[str, Any]) -> List[Dict[str, Any]]:
     """List of passthrough tool rows the caller is allowed to see.
 
     Admin sees every enabled passthrough tool. Non-admin sees the
     intersection of ``tool_grants`` with their ``user_group_members``.
+
+    Backend-aware: reads tool_registry through the factory and resolves RBAC
+    via ``is_user_admin`` / ``_user_group_ids`` without a connection, so it hits
+    the active backend (was a raw DuckDB-conn read that returned nothing on a
+    Postgres instance — empty tool list / failed passthrough calls).
     """
-    tools_repo = ToolRegistryRepository(conn)
-    if is_user_admin(user["id"], conn):
+    tools_repo = tool_registry_repo()
+    if is_user_admin(user["id"]):
         return tools_repo.list_by_mode(PASSTHROUGH, enabled_only=True)
-    group_ids = list(_user_group_ids(user["id"], conn))
+    group_ids = list(_user_group_ids(user["id"]))
     return tools_repo.list_passthrough_for_groups(group_ids)
 
 
@@ -114,7 +115,6 @@ def _visible_passthrough_tools(
 @router.get("/tools", response_model=List[PassthroughToolDTO])
 async def list_passthrough_tools(
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ) -> List[PassthroughToolDTO]:
     """List passthrough MCP tools visible to the caller.
 
@@ -122,13 +122,12 @@ async def list_passthrough_tools(
     workspaces dynamically gain access to upstream MCP tools their admin
     has curated and granted to their groups.
     """
-    sources_repo = MCPSourceRepository(conn)
     # Index sources once so each tool can resolve its source name cheaply.
     source_names: Dict[str, str] = {
-        s["id"]: s["name"] for s in sources_repo.list_all(enabled_only=True)
+        s["id"]: s["name"] for s in mcp_sources_repo().list_all(enabled_only=True)
     }
     out: List[PassthroughToolDTO] = []
-    for tool in _visible_passthrough_tools(user, conn):
+    for tool in _visible_passthrough_tools(user):
         source_name = source_names.get(tool["source_id"])
         if source_name is None:
             # Source disabled or absent — skip silently, matches the
@@ -143,21 +142,20 @@ async def invoke_passthrough_tool(
     tool_id: str,
     body: InvokeRequest,
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ) -> InvokeResponse:
     """Forward a tool call to the upstream MCP source and return its content.
 
     RBAC: admin short-circuit; otherwise the caller must be in a group
     listed in ``tool_grants`` for this tool.
     """
-    tools_repo = ToolRegistryRepository(conn)
+    tools_repo = tool_registry_repo()
     tool = tools_repo.get(tool_id)
     if tool is None or tool.get("mode") != PASSTHROUGH or not tool.get("enabled", True):
         raise HTTPException(status_code=404, detail="passthrough tool not found")
 
-    caller_is_admin = is_user_admin(user["id"], conn)
+    caller_is_admin = is_user_admin(user["id"])
     if not caller_is_admin:
-        group_ids = list(_user_group_ids(user["id"], conn))
+        group_ids = list(_user_group_ids(user["id"]))
         if not tools_repo.is_granted_to_groups(tool_id, group_ids):
             raise HTTPException(
                 status_code=403,
@@ -180,7 +178,7 @@ async def invoke_passthrough_tool(
             headers={"Retry-After": str(int(exc.retry_after_seconds) + 1)},
         ) from exc
 
-    sources_repo = MCPSourceRepository(conn)
+    sources_repo = mcp_sources_repo()
     source = sources_repo.get(tool["source_id"])
     if source is None or not source.get("enabled", True):
         raise HTTPException(status_code=409, detail="upstream MCP source missing or disabled")

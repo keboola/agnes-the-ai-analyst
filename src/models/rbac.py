@@ -48,6 +48,8 @@ class User(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     onboarded: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("FALSE"))
     last_pull_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # v71: Slack identity binding (NULL until /agnes verification code redeemed).
+    slack_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class UserGroup(Base):

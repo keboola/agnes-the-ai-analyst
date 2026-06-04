@@ -44,6 +44,7 @@ RUN mkdir -p /opt/agnes-host && \
        /app/scripts/ops/agnes-state-applier.sh \
        /app/scripts/ops/agnes-state-applier.service \
        /app/scripts/ops/agnes-state-applier.timer \
+       /app/scripts/ops/agnes-state-applier-bootstrap.service \
        /app/scripts/tls-fetch.sh \
        /opt/agnes-host/ && \
     cp /app/docker-compose.yml /app/docker-compose.prod.yml \
@@ -57,6 +58,7 @@ RUN mkdir -p /opt/agnes-host && \
               /opt/agnes-host/tls-fetch.sh && \
     chmod 0644 /opt/agnes-host/agnes-state-applier.service \
               /opt/agnes-host/agnes-state-applier.timer \
+              /opt/agnes-host/agnes-state-applier-bootstrap.service \
               /opt/agnes-host/docker-compose.yml \
               /opt/agnes-host/docker-compose.prod.yml \
               /opt/agnes-host/docker-compose.host-mount.yml \

@@ -301,12 +301,12 @@ class SyncOrchestrator:
         # rebuild and refuse to silently overwrite a previously-claimed
         # name. The map is kept in system.duckdb (analytics.duckdb is
         # rebuilt fresh each time and would not survive).
-        from src.db import get_system_db
-        from src.repositories.view_ownership import ViewOwnershipRepository
-        sys_conn_for_views = get_system_db()
+        # Backend-aware: view ownership lives in system state (Postgres on a
+        # PG instance) — use the factory, not a raw DuckDB conn.
+        from src.repositories import view_ownership_repo
         view_repo = None
         try:
-            view_repo = ViewOwnershipRepository(sys_conn_for_views)
+            view_repo = view_ownership_repo()
             # Pre-scan every connector's _meta so we can run the reconcile
             # pass BEFORE claims are evaluated. This makes "owner stopped
             # publishing → name freed → another source can claim" work in
@@ -335,11 +335,6 @@ class SyncOrchestrator:
             )
             existing_owners = {}
             view_repo = None
-            try:
-                sys_conn_for_views.close()
-            except Exception:
-                pass
-            sys_conn_for_views = None
 
         # Track every (source, view) pair this rebuild successfully claims.
         claimed_pairs: List[tuple] = []
@@ -381,7 +376,7 @@ class SyncOrchestrator:
                     conn, ext_dir.name, str(db_file),
                     existing_owners=existing_owners,
                     claimed_pairs=claimed_pairs,
-                    view_repo=view_repo if sys_conn_for_views else None,
+                    view_repo=view_repo,
                 )
                 if tables:
                     result[ext_dir.name] = tables
@@ -399,11 +394,6 @@ class SyncOrchestrator:
         finally:
             conn.execute("CHECKPOINT")
             conn.close()
-            if sys_conn_for_views is not None:
-                try:
-                    sys_conn_for_views.close()
-                except Exception:
-                    pass
 
         # Atomic swap: replace analytics.duckdb with new version
         _atomic_swap_db(tmp_path, self._db_path)
@@ -560,30 +550,23 @@ class SyncOrchestrator:
                     # parquet_in_extracts` pins this contract.
                     registered_ids: Optional[set] = None
                     try:
-                        from src.db import get_system_db
-                        from src.repositories.table_registry import (
-                            TableRegistryRepository,
-                        )
-                        sys_conn = get_system_db()
-                        try:
-                            rows = TableRegistryRepository(sys_conn).list_all()
-                            # Match parquet stems against registry rows for
-                            # THIS source where query_mode='materialized'.
-                            # The parquet filename is keyed by registry
-                            # `name` (per `_run_materialized_pass` /
-                            # `materialize_query` convention).
-                            registered_ids = {
-                                str(r.get("name"))
-                                for r in rows
-                                if (r.get("source_type") or "") == source_name
-                                and (r.get("query_mode") or "") == "materialized"
-                                and r.get("name")
-                            }
-                        finally:
-                            try:
-                                sys_conn.close()
-                            except Exception:
-                                pass
+                        # Backend-aware: read the registry through the factory
+                        # (Postgres on a PG instance) — a raw DuckDB conn would
+                        # see an empty registry and skip materialized parquets.
+                        from src.repositories import table_registry_repo
+                        rows = table_registry_repo().list_all()
+                        # Match parquet stems against registry rows for
+                        # THIS source where query_mode='materialized'.
+                        # The parquet filename is keyed by registry
+                        # `name` (per `_run_materialized_pass` /
+                        # `materialize_query` convention).
+                        registered_ids = {
+                            str(r.get("name"))
+                            for r in rows
+                            if (r.get("source_type") or "") == source_name
+                            and (r.get("query_mode") or "") == "materialized"
+                            and r.get("name")
+                        }
                     except Exception as e:
                         # No registry access (test fixture, transient DB
                         # error) — skip the fallback rather than risk
@@ -804,30 +787,27 @@ class SyncOrchestrator:
         path while their on-disk content was unrelated.
         """
         try:
-            from src.db import get_system_db
-            from src.repositories.sync_state import SyncStateRepository
+            # Backend-aware: write sync_state through the factory (Postgres on
+            # a PG instance) so /dashboard's factory-backed reads see it.
+            from src.repositories import sync_state_repo
 
             extracts_dir = _get_extracts_dir()
-            sys_conn = get_system_db()
-            try:
-                repo = SyncStateRepository(sys_conn)
-                for table_name, rows, size_bytes, query_mode in meta_rows:
-                    pq_path = extracts_dir / source_name / "data" / f"{table_name}.parquet"
-                    file_hash = ""
-                    if pq_path.exists():
-                        h = hashlib.md5()
-                        with open(pq_path, "rb") as f:
-                            for chunk in iter(lambda: f.read(8192), b""):
-                                h.update(chunk)
-                        file_hash = h.hexdigest()
+            repo = sync_state_repo()
+            for table_name, rows, size_bytes, query_mode in meta_rows:
+                pq_path = extracts_dir / source_name / "data" / f"{table_name}.parquet"
+                file_hash = ""
+                if pq_path.exists():
+                    h = hashlib.md5()
+                    with open(pq_path, "rb") as f:
+                        for chunk in iter(lambda: f.read(8192), b""):
+                            h.update(chunk)
+                    file_hash = h.hexdigest()
 
-                    repo.update_sync(
-                        table_id=table_name,
-                        rows=rows or 0,
-                        file_size_bytes=size_bytes or 0,
-                        hash=file_hash,
-                    )
-            finally:
-                sys_conn.close()
+                repo.update_sync(
+                    table_id=table_name,
+                    rows=rows or 0,
+                    file_size_bytes=size_bytes or 0,
+                    hash=file_hash,
+                )
         except Exception as e:
             logger.warning("Could not update sync_state: %s", e)

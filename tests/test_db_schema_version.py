@@ -186,7 +186,11 @@ def test_schema_version_is_62():
     # v65 → v66: ``data_package_tools`` junction.
     # v67 → v68: cloud chat tables — chat_sessions, chat_messages,
     #            user_workdirs + two regular indexes.
-    assert SCHEMA_VERSION >= 66
+    # v68 → v69: mcp_sources.env — per-source non-secret env vars for
+    #            stdio MCP sources.
+    # v69 → v70: live co-drive foundation — chat_session_participants +
+    #            is_co_session/ephemeral/sender_email.
+    assert SCHEMA_VERSION >= 70
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
@@ -626,5 +630,96 @@ def test_v35_to_v36_reapplies_visibility_constraints(tmp_path):
     # DuckDB renders the default as a quoted literal — match either form.
     assert default_expr is not None, "visibility_status DEFAULT must be set"
     assert "pending" in str(default_expr).lower(), f"visibility_status DEFAULT must be 'pending'; got {default_expr!r}"
+
+    conn.close()
+
+
+def test_v70_copresence_columns_and_table(tmp_path):
+    """Fresh install reaches v70 with co-presence additions on chat tables
+    and the chat_session_participants table present."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    sess_cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'chat_sessions'"
+        ).fetchall()
+    }
+    assert "is_co_session" in sess_cols, f"is_co_session missing from chat_sessions: {sess_cols}"
+    assert "ephemeral" in sess_cols, f"ephemeral missing from chat_sessions: {sess_cols}"
+
+    msg_cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'chat_messages'"
+        ).fetchall()
+    }
+    assert "sender_email" in msg_cols, f"sender_email missing from chat_messages: {msg_cols}"
+
+    tables = {
+        r[0]
+        for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+        ).fetchall()
+    }
+    assert "chat_session_participants" in tables, f"chat_session_participants table missing: {tables}"
+
+    conn.close()
+
+
+def test_v69_to_v70_migration(tmp_path):
+    """A DB at v69 (post-MCP-env, pre-co-presence) upgrades cleanly to v70."""
+    from src.db import _v69_to_v70
+
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+
+    # Minimal v69 shape: chat_sessions + chat_messages without co-presence cols.
+    conn.execute(
+        "CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)"
+    )
+    conn.execute("INSERT INTO schema_version (version) VALUES (69)")
+    conn.execute("""
+        CREATE TABLE chat_sessions (
+            id VARCHAR PRIMARY KEY,
+            user_email VARCHAR NOT NULL,
+            surface VARCHAR NOT NULL,
+            started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            archived BOOLEAN NOT NULL DEFAULT FALSE
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE chat_messages (
+            id VARCHAR PRIMARY KEY,
+            session_id VARCHAR NOT NULL,
+            role VARCHAR NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    _v69_to_v70(conn)
+
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 70
+
+    sess_cols = {
+        r[1]
+        for r in conn.execute("PRAGMA table_info('chat_sessions')").fetchall()
+    }
+    assert "is_co_session" in sess_cols
+    assert "ephemeral" in sess_cols
+
+    msg_cols = {
+        r[1]
+        for r in conn.execute("PRAGMA table_info('chat_messages')").fetchall()
+    }
+    assert "sender_email" in msg_cols
+
+    tables = {r[0] for r in conn.execute("SHOW TABLES").fetchall()}
+    assert "chat_session_participants" in tables
 
     conn.close()

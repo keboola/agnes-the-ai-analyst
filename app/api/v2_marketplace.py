@@ -15,15 +15,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import duckdb
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.auth.access import _user_group_ids, is_user_admin
-from app.auth.dependencies import _get_db, get_current_user
+from app.auth.dependencies import get_current_user
 from app.utils import get_marketplaces_dir
 from src.marketplace_listing import _FRONTMATTER_RE, _parse_frontmatter
-from src.repositories.marketplace_plugins import MarketplacePluginsRepository
+from src.repositories import marketplace_plugins_repo
 
 router = APIRouter(prefix="/api/v2/marketplace", tags=["marketplace-v2"])
 
@@ -79,15 +78,19 @@ def _skills_for_plugin(
     return out
 
 
-def _accessible_plugins(
-    conn: duckdb.DuckDBPyConnection,
-    user: Dict[str, Any],
-) -> List[Dict[str, Any]]:
-    """Return all marketplace_plugins rows the caller can access."""
-    if is_user_admin(user["id"], conn):
-        return MarketplacePluginsRepository(conn).list_all()
-    group_ids = _user_group_ids(user["id"], conn) or set()
-    items, _ = MarketplacePluginsRepository(conn).list_with_filters(
+def _accessible_plugins(user: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return all marketplace_plugins rows the caller can access.
+
+    Backend-aware throughout: the plugin read goes through
+    ``marketplace_plugins_repo()`` and the RBAC checks call ``is_user_admin`` /
+    ``_user_group_ids`` WITHOUT a connection, so they fall back to the factory.
+    Passing a raw DuckDB conn here read an empty plugin set + wrong-backend
+    group membership on a Postgres instance.
+    """
+    if is_user_admin(user["id"]):
+        return marketplace_plugins_repo().list_all()
+    group_ids = _user_group_ids(user["id"]) or set()
+    items, _ = marketplace_plugins_repo().list_with_filters(
         group_ids=group_ids,
         limit=10_000,
     )
@@ -97,7 +100,6 @@ def _accessible_plugins(
 @router.get("/skills", response_model=SkillsResponse)
 async def list_skills(
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Return all skills from accessible marketplace plugins.
 
@@ -106,7 +108,7 @@ async def list_skills(
     SKILL.md body (frontmatter stripped) so MCP clients can load it directly
     into Claude's context without a follow-up request.
     """
-    plugins = _accessible_plugins(conn, user)
+    plugins = _accessible_plugins(user)
     skills: List[SkillEntry] = []
     for plugin in plugins:
         skills.extend(

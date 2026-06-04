@@ -24,6 +24,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.secrets_vault import vault_key_configured
 from src.repositories import (
     sync_state_repo,
 )
@@ -336,7 +337,7 @@ async def health_check():
     status = "ok"
     if schema_check["db_schema"] != "ok":
         status = "unhealthy"
-    return {"status": status, **schema_check}
+    return {"status": status, "vault_key_configured": vault_key_configured(), **schema_check}
 
 
 @router.get("/api/health/detailed")

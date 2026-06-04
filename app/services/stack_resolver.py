@@ -29,7 +29,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-import duckdb
 from fastapi import HTTPException
 
 from app.resource_types import ResourceType
@@ -85,19 +84,87 @@ class ResourceEntry:
 
 class StackResolver:
     """Composes ``resource_grants`` ∪ ``user_stack_subscriptions`` →
-    effective stack per resource type."""
+    effective stack per resource type.
 
-    def __init__(self, conn: duckdb.DuckDBPyConnection):
+    Backend-aware: every read/write routes through the repository factory
+    (``src.repositories``), so the resolver hits whichever backend
+    (DuckDB or Postgres) the process is configured for.
+
+    The legacy ``conn`` argument is retained as a *test-isolation escape
+    hatch*: when the active backend is DuckDB **and** a DuckDB connection
+    is supplied, the resolver reads/writes through that connection (so a
+    unit test seeding an in-memory ``:memory:`` DuckDB sees its own data).
+    When the backend is Postgres the ``conn`` is ignored and the factory
+    routes to PG. This mirrors the same pattern in ``app.auth.access``
+    (``_user_group_ids`` / ``can_access``).
+    """
+
+    def __init__(self, conn: Any = None):
         self.conn = conn
+
+    # -- Repo accessors (honor the conn escape hatch) ----------------------
+
+    def _use_local_conn(self) -> bool:
+        """True iff we should read/write through ``self.conn`` directly.
+
+        Only when a connection was supplied AND the active backend is
+        DuckDB — otherwise the factory owns backend selection.
+        """
+        if self.conn is None:
+            return False
+        from src.repositories import use_pg
+        return not use_pg()
+
+    def _members_repo(self) -> Any:
+        if self._use_local_conn():
+            from src.repositories.user_group_members import (
+                UserGroupMembersRepository,
+            )
+            return UserGroupMembersRepository(self.conn)
+        from src.repositories import user_group_members_repo
+        return user_group_members_repo()
+
+    def _grants_repo(self) -> Any:
+        if self._use_local_conn():
+            from src.repositories.resource_grants import ResourceGrantsRepository
+            return ResourceGrantsRepository(self.conn)
+        from src.repositories import resource_grants_repo
+        return resource_grants_repo()
+
+    def _subscriptions_repo(self) -> Any:
+        if self._use_local_conn():
+            from src.repositories.user_stack_subscriptions import (
+                UserStackSubscriptionsRepository,
+            )
+            return UserStackSubscriptionsRepository(self.conn)
+        from src.repositories import user_stack_subscriptions_repo
+        return user_stack_subscriptions_repo()
+
+    def _groups_repo(self) -> Any:
+        if self._use_local_conn():
+            from src.repositories.user_groups import UserGroupsRepository
+            return UserGroupsRepository(self.conn)
+        from src.repositories import user_groups_repo
+        return user_groups_repo()
+
+    def _data_packages_repo(self) -> Any:
+        if self._use_local_conn():
+            from src.repositories.data_packages import DataPackagesRepository
+            return DataPackagesRepository(self.conn)
+        from src.repositories import data_packages_repo
+        return data_packages_repo()
+
+    def _memory_domains_repo(self) -> Any:
+        if self._use_local_conn():
+            from src.repositories.memory_domains import MemoryDomainsRepository
+            return MemoryDomainsRepository(self.conn)
+        from src.repositories import memory_domains_repo
+        return memory_domains_repo()
 
     # -- Group + grant lookups (private) -----------------------------------
 
     def _user_group_ids(self, user_id: str) -> List[str]:
-        rows = self.conn.execute(
-            "SELECT group_id FROM user_group_members WHERE user_id = ?",
-            [user_id],
-        ).fetchall()
-        return [r[0] for r in rows]
+        return self._members_repo().list_groups_for_user(user_id)
 
     def _grants(
         self, group_ids: List[str], resource_type: ResourceType
@@ -109,18 +176,15 @@ class StackResolver:
         """
         if not group_ids:
             return set(), set()
-        placeholders = ",".join(["?"] * len(group_ids))
-        rows = self.conn.execute(
-            f"""
-            SELECT resource_id, requirement
-              FROM resource_grants
-             WHERE group_id IN ({placeholders})
-               AND resource_type = ?
-            """,
-            [*group_ids, str(resource_type)],
-        ).fetchall()
-        required_ids = {r[0] for r in rows if r[1] == "required"}
-        available_ids = {r[0] for r in rows if r[1] == "available"}
+        rows = self._grants_repo().list_for_groups(
+            list(group_ids), str(resource_type)
+        )
+        required_ids = {
+            r["resource_id"] for r in rows if r.get("requirement") == "required"
+        }
+        available_ids = {
+            r["resource_id"] for r in rows if r.get("requirement") == "available"
+        }
         # Per Section 4.3 — if an id appears in both buckets across grants,
         # the required one wins. Remove it from available to keep the
         # union math clean (subscribed_ids ∩ available_ids).
@@ -130,24 +194,36 @@ class StackResolver:
     def _subscribed_ids(
         self, user_id: str, resource_type: ResourceType
     ) -> set:
-        rows = self.conn.execute(
-            "SELECT resource_id FROM user_stack_subscriptions "
-            "WHERE user_id = ? AND resource_type = ?",
-            [user_id, str(resource_type)],
-        ).fetchall()
-        return {r[0] for r in rows}
+        return set(
+            self._subscriptions_repo().list_for_user(
+                user_id, str(resource_type)
+            )
+        )
 
     # -- Public API --------------------------------------------------------
 
     def stack(
-        self, user_id: str, resource_type: ResourceType
+        self, user_id_or_principal, resource_type: ResourceType
     ) -> List[ResourceEntry]:
         """The user's effective stack — required ∪ (subscribed ∩ available)
         for regular users; admin (god-mode) gets ALL their subscriptions
         regardless of group grants, because admins legitimately POST
         /api/stack/subscribe without first granting themselves a group.
         Filtering admin's subscriptions through the available-grant join
-        was the "Add to stack worked but My Stack stays empty" bug."""
+        was the "Add to stack worked but My Stack stays empty" bug.
+
+        Also accepts a ``SessionPrincipal``: returns only the resources whose
+        ids are in the co-session's intersection (no admin path, no subscription
+        lookup). Every returned entry is marked ``in_stack=True``.
+        """
+        from app.auth.session_principal import SessionPrincipal
+        if isinstance(user_id_or_principal, SessionPrincipal):
+            ids = user_id_or_principal.intersection.get(resource_type.value, frozenset())
+            entries = self._fetch_entries(resource_type, set(ids), set(ids))
+            for e in entries:
+                e.in_stack = True
+            return entries
+        user_id = user_id_or_principal
         groups = self._user_group_ids(user_id)
         required_ids, available_ids = self._grants(groups, resource_type)
         raw_subscribed = self._subscribed_ids(user_id, resource_type)
@@ -199,17 +275,11 @@ class StackResolver:
         # window but a /catalog or /memory render mustn't surface them.
         if resource_type == ResourceType.DATA_PACKAGE:
             all_ids = {
-                r[0]
-                for r in self.conn.execute(
-                    "SELECT id FROM data_packages WHERE deleted_at IS NULL"
-                ).fetchall()
+                r["id"] for r in self._data_packages_repo().list(limit=100000)
             }
         elif resource_type == ResourceType.MEMORY_DOMAIN:
             all_ids = {
-                r[0]
-                for r in self.conn.execute(
-                    "SELECT id FROM memory_domains WHERE deleted_at IS NULL"
-                ).fetchall()
+                r["id"] for r in self._memory_domains_repo().list(limit=100000)
             }
         else:
             raise ValueError(
@@ -258,11 +328,8 @@ class StackResolver:
         """
         if self.is_required(user_id, resource_type, resource_id):
             raise HTTPException(status_code=400, detail="already_required")
-        self.conn.execute(
-            "INSERT INTO user_stack_subscriptions"
-            "(user_id, resource_type, resource_id) "
-            "VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-            [user_id, str(resource_type), resource_id],
+        self._subscriptions_repo().subscribe(
+            user_id, str(resource_type), resource_id
         )
 
     def remove_from_stack(
@@ -280,10 +347,8 @@ class StackResolver:
             raise HTTPException(
                 status_code=400, detail="cannot_remove_required"
             )
-        self.conn.execute(
-            "DELETE FROM user_stack_subscriptions "
-            "WHERE user_id = ? AND resource_type = ? AND resource_id = ?",
-            [user_id, str(resource_type), resource_id],
+        self._subscriptions_repo().unsubscribe(
+            user_id, str(resource_type), resource_id
         )
 
     # -- Memory item-level resolver (Section 4.4) --------------------------
@@ -310,21 +375,18 @@ class StackResolver:
         groups = self._user_group_ids(user_id)
         if not groups:
             return item_is_required
-        placeholders = ",".join(["?"] * len(groups))
-        rows = self.conn.execute(
-            f"""
-            SELECT requirement FROM resource_grants
-             WHERE group_id IN ({placeholders})
-               AND resource_type = 'memory_item'
-               AND resource_id   = ?
-            """,
-            [*groups, item_id],
-        ).fetchall()
+        rows = [
+            r
+            for r in self._grants_repo().list_for_groups(
+                list(groups), "memory_item"
+            )
+            if r["resource_id"] == item_id
+        ]
         if not rows:
             return item_is_required
         # Per-group grants exist → they override the global flag.
         # Within the per-group layer, required wins over available.
-        requirements = {r[0] for r in rows}
+        requirements = {r.get("requirement") for r in rows}
         return "required" in requirements
 
     # -- Domain entry fetch (private) --------------------------------------
@@ -337,44 +399,25 @@ class StackResolver:
     ) -> List[ResourceEntry]:
         if not ids:
             return []
-        placeholders = ",".join(["?"] * len(ids))
-        # v51: pull status + category. Memory Domains have status but no
-        # category; we SELECT NULL for category in that branch so the
-        # downstream ResourceEntry constructor sees the same 8-tuple shape.
-        # v56: data_packages carry extended-content fields surfaced on
-        # the Browse-grid card (owner_name, tags) plus the badge inputs
-        # (created_by + created_at). Memory domains stay v51-shaped —
-        # the spec only added content to data packages — so we SELECT
-        # NULLs for the v56 columns to keep the result tuple shape
-        # stable. Resolver-level badge derivation matches the API's
-        # _badges_for() heuristic: 'curated' iff creator is in Admin,
-        # 'new' iff created_at < 30 days ago.
-        # Soft-deleted entries (``deleted_at IS NOT NULL``) are excluded
-        # — a grant whose target was deleted via /admin/* mustn't pull
-        # the row back into /catalog or /memory. The Undo flow can still
-        # restore it because the row stays in the DB.
+        # v51: status + category. Memory Domains have status but no category
+        # (the repo dict simply lacks the key → None). v56: data_packages
+        # carry extended content (owner_name, tags) plus badge inputs
+        # (created_by + created_at); memory domains stay v51-shaped.
+        # Resolver-level badge derivation matches the API's _badges_for()
+        # heuristic: 'curated' iff creator is in Admin, 'new' iff created_at
+        # < 30 days ago. Soft-deleted entries are already excluded by the
+        # repos' ``list()`` (``deleted_at IS NULL``), so a grant whose
+        # target was deleted via /admin/* doesn't pull the row back.
         if resource_type == ResourceType.DATA_PACKAGE:
-            rows = self.conn.execute(
-                f"""SELECT id, name, description, icon, color, cover_image_url,
-                           status, category,
-                           owner_name, owner_team, tags,
-                           created_by, created_at
-                       FROM data_packages
-                       WHERE id IN ({placeholders}) AND deleted_at IS NULL
-                       ORDER BY name""",
-                list(ids),
-            ).fetchall()
+            rows = [
+                r for r in self._data_packages_repo().list(limit=100000)
+                if r["id"] in ids
+            ]
         elif resource_type == ResourceType.MEMORY_DOMAIN:
-            rows = self.conn.execute(
-                f"""SELECT id, name, description, icon, color, cover_image_url,
-                           status, NULL AS category,
-                           NULL AS owner_name, NULL AS owner_team, NULL AS tags,
-                           created_by, created_at
-                       FROM memory_domains
-                       WHERE id IN ({placeholders}) AND deleted_at IS NULL
-                       ORDER BY name""",
-                list(ids),
-            ).fetchall()
+            rows = [
+                r for r in self._memory_domains_repo().list(limit=100000)
+                if r["id"] in ids
+            ]
         else:
             raise ValueError(
                 f"StackResolver does not support resource_type={resource_type!r}"
@@ -383,27 +426,12 @@ class StackResolver:
         from datetime import datetime, timedelta, timezone as _tz
         import json as _json
 
-        # Pre-load Admin group's member emails + ids so badge derivation
-        # is one SELECT per fetch, not one per row.
-        admin_keys: set[str] = set()
-        try:
-            for row in self.conn.execute(
-                "SELECT u.email, u.id FROM user_group_members ugm "
-                "JOIN user_groups ug ON ug.id = ugm.group_id "
-                "JOIN users u ON u.id = ugm.user_id "
-                "WHERE ug.name = 'Admin'"
-            ).fetchall():
-                if row[0]:
-                    admin_keys.add(row[0])
-                if row[1]:
-                    admin_keys.add(row[1])
-        except Exception:
-            pass  # badge derivation is best-effort; empty set → no curated badges
+        admin_keys = self._admin_keys()
 
         now = datetime.now(_tz.utc)
         entries: List[ResourceEntry] = []
         for r in rows:
-            tags_raw = r[10]
+            tags_raw = r.get("tags")
             if isinstance(tags_raw, str) and tags_raw:
                 try:
                     tags_list = _json.loads(tags_raw)
@@ -417,25 +445,55 @@ class StackResolver:
                 tags_list = []
 
             badges: List[str] = []
-            if r[11] and r[11] in admin_keys:
+            created_by = r.get("created_by")
+            if created_by and created_by in admin_keys:
                 badges.append("curated")
-            created_at = r[12]
+            created_at = r.get("created_at")
             if isinstance(created_at, datetime):
                 ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=_tz.utc)
                 if (now - ts) < timedelta(days=30):
                     badges.append("new")
 
+            rid = r["id"]
             entries.append(ResourceEntry(
-                id=r[0], name=r[1], description=r[2], icon=r[3], color=r[4],
-                cover_image_url=r[5],
-                status=r[6] or "prod",
-                category=r[7],
-                owner_name=r[8],
-                owner_team=r[9],
+                id=rid,
+                name=r.get("name"),
+                description=r.get("description"),
+                icon=r.get("icon"),
+                color=r.get("color"),
+                cover_image_url=r.get("cover_image_url"),
+                status=r.get("status") or "prod",
+                category=r.get("category"),
+                owner_name=r.get("owner_name"),
+                owner_team=r.get("owner_team"),
                 tags=tags_list,
                 badges=badges,
                 requirement=(
-                    "required" if r[0] in required_ids else "available"
+                    "required" if rid in required_ids else "available"
                 ),
             ))
+        # The repos return name-ordered rows already; keep that order.
         return entries
+
+    def _admin_keys(self) -> set:
+        """Admin group's member emails + ids, used for the 'curated' badge.
+
+        Best-effort: returns an empty set on any lookup failure so badge
+        derivation never breaks an entry fetch.
+        """
+        keys: set = set()
+        try:
+            from src.db import SYSTEM_ADMIN_GROUP
+            admin = self._groups_repo().get_by_name(SYSTEM_ADMIN_GROUP)
+            if not admin:
+                return keys
+            for member in self._members_repo().list_members_for_group(
+                admin["id"]
+            ):
+                if member.get("email"):
+                    keys.add(member["email"])
+                if member.get("id"):
+                    keys.add(member["id"])
+        except Exception:
+            pass
+        return keys

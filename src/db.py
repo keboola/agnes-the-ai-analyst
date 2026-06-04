@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 68
+SCHEMA_VERSION = 71
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -82,7 +82,14 @@ CREATE TABLE IF NOT EXISTS users (
     -- so `agnes pull` (and the SessionStart hook that wraps it) imprints
     -- the user's last sync time. Powers the /home status frame's "Last
     -- sync" card.
-    last_pull_at TIMESTAMP
+    last_pull_at TIMESTAMP,
+    -- v71: Slack identity binding. NULL until the analyst redeems a
+    -- /agnes verification code; maps a Slack user_id to this account so the
+    -- Slack bot can resolve who is talking. Formalized in the schema (was a
+    -- lazy ALTER in services/slack_bot/binding.py) so it lives in the active
+    -- state backend — the binding broke on Postgres when it only existed in
+    -- the DuckDB system file.
+    slack_user_id VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS sync_state (
@@ -1130,7 +1137,9 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     -- reads these columns directly will see (NULL, 0) for every row.
     last_message_at  TIMESTAMP,
     message_count    INTEGER NOT NULL DEFAULT 0,
-    archived         BOOLEAN NOT NULL DEFAULT FALSE
+    archived         BOOLEAN NOT NULL DEFAULT FALSE,
+    is_co_session    BOOLEAN NOT NULL DEFAULT FALSE,
+    ephemeral        BOOLEAN NOT NULL DEFAULT FALSE
 );
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_user
     ON chat_sessions(user_email, last_message_at);
@@ -1144,10 +1153,24 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     tokens_in   INTEGER,
     tokens_out  INTEGER,
     model       VARCHAR,
+    sender_email VARCHAR,
     created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session
     ON chat_messages(session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS chat_session_participants (
+    id          VARCHAR PRIMARY KEY,
+    session_id  VARCHAR NOT NULL REFERENCES chat_sessions(id),
+    user_email  VARCHAR NOT NULL,
+    user_id     VARCHAR NOT NULL,
+    role        VARCHAR NOT NULL,
+    joined_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    left_at     TIMESTAMP,
+    UNIQUE (session_id, user_email)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_session_participants_user
+    ON chat_session_participants(user_email, session_id);
 
 CREATE TABLE IF NOT EXISTS user_workdirs (
     user_email             VARCHAR PRIMARY KEY,
@@ -4781,6 +4804,104 @@ def _v67_to_v68(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 68")
 
 
+def _v68_to_v69(conn: duckdb.DuckDBPyConnection) -> None:
+    """v69: per-source non-secret env vars for stdio MCP sources.
+
+    Adds ``mcp_sources.env`` — a JSON object of ``{VAR: value}`` passed to
+    the spawned stdio subprocess (the ``auth_secret_env`` secret overlays
+    it). NULL on existing rows preserves the prior single-secret behavior.
+    """
+    conn.execute(
+        "ALTER TABLE mcp_sources ADD COLUMN IF NOT EXISTS env VARCHAR"
+    )
+    conn.execute("UPDATE schema_version SET version = 69")
+
+
+def _v69_to_v70(conn: duckdb.DuckDBPyConnection) -> None:
+    """v70: live co-drive foundation — co-session flags + participants table.
+
+    Additive-only and forward-safe on populated prod DBs:
+    - chat_sessions.is_co_session / ephemeral (BOOLEAN NOT NULL DEFAULT FALSE)
+    - chat_messages.sender_email (VARCHAR, nullable; backfilled to the
+      session owner for existing role='user' rows — every pre-v70 session
+      is single-principal)
+    - chat_session_participants table + index
+
+    Each ADD COLUMN is PRAGMA-guarded because this migration may re-run on a
+    partially-migrated DB (the ladder is idempotent). DuckDB has no
+    ON DELETE CASCADE, so ChatRepository.hard_delete_user_sessions deletes
+    participant rows by hand (see Task 4).
+    """
+    sess_cols = {
+        r[1]
+        for r in conn.execute("PRAGMA table_info('chat_sessions')").fetchall()
+    }
+    # These are added NULLABLE (DEFAULT FALSE), even though _SYSTEM_SCHEMA
+    # (fresh install) and the Alembic PG migration declare them NOT NULL.
+    # DuckDB cannot promote them: `ALTER COLUMN ... SET NOT NULL` on
+    # chat_sessions raises DependencyException because the table is referenced
+    # by foreign keys (chat_messages, chat_session_participants); and the
+    # combined `ADD COLUMN ... NOT NULL DEFAULT` form is unsupported too. The
+    # DEFAULT FALSE materializes a concrete False for every existing row and
+    # the backfill below makes that explicit, so NO NULL is ever observed and
+    # every reader coerces via bool() — the only difference from PG/fresh is
+    # nullability *metadata*, not behavior. Closing it would require a full
+    # table rebuild (drop/recreate FKs), which is not worth the risk.
+    if "is_co_session" not in sess_cols:
+        conn.execute("ALTER TABLE chat_sessions ADD COLUMN is_co_session BOOLEAN DEFAULT FALSE")
+        conn.execute("UPDATE chat_sessions SET is_co_session = FALSE WHERE is_co_session IS NULL")
+    if "ephemeral" not in sess_cols:
+        conn.execute("ALTER TABLE chat_sessions ADD COLUMN ephemeral BOOLEAN DEFAULT FALSE")
+        conn.execute("UPDATE chat_sessions SET ephemeral = FALSE WHERE ephemeral IS NULL")
+    msg_cols = {
+        r[1]
+        for r in conn.execute("PRAGMA table_info('chat_messages')").fetchall()
+    }
+    if "sender_email" not in msg_cols:
+        conn.execute("ALTER TABLE chat_messages ADD COLUMN sender_email VARCHAR")
+        # Backfill: pre-v70 user turns are owned by the session's user_email.
+        conn.execute(
+            "UPDATE chat_messages SET sender_email = ("
+            "  SELECT s.user_email FROM chat_sessions s WHERE s.id = chat_messages.session_id"
+            ") WHERE role = 'user' AND sender_email IS NULL"
+        )
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_session_participants (
+            id          VARCHAR PRIMARY KEY,
+            session_id  VARCHAR NOT NULL REFERENCES chat_sessions(id),
+            user_email  VARCHAR NOT NULL,
+            user_id     VARCHAR NOT NULL,
+            role        VARCHAR NOT NULL,
+            joined_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            left_at     TIMESTAMP,
+            UNIQUE (session_id, user_email)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_session_participants_user "
+        "ON chat_session_participants(user_email, session_id)"
+    )
+    conn.execute("UPDATE schema_version SET version = 70")
+
+
+def _v70_to_v71(conn: duckdb.DuckDBPyConnection) -> None:
+    """v71: formalize ``users.slack_user_id`` into the schema.
+
+    Previously this column was lazily ``ALTER``-ed in
+    ``services/slack_bot/binding.py`` only when the Slack bot ran — so it
+    existed only in the DuckDB system file and never on a Postgres instance,
+    which broke Slack identity binding on Postgres (the binding was written to
+    a DuckDB ``users`` table the factory-backed reads never consult). Adding it
+    to the schema lets the binding route through ``users_repo()`` on either
+    backend. Additive + nullable; idempotent (the lazy ALTER may already have
+    added it on existing DuckDB instances).
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "slack_user_id" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN slack_user_id VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 71")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -5094,6 +5215,16 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # user_workdirs + indexes. _SYSTEM_SCHEMA already creates them on
             # fresh installs via CREATE TABLE/INDEX IF NOT EXISTS (no-op here).
             _v67_to_v68(conn)
+            # v68→v69: mcp_sources.env — per-source non-secret env vars for
+            # the spawned stdio subprocess. ADD COLUMN IF NOT EXISTS (no-op here).
+            _v68_to_v69(conn)
+            # v69→v70: live co-drive foundation — co-session flags +
+            # chat_session_participants. Additive; _SYSTEM_SCHEMA builds it
+            # on fresh installs (no-op here).
+            _v69_to_v70(conn)
+            # v70→v71: formalize users.slack_user_id. _SYSTEM_SCHEMA already
+            # creates it on fresh installs (no-op here).
+            _v70_to_v71(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5283,6 +5414,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v66_to_v67(conn)
             if current < 68:
                 _v67_to_v68(conn)
+            if current < 69:
+                _v68_to_v69(conn)
+            if current < 70:
+                _v69_to_v70(conn)
+            if current < 71:
+                _v70_to_v71(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

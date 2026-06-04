@@ -45,7 +45,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.db import _ensure_schema
+from src.db import _ensure_schema, get_system_db
 from app.api.slack import router as slack_router
 from app.api.chat import router as chat_router
 from app.auth.dependencies import get_current_user
@@ -79,8 +79,10 @@ def _build_app(
     app.include_router(slack_router)
     app.include_router(chat_router)
 
-    # Bog-standard DuckDB with the schema migration applied + one user row.
-    conn = duckdb.connect(":memory:")
+    # Shared system DuckDB (get_system_db is patched to a per-test in-memory
+    # conn by the _shared_e2e_db autouse fixture) so the factory-routed Slack
+    # binding (users_repo) and this test's inspection see the same rows.
+    conn = get_system_db()
     _ensure_schema(conn)
     conn.execute(
         "INSERT INTO users(id, email, name) VALUES (?, ?, ?)",
@@ -180,6 +182,23 @@ def _slack_headers(body_bytes: bytes, secret: str) -> dict[str, str]:
     }
 
 
+@pytest.fixture(autouse=True)
+def _shared_e2e_db(monkeypatch):
+    """Slack binding now reads/writes through the repo factory; point
+    get_system_db() and the factory at one shared in-memory DuckDB so the
+    bind persists where this test inspects it."""
+    shared = duckdb.connect(":memory:")
+    _ensure_schema(shared)
+    # This module imported get_system_db at module load, so patch that binding
+    # (not just src.db's) plus the repo factory's.
+    monkeypatch.setattr(
+        "tests.e2e.test_slack_roundtrip.get_system_db", lambda: shared, raising=False
+    )
+    monkeypatch.setattr("src.db.get_system_db", lambda: shared)
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: shared)
+    yield shared
+
+
 @pytest.fixture
 def slack_app(monkeypatch):
     """Yield (TestClient, conn, state, captured_slack_calls).
@@ -201,6 +220,12 @@ def slack_app(monkeypatch):
     from services.slack_bot import sink as sink_mod
     monkeypatch.setattr(events_mod, "send_thread_reply", fake_send)
     monkeypatch.setattr(sink_mod, "send_thread_reply", fake_send)
+    # With chat_id wired in the DM handler, the sink uses post_thread_reply_with_blocks
+    # for the first assistant turn. Capture those too so assertions still hold.
+    async def fake_post_blocks(channel: str, thread_ts: str, text: str, blocks: list) -> str:
+        captured.append((channel, thread_ts, text))
+        return "msg-fake"
+    monkeypatch.setattr(sink_mod, "post_thread_reply_with_blocks", fake_post_blocks)
     # Chat is a default-deny RBAC resource; the bound-DM branch checks the
     # user's grant before spawning. This roundtrip exercises the bind →
     # bound-reply plumbing, not the gate, so grant access. (Default-deny is
@@ -209,9 +234,13 @@ def slack_app(monkeypatch):
     monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
 
     app, conn, state = _build_app(captured_slack_calls=captured)
-    client = TestClient(app)
-    yield client, conn, state, captured
-    client.close()
+    # Use TestClient as a context manager so it starts a persistent anyio
+    # BlockingPortal (background event loop). Without `__enter__`, background
+    # asyncio tasks created by _schedule() have no loop to run on and are
+    # silently dropped — which is fine for request-synchronous code but
+    # breaks now that the endpoint is ack-then-async.
+    with TestClient(app) as client:
+        yield client, conn, state, captured
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +268,12 @@ def test_f10_slack_dm_verification_bind_then_bound_reply(slack_app):
     headers = _slack_headers(body, _TEST_SIGNING_SECRET)
     r = client.post("/api/slack/events", data=body, headers=headers)
     assert r.status_code == 200, r.text
+
+    # Ack-then-async: dispatch runs as a background task; poll briefly.
+    for _ in range(20):
+        if captured:
+            break
+        time.sleep(0.05)
 
     # Should have captured exactly one outbound reply with a 6-digit code.
     assert len(captured) == 1, captured
@@ -281,11 +316,16 @@ def test_f10_slack_dm_verification_bind_then_bound_reply(slack_app):
     r = client.post("/api/slack/events", data=body, headers=headers)
     assert r.status_code == 200, r.text
 
-    # The bound branch waits 100 ms after scheduling attach() to let
-    # the pump set up before forwarding the user message. TestClient
-    # is synchronous and the slack handler awaits its own asyncio
-    # sleep, so by the time we get here both attach() and
-    # send_user_message() should have fired.
+    # Ack-then-async: the endpoint returns 200 immediately; the dispatch
+    # (dispatch_event → _handle_dm) runs as a background asyncio task in
+    # the TestClient's live event-loop thread. _handle_dm contains an
+    # asyncio.sleep(0.1) so the task isn't done the instant we resume here.
+    # Poll briefly to let the background loop drain before asserting.
+    for _ in range(40):
+        if state.sent:
+            break
+        time.sleep(0.05)
+
     assert len(state.created) == 1
     assert state.created[0].user_email == _TEST_USER_EMAIL
     assert state.created[0].surface == Surface.SLACK_DM
@@ -332,3 +372,17 @@ def test_f10_invalid_signature_is_rejected(slack_app):
     headers = _slack_headers(body, "wrong-secret")
     r = client.post("/api/slack/events", data=body, headers=headers)
     assert r.status_code == 401
+
+
+def test_bind_brute_force_returns_429(slack_app):
+    """POST /api/slack/bind returns 429 (not 500) once the per-caller redeem
+    throttle is hit — the BindingThrottled exception is mapped, not leaked."""
+    client, _conn, _state, _captured = slack_app
+    # _MAX_REDEEM_ATTEMPTS wrong guesses → 400 each (invalid code).
+    from services.slack_bot.binding import _MAX_REDEEM_ATTEMPTS
+    for _ in range(_MAX_REDEEM_ATTEMPTS):
+        r = client.post("/api/slack/bind", json={"code": "000000"})
+        assert r.status_code == 400, r.text
+    # Next attempt is throttled → 429, not 500.
+    r = client.post("/api/slack/bind", json={"code": "000000"})
+    assert r.status_code == 429, r.text
