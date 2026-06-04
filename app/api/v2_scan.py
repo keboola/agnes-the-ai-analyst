@@ -387,13 +387,15 @@ def run_scan(
 
     with quota.acquire(user=user_id):
         if source_type != "bigquery":
-            # Local source: query parquet directly. `source_type` extracted above
-            # because `row["source_type"]` could be NULL for legacy registry rows
-            # and `Path(...) / None` raises TypeError.
-            from app.utils import get_data_dir
-            parquet = (
-                get_data_dir() / "extracts" / source_type / "data" / f"{req.table_id}.parquet"
-            )
+            # Local source: query parquet directly. Resolve by source-name-agnostic
+            # lookup — the extract directory is not necessarily the source_type
+            # (e.g. the bundled `demo` extract registers tables as 'local' but
+            # lives under extracts/demo/), and `source_type` may be NULL/empty for
+            # legacy rows. resolve_local_parquet handles both.
+            from app.utils import resolve_local_parquet
+            parquet = resolve_local_parquet(req.table_id, source_type)
+            if parquet is None:
+                raise FileNotFoundError(req.table_id)
             local = _open_duckdb(":memory:")
             try:
                 projection = ", ".join(f'"{c}"' for c in req.select) if req.select else "*"

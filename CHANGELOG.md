@@ -10,6 +10,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **`agnes schema` / `agnes describe` / sample / scan 500'd for any extract
+  whose directory name differs from its `source_type`.** The v2 endpoints
+  (`/api/v2/schema`, `/api/v2/sample`, `/api/v2/scan`, and the catalog
+  size-hint) built the local-parquet path as
+  `extracts/<source_type>/data/<id>.parquet`, assuming the extract directory is
+  named after the registry `source_type`. That holds for the built-in
+  `keboola`/`bigquery` connectors but not for a generic `extract.duckdb`: e.g.
+  the bundled demo extract registers its tables with `source_type='local'`
+  while its parquets live under `extracts/demo/`, so the lookup hit a
+  nonexistent path and `read_parquet` raised → HTTP 500. Path resolution now
+  goes through `app.utils.resolve_local_parquet`, a source-name-agnostic lookup
+  (the same `rglob("data/<id>.parquet")` strategy `catalog.py`/`data.py`
+  already use), with the `source_type` directory kept as a fast path. A missing
+  parquet now returns a clean 404 instead of 500.
+
 ## [0.65.5] — 2026-06-04
 
 ### Fixed
