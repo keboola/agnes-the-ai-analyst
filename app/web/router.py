@@ -560,11 +560,16 @@ async def index(request: Request, user: Optional[dict] = Depends(get_optional_us
 
 
 @router.get("/first-time-setup", response_class=HTMLResponse)
-async def setup_wizard(request: Request, conn: duckdb.DuckDBPyConnection = Depends(_get_db)):
-    """First-time setup wizard. Redirects to login if users already exist."""
+async def setup_wizard(request: Request):
+    """First-time setup wizard. Redirects to login if users already exist.
+
+    Counts users through the repo factory, not a raw ``_get_db`` connection:
+    on a Postgres instance the users live in PG, so a raw DuckDB count returned
+    0 and the wizard stayed open forever even on a fully-provisioned instance.
+    """
     try:
-        user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        if user_count > 0:
+        from src.repositories import users_repo
+        if users_repo().count_all() > 0:
             return RedirectResponse(url="/login", status_code=302)
     except Exception:
         pass  # No users table yet — show setup

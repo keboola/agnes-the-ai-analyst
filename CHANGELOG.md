@@ -10,6 +10,33 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.12] — 2026-06-04
+
+### Fixed
+- **Postgres backend: the first-time-setup wizard stayed open on a
+  provisioned instance.** `GET /first-time-setup` counted users with a raw
+  `SELECT COUNT(*) FROM users` on the always-DuckDB `_get_db` connection, so on
+  a Postgres instance (users in PG) the count was 0 and the wizard rendered
+  instead of redirecting to `/login` — leaving the setup flow reachable forever.
+  Now counts through `users_repo()`.
+- **Postgres backend: the bootstrapped first admin had no admin access.**
+  `POST /auth/bootstrap` (the wizard's submit) looked the Admin group up with a
+  raw `SELECT id FROM user_groups WHERE name=?` on the always-DuckDB connection,
+  so on Postgres it got the DuckDB Admin-group id and wrote a membership row
+  referencing an id absent from PG — the first admin ended up in no group and
+  `require_admin` failed for them. Now resolved via
+  `user_groups_repo().get_by_name()` (same fix as the lifespan seed-admin path).
+
+### Internal
+- Added two differential parity sweeps in `tests/db_pg/`
+  (`test_get_status_parity_sweep.py` + `test_mutation_status_parity_sweep.py`):
+  they hit every parameter-free GET and POST/PUT/PATCH/DELETE route on DuckDB
+  and Postgres with identical seeded state and assert the HTTP status is
+  identical. They catch the "endpoint reads state off a raw `Depends(_get_db)`
+  connection" backend-split class that the static `test_backend_split_guard.py`
+  ratchet can't see (it only scans `get_system_db()` callers + direct repo
+  instantiation). The GET sweep found the `/first-time-setup` divergence above;
+  the mutation sweep is clean (no remaining divergence on that surface).
 ## [0.65.11] — 2026-06-04
 
 ### Fixed
