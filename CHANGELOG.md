@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.15] — 2026-06-04
+
 ### Internal
 - Added a schema-parity gate (`tests/db_pg/test_schema_parity.py::test_alembic_head_materializes_every_model`)
   asserting the alembic chain CREATES every table and column in
@@ -24,6 +26,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   gate locks the dual-backend-discipline invariant so that drift is caught at
   CI instead of wedging a customer instance at startup.
 
+## [0.65.14] — 2026-06-04
+
+### Fixed
+- Cowork bundle now ships skills in Claude Code's directory format
+  (`.claude/skills/<name>/SKILL.md`) with supporting files (references/,
+  assets/) preserved, instead of flat `.claude/skills/<name>.md` files that
+  Claude Code never loaded as skills. Affects both curated skills
+  (setup-cowork, explore-data, query-data, new-skill) and RBAC-granted
+  marketplace skills. Note: this fixes skill loading in terminal Claude Code /
+  Claude Desktop project sessions; Cowork's agentic VM still only surfaces
+  skills installed via its own Customize → Skills UI (upstream limitation,
+  anthropics/claude-code#50669), not workspace `.claude/skills/`.
+- **Cowork bundle connects over verified TLS on macOS without manual cert setup.** The generated `mcp_server.py` / `agnes.py` now build their HTTPS `ssl` context from a Mozilla CA bundle shipped in the ZIP as `cacert.pem` (also copied to `~/.config/agnes/` by `setup.py`), falling back to the OS trust store and honouring `SSL_CERT_FILE`. This fixes `CERTIFICATE_VERIFY_FAILED` on Pythons that lack a usable system CA store (notably macOS python.org builds) **without disabling certificate verification**. An explicit opt-out for genuinely broken environments remains via `AGNES_INSECURE_SKIP_TLS_VERIFY=1`.
 ## [0.65.13] — 2026-06-04
 
 ### Internal
