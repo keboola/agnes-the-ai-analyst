@@ -20,6 +20,7 @@ from src.repositories import (
     audit_repo,
     user_curated_subscriptions_repo,
     user_group_members_repo,
+    user_groups_repo,
     users_repo,
 )
 logger = logging.getLogger(__name__)
@@ -117,7 +118,6 @@ async def create_token(
 async def bootstrap(
     request: Request,
     body: BootstrapRequest,
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Bootstrap the first admin account.
 
@@ -174,14 +174,16 @@ async def bootstrap(
         _audit(user_id, "bootstrap_completed")
 
     # Promote the bootstrap user to the Admin system group — replaces the v9
-    # ``user_role_grants`` write that the old bootstrap path relied on.
-    admin_group = conn.execute(
-        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
-    ).fetchone()
+    # ``user_role_grants`` write that the old bootstrap path relied on. Look the
+    # group up through the factory so we get the ACTIVE backend's id: a raw
+    # _get_db (always-DuckDB) read returned the DuckDB Admin-group id, and the
+    # membership written to Postgres then referenced an id absent from PG, so
+    # the bootstrapped first admin had no admin access on a Postgres instance.
+    admin_group = user_groups_repo().get_by_name(SYSTEM_ADMIN_GROUP)
     if admin_group:
         user_group_members_repo().add_member(
             user_id=user_id,
-            group_id=admin_group[0],
+            group_id=admin_group["id"],
             source="system_seed",
             added_by="auth.bootstrap",
         )
