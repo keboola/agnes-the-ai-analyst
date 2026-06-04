@@ -12,6 +12,7 @@
 import warnings as _warnings
 from src.repositories import (
     user_group_members_repo,
+    user_groups_repo,
     users_repo,
 )
 try:
@@ -259,6 +260,7 @@ from app.api.store import router as store_router
 from app.api.my_stack import router as my_stack_router
 from app.api.marketplace import router as marketplace_router
 from app.api.welcome import router as welcome_router
+from app.api.connectors import router as connectors_router
 from app.api.claude_md import router as claude_md_router
 from app.api.news import router as news_router
 from app.api.cowork_bundle import (
@@ -279,8 +281,14 @@ from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import make_git_wsgi_app
 from app.web.router import router as web_router
 from app.api.chat import router as chat_router
+from app.api.chat_copresence import router as chat_copresence_router
 from app.api.slack import router as slack_router
 from app.api.admin_chat import router as admin_chat_router
+from app.instance_config import get_slack_transport
+from services.slack_bot.socket_mode_client import (
+    SocketModeDispatcher,
+    socket_mode_preflight,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +312,36 @@ def _maybe_rebuild_on_boot() -> bool:
     except Exception:
         logger.exception("AGNES_REBUILD_ON_BOOT rebuild failed (non-fatal)")
         return False
+
+
+async def _start_slack_socket_transport(app) -> None:
+    """If chat.slack.transport=socket, start one Socket Mode WS behind
+    fail-closed gates. On any miss -> log + leave Slack HTTP-only; never
+    crash and never start a dead WS. Stashed on app.state for shutdown."""
+    app.state.slack_socket_dispatcher = None
+    if get_slack_transport() != "socket":
+        return
+    app_token = os.environ.get("SLACK_APP_TOKEN", "")
+    bot_token = os.environ.get("SLACK_BOT_TOKEN", "")
+    try:
+        workers = int(os.environ.get("UVICORN_WORKERS", "1"))
+    except ValueError:
+        workers = 1
+    ok, reason = socket_mode_preflight(
+        workers=workers, app_token=app_token, bot_token=bot_token,
+    )
+    if not ok:
+        logger.error("Slack Socket Mode disabled: %s", reason)
+        return
+    try:
+        dispatcher = SocketModeDispatcher(
+            app=app, app_token=app_token, bot_token=bot_token,
+        )
+        await dispatcher.start()
+        app.state.slack_socket_dispatcher = dispatcher
+    except Exception:
+        logger.exception("Slack Socket Mode disabled: start() failed")
+        app.state.slack_socket_dispatcher = None
 
 
 @asynccontextmanager
@@ -394,12 +432,30 @@ async def lifespan(app):
     except Exception:
         logger.exception("BQ startup config validation crashed (non-fatal)")
 
+    # Seed the Admin/Everyone system groups into the ACTIVE state backend.
+    # On DuckDB this duplicates src.db._seed_system_groups (idempotent), but
+    # that runs ONLY on a DuckDB connect — nothing seeds these groups on a
+    # Postgres instance, so without this a fresh PG deploy has no Admin group
+    # (require_admin can never pass) and no Everyone group (Everyone-scoped
+    # grants like Required onboarding never surface). ensure_system is
+    # idempotent and routes through the factory, so it is correct on either
+    # backend.
+    try:
+        from src.db import _SYSTEM_GROUPS_SEED
+        _ug_repo = user_groups_repo()
+        for _grp_name, _grp_desc in _SYSTEM_GROUPS_SEED:
+            _ug_repo.ensure_system(_grp_name, _grp_desc)
+    except Exception as e:
+        logger.warning("Could not seed system groups: %s", e)
+
     # Seed admin user (SEED_ADMIN_EMAIL) and add them to the Admin user_group.
     # Optional SEED_ADMIN_PASSWORD lets the seeded user sign in immediately
     # without going through bootstrap; never overwritten if already set.
-    # The Admin/Everyone user_groups themselves are seeded inside
-    # _ensure_schema (src.db._seed_system_groups), so this hook only has to
-    # handle membership for the seed admin.
+    # The Admin/Everyone user_groups were ensured just above (factory →
+    # active backend), so this hook only has to handle membership for the
+    # seed admin — looking the groups up through the factory too, so it gets
+    # the active backend's group ids (a raw DuckDB read returned a DuckDB-only
+    # group id that does not exist on a Postgres instance).
     # Lives in lifespan (worker-only), NOT create_app(): the latter runs
     # in the uvicorn --reload master too, and duckdb >=1.5 holds an
     # exclusive per-process file lock on system.duckdb that would then
@@ -408,9 +464,10 @@ async def lifespan(app):
     seed_email = os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None)
     if seed_email:
         try:
-            from src.db import SYSTEM_ADMIN_GROUP, get_system_db
-            conn = get_system_db()
+            from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
             repo = users_repo()
+            groups_repo = user_groups_repo()
+            members_repo = user_group_members_repo()
             seed_password = os.environ.get("SEED_ADMIN_PASSWORD") or None
             password_hash = None
             if seed_password:
@@ -433,15 +490,14 @@ async def lifespan(app):
                     repo.update(id=user_id, password_hash=password_hash)
                     logger.info("Set password on existing seed admin: %s", seed_email)
             # Make sure the seed admin is actually in the Admin group — this
-            # is what gives them admin access in v12. Idempotent.
-            from src.db import SYSTEM_EVERYONE_GROUP
-            admin_group = conn.execute(
-                "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
-            ).fetchone()
+            # is what gives them admin access in v12. Idempotent. Look the
+            # group up through the factory so we get the ACTIVE backend's id
+            # (raw DuckDB read returned a DuckDB group id absent from Postgres).
+            admin_group = groups_repo.get_by_name(SYSTEM_ADMIN_GROUP)
             if admin_group:
-                user_group_members_repo().add_member(
+                members_repo.add_member(
                     user_id=user_id,
-                    group_id=admin_group[0],
+                    group_id=admin_group["id"],
                     source="system_seed",
                     added_by="app.main:seed_admin",
                 )
@@ -450,18 +506,14 @@ async def lifespan(app):
             # default reference packages). The seed admin not being in
             # Everyone meant their own Required grants didn't surface on
             # /catalog as Required for them, which read as a bug.
-            everyone_group = conn.execute(
-                "SELECT id FROM user_groups WHERE name = ?",
-                [SYSTEM_EVERYONE_GROUP],
-            ).fetchone()
+            everyone_group = groups_repo.get_by_name(SYSTEM_EVERYONE_GROUP)
             if everyone_group:
-                UserGroupMembersRepository(conn).add_member(
+                members_repo.add_member(
                     user_id=user_id,
-                    group_id=everyone_group[0],
+                    group_id=everyone_group["id"],
                     source="system_seed",
                     added_by="app.main:seed_admin",
                 )
-            conn.close()
         except Exception as e:
             logger.warning(f"Could not seed admin: {e}")
 
@@ -699,7 +751,34 @@ async def lifespan(app):
         app.state.chat_manager = None
     # --- end CHAT-INIT -------------------------------------------------------
 
+    # --- SLACK-INIT: resolve bot user id once (mention loop-guard / strip) ---
+    app.state.slack_bot_user_id = None
+    try:
+        from services.slack_bot.identity import resolve_bot_user_id
+        app.state.slack_bot_user_id = await resolve_bot_user_id()
+        if app.state.slack_bot_user_id:
+            logger.info("slack bot user id resolved: %s", app.state.slack_bot_user_id)
+    except Exception:
+        logger.exception("SLACK-INIT failed (non-fatal); bot user id unresolved")
+    # --- end SLACK-INIT ------------------------------------------------------
+
+    # --- SLACK SOCKET MODE (optional inbound transport) ----------------------
+    # Boot-safety boundary: a Slack misconfig (bad transport value, preflight
+    # raising, etc.) must NEVER crash app startup. The helper self-guards
+    # start(); this covers everything before it.
+    try:
+        await _start_slack_socket_transport(app)
+    except Exception:
+        logger.exception("Slack Socket Mode wiring failed (non-fatal)")
+    # --- end SLACK SOCKET MODE -----------------------------------------------
+
     yield
+    _socket_disp = getattr(app.state, "slack_socket_dispatcher", None)
+    if _socket_disp is not None:
+        try:
+            await _socket_disp.stop()
+        except Exception:
+            logger.exception("Slack Socket Mode shutdown failed")
     try:
         from src.observability import get_posthog
         get_posthog().shutdown()
@@ -1100,6 +1179,7 @@ def create_app() -> FastAPI:
     app.include_router(my_stack_router)
     app.include_router(marketplace_router)
     app.include_router(welcome_router)
+    app.include_router(connectors_router)
     app.include_router(claude_md_router)
     app.include_router(news_router)
     app.include_router(cowork_user_router)
@@ -1120,6 +1200,7 @@ def create_app() -> FastAPI:
     app.include_router(db_state_router)
     app.include_router(marketplace_server_router)
     app.include_router(chat_router)
+    app.include_router(chat_copresence_router)
     app.include_router(slack_router)
     app.include_router(admin_chat_router)
 

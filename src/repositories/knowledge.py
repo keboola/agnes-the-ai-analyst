@@ -242,34 +242,50 @@ class KnowledgeRepository:
         """
         domain_value = fields.pop("domain", None) if "domain" in fields else _UNSET
         safe = {k: v for k, v in fields.items() if k in self._UPDATABLE_FIELDS}
-        # Scalar-column UPDATE path
-        if safe:
-            now = datetime.now(timezone.utc)
-            set_clause = ", ".join(f"{k} = ?" for k in safe)
-            values = list(safe.values()) + [now, item_id]
-            self.conn.execute(
-                f"UPDATE knowledge_items SET {set_clause}, updated_at = ? WHERE id = ?",
-                values,
-            )
-            # FTS index needs rebuilding only when the indexed text changed —
-            # status / tag / is_required flips don't affect the BM25 token stream.
-            if "title" in safe or "content" in safe:
-                self._refresh_fts_index()
-        # Domain junction path (only if caller passed domain explicitly).
-        if domain_value is not _UNSET:
-            if domain_value is None or domain_value == "":
-                # Clear all junction rows — caller asked to drop the domain.
+        # Scalar UPDATE + domain-junction rewrite run in one transaction so a
+        # concurrent reader never sees a half-applied edit — notably the
+        # domain DELETE+INSERT below, whose empty intermediate would make the
+        # item momentarily domain-less to RBAC reads. The FTS rebuild runs
+        # AFTER commit: `PRAGMA create_fts_index` is catalog DDL and cannot
+        # run inside an explicit transaction.
+        refresh_fts = bool(safe and ("title" in safe or "content" in safe))
+        self.conn.execute("BEGIN")
+        try:
+            # Scalar-column UPDATE path
+            if safe:
+                now = datetime.now(timezone.utc)
+                set_clause = ", ".join(f"{k} = ?" for k in safe)
+                values = list(safe.values()) + [now, item_id]
                 self.conn.execute(
-                    "DELETE FROM knowledge_item_domains WHERE item_id = ?", [item_id]
+                    f"UPDATE knowledge_items SET {set_clause}, updated_at = ? WHERE id = ?",
+                    values,
                 )
-            else:
-                self._set_item_domain_by_slug(item_id, domain_value, added_by="system")
-            # Bump updated_at even if no scalar field changed.
-            if not safe:
-                self.conn.execute(
-                    "UPDATE knowledge_items SET updated_at = ? WHERE id = ?",
-                    [datetime.now(timezone.utc), item_id],
-                )
+            # Domain junction path (only if caller passed domain explicitly).
+            if domain_value is not _UNSET:
+                if domain_value is None or domain_value == "":
+                    # Clear all junction rows — caller asked to drop the domain.
+                    self.conn.execute(
+                        "DELETE FROM knowledge_item_domains WHERE item_id = ?", [item_id]
+                    )
+                else:
+                    self._set_item_domain_by_slug(item_id, domain_value, added_by="system")
+                # Bump updated_at even if no scalar field changed.
+                if not safe:
+                    self.conn.execute(
+                        "UPDATE knowledge_items SET updated_at = ? WHERE id = ?",
+                        [datetime.now(timezone.utc), item_id],
+                    )
+            self.conn.execute("COMMIT")
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+        # FTS index rebuilds only when the indexed text changed — status / tag
+        # / is_required flips don't affect the BM25 token stream.
+        if refresh_fts:
+            self._refresh_fts_index()
 
     def set_is_required(self, item_id: str, value: bool) -> None:
         """Toggle the global ``is_required`` flag without touching ``status``.
@@ -1207,6 +1223,72 @@ class KnowledgeRepository:
         )
         rows = self.conn.execute(sql, params).fetchall()
         return {r[0]: r[1] for r in rows}
+
+    def stats_breakdown(
+        self,
+        *,
+        exclude_personal: bool = False,
+        user_groups: Optional[List[str]] = None,
+        granted_domains: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Return ``{by_status, categories, by_domain, by_source_type}`` for the
+        /api/memory/stats endpoint, honoring the same audience/MEMORY_DOMAIN
+        visibility filter as ``count_items`` / ``count_by_tag``. (``total``,
+        ``by_tag`` and ``by_audience`` have their own repo methods.) Moved off a
+        raw ``_get_db`` connection so the aggregates hit the active backend."""
+        where: List[str] = []
+        params: List[Any] = []
+        if exclude_personal:
+            where.append("(is_personal = FALSE OR is_personal IS NULL)")
+        if user_groups is not None:
+            visibility = ["audience IS NULL", "audience = 'all'"]
+            if user_groups:
+                ph = ",".join(["?"] * len(user_groups))
+                visibility.append(f"audience IN ({ph})")
+                params.extend(user_groups)
+            if granted_domains:
+                dph = ",".join(["?"] * len(granted_domains))
+                visibility.append(
+                    "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                    "WHERE kid.item_id = knowledge_items.id "
+                    f"AND kid.domain_id IN ({dph}))"
+                )
+                params.extend(granted_domains)
+            where.append("(" + " OR ".join(visibility) + ")")
+        where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+
+        by_status = {
+            r[0]: r[1] for r in self.conn.execute(
+                f"SELECT COALESCE(status, 'unknown') AS s, COUNT(*) "
+                f"FROM knowledge_items{where_sql} GROUP BY s", params,
+            ).fetchall()
+        }
+        cat_rows = self.conn.execute(
+            f"SELECT DISTINCT category FROM knowledge_items{where_sql} "
+            f"{'AND' if where_sql else 'WHERE'} category IS NOT NULL", params,
+        ).fetchall()
+        categories = sorted(r[0] for r in cat_rows if r[0])
+        by_domain = {
+            r[0]: r[1] for r in self.conn.execute(
+                "SELECT COALESCE(md.slug, 'unset') AS d, COUNT(*) "
+                "FROM knowledge_items "
+                "LEFT JOIN knowledge_item_domains kid ON kid.item_id = knowledge_items.id "
+                "LEFT JOIN memory_domains md ON md.id = kid.domain_id"
+                + (where_sql or "") + " GROUP BY d", params,
+            ).fetchall()
+        }
+        by_source_type = {
+            r[0]: r[1] for r in self.conn.execute(
+                f"SELECT COALESCE(source_type, 'unknown') AS st, COUNT(*) "
+                f"FROM knowledge_items{where_sql} GROUP BY st", params,
+            ).fetchall()
+        }
+        return {
+            "by_status": by_status,
+            "categories": categories,
+            "by_domain": by_domain,
+            "by_source_type": by_source_type,
+        }
 
     def find_contradiction_candidates(
         self,

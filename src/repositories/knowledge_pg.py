@@ -251,7 +251,11 @@ class KnowledgePgRepository:
                 keys = []
                 for i, d in enumerate(granted_domains):
                     k = f"gd_{i}"; keys.append(f":{k}"); params[k] = d
-                visibility.append(f"domain IN ({','.join(keys)})")
+                visibility.append(
+                    "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                    "WHERE kid.item_id = knowledge_items.id "
+                    f"AND kid.domain_id IN ({','.join(keys)}))"
+                )
             sql_parts.append(" AND (" + " OR ".join(visibility) + ")")
         if hide_dismissed and dismissed_by_user:
             sql_parts.append(
@@ -422,7 +426,11 @@ class KnowledgePgRepository:
                 keys = []
                 for i, d in enumerate(granted_domains):
                     k = f"gd_{i}"; keys.append(f":{k}"); params[k] = d
-                vis.append(f"domain IN ({','.join(keys)})")
+                vis.append(
+                    "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                    "WHERE kid.item_id = knowledge_items.id "
+                    f"AND kid.domain_id IN ({','.join(keys)}))"
+                )
             parts.append(" AND (" + " OR ".join(vis) + ")")
         if hide_dismissed and dismissed_by_user:
             parts.append(
@@ -877,7 +885,11 @@ class KnowledgePgRepository:
                 keys = []
                 for i, d in enumerate(granted_domains):
                     k = f"gd_{i}"; keys.append(f":{k}"); params[k] = d
-                vis.append(f"domain IN ({','.join(keys)})")
+                vis.append(
+                    "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                    "WHERE kid.item_id = knowledge_items.id "
+                    f"AND kid.domain_id IN ({','.join(keys)}))"
+                )
             where.append("(" + " OR ".join(vis) + ")")
         where_sql = " WHERE " + " AND ".join(where)
         sql = (
@@ -912,7 +924,11 @@ class KnowledgePgRepository:
                 keys = []
                 for i, d in enumerate(granted_domains):
                     k = f"gd_{i}"; keys.append(f":{k}"); params[k] = d
-                vis.append(f"domain IN ({','.join(keys)})")
+                vis.append(
+                    "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                    "WHERE kid.item_id = knowledge_items.id "
+                    f"AND kid.domain_id IN ({','.join(keys)}))"
+                )
             where.append("(" + " OR ".join(vis) + ")")
         where_sql = (" WHERE " + " AND ".join(where)) if where else ""
         sql = (
@@ -922,6 +938,73 @@ class KnowledgePgRepository:
         with self._engine.connect() as conn:
             rows = conn.execute(sa.text(sql), params).all()
         return {r[0]: int(r[1]) for r in rows}
+
+    def stats_breakdown(
+        self,
+        *,
+        exclude_personal: bool = False,
+        user_groups: Optional[List[str]] = None,
+        granted_domains: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """PG mirror of ``KnowledgeRepository.stats_breakdown`` — backs
+        /api/memory/stats (by_status / categories / by_domain / by_source_type)
+        on the active backend."""
+        where: List[str] = []
+        params: Dict[str, Any] = {}
+        if exclude_personal:
+            where.append("(is_personal = FALSE OR is_personal IS NULL)")
+        if user_groups is not None:
+            vis = ["audience IS NULL", "audience = 'all'"]
+            if user_groups:
+                keys = []
+                for i, g in enumerate(user_groups):
+                    k = f"ug_{i}"; keys.append(f":{k}"); params[k] = g
+                vis.append(f"audience IN ({','.join(keys)})")
+            if granted_domains:
+                keys = []
+                for i, d in enumerate(granted_domains):
+                    k = f"gd_{i}"; keys.append(f":{k}"); params[k] = d
+                vis.append(
+                    "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                    "WHERE kid.item_id = knowledge_items.id "
+                    f"AND kid.domain_id IN ({','.join(keys)}))"
+                )
+            where.append("(" + " OR ".join(vis) + ")")
+        where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+
+        with self._engine.connect() as conn:
+            by_status = {
+                r[0]: int(r[1]) for r in conn.execute(sa.text(
+                    f"SELECT COALESCE(status, 'unknown') AS s, COUNT(*) "
+                    f"FROM knowledge_items{where_sql} GROUP BY s"
+                ), params).all()
+            }
+            cat_rows = conn.execute(sa.text(
+                f"SELECT DISTINCT category FROM knowledge_items{where_sql} "
+                f"{'AND' if where_sql else 'WHERE'} category IS NOT NULL"
+            ), params).all()
+            categories = sorted(r[0] for r in cat_rows if r[0])
+            by_domain = {
+                r[0]: int(r[1]) for r in conn.execute(sa.text(
+                    "SELECT COALESCE(md.slug, 'unset') AS d, COUNT(*) "
+                    "FROM knowledge_items "
+                    "LEFT JOIN knowledge_item_domains kid ON kid.item_id = knowledge_items.id "
+                    "LEFT JOIN memory_domains md ON md.id = kid.domain_id"
+                    + (where_sql or "") + " GROUP BY d"
+                ), params).all()
+            }
+            by_source_type = {
+                r[0]: int(r[1]) for r in conn.execute(sa.text(
+                    f"SELECT COALESCE(source_type, 'unknown') AS st, COUNT(*) "
+                    f"FROM knowledge_items{where_sql} GROUP BY st"
+                ), params).all()
+            }
+        return {
+            "by_status": by_status,
+            "categories": categories,
+            "by_domain": by_domain,
+            "by_source_type": by_source_type,
+        }
 
     def find_contradiction_candidates(
         self,

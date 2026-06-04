@@ -100,26 +100,22 @@ def _lookup_secret_for_source(
             # Local import avoids dragging the vault module into the
             # connector's import surface — keeps stdio MCP startup fast
             # when no DB is around (tests, headless POC scripts).
-            from src.db import get_system_db
-            from app.secrets_vault import (
-                PerUserSecretsRepository,
-                SharedSecretsRepository,
-            )
+            #
+            # Route through the repo factory: per-user secrets live in the
+            # active state backend (Postgres once migrated, #530). Reading them
+            # off a raw always-DuckDB connection meant an analyst's own
+            # credential was invisible at forward time on a PG instance, so the
+            # call silently fell through to the shared/env path.
+            from src.repositories import per_user_secrets_repo, shared_secrets_repo
 
-            conn = get_system_db()
-            try:
-                if scope == "per_user" and caller_user_id:
-                    value = PerUserSecretsRepository(conn).get(
-                        source_id, caller_user_id
-                    )
-                    if value:
-                        return value
-                # Either scope='shared', or per_user with no row → shared fallback
-                value = SharedSecretsRepository(conn).get(source_id)
+            if scope == "per_user" and caller_user_id:
+                value = per_user_secrets_repo().get(source_id, caller_user_id)
                 if value:
                     return value
-            finally:
-                conn.close()
+            # Either scope='shared', or per_user with no row → shared fallback
+            value = shared_secrets_repo().get(source_id)
+            if value:
+                return value
         except Exception:
             # System DB unavailable (test fixtures, fresh setup before
             # migration) — silently fall through to the env-var path.
@@ -197,7 +193,9 @@ async def _open_session(
             except (json.JSONDecodeError, TypeError):
                 args = []
 
-        env_extra: Optional[Dict[str, str]] = None
+        # Per-source non-secret env (e.g. CRM_API_URL) is the base; the
+        # auth_secret_env secret overlays it (takes precedence).
+        env_extra: Dict[str, str] = dict(source.get("env") or {})
         secret_env = source.get("auth_secret_env")
         if secret_env:
             # Vault first, env-var second — same precedence as the HTTP
@@ -208,9 +206,9 @@ async def _open_session(
             # contract stays unchanged.
             token = _lookup_secret_for_source(source, caller_user_id=caller_user_id)
             if token:
-                env_extra = {secret_env: token}
+                env_extra[secret_env] = token
 
-        params = StdioServerParameters(command=command, args=list(args), env=env_extra)
+        params = StdioServerParameters(command=command, args=list(args), env=env_extra or None)
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()

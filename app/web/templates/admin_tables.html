@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 
 {% block title %}Table Management - {{ config.INSTANCE_NAME }}{% endblock %}
 
@@ -1967,7 +1967,7 @@
         const previewEl = document.getElementById(prefix + '-cover-preview');
         const urlEl = document.getElementById(prefix + '-cover-url');
         if (file.size > 5 * 1024 * 1024) {
-          alert('Image is too large (max 5 MiB).');
+          await alertModal('Image is too large (max 5 MiB).');
           input.value = '';
           return;
         }
@@ -1982,7 +1982,7 @@
           });
           if (!r.ok) {
             const detail = await r.json().catch(function() { return {}; });
-            alert('Upload failed: ' + (detail.detail || r.statusText));
+            await alertModal('Upload failed: ' + (detail.detail || r.statusText));
             previewEl.textContent = 'No image';
             input.value = '';
             return;
@@ -1996,7 +1996,7 @@
           img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
           previewEl.appendChild(img);
         } catch (e) {
-          alert('Network error: ' + e.message);
+          await alertModal('Network error: ' + e.message);
           previewEl.textContent = 'No image';
           input.value = '';
         }
@@ -2093,7 +2093,7 @@
           var addPanel = document.getElementById('edp-inline-add');
           if (addPanel) addPanel.style.display = 'none';
         } catch (e) {
-          alert('Failed to load package: ' + e.message);
+          await alertModal('Failed to load package: ' + e.message);
           closeEditDataPackageModal();
         }
       }
@@ -2280,11 +2280,11 @@
       }
       async function removeTableFromPackage(tableId) {
         const pkgId = document.getElementById('edp-id').value;
-        if (!confirm('Remove this table from the package?')) return;
+        if (!(await confirmModal('Remove this table from the package?'))) return;
         const r = await fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId)
                               + '/tables/' + encodeURIComponent(tableId),
                               { method: 'DELETE', credentials: 'same-origin' });
-        if (!r.ok) { alert('Remove failed: HTTP ' + r.status); return; }
+        if (!r.ok) { await alertModal('Remove failed: HTTP ' + r.status); return; }
         // Refresh the table list inline.
         const r2 = await fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId),
                                { credentials: 'same-origin' });
@@ -2326,7 +2326,7 @@
           });
           if (!r.ok) {
             const detail = await r.json().catch(function() { return {}; });
-            alert('Save failed: ' + (detail.detail || r.statusText));
+            await alertModal('Save failed: ' + (detail.detail || r.statusText));
             btn.disabled = false;
             return;
           }
@@ -2338,13 +2338,13 @@
             if (typeof showToast === 'function') {
               showToast(rbacFails + ' group access change(s) failed', 'error');
             } else {
-              alert(rbacFails + ' group access change(s) failed.');
+              await alertModal(rbacFails + ' group access change(s) failed.');
             }
           }
           closeEditDataPackageModal();
           if (typeof loadDataPackagesSection === 'function') loadDataPackagesSection();
         } catch (e) {
-          alert('Network error: ' + e.message);
+          await alertModal('Network error: ' + e.message);
           btn.disabled = false;
         }
       }
@@ -2437,7 +2437,7 @@
         var selected = Array.from(document.querySelectorAll('.edp-add-cb:checked'))
           .map(function(cb) { return cb.value; });
         if (!selected.length) {
-          alert('Pick at least one table to add.');
+          await alertModal('Pick at least one table to add.');
           return;
         }
         btn.disabled = true;
@@ -2456,7 +2456,7 @@
           var results = await Promise.all(calls);
           var fails = results.filter(function(r) { return !r.ok; });
           if (fails.length) {
-            alert(fails.length + ' of ' + results.length + ' add(s) failed.');
+            await alertModal(fails.length + ' of ' + results.length + ' add(s) failed.');
           }
           // Refresh the package's table list inline (no modal close).
           var r2 = await fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId),
@@ -2469,7 +2469,7 @@
           // the new table counts show up after the user closes the modal.
           if (typeof loadDataPackagesSection === 'function') loadDataPackagesSection();
         } catch (e) {
-          alert('Network error: ' + e.message);
+          await alertModal('Network error: ' + e.message);
         } finally {
           btn.disabled = false;
         }
@@ -2485,7 +2485,7 @@
         // so restore brings the package back whole.
         const r = await fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId),
                               { method: 'DELETE', credentials: 'same-origin' });
-        if (!r.ok) { alert('Delete failed: HTTP ' + r.status); return; }
+        if (!r.ok) { await alertModal('Delete failed: HTTP ' + r.status); return; }
         closeEditDataPackageModal();
         if (typeof loadDataPackagesSection === 'function') loadDataPackagesSection();
         if (typeof window.showUndoToast === 'function') {
@@ -2535,7 +2535,7 @@
             category: document.getElementById('cdp-category').value.trim() || null,
           };
           if (!payload.name || !payload.slug) {
-            alert('Name is required (slug auto-derives from it).');
+            await alertModal('Name is required (slug auto-derives from it).');
             btn.disabled = false;
             return;
           }
@@ -2547,7 +2547,7 @@
           });
           if (!r.ok) {
             const detail = await r.json().catch(() => ({}));
-            alert('Failed: ' + (detail.detail || r.statusText));
+            await alertModal('Failed: ' + (detail.detail || r.statusText));
             btn.disabled = false;
             return;
           }
@@ -2578,7 +2578,7 @@
             }
           }
         } catch (e) {
-          alert('Network error: ' + e.message);
+          await alertModal('Network error: ' + e.message);
           btn.disabled = false;
         } finally {
           btn.disabled = false;
@@ -2913,7 +2913,7 @@
             }).join('');
         sel.onchange = async function() {
           if (sel.value !== '__create__') { refreshBulkAssignAvailability(); return; }
-          const name = prompt('Name for the new Data Package:');
+          const name = await promptModal('Name for the new Data Package:');
           if (!name || !name.trim()) { sel.value = ''; return; }
           const slug = _deriveSlug(name.trim());
           const r = await fetch('/api/admin/data-packages', {
@@ -2930,7 +2930,7 @@
           });
           if (!r.ok) {
             const detail = await r.json().catch(function() { return {}; });
-            alert('Create failed: ' + (detail.detail || r.statusText));
+            await alertModal('Create failed: ' + (detail.detail || r.statusText));
             sel.value = '';
             return;
           }
@@ -3044,7 +3044,7 @@
       async function submitBulkAssign() {
         const pkgId = document.getElementById('bulk-assign-package').value;
         if (!pkgId) {
-          alert('Pick a target Data Package first.');
+          await alertModal('Pick a target Data Package first.');
           return;
         }
         const pkg = _bulkAssignPackages.find(function(p) { return p.id === pkgId; });
@@ -3057,7 +3057,7 @@
           // but avoiding the call keeps audit_log noise down.
           .filter(function(id) { return !alreadyMembers.has(id); });
         if (!tableIds.length) {
-          alert('Nothing to assign — pick at least one table not already in the package.');
+          await alertModal('Nothing to assign — pick at least one table not already in the package.');
           return;
         }
         const btn = document.getElementById('bulk-assign-submit-btn');
@@ -3076,7 +3076,7 @@
           const results = await Promise.all(calls);
           const fails = results.filter(function(r) { return !r.ok; });
           if (fails.length) {
-            alert(fails.length + ' of ' + results.length + ' failed. '
+            await alertModal(fails.length + ' of ' + results.length + ' failed. '
               + 'First failure: ' + fails[0].tid + ' (HTTP ' + fails[0].status + ').');
           }
           closeBulkAssignModal();
@@ -4105,7 +4105,7 @@
     // only renders when data_source_type == 'keboola'. The redundant
     // nested guard was dropped during the rebase onto main; main
     // never had it.
-    function prefillFromKeboolaTable(textareaId) {
+    async function prefillFromKeboolaTable(textareaId) {
         // Edit-modal callers may pass an editKbBucket / editKbSourceTable
         // pair instead of the Register modal's kbBucket / kbSourceTable.
         // Detect the modal via the textarea id prefix.
@@ -4118,7 +4118,7 @@
         }
         var ta = document.getElementById(textareaId);
         if (ta.value.trim()) {
-            if (!confirm('Replace existing SQL?')) return;
+            if (!(await confirmModal('Replace existing SQL?'))) return;
         }
         ta.value = 'SELECT *\nFROM kbc."' + bucket + '"."' + sourceTable + '"\nWHERE -- your filter here';
     }
@@ -4331,7 +4331,7 @@
             });
     }
 
-    function prefillFromTable(textareaId) {
+    async function prefillFromTable(textareaId) {
         // Convenience for the Custom SQL path: prompt for project.dataset.table
         // and prefill `SELECT * FROM \`...\`` so the operator only edits the
         // WHERE / projection. We can't know the project from the form (it's
@@ -4340,13 +4340,12 @@
         var taId = textareaId || 'bqSourceQuery';
         var ta = document.getElementById(taId);
         var existing = ta.value.trim();
-        if (existing && !confirm('SQL field is not empty — overwrite with prefill?')) {
+        if (existing && !(await confirmModal('SQL field is not empty — overwrite with prefill?'))) {
             return;
         }
-        var ref = window.prompt(
+        var ref = await promptModal(
             'Enter the source table as `dataset.table` or `project.dataset.table` '
-            + '(it will be wrapped in backticks):',
-            ''
+            + '(it will be wrapped in backticks):'
         );
         if (!ref) return;
         ref = ref.trim().replace(/^`|`$/g, '');
@@ -4968,8 +4967,8 @@
         window.location.href = '/admin/access#table:' + encodeURIComponent(tableId);
     }
 
-    function deleteTable(tableId) {
-        if (!confirm('Are you sure you want to unregister "' + tableId + '"?\n\nThis will remove it from sync and clean up user subscriptions.')) {
+    async function deleteTable(tableId) {
+        if (!(await confirmModal('Are you sure you want to unregister "' + tableId + '"?\n\nThis will remove it from sync and clean up user subscriptions.'))) {
             return;
         }
 
@@ -5543,11 +5542,11 @@
 
     // Remove a single table from a package, then refresh the layout.
     async function removeTableFromPackageById(pkgId, tableId) {
-        if (!confirm('Remove this table from the package? (The table itself is not deleted.)')) return;
+        if (!(await confirmModal('Remove this table from the package? (The table itself is not deleted.)'))) return;
         var r = await fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId)
                             + '/tables/' + encodeURIComponent(tableId),
                             { method: 'DELETE', credentials: 'same-origin' });
-        if (!r.ok) { alert('Remove failed: HTTP ' + r.status); return; }
+        if (!r.ok) { await alertModal('Remove failed: HTTP ' + r.status); return; }
         if (typeof loadAdminTablesLayout === 'function') loadAdminTablesLayout();
     }
 
@@ -5732,7 +5731,7 @@
         var tables = Array.isArray(body) ? body : (body.tables || []);
         var t = tables.find(function(x) { return String(x.id) === String(editId); });
         if (!t) {
-          alert('Table not found (id=' + editId + '). It may have been deleted.');
+          await alertModal('Table not found (id=' + editId + '). It may have been deleted.');
           return;
         }
         // Small delay so the layout has time to mount; then open the source-

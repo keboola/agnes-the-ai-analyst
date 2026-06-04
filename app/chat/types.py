@@ -32,6 +32,8 @@ class ChatSession:
     last_message_at: Optional[datetime]
     message_count: int
     archived: bool
+    is_co_session: bool = False
+    ephemeral: bool = False
 
 
 @dataclass
@@ -45,6 +47,18 @@ class ChatMessage:
     tokens_out: Optional[int]
     model: Optional[str]
     created_at: datetime
+    sender_email: Optional[str] = None
+
+
+@dataclass
+class SessionParticipant:
+    id: str
+    session_id: str
+    user_email: str
+    user_id: str
+    role: str  # 'owner' | 'collaborator'
+    joined_at: Optional[datetime]
+    left_at: Optional[datetime]  # None = active
 
 
 @dataclass

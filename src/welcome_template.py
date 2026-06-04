@@ -193,28 +193,21 @@ def compute_default_agent_prompt(
         except Exception:
             pass
 
-        # Resolve connector prompts via the shared module so the bash
-        # script's step-9 connector block uses the same operator-side
-        # config (GWS OAuth credentials, admin email) as the /home tile
-        # cards. Failure here falls back to the module's default empty
-        # config — the unconfigured GCP-walkthrough branch renders, which
-        # is the same behaviour as today on an instance with no
-        # AGNES_GWS_CLIENT_ID / AGNES_GWS_CLIENT_SECRET set.
-        connector_prompts: dict[str, str] | None = None
+        # Connector manifest sourced from the seed (operator Initial Workspace
+        # Template clone wins, bundled snapshot in the wheel is the fallback).
+        # Operator-side config (GWS OAuth, Atlassian base URL) now flows into
+        # `~/.claude/agnes/.env` via `agnes init`; the seed-resident SKILL.md
+        # bodies read those at install time. Renderer just needs the metadata.
+        connector_manifest = None
         try:
-            from app.web.connector_prompts import all_connector_prompts
-            from app.instance_config import (
-                get_gws_oauth_credentials, get_instance_admin_email,
-            )
-            from app.instance_config import get_atlassian_base_url, get_instance_brand
-            connector_prompts = all_connector_prompts(
-                gws_oauth=get_gws_oauth_credentials(),
-                instance_admin_email=get_instance_admin_email(),
-                atlassian_base_url=get_atlassian_base_url(),
-                instance_brand=get_instance_brand(),
-            )
+            from src.connectors_manifest import load_manifest
+            connector_manifest = load_manifest()
         except Exception:
-            logger.exception("compute_default_agent_prompt: connector prompt resolution failed; using module defaults")
+            logger.exception(
+                "compute_default_agent_prompt: connector manifest load failed; "
+                "rendering install prompt without connector tiles"
+            )
+            connector_manifest = []  # explicit empty — skip the connector block
 
         from app.instance_config import get_instance_brand, get_workspace_dir_name
         lines = resolve_lines(
@@ -222,7 +215,7 @@ def compute_default_agent_prompt(
             plugin_install_names=plugin_install_names,
             server_host=server_host,
             ca_pem=ca_pem,
-            connector_prompts=connector_prompts,
+            connector_manifest=connector_manifest,
             instance_brand=get_instance_brand(),
             workspace_dir=get_workspace_dir_name(),
         )

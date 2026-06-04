@@ -73,6 +73,57 @@ server refuses to enable chat if `UVICORN_WORKERS > 1`. HA support
 3. Slack users DM the bot to receive a 6-digit verification code,
    which they paste at `/setup` while logged into Agnes.
 
+### Slash commands
+
+The manifest also registers three slash commands, all pointed at
+`https://YOUR-AGNES-HOST/api/slack/commands` (a separate Request URL
+from the Events endpoint):
+
+| Command | What it does |
+|---|---|
+| `/agnes <question>` | Asks Agnes; runs on your persistent DM session, so the answer also appears on web `/chat`. |
+| `/agnes-new` | Archives your current Agnes DM session so the next `/agnes` starts fresh. |
+| `/agnes-status` | Shows your active session count vs. the per-user cap, plus a `/chat` deep link. |
+| `/agnes help` | Lists these commands (answered inline, no async work). |
+
+Each command acks within Slack's 3 s budget and delivers its answer
+asynchronously (ephemerally) via the command's `response_url`. Under
+Socket Mode the commands arrive over the socket instead of the HTTP
+Request URL — no manifest `url:` is needed in that mode.
+
+### Manifest stanzas: HTTP vs Socket Mode
+
+Two transports, two manifest shapes. Pick the one matching your
+`chat.slack.transport` setting. Replace `<your-host>` with your public
+Agnes hostname.
+
+**HTTP (default).** Slack delivers events, slash commands and interactivity
+over HTTPS to your public endpoints:
+
+```yaml
+settings:
+  event_subscriptions:
+    request_url: "https://<your-host>/api/slack/events"
+    bot_events: [app_mention, message.im]
+  interactivity:
+    is_enabled: true
+    request_url: "https://<your-host>/api/slack/interactivity"
+  socket_mode_enabled: false
+```
+
+**Socket Mode (optional).** All three event classes arrive over one
+WebSocket; no public `request_url` is needed — interactivity routes through
+the same `dispatch_interaction`:
+
+```yaml
+settings:
+  event_subscriptions:
+    bot_events: [app_mention, message.im]
+  interactivity:
+    is_enabled: true
+  socket_mode_enabled: true
+```
+
 ## Cost & limits
 
 Per-user defaults (configurable in `/admin/server-config`):

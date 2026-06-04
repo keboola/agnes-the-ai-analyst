@@ -938,11 +938,12 @@ What would you like to do?
     // Hero X close — confirm first so a stray click doesn't flip state.
     var heroClose = document.getElementById('installHeroClose');
     if (heroClose) {
-        heroClose.addEventListener('click', function () {
-            var ok = window.confirm(
-                "Are you already onboarded? Closing this will mark your account as onboarded " +
-                "and hide the setup steps. You can revert later from the strip below the hero."
-            );
+        heroClose.addEventListener('click', async function () {
+            var ok = await confirmModal({
+                message: "Are you already onboarded? Closing this will mark your account as onboarded " +
+                    "and hide the setup steps. You can revert later from the strip below the hero.",
+                danger: false,
+            });
             if (!ok) return;
             postOnboarded(
                 heroClose, status, true,

@@ -273,5 +273,98 @@ def import_token(
     typer.echo(f"Imported token for {resolved_email}.")
 
 
+@auth_app.command("refresh-groups")
+def refresh_groups(
+    json_out: bool = typer.Option(False, "--json", help="Print raw JSON."),
+):
+    """Re-sync your Google Workspace group memberships with the server.
+
+    The Agnes server's snapshot of your Workspace group membership refreshes
+    automatically on browser sign-in. If you've been added to a new group
+    since your last dashboard login and you're working entirely via the CLI,
+    your access (RBAC, marketplace plugin visibility, table grants) won't
+    reflect that new group until the snapshot refreshes. This command
+    triggers that refresh against the live Admin SDK without requiring a
+    browser round-trip.
+
+    Use it when a teammate added you to a group / granted you access and
+    you don't see the new plugins / tables yet — instead of signing out and
+    back in on the dashboard.
+    """
+    token = get_token()
+    if not token:
+        typer.echo("Not logged in. Run: agnes login", err=True)
+        raise typer.Exit(1)
+
+    server = get_server_url().rstrip("/")
+    try:
+        with httpx.Client(
+            base_url=server,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30.0,
+        ) as client:
+            resp = client.post("/auth/refresh-groups")
+    except Exception as e:
+        typer.echo(f"Could not reach server {server}: {e}", err=True)
+        raise typer.Exit(1)
+
+    if resp.status_code != 200:
+        detail = resp.text
+        try:
+            detail = resp.json().get("detail", detail)
+        except Exception:
+            pass
+        typer.echo(
+            f"Refresh failed (HTTP {resp.status_code}): {detail}", err=True,
+        )
+        raise typer.Exit(1)
+
+    data = resp.json()
+
+    if json_out:
+        import json
+        typer.echo(json.dumps(data, indent=2))
+        return
+
+    if data.get("denied"):
+        typer.echo(
+            "Refresh denied: your Workspace groups don't match the "
+            "configured group prefix on this Agnes instance — no access "
+            "applied. Ask your Agnes admin if you should be a member of an "
+            "allow-listed group.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if data.get("soft_failed"):
+        typer.echo(
+            "Refresh soft-failed: the server could not fetch your "
+            "Workspace groups (transient Admin SDK error or empty result). "
+            "Your previous group snapshot is unchanged."
+        )
+        return
+
+    added = data.get("added") or []
+    removed = data.get("removed") or []
+    current = data.get("current") or []
+
+    if not added and not removed:
+        typer.echo(
+            f"Groups already up to date — currently in {len(current)} "
+            f"group(s):"
+        )
+    else:
+        if added:
+            typer.echo(f"Added {len(added)} group(s):")
+            for g in added:
+                typer.echo(f"  + {g}")
+        if removed:
+            typer.echo(f"Removed {len(removed)} group(s):")
+            for g in removed:
+                typer.echo(f"  - {g}")
+        typer.echo(f"\nNow in {len(current)} group(s):")
+    for g in current:
+        typer.echo(f"  • {g}")
+
+
 from cli.commands.tokens import token_app
 auth_app.add_typer(token_app, name="token")

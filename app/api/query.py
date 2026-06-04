@@ -14,6 +14,7 @@ import duckdb
 
 from app.auth.access import is_user_admin
 from app.auth.dependencies import get_current_user, _get_db
+from app.auth.session_principal import SessionPrincipal
 from app.instance_config import get_value
 from connectors.internal.access import (
     InternalAccessError,
@@ -280,7 +281,19 @@ def _run_internal_query(
     system_db_path = str(_get_state_dir() / "system.duckdb")
     # is_user_admin takes (user_id, conn) — passing the dict raises
     # TypeError, which is exactly the regression review #278/1 caught.
-    is_admin = is_user_admin(user.get("id"), conn) if user.get("id") else False
+    # A SessionPrincipal has no .get("id") — treat co-session as non-admin
+    # for internal row-level filter. build_filter_clause expects a dict
+    # so pass a shim when user is a principal (mirrors v2_sample.py:131-137).
+    # The shim id "session.none" passes the safe-identifier regex but never
+    # matches a real user_id; the email local-part "session.none" similarly
+    # passes the username regex but matches no real session. Together the
+    # filter yields zero rows for every internal table — correct behaviour
+    # (co-sessions should not see any single user's internal rows).
+    if isinstance(user, SessionPrincipal):
+        is_admin = False
+        user = {"id": "session.none", "email": "session.none@internal"}
+    else:
+        is_admin = is_user_admin(user.get("id"), conn) if user.get("id") else False
     try:
         columns, rows, truncated = execute_internal_query(
             system_db_path=system_db_path,
@@ -1269,30 +1282,26 @@ def _view_targets_in(dry_run_set: list) -> list[str]:
     if not dry_run_set:
         return []
     try:
-        from src.db import get_system_db
-        conn = get_system_db()
-        try:
-            pairs = [(b, t) for b, t, _ in dry_run_set]
-            # Build a parameterized OR of (bucket, source_table) pairs.
-            # DuckDB supports row-tuple IN but keeping it explicit OR
-            # avoids any version-specific syntax surprises.
-            where = " OR ".join(
-                "(tr.bucket = ? AND tr.source_table = ?)" for _ in pairs
-            )
-            params: list = []
-            for b, t in pairs:
-                params.extend([b, t])
-            sql_ = (
-                f"SELECT mc.table_id "
-                f"FROM bq_metadata_cache mc "
-                f"JOIN table_registry tr ON tr.id = mc.table_id "
-                f"WHERE mc.entity_type IN ('VIEW', 'MATERIALIZED VIEW') "
-                f"AND ({where})"
-            )
-            rows = conn.execute(sql_, params).fetchall()
-            return [r[0] for r in rows]
-        finally:
-            conn.close()
+        # Route through the repo factory (backend-agnostic): a raw JOIN on the
+        # always-DuckDB system connection comes back empty on a Postgres
+        # instance, so bq_metadata_cache / table_registry would be invisible and
+        # the VIEW hint would silently never fire.
+        from src.repositories import bq_metadata_cache_repo, table_registry_repo
+
+        wanted = {(b, t) for b, t, _ in dry_run_set}
+        target_ids = {
+            r["id"]
+            for r in table_registry_repo().list_all()
+            if (r.get("bucket"), r.get("source_table")) in wanted
+        }
+        if not target_ids:
+            return []
+        view_types = {"VIEW", "MATERIALIZED VIEW"}
+        return [
+            r["table_id"]
+            for r in bq_metadata_cache_repo().list_all()
+            if r.get("table_id") in target_ids and r.get("entity_type") in view_types
+        ]
     except Exception:
         return []
 

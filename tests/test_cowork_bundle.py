@@ -269,8 +269,9 @@ class TestExchangeSetupToken:
         # the DB, so we use the endpoint instead of a direct conn).
         # Instead: insert the expired token through the API shim that gives us a
         # fresh DB connection per request.
-        # We mock the SetupTokenRepository to return our crafted row.
-        from unittest.mock import patch
+        # Mock the backend-aware setup_tokens_repo() factory to return a repo
+        # whose get_by_hash yields our crafted expired row.
+        from unittest.mock import MagicMock, patch
 
         expired_row = {
             "id": tok_id,
@@ -281,10 +282,13 @@ class TestExchangeSetupToken:
             "created_at": datetime.now(timezone.utc),
         }
 
+        mock_repo = MagicMock()
+        mock_repo.get_by_hash.return_value = expired_row
+
         c = seeded_app["client"]
         with patch(
-            "app.api.cowork_bundle.SetupTokenRepository.get_by_hash",
-            return_value=expired_row,
+            "app.api.cowork_bundle.setup_tokens_repo",
+            return_value=mock_repo,
         ):
             resp = c.post("/api/auth/exchange-setup-token",
                           json={"setup_token": raw})

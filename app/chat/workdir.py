@@ -164,7 +164,19 @@ class WorkdirManager:
         )
         logger.info("workdir initialized: user=%s template_sha=%s", user_email, template_sha)
 
-    def prepare_session_dir(self, user_email: str, chat_id: str) -> Path:
+    def prepare_session_dir(
+        self, user_email: str, chat_id: str,
+        *, include_personal_override: bool = True,
+    ) -> Path:
+        """Prepare a regular per-user session directory.
+
+        By default (``include_personal_override=True``) the user's personal
+        ``CLAUDE.local.md`` is symlinked into the session dir alongside the
+        shared workspace state, so regular per-user sessions carry the
+        analyst's personal overrides. Co-drive sessions never call this
+        method — they use :meth:`prepare_ephemeral_session_dir`, which
+        deliberately excludes ``CLAUDE.local.md`` (SR-6 protection).
+        """
         sessions_root = self.user_sessions_root(user_email)
         sessions_root.mkdir(parents=True, exist_ok=True)
         sdir = sessions_root / chat_id
@@ -173,7 +185,10 @@ class WorkdirManager:
         # claude-agent-sdk resolves .claude/{skills,plugins,agents,commands,hooks}
         # against the per-user workspace.
         ws = self.user_workspace(user_email)
-        for entry in (".claude", "CLAUDE.md", "CLAUDE.local.md", "snapshots", "scripts"):
+        entries = [".claude", "CLAUDE.md", "snapshots", "scripts"]
+        if include_personal_override:
+            entries.append("CLAUDE.local.md")
+        for entry in entries:
             link = sdir / entry
             target = ws / entry
             if not target.exists():
@@ -182,6 +197,42 @@ class WorkdirManager:
                 link.symlink_to(target)
         (sdir / "work").mkdir(exist_ok=True)
         return sdir
+
+    def prepare_ephemeral_session_dir(
+        self,
+        chat_id: str,
+        participant_emails: list[str],
+        intersection: "dict[str, frozenset[str]]",
+    ) -> Path:
+        """Fresh co-session workspace. NO symlinks to any personal workspace,
+        NO CLAUDE.local.md in any form, fresh empty memory/, shared work/.
+        Only intersection-filtered .claude/skills entries are copied in."""
+        import shutil
+        root = self._data_dir / "ephemeral_sessions" / chat_id
+        if root.exists():
+            shutil.rmtree(root)
+        (root / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
+        (root / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
+        (root / "memory").mkdir(exist_ok=True)
+        (root / "work").mkdir(exist_ok=True)
+        # FIX 4 (H1): do NOT render the owner-scoped workspace prompt for the
+        # ephemeral co-drive path. The render_workspace_prompt callable is
+        # bound to a single user's identity (participant_emails[0] was the
+        # owner), so calling it would leak owner-scoped catalog metadata
+        # ({{tables}}, {{marketplaces}}) into the shared CLAUDE.md even when
+        # those resources are not in the intersection. Analysts use
+        # `agnes catalog` for discovery, which is intersection-gated. The
+        # static "# Co-drive session" header is always safe.
+        (root / "CLAUDE.md").write_text("# Co-drive session\n", encoding="utf-8")
+        allowed = intersection.get("marketplace_plugin", frozenset())
+        src_root = self._bundled_template_dir / ".claude" / "skills"
+        if src_root.exists():
+            for plug in allowed:
+                src = src_root / plug
+                if src.exists():
+                    shutil.copytree(src, root / ".claude" / "skills" / plug,
+                                    dirs_exist_ok=True)
+        return root
 
     def purge_user(self, user_email: str) -> int:
         """GDPR hard-delete. Returns file count removed."""

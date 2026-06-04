@@ -39,6 +39,22 @@ class MarketplacePluginsPgRepository:
             ).mappings().all()
         return [self._normalize_row(dict(r)) for r in rows]
 
+    def get(self, marketplace_id: str, name: str) -> Optional[Dict[str, Any]]:
+        """Fetch a single plugin row by (marketplace_id, name), or None.
+
+        Parity with the DuckDB repo — backs the curated install/uninstall
+        existence + is_system checks through the factory.
+        """
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    "SELECT * FROM marketplace_plugins "
+                    "WHERE marketplace_id = :m AND name = :n"
+                ),
+                {"m": marketplace_id, "n": name},
+            ).mappings().first()
+        return self._normalize_row(dict(row)) if row else None
+
     def list_all(self) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
             rows = conn.execute(
@@ -54,6 +70,53 @@ class MarketplacePluginsPgRepository:
                 )
             ).all()
         return {r[0]: int(r[1]) for r in rows}
+
+    def list_granted_for_groups(
+        self, group_ids: Iterable[str],
+    ) -> List[Dict[str, Any]]:
+        """PG mirror of ``MarketplacePluginsRepository.list_granted_for_groups``."""
+        gids = list(group_ids)
+        if not gids:
+            return []
+        gid_keys: List[str] = []
+        params: Dict[str, Any] = {}
+        for i, gid in enumerate(gids):
+            k = f"g_{i}"
+            gid_keys.append(f":{k}")
+            params[k] = gid
+        # Postgres strict-standard SQL requires every ``ORDER BY``
+        # expression to appear in the ``SELECT DISTINCT`` list — same
+        # shape as the DuckDB sibling for cross-engine parity.
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT DISTINCT mp.marketplace_id, mp.name, mp.version, mp.raw, "
+                    "       mr.registered_at "
+                    "FROM resource_grants rg "
+                    "JOIN marketplace_plugins mp "
+                    "  ON mp.marketplace_id || '/' || mp.name = rg.resource_id "
+                    "JOIN marketplace_registry mr ON mr.id = mp.marketplace_id "
+                    f"WHERE rg.group_id IN ({','.join(gid_keys)}) "
+                    "  AND rg.resource_type = 'marketplace_plugin' "
+                    "ORDER BY mr.registered_at, mp.name"
+                ),
+                params,
+            ).all()
+        out: List[Dict[str, Any]] = []
+        for marketplace_id, name, version, raw, _registered_at in rows:
+            parsed_raw: Any = raw
+            if isinstance(raw, str):
+                try:
+                    parsed_raw = json.loads(raw)
+                except (ValueError, TypeError):
+                    parsed_raw = {}
+            out.append({
+                "marketplace_id": marketplace_id,
+                "name": name,
+                "version": version,
+                "raw": parsed_raw if isinstance(parsed_raw, dict) else {},
+            })
+        return out
 
     def list_with_filters(
         self,

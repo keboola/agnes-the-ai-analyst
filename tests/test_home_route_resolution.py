@@ -176,18 +176,17 @@ def test_gws_oauth_half_configured_falls_back(fresh_db, monkeypatch):
     assert get_gws_oauth_credentials()["configured"] is False
 
 
-def test_home_renders_configured_gws_branch(fresh_db, monkeypatch):
-    """Configured branch writes ~/.config/gws/client_secret.json directly
-    instead of exporting env vars. Claude Code's security layer redacts
-    env vars whose name contains 'SECRET', so the file-write path is the
-    only reliable way to seed the OAuth app credentials.
+def test_home_renders_gws_oauth_app_branch(fresh_db, monkeypatch):
+    """In the A1.2 seed-driven renderer, the GWS SKILL.md body always
+    describes BOTH branches (operator-OAuth-app and manual GCP
+    walkthrough) — the skill checks `~/.claude/agnes/.env` at install
+    time to pick the right one. Pin both landmarks here.
 
-    The gws prompt body now flows through Jinja's autoescape (the template
-    moved from inline `<code>` text to a `{{ connector_prompts.gws }}`
-    expression after the connector-prompts extraction). That means `"`
-    characters render as `&quot;` in the served HTML — the browser
-    un-escapes them on read, but the raw response body has the entity-
-    encoded form. So the test un-escapes before substring-matching."""
+    Behaviour change from pre-A1.2: server no longer substitutes literal
+    client_id / client_secret values into the rendered /home HTML. Those
+    values now flow through `agnes init` into `<workspace>/.claude/agnes/.env`
+    (wired up in A1.3) where the seed skill reads them at install time.
+    """
     import html as _html
 
     monkeypatch.setenv(
@@ -208,19 +207,17 @@ def test_home_renders_configured_gws_branch(fresh_db, monkeypatch):
     resp = c.get("/home", cookies={"access_token": sess})
     assert resp.status_code == 200
     body = _html.unescape(resp.text)
-    # Configured branch — JSON file path
+    # Operator-OAuth-app branch landmark — the inlined client_secret.json
+    # schema block references the per-tenant .env file.
     assert "~/.config/gws/client_secret.json" in body
-    assert '"client_id": "123456789012-abcd5678efgh.apps.googleusercontent.com"' in body
-    assert '"client_secret": "GOCSPX-secret-xyz"' in body
-    # Project ID derived from client_id prefix
-    assert '"project_id": "123456789012"' in body
+    assert "AGNES_GWS_CLIENT_ID" in body
     # Full read+write scopes — no --readonly flag (Agnes needs Drive/Gmail
     # write so the agent can create, edit, and send on the user's behalf).
     assert "gws auth login --readonly" not in body
     assert "OAUTHLIB_INSECURE_TRANSPORT=1 gws auth login" in body
-    # Manual-setup walkthrough should NOT appear in the configured branch
-    assert "Run `gws auth setup` for me" not in body
-    # Old env-var approach should not leak back in
+    # Old env-var approach should not leak back in (Claude Code security
+    # layer redacts env vars whose name contains 'SECRET' from non-
+    # interactive subshells, so the file-write path is the canonical one).
     assert "export GOOGLE_WORKSPACE_CLI_CLIENT_SECRET=" not in body
 
 
@@ -375,41 +372,20 @@ def test_atlassian_base_url_strips_trailing_wiki(fresh_db, monkeypatch):
     assert get_atlassian_base_url() == "https://acme.atlassian.net"
 
 
-def test_atlassian_prompt_uses_base_url_when_set():
-    """The atlassian connector prompt bakes the operator's base URL into
-    the helper script instead of asking the user. Saves a chat round-
-    trip and avoids the "guess your org's Atlassian URL" footgun."""
-    from app.web.connector_prompts import atlassian_prompt
+def test_atlassian_skill_asks_for_url_in_v1():
+    """In the A1.2 seed-driven renderer, the Atlassian SKILL.md asks the
+    user for their Atlassian Cloud site URL unconditionally. The
+    operator-baked-URL feature (previously substituted server-side via
+    ``atlassian_prompt(base_url=...)``) moves to runtime in B1b: the
+    skill will read ``~/.claude/agnes/.env`` for ``ATLASSIAN_BASE_URL``
+    and skip the ask when present. Until then, document the v1 behaviour
+    explicitly so a future regression catches at this pin.
+    """
+    from src import connectors_manifest as cm
 
-    p = atlassian_prompt(base_url="https://acme.atlassian.net")
-    # The literal URL is baked into the prompt body.
-    assert "https://acme.atlassian.net" in p
-    # The "ask me for the site URL" step disappears.
-    assert "Ask me for my Atlassian Cloud site URL" not in p
-    # The placeholder in step 4's helper-script body is replaced with the literal.
-    assert "<the site URL I gave you>" not in p
-    # The new "operator baked it in" wording appears in step 1.
-    assert "already provisioned by the Agnes operator" in p
+    from app.web.setup_instructions import resolve_lines
 
-
-def test_atlassian_prompt_asks_user_when_base_url_empty():
-    """When no operator override is set, prompt falls back to the
-    existing "ask me for the site URL" flow — no regression for OSS
-    instances that don't set the env var."""
-    from app.web.connector_prompts import atlassian_prompt
-
-    p = atlassian_prompt(base_url="")
-    assert "Ask me for my Atlassian Cloud site URL" in p
-    assert "<the site URL I gave you>" in p
-    assert "already provisioned by the Agnes operator" not in p
-
-
-def test_all_connector_prompts_threads_atlassian_base_url():
-    """all_connector_prompts() must forward the atlassian_base_url
-    kwarg to atlassian_prompt — otherwise the operator's Terraform
-    override never reaches the rendered text."""
-    from app.web.connector_prompts import all_connector_prompts
-
-    out = all_connector_prompts(atlassian_base_url="https://acme.atlassian.net")
-    assert "https://acme.atlassian.net" in out["atlassian"]
-    assert "Ask me for my Atlassian Cloud site URL" not in out["atlassian"]
+    cm.invalidate_cache()
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    # The bundled Atlassian SKILL.md asks the user for the site URL.
+    assert "Ask me for my Atlassian Cloud site URL" in joined

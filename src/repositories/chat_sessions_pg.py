@@ -38,6 +38,8 @@ def _row_to_session(row) -> ChatSession:
         last_message_at=row["last_message_at"],
         message_count=int(row["message_count"]) if row["message_count"] is not None else 0,
         archived=bool(row["archived"]),
+        is_co_session=bool(row["is_co_session"]),
+        ephemeral=bool(row["ephemeral"]),
     )
 
 
