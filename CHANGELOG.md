@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.2] — 2026-06-04
+
+### Changed
+- Refreshed the `/login` feature panel to match the product pillars shown on `/home`: **Data packages**, **Marketplace** (plugins, skills, and agents in one card), **MCP**, **Memory**, and a **Use it anywhere** card for the cloud surfaces (Cowork, web chat, Slack). Replaces the stale, aspirational cards (*Unified Data Access / Instant Automation / Smart Notifications / Performance Intelligence*) with descriptions that reflect what the platform actually does, and adds a `BETA` badge to every capability except the mature Data packages core. The panel subtitle is realigned with the `/home` hero copy, and the cards are tightened so the full set fits without scrolling. Adds a "Made by Keboola" attribution with the Keboola wordmark at the foot of the brand panel.
+
 ## [0.65.1] — 2026-06-04
 
 ### Internal
