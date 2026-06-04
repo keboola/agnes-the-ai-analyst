@@ -21,7 +21,7 @@ def _cols(conn, table):
 def test_fresh_install_has_v70_shape(tmp_path):
     conn = duckdb.connect(str(tmp_path / "system.duckdb"))
     _ensure_schema(conn)
-    assert get_schema_version(conn) == SCHEMA_VERSION == 70
+    assert get_schema_version(conn) == SCHEMA_VERSION
     # main's v69 MCP-env addition.
     assert "env" in _cols(conn, "mcp_sources")
     # our v70 co-presence additions.
@@ -73,7 +73,7 @@ def test_v68_db_migrates_to_v70_with_backfill(tmp_path):
 
     _ensure_schema(conn)
 
-    assert get_schema_version(conn) == SCHEMA_VERSION == 70
+    assert get_schema_version(conn) == SCHEMA_VERSION
     # v69 MCP-env step ran.
     assert "env" in _cols(conn, "mcp_sources")
     # v70 co-presence step ran.

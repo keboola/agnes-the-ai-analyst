@@ -9,7 +9,7 @@ from pathlib import Path
 
 import duckdb
 import pytest
-from src.db import _ensure_schema
+from src.db import _ensure_schema, get_system_db
 
 from services.slack_bot.binding import (
     issue_verification_code,
@@ -18,9 +18,25 @@ from services.slack_bot.binding import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _shared_slack_db(monkeypatch):
+    """Slack identity binding now reads/writes through the repo factory
+    (``users_repo()`` → ``get_system_db()``), not the test's standalone conn.
+    Point both the test module's ``get_system_db`` and the factory's at one
+    shared in-memory DuckDB so a user seeded in a test is visible to the
+    binding lookup/redeem on the (default DuckDB) backend."""
+    shared = duckdb.connect(":memory:")
+    _ensure_schema(shared)
+    monkeypatch.setattr(
+        "tests.test_slack_bot.get_system_db", lambda: shared, raising=False
+    )
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: shared)
+    yield shared
+
+
 @pytest.fixture
 def conn():
-    c = duckdb.connect(":memory:")
+    c = get_system_db()
     _ensure_schema(c)
     c.execute("INSERT INTO users(id, email, name) VALUES ('uid1', 'u@x', 'U')")
     return c
@@ -144,7 +160,7 @@ def _build_slack_app_state():
     from app.chat.types import ChatSession, Surface
     from datetime import datetime, timezone
 
-    conn = duckdb.connect(":memory:")
+    conn = get_system_db()
     _ensure_schema(conn)
     conn.execute(
         "INSERT INTO users(id, email, name) VALUES ('uid1', 'bob@example.com', 'Bob')"
@@ -530,7 +546,7 @@ def test_mention_bot_loop_guard_returns_silently(monkeypatch):
     import services.slack_bot.events as ev
     posts = []
     monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: posts.append(a))
-    conn = duckdb.connect(":memory:"); _ensure_schema(conn)
+    conn = get_system_db(); _ensure_schema(conn)
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
     asyncio.run(ev._handle_mention(app, {"bot_id": "B1", "channel": "C1", "ts": "1.0", "user": "U07BOT"}))
@@ -542,7 +558,7 @@ def test_mention_self_user_loop_guard_returns_silently(monkeypatch):
     import services.slack_bot.events as ev
     posts = []
     monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: posts.append(a))
-    conn = duckdb.connect(":memory:"); _ensure_schema(conn)
+    conn = get_system_db(); _ensure_schema(conn)
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
     asyncio.run(ev._handle_mention(app, {"channel": "C1", "ts": "1.0", "user": "U07BOT", "text": "<@U07BOT> hi"}))
@@ -556,7 +572,7 @@ def test_mention_not_allowlisted_ephemeral_deny(monkeypatch):
     posts = []
     async def _fake_ep(ch, u, txt): posts.append((ch, u, txt))
     monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
-    conn = duckdb.connect(":memory:"); _ensure_schema(conn); _ensure_table(conn)
+    conn = get_system_db(); _ensure_schema(conn); _ensure_table(conn)
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
     asyncio.run(ev._handle_mention(app, {"channel": "C_X", "ts": "1.0", "user": "U1", "text": "<@U07BOT> hi"}))
@@ -571,7 +587,7 @@ def test_mention_unbound_user_gets_code(monkeypatch):
     posts = []
     async def _fake_ep(ch, u, txt): posts.append((ch, u, txt))
     monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
-    conn = duckdb.connect(":memory:"); _ensure_schema(conn); _ensure_table(conn)
+    conn = get_system_db(); _ensure_schema(conn); _ensure_table(conn)
     gid = conn.execute("SELECT id FROM user_groups WHERE name='Everyone'").fetchone()[0]
     conn.execute(
         "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
@@ -616,7 +632,7 @@ def test_mention_happy_path_creates_thread_and_sends(monkeypatch):
     import asyncio
     import services.slack_bot.events as ev
     monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
-    conn = duckdb.connect(":memory:"); _ensure_schema(conn)
+    conn = get_system_db(); _ensure_schema(conn)
     _seed_bound_chat_user(conn)
     _allow_channel(conn)
     mgr = _FakeMgr()
@@ -642,7 +658,7 @@ def test_mention_ownership_reject_ephemeral(monkeypatch):
     posts = []
     async def _fake_ep(ch, u, txt): posts.append(txt)
     monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
-    conn = duckdb.connect(":memory:"); _ensure_schema(conn)
+    conn = get_system_db(); _ensure_schema(conn)
     _seed_bound_chat_user(conn, email="owner@x", slack_id="U_OWNER")
     _seed_bound_chat_user(conn, email="other@x", slack_id="U_OTHER")
     _allow_channel(conn)
@@ -668,7 +684,7 @@ def test_mention_same_thread_reuses_session(monkeypatch):
     import asyncio
     import services.slack_bot.events as ev
     monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
-    conn = duckdb.connect(":memory:"); _ensure_schema(conn)
+    conn = get_system_db(); _ensure_schema(conn)
     _seed_bound_chat_user(conn)
     _allow_channel(conn)
     # existing session owned by the SAME user (column is started_at)
@@ -689,7 +705,7 @@ def test_mention_attach_not_awaited_returns_under_budget(monkeypatch):
     import asyncio
     import services.slack_bot.events as ev
     monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
-    conn = duckdb.connect(":memory:"); _ensure_schema(conn)
+    conn = get_system_db(); _ensure_schema(conn)
     _seed_bound_chat_user(conn)
     _allow_channel(conn)
 
@@ -727,7 +743,7 @@ def test_slack_app_mention_dispatches(monkeypatch):
     async def _fake_ep(ch, u, txt): posts.append((ch, u, txt))
     monkeypatch.setattr(ev, "send_ephemeral_to_user", _fake_ep)
 
-    conn = duckdb.connect(":memory:"); _ensure_schema(conn)
+    conn = get_system_db(); _ensure_schema(conn)
     from services.slack_bot.binding import _ensure_table
     _ensure_table(conn)
     mgr = _FakeMgr()

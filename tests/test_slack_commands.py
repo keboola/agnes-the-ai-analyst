@@ -6,6 +6,22 @@ import asyncio
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _shared_slack_db(monkeypatch):
+    """Point get_system_db() and the repo factory at one shared in-memory
+    DuckDB. The Slack command handler resolves the caller via users_repo()
+    (factory) now, not repo._conn, so a user seeded in _agnes_app must be
+    visible through the factory on the default DuckDB backend."""
+    import duckdb
+    from src.db import _ensure_schema
+
+    shared = duckdb.connect(":memory:")
+    _ensure_schema(shared)
+    monkeypatch.setattr("src.db.get_system_db", lambda: shared)
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: shared)
+    yield shared
+
+
 def test_send_ephemeral_posts_to_response_url(monkeypatch):
     from services.slack_bot import sender as snd
 
@@ -127,20 +143,24 @@ def test_commands_schedules_dispatch(monkeypatch):
 
 def _agnes_app(monkeypatch, *, bound=True, can_chat=True):
     from types import SimpleNamespace
-    import duckdb
-    from src.db import _ensure_schema
+    from src.db import _ensure_schema, get_system_db
     from app.chat.persistence import ChatRepository
     from app.chat.types import ChatSession, Surface
     from datetime import datetime, timezone
     from services.slack_bot.binding import _ensure_table
 
-    conn = duckdb.connect(":memory:")
+    # get_system_db is patched by the autouse _shared_slack_db fixture to a
+    # shared in-memory conn that the repo factory (users_repo) also resolves to,
+    # so a user seeded here is visible to the factory-routed Slack binding
+    # lookup (which no longer reads repo._conn directly).
+    conn = get_system_db()
     _ensure_schema(conn)
     conn.execute("INSERT INTO users(id, email, name) VALUES ('uid1','bob@example.com','Bob')")
     repo = ChatRepository(conn)
     _ensure_table(conn)
     if bound:
-        conn.execute("UPDATE users SET slack_user_id='U1' WHERE email='bob@example.com'")
+        from src.repositories import users_repo
+        users_repo().update(id="uid1", slack_user_id="U1")
 
     created: list = []
     attached: list = []
