@@ -10,6 +10,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.3] — 2026-06-04
+
+### Fixed
+- **Postgres backend: the sync pipeline served no data on a PG instance.**
+  `SyncOrchestrator.rebuild()` read the table registry, wrote `sync_state`, and
+  read/reconciled `view_ownership` through a raw `get_system_db()` (always
+  DuckDB) — so on a Postgres-backed instance it saw an empty registry, rebuilt
+  zero analytics views, and wrote sync progress to a DuckDB file the
+  factory-backed `/dashboard` never reads. All three now go through the repo
+  factory (`table_registry_repo()` / `sync_state_repo()` / `view_ownership_repo()`),
+  so extract → rebuild → serve works on either backend. (Highest-severity
+  remaining split: without it a PG instance serves no data at all.) The profiler's
+  metric-table map (`profiler.get_table_map`) was the same raw-conn pattern and is
+  now `metric_repo()`-routed too.
+- **Postgres backend: memory visibility for non-admins with domain grants.**
+  `knowledge_pg`'s `list_items` / `_build_filter_clauses` (and `count_by_tag` /
+  `count_by_audience`) resolved `granted_domains` via a stale `domain IN (...)`
+  against an inline column instead of the v49 `knowledge_item_domains` junction
+  (matching the DuckDB sibling), so a non-admin's domain-granted memory items
+  were invisible/miscounted on Postgres.
+
 ## [0.65.2] — 2026-06-04
 
 ### Changed
