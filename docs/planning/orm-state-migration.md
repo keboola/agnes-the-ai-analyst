@@ -1,168 +1,65 @@
-# ORM-on-state migration plan
+# ORM-on-state migration plan — v2
 
 **Date**: 2026-06-04
 **Branch**: `vr/orm-migration-plan` (off `origin/main` @ `46943e9b`)
 **Status**: research + plan, no code change
+**Supersedes**: v1 (commit `a8555f8a`). Restructured per the adversary review at `docs/planning/orm-migration-adversary-review.md` — every CRITICAL/HIGH finding addressed below; the doc tracks where.
 
 ## Goal
 
-Eliminate raw SQL from non-repo code paths. Single SQLAlchemy ORM layer for application state (today: 37 DuckDB repos + 41 Postgres mirrors via a declarative `_REGISTRY` factory at `src/repositories/__init__.py`). Same models run on DuckDB or Postgres via the dialect layer (`duckdb-engine` for DuckDB, `psycopg` for PG). DuckDB stays for analytics: `analytics.duckdb`, `extract.duckdb`, BQ extension, parquet views, FTS extension.
+Eliminate raw SQL from non-repo code paths. Single SQLAlchemy ORM layer for application state (today: 37 DuckDB repos + 41 Postgres mirrors via a declarative `_REGISTRY` factory at `src/repositories/__init__.py`). Same ORM models run on DuckDB or Postgres via the dialect layer (`duckdb-engine` for DuckDB, `psycopg` for PG) — **iff** the duckdb-engine spike (Phase 2) clears. DuckDB stays for analytics: `analytics.duckdb`, `extract.duckdb`, BQ extension, parquet views, FTS extension.
 
 ## TL;DR
 
 User invariant under inspection: **"there should be no raw SQL hardcoded except in the analytical part"**.
 
-**Verdict: REFUTED today, structurally achievable.**
+**Verdict: REFUTED today; achievable as a sequenced cleanup gated by a real spike.**
 
-- 73 raw-SQL spots outside `src/repositories/`.
-- 65 bug-class (state tables).
-- 17 acceptable analytics escapes (BQ extension, parquet, FTS, `SELECT 1`, `information_schema`, session settings).
-- 1 needs-discussion (admin LLM-generated SQL surface).
-- 2 misplaced repository-pattern files (`app/chat/persistence.py`, `app/secrets_vault.py`).
+- 73 raw-SQL spots outside `src/repositories/` (audit at `docs/planning/agnes-orm-rawsql-audit.md`).
+  - 65 bug-class (state tables).
+  - 17 acceptable analytics escapes.
+  - 1 needs-discussion → resolved in this v2 (see §"Admin LLM-SQL classification").
+- 2 misplaced repository-pattern files (`app/chat/persistence.py`, `app/secrets_vault.py`) — **not mechanical moves**, see Phase 5.
+- Today: 62 mapped tables across 15 `src/models/*.py` files; 45 registry keys in `_REGISTRY`; 15 cross-engine contract tests (14 parametrize both backends, 1 via shared `state_backend` fixture). **Knowledge + slack-binding clusters have NO contract test yet.**
 
-Migration shape: **retire DuckDB-branch repos, keep PG-branch on `src/models/` declarative, run both backends through the same models via SQLAlchemy dialect dispatch**. Postgres is not mandatory — `duckdb-engine` carries the laptop/dev case.
+**Single cost estimate**: ~9–13 engineer-weeks, split:
 
-Cost: ~5–8 engineer-weeks. Risk: `duckdb-engine` maturity (single-week spike gates the rest).
+| Tranche | Phases | Weeks | Standalone value |
+|---|---|---:|---|
+| **Invariant cleanup (no new dep)** | 0–5 | 4–5 | Ships the 65 bug-class spots into repos. Lint baseline locks future drift. **Delivers the invariant even if everything below stalls.** |
+| **Spike + boundary resolution** | 2 (in parallel) + 6–7 | 2 | Validates `duckdb-engine` for SA on DuckDB. Resolves usage / chat / knowledge boundary designs as named contract tests. |
+| **ORM consolidation** | 8–11 | 3–6 | Single ORM. Only runs if Phase 2 spike clears. |
 
----
-
-## Current architecture
-
-### What already exists
-
-- **`src/models/` (15 files)** — full declarative SQLAlchemy mapping for every state table. Already the destination for the PG repos. **No green-field model authoring needed.**
-- **`src/repositories/__init__.py::_REGISTRY`** (PR #547, 2026-06-04) — declarative `key → {backend: (module, class)}` table. Adding a new backend (e.g. `DUCKDB_QUACK`, fall 2026) is a one-column change. Per-repo dispatch already trivial.
-- **`src/db_state_machine.py::BackendState`** — `StrEnum { DUCKDB, SIDE_CAR, CLOUD, DUCKDB_QUACK }` + in-progress variants + migration transition validator. Backend evolution already first-class.
-- **`tests/db_pg/test_*_contract.py`** — 15 cross-engine contract tests. Mandated safety net.
-- **`docker-compose.postgres.yml`** + `scripts/db_state_migrator.py` + `scripts/migrate_duckdb_to_pg/tasks.py` — operational migration pipeline DuckDB → PG, with admin UI surface (`/admin/db/*`).
-- **`tests/test_repository_registry.py` + `test_repo_method_parity.py`** — structural parity gates.
-
-### What this plan changes
-
-- Collapse `src/repositories/x.py` (DuckDB) + `src/repositories/x_pg.py` (PG) → single `src/repositories/x.py` running through SA on either dialect.
-- Add `duckdb-engine` to `pyproject.toml`.
-- Lift 65 caller-side raw-SQL spots into repo methods.
-- Move 2 misplaced repos (`app/chat/persistence.py`, `app/secrets_vault.py`) into `src/repositories/`.
-- Add 1 brand-new repo + 3 brand-new models for `services/slack_bot/binding.py` (slack_binding_codes / issue_log / redeem_log — currently no repo at all).
-- Retire `src/db.py::_v1_to_v(N)` DuckDB schema ladder. Single Alembic ladder becomes source of truth.
-- Add lint rule that fails CI on `conn.execute(<SQL string literal>)` outside the explicit allowlist.
+The invariant ships first. The unified ORM is a *follow-on bet* gated by Phase 2.
 
 ---
 
-## Inventory summary
+## What changed vs. v1 (adversary fixes)
 
-Sources: parallel research agents on 2026-06-04 producing:
-
-- `/tmp/agnes-orm-inventory-src.md` (149 files under `src/`)
-- `/tmp/agnes-orm-inventory-app.md` (132 files under `app/`)
-- `/tmp/agnes-orm-inventory-cli-conn-svc.md` (197 files under `cli/`, `connectors/`, `services/`, `scripts/`)
-- `/tmp/agnes-orm-rawsql-audit.md` (73 raw-SQL findings outside repos)
-
-### File counts
-
-| Tree | Files | Migration touch |
-|---|---:|---|
-| `src/` | 149 | 37 DuckDB repos retire (collapsed into PG side) + `src/db.py` ladder retires |
-| `app/` | 132 | 30 files contain raw state-SQL hits; 10 stay-as-is (analytics) |
-| `cli/`, `connectors/`, `services/`, `scripts/` | 197 | 7 service/script files contain raw state-SQL; most files use repos already |
-| `tests/` | (not enumerated, ~150 tests/) | contract tests stay green at every step |
-
-### Category sweep across the repo
-
-| Category | Count | Migration touch |
-|---|---:|---|
-| state-repo (DuckDB CRUD, `src/repositories/*.py`) | 37 | **retire** branch, keep PG → single ORM |
-| state-repo-pg (Postgres mirror) | 41 | **collapse with DuckDB sibling, becomes the only repo** |
-| state-other (`src/db.py` schema ladder, `src/db_pg.py` engine, `src/db_state_machine.py`) | 4 | `db.py` ladder retires; `db_pg.py` stays; `db_state_machine.py` stays |
-| analytics (DuckDB-pinned) | ~10 (`orchestrator`, `profiler`, `remote_query`, `duckdb_conn`, `fts`, plus most of `app/api/v2_*.py`, `app/api/query*.py`, `cli/commands/explore.py`, `cli/commands/query.py`, `connectors/*/extractor.py`) | **keep-as-is** |
-| marketplace-server | 6 | `marketplace_filter.py` already factory-routed |
-| infra (DB-agnostic helpers, validators, config) | ~80 | no touch |
-| service-glue, cli-glue | ~60 | most files already use repos; relink imports |
-| models (`src/models/*.py`, SA declarative) | 15 | **the migration target — already there** |
-| dead | 0 | — |
-
----
-
-## Raw-SQL audit — the fact check
-
-**73 total spots outside `src/repositories/`, `migrations/`, `tests/`, `src/db.py`, `src/db_pg.py`, `src/fts.py`, `src/orchestrator.py`, `connectors/*/extractor.py`.**
-
-### Bug-class (65 spots) — must move into repos
-
-Files with state-table raw SQL, sorted by hit count:
-
-| File | Hits | Tables touched | Verdict |
-|---|---:|---|---|
-| `app/chat/persistence.py` | 31 | chat_sessions, chat_messages, chat_session_participants, user_workdirs | **misplaced repo** — move to `src/repositories/chat.py` |
-| `app/secrets_vault.py` | 13 | mcp_secrets, system_secrets, mcp_user_secrets | **misplaced repos** — move to `src/repositories/{mcp_secrets,system_secrets,mcp_user_secrets}.py` |
-| `app/web/router.py` | 12 | various small COUNT/SELECT 1 helpers | lift into existing repos |
-| `app/api/marketplace.py` | 12 | usage_marketplace_item_*, store_entities, users, user_plugin_optouts | new `usage_marketplace_repo` + lift owner/subscriber queries |
-| `app/api/observability.py` | 11 | audit_log, user_observability_views | new `audit_repo().facets_for_window()` + use existing `observability_views_repo` |
-| `app/api/admin_usage.py` | 8 + 1 unclear | usage_events, usage_session_summary, usage_tool_daily, usage_marketplace_item_*, session_processor_state | `usage_repo` orchestration methods (`reprocess_all`, `prune_older_than`, `export`); admin LLM-SQL surface flagged separately |
-| `app/api/memory.py` | 8 | user_group_members, user_groups, resource_grants, knowledge_votes, audit_log, memory_domains | lift into existing repos |
-| `app/api/access.py` | 7 | user_group_members, resource_grants, user_stack_subscriptions | cascade-delete + transactional downgrade-fanout repo methods |
-| `app/api/marketplaces.py` | 7 | marketplace_plugins, resource_grants, user_groups | mark-system fanout into repo |
-| `app/api/me_stats.py` | 7 | usage_session_summary, session_processor_state | new aggregate repo methods (daily / by_model / top_sessions / totals) |
-| `app/resource_types.py` | 7 | per ResourceType projection delegates | lift to repos |
-| `app/api/activity.py` | 5 | audit_log, sync_history, session_processor_state | `audit_repo().latest_scheduler_tick()`, `sync_history_repo().status_counts_since()`, `session_processor_state_repo` |
-| `app/api/health.py` | 5 | users, audit_log, session_processor_state, schema_version | repos (+ `SELECT 1` stays raw) |
-| `app/api/store.py` | 4 | store_entities | `synthetic_name_collision`, `revert_archive` |
-| `app/api/admin.py` | 4 | sync_state, sync_history, store_submissions | repo methods on existing repos |
-| `app/api/admin_user_sessions.py` | 3 | usage_session_summary, users, audit_log | repo methods |
-| `app/auth/providers/email.py` | 3 | setup_tokens / pending_codes | **CAS pattern** — needs careful ORM method design with row-count check |
-| `app/auth/providers/password.py` | 2 | personal_access_tokens | same CAS shape |
-| `app/api/me.py` | 1 | users + usage_session_summary CTE | boundary case (state ⋈ rollup) |
-| `app/api/chat_copresence.py` | 1 | users | `users_repo().get_by_email()` exists |
-| `app/api/my_stack.py` | 2 | marketplace_plugins, user_curated_subscriptions | lift to repos |
-| `app/api/sync.py` | 1 | users | lift to repo |
-| `app/api/me_debug.py` | 1 | user_group_members | lift to repo |
-| `app/chat/audit.py` | 1 | audit_log | `audit_repo().log()` |
-| `app/chat/copresence_summary.py` | 1 | chat_sessions | repo |
-| `services/session_processors/usage_lib.py` | 6 | usage_events, usage_tool_daily, usage_marketplace_item_*, session_processor_state, marketplace_plugins, store_entities | **biggest single block** — rollup INSERT-SELECT; design choice (raw `Session.execute(text(...))` ok or rewrite as SA Core) |
-| `services/slack_bot/binding.py` | (many) | slack_binding_codes, slack_binding_issue_log, slack_binding_redeem_log | **no repo exists** — add 3 models + `SlackBindingRepository` |
-| `services/slack_bot/events.py` | 1 | users | repo |
-| `services/session_pipeline/runner.py` | 1 | users | repo |
-| `services/verification_detector/__main__.py` | 1 | session_processor_state | repo |
-| `src/claude_md.py` | 3 | table_registry, metric_definitions, marketplace_registry | lift to repos |
-| `src/rbac.py` | 2 | resource_grants, user_group_members | lift to existing `resource_grants_repo` |
-| `src/store_guardrails/purge.py` | 1 | store_submissions | repo |
-| `src/store_guardrails/reaper.py` | 1 | store_submissions | repo |
-| `connectors/internal/registry.py` | 1 | table_registry | repo |
-
-### Acceptable analytics escapes (17 spots) — stay raw on purpose
-
-- `app/api/mcp_per_table.py:69, 134` — `DESCRIBE` + filtered SELECT against analytics views.
-- `app/api/health.py:365` — `SELECT 1` liveness ping.
-- `src/duckdb_conn.py:46, 54` — `SET GLOBAL TimeZone='UTC'` + probe.
-- `src/remote_query.py:366` — analyst remote-query SQL into BQ-attached DuckDB.
-- `connectors/internal/access.py:256, 336` — `information_schema` catalog scan + per-request ephemeral DuckDB CREATE TABLE.
-- `cli/commands/explore.py:47, 55` + `cli/commands/query.py:90` — CLI analytics introspection.
-- `cli/mcp/server.py:203-204` — MCP query wrapping.
-- `cli/lib/pull.py:699-731` — analyst-local DuckDB view rebuild.
-- `connectors/bigquery/access.py`, `connectors/bigquery/metadata.py`, `connectors/keboola/access.py`, `connectors/mcp/*.py` — extension lifecycle + TVF dispatch.
-- `connectors/jira/extract_init.py` + `connectors/jira/scripts/consistency_check.py` — extract.duckdb DDL + parquet consistency.
-- `src/profiler.py` — analytics data profiler.
-- `scripts/build_demo_extract.py`, `scripts/duckdb_manager.py`, `scripts/generate_sample_data.py` — extract.duckdb / parquet seed.
-- `app/api/v2_sample.py`, `v2_scan.py`, `v2_schema.py` — BQ extension calls + parquet DESCRIBE.
-
-### Needs-discussion (1 spot)
-
-`app/api/admin_usage.py:286` — admin "ask LLM → SQL → execute" surface. SQL validated by `validate_select_only(sql)` then handed to `conn.execute(validated_sql)`. No clean ORM signature for "execute arbitrary user-supplied SELECT". Options:
-
-a. Keep raw with validator as the seam (current). Lint allowlist this single line.
-b. Add a thin `RawValidatedQueryRepository.run(validated_sql) → rows` wrapper so lint rule doesn't need a file-specific exemption.
-
-Recommend (a) — the validator is the security boundary; wrapping it in a repo adds nothing.
-
-### Boundary: state-rollup tables that read like analytics
-
-`usage_events`, `usage_session_summary`, `usage_tool_daily`, `usage_marketplace_item_daily`, `usage_marketplace_item_window` are written transactionally by the session processor but read as a small analytical warehouse (DuckDB `COPY TO PARQUET` for export, time-window aggregates, dimension cross-tabs).
-
-**Recommendation: keep `usage_*` on DuckDB even after the ORM migration, OR migrate to PG with `COPY usage_events TO STDOUT (FORMAT csv/binary)` + Python parquet write.** Either is defensible; the decision belongs to Phase 4 of the plan (after the spike).
+| Adversary finding | v1 said | v2 says |
+|---|---|---|
+| **CRIT-1**: Lint rule blocks own cleanup PRs | Phase 0 ships rule, "Existing 65 spots fail until lifted" | Phase 0 ships **baseline-snapshot** lint (existing offenders in a frozen allowlist file; new offenders fail; allowlist shrinks per cleanup PR via codeowners gate) |
+| **CRIT-2**: `RETURNING` on DuckDB UPDATE not validated | Phase 7 spike covers RETURNING as one checkbox | Phase 2 spike is *the gate*, with explicit pass/fail criteria for `update().returning()` cross-dialect. Phases 8+ can't start until spike report ships. Listed CAS-pattern fallbacks. |
+| **CRIT-3**: Usage telemetry split-brain | "Keep `usage_*` on DuckDB even under PG state" | Phase 6 names this as a decision *before* allowing PG state. Two paths costed: (a) usage stays DuckDB and the marketplace_plugins/store_entities lookups stay DuckDB too in the processor; (b) usage moves to PG fully. **Bias to (b)** — explicit rationale below. |
+| **CRIT-4**: `src/db.py` deletion removes recovery code | Phase 10: "Delete `_v1_to_v(N)` chain from `src/db.py`" | Phase 10 split: DDL ladder retires; WAL salvage / pre-migrate snapshot / CHECKPOINT helpers / schema_version backfills *stay* until DuckDB-state is no longer supported (which the plan never claims). |
+| **HIGH-5**: Chat move not mechanical | "Move `app/chat/persistence.py` → `src/repositories/chat.py`" | Phase 5 is *facade redesign*: transaction-parity tests pinning DuckDB no-multi-txn vs PG single-txn behavior, then move. Adapter pattern preserved (or explicitly retired). |
+| **HIGH-6**: Knowledge FTS parity promised before it exists | Phase 9 ships PG `tsvector + GIN + unaccent` + Czech-diacritic contract | New Phase 7 (preceding Phase 8): land `tests/db_pg/test_knowledge_contract.py` parametrized cross-dialect WITH Czech diacritics + BM25-rank parity + ILIKE-fallback parity. PG `unaccent` + `search_vector` GENERATED column ship in the **same** PR. |
+| **HIGH-7**: Contract-test safety net overstated | "15 cross-engine contract tests… mandated safety net" | Pre-Phase 1: ship a coverage matrix (`tests/db_pg/test_registry_coverage.py`) gating every `_REGISTRY` key to a named contract test or a documented exemption. Knowledge + slack are explicit gaps to close. |
+| **HIGH-8**: Model/registry completeness via file count | "15 files = full mapping" | Per-table matrix at end of doc: table → model class → DD repo method-owner → PG repo method-owner → contract test → cluster phase. Replaces the file-count framing. |
+| **HIGH-9**: Migration tooling cited as proof; later retooled | "operational pipeline" | Phase 11 is named *migration-tool rework* with explicit risk: dry-run / rollback / row-count / checksum / compose-startup tests. No "easy" claim. |
+| **MED-10**: Lint rule misses f-strings/variables | "AST grep on string literals" | Lint rule v2: catches all DBAPI/SA execution outside the allowlist regardless of literal vs variable. Implemented as call-site detection: any `<obj>.execute(...)` or `<obj>.exec_driver_sql(...)` outside the allowlist fails. Allowlist file lists exact exemptions with reason strings. |
+| **MED-11**: DuckDB pool config underspecified | "NullPool — already understood pattern" | Phase 2 spike output includes a written engine-factory spec: pool class, pool size, `DATA_DIR` change handling, write retry policy, transaction scope, concurrent-write test. |
+| **MED-12**: Quack timing supports spike-first | "DuckDB-Quack lands fall 2026" as a risk row | v2 explicitly frames Phases 0–5 as invariant cleanup that ships regardless of Quack timing. Phases 6–11 are conditional on the Phase 2 spike + Quack roadmap check. |
+| **MED-13**: Admin LLM SQL unclassified | "needs-discussion" | Classified: **analytics escape, DuckDB-only**. Lint allowlist entry: `app/api/admin_usage.py` with reason "LLM-generated SQL validated by `validate_select_only`; surface is analytical-tier; DuckDB-pinned". Phase 6 decision (b) doesn't apply here (this is read-only export, not transactional writes). |
+| **LOW-14**: Registry grep brittle | Used `_REGISTRY\s*=` | Audit scripts updated to match `_REGISTRY\s*:\s*` (typed assignment) OR plain `=`. Documented in §"Audit scripts" appendix. |
+| **LOW-15**: Script deletion overreach | "Delete after run" list | Split into "unreferenced by runtime" (safe to remove from import path; keep in repo for operator history) vs "delete entirely" (none in v2 — operator tooling stays). |
+| **LOW-16**: Two effort estimates | 5–8w and 7–9w | One number: **9–13 engineer-weeks** total, broken into three tranches above. |
 
 ---
 
 ## Architecture target
+
+End state (only reachable if Phase 2 spike clears):
 
 ```
 ┌─ Application state ────────────────────────────────────────┐
@@ -175,311 +72,402 @@ Recommend (a) — the validator is the security boundary; wrapping it in a repo 
 │  DATABASE_URL=postgresql+psycopg://...                     │
 │    → psycopg SA dialect → Postgres                         │
 │                                                            │
-│  DATABASE_URL=duckdb+quack:///... (fall 2026)              │
-│    → duckdb-quack SA dialect → DuckDB-Quack                │
-│                                                            │
-│ Same models. Same queries. SA dialect normalizes           │
-│ DISTINCT/ORDER BY/RETURNING/DDL.                           │
+│  DATABASE_URL=duckdb+quack:///... (fall 2026, ETA)         │
+│    → quack extension → DuckDB-Quack (when GA)              │
 └────────────────────────────────────────────────────────────┘
 ┌─ Analytics ────────────────────────────────────────────────┐
 │ Raw DuckDB python client (unchanged)                       │
 │   analytics.duckdb, ATTACH extract.duckdb,                 │
 │   BQ extension, Keboola extension, FTS extension,          │
 │   read_parquet views, COPY TO PARQUET                      │
+└─ DuckDB-state lifecycle helpers (kept, NOT in scope) ──────┐
+│ src/db.py — WAL salvage, pre-migrate snapshot,             │
+│ CHECKPOINT, system.duckdb open/close, schema_version       │
+│ backfills (only when DATABASE_URL points at duckdb://)     │
 └────────────────────────────────────────────────────────────┘
 ```
 
-### What "no raw SQL" means in this plan
-
-| Layer | Raw SQL allowed? | Why |
-|---|---|---|
-| `src/repositories/*.py` | ✅ via SA Core / ORM query API | Some queries need dialect-specific tuning; SA `text()` is a controlled escape |
-| `src/models/*.py` | ✅ table/column DDL (declarative) | The DDL IS the schema definition |
-| `migrations/versions/*.py` (Alembic) | ✅ | Migration DSL |
-| `src/db.py` (analytics half) | ✅ DuckDB-only | Analytics engine bootstrap |
-| `src/orchestrator.py`, `src/profiler.py`, `src/remote_query.py`, `src/duckdb_conn.py`, `src/fts.py` | ✅ DuckDB-only | Analytics path |
-| `connectors/*/extractor.py`, `connectors/*/access.py` | ✅ DuckDB-only | Extract.duckdb producers + extension lifecycle |
-| `app/api/v2_*.py`, `app/api/query*.py`, `app/api/data.py`, `app/api/catalog.py`, `app/api/mcp_per_table.py`, `app/api/bq_metadata_refresh.py`, `app/api/jira_webhooks.py`, `app/api/admin_bigquery_test.py`, `app/api/admin_keboola_test.py` | ✅ DuckDB-only | Analytics route layer |
-| `cli/commands/explore.py`, `cli/commands/query.py`, `cli/mcp/server.py`, `cli/lib/pull.py` | ✅ DuckDB-only | Analyst-side analytics |
-| `scripts/build_demo_extract.py`, `scripts/duckdb_manager.py`, `scripts/generate_sample_data.py` | ✅ DuckDB-only | Analytics tooling |
-| **Everywhere else** | ❌ | Lint rule enforces |
-
-The lint allowlist becomes the canonical "this file is in the analytical part" registry.
+If the spike doesn't clear: stop at end of Tranche 1. Invariant still holds; dual-repo continues; revisit in 6–12 months (likely after DuckDB-Quack v2.0).
 
 ---
 
-## Migration phases
+## Tranche 1 — Invariant cleanup (Phases 0–5)
 
-Each phase ships as one or more PRs. Each PR keeps the test suite green; cross-engine contract tests (`tests/db_pg/test_*_contract.py`) are the per-cluster gate.
+**Goal**: bring the 65 bug-class spots into repos; lock future drift via baseline lint. **Ships standalone value even if Tranche 2/3 never run.**
 
-### Phase 0 — lint rule + acceptable-escape registry (small PR)
+### Phase 0 — Baseline lint + per-file allowlist (small PR)
 
-**Goal**: lock in the invariant going forward. Cost-free; catches regressions.
+**Adversary fix CRIT-1.**
 
-- Add an AST-based pre-commit / CI rule that fails on `conn.execute(<string-literal>)` or `sa.text(<string-literal>)` in any file NOT in the allowlist.
-- Allowlist:
-  - `src/repositories/`
-  - `src/models/`
-  - `migrations/versions/`
-  - `tests/`
-  - `src/db.py`, `src/db_pg.py`, `src/duckdb_conn.py`, `src/fts.py`, `src/orchestrator.py`, `src/profiler.py`, `src/remote_query.py`
-  - `connectors/`
-  - `scripts/`
-  - The analytics-route files enumerated above
-- Allowed literals everywhere (even outside allowlist): `SELECT 1`, `BEGIN`, `COMMIT`, `ROLLBACK`, `SET …`, `INSTALL …`, `LOAD …`, `DESCRIBE …`, `PRAGMA …`, `CHECKPOINT`.
-- Allowed because they hit `information_schema` (catalog reads): `information_schema.tables`, `information_schema.columns`.
+- Add AST-aware lint rule that fails on ANY `<obj>.execute(...)` / `<obj>.exec_driver_sql(...)` / `sa.text(...).execute(...)` call OUTSIDE the explicit allowlist file (`tools/lint/sql_allowlist.txt`).
+- Detection target: call-site, NOT string-literal shape. Catches `conn.execute(local_sql_variable)`, f-strings, multi-line triple-quoted strings, LLM-validated paths. (Adversary fix MED-10.)
+- Allowlist file at commit time: snapshot of today's 73 spots + their justifications.
+  - Each allowlist line: `path:line  reason  cluster` (e.g., `app/api/marketplace.py:412  rollup-state-DuckDB-pinned  usage`).
+- New raw-SQL spots fail CI. Removing an allowlist entry requires the cleanup PR that lifts that spot into a repo. CODEOWNERS gates the file so the allowlist only shrinks.
 
-**Outcome**: a new bug-class spot cannot land. Existing 65 spots fail until lifted into repos.
+**Outcome**: future drift impossible; existing offenders explicit + addressed in priority order in subsequent phases.
 
-### Phase 1 — quick wins (lift to existing repos)
+### Phase 1 — Coverage matrix + quick wins (~30 hits)
 
-**Goal**: ~30 of the 65 bug-class spots have a clear repo home and need no new method (or a one-liner method).
+**Adversary fix HIGH-7, HIGH-8.**
 
-Per-cluster PRs, each PR ships one file or one tight cluster:
+**1a.** Ship `tests/db_pg/test_registry_coverage.py`: assertion that every `_REGISTRY` key has either:
+- a named `tests/db_pg/test_<cluster>_contract.py` parametrizing both backends, or
+- an entry in `tests/db_pg/contract_exemptions.txt` with a reason.
 
-- `app/chat/audit.py` → `audit_repo().log()` (1 hit)
-- `app/chat/copresence_summary.py` → `chat_session_repo().title_for()` (1 hit)
-- `app/api/chat_copresence.py` → `users_repo().get_by_email()` (1 hit)
-- `app/api/sync.py` → `users_repo().mark_last_pull(user_id, ts)` (1 hit)
-- `app/api/me_debug.py` → `user_group_members_repo().google_sync_summary()` (1 hit)
-- `app/api/store.py` → `store_entities_repo().synthetic_name_collision()` + `.revert_archive()` (2 hits)
-- `app/api/my_stack.py` → existing repos (2 hits)
-- `app/api/admin_user_sessions.py` → `usage_session_summary_repo().for_user()`, `users_repo().get()`, `audit_repo().count_for_user()` (3 hits)
-- `src/store_guardrails/purge.py` → `store_submissions_repo().purgeable()` (1 hit)
-- `src/store_guardrails/reaper.py` → `store_submissions_repo().reap_stuck_reviews()` + `.mark_review_error()` (2 hits)
-- `src/claude_md.py` → `table_registry_repo().list_all()` / `.list_by_ids()`, `metric_definitions_repo().category_counts()`, `marketplace_registry_repo().names_by_ids()` (3 hits)
-- `src/rbac.py` → `resource_grants_repo().has_grant_for_user()` (2 hits)
-- `connectors/internal/registry.py` → `table_registry_repo().prune_internal_except()` (1 hit)
-- `services/slack_bot/events.py` → `users_repo().get_by_slack_id()` (1 hit)
-- `services/session_pipeline/runner.py` → `users_repo().get()` (1 hit)
-- `services/verification_detector/__main__.py` → `session_processor_state_repo().delete()` (1 hit)
-- `app/web/router.py` → ~12 small COUNT / SELECT 1 helpers (one PR per cluster of related ones)
+Today's 14-of-15 parametrized contract tests pass immediately. **Knowledge** + **slack-binding** (Phase 3 work) + chat clusters fail the coverage gate — addressed in their respective phases. Initial exemptions: knowledge (Phase 7), chat clusters (Phase 5), slack-binding (Phase 3).
 
-**Outcome**: ~30 hits gone. Lint rule starts passing on those files.
+**1b.** Quick-win PRs that lift the ~30 single-hit / no-design-needed spots into existing repos. Per-cluster PRs:
 
-### Phase 2 — facet + aggregate routes (medium repo work)
+| File | Repo method to add | Hits |
+|---|---|---:|
+| `app/chat/audit.py` | `audit_repo().log()` (exists) | 1 |
+| `app/chat/copresence_summary.py` | `chat_session_repo().title_for()` | 1 |
+| `app/api/chat_copresence.py` | `users_repo().get_by_email()` (exists) | 1 |
+| `app/api/sync.py` | `users_repo().mark_last_pull()` | 1 |
+| `app/api/me_debug.py` | `user_group_members_repo().google_sync_summary()` | 1 |
+| `app/api/store.py` | `store_entities_repo().synthetic_name_collision()` + `.revert_archive()` | 2 |
+| `app/api/my_stack.py` | existing repos | 2 |
+| `app/api/admin_user_sessions.py` | `usage_session_summary_repo().for_user()`, `users_repo().get()`, `audit_repo().count_for_user()` | 3 |
+| `src/store_guardrails/purge.py` | `store_submissions_repo().purgeable()` | 1 |
+| `src/store_guardrails/reaper.py` | `store_submissions_repo().reap_stuck_reviews()` + `.mark_review_error()` | 2 |
+| `src/claude_md.py` | `table_registry_repo().list_all()` / `.list_by_ids()`, `metric_definitions_repo().category_counts()`, `marketplace_registry_repo().names_by_ids()` | 3 |
+| `src/rbac.py` | `resource_grants_repo().has_grant_for_user()` | 2 |
+| `connectors/internal/registry.py` | `table_registry_repo().prune_internal_except()` | 1 |
+| `services/slack_bot/events.py` | `users_repo().get_by_slack_id()` | 1 |
+| `services/session_pipeline/runner.py` | `users_repo().get()` (exists) | 1 |
+| `services/verification_detector/__main__.py` | `session_processor_state_repo().delete()` | 1 |
+| `app/web/router.py` | ~12 small COUNT / SELECT 1 helpers → cluster-split | ~12 |
 
-**Goal**: lift composite queries into new repo aggregate methods.
+Each PR drops the corresponding allowlist line. ~30 hits gone.
 
-- `app/api/activity.py`: `audit_repo().latest_scheduler_tick()`, `sync_history_repo().status_counts_since()`, `audit_repo().distinct_active_users()`, `session_processor_state_repo().verification_summary()`.
-- `app/api/health.py`: composite `health_repo` or extend existing repos (`SELECT 1` stays raw with explicit allowlist).
-- `app/api/observability.py`: `audit_repo().facets_for_window(since, scheduler_actions)` (one composite method replaces 5 raw SELECTs); `observability_views_repo().count_for_user()`, `.has(user_id, name)` (already exist — just use them).
-- `app/api/memory.py`: `user_group_members_repo().group_names_for()`, `resource_grants_repo().granted_resource_ids_for_user(resource_type)`, `knowledge_votes_repo().for_user()`, `audit_repo().query(action_prefix=…)` (mostly already exists), `memory_domains_repo().slugs_by_ids()`.
-- `app/api/access.py`: `user_group_members_repo().delete_all_for_group()` (exists), `resource_grants_repo().delete_all_for_group()` (exists), `user_stack_subscriptions_repo().downgrade_fanout(group_id, resource_type, resource_id)` (transactional INSERT … FROM JOIN).
-- `app/api/marketplaces.py`: `marketplace_plugins_repo().exists()`, `.mark_system()`, `.unmark_system()`; `user_groups_repo().all_ids()`; `marketplace_plugins_repo().delete_all_for_marketplace()` + `resource_grants_repo().delete_for_marketplace_prefix()`.
-- `app/api/admin.py`: `sync_state_repo().error_and_sync_summaries()`, `sync_history_repo().delete_for_table()`, `sync_state_repo().delete_for_table()`, `store_submissions_repo().delete()`.
-- `app/api/me.py`, `app/api/me_stats.py`: `users_repo().enrich_self()` (CTE), `usage_session_summary_repo().daily()`, `.by_model()`, `.top_sessions()`, `.totals()`.
-- `app/resource_types.py`: lift each projection delegate to its respective repo.
+### Phase 2 — `duckdb-engine` spike (parallel with Phase 1)
 
-**Outcome**: ~25 more hits gone. App-layer state SQL effectively eliminated outside the remaining clusters.
+**Adversary fix CRIT-2, MED-11, MED-12.**
 
-### Phase 3 — CAS + transactional patterns (careful design)
+**Phase 2 is the gate.** Tranche 3 (Phases 8–11) cannot start until Phase 2 ships a green spike report.
 
-**Goal**: race-free token/grant patterns need explicit return-count signatures.
+**Time-box**: 8 working days (was 5d — adversary noted underestimation).
 
-- `app/auth/providers/email.py`: `setup_tokens_repo().consume(token, now) → bool` returning `True` iff exactly one row updated; CAS via `WHERE token=? AND consumed_at IS NULL RETURNING id`. Same shape on PG (`UPDATE … RETURNING id`) and DuckDB (`UPDATE … RETURNING 1` available since DuckDB 0.9).
-- `app/auth/providers/password.py`: same shape for `personal_access_tokens.last_used_at` update.
+**Pass/fail criteria** (each a binary):
 
-**Outcome**: 5 more hits gone, race-free behavior preserved cross-engine.
+| Capability | Test | Pass = |
+|---|---|---|
+| Alembic upgrade head on `duckdb:///...` URL | Run full `alembic upgrade head` against a fresh DuckDB file | ladder lands; final schema matches `Base.metadata.create_all()` |
+| `update(...).returning(...)` for CAS | `Session.execute(update(Tok).where(...).returning(Tok.id))` | Single row returned iff WHERE matched; works on both PG and DuckDB. **Fallback documented if DuckDB fails** (manual SELECT-then-UPDATE-with-WHERE-clause-on-version_token; loses some atomicity guarantees) |
+| `insert(...).returning(...)` | Same on `insert()` | Works on both |
+| `delete(...).returning(...)` | Same on `delete()` | Works on both |
+| JSONB on PG ↔ JSON on DuckDB | Roundtrip `dict[str, Any]` through model with `JSON` column | Survives `commit()` + `refresh()` on both |
+| Computed column for FTS | PG `GENERATED ALWAYS AS (...) STORED` mirrored by DuckDB's `GENERATED ALWAYS AS (...) VIRTUAL`/STORED | Either supported or documented escape (Phase 7) |
+| FK enforcement | `user_group_members.group_id → user_groups.id` | DELETE parent with child row raises on both |
+| `RETURNING id` rowcount semantics | UPDATE matching 0 rows | Returns empty result, not 1-row-with-None |
+| SA pool config | `NullPool` + DuckDB single-writer | Concurrent app+scheduler write workload completes; no `TransactionContext Error: catalog write-write conflict` |
+| Re-open on `DATA_DIR` change | Test fixture swaps `DATA_DIR` mid-process | Engine factory rebuilds cleanly |
+| Reading PostHog/observability JSON cols | Dict round-trip with nested arrays | Works on both |
+| Connection lifecycle under FastAPI threadpool | 50-thread concurrent read | No connection leaks; pool config holds |
 
-### Phase 4 — misplaced repos (move into `src/repositories/`)
+**Deliverable**: `docs/planning/duckdb-engine-spike-report.md` with each capability tagged **PASS** / **FAIL** / **WORKAROUND-AVAILABLE** + GH issue references for any blockers found in `Mause/duckdb_engine`.
 
-**Goal**: bring the two repository-pattern-but-wrong-location files into the canonical home.
+**External evidence to consult during spike**:
+- `https://github.com/Mause/duckdb_engine` issues list
+- `https://github.com/duckdb/duckdb/issues/9915` (RETURNING for UPDATE — currently undocumented per adversary)
+- DuckDB 1.5.3 release notes, especially anything about RETURNING / SA compatibility
+- DuckDB-Quack beta status (`https://duckdb.org/2026/05/20/announcing-duckdb-153`): GA target fall 2026
 
-- `app/chat/persistence.py` (31 hits, ~600 LOC of dual-backend repo logic) → split into:
-  - `src/repositories/chat_sessions.py` + `chat_sessions_pg.py` (PG sibling already exists)
-  - `src/repositories/chat_messages.py` + `chat_messages_pg.py` (PG sibling already exists)
-  - `src/repositories/chat_session_participants.py` + `_pg.py` (already exists)
-  - `src/repositories/user_workdirs.py` + `_pg.py` (already exists)
-  - Each registers in `_REGISTRY`; callers go through factory.
-  - Cross-engine contract tests added for the 4 new repos.
-- `app/secrets_vault.py` (13 hits, 3 repository classes) → split into:
-  - `src/repositories/mcp_secrets.py` (`SharedSecretsRepository`)
-  - `src/repositories/system_secrets.py` (`SystemSecretsRepository`)
-  - `src/repositories/mcp_user_secrets.py` (`PerUserSecretsRepository`)
-  - PG mirrors via existing `secrets_vault_pg.py` content.
+### Phase 3 — Slack-binding repo + models (new repo + new contract test)
 
-**Outcome**: 44 more hits gone. Two largest single-file bug-class concentrations resolved.
-
-### Phase 5 — services with no repo
-
-**Goal**: add the missing `services/slack_bot/binding.py` repo + models.
+**Adversary fix HIGH-7 (slack-binding gap).**
 
 - New models in `src/models/slack.py`: `SlackBindingCode`, `SlackBindingIssueLog`, `SlackBindingRedeemLog`.
-- New repo `src/repositories/slack_bindings.py` (DuckDB) + `slack_bindings_pg.py` (PG).
-- Cross-engine contract test.
-- Register in `_REGISTRY`.
-- Rewrite `services/slack_bot/binding.py` to call the repo.
+- New repo `src/repositories/slack_bindings.py` (DuckDB) + `slack_bindings_pg.py` (PG) — dual-repo for now, consolidated in Phase 8.
+- New `tests/db_pg/test_slack_bindings_contract.py` parametrizing both backends.
+- Alembic migration adding the three tables to PG; matching `_v(N)_to_v(N+1)` step in `src/db.py` (per CLAUDE.md dual-backend discipline).
+- Rewrite `services/slack_bot/binding.py` to call the repo. Drop allowlist entry for binding.py.
 
-**Outcome**: last service-layer bug-class concentration gone. App-state raw SQL count outside repos drops to ~0.
+### Phase 4 — Facet + aggregate routes (medium repo work, ~25 hits)
 
-### Phase 6 — usage rollup design decision
+**Adversary fix MED-13 (admin LLM SQL).**
 
-**Goal**: decide state-vs-analytics line for `usage_*` tables.
+- `app/api/activity.py`: `audit_repo().latest_scheduler_tick()`, `sync_history_repo().status_counts_since()`, `audit_repo().distinct_active_users()`, `session_processor_state_repo().verification_summary()`.
+- `app/api/health.py`: compose existing repos. `SELECT 1` liveness ping documented in allowlist with reason "no-table liveness check".
+- `app/api/observability.py`: `audit_repo().facets_for_window(since, scheduler_actions)`; existing `observability_views_repo` methods.
+- `app/api/memory.py`: lifts to `user_group_members_repo().group_names_for()`, `resource_grants_repo().granted_resource_ids_for_user()`, `knowledge_votes_repo().for_user()`, existing `audit_repo().query()`, `memory_domains_repo().slugs_by_ids()`.
+- `app/api/access.py`: `user_group_members_repo().delete_all_for_group()` (exists), `resource_grants_repo().delete_all_for_group()` (exists), `user_stack_subscriptions_repo().downgrade_fanout(group_id, resource_type, resource_id)` (transactional INSERT FROM JOIN — DuckDB and PG syntax checked in contract test).
+- `app/api/marketplaces.py`: `marketplace_plugins_repo().exists()`, `.mark_system()`, `.unmark_system()`; `user_groups_repo().all_ids()`; `marketplace_plugins_repo().delete_all_for_marketplace()` + `resource_grants_repo().delete_for_marketplace_prefix()`.
+- `app/api/admin.py`: `sync_state_repo().error_and_sync_summaries()`, `sync_history_repo().delete_for_table()`, `sync_state_repo().delete_for_table()`, `store_submissions_repo().delete()`.
+- `app/resource_types.py`: lift each projection delegate to its respective repo.
+- `app/api/me.py`, `app/api/me_stats.py`: NEW DECISION needed iff Phase 6 chooses path (b) → `users_repo().enrich_self()`, `usage_session_summary_repo` methods. Iff path (a): keep raw, allowlist with reason "rollup-state-DuckDB-pinned".
 
-Boundary case from the audit: `services/session_processors/usage_lib.py` rebuilds rollups via DELETE/INSERT-SELECT inside one transaction. `app/api/admin_usage.py` exports via DuckDB `COPY TO PARQUET`.
+**Admin LLM SQL classification** (adversary MED-13): `app/api/admin_usage.py` LLM-validated SELECT surface = analytics escape, lint-allowlisted with reason "LLM Text-to-SQL validated by `validate_select_only`; pinned to DuckDB; analytical-tier read-only". Stays raw permanently. Documented in allowlist file.
 
-Two paths:
+### Phase 5 — Chat + secrets repository moves (with facade design)
 
-a. **Keep `usage_*` on DuckDB even under PG-state world.** State path runs through PG models for `users`/`groups`/etc.; `usage_*` stay in the DuckDB system DB. `Session.execute(text(...))` for the rollup INSERT-SELECT remains acceptable (analytics-shaped). The current dual-backend `usage_pg.py` mirror gets demoted to "future option", or kept as the PG escape hatch for cloud deployments that prefer all-PG.
+**Adversary fix HIGH-5.**
 
-b. **Move `usage_*` to PG fully.** Replace `COPY TO PARQUET` export with `COPY usage_events TO STDOUT (FORMAT csv/binary)` + Python parquet write. Rewrite rollup INSERT-SELECT as SA Core query. Doable but a meaningful chunk of work.
+**5a. Chat (NOT a mechanical move).**
 
-**Recommendation: (a). Defer (b) until DuckDB-Quack ships (fall 2026) and the case for all-PG state weakens further.**
+Step-by-step:
 
-Path (a) leaves ~8 raw SQL hits in `services/session_processors/usage_lib.py` and `app/api/admin_usage.py` permanently, but they're then explicit "analytical-tier" SQL and the lint allowlist covers them.
+1. Ship `tests/db_pg/test_chat_contract.py` parametrized over both backends with explicit transaction-parity assertions:
+   - Atomic-fork semantics on PG (`chat_session_participants_pg:136-146`)
+   - No-multi-statement-transaction on DuckDB (`app/chat/persistence.py:518-520`)
+   - Private-fork message copy atomicity (PG-only? DuckDB-best-effort?)
+2. **Decide**: should DuckDB acquire transactional fork semantics, or stay best-effort?
+   - Option A: gain transactions on DuckDB (`BEGIN`/`COMMIT` wrap the inline SQL block). Risk: lock contention given single-writer; needs concurrency stress test.
+   - Option B: keep DuckDB best-effort, document as known-limitation in `ChatRepository` docstring + contract test.
+   - **Recommendation**: B (DuckDB single-writer means a contended fork could starve the rest of the app).
+3. Split `app/chat/persistence.py` into 4 cluster repos (each dual-DD+PG until Phase 8):
+   - `src/repositories/chat_sessions.py` + `chat_sessions_pg.py` exists
+   - `src/repositories/chat_messages.py` + `chat_messages_pg.py` exists
+   - `src/repositories/chat_session_participants.py` + `_pg.py` exists
+   - `src/repositories/user_workdirs.py` + `_pg.py` exists
+4. `app/chat/persistence.py:ChatRepository` becomes a thin facade that delegates to the four repos via the factory. Callers unchanged.
+5. Drop allowlist entries for `app/chat/persistence.py` (31 spots).
 
-### Phase 7 — `duckdb-engine` spike + dialect dispatch
+**5b. Secrets vault (mechanical-ish move).**
 
-**Goal**: validate `duckdb-engine` (SA dialect for DuckDB) handles Agnes's schema + concurrency. Gate for Phase 8.
+- Three classes today in `app/secrets_vault.py` (`SharedSecretsRepository`, `SystemSecretsRepository`, `PerUserSecretsRepository`).
+- PG mirrors already exist in `src/repositories/secrets_vault_pg.py`.
+- The DuckDB-side declarations stay in `app/secrets_vault.py` BUT only because `_REGISTRY` already routes there:
+  - `("app.secrets_vault", "PerUserSecretsRepository")` at `src/repositories/__init__.py:342-345`
+  - Same for SharedSecrets, SystemSecrets at lines 346-353
+- Move target: create `src/repositories/{mcp_secrets,system_secrets,mcp_user_secrets}.py` files; update `_REGISTRY`; delete the classes from `app/secrets_vault.py` (file shrinks to a thin top-level helper module or vanishes entirely).
+- New `tests/db_pg/test_{mcp_secrets,system_secrets,mcp_user_secrets}_contract.py`.
+- Drop 13 allowlist entries.
 
-- Add `duckdb-engine` to `pyproject.toml`.
-- Pick one cluster (`users` is smallest, well-tested): write `src/models/users.py` declarative model (already exists), wire `tests/db_pg/test_users_contract.py` to run against `duckdb+engine://` URL in addition to PG.
-- Validate:
-  - DDL roundtrips through Alembic on the DuckDB dialect.
-  - JSON columns (`raw`, `params`, `doc_links`, etc.) behave correctly.
-  - `RETURNING` clauses work for CAS patterns.
-  - FK enforcement parity (`user_group_members.group_id → user_groups.id`).
-  - Single-writer constraint: SA pool config (`NullPool` or `pool_size=1`) prevents DuckDB concurrent-write exceptions.
-  - Connection lifecycle: re-open on DATA_DIR change (test fixtures swap dirs).
-- Time-box: **5 days**. Sink-or-swim.
+**End of Tranche 1**:
+- All 65 bug-class spots in repos (or explicitly allowlisted with documented reason).
+- Lint rule catches new drift.
+- Coverage matrix turns green: every `_REGISTRY` key has a contract test.
+- ~9 weeks elapsed if everything goes well (4-5w Tranche 1 + 2w Phase 2 spike running in parallel).
 
-**Spike outcomes**:
+---
 
-| Outcome | Then |
-|---|---|
-| All green | Proceed to Phase 8 |
-| Minor gaps (1-2 known issues with workarounds) | Proceed to Phase 8 with documented workarounds |
-| Major gaps (txn semantics broken, FK enforcement missing, Alembic incompatible) | Stop. Stick with dual-repo + lint + contract tests. Revisit when DuckDB-Quack lands |
+## Tranche 2 — Boundary resolution (Phases 6–7)
 
-### Phase 8 — cluster-by-cluster ORM consolidation
+**Goal**: resolve the cross-engine boundaries that block ORM collapse. Each phase produces a *decision* + contract tests.
 
-**Goal**: collapse dual repos into single ORM-mapped repos.
+### Phase 6 — Usage telemetry backend ownership
 
-Cluster order (small → large, validates pattern early):
+**Adversary fix CRIT-3.**
+
+Current state (adversary evidence):
+- `UsageProcessor.process_session` accepts a `duckdb.DuckDBPyConnection` at `services/session_processors/usage.py:33-39`.
+- Builds `MarketplaceItemLookup(conn)` at `services/session_processors/usage.py:53` — DuckDB cursor read of `marketplace_plugins` + `store_entities`.
+- Writes events via `repo = usage_repo()` at `services/session_processors/usage.py:103-105` — factory-dispatched.
+- Rollup INSERT-SELECT uses the same DuckDB cursor at `services/session_processors/usage_lib.py:670-742`.
+
+If `DATABASE_URL=postgresql+psycopg://...` today: events go to PG; lookup attribution and rollups read empty DuckDB. **Split-brain.**
+
+**Decision** (must be made BEFORE any PG-state deployment):
+
+**Path (a): `usage_*` pins to DuckDB across the board.**
+- Marketplace plugin lookup also pins to DuckDB (`marketplace_plugins` shadowed in DuckDB).
+- Conflicts with the goal of "DuckDB only for analytics" — `marketplace_plugins` IS state.
+- Requires keeping `marketplace_plugins` in both DuckDB AND PG; sync on every write. Operational tax.
+
+**Path (b): `usage_*` moves to PG fully. RECOMMENDED.**
+- `UsageProcessor` is changed to take no DuckDB cursor; lookups go through `marketplace_plugins_repo()` + `store_entities_repo()`.
+- Rollup INSERT-SELECT becomes SA Core `insert().from_select()`; verified cross-dialect during Phase 2 spike.
+- Admin export `COPY TO PARQUET` keeps as a DuckDB-only escape: write a small helper that ATTACHes the PG database to a fresh DuckDB session (`ATTACH 'postgres:...' AS pg`) then runs `COPY (SELECT … FROM pg.usage_events …) TO 'file.parquet'`. **Or** export via Python parquet write (pyarrow) sourcing rows from PG via SA Core. (Both options costed in spike phase.)
+- LLM-validated text-to-SQL admin surface stays DuckDB-pinned per Phase 4 classification (uses a DuckDB-attached view of PG; same ATTACH escape).
+
+**Deliverable**: `docs/planning/usage-backend-decision.md` with the chosen path + the implementation steps. **No code change in this phase yet** — just the decision + contract test design.
+
+### Phase 7 — Knowledge FTS contract + PG search shipping
+
+**Adversary fix HIGH-6.**
+
+Reality today (adversary evidence):
+- DuckDB uses `fts_main_knowledge_items.match_bm25` with `strip_accents=1` at `src/fts.py:14-15, 57-58`; `src/repositories/knowledge.py:545-552`.
+- PG uses `to_tsvector('english', ...)` + `plainto_tsquery('english', :q)` at `src/repositories/knowledge_pg.py:292-316`.
+- `KnowledgeItem` has NO `search_vector` column (`src/models/knowledge.py:32-75`).
+- `migrations/versions/0010_knowledge.py:25-59` creates only ordinary indexes.
+- Czech-diacritic test is **DuckDB-only** at `tests/test_knowledge_fts_search.py:239-260`. PG knowledge tests are at `tests/db_pg/test_knowledge_pg.py` — PG-only, no diacritic coverage.
+
+**Deliverables in one Phase 7 PR**:
+
+1. New `tests/db_pg/test_knowledge_contract.py` parametrized cross-dialect with:
+   - Czech-diacritic match (`cesky` ↔ `česky`)
+   - BM25-equivalent ranking (top-k order parity within tolerance)
+   - ILIKE fallback parity
+   - Count parity
+2. Alembic migration adding `search_vector` GENERATED ALWAYS AS (`to_tsvector('unaccent_simple', coalesce(title,'') || ' ' || coalesce(body,''))`) STORED on PG.
+3. PG `unaccent` extension install (in `migrations/env.py` or the migration script itself).
+4. Rewrite `src/repositories/knowledge_pg.py` FTS query to use `search_vector @@ plainto_tsquery('unaccent_simple', :q)` + `ts_rank_cd(search_vector, query)` for ranking.
+5. Contract test passes on BOTH backends before merge.
+
+This is THE prerequisite to consolidating the knowledge repo in Phase 8.
+
+---
+
+## Tranche 3 — ORM consolidation (Phases 8–11)
+
+**Conditional**: ONLY runs if Phase 2 spike clears AND Phase 6 decision is path (b) [or path (a) operational tax accepted].
+
+### Phase 8 — Cluster-by-cluster ORM consolidation
+
+Same content as v1 Phase 8 but each PR adds:
+- Engine factory spec for DuckDB pool config (from Phase 2 spike).
+- Updated `_REGISTRY` to single-class (or two with explicit dialect-aware methods only where the spike found gaps).
+- Drop the DuckDB `_v(N)_to_v(N+1)` migration step from `src/db.py` for the cluster, asserting the equivalent Alembic step landed.
+
+Cluster order: small → large.
 
 1. `users`, `audit`, `access_tokens`, `setup_tokens`, `cli_auth_codes`, `profiles`
 2. `user_groups`, `user_group_members`, `resource_grants` (RBAC core)
 3. `claude_md_template`, `welcome_template`, `news_template`, `instance_templates`
 4. `table_registry`, `sync_state`, `sync_history`, `sync_settings`, `view_ownership`, `column_metadata`, `bq_metadata_cache`
-5. `notifications` cluster (telegram, pending_codes, script_registry)
+5. `notifications` cluster
 6. `marketplace_registry`, `marketplace_plugins`
 7. `store_entities`, `user_store_installs`, `user_curated_subscriptions`, `store_submissions`, `user_stack_subscriptions`
 8. `data_packages`, `recipes`, `memory_domains`, `memory_domain_suggestions`
-9. `personal_access_tokens`, `setup_banner`
-10. `metric_definitions`, `table_profiles`
-11. `session_processor_state`, `observability_views`
-12. `mcp_sources`, `tool_registry`, `mcp_secrets`, `system_secrets`, `mcp_user_secrets`
-13. `chat_sessions`, `chat_messages`, `chat_session_participants`, `user_workdirs`
-14. `slack_bindings` (new from Phase 5)
-15. **`knowledge`** (last — special-case FTS; see Phase 9)
+9. `personal_access_tokens`, `setup_banner`, `metric_definitions`, `table_profiles`
+10. `session_processor_state`, `observability_views`, `usage` (depends on Phase 6 path)
+11. `mcp_sources`, `tool_registry`, `mcp_secrets`, `system_secrets`, `mcp_user_secrets`
+12. `chat_sessions`, `chat_messages`, `chat_session_participants`, `user_workdirs`
+13. `slack_bindings`
+14. **`knowledge`** (depends on Phase 7 done)
 
-Per cluster PR pattern:
+### Phase 9 — Sweep: remove dead DuckDB repo files
 
-- Drop `src/repositories/X.py` (DuckDB).
-- Promote `src/repositories/X_pg.py` to `src/repositories/X.py` (drop `_pg` suffix); rewrite to use SA dialect-agnostic API (no `psycopg`-specific code).
-- Update `_REGISTRY` so the cluster has only one backend entry (or use SA dialect dispatch internally).
-- Add `tests/db_pg/test_<cluster>_contract.py` (or rename existing) to run against BOTH `duckdb+engine://` and `postgresql+psycopg://` URLs.
-- Delete the DuckDB schema migration steps for this cluster from `src/db.py` (the Alembic ladder is now source of truth; existing instances already have the tables).
+Once Phase 8 completes every cluster, every `<name>_pg.py` file gets renamed to `<name>.py` and the DuckDB-class file gets deleted (or vice versa — pick by which file is currently the "lead" with fewer drift items).
 
-**Outcome**: 14 of 15 clusters retire the DD branch.
+### Phase 10 — Retire `src/db.py` DDL ladder (KEEP recovery helpers)
 
-### Phase 9 — knowledge FTS escape hatch
+**Adversary fix CRIT-4.**
 
-**Goal**: knowledge search is the one real cross-dialect divergence.
+This is **not** "delete src/db.py". It is "delete the `_v1_to_vN` ladder from src/db.py" — a careful surgical removal:
 
-Decision: how to deliver knowledge BM25 search on a Postgres-state instance?
+- **Delete**: every `_v<N>_to_v<N+1>(conn)` function. Every state-table `CREATE TABLE IF NOT EXISTS` (those are now Alembic-owned).
+- **KEEP**: WAL salvage (`src/db.py:1397-1436`), pre-migrate snapshot (`src/db.py:1280-1390`), `CHECKPOINT` post-migration (`src/db.py:5453-5477`), `system.duckdb.pre-migrate` copy (`src/db.py:5116-5127`), `_try_open_system_db` recovery logic. These are the DuckDB-state lifecycle. They run iff `DATABASE_URL` points at `duckdb://`.
+- **KEEP**: `get_analytics_db()`, BQ extension bootstrap, FTS install — analytics path.
+- **MOVE**: schema_version backfill logic moves to `migrations/env.py` if it's needed for the Alembic transition (one-shot).
 
-a. **PG `tsvector + GIN + unaccent`.** Matches `strip_accents=1` semantics; ranking via `ts_rank_cd`. Native PG, no extension management. DuckDB instance still uses the `fts` extension. Repo method dispatches by dialect.
-b. **DuckDB FTS satellite.** PG instance keeps a separate DuckDB file just for the FTS index, rebuilt from PG changes. Same SQL on both sides. Operational cost: a second moving part.
-c. **External search service** (e.g. Tantivy / OpenSearch). Out of scope for this plan.
+Estimated post-deletion `src/db.py` LOC: ~2500 (down from 5565). Not the ~1500 v1 claimed.
 
-**Recommendation: (a)**. Pure DB layer, no operational ops. The `knowledge_pg.py` repo today already has CRUD; only the search query body changes per dialect.
+`tests/test_db_schema_version.py` updates: assert Alembic head equals expected, instead of asserting `schema_version` table contents.
 
-Phase 9 ships:
+### Phase 11 — Factory simplification + migration-tool rework
 
-- `src/models/knowledge.py` (exists) gets a `search_vector` computed column on PG (tsvector GENERATED ALWAYS AS …); DuckDB instance keeps the `fts` extension index.
-- `src/repositories/knowledge.py` (the now-consolidated repo) holds two search-method branches: PG uses `tsvector @@ ts_query`, DuckDB uses `match_bm25`.
-- Lint allowlist documents `src/fts.py` (DuckDB FTS extension management) as analytics-tier; the search-query SQL in the repo is the one cross-dialect raw block.
-- Cross-engine contract test covers Czech-diacritics → match.
+**Adversary fix HIGH-9.**
 
-### Phase 10 — retire `src/db.py` schema ladder
-
-**Goal**: single Alembic source of truth.
-
-After every cluster has been ported (Phase 8 + 9 complete):
-
-- Delete `_v1_to_v(N)` chain from `src/db.py`.
-- Keep `get_analytics_db()`, BQ extension bootstrap, FTS install — those are analytics path.
-- Delete `_ensure_schema` for the state tables (Alembic owns that now).
-- `src/db.py` shrinks from 5565 LOC to ~1500 (analytics half + connection helpers).
-- `tests/test_db_schema_version.py` integration gate updated to query Alembic head instead of `schema_version` table.
-
-### Phase 11 — factory simplification
-
-**Goal**: cleanup the registry once the dual-branch shape is gone.
-
-- `_REGISTRY` collapses from `{DUCKDB: (...), PG: (...)}` per repo to `(module, class)` per repo (single backend).
-- Backend dispatch lives in SQLAlchemy at the engine level (DATABASE_URL → dialect).
-- `use_pg()` → `active_dialect()` returning the SA dialect name; still used by analytics paths that branch (DuckDB vs PG dialect-specific SQL like the knowledge search query).
-- Migration tooling (`scripts/db_state_migrator.py`, `scripts/migrate_duckdb_to_pg/tasks.py`) re-tooled to iterate `Base.metadata.sorted_tables` and copy via SA Core.
+- `_REGISTRY` collapses to single-entry per repo key (one `(module, class)` tuple per repo). The PG dialect IS the DuckDB dialect IS the implementation.
+- `use_pg()` → `active_dialect()` returning SA dialect string. Still used by analytics paths that branch (e.g., knowledge search query selects FTS strategy by dialect).
+- **Migration-tool rework, named risk**:
+  - `scripts/db_state_migrator.py` + `scripts/migrate_duckdb_to_pg/tasks.py` re-tooled.
+  - Test plan: dry-run, rollback, row-count parity, checksum parity, compose-startup ordering, idempotent retry.
+  - The migration tooling is its own PR with full integration test of the SIDE_CAR → CLOUD transition path.
 
 ---
 
-## Risks
+## Risk register (v2)
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| `duckdb-engine` Alembic compatibility gap | Medium | High (blocks Phase 8) | Phase 7 spike gates; fallback to dual-repo if blocked |
-| `duckdb-engine` JSON column edge cases | Medium | Medium | Spike covers JSON roundtrip explicitly |
-| DuckDB single-writer + SA session pool | Low | Medium | SA pool config (`NullPool`) — already understood pattern |
-| Migration cost overrun | Medium | Medium | Phase-by-phase, contract tests gate each PR |
-| DuckDB-Quack lands fall 2026 and obsoletes the rewrite | Medium | Variable | Plan ships in <8 weeks (lint + Phases 1-5 land independently of duckdb-engine spike) |
-| Existing instances mid-migration during PG cutover | Low | High | Existing `scripts/db_state_migrator.py` already handles per-table copy; gets re-tooled in Phase 11 |
-| `knowledge` FTS Czech-diacritics regression on PG | Medium | Medium | `unaccent` extension + contract test |
-| Lint rule false positives | Low | Low | Allowlist designed explicitly; iterate based on misses |
+| `duckdb-engine` Alembic + `UPDATE RETURNING` gap | **High** | Blocks Tranche 3 | Phase 2 gates everything; fallback to dual-repo + lint locks invariant |
+| DuckDB single-writer + SA pool config | Medium | Medium | Phase 2 explicit `NullPool` test under concurrent app+scheduler workload |
+| Knowledge FTS Czech-diacritic regression on PG | Medium | Medium | Phase 7 contract test must pass before Phase 8 includes `knowledge` |
+| Usage backend split-brain on PG-state deploys | **High** today | **High** today | Phase 6 named decision; **disable PG-state for any new install until Phase 6 ships** |
+| `src/db.py` lifecycle helper accidentally deleted | Medium | High (loses crash recovery) | Phase 10 split — DDL ladder vs lifecycle helpers as explicit checklist |
+| Chat fork semantics drift during repo move | Medium | Medium | Phase 5 transaction-parity contract test pinned BEFORE move |
+| Migration-tool rework breaks deploy ordering | Medium | High | Phase 11 dry-run + integration test of full state-machine transition |
+| Lint baseline allowlist creeps upward | Low | Low | CODEOWNERS gate on `tools/lint/sql_allowlist.txt`; shrink-only diff check in CI |
+| DuckDB-Quack ships before Tranche 3 done | Medium | Variable | Tranche 1 ships standalone value; Tranche 3 paths re-evaluated post-Quack |
+| Cost overrun on Tranche 1 | Medium | Low | Quick wins parallelizable across people; Phase 2 spike runs in parallel with Phase 1 |
 
 ---
 
-## Sequencing summary
+## Sequencing summary (v2)
 
-| Phase | What | PRs | Effort | Depends on |
+| Phase | What | PRs | Weeks | Depends on |
 |---|---|---:|---|---|
-| 0 | Lint rule + allowlist | 1 | 1d | — |
-| 1 | Quick wins (~30 hits) | ~10 | 3-5d | 0 |
-| 2 | Facet + aggregate routes (~25 hits) | ~10 | 5-7d | 0 |
-| 3 | CAS patterns (5 hits) | ~3 | 2-3d | 0 |
-| 4 | Misplaced repos (44 hits) | 2 | 5d | 0 |
-| 5 | slack_bot/binding repo (new) | 1 | 2d | 0 |
-| 6 | Usage rollup decision | (spike only, no code change) | 1d | — |
-| 7 | duckdb-engine spike | 1 throwaway | 5d | — |
-| 8 | Cluster-by-cluster ORM (~14 clusters) | ~14 | 3-4w | 7 green |
-| 9 | Knowledge FTS | 1 | 5d | 8 done |
-| 10 | Retire src/db.py ladder | 1 | 3d | 8, 9 done |
-| 11 | Factory simplification | 1 | 2d | 10 done |
+| **Tranche 1 — invariant cleanup** | | | **4–5** | |
+| 0 | Baseline lint rule + allowlist | 1 | 1d | — |
+| 1 | Coverage matrix + quick wins (~30 hits) | ~10 | 1.5w | 0 |
+| 2 | duckdb-engine spike (PARALLEL) | 1 throwaway | 1.5w | — |
+| 3 | Slack-binding new repo + models + contract | 1 | 0.5w | 0, 1a (coverage matrix) |
+| 4 | Facet + aggregate routes (~25 hits) | ~10 | 1.5w | 0 |
+| 5 | Chat facade redesign + move (44 hits, 31+13) | 2 | 1w | 0, 4 (some shared repos) |
+| **Tranche 2 — boundary resolution** | | | **2** | |
+| 6 | Usage backend decision doc + tests | 1 | 1w | 1a |
+| 7 | Knowledge FTS contract + PG search shipping | 1 | 1w | 1a |
+| **Tranche 3 — ORM collapse (GATED on Phase 2)** | | | **3–6** | |
+| 8 | Cluster-by-cluster ORM (~14 clusters) | ~14 | 2.5–5w | 2 GREEN, 6 done, 7 done |
+| 9 | Sweep dead repo files | 1 | 0.5w | 8 |
+| 10 | Retire src/db.py DDL ladder (keep lifecycle helpers) | 1 | 0.5w | 8, 9 |
+| 11 | Factory simplification + migration-tool rework | 1 (multi-commit) | 1w | 10 |
 
-**Total**: ~7-9 engineer-weeks. Phases 0-6 (~2-3w) deliver standalone value and **lock the invariant** even if Phases 7-11 never ship.
+**Total**: ~9–13 engineer-weeks if Tranche 3 ships. **~4–7 weeks** if Tranche 3 stops at Phase 2 spike fail (invariant still locked).
 
 ---
 
-## Fact-check verdict
+## Per-table coverage matrix (replaces "15 files" framing)
+
+**Adversary fix HIGH-8.** Source of truth for completeness: this table, not file counts. Populated during Phase 1a coverage-matrix PR; reproduced here as a sketch.
+
+| Table | Model class | DD repo | PG repo | Contract test | Cluster phase |
+|---|---|---|---|---|---|
+| `users` | `User` (src/models/__init__.py) | `users.UserRepository` | `users_pg.UsersPgRepository` | `test_users_contract.py` ✓ | 8 (cluster 1) |
+| `user_groups` | `UserGroup` | `user_groups.UserGroupsRepository` | `user_groups_pg.UserGroupsPgRepository` | `test_rbac_contract.py` ✓ | 8 (cluster 2) |
+| `user_group_members` | `UserGroupMember` | `user_group_members.UserGroupMembersRepository` | `user_group_members_pg.UserGroupMembersPgRepository` | `test_rbac_contract.py` ✓ | 8 (cluster 2) |
+| `resource_grants` | `ResourceGrant` | `resource_grants.ResourceGrantsRepository` | `resource_grants_pg.ResourceGrantsPgRepository` | `test_rbac_contract.py` ✓ | 8 (cluster 2) |
+| `audit_log` | `AuditLog` | `audit.AuditRepository` | `audit_pg.AuditPgRepository` | `test_audit_contract.py` ✓ | 8 (cluster 1) |
+| `table_registry` | `TableRegistry` | `table_registry.TableRegistryRepository` | `table_registry_pg.TableRegistryPgRepository` | (gap — schedule contract) | 8 (cluster 4) |
+| `sync_state` | `SyncState` | `sync_state.SyncStateRepository` | `sync_state_pg.SyncStatePgRepository` | (gap) | 8 (cluster 4) |
+| ... (continues for 62 tables) | | | | | |
+
+The full matrix lands as a CSV/markdown file in the Phase 1a PR: `docs/planning/orm-coverage-matrix.md`. Coverage gate fails CI iff:
+- A `_REGISTRY` key has no row in the matrix, OR
+- A row points to a non-existent test/file, OR
+- A model exists in `src/models/` with no row.
+
+---
+
+## Fact-check verdict (v2)
 
 | Claim | Reality |
 |---|---|
-| "No raw SQL hardcoded except in the analytical part" today | **REFUTED** — 65 bug-class spots outside repos |
-| Migration is achievable | **YES** — `src/models/` already there, factory already declarative, contract tests already cover dual-backend |
-| Postgres becomes mandatory | **NO** — `duckdb-engine` SA dialect carries DuckDB-only deploys |
-| DuckDB stays for analytics | **YES** — explicitly fenced; ~10 files + connectors + extension paths preserved |
-| Cost-effective in <8 weeks | **YES** — Phases 0-6 are independent quick wins, Phases 7-11 gated by duckdb-engine spike |
-| Lint catches future drift | **YES** — Phase 0 ships standalone |
+| "No raw SQL hardcoded except in the analytical part" today | **REFUTED** — 65 bug-class spots |
+| Tranche 1 (~5w) delivers the invariant standalone | **YES** — baseline lint + 65 lifts; no new dep required |
+| Tranche 3 ORM collapse cost is firm | **NO — gated on Phase 2 spike**. If spike fails, Tranche 3 doesn't start |
+| Postgres becomes mandatory | **NO** — `duckdb-engine` is the laptop/dev path. If it fails the spike, dual-repo continues |
+| DuckDB stays for analytics | **YES** — explicit fence; `src/db.py` lifecycle helpers kept |
+| Cross-engine contract tests safety net | **PARTIAL today** — knowledge + slack + chat clusters explicitly addressed in Phase 1a coverage gate + Phases 3, 5, 7 |
+| `src/db.py` retires entirely | **NO** — only the DDL ladder. WAL/snapshot/CHECKPOINT helpers stay |
 
-The work is incremental, gated by an explicit spike, reversible at each phase, and the first ~30% of value (Phases 0-3) ships in 2 weeks without needing any new dependency.
+---
+
+## Audit scripts (appendix)
+
+Used by Phase 0 lint + Phase 1a coverage matrix:
+
+```bash
+# Find all execute() call sites outside the allowlist.
+# (AST-based; pseudo-code — actual implementation in tools/lint/sql_check.py)
+python tools/lint/sql_check.py --allowlist tools/lint/sql_allowlist.txt
+
+# Find every model class.
+rg -n '__tablename__\s*=' src/models/*.py
+
+# Find every registry key (handles typed AND plain assignment).
+rg -nP '^\s+"[a-z_]+":\s*\{' src/repositories/__init__.py
+
+# Compare to actual repo class list.
+rg -nP 'class\s+[A-Z][A-Za-z]*Repository' src/repositories/*.py
+```
 
 ---
 
 ## Appendices
 
-- **`/tmp/agnes-orm-inventory-src.md`** — file-by-file inventory of `src/` (149 files)
-- **`/tmp/agnes-orm-inventory-app.md`** — file-by-file inventory of `app/` (132 files)
-- **`/tmp/agnes-orm-inventory-cli-conn-svc.md`** — file-by-file inventory of `cli/`, `connectors/`, `services/`, `scripts/` (197 files)
-- **`/tmp/agnes-orm-rawsql-audit.md`** — 73 numbered raw-SQL findings outside repos with verdicts
+- **`docs/planning/orm-migration-adversary-review.md`** — Codex adversary review v1, the source of every v2 fix
+- **`docs/planning/agnes-orm-inventory-src.md`** — file-by-file `src/` inventory
+- **`docs/planning/agnes-orm-inventory-app.md`** — file-by-file `app/` inventory
+- **`docs/planning/agnes-orm-inventory-cli-conn-svc.md`** — file-by-file `cli/`, `connectors/`, `services/`, `scripts/` inventory
+- **`docs/planning/agnes-orm-rawsql-audit.md`** — 73 numbered raw-SQL findings
+
+Future appendices (land with the phases that produce them):
+- `docs/planning/duckdb-engine-spike-report.md` — Phase 2 deliverable
+- `docs/planning/usage-backend-decision.md` — Phase 6 deliverable
+- `docs/planning/orm-coverage-matrix.md` — Phase 1a deliverable
