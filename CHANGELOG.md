@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.11] — 2026-06-04
+
 ### Fixed
 - **`agnes schema` / `agnes describe` / sample / scan 500'd for any extract
   whose directory name differs from its `source_type`.** The v2 endpoints
@@ -26,6 +28,103 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   already use), with the `source_type` directory kept as a fast path. A missing
   parquet now returns a clean 404 instead of 500.
 
+## [0.65.10] — 2026-06-04
+
+### Fixed
+- **Postgres backend: `agnes query` against internal tables returned nothing.**
+  The internal-table SQL feature (analyst SQL over `agnes_telemetry` /
+  `agnes_audit` / `agnes_sessions`) ran the query in DuckDB against the system
+  file, so on a Postgres instance — where those rows live in PG — the same query
+  returned an empty result instead of the data DuckDB would show. It now reads
+  the caller's RBAC-filtered rows from Postgres into a per-request in-memory
+  DuckDB (one table per referenced internal source) and runs the analyst's
+  arbitrary DuckDB SQL there, so behaviour is identical on both backends. The
+  postgres extension is deliberately NOT loaded and nothing is ATTACHed, so the
+  `postgres_*` table functions (which take the catalog as a string literal and
+  would slip past identifier guards) are unavailable; and because the filter is
+  applied during materialisation, the materialised table is itself the RBAC
+  boundary — a user CTE that shadows an `agnes_*` alias still reads only the
+  caller's rows. A 1M-row-per-table materialisation cap protects against an
+  admin-unscoped query over a huge table (raises rather than risking an OOM).
+  Pinned by both-backends parity + RBAC-escape tests
+  (`tests/db_pg/test_parity_internal_query.py`).
+
+## [0.65.9] — 2026-06-04
+
+### Fixed
+- **Postgres backend: Slack identity binding silently failed.** The
+  `users.slack_user_id` column (mapping a Slack user to an Agnes account) was
+  only ever lazy-`ALTER`-ed into the DuckDB system file by the Slack bot, so it
+  never existed on a Postgres instance — and the bind wrote / the lookup read it
+  through a raw DuckDB connection the factory-backed reads never consult. On a
+  PG instance a redeemed `/agnes` code bound nothing and `/agnes` looped on
+  "bind your identity first". The column is now part of the formal schema
+  (DuckDB schema **v71** / alembic `0018`, additive + nullable, mirrored in the
+  `users` SQLAlchemy model), and `lookup_user_email` / the redeem bind route
+  through `users_repo()` (new `get_by_slack_user_id` + `slack_user_id` on the
+  update allow-list, both backends). Pinned by both-backends parity + contract
+  tests.
+- **Slack verification codes expired immediately on non-UTC hosts.** The redeem
+  TTL check compared a SQL `current_timestamp` (naive UTC) `issued_at` against
+  Python `datetime.now()` (local time), so on a host whose timezone was ahead of
+  UTC every code looked already-expired (and on UTC-behind hosts, never
+  expired). The code now stores and compares `issued_at` in naive UTC on both
+  sides, so the TTL is correct regardless of the server timezone.
+
+### Internal
+- Schema **v71** (DuckDB `_v70_to_v71` + alembic `0018_slack_user_id_v71`):
+  adds the nullable `users.slack_user_id` column on both backends. Additive,
+  idempotent (tolerates the pre-existing lazy ALTER). No `UNIQUE` constraint —
+  DuckDB rejects multiple NULLs in a UNIQUE index, which the many unbound users
+  would violate; the one-code-per-Slack-user issue flow already prevents
+  duplicate bindings.
+## [0.65.8] — 2026-06-04
+
+### Fixed
+- **Postgres backend: per-user MCP credentials were ignored at call time.**
+  When forwarding to an upstream MCP source, `connectors.mcp.client.`
+  `_lookup_secret_for_source` read the caller's per-user secret off a raw
+  always-DuckDB connection. Per-user secrets are stored in Postgres (#530), so
+  on a PG instance the analyst's own credential was never found and the call
+  silently fell through to the shared/env path (wrong identity, or unauthorized).
+  Both the per-user and shared lookups now route through the repo factory
+  (`per_user_secrets_repo()` / `shared_secrets_repo()`). (#537)
+- **Postgres backend: the shared MCP vault lived only in DuckDB.** The
+  server-wide `mcp_secrets` vault had no Postgres repository, so admin-set shared
+  credentials were written to and read from the DuckDB system file even on a PG
+  instance — lost on a DuckDB reset and inconsistent with the PG-resident
+  per-user secrets. Added `SharedSecretsPgRepository` + a `shared_secrets_repo()`
+  factory, and routed the admin MCP source endpoints (`app/api/admin_mcp.py`)
+  through it. The `mcp_secrets` table already exists in the PG schema (migration
+  0014), so no new migration is needed. Both fixes pinned by both-backends
+  parity tests (`tests/db_pg/test_parity_mcp_shared_vault.py`). Closes the
+  deferred follow-up flagged in #530's merge body. (#537)
+
+## [0.65.7] — 2026-06-04
+
+### Fixed
+- **Postgres backend: a fresh instance had no `Admin` / `Everyone` system
+  groups, so admin access and Everyone-scoped grants never worked.** The system
+  groups are seeded by `src.db._seed_system_groups`, which runs only on a DuckDB
+  connect — nothing seeded them on Postgres. The lifespan seed-admin step then
+  looked the `Admin` group up off a raw DuckDB connection, so the membership it
+  wrote referenced a DuckDB-only group id absent from Postgres and granted no
+  admin access. Startup now seeds the system groups through the factory
+  (`user_groups_repo().ensure_system`, idempotent on either backend) and the
+  seed-admin step resolves group ids + writes membership through the factory.
+  Pinned by both-backends parity tests (`tests/db_pg/test_parity_seed_admin_groups.py`). (#536)
+
+## [0.65.6] — 2026-06-04
+
+### Fixed
+- **Postgres backend: catalog `/sample` preview was empty for internal tables.**
+  The preview for an internal source (`agnes_audit` / `agnes_sessions` /
+  `agnes_telemetry`) read the physical state table (`audit_log` etc.) off a raw
+  always-DuckDB connection, so on a Postgres instance it returned zero rows. The
+  read now routes through `connectors.internal.access.sample_internal_rows`,
+  which dispatches on `use_pg()` (Postgres via the engine, DuckDB via the system
+  connection) while keeping the same RBAC row filter. Pinned by a both-backends
+  parity test (`tests/db_pg/test_parity_internal_sample.py`).
 ## [0.65.5] — 2026-06-04
 
 ### Fixed

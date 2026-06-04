@@ -19,9 +19,8 @@ SR-12 hardening:
 """
 from __future__ import annotations
 
-import json
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import duckdb
@@ -66,10 +65,9 @@ def _ensure_table(conn: duckdb.DuckDBPyConnection) -> None:
         " attempted_at TIMESTAMP NOT NULL"
         ")"
     )
-    # users table is assumed to exist; add a nullable slack_user_id column
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
-    if "slack_user_id" not in cols:
-        conn.execute("ALTER TABLE users ADD COLUMN slack_user_id VARCHAR")
+    # users.slack_user_id is part of the formal schema as of v71 (DuckDB
+    # _v70_to_v71 / alembic 0018), so no lazy ALTER is needed here anymore —
+    # and the binding must live in the active state backend, not just DuckDB.
 
 
 def issue_verification_code(conn: duckdb.DuckDBPyConnection, *, slack_user_id: str) -> str:
@@ -92,10 +90,16 @@ def issue_verification_code(conn: duckdb.DuckDBPyConnection, *, slack_user_id: s
     # One active code per user — delete any prior outstanding code.
     conn.execute("DELETE FROM slack_binding_codes WHERE slack_user_id = ?", [slack_user_id])
     code = f"{secrets.randbelow(1_000_000):06d}"
+    # Store issued_at as naive UTC from Python (not SQL current_timestamp): the
+    # redeem TTL check compares it against datetime.now(UTC), and DuckDB's
+    # current_timestamp timezone basis is not guaranteed to match Python's, so
+    # mixing the two skewed the TTL by the host's UTC offset. Python-UTC on both
+    # sides keeps the expiry correct on any host.
+    issued_at = datetime.now(timezone.utc).replace(tzinfo=None)
     conn.execute(
         "INSERT INTO slack_binding_codes(code, slack_user_id, issued_at, attempts) "
-        "VALUES (?, ?, current_timestamp, 0)",
-        [code, slack_user_id],
+        "VALUES (?, ?, ?, 0)",
+        [code, slack_user_id, issued_at],
     )
     conn.execute(
         "INSERT INTO slack_binding_issue_log(slack_user_id, issued_at) "
@@ -158,33 +162,35 @@ def redeem_verification_code(
         _record_failure()
         return False
     slack_user_id, issued_at = row
-    # DuckDB returns naive datetimes in local time (current_timestamp semantics)
-    now = datetime.now()
+    # ``issued_at`` was written with SQL ``current_timestamp``, which is naive
+    # UTC. Compare against naive UTC — ``datetime.now()`` is local time, so on a
+    # host whose timezone is not UTC the TTL was skewed by the UTC offset
+    # (codes expired early on UTC+ hosts, never on UTC- hosts).
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     if (now - issued_at).total_seconds() > _CODE_TTL_SECONDS:
         conn.execute("DELETE FROM slack_binding_codes WHERE code = ?", [code])
         _record_failure()
         return False
-    # Bind: write slack_user_id to the user row.
-    conn.execute("UPDATE users SET slack_user_id = ? WHERE email = ?", [slack_user_id, user_email])
+    # Bind: write slack_user_id to the user row through the factory so the
+    # binding lands in the active state backend (Postgres or DuckDB) — a raw
+    # UPDATE on the DuckDB connection never reached the PG-resident users table.
+    from src.repositories import users_repo
+    _u = users_repo().get_by_email(user_email)
+    if _u:
+        users_repo().update(id=_u["id"], slack_user_id=slack_user_id)
     conn.execute("DELETE FROM slack_binding_codes WHERE code = ?", [code])
     # Success — clear this caller's failed-attempt history so a future
     # legitimate re-bind isn't penalised by earlier typos.
     conn.execute("DELETE FROM slack_binding_redeem_log WHERE user_email = ?", [user_email])
     # Audit (best-effort — missing audit_log table or factory not initialised
-    # must never block the bind itself).
-    # Use json.dumps for the params value — f-string interpolation of
-    # slack_user_id or user_email allows injection of arbitrary JSON keys
-    # (e.g. a Slack user ID containing '"injected":"yes' would produce
-    # malformed/injected audit JSON).
+    # must never block the bind itself). audit_repo() serializes params safely,
+    # so a Slack user id containing JSON metacharacters cannot inject keys.
     try:
-        conn.execute(
-            "INSERT INTO audit_log (id, timestamp, user_id, action, params) "
-            "VALUES (?, current_timestamp, ?, 'slack.bind', ?)",
-            [
-                f"aud_{secrets.token_hex(8)}",
-                user_email,
-                json.dumps({"slack_user_id": slack_user_id, "email": user_email}),
-            ],
+        from src.repositories import audit_repo
+        audit_repo().log(
+            user_id=user_email,
+            action="slack.bind",
+            params={"slack_user_id": slack_user_id, "email": user_email},
         )
     except Exception:
         pass
@@ -213,7 +219,10 @@ def is_channel_allowlisted(conn: duckdb.DuckDBPyConnection, channel_id: str) -> 
 
 
 def lookup_user_email(repo, slack_user_id: str) -> Optional[str]:
-    row = repo._conn.execute(
-        "SELECT email FROM users WHERE slack_user_id = ?", [slack_user_id]
-    ).fetchone()
-    return row[0] if row else None
+    # Resolve through the factory so the Slack→Agnes identity binding is read
+    # from the active state backend (the binding is persisted there as of v71);
+    # the raw repo._conn read returned nothing on a Postgres instance. ``repo``
+    # is kept for signature/call-site stability.
+    from src.repositories import users_repo
+    u = users_repo().get_by_slack_user_id(slack_user_id)
+    return u["email"] if u else None

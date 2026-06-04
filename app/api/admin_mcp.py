@@ -42,7 +42,6 @@ from pydantic import BaseModel, field_validator
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from app.secrets_vault import (
-    SharedSecretsRepository,
     VaultKeyNotConfiguredError,
 )
 from connectors.mcp import classifier as mcp_classifier
@@ -50,6 +49,7 @@ from connectors.mcp import extractor as mcp_extractor
 from src.repositories import (
     mcp_sources_repo,
     per_user_secrets_repo,
+    shared_secrets_repo,
     tool_registry_repo,
 )
 from src.repositories.audit import AuditRepository
@@ -407,7 +407,7 @@ async def list_mcp_sources(
 ):
     repo = mcp_sources_repo()
     rows = repo.list_all(enabled_only=enabled_only)
-    secrets = SharedSecretsRepository(conn)
+    secrets = shared_secrets_repo()
     return [
         _serialize_source(r, has_vault_secret=secrets.has(r["id"])) for r in rows
     ]
@@ -427,7 +427,7 @@ async def get_mcp_source(
     tools_repo = tool_registry_repo()
     tools = tools_repo.list_for_source(source_id)
     out = _serialize_source(
-        src, has_vault_secret=SharedSecretsRepository(conn).has(source_id)
+        src, has_vault_secret=shared_secrets_repo().has(source_id)
     )
     out["tools"] = [_serialize_tool(t) for t in tools]
     return out
@@ -473,7 +473,7 @@ async def update_mcp_source(
     )
     return (
         _serialize_source(
-            fresh, has_vault_secret=SharedSecretsRepository(conn).has(source_id)
+            fresh, has_vault_secret=shared_secrets_repo().has(source_id)
         )
         if fresh
         else {"id": source_id}
@@ -499,7 +499,7 @@ async def delete_mcp_source(
     src_repo.delete(source_id)
     # Clean up vault secrets so a deleted source leaves no orphaned encrypted
     # blobs — the shared secret plus any per-user rows. (Devin Review on #530.)
-    SharedSecretsRepository(conn).delete(source_id)
+    shared_secrets_repo().delete(source_id)
     # Per-user secrets were migrated to Postgres (#530), so they must be dropped
     # through the factory — a raw PerUserSecretsRepository(conn) deletes from the
     # always-DuckDB connection and leaves orphaned rows on a PG instance.
@@ -545,7 +545,7 @@ async def set_mcp_source_secret(
     if not body.value:
         raise HTTPException(status_code=400, detail="secret value required")
     try:
-        SharedSecretsRepository(conn).upsert(source_id, body.value)
+        shared_secrets_repo().upsert(source_id, body.value)
     except VaultKeyNotConfiguredError as exc:
         raise HTTPException(
             status_code=409,
@@ -568,7 +568,7 @@ async def delete_mcp_source_secret(
     src_repo = mcp_sources_repo()
     if not src_repo.get(source_id):
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
-    SharedSecretsRepository(conn).delete(source_id)
+    shared_secrets_repo().delete(source_id)
     _audit(
         conn, user["id"], "mcp_source.secret.delete",
         f"mcp_source:{source_id}", {},
