@@ -186,11 +186,14 @@ def build_schema_uncached(
             "where_dialect_hints": _BQ_DIALECT_HINTS,
         }
     else:
-        # Local source — read schema from the parquet via DuckDB
-        from app.utils import get_data_dir
-        parquet = (
-            get_data_dir() / "extracts" / source_type / "data" / f"{table_id}.parquet"
-        )
+        # Local source — read schema from the parquet via DuckDB. Resolve the
+        # parquet by source-name-agnostic lookup: the extract directory is not
+        # necessarily the source_type (e.g. the bundled `demo` extract registers
+        # tables as source_type='local' but lives under extracts/demo/).
+        from app.utils import resolve_local_parquet
+        parquet = resolve_local_parquet(table_id, source_type)
+        if parquet is None:
+            raise NotFound(table_id)
         local_conn = _open_duckdb(":memory:")
         try:
             cols = local_conn.execute(

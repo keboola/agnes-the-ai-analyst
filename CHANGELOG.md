@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.65.12] — 2026-06-04
+
 ### Fixed
 - **Postgres backend: the first-time-setup wizard stayed open on a
   provisioned instance.** `GET /first-time-setup` counted users with a raw
@@ -35,6 +37,44 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   ratchet can't see (it only scans `get_system_db()` callers + direct repo
   instantiation). The GET sweep found the `/first-time-setup` divergence above;
   the mutation sweep is clean (no remaining divergence on that surface).
+## [0.65.11] — 2026-06-04
+
+### Fixed
+- **`agnes schema` / `agnes describe` / sample / scan 500'd for any extract
+  whose directory name differs from its `source_type`.** The v2 endpoints
+  (`/api/v2/schema`, `/api/v2/sample`, `/api/v2/scan`, and the catalog
+  size-hint) built the local-parquet path as
+  `extracts/<source_type>/data/<id>.parquet`, assuming the extract directory is
+  named after the registry `source_type`. That holds for the built-in
+  `keboola`/`bigquery` connectors but not for a generic `extract.duckdb`: e.g.
+  the bundled demo extract registers its tables with `source_type='local'`
+  while its parquets live under `extracts/demo/`, so the lookup hit a
+  nonexistent path and `read_parquet` raised → HTTP 500. Path resolution now
+  goes through `app.utils.resolve_local_parquet`, a source-name-agnostic lookup
+  (the same `rglob("data/<id>.parquet")` strategy `catalog.py`/`data.py`
+  already use), with the `source_type` directory kept as a fast path. A missing
+  parquet now returns a clean 404 instead of 500.
+
+## [0.65.10] — 2026-06-04
+
+### Fixed
+- **Postgres backend: `agnes query` against internal tables returned nothing.**
+  The internal-table SQL feature (analyst SQL over `agnes_telemetry` /
+  `agnes_audit` / `agnes_sessions`) ran the query in DuckDB against the system
+  file, so on a Postgres instance — where those rows live in PG — the same query
+  returned an empty result instead of the data DuckDB would show. It now reads
+  the caller's RBAC-filtered rows from Postgres into a per-request in-memory
+  DuckDB (one table per referenced internal source) and runs the analyst's
+  arbitrary DuckDB SQL there, so behaviour is identical on both backends. The
+  postgres extension is deliberately NOT loaded and nothing is ATTACHed, so the
+  `postgres_*` table functions (which take the catalog as a string literal and
+  would slip past identifier guards) are unavailable; and because the filter is
+  applied during materialisation, the materialised table is itself the RBAC
+  boundary — a user CTE that shadows an `agnes_*` alias still reads only the
+  caller's rows. A 1M-row-per-table materialisation cap protects against an
+  admin-unscoped query over a huge table (raises rather than risking an OOM).
+  Pinned by both-backends parity + RBAC-escape tests
+  (`tests/db_pg/test_parity_internal_query.py`).
 
 ## [0.65.9] — 2026-06-04
 
