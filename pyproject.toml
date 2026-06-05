@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.66.0"
+version = "0.67.0"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -17,7 +17,7 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "python-multipart>=0.0.27",
     "jinja2>=3.1.0",
-    "starlette>=0.41.0",
+    "starlette>=1.0.1",
     # Authentication
     "PyJWT>=2.8.0",
     "itsdangerous>=2.1.0",

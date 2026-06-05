@@ -10,6 +10,33 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.67.0] — 2026-06-05
+
+### Added
+- **Cowork bundle ships a `skill-router` agent.** Every generated
+  `bundle.zip` now includes `.claude/agents/skill-router.md` alongside the
+  curated skills — a lightweight subagent that inventories the workspace
+  skills, selects the ones that fit the user's task, and activates them via
+  the Skill tool. Bundled because Cowork's Customize → Skills panel does not
+  list workspace skills (a known Claude Code UI bug), so users otherwise
+  can't see what's available. The name is reserved (`_CURATED_AGENT_NAMES`)
+  so a marketplace plugin can't shadow it.
+
+## [0.66.1] — 2026-06-05
+
+### Internal
+- Bump `starlette` 1.0.0 → 1.0.1 (transitive bugfix release; no public-surface change). (#554)
+
 ## [0.66.0] — 2026-06-04
 
 ### Added
