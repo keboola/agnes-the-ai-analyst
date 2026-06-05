@@ -58,3 +58,21 @@ def test_me_cowork_accessible_to_non_admin(seeded_app):
     assert resp.status_code == 200
     assert "AI Cowork" in resp.text
     assert "Download Setup Bundle" in resp.text
+
+
+def test_me_cowork_has_plugin_package_section(seeded_app):
+    """/me/cowork hosts the per-plugin download list + the package guideline.
+
+    The list used to live on /home; it was relocated here so there is a single
+    place for the "what is a package" explanation. Pin: the JS-populated
+    download container, the per-plugin Cowork endpoint the JS builds links
+    against, and the guideline copy are all present."""
+    c = seeded_app["client"]
+    token = seeded_app["analyst_token"]
+    body = c.get("/me/cowork", headers=_auth(token)).text
+    assert 'id="cowork-plugin-list"' in body
+    assert "/marketplace/cowork/" in body
+    # Both flows are described so users can orient: the cross-project package
+    # flow and the folder-scoped bundled-project-with-MCP flow.
+    assert "Plugin packages" in body
+    assert "Bundled Project Setup with MCP" in body
