@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.67.0"
+version = "0.67.1"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -154,6 +154,13 @@ dependencies = [
 # `uv pip install --system --no-cache .[server]`.
 server = [
     "kbcstorage>=0.9.0",
+    # FastAPI debug toolbar. Shipped in the single production image
+    # (build-once / promote-the-same-artifact): the image validated in dev is
+    # the exact one promoted to prod, differing only by the DEBUG env var.
+    # INERT in prod — the toolbar middleware is only mounted when DEBUG=1
+    # (app/main.py), which prod never sets; dev/staging do. Moved here from the
+    # `dev` extra so it lands in the Dockerfile's `.[server]` install.
+    "fastapi-debug-toolbar>=0.6.3",
 ]
 observability = [
     # Already in base dependencies — listed here so operators who want to
@@ -180,10 +187,8 @@ dev = [
     # under tests/test_corporate_memory_v1.py (extraction.json, correction.json,
     # confidence_calibration.json). Production code does not depend on it.
     "jsonschema>=4.0.0",
-    # FastAPI debug toolbar — gated behind DEBUG=1 env var in app/main.py.
-    # Provides per-request panels (headers, routes, timer, profiling, etc.)
-    # for local development. Never loaded in production (no DEBUG=1 there).
-    "fastapi-debug-toolbar>=0.6.3",
+    # NOTE: fastapi-debug-toolbar moved to the `server` extra (build-once —
+    # ships in the production image, inert unless DEBUG=1). See `server` above.
     # Browser automation for the cloud-chat E2E suite (tests/e2e/test_chat_web.py).
     # Pure-Python wheel; the Chromium binary is downloaded separately via
     # `playwright install chromium --with-deps`. Imports are wrapped behind a

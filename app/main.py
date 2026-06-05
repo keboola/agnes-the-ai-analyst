@@ -809,8 +809,32 @@ def _toolbar_show_callback(request, settings) -> bool:
     Starlette's debug-only ServerErrorMiddleware, but we still want the
     toolbar mounted. Read DEBUG / LOCAL_DEV_MODE env directly so operators who
     flip the env at runtime (rare) see the change without re-import.
+
+    Only top-level document navigations (and the toolbar's own
+    ``/_debug_toolbar`` endpoints) are instrumented. Background ``fetch``/XHR —
+    notably the dashboard's ``/api/...`` polling — must NOT be instrumented:
+    each instrumented response rewrites the ``dtRefresh`` cookie, and the
+    toolbar's ``refresh.js`` then repoints to that request's store and wipes the
+    open panel's content (re-showing the loader). For request-scoped query
+    panels (DuckDB/Postgres) that meant the queries from the page you navigated
+    to flickered and reset to the latest poll's count. Gating on
+    ``Sec-Fetch-Dest`` keeps the toolbar pinned to the page under inspection.
     """
-    return _is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")
+    if not (_is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")):
+        return False
+    path = request.url.path
+    # The toolbar's own render_panel + static endpoints are XHR — always allow,
+    # or panels can never lazy-load their content.
+    if path.startswith("/_debug_toolbar"):
+        return True
+    # Background fetch/XHR (Sec-Fetch-Dest is "empty"/"cors"/... not "document")
+    # and API polls do not own the toolbar — skip so they don't reset it.
+    dest = request.headers.get("sec-fetch-dest")
+    if dest and dest != "document":
+        return False
+    if path.startswith("/api/"):
+        return False
+    return True
 
 
 def create_app() -> FastAPI:
@@ -891,6 +915,7 @@ def create_app() -> FastAPI:
                     "debug_toolbar.panels.timer.TimerPanel",
                     "debug_toolbar.panels.logging.LoggingPanel",
                     "app.debug.duckdb_panel.DuckDBPanel",
+                    "app.debug.postgres_panel.PostgresPanel",
                 ],
                 jinja_loaders=[FileSystemLoader(str(_debug_templates_dir))],
                 show_toolbar_callback="app.main._toolbar_show_callback",

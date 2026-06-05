@@ -20,6 +20,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.67.1] — 2026-06-05
+
+### Added
+- **Postgres debug-toolbar panel.** The FastAPI debug toolbar (mounted only when `DEBUG=1`) now has a Postgres panel alongside the DuckDB one — captures every state-layer SQL statement through SQLAlchemy `before/after_cursor_execute` + `handle_error` event listeners into a contextvar-scoped, request-scoped store, then renders timings/params/errors per request. Closes the toolbar gap that opened when app state moved from `system.duckdb` to Cloud SQL Postgres (state SQL was invisible; only analytics DuckDB queries showed). The toolbar background-poll fix-up also pins panel state to document navigations so background polls (e.g. usage telemetry) don't reset the query panel mid-request. (#553)
+
+### Internal
+- `fastapi-debug-toolbar` moves from the `[dev]` extra to the `[server]` extra so it ships inside the single production image (build-once / promote-the-same-artifact discipline — the image validated in dev is the exact one promoted to prod, differing only by the `DEBUG` env var). The toolbar middleware is mounted only when `DEBUG=1` in `app/main.py`, which prod never sets, so the dep is inert in prod. (#553)
+
 ## [0.67.0] — 2026-06-05
 
 ### Added
