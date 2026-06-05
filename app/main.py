@@ -801,16 +801,56 @@ def _is_truthy_env(name: str) -> bool:
 DEBUG = _is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")
 
 
+# Background poll / low-signal endpoints the debug toolbar must NOT attach to.
+# They run ~no application queries but fire repeatedly, and every instrumented
+# response rewrites the `dtRefresh` cookie — `refresh.js` then repoints the
+# toolbar to that request's (near-empty) store and wipes the panel content you
+# were reading (the "flickers to 0 / stuck spinner" symptom). Skipping ONLY
+# these keeps data XHRs (e.g. /api/marketplace/items, /api/store/entities, whose
+# Postgres queries are exactly what you want to inspect) instrumented while the
+# pollers stay out of the way. Tunable: add high-frequency, low-signal paths.
+#
+# Two sets: EXACT skips only the listed path verbatim (so e.g. `/api/health`
+# does NOT inadvertently skip `/api/health/detailed`, which is a separate
+# authenticated admin diagnostics endpoint — see app/api/health.py). PREFIXES
+# skips the listed path AND any sub-path (whole subtree is a poll surface).
+_TOOLBAR_SKIP_EXACT = (
+    "/api/version",
+    "/api/health",
+    "/api/memory/stats",
+)
+_TOOLBAR_SKIP_PREFIXES = (
+    "/api/notifications",
+)
+
+
 def _toolbar_show_callback(request, settings) -> bool:
-    """Decide whether the debug toolbar shows on a request.
+    """Decide whether the debug toolbar attaches to a request.
 
     Replaces the upstream default (which reads `request.app.debug`) — we keep
     `app.debug=False` so our @app.exception_handler(Exception) runs instead of
     Starlette's debug-only ServerErrorMiddleware, but we still want the
     toolbar mounted. Read DEBUG / LOCAL_DEV_MODE env directly so operators who
     flip the env at runtime (rare) see the change without re-import.
+
+    Document navigations AND data XHRs are instrumented (so async/XHR-loaded
+    listings show their queries); only the toolbar's own ``/_debug_toolbar``
+    endpoints (always allowed) and the background pollers in
+    ``_TOOLBAR_SKIP_PREFIXES`` are special-cased. See that constant for why the
+    pollers must be excluded. For comprehensive, request-independent capture of
+    EVERY query (incl. async/threadpool), see the DEBUG-gated logger in
+    ``app/debug/postgres_panel.py`` (logger ``agnes.db.postgres``).
     """
-    return _is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")
+    if not (_is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")):
+        return False
+    path = request.url.path
+    if path.startswith("/_debug_toolbar"):
+        return True  # toolbar's own render_panel + static — always, or panels can't load
+    if path in _TOOLBAR_SKIP_EXACT:
+        return False
+    if any(path == p or path.startswith(p + "/") for p in _TOOLBAR_SKIP_PREFIXES):
+        return False
+    return True
 
 
 def create_app() -> FastAPI:
@@ -891,6 +931,7 @@ def create_app() -> FastAPI:
                     "debug_toolbar.panels.timer.TimerPanel",
                     "debug_toolbar.panels.logging.LoggingPanel",
                     "app.debug.duckdb_panel.DuckDBPanel",
+                    "app.debug.postgres_panel.PostgresPanel",
                 ],
                 jinja_loaders=[FileSystemLoader(str(_debug_templates_dir))],
                 show_toolbar_callback="app.main._toolbar_show_callback",

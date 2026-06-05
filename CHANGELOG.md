@@ -10,6 +10,52 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.67.2] — 2026-06-05
+
+### Changed
+- **PG debug-toolbar panel now captures data-XHR queries.** v0.67.1 pinned the toolbar to document navigations to stop background polls (`/api/version`, `/api/health`, …) from wiping the panel — but that also hid the queries from data XHRs like `/api/marketplace/items` and `/api/store/entities`, which is exactly what an operator wants to inspect. The skip list is now narrow (a handful of named pollers) and everything else — document navigations AND data XHRs — is instrumented. `/api/health` is exact-match so the separate authenticated admin diagnostics endpoint `/api/health/detailed` stays observable. (#559)
+
+### Added
+- **`agnes.db.postgres` per-statement query log (DEBUG-gated).** New stdlib logger emits one line per Postgres statement (op, table, ms, params, errors) for every request — including async/threadpool paths the toolbar can't pin to. Silent in prod (gated on `DEBUG=1` / `LOCAL_DEV_MODE=1`). Pairs with the toolbar's PG panel for comprehensive, request-independent capture. (#559)
+
+### Fixed
+- The stuck-review reaper now works on Postgres-backed instances. It was DuckDB-only: `POST /api/admin/run-reap-stuck-reviews` injected a DuckDB connection and the reaper ran raw DuckDB SQL against it, so on a Postgres deployment it queried an empty local DuckDB, found nothing, and returned `200 reaped=0` every 15 minutes while real `pending_llm` submissions sat in Postgres forever. A flea-market submission whose LLM review never completed (e.g. the LLM provider key was unset when it was uploaded, so no review was scheduled) would then show "Under review" indefinitely instead of flipping to `review_error` with a Retry button. The flip SQL now lives on the repositories (`reap_stuck_pending_llm` on both the DuckDB and Postgres `store_submissions` repos) and the reaper resolves the repo from the factory, so it flips rows on whichever backend holds them. Covered by a cross-engine contract test. (#558)
+
+## [0.67.1] — 2026-06-05
+
+### Added
+- **Postgres debug-toolbar panel.** The FastAPI debug toolbar (mounted only when `DEBUG=1`) now has a Postgres panel alongside the DuckDB one — captures every state-layer SQL statement through SQLAlchemy `before/after_cursor_execute` + `handle_error` event listeners into a contextvar-scoped, request-scoped store, then renders timings/params/errors per request. Closes the toolbar gap that opened when app state moved from `system.duckdb` to Cloud SQL Postgres (state SQL was invisible; only analytics DuckDB queries showed). The toolbar background-poll fix-up also pins panel state to document navigations so background polls (e.g. usage telemetry) don't reset the query panel mid-request. (#553)
+
+### Internal
+- `fastapi-debug-toolbar` moves from the `[dev]` extra to the `[server]` extra so it ships inside the single production image (build-once / promote-the-same-artifact discipline — the image validated in dev is the exact one promoted to prod, differing only by the `DEBUG` env var). The toolbar middleware is mounted only when `DEBUG=1` in `app/main.py`, which prod never sets, so the dep is inert in prod. (#553)
+
+## [0.67.0] — 2026-06-05
+
+### Added
+- **Cowork bundle ships a `skill-router` agent.** Every generated
+  `bundle.zip` now includes `.claude/agents/skill-router.md` alongside the
+  curated skills — a lightweight subagent that inventories the workspace
+  skills, selects the ones that fit the user's task, and activates them via
+  the Skill tool. Bundled because Cowork's Customize → Skills panel does not
+  list workspace skills (a known Claude Code UI bug), so users otherwise
+  can't see what's available. The name is reserved (`_CURATED_AGENT_NAMES`)
+  so a marketplace plugin can't shadow it.
+
+## [0.66.1] — 2026-06-05
+
+### Internal
+- Bump `starlette` 1.0.0 → 1.0.1 (transitive bugfix release; no public-surface change). (#554)
+
 ## [0.66.0] — 2026-06-04
 
 ### Added
