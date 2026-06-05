@@ -104,6 +104,13 @@
                     <a class="app-nav-menu-item {% if _path.startswith('/admin/workspace-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/workspace-prompt">Workspace Prompt</a>
                 </details>
 
+                <details class="app-nav-menu-group" data-section="documentation" open>
+                    <summary class="app-nav-menu-section">Documentation</summary>
+                    <a class="app-nav-menu-item {% if _path.startswith('/documentation') %}is-active{% endif %}" role="menuitem" href="/documentation/api">API Guide</a>
+                    <a class="app-nav-menu-item" role="menuitem" href="/docs">Interactive API (Swagger)</a>
+                    <a class="app-nav-menu-item" role="menuitem" href="/redoc">API Reference (ReDoc)</a>
+                </details>
+
                 <details class="app-nav-menu-group" data-section="server" open>
                     <summary class="app-nav-menu-section">Server</summary>
                     <a class="app-nav-menu-item {% if _path.startswith('/admin/server-config') %}is-active{% endif %}" role="menuitem" href="/admin/server-config">Instance settings</a>

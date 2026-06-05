@@ -31,3 +31,16 @@ def test_api_guide_renders_for_non_admin(seeded_app):
     assert 'href="/redoc"' in body
     # Live version stamp from template context, not from the markdown
     assert "Running version" in body
+
+
+def test_documentation_section_in_admin_menu(seeded_app):
+    """Admin dropdown carries a Documentation section linking guide + Swagger + ReDoc."""
+    client = seeded_app["client"]
+    r = client.get("/dashboard", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    body = r.text
+    assert 'data-section="documentation"' in body
+    assert 'href="/documentation/api"' in body
+    assert ">API Guide<" in body
+    assert 'href="/docs"' in body
+    assert 'href="/redoc"' in body
