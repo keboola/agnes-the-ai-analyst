@@ -10,6 +10,8 @@ Follows the pattern established in test_audit_contract.py.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import patch
 
 import duckdb
 import pytest
@@ -352,3 +354,116 @@ def test_reap_stuck_pending_llm_contract(store_repos):
     )
     assert subs.reap_stuck_pending_llm(grace_seconds=1800, error_payload=err) == []
     assert subs.get(appr_id)["status"] == "approved"
+
+
+def _audit_for_backend(repos, conn, backend):
+    """Build an audit repo bound to the same backend the fixture uses."""
+    if backend == "duckdb":
+        from src.repositories.audit import AuditRepository
+        return AuditRepository(conn)
+    from src.repositories.audit_pg import AuditPgRepository
+    return AuditPgRepository(repos["submissions"]._engine)
+
+
+def test_run_llm_review_persists_verdict_contract(store_repos, tmp_path):
+    """run_llm_review must find the pending submission and flip it on BOTH
+    backends. On Postgres the pre-fix DuckDB-only path logged
+    'submission vanished' (rows live in PG, the DuckDB handle was empty)
+    and left the row stuck at pending_llm forever — this guards that
+    regression by driving the runner with backend-native repos."""
+    from src.store_guardrails.runner import LlmResult, run_llm_review
+
+    repos, conn, backend = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    _make_entity(repos["entities"])
+    sub_id = repos["submissions"].create(
+        submitter_id="user-1", submitter_email="alice@x.com",
+        type="skill", name="my-skill", version="abc123",
+        status="pending_llm", entity_id="entity-1",
+        inline_checks={"manifest": {"status": "pass"}},
+    )
+
+    plugin_dir = tmp_path / "bundle"
+    plugin_dir.mkdir()
+    (plugin_dir / "SKILL.md").write_text("# Test\nbody " * 30)
+
+    safe = {
+        "risk_level": "safe", "summary": "OK", "findings": [],
+        "template_placeholders_found": 0,
+        "reviewed_by_model": "claude-haiku-4-5-20251001", "error": None,
+    }
+    audit = _audit_for_backend(repos, conn, backend)
+    with patch(
+        "src.store_guardrails.runner.llm_review.review_bundle",
+        return_value=safe,
+    ):
+        result = run_llm_review(
+            sub_id, plugin_dir=plugin_dir,
+            api_key_loader=lambda: "sk-test",
+            model_loader=lambda: "claude-haiku-4-5-20251001",
+            subs_repo=repos["submissions"],
+            ents_repo=repos["entities"],
+            audit=audit,
+        )
+
+    assert isinstance(result, LlmResult)
+    assert result.passed
+    # The row was found (not "vanished") and flipped on this backend.
+    assert repos["submissions"].get(sub_id)["status"] == "approved"
+    assert repos["entities"].get("entity-1")["visibility_status"] == "approved"
+
+
+def test_run_llm_review_factory_path_resolves_pg(store_repos, tmp_path):
+    """Production path: run_llm_review with NO injected repos must resolve
+    the Postgres repos via the src.repositories factory and flip the row.
+    The injected-repo test above proves the runner body works on PG repos;
+    this proves the no-injection factory wiring (what the app actually
+    calls) resolves to PG when use_pg() is true.
+
+    PG-only: the DuckDB fixture uses a standalone duckdb.connect(), not the
+    get_system_db() singleton the factory resolves, so the no-injection
+    path can't see the fixture's rows on DuckDB. The factory's DuckDB
+    wiring is covered by the injected-repo test + the broad DuckDB unit
+    suite (tests/test_store_guardrails_llm.py)."""
+    repos, conn, backend = store_repos
+    if backend != "pg":
+        pytest.skip("factory no-injection path is integration-tested on PG only")
+
+    from src.store_guardrails.runner import LlmResult, run_llm_review
+    from src.repositories import use_pg
+
+    assert use_pg() is True  # fixture set AGNES_DB_URL → factory must pick PG
+
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    _make_entity(repos["entities"])
+    sub_id = repos["submissions"].create(
+        submitter_id="user-1", submitter_email="alice@x.com",
+        type="skill", name="my-skill", version="abc123",
+        status="pending_llm", entity_id="entity-1",
+        inline_checks={"manifest": {"status": "pass"}},
+    )
+
+    plugin_dir = tmp_path / "bundle"
+    plugin_dir.mkdir()
+    (plugin_dir / "SKILL.md").write_text("# Test\nbody " * 30)
+
+    safe = {
+        "risk_level": "safe", "summary": "OK", "findings": [],
+        "template_placeholders_found": 0,
+        "reviewed_by_model": "claude-haiku-4-5-20251001", "error": None,
+    }
+    with patch(
+        "src.store_guardrails.runner.llm_review.review_bundle",
+        return_value=safe,
+    ):
+        result = run_llm_review(
+            sub_id, plugin_dir=plugin_dir,
+            api_key_loader=lambda: "sk-test",
+            model_loader=lambda: "claude-haiku-4-5-20251001",
+            # No subs_repo/ents_repo/audit → forces factory resolution.
+        )
+
+    assert isinstance(result, LlmResult)
+    assert result.passed
+    assert repos["submissions"].get(sub_id)["status"] == "approved"
+    assert repos["entities"].get("entity-1")["visibility_status"] == "approved"
