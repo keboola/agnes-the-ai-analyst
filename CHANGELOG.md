@@ -20,6 +20,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.68.0] — 2026-06-05
+
+### Added
+- **In-app API documentation.** A curated API Reference guide (`docs/api-reference.md`) is rendered at `/documentation/api` (login-gated, no admin requirement) — any analyst can navigate directly to the guide from the app without leaving the browser. Links out to the auto-generated Swagger UI (`/docs`) and ReDoc (`/redoc`) are embedded on the page.
+- **Documentation section in the Admin dropdown.** A new *Documentation* group in the Admin nav menu links the curated API Guide, Swagger UI, and ReDoc — making all three reference surfaces reachable from a single place for admins doing integration or debugging work.
+- **CI gate: public API endpoint coverage.** A new test (`tests/test_api_docs_coverage.py`) requires every public `/api/*` route in the FastAPI app to be listed in `docs/api-reference.md`; CI fails when a new endpoint ships without a matching entry in the guide, preventing silent documentation drift.
+- **Admin menu highlights on `/documentation` pages.** The Admin nav trigger now shows the active state when the user is anywhere under `/documentation`, consistent with the existing `/admin/*` highlight behaviour.
+
 ## [0.67.6] — 2026-06-05
 
 ### Fixed
