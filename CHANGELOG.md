@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- **Edit-group modal now flips in dark mode.** `admin_group_detail`'s edit modal hardcoded a white card (`background: #fff`) with `#e5e7eb`-bordered inputs, so it stayed a white island in the dark theme. It now adopts the canonical global `.modal-card` — whose token-driven rules (`var(--surface)`/`var(--text-primary)`/`var(--border)`) style the card plus its labels and inputs — and the description field uses the `.form-textarea` canonical. Light mode is unchanged (`--ds-surface` resolves to `#ffffff`, the prior literal); dark mode flips the card, inputs, and labels together. Part of the #497 §8 form-input audit. (#497)
 
 ### Removed
 
