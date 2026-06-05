@@ -19,6 +19,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+## [0.67.5] — 2026-06-05
+
+### Internal
 - Anti-regression guard in `tests/test_design_system_contract.py`: page-level
   templates must `{% extends %}` a design-system base, not ship their own
   `<html>`/`<head>`/`<body>` scaffold. Closes the one unimplemented item from
@@ -28,7 +32,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   class of bug (shared infra like `app.js`/theme/nav lived only in the base).
   `admin_chat.html` is the lone known standalone left, tolerated via an
   explicit `_STANDALONE_ALLOWLIST`; a companion test fails if an allowlist
-  entry goes stale (page migrated or removed) so the list can't silently rot.
+  entry goes stale (page migrated or removed) so the list can't silently rot. (#551)
 
 ## [0.67.4] — 2026-06-05
 
