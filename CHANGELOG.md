@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- The stuck-review reaper now works on Postgres-backed instances. It was DuckDB-only: `POST /api/admin/run-reap-stuck-reviews` injected a DuckDB connection and the reaper ran raw DuckDB SQL against it, so on a Postgres deployment it queried an empty local DuckDB, found nothing, and returned `200 reaped=0` every 15 minutes while real `pending_llm` submissions sat in Postgres forever. A flea-market submission whose LLM review never completed (e.g. the LLM provider key was unset when it was uploaded, so no review was scheduled) would then show "Under review" indefinitely instead of flipping to `review_error` with a Retry button. The flip SQL now lives on the repositories (`reap_stuck_pending_llm` on both the DuckDB and Postgres `store_submissions` repos) and the reaper resolves the repo from the factory, so it flips rows on whichever backend holds them. Covered by a cross-engine contract test.
+
 ## [0.66.1] — 2026-06-05
 
 ### Internal
