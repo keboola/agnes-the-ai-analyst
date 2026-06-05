@@ -41,11 +41,11 @@ def cowork_env(e2e_env):
 
     # One plugin on disk that exercises the transforms: hex version, homepage,
     # a skill with Claude-Code-only frontmatter keys.
-    d = data_dir / "marketplaces" / "mkt" / "plugins" / "grpn"
+    d = data_dir / "marketplaces" / "mkt" / "plugins" / "demo"
     (d / ".claude-plugin").mkdir(parents=True)
     (d / ".claude-plugin" / "plugin.json").write_text(
         json.dumps(
-            {"name": "grpn", "version": "deadbeefcafe", "homepage": "https://internal/x"}
+            {"name": "demo", "version": "deadbeefcafe", "homepage": "https://internal/x"}
         ),
         encoding="utf-8",
     )
@@ -63,11 +63,11 @@ def cowork_env(e2e_env):
             "INSERT INTO marketplace_registry (id, name, url, registered_at) VALUES (?,?,?,?)",
             ["mkt", "Market", "https://example.test/m.git", t],
         )
-        raw = {"name": "grpn", "version": "deadbeefcafe", "description": "grpn plugin"}
+        raw = {"name": "demo", "version": "deadbeefcafe", "description": "demo plugin"}
         conn.execute(
             "INSERT INTO marketplace_plugins (marketplace_id, name, version, raw, updated_at) "
             "VALUES (?,?,?,?,?)",
-            ["mkt", "grpn", "deadbeefcafe", json.dumps(raw), t],
+            ["mkt", "demo", "deadbeefcafe", json.dumps(raw), t],
         )
 
         users = UserRepository(conn)
@@ -88,11 +88,11 @@ def cowork_env(e2e_env):
         rg.create(
             group_id=admin_gid,
             resource_type="marketplace_plugin",
-            resource_id="mkt/grpn",
+            resource_id="mkt/demo",
         )
 
         subs = UserCuratedSubscriptionsRepository(conn)
-        subs.subscribe("admin1", "mkt", "grpn")
+        subs.subscribe("admin1", "mkt", "demo")
     finally:
         conn.close()
 
@@ -108,11 +108,11 @@ class TestCoworkZip:
     def test_granted_user_downloads_transformed_zip(self, cowork_env):
         c = cowork_env["client"]
         resp = c.get(
-            "/marketplace/cowork/mkt-grpn.zip", headers=_auth(cowork_env["admin_token"])
+            "/marketplace/cowork/mkt-demo.zip", headers=_auth(cowork_env["admin_token"])
         )
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "application/zip"
-        assert "mkt-grpn.zip" in resp.headers["content-disposition"]
+        assert "mkt-demo.zip" in resp.headers["content-disposition"]
         files = _read_zip(resp.content)
         assert ".claude-plugin/plugin.json" in files
         assert ".claude-plugin/marketplace.json" not in files
@@ -126,7 +126,7 @@ class TestCoworkZip:
     def test_ungranted_plugin_returns_404(self, cowork_env):
         c = cowork_env["client"]
         resp = c.get(
-            "/marketplace/cowork/mkt-grpn.zip", headers=_auth(cowork_env["nope_token"])
+            "/marketplace/cowork/mkt-demo.zip", headers=_auth(cowork_env["nope_token"])
         )
         assert resp.status_code == 404
 
@@ -141,15 +141,15 @@ class TestCoworkZip:
     def test_if_none_match_returns_304(self, cowork_env):
         c = cowork_env["client"]
         first = c.get(
-            "/marketplace/cowork/mkt-grpn.zip", headers=_auth(cowork_env["admin_token"])
+            "/marketplace/cowork/mkt-demo.zip", headers=_auth(cowork_env["admin_token"])
         )
         etag = first.headers["etag"]
         second = c.get(
-            "/marketplace/cowork/mkt-grpn.zip",
+            "/marketplace/cowork/mkt-demo.zip",
             headers={**_auth(cowork_env["admin_token"]), "If-None-Match": etag},
         )
         assert second.status_code == 304
 
     def test_missing_auth_returns_401(self, cowork_env):
-        resp = cowork_env["client"].get("/marketplace/cowork/mkt-grpn.zip")
+        resp = cowork_env["client"].get("/marketplace/cowork/mkt-demo.zip")
         assert resp.status_code == 401
