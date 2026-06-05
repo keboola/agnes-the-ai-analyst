@@ -3765,6 +3765,22 @@
     // accept an explicit ?source= override so secondary-source registration
     // works in both directions and we can remove this guard.
     {% if data_source_type == 'keboola' %}
+    // After a discover call repopulates a <datalist>, nudge the browser to
+    // open its native suggestion popup so the freshly loaded options are
+    // visible without the user having to click back into the input. Focus
+    // the associated input (located via its `list=` attribute) + dispatch a
+    // synthetic `input` event — the cross-browser heuristic Chromium honors,
+    // mirroring the smart-paste handler below. No-op when nothing loaded (an
+    // empty popup just confuses). Progressive enhancement: a browser that
+    // ignores the nudge still has the populated datalist + success toast, so
+    // clicking the input shows the options as before.
+    function _openKbDatalistPopup(datalistId) {
+        var inputEl = document.querySelector('input[list="' + datalistId + '"]');
+        if (!inputEl) return;
+        inputEl.focus();
+        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
     function discoverKeboolaBuckets(datalistId) {
         fetch('/api/admin/discover-tables?source=keboola')
             .then(function(r) {
@@ -3796,6 +3812,7 @@
                     dl.appendChild(o);
                 });
                 showToast('Loaded ' + (dl.children.length) + ' buckets', 'success');
+                if (dl.children.length) _openKbDatalistPopup(datalistId);
             })
             .catch(function(err) {
                 showToast('' + err.message, 'error');
@@ -3834,6 +3851,7 @@
                     dl.appendChild(o);
                 });
                 showToast('Loaded ' + dl.children.length + ' tables in ' + bucket, 'success');
+                if (dl.children.length) _openKbDatalistPopup(tablesDatalistId);
             })
             .catch(function(err) {
                 showToast('' + err.message, 'error');
