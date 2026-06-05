@@ -92,15 +92,22 @@ If spike fails: stop at end of Tranche 1. Invariant still holds; dual-repo conti
 
 - New tool `tools/lint/sql_check.py`:
   - AST visitor identifies every call site matching the DBAPI/SA execute shape: `<obj>.execute(<args>)`, `<obj>.exec_driver_sql(<args>)`, `<obj>.executemany(<args>)`, `sa.text(<args>).execute(<args>)`, `sa.text(<args>)` in any expression chained to `.execute`, `Session.execute(<args>)`.
-  - For each match, computes a stable callsite ID: `<sha256-12 of repo-relative-path>:<qualified-callsite>:<ast-node-hash>` where:
-    - `qualified-callsite` = `<module-dot-path>.<class-name or "">.<function-name>#<lexical-index-within-function>`
-    - `ast-node-hash` = stable hash of the parent function's AST normalized to ignore comments/whitespace (covers code-shape changes; insensitive to unrelated formatting)
+  - For each match, computes a stable callsite ID: `<sha256-12 of repo-relative-path>:<qualified-scope>:<callsite-token-hash>` where:
+    - `qualified-scope` = `<module-dot-path>.<class-name or "">.<function-or-comprehension-or-lambda-name>#<lexical-index-within-scope>`. Module-level: scope name is `<module>`. Lambdas: scope name is `<lambda#N>` keyed by enclosing-function lexical order. Comprehensions: scope name is `<listcomp#N>`/`<setcomp#N>`/`<dictcomp#N>`/`<genexpr#N>`. Nested functions: dotted path through the enclosing scopes.
+    - `callsite-token-hash` = sha256-12 of the normalized token list of the ENTIRE call expression itself (the `.execute(...)` call and its arguments), NOT the parent function. Adding an unrelated `log.info()` in the same function does NOT change the hash. The hash changes ONLY when the call expression's own tokens change (different method, different argument tree, etc.).
   - Output: `tools/lint/sql_allowlist.yaml` (one entry per ID with reason + owner).
 - Reason taxonomy:
   - `analytics-domain` — table never lives in state DB. Permanent. Example: `read_parquet`, BQ TVF, FTS extension, analytics.duckdb views.
   - `dialect-bootstrap` — extension `INSTALL`/`LOAD`, `SET GLOBAL TimeZone='UTC'`, `INSTALL bigquery`. Permanent.
   - `liveness` — `SELECT 1`-class. Permanent.
-  - `state-via-duckdb-attach` — state table read via DuckDB ATTACH for export/LLM (admin LLM SQL, usage_* export). **Requires owner + 90-day expiry + security/performance review.**
+  - `state-via-duckdb-attach` — state table read via DuckDB ATTACH for export/LLM (admin LLM SQL, usage_* export). **Requires owner + 90-day expiry + the following audit items, all enumerated in `tools/lint/sql_allowlist.yaml` per entry**:
+    - `tables_allowed`: explicit list of tables the SQL may reference (any other table → reject)
+    - `functions_blocked`: explicit blacklist of PG/DuckDB functions the SQL may not call (`pg_read_file`, `lo_import`, `system$*`, `read_csv_auto`, etc.)
+    - `row_cap`: max rows returned per execution
+    - `timeout_ms`: statement timeout
+    - `rbac_under_attach`: documented behavior of who can read what (the DuckDB ATTACH bypasses PG row-level security; document the threat model)
+    - `audit_logging`: rejected + accepted SQL logged to `audit_log` with caller user_id
+    - **Review**: the entry MUST be linked to a security review issue/doc (`security_review: <URL>`) before CI accepts the entry.
 - CI invariant: discovered IDs **must equal** snapshot IDs. New IDs not in snapshot → CI fail. Snapshot IDs not discovered → CI fail (snapshot is shrink-only; removing requires the cleanup PR landing in the same diff).
 - Snapshot lives at `tools/lint/sql_allowlist.yaml`; CODEOWNERS requires review on changes but CI enforces shape.
 - Initial snapshot: 73 spots, classified per the audit in `docs/planning/agnes-orm-rawsql-audit.md`.
@@ -172,7 +179,17 @@ If spike fails: stop at end of Tranche 1. Invariant still holds; dual-repo conti
 
 **Deliverable**: `docs/planning/duckdb-engine-spike-report.md` with each row tagged **PASS** / **FAIL** / **WORKAROUND-AVAILABLE** + concrete GH issue references for blockers found in `Mause/duckdb_engine`.
 
-If any of `update().returning()`, FK enforcement, savepoints, or SA pool config is FAIL with no workaround: **stop. Tranche 3 abandoned. Dual-repo continues; revisit post-Quack-v2.0.**
+**Stop criteria** (any of these FAIL with no workaround → Tranche 3 abandoned; dual-repo continues; revisit post-Quack-v2.0):
+
+- `update().returning()` semantics
+- FK enforcement
+- Savepoints / nested transactions
+- SA `NullPool` + DuckDB single-writer concurrency
+- **`alembic upgrade head` on `duckdb:///` URL** (added explicitly — if Alembic itself doesn't run on duckdb-engine, the single-Alembic-ladder premise of the plan is dead)
+- **DDL autogenerate parity** — running `alembic revision --autogenerate` against a no-op schema change produces an empty migration on both backends, AND CREATE/ALTER/DROP/type-change DDL operations roundtrip through Alembic on duckdb-engine (CREATE column, DROP column, ALTER type, RENAME column, RENAME table)
+- **JSON SQL NULL vs JSON `null` distinguishability**
+
+The other checklist rows are "should pass" but not stop-the-world if a documented workaround exists (e.g., manual SQL `RETURNING` for one specific repo, retry policy as middleware instead of native, etc.).
 
 ### Phase 3 — Slack-binding repo + models + contract
 
@@ -196,8 +213,8 @@ Same as v2. Each lift drops the corresponding allowlist entry. Notable: `app/api
 
 1. Ship `tests/db_pg/test_chat_invariants_contract.py` parametrized over both backends — common invariants only (schema, indexes, CRUD round-trip, FK enforcement).
 2. Ship `tests/test_chat_transaction_semantics.py` — NOT parametrized; two named test classes:
-   - `TestPgAtomicFork`: PG-only; asserts `chat_session_participants_pg:136-146` atomic fork behavior.
-   - `TestDuckDbBestEffortFork`: DuckDB-only; asserts best-effort semantics + documents as public contract.
+   - `TestPgAtomicFork`: PG-only; **failure-injection assertion**: monkeypatch `psycopg.connection.commit` to raise mid-fork; assert that NO `chat_session_participants` row was committed (atomic rollback) AND the partially-created session is observable as ROLLED BACK in PG state.
+   - `TestDuckDbBestEffortFork`: DuckDB-only; **failure-injection assertion**: simulate a write failure between two of the inline statements; assert that the residual state matches the documented "at most an empty ephemeral session for GC" contract — i.e., a session row may exist with zero `chat_session_participants` rows, NEVER orphaned messages. The exact residual rows are part of the contract; the test pins them.
 3. Decision: DuckDB stays best-effort. Documented as known-limitation in `ChatRepository` docstring + above test.
 4. Split `app/chat/persistence.py` into 4 cluster repos (each dual-DD+PG until Phase 8):
    - `src/repositories/chat_sessions.py` + `chat_sessions_pg.py`
@@ -270,8 +287,14 @@ Reality today (unchanged from v2 acknowledgment):
 **Phase 7 redesign (drop BM25-equivalent ambition):**
 
 1. New `tests/db_pg/test_knowledge_contract.py` parametrized cross-dialect with:
-   - **Lexical-match parity**: query `česky` matches body `cesky` and vice versa on both backends.
-   - **Top-K-overlap relevance**: top-10 results across both backends share ≥ 7 items for a curated query set (relaxed from "BM25-equivalent"). Acknowledges PG `ts_rank` is lexicographic, not statistical; DuckDB BM25 is statistical; perfect ranking parity is NOT a requirement.
+   - **Lexical-match parity**: query `česky` matches `content` text `cesky` (and vice versa) on both backends.
+   - **Top-K-overlap relevance**: top-10 results across both backends share ≥ 7 items for a **frozen, version-controlled curated query set** (relaxed from "BM25-equivalent"). Acknowledges PG `ts_rank` is lexicographic, not statistical; DuckDB BM25 is statistical; perfect ranking parity is NOT a requirement.
+   - **Curated query set methodology** (anti-self-curation safeguard):
+     - Lives at `tests/db_pg/fixtures/knowledge_search_queries.yaml` — 30 queries minimum, curated from real `audit_log` entries with `action='knowledge.search'` over a 90-day window of production usage, anonymized.
+     - File MUST be checked in BEFORE the contract test PR. Reviewer for the contract PR is NOT the curator.
+     - Each query carries an expected top-K set (≥ 10 items) labeled `must-contain`, `nice-to-have`, `must-not-contain`.
+     - Adding queries requires a PR labeled `knowledge-search-contract` with curator + reviewer sign-off (CODEOWNERS rule on the fixture file).
+     - Frozen at Phase 7 PR merge; modifications post-merge require explicit changelog entry.
    - **Count parity**: same query returns same row count on both (within a non-ranking match-set sense).
    - **ILIKE fallback parity**: when FTS extension unavailable, fallback returns same rows on both.
 
@@ -286,10 +309,11 @@ Reality today (unchanged from v2 acknowledgment):
 
 3. Add `search_vector` GENERATED ALWAYS AS column on PG `knowledge_items`:
    ```sql
+   -- Column is `content`, NOT `body` — verified at src/models/knowledge.py:37.
    ALTER TABLE knowledge_items ADD COLUMN search_vector tsvector
      GENERATED ALWAYS AS (
        to_tsvector('public.cs_unaccent',
-         coalesce(title, '') || ' ' || coalesce(body, ''))
+         coalesce(title, '') || ' ' || coalesce(content, ''))
      ) STORED;
    CREATE INDEX knowledge_items_search_vector_idx
      ON knowledge_items USING GIN (search_vector);
@@ -318,27 +342,41 @@ Reality today (unchanged from v2 acknowledgment):
 
 **Adversary v2 fix NEW-HIGH-8.**
 
-Cluster definition: each cluster is identified by registry keys (not table names, not repo names). Each cluster lists owned tables, FK targets to other clusters, dependencies, migration_function_name, contract test, models.
+Cluster definition: each cluster is identified by **actual `_REGISTRY` keys** (verified against `src/repositories/__init__.py`). FK columns enumerated against `src/models/*.py` declarations. Bare-string identifier columns (`data_package_tables.table_id`, `data_package_tools.tool_id`, `resource_grants.resource_id` polymorphic column) are NOT FKs and don't drive cluster ordering — they're application-validated references.
 
-| Cluster | Registry keys | Owned tables | FKs into | Depends on | Migration fn | Contract test | Model files |
-|---:|---|---|---|---|---|---|---|
-| 1 | `users`, `audit`, `cli_auth_codes`, `setup_tokens`, `profile` | `users`, `audit_log`, `cli_auth_codes`, `setup_tokens`, `table_profiles` | — (root) | — | varies | `test_users_contract.py`, `test_audit_contract.py`, `test_profile_contract.py` | `models/audit.py`, `models/misc.py`, `models/config.py` |
-| 2 | `user_groups`, `user_group_members` | `user_groups`, `user_group_members` | cluster 1 (users) | 1 | varies | `test_rbac_contract.py` (partial) | `models/rbac.py` |
-| 3 | `claude_md_template`, `welcome_template`, `news_template` | `instance_templates`, `news_template` | — | — | varies | gap → exemption | `models/lookup.py` |
-| 4 | `table_registry`, `sync_state`, `sync_settings`, `view_ownership`, `column_metadata`, `bq_metadata_cache` | corresponding tables | cluster 1, 2 | 1, 2 | varies | `test_table_registry_contract.py` (gap → schedule) | `models/ops.py`, `models/misc.py` |
-| 5 | `notifications_telegram`, `notifications_pending_code`, `notifications_script` | `telegram_links`, `pending_codes`, `script_registry` | cluster 1 | 1 | varies | gap → exemption | `models/misc.py` |
-| 6 | `marketplace_registry`, `marketplace_plugins` | `marketplace_registry`, `marketplace_plugins` | — | — | varies | `test_marketplace_plugins_grants_contract.py` (partial; covers grants JOIN only) | `models/store.py` |
-| 7 | `store_entities`, `user_store_installs`, `user_curated_subscriptions`, `store_submissions`, `user_stack_subscriptions` | corresponding tables | cluster 1, 6 | 1, 6 | varies | `test_store_contract.py` (partial) | `models/store.py` |
-| 8 | `data_packages` | `data_packages`, `data_package_tables`, `data_package_tools` | cluster 1, 4 | 1, 4 | varies | `test_data_packages_contract.py` | `models/data_packages.py` |
-| 9 | `recipes` | `recipes` | cluster 1, 8 | 1, 8 | varies | `test_recipes_contract.py` | `models/recipes.py` |
-| 10 | `memory_domains`, `memory_domain_suggestions` | `memory_domains`, `knowledge_item_domains`, `memory_domain_suggestions` | cluster 1 | 1 | varies | `test_memory_domains_contract.py`, `test_memory_domain_suggestions_contract.py` | `models/knowledge.py` |
-| 11 | `usage` (conditional on Phase 6 path) | `usage_events`, `usage_session_summary`, `usage_tool_daily`, `usage_marketplace_item_daily`, `usage_marketplace_item_window` | cluster 1, 6 | 1, 6, **Phase 6 done** | varies | gap → schedule | `models/telemetry.py` |
-| 12 | `personal_access_token`, `access_token`, `setup_banner`, `metric`, `session_processor_state`, `observability_views` | `personal_access_tokens`, `setup_banner`, `metric_definitions`, `session_processor_state`, `user_observability_views`, etc. | cluster 1 | 1 | varies | `test_access_tokens_contract.py` (partial), others gap | `models/config.py`, `models/misc.py` |
-| 13 | `mcp_sources`, `tool_registry`, `mcp_secrets`, `system_secrets`, `mcp_user_secrets` | corresponding tables | cluster 1 | 1, **Phase 5b done** | varies | `test_mcp_sources_contract.py`, `test_system_secrets_contract.py`, others gap → schedule | `models/mcp.py`, `models/vault.py` |
-| 14 | `chat_session`, `chat_message`, `chat_session_participant`, `user_workdir` | corresponding tables | cluster 1 | 1, **Phase 5a done** | varies | `test_chat_invariants_contract.py` (Phase 5) | `models/chat.py` |
-| 15 | `slack_bindings` (added Phase 3) | `slack_binding_codes`, `slack_binding_issue_log`, `slack_binding_redeem_log` | cluster 1 | 1, **Phase 3 done** | varies | `test_slack_bindings_contract.py` (Phase 3) | `models/slack.py` |
-| 16 | `knowledge` | `knowledge_items`, `knowledge_contradictions`, `knowledge_item_relations`, `verification_evidence`, `knowledge_votes`, `knowledge_item_user_dismissed` | cluster 1, 10 | 1, 10, **Phase 7 done** | varies | `test_knowledge_contract.py` (Phase 7) | `models/knowledge.py` |
-| 17 | `resource_grants` (LAST — has FKs to most other clusters) | `resource_grants` | clusters 1, 2, 4, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16 | all of the above | new fn | `test_rbac_contract.py` (extend) | `models/rbac.py` |
+**Real cross-table FK inventory** (verified `2026-06-05` against `src/models/`):
+
+- `user_group_members.group_id` → `user_groups.id` (rbac.py:70-76). NOT FK to `users` despite the column name.
+- `resource_grants.group_id` → `user_groups.id` (rbac.py:148-150).
+- `resource_grants.resource_id_table` → `table_registry.id` (rbac.py:173-177, ondelete CASCADE).
+- `resource_grants.resource_id_data_package` → `data_packages.id` (rbac.py:178-182).
+- `resource_grants.resource_id_memory_domain` → `memory_domains.id` (rbac.py:183-187).
+- `resource_grants.resource_id_memory_item` → `knowledge_items.id` (rbac.py:188-192).
+- `resource_grants.resource_id_recipe` → `recipes.id` (rbac.py:193-197).
+- (`resource_grants.resource_id_marketplace_plugin` does NOT exist — for marketplace_plugin the legacy polymorphic `resource_id` is the only column; FK is application-validated, no SQL constraint.)
+- `data_package_tables.package_id` → `data_packages.id` (data_packages.py:88).
+- `data_package_tools.package_id` → `data_packages.id` (data_packages.py:116).
+- Chat FKs are intra-cluster only (chat.py:111-143).
+
+| Cluster | Registry keys (from `_REGISTRY`) | Owned tables | FKs out (cross-cluster) | Depends on | Contract test | Model files |
+|---:|---|---|---|---|---|---|
+| 1 | `users`, `audit`, `cli_auth_codes`, `setup_tokens`, `profile` | `users`, `audit_log`, `cli_auth_codes`, `setup_tokens`, `table_profiles` | — (root) | — | `test_users_contract.py`, `test_audit_contract.py` ✓; `test_cli_auth_codes_contract.py`, `test_setup_tokens_contract.py`, `test_profile_contract.py` (gap → 30d exemption) | `models/audit.py`, `models/misc.py`, `models/config.py` |
+| 2 | `user_groups`, `user_group_members` | `user_groups`, `user_group_members` | `user_group_members.group_id` → `user_groups.id` (intra-cluster) | — | `test_rbac_contract.py` ✓ (partial, extend) | `models/rbac.py` |
+| 3 | `claude_md_template`, `welcome_template`, `news_template`, `metric` | `instance_templates`, `news_template`, `metric_definitions` | — | — | gap → 30d exemption | `models/lookup.py`, `models/config.py` |
+| 4 | `table_registry`, `sync_state`, `sync_settings`, `view_ownership`, `column_metadata`, `bq_metadata_cache` | corresponding tables | — | — | gap → 30d exemption | `models/ops.py`, `models/misc.py` |
+| 5 | `notifications_telegram`, `notifications_pending_code`, `notifications_script` | `telegram_links`, `pending_codes`, `script_registry` | — | — | gap → 30d exemption | `models/misc.py` |
+| 6 | `marketplace_registry`, `marketplace_plugins` | `marketplace_registry`, `marketplace_plugins` | — | — | `test_marketplace_plugins_grants_contract.py` ✓ (partial; extend) | `models/store.py` |
+| 7 | `store_entities`, `user_store_installs`, `user_curated_subscriptions`, `store_submissions`, `user_stack_subscriptions` | corresponding tables | — (intra-cluster FKs only) | — | `test_store_contract.py` ✓ (partial), others gap | `models/store.py` |
+| 8 | `data_packages` | `data_packages`, `data_package_tables`, `data_package_tools` | data_package_{tables,tools}.package_id → data_packages.id (intra-cluster) | — | `test_data_packages_contract.py` ✓ | `models/data_packages.py` |
+| 9 | `recipes` | `recipes` | — | — | `test_recipes_contract.py` ✓ | `models/recipes.py` |
+| 10 | `memory_domains`, `memory_domain_suggestions` | `memory_domains`, `knowledge_item_domains`, `memory_domain_suggestions` | — | — | `test_memory_domains_contract.py` ✓, `test_memory_domain_suggestions_contract.py` ✓ | `models/knowledge.py` |
+| 11 | `usage` (conditional on Phase 6 path) | `usage_events`, `usage_session_summary`, `usage_tool_daily`, `usage_marketplace_item_daily`, `usage_marketplace_item_window` | — (application-attributed to `marketplace_plugins.name`, no SQL FK) | **Phase 6 done** | gap → schedule | `models/telemetry.py` |
+| 12 | `access_token`, `setup_banner`, `session_processor_state`, `observability_views` | `personal_access_tokens` (NB: registry key is `access_token`; table is `personal_access_tokens`), `setup_banner`, `session_processor_state`, `user_observability_views` | — | — | `test_access_tokens_contract.py` ✓ (partial), others gap | `models/config.py`, `models/misc.py` |
+| 13 | `mcp_sources`, `tool_registry`, `per_user_secrets`, `shared_secrets`, `system_secrets` | `mcp_sources`, `tool_registry`, `mcp_user_secrets`, `mcp_secrets`, `system_secrets` (NB: tables don't 1:1 match registry-key names — verified above) | — | **Phase 5b done** | `test_mcp_sources_contract.py` ✓, `test_system_secrets_contract.py` ✓; per_user_secrets + shared_secrets + tool_registry gap | `models/mcp.py`, `models/vault.py` |
+| 14 | `chat_session`, `chat_message`, `chat_session_participant`, `user_workdir` | `chat_sessions`, `chat_messages`, `chat_session_participants`, `user_workdirs` | intra-cluster only | **Phase 5a done** | `test_chat_invariants_contract.py` (Phase 5) | `models/chat.py` |
+| 15 | `slack_bindings` (added Phase 3) | `slack_binding_codes`, `slack_binding_issue_log`, `slack_binding_redeem_log` | — | **Phase 3 done** | `test_slack_bindings_contract.py` (Phase 3) | `models/slack.py` |
+| 16 | `knowledge` | `knowledge_items`, `knowledge_contradictions`, `knowledge_item_relations`, `verification_evidence`, `knowledge_votes`, `knowledge_item_user_dismissed` | — | **Phase 7 done** | `test_knowledge_contract.py` (Phase 7) | `models/knowledge.py` |
+| 17 | `resource_grants` (LAST — typed FK columns reference 5 separate clusters) | `resource_grants` | `group_id` → cluster 2; `resource_id_table` → cluster 4; `resource_id_data_package` → cluster 8; `resource_id_memory_domain` → cluster 10; `resource_id_memory_item` → cluster 16; `resource_id_recipe` → cluster 9 | 2, 4, 8, 9, 10, 16 | `test_rbac_contract.py` (extend with the 5 typed-FK paths) | `models/rbac.py` |
 
 Per cluster PR pattern (unchanged from v2 mechanically):
 - Drop DD repo file.
@@ -348,7 +386,7 @@ Per cluster PR pattern (unchanged from v2 mechanically):
 - Add `COVERED_METHODS` list per coverage matrix gate.
 - Delete the cluster's `_v(N)_to_v(N+1)` migration step from `src/db.py`; assert equivalent Alembic step landed.
 
-**FK constraint deferral** (for `resource_grants` and any other cluster with cross-cluster FKs): Alembic migration in cluster 17 (or wherever the resource_grants consolidation lands) creates FK constraints AFTER all referenced clusters' migrations have run. SA model declarations carry the FK metadata but constraint creation is sequenced explicitly.
+**FK constraint deferral**: cluster 17's PR adds the 5 typed-FK constraints to `resource_grants` ONLY after each referenced cluster's migration has run. SA model carries the FK metadata; Alembic constraint creation is sequenced explicitly. Clusters 11 and 7 reference `marketplace_plugins.name` at the application layer only (no SQL FK), so they don't gate on cluster 6 schema-wise — only on cluster 6 repo consolidation.
 
 ### Phase 9 — Sweep: remove dead DuckDB repo files
 
@@ -376,8 +414,10 @@ For each existing migrator behavior, ship a named regression test in `tests/inte
 | Behavior | Location today | Named regression test |
 |---|---|---|
 | Job JSON + liveness heartbeat | `scripts/db_state_migrator.py:68-127` | `test_migrator_heartbeat.py::test_heartbeat_updates_during_long_copy` |
-| Cancel sentinels | `scripts/db_state_migrator.py:198-234` | `test_migrator_cancel.py::test_cancel_sentinel_aborts_copy_mid_task` |
-| Final cancel-before-flip lock | `scripts/db_state_migrator.py:1179-1208` | `test_migrator_cancel.py::test_cancel_before_flip_lock_holds` |
+| Cancel sentinel definition + check primitive | `scripts/db_state_migrator.py:61-119` (`CancelRequested` exception at 61; `Job.check_cancel_requested` at 86-119) | `test_migrator_cancel.py::test_cancel_sentinel_raises_on_check` |
+| Cancel sentinel polls at step boundaries | `scripts/db_state_migrator.py:1051, 1070, 1086, 1091, 1110, 1117, 1148, 1167` (each is a `writer.check_cancel_requested()` poll) | `test_migrator_cancel.py::test_cancel_sentinel_aborts_copy_mid_task` |
+| Final cancel-before-flip lock | `scripts/db_state_migrator.py:198-234` (`_check_cancel_before_flip` helper) and `1202, 1207` (its call sites) | `test_migrator_cancel.py::test_cancel_before_flip_lock_holds` |
+| State reversion on cancel/failure | `scripts/db_state_migrator.py:1213-1258` + backup-failure revert at `1126-1145` | `test_migrator_cancel.py::test_state_reverts_to_source_on_cancel_or_failure` |
 | URL password masking | `scripts/db_state_migrator.py:249-265` | `test_migrator_logging.py::test_alembic_timeout_error_redacts_password` |
 | Audit PII scrub before copy | `scripts/db_state_migrator.py:361-388, 488-535` | `test_migrator_pii.py::test_audit_log_email_redacted_in_copied_rows` |
 | Backup hard-fail + cleanup | `scripts/db_state_migrator.py:914-997` | `test_migrator_backup.py::test_half_written_backup_removed_on_failure` |
