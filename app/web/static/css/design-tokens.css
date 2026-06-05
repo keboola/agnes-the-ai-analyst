@@ -18,6 +18,12 @@
  */
 
 :root {
+    /* Native form controls (inputs/selects/textareas) + scrollbars render in
+       the light UA palette; `[data-theme="dark"]` below flips this to `dark`
+       so a default-styled field with no explicit background doesn't stay
+       white on a dark surface. */
+    color-scheme: light;
+
     /* Brand surface — green/navy palette. Opted into via the
        `.home-mock` / `.advanced-mock` scopes. */
     --ds-primary: #2ea877;          /* brand-dark green */
@@ -211,6 +217,11 @@
    surfaces audited by the chat page are guaranteed AA-clean.
    Other pages may need touch-ups when their templates next change. */
 :root[data-theme="dark"] {
+    /* Flip native controls (inputs, selects, textareas, scrollbars) to the
+       dark UA palette so browser-default form fields aren't white-on-dark.
+       Higher specificity than `:root`; `auto` + OS-dark resolves here too. */
+    color-scheme: dark;
+
     /* Brand surface — same hue, lighter for AA contrast on dark fills */
     --ds-primary: #4ec096;
     --ds-primary-dark: #2ea877;

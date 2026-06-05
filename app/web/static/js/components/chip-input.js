@@ -41,7 +41,7 @@
     host.innerHTML = '';
     host.style.cssText = host.style.cssText +
       ';display:flex;flex-wrap:wrap;gap:6px;align-items:center;' +
-      'border:1px solid #e5e7eb;border-radius:8px;padding:6px;position:relative;background:#fff;';
+      'border:1px solid var(--ds-border);border-radius:8px;padding:6px;position:relative;background:var(--ds-surface);';
 
     const chipsHost = document.createElement('div');
     chipsHost.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;align-items:center;flex:1;min-width:120px;';
@@ -64,8 +64,8 @@
 
     const dropdown = document.createElement('div');
     dropdown.setAttribute('role', 'listbox');
-    dropdown.style.cssText = 'position:absolute;left:0;right:0;top:100%;background:#fff;' +
-      'border:1px solid #e5e7eb;border-radius:8px;margin-top:4px;max-height:240px;' +
+    dropdown.style.cssText = 'position:absolute;left:0;right:0;top:100%;background:var(--ds-surface);' +
+      'border:1px solid var(--ds-border);border-radius:8px;margin-top:4px;max-height:240px;' +
       'overflow-y:auto;display:none;z-index:1000;box-shadow:0 4px 12px rgba(0,0,0,0.08);';
     host.appendChild(dropdown);
 
@@ -135,7 +135,7 @@
         const createRow = document.createElement('div');
         createRow.setAttribute('role', 'option');
         createRow.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:13px;' +
-          'border-top:1px solid #e5e7eb;color:#0073D1;';
+          'border-top:1px solid var(--ds-border);color:#0073D1;';
         createRow.textContent = '+ Create new "' + filter + '"…';
         createRow.dataset.create = '1';
         createRow.dataset.name = filter;

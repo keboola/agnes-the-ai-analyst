@@ -68,7 +68,7 @@
     width: 100%; padding: 10px 12px;
     border: 1px solid var(--border, #d1d5db); border-radius: 8px;
     font-size: 14px; font-family: var(--font-primary, inherit);
-    box-sizing: border-box; background: #fff;
+    box-sizing: border-box; background: var(--ds-surface);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
   .field textarea { min-height: 90px; resize: vertical; }
@@ -86,7 +86,7 @@
     cursor: pointer; padding: 14px 12px;
     border: 1px solid var(--border, #e5e7eb); border-radius: 10px;
     text-align: center; transition: all 0.15s ease;
-    background: #fff;
+    background: var(--ds-surface);
   }
   .type-tiles label:hover { border-color: #c7d2fe; }
   .type-tiles label.is-active {
@@ -108,9 +108,9 @@
     display: flex; align-items: center; gap: 12px;
     transition: all 0.15s ease;
   }
-  .file-drop:hover { border-color: var(--ds-primary); background: #fff; }
+  .file-drop:hover { border-color: var(--ds-primary); background: var(--ds-surface); }
   .file-drop.is-dragover {
-    border-color: var(--ds-primary); background: #fff;
+    border-color: var(--ds-primary); background: var(--ds-surface);
     box-shadow: 0 0 0 4px rgba(46, 168, 119, 0.15);
     transform: scale(1.005);
   }
@@ -130,7 +130,7 @@
   .file-drop input[type=file] { display: none; }
   .file-drop button {
     appearance: none; padding: 7px 14px;
-    border: 1px solid var(--border, #d1d5db); background: #fff;
+    border: 1px solid var(--border, #d1d5db); background: var(--ds-surface);
     color: var(--text-primary, #111827); border-radius: 8px;
     font-size: 12px; font-weight: 500; cursor: pointer;
     flex-shrink: 0; font-family: var(--font-primary, inherit);
