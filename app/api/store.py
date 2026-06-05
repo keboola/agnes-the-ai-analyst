@@ -3194,3 +3194,8 @@ def _invalidate_etag() -> None:
         packager.invalidate_etag_cache()
     except Exception:
         logger.exception("failed to invalidate marketplace etag cache")
+    try:
+        from app.marketplace_server import cowork_packager
+        cowork_packager.invalidate_cache()
+    except Exception:
+        logger.exception("failed to invalidate cowork zip cache")

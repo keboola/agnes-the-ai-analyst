@@ -1,7 +1,7 @@
 """Unit tests for the Cowork plugin-zip transforms (issue #464).
 
 Behaviour is matched against the known-good reference zip
-(``grpn-v1.15.28.zip``): keep ALL content, concatenate per-directory ``.md``
+(``demo-v1.15.28.zip``): keep ALL content, concatenate per-directory ``.md``
 under ``data/`` into ``_all.md``, keep agent ``tools:``, whitelist SKILL.md
 frontmatter, fix plugin.json. Pure-function tests — no DB, no FastAPI.
 """
@@ -181,11 +181,11 @@ Agent body.
 def _make_plugin(tmp_path):
     """On-disk plugin dir exercising the reference behaviour, returned as the
     resolver-shaped dict ``build_cowork_zip`` expects."""
-    d = tmp_path / "marketplaces" / "mkt" / "plugins" / "grpn"
+    d = tmp_path / "marketplaces" / "mkt" / "plugins" / "demo"
     (d / ".claude-plugin").mkdir(parents=True)
     (d / ".claude-plugin" / "plugin.json").write_text(
-        json.dumps({"name": "grpn", "version": "deadbeef",
-                    "homepage": "https://internal.example/grpn"}),
+        json.dumps({"name": "demo", "version": "deadbeef",
+                    "homepage": "https://internal.example/demo"}),
         encoding="utf-8",
     )
     (d / "skills" / "create").mkdir(parents=True)
@@ -210,13 +210,13 @@ def _make_plugin(tmp_path):
     # Stripped.
     (d / ".DS_Store").write_text("junk", encoding="utf-8")
     # Kept root docs.
-    (d / "README.md").write_text("# grpn", encoding="utf-8")
+    (d / "README.md").write_text("# demo", encoding="utf-8")
     (d / ".mcp.json").write_text("{}", encoding="utf-8")
     return {
-        "manifest_name": "grpn",
-        "prefixed_name": "mkt-grpn",
+        "manifest_name": "demo",
+        "prefixed_name": "mkt-demo",
         "version": "deadbeef",
-        "raw": {"name": "grpn", "description": "Groupon plugin"},
+        "raw": {"name": "demo", "description": "demo plugin"},
         "plugin_dir": d,
     }
 
@@ -305,3 +305,12 @@ class TestBuildCoworkZip:
         )
         names = list(_read_zip(cp.build_cowork_zip(plugin)[0]))
         assert len(names) == len(set(names))  # no duplicate arcnames
+        # Collisions resolve at the DIRECTORY level: both skills keep an intact
+        # `SKILL.md` (a renamed `SKILL-1.md` would make Cowork drop the skill).
+        skill_arcs = [n for n in names if n.startswith("skills/") and "/" in n]
+        assert all(
+            n.rsplit("/", 1)[1] == "SKILL.md" for n in skill_arcs
+        ), f"a SKILL.md got renamed: {skill_arcs}"
+        # The two colliding dirs survive as distinct directories.
+        skill_dirs = {n.rsplit("/", 1)[0] for n in skill_arcs}
+        assert {"skills/dyn-id", "skills/dyn-id-1"} <= skill_dirs, skill_dirs
