@@ -4,6 +4,12 @@
 > (`tests/test_api_docs_coverage.py`). For the always-current interactive reference, see
 > [Swagger UI](/docs) and [ReDoc](/redoc) (login required).
 
+> **Three surfaces, one source.** This guide is reachable from
+> [`/documentation/api`](/documentation/api) (web), `agnes docs api` (CLI), and the
+> `documentation_api` MCP tool (agent / Claude Desktop). All three render the same
+> `docs/api-reference.md` so a public endpoint is documented in lockstep across
+> the surfaces an analyst or agent might reach for.
+
 ---
 
 ## Contents

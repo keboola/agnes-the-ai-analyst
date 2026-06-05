@@ -104,10 +104,21 @@ class TestAuthMiddleware:
 # ── tool registration ────────────────────────────────────────────────────────────
 
 class TestToolRegistration:
-    def test_exactly_six_server_side_tools(self):
+    def test_exactly_seven_server_side_tools(self):
         mod = _import_mod()
         tools = {t.name for t in mod.mcp._tool_manager.list_tools()}
-        assert tools == {"server_info", "catalog", "schema", "describe", "query", "skills"}
+        assert tools == {
+            "server_info",
+            "catalog",
+            "schema",
+            "describe",
+            "query",
+            "skills",
+            # Triple-surface coverage for /documentation/api — agents read
+            # the curated REST guide without leaving the chat. See
+            # tests/test_documentation_api_triple_surface.py for the policy.
+            "documentation_api",
+        }
 
     def test_no_client_only_tools(self):
         """query_local and pull require a local analyst filesystem — excluded here."""
