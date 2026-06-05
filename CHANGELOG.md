@@ -1336,6 +1336,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - SQLAlchemy models (`src/models/mcp.py`) and Alembic migration `0014_cowork_mcp_v63_v67` covering all v63–v67 tables: `setup_tokens`, `mcp_sources`, `tool_registry`, `tool_grants`, `mcp_secrets`, `mcp_user_secrets`, `data_package_tools`.
 - `scripts/migrate_duckdb_to_pg/_PK_COLUMNS` extended with non-`id` PKs for v63–v67 tables (`tool_registry`, `tool_grants`, `mcp_secrets`, `mcp_user_secrets`, `data_package_tools`) — fixes `SELECT id FROM mcp_secrets` `UndefinedColumn` in migrator tests.
 
+### Fixed
+- **Cowork zip cache correctness.** The per-plugin Cowork zip cache is now keyed by `(prefixed_name, version)` instead of `prefixed_name` alone — per-user store bundles (e.g. `flea`) share one `prefixed_name` but differ in content, so the old key could serve one user's bundle to another on a TTL hit. The cache is also now invalidated on store/marketplace entity create/update/archive (not only on nightly sync), so edited plugin content stops being served stale within the 300 s TTL.
+- **Cowork zip arcname dedup keeps skills valid.** Arcname collisions (two source dirs sanitizing to one path, e.g. `[id]/` and `dyn-id/`) now resolve at the directory level (`skills/dyn-id` → `skills/dyn-id-1`) instead of renaming the file, so a colliding `SKILL.md` is never turned into `SKILL-1.md` (which would make Cowork stop recognising the skill). The root-level filename fallback now splits on the filename only, so a dot in a parent directory can no longer corrupt the path. A missing per-file size guard in the store-bundle branch was added to match the on-disk-plugin branch.
+
 ## [0.57.2] — 2026-06-01
 
 ### Added

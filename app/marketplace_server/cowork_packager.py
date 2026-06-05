@@ -6,7 +6,7 @@ marketplace consumer. Its server-side validator is stricter than
 plugin at the **zip root** (no wrapper dir, no ``marketplace.json``).
 
 The transforms here are matched against a **known-good reference zip**
-(``grpn-v1.15.28.zip``) that uploaded successfully — not the (more
+(``demo-plugin-v1.0.0.zip``) that uploaded successfully — not the (more
 aggressive) strip list first sketched in issue #464. The empirically-working
 artifact **keeps all content** (``data/``, ``scripts/``, ``vendor/``,
 ``global-rules/``, ``CLAUDE.md``, ``settings.json``, agent ``tools:`` …) and
@@ -373,20 +373,47 @@ def _fallback_file_cap(members: List[Tuple[str, bytes]]) -> List[Tuple[str, byte
 
 def _dedup_arcnames(members: List[Tuple[str, bytes]]) -> List[Tuple[str, bytes]]:
     """Guarantee unique arcnames. Path sanitization can map two distinct
-    source paths to one arcname (``[id]/`` and ``dyn-id/`` both → ``dyn-id/``);
-    a duplicate zip entry makes consumers pick an arbitrary winner. Sort first
-    so the suffix assignment is deterministic."""
+    source dirs to one arcname (``[id]/`` and ``dyn-id/`` both → ``dyn-id/``);
+    a duplicate zip entry makes consumers pick an arbitrary winner.
+
+    Collisions are resolved at the **directory** level, not the file level:
+    when a file's arcname is already taken we suffix its *parent directory*
+    (``skills/dyn-id`` → ``skills/dyn-id-1``) and remember that remap so the
+    rest of the colliding directory follows it as a unit. This keeps marker
+    files intact — renaming ``skills/dyn-id/SKILL.md`` → ``SKILL-1.md`` would
+    make Cowork stop recognising the skill (a skill dir must hold ``SKILL.md``).
+    Root-level files (no directory) fall back to a filename-stem suffix, split
+    on the **filename** only so a dot in a parent dir can't corrupt the path.
+
+    Sort first so suffix assignment is deterministic; within one arcname the
+    stable sort preserves source order, so the first occurrence keeps the
+    original path and only later duplicates are remapped."""
     seen: set[str] = set()
+    dir_remap: Dict[str, str] = {}
     out: List[Tuple[str, bytes]] = []
     for arc, data in sorted(members, key=lambda m: m[0]):
+        parent, sep, name = arc.rpartition("/")
         if arc in seen:
-            stem, dot, ext = arc.rpartition(".")
-            i = 1
-            cand = f"{stem}-{i}.{ext}" if dot else f"{arc}-{i}"
-            while cand in seen:
-                i += 1
-                cand = f"{stem}-{i}.{ext}" if dot else f"{arc}-{i}"
-            arc = cand
+            if sep:
+                # Reuse this directory's existing remap if it's still free for
+                # this filename; otherwise compute a fresh suffixed dir.
+                cand_parent = dir_remap.get(parent)
+                if cand_parent is None or f"{cand_parent}/{name}" in seen:
+                    i = 1
+                    cand_parent = f"{parent}-{i}"
+                    while f"{cand_parent}/{name}" in seen:
+                        i += 1
+                        cand_parent = f"{parent}-{i}"
+                    dir_remap[parent] = cand_parent
+                arc = f"{cand_parent}/{name}"
+            else:
+                fstem, dot, fext = name.rpartition(".")
+                i = 1
+                cand = f"{fstem}-{i}.{fext}" if dot else f"{name}-{i}"
+                while cand in seen:
+                    i += 1
+                    cand = f"{fstem}-{i}.{fext}" if dot else f"{name}-{i}"
+                arc = cand
         seen.add(arc)
         out.append((arc, data))
     return out
@@ -429,6 +456,13 @@ def collect_members(plugin: dict) -> List[Tuple[str, bytes]]:
             if _is_stripped(rel_parts):
                 continue
             if _escapes(abs_path, bases):
+                continue
+            # Per-file size guard — mirror the plugin_dir branch so one giant
+            # file in a bundle isn't read whole into memory.
+            try:
+                if abs_path.stat().st_size > _MAX_FILE_BYTES:
+                    continue
+            except OSError:
                 continue
             data = _transform_file(rel_parts, abs_path.read_bytes(), plugin)
             arc = _sanitize_arcname(rel)
@@ -518,18 +552,23 @@ def invalidate_cache() -> None:
 def get_cowork_zip(plugin: dict) -> Tuple[bytes, str]:
     """Cached single-collect entry point. Returns (zip_bytes, etag).
 
-    Builds at most once per (prefixed_name) within the cache TTL — so a
-    download plus its If-None-Match revalidations don't each re-walk and
-    re-zip thousands of files. Raises ``CoworkZipError`` on cap breaches.
+    Builds at most once per ``(prefixed_name, version)`` within the cache TTL
+    — so a download plus its If-None-Match revalidations don't each re-walk
+    and re-zip thousands of files. Raises ``CoworkZipError`` on cap breaches.
+
+    The ``version`` (a content hash of the composed source dirs) is part of
+    the key because per-user bundles (e.g. ``flea``) share one
+    ``prefixed_name`` across users but differ in content — keying on
+    ``prefixed_name`` alone would serve User A's bundle to User B on a TTL hit.
     """
-    key = plugin.get("prefixed_name") or ""
-    if key:
+    key = (plugin.get("prefixed_name") or "", plugin.get("version") or "")
+    if key[0]:
         with _ZIP_CACHE_LOCK:
             hit = _ZIP_CACHE.get(key)
         if hit is not None:
             return hit
     result = build_cowork_zip(plugin)
-    if key:
+    if key[0]:
         with _ZIP_CACHE_LOCK:
             _ZIP_CACHE[key] = result
     return result
