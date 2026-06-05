@@ -332,11 +332,12 @@ def test_home_reads_onboarded_through_repo_factory_not_raw_duckdb(fresh_db, monk
     assert 'class="install-block"' not in resp.text
 
 
-def test_home_cowork_card_completed(fresh_db):
-    """The Cowork surface card used to be a placeholder marked
-    'INSTRUCTIONS NEEDED'. It now ships real upload instructions + a
-    JS-populated plugin download list hitting /marketplace/cowork/. Pin:
-    the placeholder badge is gone and the new download-list hook is present."""
+def test_home_cowork_card_links_to_me_cowork(fresh_db):
+    """The /home Cowork surface card carries real upload instructions and now
+    points at /me/cowork for the per-plugin download list (the list + the
+    package guideline were relocated there so there is a single home for them).
+    Pin: the placeholder badge is gone, the inline download list is no longer
+    on /home, and the card links to /me/cowork."""
     from src.db import get_system_db, close_system_db
 
     conn = get_system_db()
@@ -349,10 +350,9 @@ def test_home_cowork_card_completed(fresh_db):
     body = _client().get("/home", cookies={"access_token": sess}).text
     # Placeholder removed.
     assert "INSTRUCTIONS NEEDED" not in body
-    # New card hooks present: the download-list container + the per-plugin
-    # cowork endpoint path the JS builds links against.
-    assert 'id="cowork-plugin-list"' in body
-    assert "/marketplace/cowork/" in body
+    # The inline plugin list moved to /me/cowork; /home links there instead.
+    assert 'id="cowork-plugin-list"' not in body
+    assert 'href="/me/cowork"' in body
 
 
 # ── GWS Email-admin button render tests (admin_email knob coverage) ────────
