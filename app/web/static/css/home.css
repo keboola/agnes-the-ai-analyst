@@ -1694,50 +1694,6 @@
     text-decoration: underline;
 }
 
-/* Cowork plugin download list — one tappable row per RBAC-granted plugin,
-   populated by JS from /marketplace/info. Each row links to the per-plugin
-   Cowork zip endpoint. */
-.home-mock .surface-card .cowork-plugin-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin: 4px 0;
-}
-.home-mock .surface-card .cowork-plugin-empty {
-    font-size: 13px;
-    color: var(--ds-text-muted);
-    margin: 4px 0;
-}
-.home-mock .surface-card .cowork-plugin-empty a { color: var(--ds-primary-dark); }
-.home-mock .surface-card a.cowork-plugin-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    border: 1px solid var(--ds-border);
-    border-radius: 8px;
-    background: var(--ds-surface-dim);
-    text-decoration: none;
-    color: var(--ds-text-primary);
-    font-size: 13px;
-    transition: border-color 0.12s ease, background 0.12s ease;
-}
-.home-mock .surface-card a.cowork-plugin-row:hover {
-    border-color: var(--ds-primary);
-    background: var(--ds-primary-light);
-}
-.home-mock .surface-card .cowork-plugin-name { font-weight: 600; }
-.home-mock .surface-card .cowork-plugin-ver {
-    color: var(--ds-text-muted);
-    font-family: var(--ds-font-mono);
-    font-size: 12px;
-}
-.home-mock .surface-card .cowork-plugin-dl {
-    margin-left: auto;
-    color: var(--ds-primary-dark);
-    font-weight: 600;
-    white-space: nowrap;
-}
 
 /* `.code-output` extracted to shared
    app/web/static/css/components.css — markup renamed accordingly
