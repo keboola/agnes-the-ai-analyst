@@ -15,11 +15,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
-- **Keboola discovery now opens the suggestions dropdown.** After clicking Discover (buckets) or List tables in the register or edit Keboola-table modal, the freshly populated `<datalist>` opens its native suggestion popup automatically — the associated input is focused and an `input` event dispatched — so the loaded buckets/tables are visible without a second click into the field. No-op when discovery returns nothing; degrades gracefully on browsers that ignore the nudge (the populated datalist + success toast are unchanged). (#556)
 
 ### Removed
 
 ### Internal
+
+## [0.67.6] — 2026-06-05
+
+### Fixed
+- **Keboola discovery now opens the suggestions dropdown.** After clicking Discover (buckets) or List tables in the register or edit Keboola-table modal, the freshly populated `<datalist>` opens its native suggestion popup automatically — the associated input is focused and an `input` event dispatched — so the loaded buckets/tables are visible without a second click into the field. No-op when discovery returns nothing; degrades gracefully on browsers that ignore the nudge (the populated datalist + success toast are unchanged). (#556, #561)
 
 ## [0.67.5] — 2026-06-05
 
