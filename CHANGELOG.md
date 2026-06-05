@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- **Setup page no longer serves a stale install script after a redeploy.** Server-rendered HTML responses now carry `Cache-Control: no-store`, so browsers re-render `/home`, `/setup`, and `/install` against the live build on every load. Previously the page had no cache directive: a browser-cached setup hero kept handing out the wheel filename baked in at its original render time, and after a redeploy that version-pinned `/cli/wheel/{name}` URL 404s (the new build replaced the wheel on disk), breaking a fresh install end-to-end. Scoped to `text/html` — JSON APIs and the immutable-cached static / marketplace-image assets are untouched.
 
 ### Removed
 

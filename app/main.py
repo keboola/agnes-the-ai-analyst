@@ -887,6 +887,20 @@ def create_app() -> FastAPI:
         if request.url.path.startswith("/api/"):
             response.headers["X-Agnes-Latest-Version"] = APP_VERSION
             response.headers["X-Agnes-Min-Version"] = MIN_COMPAT_CLI_VERSION
+        # Server-rendered HTML must not be heuristically cached by the browser.
+        # The setup hero (/home, /setup, /install) bakes build-pinned values
+        # into the markup at render time — most importantly the current wheel
+        # filename, served from the version-pinned `/cli/wheel/{name}` endpoint
+        # that 404s for any name but the wheel currently on disk. Without an
+        # explicit directive a browser reuses the cached document, so after a
+        # redeploy a user is handed a stale page whose baked wheel URL now 404s
+        # (the new build replaced the wheel). `no-store` forces a fresh render
+        # on every load. Scoped to text/html so JSON APIs and the
+        # immutable-cached static / marketplace-image assets are untouched; an
+        # explicit Cache-Control set by a route still wins.
+        ctype = response.headers.get("content-type", "")
+        if ctype.startswith("text/html") and "cache-control" not in response.headers:
+            response.headers["Cache-Control"] = "no-store"
         return response
 
     # FastAPI debug toolbar — only when DEBUG=1 in env. Injects per-request
