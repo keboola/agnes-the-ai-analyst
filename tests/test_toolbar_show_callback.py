@@ -43,6 +43,19 @@ def test_background_pollers_skipped():
         assert _toolbar_show_callback(_Req(p, "empty"), None) is False, p
 
 
+def test_health_detailed_NOT_skipped():
+    """/api/health is exact-match only — /api/health/detailed is a separate
+    admin diagnostics endpoint (app/api/health.py) and must be instrumented."""
+    assert _toolbar_show_callback(_Req("/api/health/detailed", "empty"), None) is True
+
+
+def test_notifications_subpaths_skipped():
+    """/api/notifications is a prefix — the whole subtree (poll, etc.) is a
+    poll surface and stays out of the toolbar."""
+    for p in ("/api/notifications", "/api/notifications/poll", "/api/notifications/123"):
+        assert _toolbar_show_callback(_Req(p, "empty"), None) is False, p
+
+
 def test_disabled_when_debug_off(monkeypatch):
     monkeypatch.delenv("DEBUG", raising=False)
     monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)

@@ -809,10 +809,17 @@ DEBUG = _is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")
 # these keeps data XHRs (e.g. /api/marketplace/items, /api/store/entities, whose
 # Postgres queries are exactly what you want to inspect) instrumented while the
 # pollers stay out of the way. Tunable: add high-frequency, low-signal paths.
-_TOOLBAR_SKIP_PREFIXES = (
+#
+# Two sets: EXACT skips only the listed path verbatim (so e.g. `/api/health`
+# does NOT inadvertently skip `/api/health/detailed`, which is a separate
+# authenticated admin diagnostics endpoint — see app/api/health.py). PREFIXES
+# skips the listed path AND any sub-path (whole subtree is a poll surface).
+_TOOLBAR_SKIP_EXACT = (
     "/api/version",
     "/api/health",
     "/api/memory/stats",
+)
+_TOOLBAR_SKIP_PREFIXES = (
     "/api/notifications",
 )
 
@@ -839,7 +846,9 @@ def _toolbar_show_callback(request, settings) -> bool:
     path = request.url.path
     if path.startswith("/_debug_toolbar"):
         return True  # toolbar's own render_panel + static — always, or panels can't load
-    if any(path == p or path.startswith(p) for p in _TOOLBAR_SKIP_PREFIXES):
+    if path in _TOOLBAR_SKIP_EXACT:
+        return False
+    if any(path == p or path.startswith(p + "/") for p in _TOOLBAR_SKIP_PREFIXES):
         return False
     return True
 

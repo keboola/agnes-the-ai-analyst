@@ -32,9 +32,11 @@ _query_log = logging.getLogger("agnes.db.postgres")
 
 
 def _debug_enabled() -> bool:
-    return os.environ.get("DEBUG", "").lower() in ("1", "true", "yes", "on") or os.environ.get(
+    # Truthy set kept in sync with ``app.main._is_truthy_env`` — operators
+    # expect a single envvar dialect across the codebase.
+    return os.environ.get("DEBUG", "").lower() in ("1", "true", "yes") or os.environ.get(
         "LOCAL_DEV_MODE", ""
-    ).lower() in ("1", "true", "yes", "on")
+    ).lower() in ("1", "true", "yes")
 
 
 def _oneline(sql: str, limit: int = 500) -> str:
