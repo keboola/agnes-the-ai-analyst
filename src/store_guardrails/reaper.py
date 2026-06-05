@@ -14,29 +14,42 @@ sees the entry under the *Needs review* chip with a Retry button.
 Idempotent: runs at any cadence; only flips rows that have been pending
 longer than the grace. Safe to call directly outside the scheduler for
 on-demand cleanup.
+
+Backend-agnostic: the flip itself is an engine-specific UPDATE that lives
+on the repository (``StoreSubmissionsRepository.reap_stuck_pending_llm``
+for DuckDB, ``StoreSubmissionsPgRepository`` for Postgres). This module
+only orchestrates — it resolves the right repo + audit sink from the
+factory so it works on whichever backend the deployment runs. Passing a
+raw DuckDB ``conn`` (the pre-fix API) silently no-ops on Postgres-backed
+instances because the rows live in PG, not the local DuckDB; the factory
+path closes that gap.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
-
-import duckdb
-
-from src.repositories.audit import AuditRepository
 
 logger = logging.getLogger(__name__)
 
 
 def reap_stuck_llm_reviews(
-    conn: duckdb.DuckDBPyConnection,
     *,
     grace_seconds: int = 1800,
+    subs_repo: Any = None,
+    audit: Any = None,
 ) -> Dict[str, Any]:
     """Flip every ``pending_llm`` submission older than ``grace_seconds``
     to ``review_error``. Returns a summary dict for telemetry.
+
+    Backend resolution: ``subs_repo`` / ``audit`` are resolved from the
+    repository factory (``store_submissions_repo()`` / ``audit_repo()``)
+    unless injected explicitly (tests). The factory picks DuckDB or
+    Postgres per ``use_pg()`` — the only resolution correct on PG
+    instances. The pre-fix API took a raw DuckDB ``conn`` and ran the
+    flip SQL against it directly, which silently no-op'd on
+    Postgres-backed deployments (rows live in PG, the conn pointed at an
+    empty local DuckDB); that path is gone.
 
     ``grace_seconds`` should comfortably exceed the p99 LLM-review wall
     time. Default 1800s (30 min) covers Sonnet/Opus reviews of large
@@ -45,19 +58,13 @@ def reap_stuck_llm_reviews(
     if grace_seconds <= 0:
         return {"skipped": True, "reaped": 0, "grace_seconds": grace_seconds}
 
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=grace_seconds)
-    rows = conn.execute(
-        """SELECT id, submitter_id, entity_id
-             FROM store_submissions
-            WHERE status = 'pending_llm'
-              AND created_at < ?""",
-        [cutoff],
-    ).fetchall()
+    if subs_repo is None:
+        from src.repositories import store_submissions_repo
+        subs_repo = store_submissions_repo()
+    if audit is None:
+        from src.repositories import audit_repo
+        audit = audit_repo()
 
-    if not rows:
-        return {"skipped": False, "reaped": 0, "grace_seconds": grace_seconds}
-
-    audit = AuditRepository(conn)
     error_payload = {
         "risk_level": None,
         "summary": None,
@@ -66,19 +73,13 @@ def reap_stuck_llm_reviews(
         "reviewed_by_model": None,
         "error": "timeout_or_crash",
     }
-    now = datetime.now(timezone.utc)
 
-    reaped = 0
-    for sub_id, submitter_id, _entity_id in rows:
-        conn.execute(
-            """UPDATE store_submissions
-                  SET status = 'review_error',
-                      llm_findings = ?,
-                      updated_at = ?
-                WHERE id = ?
-                  AND status = 'pending_llm'""",
-            [json.dumps(error_payload), now, sub_id],
-        )
+    reaped_rows = subs_repo.reap_stuck_pending_llm(
+        grace_seconds=grace_seconds,
+        error_payload=error_payload,
+    )
+
+    for sub_id, submitter_id in reaped_rows:
         audit.log(
             user_id=submitter_id,
             action="store.submission.review_error",
@@ -89,11 +90,12 @@ def reap_stuck_llm_reviews(
             },
             result="error",
         )
-        reaped += 1
 
-    logger.info(
-        "reaper: flipped %d pending_llm rows to review_error "
-        "(grace=%ds)",
-        reaped, grace_seconds,
-    )
+    reaped = len(reaped_rows)
+    if reaped:
+        logger.info(
+            "reaper: flipped %d pending_llm rows to review_error "
+            "(grace=%ds)",
+            reaped, grace_seconds,
+        )
     return {"skipped": False, "reaped": reaped, "grace_seconds": grace_seconds}

@@ -4661,7 +4661,6 @@ async def run_blocked_purge(
 @router.post("/run-reap-stuck-reviews")
 async def run_reap_stuck_reviews(
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Trigger the stuck-review reaper.
 
@@ -4670,12 +4669,18 @@ async def run_reap_stuck_reviews(
     demand if a worker crash is suspected. Flips any
     ``status='pending_llm'`` row older than the configured grace to
     ``review_error`` so the queue stops growing indefinitely.
+
+    No DuckDB ``conn`` dependency: the reaper resolves the submissions
+    repo from the factory so it flips rows on whichever backend holds
+    them. Injecting a DuckDB ``conn`` here was the bug that made the
+    reaper a silent no-op on Postgres-backed instances — the rows live
+    in PG, the conn pointed at an empty local DuckDB.
     """
     from app.instance_config import get_guardrails_stuck_review_grace_seconds
     from src.store_guardrails.reaper import reap_stuck_llm_reviews
 
     grace = get_guardrails_stuck_review_grace_seconds()
-    result = reap_stuck_llm_reviews(conn, grace_seconds=grace)
+    result = reap_stuck_llm_reviews(grace_seconds=grace)
 
     audit_repo().log(
         user_id=user.get("id"),

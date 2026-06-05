@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
@@ -286,6 +286,61 @@ class StoreSubmissionsRepository:
                 WHERE id = ?""",
             [admin_user_id, reason, datetime.now(timezone.utc), id],
         )
+
+    def reap_stuck_pending_llm(
+        self,
+        *,
+        grace_seconds: int,
+        error_payload: Dict[str, Any],
+    ) -> List[Tuple[str, str]]:
+        """Flip every ``pending_llm`` row older than ``grace_seconds`` to
+        ``review_error``, stamping ``llm_findings`` with ``error_payload``.
+
+        Returns ``[(submission_id, submitter_id), …]`` for the rows that
+        were actually flipped so the caller can write one audit row each.
+        Scoped strictly to ``pending_llm`` — the per-row CAS in the WHERE
+        clause keeps it idempotent and never touches a row that another
+        worker resolved in between. Engine-specific SQL lives here (not in
+        the reaper) so the Postgres sibling can mirror it; see
+        ``store_submissions_pg.StoreSubmissionsPgRepository``.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=grace_seconds)
+        rows = self.conn.execute(
+            """SELECT id, submitter_id
+                 FROM store_submissions
+                WHERE status = 'pending_llm'
+                  AND created_at < ?""",
+            [cutoff],
+        ).fetchall()
+        if not rows:
+            return []
+        now = datetime.now(timezone.utc)
+        payload = json.dumps(error_payload)
+        reaped: List[Tuple[str, str]] = []
+        for sub_id, submitter_id in rows:
+            result = self.conn.execute(
+                """UPDATE store_submissions
+                      SET status = 'review_error',
+                          llm_findings = ?,
+                          updated_at = ?
+                    WHERE id = ?
+                      AND status = 'pending_llm'""",
+                [payload, now, sub_id],
+            )
+            # Only report a row as reaped when the CAS actually flipped it.
+            # If a concurrent worker resolved the row between the SELECT
+            # above and this UPDATE, the row count is 0 — skip it so the
+            # caller doesn't write a phantom audit entry. Mirrors the PG
+            # sibling's atomic UPDATE … RETURNING semantics. DuckDB returns
+            # the affected-row count in row 0, col 0 of the UPDATE relation.
+            try:
+                row = result.fetchone()
+                flipped = int(row[0]) if row else 0
+            except Exception:
+                flipped = 0
+            if flipped:
+                reaped.append((sub_id, submitter_id))
+        return reaped
 
     def count_for_submitter(self, submitter_id: str, exclude_id: Optional[str] = None) -> int:
         """Number of submissions by a single user. Used by the detail page

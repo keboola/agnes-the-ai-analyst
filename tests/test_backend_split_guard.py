@@ -172,7 +172,9 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     # factory; entry removed.
     # src/profiler.py — get_table_map migrated to metric_repo(); entry removed.
     "src/store_guardrails/purge.py": {"StoreEntitiesRepository", "StoreSubmissionsRepository"},
-    "src/store_guardrails/reaper.py": {"AuditRepository"},
+    # src/store_guardrails/reaper.py — flip SQL moved onto the repos and the
+    # reaper now resolves submissions_repo()/audit_repo() from the factory
+    # (the DuckDB-only direct instantiation was the Postgres no-op bug); entry removed.
     "src/store_guardrails/runner.py": {"AuditRepository", "StoreEntitiesRepository", "StoreSubmissionsRepository"},
     "src/welcome_template.py": {"WelcomeTemplateRepository"},
 }
