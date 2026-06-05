@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Walking guide (product tour).** A client-side spotlight tour that walks a signed-in user through the primary navigation (Home, Chat, Marketplace, Data Packages, Memory, profile menu). Auto-starts once on a user's first authed visit and can be reopened anytime from the profile menu → "Take a tour". Progress + "seen" state live in `localStorage` (no backend state); steps whose nav anchor is absent for the viewer (e.g. Chat without a grant) are skipped automatically. Styles read the `--ds-*` design tokens so the overlay flips with the blue/dark themes. New `app/web/static/css/tour.css`, `app/web/static/js/tour.js`, and `_tour.html` partial included by both base layouts.
 
 ### Changed
 

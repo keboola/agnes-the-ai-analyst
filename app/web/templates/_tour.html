@@ -1,0 +1,30 @@
+{# Walking guide / product tour overlay.
+
+   Included once near the end of <body> by base.html and base_ds.html, so
+   it ships on every authed page. The markup is inert until tour.js
+   un-hides #agnesTour (auto on first visit, or via [data-tour-start] in
+   the user menu). Styles live in static/css/tour.css; the engine in
+   static/js/tour.js. Both bases also <link> tour.css in <head>.
+
+   Authed-only: the tour walks the primary nav, which only renders for
+   signed-in users (see _app_header.html `{% if session.user %}`). #}
+{% if session.user %}
+<div id="agnesTour" class="agnes-tour" data-instance="{{ config.INSTANCE_NAME or 'Agnes' }}" hidden>
+    <div class="agnes-tour__backdrop"></div>
+    <div class="agnes-tour__spot" hidden></div>
+    <div class="agnes-tour__pop" role="dialog" aria-modal="true" aria-labelledby="agnesTourTitle">
+        <p class="agnes-tour__eyebrow"></p>
+        <h3 class="agnes-tour__title" id="agnesTourTitle"></h3>
+        <p class="agnes-tour__body"></p>
+        <div class="agnes-tour__foot">
+            <span class="agnes-tour__dots" aria-hidden="true"></span>
+            <div class="agnes-tour__btns">
+                <button type="button" class="agnes-tour__btn agnes-tour__btn--ghost" data-act="skip">Skip</button>
+                <button type="button" class="agnes-tour__btn agnes-tour__btn--secondary" data-act="back">Back</button>
+                <button type="button" class="agnes-tour__btn agnes-tour__btn--primary" data-act="next">Next</button>
+            </div>
+        </div>
+    </div>
+</div>
+<script src="{{ static_url('js/tour.js') }}" defer></script>
+{% endif %}

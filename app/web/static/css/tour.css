@@ -1,0 +1,193 @@
+/* Walking guide / product tour — a client-side spotlight overlay that
+ * walks a user through the primary nav the first time they sign in (and
+ * on demand from the user menu → "Take a tour").
+ *
+ * Self-contained: every selector is `.agnes-tour*`-scoped so it cannot
+ * leak into page chrome, and all colours read the canonical `--ds-*`
+ * design tokens so the overlay flips with the blue/dark themes for free.
+ * No `:root {}`, no `.container:has()`, no `var(--primary)` — passes
+ * tests/test_design_system_contract.py.
+ *
+ * Layering: backdrop (click-trap) < spot (visual dimmer + ring) < pop
+ * (the card). The dimming is done with one giant box-shadow spread on
+ * `.agnes-tour__spot` so the highlighted element reads as a lit cut-out
+ * without needing four mask panels.
+ */
+
+.agnes-tour[hidden] {
+    display: none;
+}
+
+.agnes-tour {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    font-family: var(--ds-font);
+}
+
+/* Transparent full-screen click-trap so the page underneath can't be
+   interacted with mid-tour. Sits below the spot + pop. */
+.agnes-tour__backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    background: transparent;
+}
+
+/* The lit cut-out: positioned over the target element. The huge
+   box-shadow spread paints the dim everywhere EXCEPT this box, and the
+   ring + glow draw the eye. pointer-events:none so it never eats clicks
+   (the backdrop below handles those). */
+.agnes-tour__spot {
+    position: fixed;
+    z-index: 10001;
+    border-radius: 10px;
+    box-shadow:
+        0 0 0 9999px rgba(14, 21, 37, 0.62),
+        0 0 0 3px var(--ds-primary),
+        0 0 0 7px rgba(46, 168, 119, 0.28);
+    pointer-events: none;
+    transition: top .22s ease, left .22s ease, width .22s ease, height .22s ease;
+}
+
+/* When a step has no target (welcome / closing card) the spot is hidden
+   and the dim is supplied by the backdrop instead. */
+.agnes-tour__backdrop.is-dim {
+    background: rgba(14, 21, 37, 0.62);
+}
+
+/* The instruction card. */
+.agnes-tour__pop {
+    position: fixed;
+    z-index: 10002;
+    width: min(360px, calc(100vw - 32px));
+    background: var(--ds-surface);
+    color: var(--ds-text-primary);
+    border: 1px solid var(--ds-border);
+    border-radius: 14px;
+    box-shadow: var(--ds-shadow-lg);
+    padding: 20px;
+    transition: top .22s ease, left .22s ease;
+}
+
+/* Centered variant for target-less steps. */
+.agnes-tour__pop.is-centered {
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+}
+
+.agnes-tour__eyebrow {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--ds-primary);
+    margin: 0 0 6px;
+}
+
+.agnes-tour__title {
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.25;
+    margin: 0 0 8px;
+    color: var(--ds-text-primary);
+}
+
+.agnes-tour__body {
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--ds-text-secondary);
+    margin: 0 0 18px;
+}
+
+.agnes-tour__foot {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.agnes-tour__dots {
+    display: flex;
+    gap: 6px;
+    flex: 1;
+}
+
+.agnes-tour__dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ds-border);
+    transition: background .18s ease, transform .18s ease;
+}
+
+.agnes-tour__dot.is-on {
+    background: var(--ds-primary);
+    transform: scale(1.25);
+}
+
+.agnes-tour__btns {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.agnes-tour__btn {
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: 8px;
+    padding: 7px 14px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background .15s ease, border-color .15s ease, color .15s ease;
+}
+
+.agnes-tour__btn--ghost {
+    background: transparent;
+    color: var(--ds-text-muted);
+    padding: 7px 6px;
+}
+
+.agnes-tour__btn--ghost:hover {
+    color: var(--ds-text-primary);
+}
+
+.agnes-tour__btn--secondary {
+    background: var(--ds-surface);
+    border-color: var(--ds-border);
+    color: var(--ds-text-secondary);
+}
+
+.agnes-tour__btn--secondary:hover {
+    border-color: var(--ds-primary);
+    color: var(--ds-text-primary);
+}
+
+.agnes-tour__btn--primary {
+    background: var(--ds-primary);
+    color: var(--ds-text-inverse);
+}
+
+.agnes-tour__btn--primary:hover {
+    background: var(--ds-primary-dark);
+}
+
+.agnes-tour__btn:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+.agnes-tour__btn[disabled] {
+    opacity: .45;
+    cursor: default;
+    pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .agnes-tour__spot,
+    .agnes-tour__pop,
+    .agnes-tour__dot {
+        transition: none;
+    }
+}

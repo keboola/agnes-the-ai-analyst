@@ -21,7 +21,7 @@
            Setup local agent + My Stack used to live in the nav too;
            Setup is reached from /home's install flow and My Stack
            lives inside /marketplace as a tab. #}
-        <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}">Home</a>
+        <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}" data-tour="nav-home">Home</a>
         {# Cloud chat entry — shown only when chat is enabled AND one of the
            viewer's groups holds an explicit chat grant (``can_chat`` from
            _build_context, via has_explicit_grant). Default-deny: with no grant
@@ -29,17 +29,17 @@
            (god-mode on the route guard). Gated server-side, so this is just
            UX — no trap. #}
         {% if can_chat %}
-        <a class="app-nav-link {% if _path == '/chat' or _path.startswith('/chat/') %}is-active{% endif %}" href="/chat">Chat</a>
+        <a class="app-nav-link {% if _path == '/chat' or _path.startswith('/chat/') %}is-active{% endif %}" href="/chat" data-tour="nav-chat">Chat</a>
         {% endif %}
-        <a class="app-nav-link {% if _path == '/marketplace' or _path.startswith('/marketplace/') %}is-active{% endif %}" href="/marketplace">Marketplace</a>
-        <a class="app-nav-link {% if _path.startswith('/catalog') %}is-active{% endif %}" href="/catalog">Data Packages</a>
+        <a class="app-nav-link {% if _path == '/marketplace' or _path.startswith('/marketplace/') %}is-active{% endif %}" href="/marketplace" data-tour="nav-marketplace">Marketplace</a>
+        <a class="app-nav-link {% if _path.startswith('/catalog') %}is-active{% endif %}" href="/catalog" data-tour="nav-catalog">Data Packages</a>
         {# Curated Memory is the analyst-facing read surface for shared
            organizational knowledge — not admin-gated (the route runs on
            get_current_user, same as the /api/memory/* endpoints), so it
            sits in the primary nav next to Data Packages, visible to all
            authenticated users. The admin review queue is separate:
            /admin/corporate-memory, in the Admin dropdown below. #}
-        <a class="app-nav-link {% if _path == '/corporate-memory' %}is-active{% endif %}" href="/corporate-memory">Memory</a>
+        <a class="app-nav-link {% if _path == '/corporate-memory' %}is-active{% endif %}" href="/corporate-memory" data-tour="nav-memory">Memory</a>
 
         {# Admin menu: admin-only. Backend gates the routes via
            require_admin (see app/web/router.py for /admin/*, including
@@ -117,6 +117,7 @@
 
         <div class="app-user-menu" id="userMenu">
             <button type="button" class="app-user-menu-trigger" id="userMenuTrigger"
+                    data-tour="user-menu"
                     aria-haspopup="menu" aria-expanded="false" aria-controls="userMenuPanel">
                 {% if session.user.picture %}
                 <img src="{{ session.user.picture }}" alt="" class="app-avatar-img">
@@ -137,6 +138,8 @@
                 <a class="app-user-menu-item {% if _path == '/me/profile' %}is-active{% endif %}" role="menuitem" href="/me/profile">Profile</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/cowork') or _path.startswith('/me/mcp') %}is-active{% endif %}" role="menuitem" href="/me/cowork">AI Cowork</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
+                {# Re-open the walking-guide tour. tour.js binds [data-tour-start]. #}
+                <button type="button" class="app-user-menu-item" role="menuitem" data-tour-start>Take a tour</button>
                 <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>
             </div>
         </div>
