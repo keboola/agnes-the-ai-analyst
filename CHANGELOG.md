@@ -15,6 +15,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- Flea-market LLM security reviews now run on Postgres-backed instances. `run_llm_review` (the background task that reviews a submitted plugin/skill/agent) resolved its repositories from a DuckDB connection (`conn_factory=get_system_db`), so on a Postgres deployment it looked the submission up in an empty DuckDB, logged "submission vanished", and returned with no verdict — leaving **every** submission stuck at `pending_llm` ("Under review") forever, regardless of the LLM key. It now resolves `store_submissions` / `store_entities` / `audit` from the repository factory, persisting the verdict to whichever backend holds the row. The `_schedule_llm_review` / retry / rescan / override call sites no longer pass a DuckDB `conn_factory`. Covered by a cross-engine contract test.
+- The stuck-review reaper now works on Postgres-backed instances. Same root cause: `POST /api/admin/run-reap-stuck-reviews` injected a DuckDB connection and the reaper ran raw DuckDB SQL against it, so on a Postgres deployment it queried an empty local DuckDB, found nothing, and returned `200 reaped=0` every 15 minutes while real `pending_llm` submissions sat in Postgres — so a stuck submission never even flipped to `review_error` with a Retry button. The flip SQL now lives on the repositories (`reap_stuck_pending_llm` on both the DuckDB and Postgres `store_submissions` repos) and the reaper resolves the repo from the factory. Covered by a cross-engine contract test.
 
 ### Removed
 

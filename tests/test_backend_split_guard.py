@@ -172,8 +172,12 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     # factory; entry removed.
     # src/profiler.py — get_table_map migrated to metric_repo(); entry removed.
     "src/store_guardrails/purge.py": {"StoreEntitiesRepository", "StoreSubmissionsRepository"},
-    "src/store_guardrails/reaper.py": {"AuditRepository"},
-    "src/store_guardrails/runner.py": {"AuditRepository", "StoreEntitiesRepository", "StoreSubmissionsRepository"},
+    # src/store_guardrails/reaper.py + runner.py — both moved off direct
+    # DuckDB-conn repo instantiation onto the src.repositories factory
+    # (store_submissions_repo / store_entities_repo / audit_repo). The
+    # direct-conn path was the Postgres no-op bug: the reaper reaped 0 and
+    # run_llm_review logged "submission vanished" because the rows lived in
+    # PG while the conn pointed at an empty DuckDB. Entries removed.
     "src/welcome_template.py": {"WelcomeTemplateRepository"},
 }
 
