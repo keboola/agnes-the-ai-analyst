@@ -129,7 +129,7 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     "app/api/cli_auth.py": {"AccessTokenRepository", "AuditRepository"},
     # cowork_bundle.py — fully migrated to the factory (setup_tokens_repo /
     # users_repo / access_token_repo / audit_repo); entry removed.
-    "app/api/data_packages.py": {"AuditRepository", "TableRegistryRepository"},
+    "app/api/data_packages.py": {"AuditRepository"},
     "app/api/mcp/tools_generator.py": {"MCPSourceRepository", "ToolRegistryRepository"},
     "app/api/mcp_per_table.py": {"TableRegistryRepository"},
     # mcp_user_secrets.py — migrated to mcp_sources_repo()/per_user_secrets_repo(); entry removed.

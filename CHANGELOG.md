@@ -21,6 +21,29 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.67.5] — 2026-06-05
+
+### Internal
+- Anti-regression guard in `tests/test_design_system_contract.py`: page-level
+  templates must `{% extends %}` a design-system base, not ship their own
+  `<html>`/`<head>`/`<body>` scaffold. Closes the one unimplemented item from
+  the standalone→`base_ds` migration plan (#284/#481/#482) — the migration
+  itself landed, but the contract test meant to lock it in never did, so
+  nothing stopped a future page from re-introducing the dead-Admin-dropdown
+  class of bug (shared infra like `app.js`/theme/nav lived only in the base).
+  `admin_chat.html` is the lone known standalone left, tolerated via an
+  explicit `_STANDALONE_ALLOWLIST`; a companion test fails if an allowlist
+  entry goes stale (page migrated or removed) so the list can't silently rot. (#551)
+
+## [0.67.4] — 2026-06-05
+
+### Fixed
+- **Postgres: admins can grant data tables to analysts again.** `POST /api/admin/data-packages/{id}/tables` resolved the table via `TableRegistryRepository(conn)` on the always-DuckDB `_get_db` connection, so on a Postgres-backed deployment it never found tables that live in PG and returned `404 table_not_found` for tables that are present in `/api/v2/catalog` — analysts could not be granted any data package. The lookup now goes through the backend-aware `table_registry_repo()` factory. (#562)
+- **Postgres: deleting a group that carries grants no longer 500s.** `DELETE /api/admin/groups/{id}` cascaded members + grants via raw `conn.execute(...)` (DuckDB) before `repo.delete()` (Postgres), so on a Postgres deployment the children were never removed and the parent delete hit a `resource_grants.group_id` foreign-key violation. The cascade now routes through the `user_group_members_repo()` / `resource_grants_repo()` factories, matching the parent delete's backend. (#562)
+
+### Internal
+- Cross-backend parity regression test (`tests/db_pg/test_parity_data_packages_groups.py`) driving the data-package table-attach and group-delete endpoints on both DuckDB and Postgres; retired the now-fixed `TableRegistryRepository` entry for `app/api/data_packages.py` from the backend-split direct-instantiation allow-list. (#562)
+
 ## [0.67.3] — 2026-06-05
 
 ### Internal

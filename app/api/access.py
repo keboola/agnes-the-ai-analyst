@@ -449,36 +449,19 @@ async def delete_group(
     _guard_google_managed(g)
     if g.get("is_system"):
         raise HTTPException(status_code=409, detail="Cannot delete a system group")
-    # Cascade members + grants BEFORE the parent row. DuckDB enforces the
-    # v14 FK (`user_group_members.group_id`, `resource_grants.group_id`
-    # → `user_groups.id`) but does NOT see same-transaction child DELETEs
-    # when validating the parent DELETE — wrapping the whole sequence in
-    # `BEGIN TRANSACTION` fails on the parent DELETE with
-    # `Violates foreign key constraint because key "group_id: <id>" is
-    # still referenced by a foreign key in a different table.` (This was
-    # the pre-#430 behavior: any group carrying a system-plugin auto-grant
-    # — i.e. every group created after `mark_system` on any plugin —
-    # could not be deleted via API/CLI and the operator was stuck on the
-    # 500 + leaked entity.)
-    #
-    # Each DELETE statement therefore autocommits at the DuckDB layer, so
-    # by the time the parent DELETE runs the children are already
-    # committed-gone and the FK check passes. Atomicity is lost in the
-    # narrow case where the second child DELETE or the parent DELETE
-    # raises after the first child DELETE has committed — but the failure
-    # mode is "a group with no members + no grants survives", which is
-    # cosmetically wrong but functionally identical to a freshly-created
-    # empty group (and can be retried by re-issuing the DELETE). The
-    # alternative — orphan rows pointing at a deleted user_groups.id — is
-    # blocked by the FK regardless, so transactional cleanup wasn't
-    # buying us the invariant the original comment claimed.
+    # Cascade members + grants BEFORE the parent row, through the backend
+    # factory — NOT raw conn.execute(). The _get_db conn is always DuckDB, so
+    # on a Postgres deployment a raw-conn cascade no-ops against an empty DuckDB
+    # while repo.delete() hits PG, leaving resource_grants.group_id /
+    # user_group_members.group_id still referencing the about-to-be-deleted
+    # group → FK violation → 500. Routing the cascade through the same factory
+    # as repo.delete() keeps the children and the parent on the active backend.
+    # Each repo call autocommits, so by the time the parent DELETE runs the
+    # children are already gone and the v14 FK check passes (the same ordering
+    # the pre-#430 DuckDB fix relied on — children before parent).
     try:
-        conn.execute(
-            "DELETE FROM user_group_members WHERE group_id = ?", [group_id]
-        )
-        conn.execute(
-            "DELETE FROM resource_grants WHERE group_id = ?", [group_id]
-        )
+        user_group_members_repo().delete_all_for_group(group_id)
+        resource_grants_repo().delete_all_for_group(group_id)
         repo.delete(group_id)
     except SystemGroupProtected:
         raise HTTPException(status_code=409, detail="Cannot delete a system group")
