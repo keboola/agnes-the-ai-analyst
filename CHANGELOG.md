@@ -31,6 +31,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   list workspace skills (a known Claude Code UI bug), so users otherwise
   can't see what's available. The name is reserved (`_CURATED_AGENT_NAMES`)
   so a marketplace plugin can't shadow it.
+
 ## [0.66.1] — 2026-06-05
 
 ### Internal
