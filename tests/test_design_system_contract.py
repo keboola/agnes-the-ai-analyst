@@ -445,3 +445,71 @@ def test_base_ds_carries_operator_custom_scripts() -> None:
         f"base_ds.html is missing operator custom_scripts loop(s): {missing} — "
         "pages migrated onto base_ds will drop operator scripts"
     )
+
+
+# Bases that legitimately own the <html>/<head>/<body> scaffold. Every other
+# page-level template must `{% extends %}` one of these (directly, or via the
+# base_page → base_ds chain) rather than ship its own standalone document.
+_PAGE_SCAFFOLD_BASES = {
+    "base.html",
+    "base_ds.html",
+    "base_page.html",
+    "base_login.html",
+}
+
+# Leaf pages still on a standalone scaffold, pending migration onto the
+# design-system base. Entries are tolerated ONLY so the guard locks in today's
+# state — drop an entry when its page is migrated, and never add a new one (a
+# fresh standalone is exactly the regression this guard exists to block).
+_STANDALONE_ALLOWLIST = {"admin_chat.html"}
+
+_EXTENDS_RE = re.compile(r"\{%-?\s*extends")
+_SCAFFOLD_RE = re.compile(r"<!DOCTYPE|<html[\s>]", re.IGNORECASE)
+
+
+def test_no_new_standalone_page_templates() -> None:
+    """Page-level templates must extend a design-system base, not ship their
+    own <html>/<head>/<body>. Anti-regression guard for the standalone→base_ds
+    migration (#284/#481/#482): before it, shared infrastructure (app.js, the
+    theme include, the nav, the Inter font) lived only in base.html, so any
+    standalone page silently lost it — the original dead Admin-dropdown bug on
+    /catalog, /admin/tables, /corporate-memory. Partials (`_`-prefixed) and the
+    bases themselves are exempt; known-standalone leaves sit in
+    _STANDALONE_ALLOWLIST until migrated."""
+    offenders: list[str] = []
+    for path in _all_html():
+        name = path.name
+        if (
+            name.startswith("_")
+            or name in _PAGE_SCAFFOLD_BASES
+            or name in _STANDALONE_ALLOWLIST
+        ):
+            continue
+        text = path.read_text(encoding="utf-8")
+        if _EXTENDS_RE.search(text):
+            continue
+        # No `{% extends %}`: a regression only if it ships a real page
+        # scaffold. A non-`_` include fragment without one is harmless.
+        if _SCAFFOLD_RE.search(text):
+            offenders.append(str(path.relative_to(TEMPLATES)))
+    assert not offenders, (
+        "standalone page template(s) found — extend a design-system base "
+        "(base_page.html / base_ds.html) instead of shipping your own "
+        "<html>/<head>/<body>:\n" + "\n".join(f"  {o}" for o in offenders)
+    )
+
+
+def test_standalone_allowlist_has_no_stale_entries() -> None:
+    """Every _STANDALONE_ALLOWLIST entry must still exist AND still be a
+    standalone (no `{% extends %}`). When a page is migrated onto a base its
+    allowlist entry goes stale — this fails so the entry is removed, keeping
+    the allowlist honest instead of silently masking a now-compliant page."""
+    stale: list[str] = []
+    for name in sorted(_STANDALONE_ALLOWLIST):
+        path = TEMPLATES / name
+        if not path.exists() or _EXTENDS_RE.search(path.read_text(encoding="utf-8")):
+            stale.append(name)
+    assert not stale, (
+        "stale _STANDALONE_ALLOWLIST entr(ies) — page migrated or removed, "
+        f"drop from the allowlist: {stale}"
+    )
