@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.67.0] — 2026-06-05
+
+### Added
 - **Cowork bundle ships a `skill-router` agent.** Every generated
   `bundle.zip` now includes `.claude/agents/skill-router.md` alongside the
   curated skills — a lightweight subagent that inventories the workspace
