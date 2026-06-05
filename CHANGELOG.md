@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Per-plugin Cowork export + Cowork download UI.** Plugins can now be downloaded individually as Claude Cowork-uploadable zips. New `GET /marketplace/cowork/{prefixed_name}.zip` (same PAT/cookie auth and RBAC filtering as `marketplace.zip`) repackages a single plugin into the shape Cowork's stricter validator accepts — matched against a known-good reference upload. It keeps all plugin content (`data/`, `scripts/`, `vendor/`, `global-rules/`, `CLAUDE.md`, `settings.json`, agent `tools:`) and only: puts the plugin at the zip root (no `marketplace.json` wrapper); coerces `plugin.json` to a semver `version` + required `author` + dropped `homepage`; whitelists SKILL.md frontmatter to `name`/`description`/`compatibility` (drops Claude-Code-only `argument-hint`/`user-invocable`) with `<`/`>`/`"` sanitized out of descriptions; concatenates the per-directory `.md` files under `data/` into `_all.md` (keeps every byte while staying under Cowork's 5000-file cap — a docs/Confluence dump can be tens of thousands of files); renames Next.js route path segments (`[x]`→`dyn-x`, `(y)`→`grp-y`); and strips `.DS_Store` + Agnes-only paths. `/me/cowork` describes both Cowork flows — the bundled project (skills + live MCP data, scoped to one project folder) and per-plugin packages (uploaded via Customize, skills work across all Cowork projects) — and hosts the per-plugin download list; each marketplace plugin detail page also gains a "Download for Cowork" button. New module `app/marketplace_server/cowork_packager.py`.
 
 ### Changed
 
@@ -1339,6 +1340,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Dual-backend: `mcp_sources_pg.py`, `tool_registry_pg.py`, `setup_tokens_pg.py` — Postgres counterparts for all three new v63-v67 repositories; factory functions registered in `src/repositories/__init__.py`. `DataPackagesPgRepository` extended with `add_tool`, `remove_tool`, `list_tools` to match the DuckDB sibling.
 - SQLAlchemy models (`src/models/mcp.py`) and Alembic migration `0014_cowork_mcp_v63_v67` covering all v63–v67 tables: `setup_tokens`, `mcp_sources`, `tool_registry`, `tool_grants`, `mcp_secrets`, `mcp_user_secrets`, `data_package_tools`.
 - `scripts/migrate_duckdb_to_pg/_PK_COLUMNS` extended with non-`id` PKs for v63–v67 tables (`tool_registry`, `tool_grants`, `mcp_secrets`, `mcp_user_secrets`, `data_package_tools`) — fixes `SELECT id FROM mcp_secrets` `UndefinedColumn` in migrator tests.
+
+### Fixed
+- **Cowork zip cache correctness.** The per-plugin Cowork zip cache is now keyed by `(prefixed_name, version)` instead of `prefixed_name` alone — per-user store bundles (e.g. `flea`) share one `prefixed_name` but differ in content, so the old key could serve one user's bundle to another on a TTL hit. The cache is also now invalidated on store/marketplace entity create/update/archive (not only on nightly sync), so edited plugin content stops being served stale within the 300 s TTL.
+- **Cowork zip arcname dedup keeps skills valid.** Arcname collisions (two source dirs sanitizing to one path, e.g. `[id]/` and `dyn-id/`) now resolve at the directory level (`skills/dyn-id` → `skills/dyn-id-1`) instead of renaming the file, so a colliding `SKILL.md` is never turned into `SKILL-1.md` (which would make Cowork stop recognising the skill). The root-level filename fallback now splits on the filename only, so a dot in a parent directory can no longer corrupt the path. A missing per-file size guard in the store-bundle branch was added to match the on-disk-plugin branch.
 
 ## [0.57.2] — 2026-06-01
 
