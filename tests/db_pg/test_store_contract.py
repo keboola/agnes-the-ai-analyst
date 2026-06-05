@@ -9,8 +9,11 @@ Follows the pattern established in test_audit_contract.py.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import duckdb
 import pytest
+import sqlalchemy as sa
 
 
 # ---------------------------------------------------------------------------
@@ -269,3 +272,83 @@ def test_archived_entity_visible_with_list(store_repos):
     items_all, total_all = repos["entities"].list()
     ids_all = [i["id"] for i in items_all]
     assert "entity-1" in ids_all
+
+
+def _backdate_created_at(repos, conn, backend, sub_id, ts):
+    """Force a submission's created_at into the past on either backend —
+    repo.create() always stamps NOW()."""
+    if backend == "duckdb":
+        conn.execute(
+            "UPDATE store_submissions SET created_at = ? WHERE id = ?",
+            [ts, sub_id],
+        )
+    else:
+        with repos["submissions"]._engine.begin() as c:
+            c.execute(
+                sa.text(
+                    "UPDATE store_submissions SET created_at = :ts WHERE id = :id"
+                ),
+                {"ts": ts, "id": sub_id},
+            )
+
+
+def test_reap_stuck_pending_llm_contract(store_repos):
+    """reap_stuck_pending_llm must behave identically on both backends:
+    flip aged pending_llm → review_error, leave fresh rows + non-pending
+    rows alone, and be idempotent. This is the parity the DuckDB-only
+    reaper silently failed on Postgres-backed instances."""
+    repos, conn, backend = store_repos
+    subs = repos["submissions"]
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+
+    # Aged pending_llm — should be reaped.
+    _make_entity(repos["entities"], id="entity-old", name="old-skill")
+    old_id = subs.create(
+        submitter_id="user-1", submitter_email="alice@x.com",
+        type="skill", name="old-skill", version="abc123",
+        status="pending_llm", entity_id="entity-old",
+    )
+    _backdate_created_at(
+        repos, conn, backend, old_id,
+        datetime.now(timezone.utc) - timedelta(hours=1),
+    )
+
+    # Fresh pending_llm — within grace, must survive.
+    _make_entity(repos["entities"], id="entity-fresh", name="fresh-skill")
+    fresh_id = subs.create(
+        submitter_id="user-1", submitter_email="alice@x.com",
+        type="skill", name="fresh-skill", version="abc123",
+        status="pending_llm", entity_id="entity-fresh",
+    )
+
+    err = {"error": "timeout_or_crash"}
+    reaped = subs.reap_stuck_pending_llm(grace_seconds=1800, error_payload=err)
+
+    assert [r[0] for r in reaped] == [old_id]
+    assert reaped[0][1] == "user-1"  # submitter_id surfaced for audit
+
+    old_row = subs.get(old_id)
+    assert old_row["status"] == "review_error"
+    assert (old_row["llm_findings"] or {}).get("error") == "timeout_or_crash"
+
+    assert subs.get(fresh_id)["status"] == "pending_llm"
+
+    # Idempotent — the now-review_error row is not pending_llm anymore.
+    reaped_again = subs.reap_stuck_pending_llm(grace_seconds=1800, error_payload=err)
+    assert reaped_again == []
+
+    # Scoped strictly to pending_llm: an aged row in any other status must
+    # survive, on both backends (parity with the DuckDB unit suite's
+    # test_does_not_flip_other_statuses).
+    _make_entity(repos["entities"], id="entity-appr", name="appr-skill")
+    appr_id = subs.create(
+        submitter_id="user-1", submitter_email="alice@x.com",
+        type="skill", name="appr-skill", version="abc123",
+        status="approved", entity_id="entity-appr",
+    )
+    _backdate_created_at(
+        repos, conn, backend, appr_id,
+        datetime.now(timezone.utc) - timedelta(hours=24),
+    )
+    assert subs.reap_stuck_pending_llm(grace_seconds=1800, error_payload=err) == []
+    assert subs.get(appr_id)["status"] == "approved"
