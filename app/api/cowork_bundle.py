@@ -120,6 +120,12 @@ _CURATED_SKILL_NAMES: frozenset[str] = frozenset({
     "setup-cowork", "explore-data", "query-data", "new-skill",
 })
 
+# Names reserved for Agnes curated agents — same protection as curated skills,
+# so a marketplace plugin can't shadow the bundled skill-router agent.
+_CURATED_AGENT_NAMES: frozenset[str] = frozenset({
+    "skill-router",
+})
+
 
 def _filter_skill_for_bundle(text: str, name: str) -> str:
     """Keep name/description/compatibility; drop Claude-Code-only keys.
@@ -167,7 +173,7 @@ def _collect_marketplace_content(
         return skills, agents
 
     seen_skill: set[str] = set(_CURATED_SKILL_NAMES)  # reserves curated names
-    seen_agent: set[str] = set()
+    seen_agent: set[str] = set(_CURATED_AGENT_NAMES)  # reserves curated agents
 
     for plugin in plugins:
         plugin_dir = plugin.get("plugin_dir")
@@ -1206,6 +1212,55 @@ def _skill_new_skill() -> str:
     """)
 
 
+def _bundle_agent_skill_router() -> str:
+    """Return .claude/agents/skill-router.md for the bundle.
+
+    A lightweight subagent that inventories the workspace skills, picks the
+    ones that fit the user's request, and activates them. Bundled because
+    Cowork's Customize panel does not list workspace skills (a known Claude
+    Code UI bug), so users often cannot see what is available to choose from.
+    """
+    return textwrap.dedent("""\
+        ---
+        name: skill-router
+        description: Selects and activates the Agnes Cowork skills relevant to the current task. Use at the start of a task when it is unclear which skill applies, or when the user asks which skill to use.
+        tools: Read, Glob, Bash, Skill
+        ---
+
+        You route a request to the right Agnes skill(s) and activate them. In
+        Cowork the Customize - Skills panel does not list workspace skills (a
+        known Claude Code UI bug), so users often cannot see what is available.
+        Discover the skills yourself, pick the ones that fit, and run them.
+
+        ## Steps
+
+        1. Enumerate available skills. They live in `.claude/skills/`:
+           - directory form: `.claude/skills/<name>/SKILL.md`
+           - flat form:      `.claude/skills/<name>.md`
+           Glob `.claude/skills/**/*.md`, then Read each file's frontmatter
+           `name` + `description`. Build a short inventory.
+
+        2. Match against the user's request. Compare the task to each skill's
+           `description` and choose the smallest set that covers it — usually one
+           skill, occasionally two complementary ones. The description must
+           actually fit the goal; do not match on a keyword alone.
+
+        3. Activate the chosen skill(s) with the Skill tool, in the order they
+           should run. Pass along any argument the user supplied (e.g. a table
+           name).
+
+        4. If nothing fits, say so plainly and list the available skills with
+           their one-line descriptions so the user can choose. Never invent a
+           skill that is not in the inventory.
+
+        ## Output
+
+        State which skills you activated and why (one line each), then hand back
+        so the activated skill's workflow can run. You are a router, not the
+        destination — keep it short.
+    """)
+
+
 def _build_bundle_zip(
     server_url: str,
     setup_token: str,
@@ -1240,6 +1295,7 @@ def _build_bundle_zip(
         │   │   ├── new-skill/SKILL.md     ← /new-skill — design + write a new skill
         │   │   └── <marketplace skill>/SKILL.md (+ supporting files), per RBAC grants
         │   └── agents/
+        │       ├── skill-router.md   ← selects + activates the right skill(s)
         │       └── <marketplace agents per user's RBAC grants>
         └── CLAUDE.md                 ← user + agent guidance (Bash-first)
 
@@ -1273,6 +1329,9 @@ def _build_bundle_zip(
         zf.writestr(f"{folder_name}/.claude/skills/explore-data/SKILL.md", _skill_explore_data())
         zf.writestr(f"{folder_name}/.claude/skills/query-data/SKILL.md", _skill_query_data())
         zf.writestr(f"{folder_name}/.claude/skills/new-skill/SKILL.md", _skill_new_skill())
+        # Agnes curated agents — the skill-router picks + activates the right
+        # skill(s) for a task (Cowork's Customize panel can't list them).
+        zf.writestr(f"{folder_name}/.claude/agents/skill-router.md", _bundle_agent_skill_router())
         # Marketplace skills + agents from the user's RBAC-granted plugins.
         for arcname, content in (marketplace_skills or []):
             zf.writestr(f"{folder_name}/{arcname}", content)

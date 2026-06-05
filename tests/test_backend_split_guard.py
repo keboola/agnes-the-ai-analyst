@@ -129,7 +129,7 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     "app/api/cli_auth.py": {"AccessTokenRepository", "AuditRepository"},
     # cowork_bundle.py — fully migrated to the factory (setup_tokens_repo /
     # users_repo / access_token_repo / audit_repo); entry removed.
-    "app/api/data_packages.py": {"AuditRepository", "TableRegistryRepository"},
+    "app/api/data_packages.py": {"AuditRepository"},
     "app/api/mcp/tools_generator.py": {"MCPSourceRepository", "ToolRegistryRepository"},
     "app/api/mcp_per_table.py": {"TableRegistryRepository"},
     # mcp_user_secrets.py — migrated to mcp_sources_repo()/per_user_secrets_repo(); entry removed.
@@ -172,7 +172,9 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     # factory; entry removed.
     # src/profiler.py — get_table_map migrated to metric_repo(); entry removed.
     "src/store_guardrails/purge.py": {"StoreEntitiesRepository", "StoreSubmissionsRepository"},
-    "src/store_guardrails/reaper.py": {"AuditRepository"},
+    # src/store_guardrails/reaper.py — flip SQL moved onto the repos and the
+    # reaper now resolves submissions_repo()/audit_repo() from the factory
+    # (the DuckDB-only direct instantiation was the Postgres no-op bug); entry removed.
     "src/store_guardrails/runner.py": {"AuditRepository", "StoreEntitiesRepository", "StoreSubmissionsRepository"},
     "src/welcome_template.py": {"WelcomeTemplateRepository"},
 }

@@ -101,8 +101,9 @@ class SocketModeDispatcher:
         self._client = SocketModeClient(
             app_token=self._app_token,
             # web_client=None → slack_sdk builds an UNAUTHENTICATED AsyncWebClient.
-            # Fine for Phase 0: inbound event receipt only; outbound replies use
-            # SLACK_BOT_TOKEN from env (sender.py). self._bot_token is collected now
+            # Fine for Phase 0: inbound event receipt only; outbound replies
+            # resolve SLACK_BOT_TOKEN via slack_secret (env > vault) in sender.py.
+            # self._bot_token is collected now
             # and gets wired here (AsyncWebClient(token=self._bot_token)) when Web API
             # calls are needed in a later phase.
             web_client=None,

@@ -240,6 +240,7 @@ from app.api.v2_marketplace import router as v2_marketplace_router
 from app.api.marketplaces import router as marketplaces_router
 from app.api.data_packages import router as data_packages_router
 from app.api.admin_mcp import router as admin_mcp_router
+from app.api.admin_slack_secrets import router as admin_slack_secrets_router
 from app.api.mcp_passthrough import router as mcp_passthrough_router
 from app.api.mcp_per_table import router as mcp_per_table_router
 from app.api.mcp_user_secrets import router as mcp_user_secrets_router
@@ -321,8 +322,9 @@ async def _start_slack_socket_transport(app) -> None:
     app.state.slack_socket_dispatcher = None
     if get_slack_transport() != "socket":
         return
-    app_token = os.environ.get("SLACK_APP_TOKEN", "")
-    bot_token = os.environ.get("SLACK_BOT_TOKEN", "")
+    from services.slack_bot.secrets import slack_secret
+    app_token = slack_secret("SLACK_APP_TOKEN") or ""
+    bot_token = slack_secret("SLACK_BOT_TOKEN") or ""
     try:
         workers = int(os.environ.get("UVICORN_WORKERS", "1"))
     except ValueError:
@@ -799,16 +801,56 @@ def _is_truthy_env(name: str) -> bool:
 DEBUG = _is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")
 
 
+# Background poll / low-signal endpoints the debug toolbar must NOT attach to.
+# They run ~no application queries but fire repeatedly, and every instrumented
+# response rewrites the `dtRefresh` cookie — `refresh.js` then repoints the
+# toolbar to that request's (near-empty) store and wipes the panel content you
+# were reading (the "flickers to 0 / stuck spinner" symptom). Skipping ONLY
+# these keeps data XHRs (e.g. /api/marketplace/items, /api/store/entities, whose
+# Postgres queries are exactly what you want to inspect) instrumented while the
+# pollers stay out of the way. Tunable: add high-frequency, low-signal paths.
+#
+# Two sets: EXACT skips only the listed path verbatim (so e.g. `/api/health`
+# does NOT inadvertently skip `/api/health/detailed`, which is a separate
+# authenticated admin diagnostics endpoint — see app/api/health.py). PREFIXES
+# skips the listed path AND any sub-path (whole subtree is a poll surface).
+_TOOLBAR_SKIP_EXACT = (
+    "/api/version",
+    "/api/health",
+    "/api/memory/stats",
+)
+_TOOLBAR_SKIP_PREFIXES = (
+    "/api/notifications",
+)
+
+
 def _toolbar_show_callback(request, settings) -> bool:
-    """Decide whether the debug toolbar shows on a request.
+    """Decide whether the debug toolbar attaches to a request.
 
     Replaces the upstream default (which reads `request.app.debug`) — we keep
     `app.debug=False` so our @app.exception_handler(Exception) runs instead of
     Starlette's debug-only ServerErrorMiddleware, but we still want the
     toolbar mounted. Read DEBUG / LOCAL_DEV_MODE env directly so operators who
     flip the env at runtime (rare) see the change without re-import.
+
+    Document navigations AND data XHRs are instrumented (so async/XHR-loaded
+    listings show their queries); only the toolbar's own ``/_debug_toolbar``
+    endpoints (always allowed) and the background pollers in
+    ``_TOOLBAR_SKIP_PREFIXES`` are special-cased. See that constant for why the
+    pollers must be excluded. For comprehensive, request-independent capture of
+    EVERY query (incl. async/threadpool), see the DEBUG-gated logger in
+    ``app/debug/postgres_panel.py`` (logger ``agnes.db.postgres``).
     """
-    return _is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")
+    if not (_is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")):
+        return False
+    path = request.url.path
+    if path.startswith("/_debug_toolbar"):
+        return True  # toolbar's own render_panel + static — always, or panels can't load
+    if path in _TOOLBAR_SKIP_EXACT:
+        return False
+    if any(path == p or path.startswith(p + "/") for p in _TOOLBAR_SKIP_PREFIXES):
+        return False
+    return True
 
 
 def create_app() -> FastAPI:
@@ -889,6 +931,7 @@ def create_app() -> FastAPI:
                     "debug_toolbar.panels.timer.TimerPanel",
                     "debug_toolbar.panels.logging.LoggingPanel",
                     "app.debug.duckdb_panel.DuckDBPanel",
+                    "app.debug.postgres_panel.PostgresPanel",
                 ],
                 jinja_loaders=[FileSystemLoader(str(_debug_templates_dir))],
                 show_toolbar_callback="app.main._toolbar_show_callback",
@@ -1163,6 +1206,7 @@ def create_app() -> FastAPI:
     app.include_router(marketplaces_router)
     app.include_router(data_packages_router)
     app.include_router(admin_mcp_router)
+    app.include_router(admin_slack_secrets_router)
     app.include_router(mcp_passthrough_router)
     app.include_router(mcp_user_secrets_router)
     app.include_router(mcp_per_table_router)

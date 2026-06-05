@@ -107,6 +107,7 @@ __all__ = [
     "mcp_sources_repo",
     "per_user_secrets_repo",
     "shared_secrets_repo",
+    "system_secrets_repo",
     "tool_registry_repo",
     "setup_tokens_repo",
     # Cloud chat
@@ -346,6 +347,10 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("app.secrets_vault", "SharedSecretsRepository"),
         PG: ("src.repositories.secrets_vault_pg", "SharedSecretsPgRepository"),
     },
+    "system_secrets": {
+        DUCKDB: ("app.secrets_vault", "SystemSecretsRepository"),
+        PG: ("src.repositories.secrets_vault_pg", "SystemSecretsPgRepository"),
+    },
     "tool_registry": {
         DUCKDB: ("src.repositories.tool_registry", "ToolRegistryRepository"),
         PG: ("src.repositories.tool_registry_pg", "ToolRegistryPgRepository"),
@@ -449,6 +454,7 @@ def user_stack_subscriptions_repo() -> Any: return _build("user_stack_subscripti
 def mcp_sources_repo() -> Any: return _build("mcp_sources")
 def per_user_secrets_repo() -> Any: return _build("per_user_secrets")
 def shared_secrets_repo() -> Any: return _build("shared_secrets")
+def system_secrets_repo() -> Any: return _build("system_secrets")
 def tool_registry_repo() -> Any: return _build("tool_registry")
 def setup_tokens_repo() -> Any: return _build("setup_tokens")
 
