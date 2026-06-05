@@ -801,8 +801,24 @@ def _is_truthy_env(name: str) -> bool:
 DEBUG = _is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")
 
 
+# Background poll / low-signal endpoints the debug toolbar must NOT attach to.
+# They run ~no application queries but fire repeatedly, and every instrumented
+# response rewrites the `dtRefresh` cookie — `refresh.js` then repoints the
+# toolbar to that request's (near-empty) store and wipes the panel content you
+# were reading (the "flickers to 0 / stuck spinner" symptom). Skipping ONLY
+# these keeps data XHRs (e.g. /api/marketplace/items, /api/store/entities, whose
+# Postgres queries are exactly what you want to inspect) instrumented while the
+# pollers stay out of the way. Tunable: add high-frequency, low-signal paths.
+_TOOLBAR_SKIP_PREFIXES = (
+    "/api/version",
+    "/api/health",
+    "/api/memory/stats",
+    "/api/notifications",
+)
+
+
 def _toolbar_show_callback(request, settings) -> bool:
-    """Decide whether the debug toolbar shows on a request.
+    """Decide whether the debug toolbar attaches to a request.
 
     Replaces the upstream default (which reads `request.app.debug`) — we keep
     `app.debug=False` so our @app.exception_handler(Exception) runs instead of
@@ -810,29 +826,20 @@ def _toolbar_show_callback(request, settings) -> bool:
     toolbar mounted. Read DEBUG / LOCAL_DEV_MODE env directly so operators who
     flip the env at runtime (rare) see the change without re-import.
 
-    Only top-level document navigations (and the toolbar's own
-    ``/_debug_toolbar`` endpoints) are instrumented. Background ``fetch``/XHR —
-    notably the dashboard's ``/api/...`` polling — must NOT be instrumented:
-    each instrumented response rewrites the ``dtRefresh`` cookie, and the
-    toolbar's ``refresh.js`` then repoints to that request's store and wipes the
-    open panel's content (re-showing the loader). For request-scoped query
-    panels (DuckDB/Postgres) that meant the queries from the page you navigated
-    to flickered and reset to the latest poll's count. Gating on
-    ``Sec-Fetch-Dest`` keeps the toolbar pinned to the page under inspection.
+    Document navigations AND data XHRs are instrumented (so async/XHR-loaded
+    listings show their queries); only the toolbar's own ``/_debug_toolbar``
+    endpoints (always allowed) and the background pollers in
+    ``_TOOLBAR_SKIP_PREFIXES`` are special-cased. See that constant for why the
+    pollers must be excluded. For comprehensive, request-independent capture of
+    EVERY query (incl. async/threadpool), see the DEBUG-gated logger in
+    ``app/debug/postgres_panel.py`` (logger ``agnes.db.postgres``).
     """
     if not (_is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")):
         return False
     path = request.url.path
-    # The toolbar's own render_panel + static endpoints are XHR — always allow,
-    # or panels can never lazy-load their content.
     if path.startswith("/_debug_toolbar"):
-        return True
-    # Background fetch/XHR (Sec-Fetch-Dest is "empty"/"cors"/... not "document")
-    # and API polls do not own the toolbar — skip so they don't reset it.
-    dest = request.headers.get("sec-fetch-dest")
-    if dest and dest != "document":
-        return False
-    if path.startswith("/api/"):
+        return True  # toolbar's own render_panel + static — always, or panels can't load
+    if any(path == p or path.startswith(p) for p in _TOOLBAR_SKIP_PREFIXES):
         return False
     return True
 
