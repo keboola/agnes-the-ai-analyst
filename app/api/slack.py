@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -23,6 +22,7 @@ from services.slack_bot.commands import (
 )
 from services.slack_bot.events import _run_logged, _schedule, dispatch_event
 from services.slack_bot.interactivity import dispatch_interaction, parse_interaction
+from services.slack_bot.secrets import slack_secret
 from services.slack_bot.sigverify import verify_slack_signature
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ async def slack_events(request: Request):
     body = await request.body()
     ts = request.headers.get("X-Slack-Request-Timestamp", "")
     sig = request.headers.get("X-Slack-Signature", "")
-    secret = os.environ.get("SLACK_SIGNING_SECRET", "")
+    secret = slack_secret("SLACK_SIGNING_SECRET") or ""
     if not secret or not verify_slack_signature(secret, ts, sig, body):
         raise HTTPException(401, "bad_signature")
     payload = await request.json()
@@ -57,7 +57,7 @@ async def slack_commands(request: Request):
     body = await request.body()
     ts = request.headers.get("X-Slack-Request-Timestamp", "")
     sig = request.headers.get("X-Slack-Signature", "")
-    secret = os.environ.get("SLACK_SIGNING_SECRET", "")
+    secret = slack_secret("SLACK_SIGNING_SECRET") or ""
     if not secret or not verify_slack_signature(secret, ts, sig, body):
         raise HTTPException(401, "bad_signature")
     form = {k: v[0] for k, v in parse_qs(body.decode()).items()}
@@ -79,7 +79,7 @@ async def slack_interactivity(request: Request):
     body = await request.body()                       # raw bytes — Slack signs these
     ts = request.headers.get("X-Slack-Request-Timestamp", "")
     sig = request.headers.get("X-Slack-Signature", "")
-    secret = os.environ.get("SLACK_SIGNING_SECRET", "")
+    secret = slack_secret("SLACK_SIGNING_SECRET") or ""
     if not secret or not verify_slack_signature(secret, ts, sig, body):
         raise HTTPException(401, "bad_signature")
     form = {k: v[0] for k, v in parse_qs(body.decode()).items()}

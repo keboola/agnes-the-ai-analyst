@@ -198,6 +198,64 @@ class SharedSecretsRepository:
 
 
 # ---------------------------------------------------------------------------
+# Repository — server-wide system secrets (system_secrets table)
+# ---------------------------------------------------------------------------
+
+
+class SystemSecretsRepository:
+    """Server-wide system secrets keyed by ``name`` (Slack bot tokens)."""
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection):
+        self.conn = conn
+
+    def upsert(self, name: str, value: str) -> None:
+        """Store the encrypted secret for ``name``. Replaces any prior row."""
+        token = encrypt_secret(value)
+        self.conn.execute(
+            """INSERT INTO system_secrets (name, secret_value_enc, updated_at)
+               VALUES (?, ?, current_timestamp)
+               ON CONFLICT (name) DO UPDATE SET
+                 secret_value_enc = excluded.secret_value_enc,
+                 updated_at       = excluded.updated_at""",
+            [name, token],
+        )
+
+    def get(self, name: str) -> Optional[str]:
+        """Decrypted secret for ``name`` or ``None`` when absent or
+        undecryptable. Catches both ``InvalidToken`` (vault key rotated) and
+        ``RuntimeError`` (``AGNES_VAULT_KEY`` set-but-malformed) so a bad key
+        fails closed (feature disabled) instead of 500-ing every Slack request."""
+        row = self.conn.execute(
+            "SELECT secret_value_enc FROM system_secrets WHERE name = ?",
+            [name],
+        ).fetchone()
+        if row is None:
+            return None
+        token = row[0]
+        if not isinstance(token, (bytes, bytearray)):
+            return None
+        try:
+            return decrypt_secret(bytes(token))
+        except (InvalidToken, RuntimeError):
+            logger.warning(
+                "system_secrets row for %s failed to decrypt — vault key "
+                "rotated or malformed? Treating as unset.",
+                name,
+            )
+            return None
+
+    def delete(self, name: str) -> None:
+        self.conn.execute("DELETE FROM system_secrets WHERE name = ?", [name])
+
+    def has(self, name: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM system_secrets WHERE name = ? LIMIT 1",
+            [name],
+        ).fetchone()
+        return row is not None
+
+
+# ---------------------------------------------------------------------------
 # Repository — per-user source secrets (mcp_user_secrets table)
 # ---------------------------------------------------------------------------
 

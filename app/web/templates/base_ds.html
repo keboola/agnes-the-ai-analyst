@@ -39,6 +39,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {# Resolve the OS-aware "auto" theme before stylesheets load (no flash). #}
+    {% include "_theme_resolve.html" %}
     {# Operator-injected scripts (placement=head_start) — run before any
        CSS/JS so vendors that need to install global hooks first (GTM
        dataLayer init, etc.) work. Admin-only, see instance.custom_scripts.

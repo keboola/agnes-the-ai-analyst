@@ -46,3 +46,4 @@ settings:
 - `SLACK_SIGNING_SECRET`
 - `chat.slack.transport: http` in `instance.yaml` (or `SLACK_TRANSPORT=http`,
   or leave unset — `http` is the default).
+- These tokens may instead be set from the admin UI (`/admin/server-config` → Slack bot secrets), stored encrypted in the vault (`AGNES_VAULT_KEY` required). Environment variables, if present, take precedence.

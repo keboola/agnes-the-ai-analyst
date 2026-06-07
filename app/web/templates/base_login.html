@@ -6,6 +6,8 @@
        base.html for the full rationale. #}
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {# Resolve the OS-aware "auto" theme before stylesheets load (no flash). #}
+    {% include "_theme_resolve.html" %}
     {# Operator-injected scripts (placement=head_start). Mirrors base.html
        so login/auth pages surface custom_scripts too. #}
     {% for s in custom_scripts | default([]) if s.placement == 'head_start' %}

@@ -53,6 +53,7 @@ from cli.commands.my_stack import my_stack_app
 from cli.commands.marketplace import marketplace_app
 from cli.commands.stack import stack_app
 from cli.commands.mcp import mcp_app
+from cli.commands.docs import docs_app
 
 
 def _cli_version() -> str:
@@ -148,6 +149,7 @@ app.add_typer(my_stack_app, name="my-stack")
 app.add_typer(marketplace_app, name="marketplace")
 app.add_typer(stack_app, name="stack")
 app.add_typer(mcp_app, name="mcp")
+app.add_typer(docs_app, name="docs")
 
 
 def _capture_cli_exception(exc: BaseException, kind: str) -> None:

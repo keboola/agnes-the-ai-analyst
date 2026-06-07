@@ -52,6 +52,10 @@ class TestGenerateBundle:
         assert f"{folder}/agnes.py" in names             # Bash-tool CLI fallback
         assert f"{folder}/.claude/settings.json" in names
         assert f"{folder}/CLAUDE.md" in names
+        assert f"{folder}/cacert.pem" in names           # Mozilla CA bundle for verified TLS
+
+        # The bundled CA file must be a real PEM cert bundle
+        assert "BEGIN CERTIFICATE" in zf.read(f"{folder}/cacert.pem").decode()
 
         # Shell scripts are gone — no terminal setup required
         assert "setup.sh" not in names
@@ -90,13 +94,39 @@ class TestGenerateBundle:
 
         # Agnes curated skills must ship in every bundle.
         curated = [
-            f"{folder}/.claude/skills/setup-cowork.md",
-            f"{folder}/.claude/skills/explore-data.md",
-            f"{folder}/.claude/skills/query-data.md",
-            f"{folder}/.claude/skills/new-skill.md",
+            f"{folder}/.claude/skills/setup-cowork/SKILL.md",
+            f"{folder}/.claude/skills/explore-data/SKILL.md",
+            f"{folder}/.claude/skills/query-data/SKILL.md",
+            f"{folder}/.claude/skills/new-skill/SKILL.md",
         ]
         for path in curated:
             assert path in names, f"Curated skill missing from bundle: {path}"
+
+        # The skill-router agent must ship in every bundle, with frontmatter and
+        # the Skill tool so it can activate the skills it selects.
+        router = f"{folder}/.claude/agents/skill-router.md"
+        assert router in names, f"skill-router agent missing from bundle: {router}"
+        router_md = zf.read(router).decode()
+        assert router_md.startswith("---"), "skill-router must have YAML frontmatter"
+        assert "name: skill-router" in router_md
+        assert "Skill" in router_md, "skill-router must be allowed the Skill tool"
+
+    def test_bundled_scripts_verify_tls_by_default(self, seeded_app):
+        """mcp_server.py / agnes.py / setup.py must verify TLS against the
+        bundled CA by default; CERT_NONE is only reachable via the explicit
+        opt-out env var."""
+        c = seeded_app["client"]
+        resp = c.post("/api/user/cowork-bundle",
+                      headers=_auth(seeded_app["analyst_token"]))
+        assert resp.status_code == 200
+        zf = zipfile.ZipFile(io.BytesIO(resp.content))
+        folder = zf.namelist()[0].split("/")[0]
+        for script in ("mcp_server.py", "agnes.py", "setup.py"):
+            src = zf.read(f"{folder}/{script}").decode()
+            assert "context=_SSL_CTX" in src, f"{script}: urlopen must pass an SSL context"
+            assert "cacert.pem" in src, f"{script}: must reference the bundled CA file"
+            assert "AGNES_INSECURE_SKIP_TLS_VERIFY" in src, f"{script}: opt-out gate missing"
+            assert "ssl.create_default_context" in src, f"{script}: must build a verifying context"
 
     def test_requires_authentication(self, seeded_app):
         c = seeded_app["client"]
@@ -338,10 +368,14 @@ class TestCollectMarketplaceContent:
         from app.api.cowork_bundle import _collect_marketplace_content
 
         plugin_dir = tmp_path / "plugins" / "grpn"
-        (plugin_dir / "skills" / "create").mkdir(parents=True)
+        (plugin_dir / "skills" / "create" / "references").mkdir(parents=True)
         (plugin_dir / "skills" / "create" / "SKILL.md").write_text(
             "---\nname: create\ndescription: creates things\nargument-hint: x\n---\nbody\n",
             encoding="utf-8",
+        )
+        # Supporting file must ride along into the skill directory.
+        (plugin_dir / "skills" / "create" / "references" / "ref.md").write_text(
+            "reference content", encoding="utf-8",
         )
         (plugin_dir / "agents").mkdir()
         (plugin_dir / "agents" / "reviewer.md").write_text(
@@ -354,8 +388,13 @@ class TestCollectMarketplaceContent:
         with mock.patch("src.marketplace_filter.resolve_user_marketplace", return_value=[fake_plugin]):
             skills, agents = _collect_marketplace_content(object(), {"id": "u1"})
 
-        assert any("create" in arc for arc, _ in skills)
-        skill_content = next(c for arc, c in skills if "create" in arc).decode()
+        arcnames = [arc for arc, _ in skills]
+        # Directory format: entrypoint is <name>/SKILL.md, NOT a flat <name>.md.
+        assert ".claude/skills/create/SKILL.md" in arcnames
+        assert ".claude/skills/create.md" not in arcnames
+        # Supporting files are preserved next to SKILL.md.
+        assert ".claude/skills/create/references/ref.md" in arcnames
+        skill_content = next(c for arc, c in skills if arc.endswith("create/SKILL.md")).decode()
         assert "argument-hint" not in skill_content
         assert any("reviewer" in arc for arc, _ in agents)
 
@@ -397,8 +436,8 @@ class TestCollectMarketplaceContent:
             skills, _ = _collect_marketplace_content(object(), {"id": "u1"})
         arcnames = [arc for arc, _ in skills]
         # Curated name is reserved — marketplace version gets a prefix.
-        assert not any(arc == ".claude/skills/explore-data.md" for arc in arcnames)
-        assert any(arc == ".claude/skills/evil-explore-data.md" for arc in arcnames)
+        assert not any(arc == ".claude/skills/explore-data/SKILL.md" for arc in arcnames)
+        assert any(arc == ".claude/skills/evil-explore-data/SKILL.md" for arc in arcnames)
 
     def test_double_prefix_collision_skipped(self, tmp_path):
         from app.api.cowork_bundle import _collect_marketplace_content
@@ -424,5 +463,5 @@ class TestCollectMarketplaceContent:
                       headers=_auth(seeded_app["analyst_token"]))
         zf = zipfile.ZipFile(io.BytesIO(resp.content))
         folder = next(n.split("/")[0] for n in zf.namelist())
-        content = zf.read(f"{folder}/.claude/skills/setup-cowork.md").decode()
+        content = zf.read(f"{folder}/.claude/skills/setup-cowork/SKILL.md").decode()
         assert "name: setup-cowork" in content

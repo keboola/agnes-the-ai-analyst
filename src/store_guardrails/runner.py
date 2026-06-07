@@ -12,9 +12,12 @@ Two public entry points:
   and flips ``store_entities.visibility_status`` accordingly. Idempotent
   via the submission ID.
 
-Both functions take a connection factory rather than a live connection so
-the BackgroundTask runs against a fresh DuckDB handle (important —
-DuckDB connections aren't safe to share across threads).
+``run_llm_review`` resolves its repositories from the
+``src.repositories`` factory, so it persists the verdict to whichever
+backend the deployment runs on. The earlier DuckDB-only ``conn_factory``
+path silently no-op'd ("submission vanished") on Postgres-backed
+instances — the submission row lived in Postgres, the DuckDB handle was
+empty — leaving the row stuck at ``pending_llm`` with no verdict.
 """
 
 from __future__ import annotations
@@ -25,11 +28,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-import duckdb
-
-from src.repositories.audit import AuditRepository
-from src.repositories.store_entities import StoreEntitiesRepository
-from src.repositories.store_submissions import StoreSubmissionsRepository
 from . import (
     content_check,
     llm_review,
@@ -129,9 +127,12 @@ def run_llm_review(
     submission_id: str,
     *,
     plugin_dir: Path,
-    conn_factory: Callable[[], duckdb.DuckDBPyConnection],
     api_key_loader: Callable[[], str],
     model_loader: Callable[[], str],
+    conn_factory: Optional[Callable[[], Any]] = None,
+    subs_repo: Any = None,
+    ents_repo: Any = None,
+    audit: Any = None,
 ) -> LlmResult:
     """Background-task entry point. Resolves the LLM verdict and persists it.
 
@@ -149,12 +150,24 @@ def run_llm_review(
     surface a retry button in the admin UI. Errors during persistence
     propagate — those mean a bug in our DB layer and we want a stack.
     """
-    conn = conn_factory()
+    # Resolve repositories from the factory so the verdict is read from /
+    # written to whichever backend the deployment runs on. ``conn_factory``
+    # is accepted for call-site/test compatibility but no longer used — the
+    # old ``conn_factory=get_system_db`` path was DuckDB-only and made this
+    # whole function a silent no-op on Postgres-backed instances (the
+    # submission row lives in PG; the DuckDB handle is empty, so ``get()``
+    # returned None → "submission vanished" → the row stuck at pending_llm
+    # forever). Explicit repos can still be injected by tests.
+    if subs_repo is None:
+        from src.repositories import store_submissions_repo
+        subs_repo = store_submissions_repo()
+    if ents_repo is None:
+        from src.repositories import store_entities_repo
+        ents_repo = store_entities_repo()
+    if audit is None:
+        from src.repositories import audit_repo
+        audit = audit_repo()
     try:
-        subs_repo = StoreSubmissionsRepository(conn)
-        ents_repo = StoreEntitiesRepository(conn)
-        audit = AuditRepository(conn)
-
         sub = subs_repo.get(submission_id)
         if sub is None:
             logger.warning("run_llm_review: submission %s vanished", submission_id)
@@ -399,10 +412,10 @@ def run_llm_review(
 
         return LlmResult(verdict=verdict, reviewed_by_model=model)
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        # Repositories come from the factory — a process-wide DuckDB
+        # singleton or a pooled Postgres engine. Neither is owned by this
+        # call, so there is nothing instance-scoped to close here.
+        pass
 
 
 # Convenience: default factories the API layer wires up. Kept here so

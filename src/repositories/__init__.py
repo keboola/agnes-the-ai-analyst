@@ -24,10 +24,31 @@ We DO NOT mix backends within a request: every factory consults the
 same env var, so within one request all repos resolve to the same
 side. Cross-repo transactional guarantees are then identical to the
 pre-existing single-conn behaviour.
+
+Backend dispatch is a *declarative registry*, not a hand-written
+two-way ``if`` per repo. :data:`_REGISTRY` maps each repo key to a
+``{backend: (module_path, class_name)}`` table, and :func:`_build`
+resolves the active backend, imports the class lazily, and constructs
+it with that backend's connection argument (see :data:`_ARG_PROVIDERS`).
+
+Adding a new backend (e.g. ``duckdb_quack``, see
+``src/db_state_machine.py``) is therefore localised:
+
+  1. teach :func:`use_pg` / a future ``active_backend()`` to return the
+     new backend key,
+  2. add the new key to :data:`_ARG_PROVIDERS` (how to obtain its
+     connection/engine),
+  3. fill the new column in :data:`_REGISTRY` (one ``(module, class)``
+     per repo).
+
+The dispatch logic in :func:`_build` is backend-count-agnostic — no
+per-repo function changes — and ``tests/test_repository_registry.py``
+verifies the table stays complete and symmetric across backends.
 """
 from __future__ import annotations
 
 import os
+from importlib import import_module
 from typing import Any
 
 # Re-exports of the legacy DuckDB connection helpers — many callers
@@ -86,6 +107,7 @@ __all__ = [
     "mcp_sources_repo",
     "per_user_secrets_repo",
     "shared_secrets_repo",
+    "system_secrets_repo",
     "tool_registry_repo",
     "setup_tokens_repo",
     # Cloud chat
@@ -131,420 +153,313 @@ def _pg_engine() -> Any:
 
 
 # ---------------------------------------------------------------------------
+# backend dispatch
+# ---------------------------------------------------------------------------
+
+#: Backend keys. New backends append here (and to the data structures below).
+DUCKDB = "duckdb"
+PG = "pg"
+
+
+def _active_backend() -> str:
+    """The backend key the current request/process resolves to."""
+    return PG if use_pg() else DUCKDB
+
+
+#: How to obtain the constructor argument for each backend. DuckDB repos take
+#: a fresh cursor on the singleton system DB; PG repos take the singleton
+#: engine. A new backend registers its connection/engine provider here.
+#:
+#: The providers resolve ``get_system_db`` / ``_pg_engine`` by NAME at call
+#: time (the lambda looks them up in this module's globals when invoked), not
+#: by capturing the function object at import. This preserves the pre-registry
+#: behaviour where each factory called ``get_system_db()`` in its body — tests
+#: that ``patch("src.repositories.get_system_db", ...)`` to redirect the system
+#: DB must still take effect.
+_ARG_PROVIDERS = {
+    DUCKDB: lambda: get_system_db(),
+    PG: lambda: _pg_engine(),
+}
+
+#: ``repo_key -> {backend: (module_path, class_name)}``. The single source of
+#: truth for which class implements each repo on each backend. Lazy import by
+#: dotted path keeps import cost identical to the old per-function local
+#: imports and avoids import cycles (e.g. ``app.*`` repos).
+_REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
+    # core user / RBAC
+    "users": {
+        DUCKDB: ("src.repositories.users", "UserRepository"),
+        PG: ("src.repositories.users_pg", "UsersPgRepository"),
+    },
+    "user_groups": {
+        DUCKDB: ("src.repositories.user_groups", "UserGroupsRepository"),
+        PG: ("src.repositories.user_groups_pg", "UserGroupsPgRepository"),
+    },
+    "user_group_members": {
+        DUCKDB: ("src.repositories.user_group_members", "UserGroupMembersRepository"),
+        PG: ("src.repositories.user_group_members_pg", "UserGroupMembersPgRepository"),
+    },
+    "resource_grants": {
+        DUCKDB: ("src.repositories.resource_grants", "ResourceGrantsRepository"),
+        PG: ("src.repositories.resource_grants_pg", "ResourceGrantsPgRepository"),
+    },
+    "audit": {
+        DUCKDB: ("src.repositories.audit", "AuditRepository"),
+        PG: ("src.repositories.audit_pg", "AuditPgRepository"),
+    },
+    # ops triad
+    "table_registry": {
+        DUCKDB: ("src.repositories.table_registry", "TableRegistryRepository"),
+        PG: ("src.repositories.table_registry_pg", "TableRegistryPgRepository"),
+    },
+    "sync_state": {
+        DUCKDB: ("src.repositories.sync_state", "SyncStateRepository"),
+        PG: ("src.repositories.sync_state_pg", "SyncStatePgRepository"),
+    },
+    # config / templates / tokens
+    "metric": {
+        DUCKDB: ("src.repositories.metrics", "MetricRepository"),
+        PG: ("src.repositories.metrics_pg", "MetricPgRepository"),
+    },
+    "claude_md_template": {
+        DUCKDB: ("src.repositories.claude_md_template", "ClaudeMdTemplateRepository"),
+        PG: ("src.repositories.claude_md_template_pg", "ClaudeMdTemplatePgRepository"),
+    },
+    "welcome_template": {
+        DUCKDB: ("src.repositories.welcome_template", "WelcomeTemplateRepository"),
+        PG: ("src.repositories.welcome_template_pg", "WelcomeTemplatePgRepository"),
+    },
+    "news_template": {
+        DUCKDB: ("src.repositories.news_template", "NewsTemplateRepository"),
+        PG: ("src.repositories.news_template_pg", "NewsTemplatePgRepository"),
+    },
+    "access_token": {
+        DUCKDB: ("src.repositories.access_tokens", "AccessTokenRepository"),
+        PG: ("src.repositories.access_tokens_pg", "AccessTokenPgRepository"),
+    },
+    "profile": {
+        DUCKDB: ("src.repositories.profiles", "ProfileRepository"),
+        PG: ("src.repositories.profiles_pg", "ProfilePgRepository"),
+    },
+    # lookup / cache / settings
+    "view_ownership": {
+        DUCKDB: ("src.repositories.view_ownership", "ViewOwnershipRepository"),
+        PG: ("src.repositories.view_ownership_pg", "ViewOwnershipPgRepository"),
+    },
+    "column_metadata": {
+        DUCKDB: ("src.repositories.column_metadata", "ColumnMetadataRepository"),
+        PG: ("src.repositories.column_metadata_pg", "ColumnMetadataPgRepository"),
+    },
+    "bq_metadata_cache": {
+        DUCKDB: ("src.repositories.bq_metadata_cache", "BqMetadataCacheRepository"),
+        PG: ("src.repositories.bq_metadata_cache_pg", "BqMetadataCachePgRepository"),
+    },
+    "sync_settings": {
+        DUCKDB: ("src.repositories.sync_settings", "SyncSettingsRepository"),
+        PG: ("src.repositories.sync_settings_pg", "SyncSettingsPgRepository"),
+    },
+    "notifications_telegram": {
+        DUCKDB: ("src.repositories.notifications", "TelegramRepository"),
+        PG: ("src.repositories.notifications_pg", "TelegramPgRepository"),
+    },
+    "notifications_pending_code": {
+        DUCKDB: ("src.repositories.notifications", "PendingCodeRepository"),
+        PG: ("src.repositories.notifications_pg", "PendingCodePgRepository"),
+    },
+    "notifications_script": {
+        DUCKDB: ("src.repositories.notifications", "ScriptRepository"),
+        PG: ("src.repositories.notifications_pg", "ScriptPgRepository"),
+    },
+    # telemetry
+    "session_processor_state": {
+        DUCKDB: ("src.repositories.session_processor_state", "SessionProcessorStateRepository"),
+        PG: ("src.repositories.session_processor_state_pg", "SessionProcessorStatePgRepository"),
+    },
+    "observability_views": {
+        DUCKDB: ("src.repositories.observability_views", "ObservabilityViewsRepository"),
+        PG: ("src.repositories.observability_views_pg", "ObservabilityViewsPgRepository"),
+    },
+    "usage": {
+        DUCKDB: ("src.repositories.usage", "UsageRepository"),
+        PG: ("src.repositories.usage_pg", "UsagePgRepository"),
+    },
+    # store / marketplace
+    "marketplace_registry": {
+        DUCKDB: ("src.repositories.marketplace_registry", "MarketplaceRegistryRepository"),
+        PG: ("src.repositories.marketplace_registry_pg", "MarketplaceRegistryPgRepository"),
+    },
+    "marketplace_plugins": {
+        DUCKDB: ("src.repositories.marketplace_plugins", "MarketplacePluginsRepository"),
+        PG: ("src.repositories.marketplace_plugins_pg", "MarketplacePluginsPgRepository"),
+    },
+    "store_entities": {
+        DUCKDB: ("src.repositories.store_entities", "StoreEntitiesRepository"),
+        PG: ("src.repositories.store_entities_pg", "StoreEntitiesPgRepository"),
+    },
+    "user_store_installs": {
+        DUCKDB: ("src.repositories.user_store_installs", "UserStoreInstallsRepository"),
+        PG: ("src.repositories.user_store_installs_pg", "UserStoreInstallsPgRepository"),
+    },
+    "user_curated_subscriptions": {
+        DUCKDB: ("src.repositories.user_curated_subscriptions", "UserCuratedSubscriptionsRepository"),
+        PG: ("src.repositories.user_curated_subscriptions_pg", "UserCuratedSubscriptionsPgRepository"),
+    },
+    "store_submissions": {
+        DUCKDB: ("src.repositories.store_submissions", "StoreSubmissionsRepository"),
+        PG: ("src.repositories.store_submissions_pg", "StoreSubmissionsPgRepository"),
+    },
+    # knowledge
+    "knowledge": {
+        DUCKDB: ("src.repositories.knowledge", "KnowledgeRepository"),
+        PG: ("src.repositories.knowledge_pg", "KnowledgePgRepository"),
+    },
+    # data packages / memory / recipes / subscriptions
+    "data_packages": {
+        DUCKDB: ("src.repositories.data_packages", "DataPackagesRepository"),
+        PG: ("src.repositories.data_packages_pg", "DataPackagesPgRepository"),
+    },
+    "memory_domains": {
+        DUCKDB: ("src.repositories.memory_domains", "MemoryDomainsRepository"),
+        PG: ("src.repositories.memory_domains_pg", "MemoryDomainsPgRepository"),
+    },
+    "memory_domain_suggestions": {
+        DUCKDB: ("src.repositories.memory_domain_suggestions", "MemoryDomainSuggestionsRepository"),
+        PG: ("src.repositories.memory_domain_suggestions_pg", "MemoryDomainSuggestionsPgRepository"),
+    },
+    "recipes": {
+        DUCKDB: ("src.repositories.recipes", "RecipesRepository"),
+        PG: ("src.repositories.recipes_pg", "RecipesPgRepository"),
+    },
+    "user_stack_subscriptions": {
+        DUCKDB: ("src.repositories.user_stack_subscriptions", "UserStackSubscriptionsRepository"),
+        PG: ("src.repositories.user_stack_subscriptions_pg", "UserStackSubscriptionsPgRepository"),
+    },
+    # MCP / Cowork
+    "mcp_sources": {
+        DUCKDB: ("src.repositories.mcp_sources", "MCPSourceRepository"),
+        PG: ("src.repositories.mcp_sources_pg", "MCPSourcePgRepository"),
+    },
+    "per_user_secrets": {
+        DUCKDB: ("app.secrets_vault", "PerUserSecretsRepository"),
+        PG: ("src.repositories.secrets_vault_pg", "PerUserSecretsPgRepository"),
+    },
+    "shared_secrets": {
+        DUCKDB: ("app.secrets_vault", "SharedSecretsRepository"),
+        PG: ("src.repositories.secrets_vault_pg", "SharedSecretsPgRepository"),
+    },
+    "system_secrets": {
+        DUCKDB: ("app.secrets_vault", "SystemSecretsRepository"),
+        PG: ("src.repositories.secrets_vault_pg", "SystemSecretsPgRepository"),
+    },
+    "tool_registry": {
+        DUCKDB: ("src.repositories.tool_registry", "ToolRegistryRepository"),
+        PG: ("src.repositories.tool_registry_pg", "ToolRegistryPgRepository"),
+    },
+    "setup_tokens": {
+        DUCKDB: ("src.repositories.setup_tokens", "SetupTokenRepository"),
+        PG: ("src.repositories.setup_tokens_pg", "SetupTokenPgRepository"),
+    },
+    # cloud chat — the DuckDB side is a single ChatRepository covering all
+    # chat tables; the PG side is split per table.
+    "chat_session": {
+        DUCKDB: ("app.chat.persistence", "ChatRepository"),
+        PG: ("src.repositories.chat_sessions_pg", "ChatSessionPgRepository"),
+    },
+    "chat_message": {
+        DUCKDB: ("app.chat.persistence", "ChatRepository"),
+        PG: ("src.repositories.chat_messages_pg", "ChatMessagePgRepository"),
+    },
+    "user_workdirs": {
+        DUCKDB: ("app.chat.persistence", "ChatRepository"),
+        PG: ("src.repositories.user_workdirs_pg", "UserWorkdirPgRepository"),
+    },
+    "chat_session_participants": {
+        DUCKDB: ("app.chat.persistence", "ChatRepository"),
+        PG: ("src.repositories.chat_session_participants_pg", "ChatSessionParticipantPgRepository"),
+    },
+}
+
+
+def _build(key: str) -> Any:
+    """Resolve + construct the repo for ``key`` on the active backend."""
+    backend = _active_backend()
+    try:
+        module_path, class_name = _REGISTRY[key][backend]
+    except KeyError as exc:
+        raise KeyError(
+            f"no '{backend}' repository registered for '{key}' "
+            f"(known: {sorted(_REGISTRY.get(key, {}))})"
+        ) from exc
+    klass = getattr(import_module(module_path), class_name)
+    return klass(_ARG_PROVIDERS[backend]())
+
+
+# ---------------------------------------------------------------------------
+# public factory functions — thin delegates over the registry. Names + return
+# contract are unchanged; callsites are unaffected.
+# ---------------------------------------------------------------------------
+
 # core user / RBAC
-# ---------------------------------------------------------------------------
+def users_repo() -> Any: return _build("users")
+def user_groups_repo() -> Any: return _build("user_groups")
+def user_group_members_repo() -> Any: return _build("user_group_members")
+def resource_grants_repo() -> Any: return _build("resource_grants")
+def audit_repo() -> Any: return _build("audit")
 
-def users_repo() -> Any:
-    if use_pg():
-        from src.repositories.users_pg import UsersPgRepository
-        return UsersPgRepository(_pg_engine())
-    from src.repositories.users import UserRepository
-    return UserRepository(get_system_db())
-
-
-def user_groups_repo() -> Any:
-    if use_pg():
-        from src.repositories.user_groups_pg import UserGroupsPgRepository
-        return UserGroupsPgRepository(_pg_engine())
-    from src.repositories.user_groups import UserGroupsRepository
-    return UserGroupsRepository(get_system_db())
-
-
-def user_group_members_repo() -> Any:
-    if use_pg():
-        from src.repositories.user_group_members_pg import UserGroupMembersPgRepository
-        return UserGroupMembersPgRepository(_pg_engine())
-    from src.repositories.user_group_members import UserGroupMembersRepository
-    return UserGroupMembersRepository(get_system_db())
-
-
-def resource_grants_repo() -> Any:
-    if use_pg():
-        from src.repositories.resource_grants_pg import ResourceGrantsPgRepository
-        return ResourceGrantsPgRepository(_pg_engine())
-    from src.repositories.resource_grants import ResourceGrantsRepository
-    return ResourceGrantsRepository(get_system_db())
-
-
-def audit_repo() -> Any:
-    if use_pg():
-        from src.repositories.audit_pg import AuditPgRepository
-        return AuditPgRepository(_pg_engine())
-    from src.repositories.audit import AuditRepository
-    return AuditRepository(get_system_db())
-
-
-# ---------------------------------------------------------------------------
 # ops triad
-# ---------------------------------------------------------------------------
+def table_registry_repo() -> Any: return _build("table_registry")
+def sync_state_repo() -> Any: return _build("sync_state")
 
-def table_registry_repo() -> Any:
-    if use_pg():
-        from src.repositories.table_registry_pg import TableRegistryPgRepository
-        return TableRegistryPgRepository(_pg_engine())
-    from src.repositories.table_registry import TableRegistryRepository
-    return TableRegistryRepository(get_system_db())
-
-
-def sync_state_repo() -> Any:
-    if use_pg():
-        from src.repositories.sync_state_pg import SyncStatePgRepository
-        return SyncStatePgRepository(_pg_engine())
-    from src.repositories.sync_state import SyncStateRepository
-    return SyncStateRepository(get_system_db())
-
-
-# ---------------------------------------------------------------------------
 # config / templates / tokens
-# ---------------------------------------------------------------------------
+def metric_repo() -> Any: return _build("metric")
+def claude_md_template_repo() -> Any: return _build("claude_md_template")
+def welcome_template_repo() -> Any: return _build("welcome_template")
+def news_template_repo() -> Any: return _build("news_template")
+def access_token_repo() -> Any: return _build("access_token")
+def profile_repo() -> Any: return _build("profile")
 
-def metric_repo() -> Any:
-    if use_pg():
-        from src.repositories.metrics_pg import MetricPgRepository
-        return MetricPgRepository(_pg_engine())
-    from src.repositories.metrics import MetricRepository
-    return MetricRepository(get_system_db())
-
-
-def claude_md_template_repo() -> Any:
-    if use_pg():
-        from src.repositories.claude_md_template_pg import ClaudeMdTemplatePgRepository
-        return ClaudeMdTemplatePgRepository(_pg_engine())
-    from src.repositories.claude_md_template import ClaudeMdTemplateRepository
-    return ClaudeMdTemplateRepository(get_system_db())
-
-
-def welcome_template_repo() -> Any:
-    if use_pg():
-        from src.repositories.welcome_template_pg import WelcomeTemplatePgRepository
-        return WelcomeTemplatePgRepository(_pg_engine())
-    from src.repositories.welcome_template import WelcomeTemplateRepository
-    return WelcomeTemplateRepository(get_system_db())
-
-
-def news_template_repo() -> Any:
-    if use_pg():
-        from src.repositories.news_template_pg import NewsTemplatePgRepository
-        return NewsTemplatePgRepository(_pg_engine())
-    from src.repositories.news_template import NewsTemplateRepository
-    return NewsTemplateRepository(get_system_db())
-
-
-def access_token_repo() -> Any:
-    if use_pg():
-        from src.repositories.access_tokens_pg import AccessTokenPgRepository
-        return AccessTokenPgRepository(_pg_engine())
-    from src.repositories.access_tokens import AccessTokenRepository
-    return AccessTokenRepository(get_system_db())
-
-
-def profile_repo() -> Any:
-    if use_pg():
-        from src.repositories.profiles_pg import ProfilePgRepository
-        return ProfilePgRepository(_pg_engine())
-    from src.repositories.profiles import ProfileRepository
-    return ProfileRepository(get_system_db())
-
-
-# ---------------------------------------------------------------------------
 # lookup / cache / settings
-# ---------------------------------------------------------------------------
+def view_ownership_repo() -> Any: return _build("view_ownership")
+def column_metadata_repo() -> Any: return _build("column_metadata")
+def bq_metadata_cache_repo() -> Any: return _build("bq_metadata_cache")
+def sync_settings_repo() -> Any: return _build("sync_settings")
+def notifications_telegram_repo() -> Any: return _build("notifications_telegram")
+def notifications_pending_code_repo() -> Any: return _build("notifications_pending_code")
+def notifications_script_repo() -> Any: return _build("notifications_script")
 
-def view_ownership_repo() -> Any:
-    if use_pg():
-        from src.repositories.view_ownership_pg import ViewOwnershipPgRepository
-        return ViewOwnershipPgRepository(_pg_engine())
-    from src.repositories.view_ownership import ViewOwnershipRepository
-    return ViewOwnershipRepository(get_system_db())
-
-
-def column_metadata_repo() -> Any:
-    if use_pg():
-        from src.repositories.column_metadata_pg import ColumnMetadataPgRepository
-        return ColumnMetadataPgRepository(_pg_engine())
-    from src.repositories.column_metadata import ColumnMetadataRepository
-    return ColumnMetadataRepository(get_system_db())
-
-
-def bq_metadata_cache_repo() -> Any:
-    if use_pg():
-        from src.repositories.bq_metadata_cache_pg import BqMetadataCachePgRepository
-        return BqMetadataCachePgRepository(_pg_engine())
-    from src.repositories.bq_metadata_cache import BqMetadataCacheRepository
-    return BqMetadataCacheRepository(get_system_db())
-
-
-def sync_settings_repo() -> Any:
-    if use_pg():
-        from src.repositories.sync_settings_pg import SyncSettingsPgRepository
-        return SyncSettingsPgRepository(_pg_engine())
-    from src.repositories.sync_settings import SyncSettingsRepository
-    return SyncSettingsRepository(get_system_db())
-
-
-def notifications_telegram_repo() -> Any:
-    if use_pg():
-        from src.repositories.notifications_pg import TelegramPgRepository
-        return TelegramPgRepository(_pg_engine())
-    from src.repositories.notifications import TelegramRepository
-    return TelegramRepository(get_system_db())
-
-
-def notifications_pending_code_repo() -> Any:
-    if use_pg():
-        from src.repositories.notifications_pg import PendingCodePgRepository
-        return PendingCodePgRepository(_pg_engine())
-    from src.repositories.notifications import PendingCodeRepository
-    return PendingCodeRepository(get_system_db())
-
-
-def notifications_script_repo() -> Any:
-    if use_pg():
-        from src.repositories.notifications_pg import ScriptPgRepository
-        return ScriptPgRepository(_pg_engine())
-    from src.repositories.notifications import ScriptRepository
-    return ScriptRepository(get_system_db())
-
-
-# ---------------------------------------------------------------------------
 # telemetry
-# ---------------------------------------------------------------------------
+def session_processor_state_repo() -> Any: return _build("session_processor_state")
+def observability_views_repo() -> Any: return _build("observability_views")
+def usage_repo() -> Any: return _build("usage")
 
-def session_processor_state_repo() -> Any:
-    if use_pg():
-        from src.repositories.session_processor_state_pg import (
-            SessionProcessorStatePgRepository,
-        )
-        return SessionProcessorStatePgRepository(_pg_engine())
-    from src.repositories.session_processor_state import (
-        SessionProcessorStateRepository,
-    )
-    return SessionProcessorStateRepository(get_system_db())
-
-
-def observability_views_repo() -> Any:
-    if use_pg():
-        from src.repositories.observability_views_pg import (
-            ObservabilityViewsPgRepository,
-        )
-        return ObservabilityViewsPgRepository(_pg_engine())
-    from src.repositories.observability_views import ObservabilityViewsRepository
-    return ObservabilityViewsRepository(get_system_db())
-
-
-def usage_repo() -> Any:
-    if use_pg():
-        from src.repositories.usage_pg import UsagePgRepository
-        return UsagePgRepository(_pg_engine())
-    from src.repositories.usage import UsageRepository
-    return UsageRepository(get_system_db())
-
-
-# ---------------------------------------------------------------------------
 # store / marketplace
-# ---------------------------------------------------------------------------
+def marketplace_registry_repo() -> Any: return _build("marketplace_registry")
+def marketplace_plugins_repo() -> Any: return _build("marketplace_plugins")
+def store_entities_repo() -> Any: return _build("store_entities")
+def user_store_installs_repo() -> Any: return _build("user_store_installs")
+def user_curated_subscriptions_repo() -> Any: return _build("user_curated_subscriptions")
+def store_submissions_repo() -> Any: return _build("store_submissions")
 
-def marketplace_registry_repo() -> Any:
-    if use_pg():
-        from src.repositories.marketplace_registry_pg import (
-            MarketplaceRegistryPgRepository,
-        )
-        return MarketplaceRegistryPgRepository(_pg_engine())
-    from src.repositories.marketplace_registry import MarketplaceRegistryRepository
-    return MarketplaceRegistryRepository(get_system_db())
-
-
-def marketplace_plugins_repo() -> Any:
-    if use_pg():
-        from src.repositories.marketplace_plugins_pg import (
-            MarketplacePluginsPgRepository,
-        )
-        return MarketplacePluginsPgRepository(_pg_engine())
-    from src.repositories.marketplace_plugins import MarketplacePluginsRepository
-    return MarketplacePluginsRepository(get_system_db())
-
-
-def store_entities_repo() -> Any:
-    if use_pg():
-        from src.repositories.store_entities_pg import StoreEntitiesPgRepository
-        return StoreEntitiesPgRepository(_pg_engine())
-    from src.repositories.store_entities import StoreEntitiesRepository
-    return StoreEntitiesRepository(get_system_db())
-
-
-def user_store_installs_repo() -> Any:
-    if use_pg():
-        from src.repositories.user_store_installs_pg import (
-            UserStoreInstallsPgRepository,
-        )
-        return UserStoreInstallsPgRepository(_pg_engine())
-    from src.repositories.user_store_installs import UserStoreInstallsRepository
-    return UserStoreInstallsRepository(get_system_db())
-
-
-def user_curated_subscriptions_repo() -> Any:
-    if use_pg():
-        from src.repositories.user_curated_subscriptions_pg import (
-            UserCuratedSubscriptionsPgRepository,
-        )
-        return UserCuratedSubscriptionsPgRepository(_pg_engine())
-    from src.repositories.user_curated_subscriptions import (
-        UserCuratedSubscriptionsRepository,
-    )
-    return UserCuratedSubscriptionsRepository(get_system_db())
-
-
-def store_submissions_repo() -> Any:
-    if use_pg():
-        from src.repositories.store_submissions_pg import (
-            StoreSubmissionsPgRepository,
-        )
-        return StoreSubmissionsPgRepository(_pg_engine())
-    from src.repositories.store_submissions import StoreSubmissionsRepository
-    return StoreSubmissionsRepository(get_system_db())
-
-
-# ---------------------------------------------------------------------------
 # knowledge
-# ---------------------------------------------------------------------------
+def knowledge_repo() -> Any: return _build("knowledge")
 
-def knowledge_repo() -> Any:
-    if use_pg():
-        from src.repositories.knowledge_pg import KnowledgePgRepository
-        return KnowledgePgRepository(_pg_engine())
-    from src.repositories.knowledge import KnowledgeRepository
-    return KnowledgeRepository(get_system_db())
-
-
-# ---------------------------------------------------------------------------
 # data packages / memory / recipes / subscriptions
-# ---------------------------------------------------------------------------
+def data_packages_repo() -> Any: return _build("data_packages")
+def memory_domains_repo() -> Any: return _build("memory_domains")
+def memory_domain_suggestions_repo() -> Any: return _build("memory_domain_suggestions")
+def recipes_repo() -> Any: return _build("recipes")
+def user_stack_subscriptions_repo() -> Any: return _build("user_stack_subscriptions")
 
-def data_packages_repo() -> Any:
-    if use_pg():
-        from src.repositories.data_packages_pg import DataPackagesPgRepository
-        return DataPackagesPgRepository(_pg_engine())
-    from src.repositories.data_packages import DataPackagesRepository
-    return DataPackagesRepository(get_system_db())
-
-
-def memory_domains_repo() -> Any:
-    if use_pg():
-        from src.repositories.memory_domains_pg import MemoryDomainsPgRepository
-        return MemoryDomainsPgRepository(_pg_engine())
-    from src.repositories.memory_domains import MemoryDomainsRepository
-    return MemoryDomainsRepository(get_system_db())
-
-
-def memory_domain_suggestions_repo() -> Any:
-    if use_pg():
-        from src.repositories.memory_domain_suggestions_pg import (
-            MemoryDomainSuggestionsPgRepository,
-        )
-        return MemoryDomainSuggestionsPgRepository(_pg_engine())
-    from src.repositories.memory_domain_suggestions import (
-        MemoryDomainSuggestionsRepository,
-    )
-    return MemoryDomainSuggestionsRepository(get_system_db())
-
-
-def recipes_repo() -> Any:
-    if use_pg():
-        from src.repositories.recipes_pg import RecipesPgRepository
-        return RecipesPgRepository(_pg_engine())
-    from src.repositories.recipes import RecipesRepository
-    return RecipesRepository(get_system_db())
-
-
-def user_stack_subscriptions_repo() -> Any:
-    if use_pg():
-        from src.repositories.user_stack_subscriptions_pg import (
-            UserStackSubscriptionsPgRepository,
-        )
-        return UserStackSubscriptionsPgRepository(_pg_engine())
-    from src.repositories.user_stack_subscriptions import (
-        UserStackSubscriptionsRepository,
-    )
-    return UserStackSubscriptionsRepository(get_system_db())
-
-
-# ---------------------------------------------------------------------------
 # MCP / Cowork
-# ---------------------------------------------------------------------------
+def mcp_sources_repo() -> Any: return _build("mcp_sources")
+def per_user_secrets_repo() -> Any: return _build("per_user_secrets")
+def shared_secrets_repo() -> Any: return _build("shared_secrets")
+def system_secrets_repo() -> Any: return _build("system_secrets")
+def tool_registry_repo() -> Any: return _build("tool_registry")
+def setup_tokens_repo() -> Any: return _build("setup_tokens")
 
-def mcp_sources_repo() -> Any:
-    if use_pg():
-        from src.repositories.mcp_sources_pg import MCPSourcePgRepository
-        return MCPSourcePgRepository(_pg_engine())
-    from src.repositories.mcp_sources import MCPSourceRepository
-    return MCPSourceRepository(get_system_db())
-
-
-def per_user_secrets_repo() -> Any:
-    if use_pg():
-        from src.repositories.secrets_vault_pg import PerUserSecretsPgRepository
-        return PerUserSecretsPgRepository(_pg_engine())
-    from app.secrets_vault import PerUserSecretsRepository
-    return PerUserSecretsRepository(get_system_db())
-
-
-def shared_secrets_repo() -> Any:
-    if use_pg():
-        from src.repositories.secrets_vault_pg import SharedSecretsPgRepository
-        return SharedSecretsPgRepository(_pg_engine())
-    from app.secrets_vault import SharedSecretsRepository
-    return SharedSecretsRepository(get_system_db())
-
-
-def tool_registry_repo() -> Any:
-    if use_pg():
-        from src.repositories.tool_registry_pg import ToolRegistryPgRepository
-        return ToolRegistryPgRepository(_pg_engine())
-    from src.repositories.tool_registry import ToolRegistryRepository
-    return ToolRegistryRepository(get_system_db())
-
-
-def setup_tokens_repo() -> Any:
-    if use_pg():
-        from src.repositories.setup_tokens_pg import SetupTokenPgRepository
-        return SetupTokenPgRepository(_pg_engine())
-    from src.repositories.setup_tokens import SetupTokenRepository
-    return SetupTokenRepository(get_system_db())
-
-
-# ---------------------------------------------------------------------------
-# Cloud chat
-# ---------------------------------------------------------------------------
-
-def chat_session_repo() -> Any:
-    if use_pg():
-        from src.repositories.chat_sessions_pg import ChatSessionPgRepository
-        return ChatSessionPgRepository(_pg_engine())
-    from app.chat.persistence import ChatRepository
-    return ChatRepository(get_system_db())
-
-
-def chat_message_repo() -> Any:
-    if use_pg():
-        from src.repositories.chat_messages_pg import ChatMessagePgRepository
-        return ChatMessagePgRepository(_pg_engine())
-    from app.chat.persistence import ChatRepository
-    return ChatRepository(get_system_db())
-
-
-def user_workdirs_repo() -> Any:
-    if use_pg():
-        from src.repositories.user_workdirs_pg import UserWorkdirPgRepository
-        return UserWorkdirPgRepository(_pg_engine())
-    from app.chat.persistence import ChatRepository
-    return ChatRepository(get_system_db())
-
-
-def chat_session_participants_repo() -> Any:
-    if use_pg():
-        from src.repositories.chat_session_participants_pg import (
-            ChatSessionParticipantPgRepository,
-        )
-        return ChatSessionParticipantPgRepository(_pg_engine())
-    from app.chat.persistence import ChatRepository
-    return ChatRepository(get_system_db())
+# cloud chat
+def chat_session_repo() -> Any: return _build("chat_session")
+def chat_message_repo() -> Any: return _build("chat_message")
+def user_workdirs_repo() -> Any: return _build("user_workdirs")
+def chat_session_participants_repo() -> Any: return _build("chat_session_participants")

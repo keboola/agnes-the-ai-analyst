@@ -99,6 +99,69 @@ class SharedSecretsPgRepository:
         return row is not None
 
 
+class SystemSecretsPgRepository:
+    """Server-wide system secrets keyed by ``name`` (PG).
+
+    Signature-compatible with ``app.secrets_vault.SystemSecretsRepository``.
+    """
+
+    def __init__(self, engine: Engine):
+        self._engine = engine
+
+    def upsert(self, name: str, value: str) -> None:
+        token = encrypt_secret(value)
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    """INSERT INTO system_secrets
+                           (name, secret_value_enc, updated_at)
+                       VALUES (:name, :token, CURRENT_TIMESTAMP)
+                       ON CONFLICT (name) DO UPDATE SET
+                           secret_value_enc = EXCLUDED.secret_value_enc,
+                           updated_at       = EXCLUDED.updated_at"""
+                ),
+                {"name": name, "token": token},
+            )
+
+    def get(self, name: str) -> Optional[str]:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    "SELECT secret_value_enc FROM system_secrets WHERE name = :name"
+                ),
+                {"name": name},
+            ).fetchone()
+        if row is None:
+            return None
+        token = row[0]
+        if not isinstance(token, (bytes, bytearray, memoryview)):
+            return None
+        try:
+            return decrypt_secret(bytes(token))
+        except (InvalidToken, RuntimeError):
+            logger.warning(
+                "system_secrets row for %s failed to decrypt — vault key "
+                "rotated or malformed? Treating as unset.",
+                name,
+            )
+            return None
+
+    def delete(self, name: str) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("DELETE FROM system_secrets WHERE name = :name"),
+                {"name": name},
+            )
+
+    def has(self, name: str) -> bool:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text("SELECT 1 FROM system_secrets WHERE name = :name LIMIT 1"),
+                {"name": name},
+            ).fetchone()
+        return row is not None
+
+
 class PerUserSecretsPgRepository:
     """Per-user MCP source secrets (PG). One row per ``(source_id, user_id)``.
 
