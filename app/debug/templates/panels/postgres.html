@@ -18,3 +18,42 @@
   {% endfor %}
   </tbody>
 </table>
+<script>
+/* Auto-reload the OPEN toolbar panel when an in-page action (e.g. switching the
+ * Flea Market tab) fires a new request. The toolbar's refresh.js repoints the
+ * store + wipes the open panel's content + shows a loader, but never re-fetches
+ * it — so without this you'd see the subtitle/latency change but the query list
+ * stay empty until you re-click the panel tab. Installs once on window; lives
+ * outside the panel content so it survives refresh.js wiping that content. */
+(function () {
+  if (window.__agnesPanelAutoReload) return;
+  window.__agnesPanelAutoReload = true;
+  var fd = document.getElementById("fastDebug");
+  if (!fd) return;
+  var lastStore = fd.dataset.storeId;
+  setInterval(function () {
+    var sid = fd.dataset.storeId;
+    if (!sid || sid === lastStore) return;
+    lastStore = sid;
+    // The single currently-visible panel content (toolbar hides the rest with
+    // display:none). offsetParent is null inside the fixed-position toolbar even
+    // when visible, so test rendered height instead.
+    var pc = Array.prototype.find.call(
+      document.querySelectorAll("#fastDebug .fastDebugPanelContent"),
+      function (e) { return e.offsetHeight > 0; }
+    );
+    if (!pc) return;
+    var panelDiv = pc.closest("[id]");
+    var inner = pc.querySelector(".fastdt-scroll");
+    if (!panelDiv || !inner) return;
+    var url = new URL(fd.dataset.renderPanelUrl, window.location);
+    url.searchParams.set("store_id", sid);
+    url.searchParams.set("panel_id", panelDiv.id);
+    fetch(url).then(function (r) { return r.json(); }).then(function (d) {
+      var loader = pc.querySelector(".fastdt-loader");
+      if (loader) loader.remove();
+      inner.innerHTML = d.content;
+    }).catch(function () {});
+  }, 250);
+})();
+</script>

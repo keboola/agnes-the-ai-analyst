@@ -2343,6 +2343,48 @@ async def marketplace_format_guide(
     )
 
 
+@router.get("/documentation/api", response_class=HTMLResponse)
+async def documentation_api(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Render docs/api-reference.md as a logged-in HTML page.
+
+    Same pattern and rationale as /marketplace/format-guide above: the
+    Markdown source lives in docs/ so it's readable on the GitHub mirror;
+    the web rendering is the in-product entry point (Admin menu →
+    Documentation). Auth is ``get_current_user`` only — the audience is
+    "anyone scripting against the API", which is broader than admins.
+    Freshness is enforced by tests/test_api_docs_coverage.py, which fails
+    CI when a public /api/* route is missing from the document.
+    """
+    from markdown_it import MarkdownIt
+    from pathlib import Path
+
+    from app.version import APP_VERSION
+
+    md_path = (
+        Path(__file__).resolve().parent.parent.parent
+        / "docs" / "api-reference.md"
+    )
+    try:
+        md_text = md_path.read_text(encoding="utf-8")
+    except OSError:
+        md_text = (
+            "# API reference unavailable\n\n"
+            "The source markdown file is missing from this deployment."
+        )
+    rendered = MarkdownIt("commonmark", {"breaks": False}).enable("table").render(md_text)
+    ctx = _build_context(
+        request, user=user,
+        rendered_html=rendered,
+        app_version=APP_VERSION,
+    )
+    return templates.TemplateResponse(
+        request, "documentation_api.html", ctx,
+    )
+
+
 @router.get("/admin/tables", response_class=HTMLResponse)
 async def admin_tables(
     request: Request,

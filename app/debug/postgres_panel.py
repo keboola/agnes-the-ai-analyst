@@ -16,9 +16,32 @@ overhead on the normal request path. ``instrument_engine()`` is called once from
 from __future__ import annotations
 
 import contextvars
+import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
+
+# Comprehensive per-statement query log. Unlike the toolbar panel (which is
+# request-scoped via the contextvar store and only shows the document request),
+# this fires on EVERY statement the engine executes — sync, async, threadpool,
+# and XHR/API requests alike — so async work (e.g. the marketplace/flea-market
+# listings loaded via /api XHR) is always observable in the logs even when the
+# toolbar can only pin to one request. Gated on DEBUG so it is silent in prod.
+_query_log = logging.getLogger("agnes.db.postgres")
+
+
+def _debug_enabled() -> bool:
+    # Truthy set kept in sync with ``app.main._is_truthy_env`` — operators
+    # expect a single envvar dialect across the codebase.
+    return os.environ.get("DEBUG", "").lower() in ("1", "true", "yes") or os.environ.get(
+        "LOCAL_DEV_MODE", ""
+    ).lower() in ("1", "true", "yes")
+
+
+def _oneline(sql: str, limit: int = 500) -> str:
+    s = " ".join(str(sql).split())
+    return s if len(s) <= limit else s[:limit] + "…"
 
 
 @dataclass
@@ -81,40 +104,41 @@ def instrument_engine(engine: Any) -> None:
 
     @event.listens_for(engine, "before_cursor_execute")
     def _before(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
-        if _request_store.get() is None:
-            return
-        context._agnes_pg_start = time.perf_counter()
+        # Time the statement whenever EITHER the panel store is active (toolbar
+        # request) OR DEBUG logging is on — so async/XHR queries outside a
+        # toolbar request are still timed for the comprehensive log.
+        if _request_store.get() is not None or _debug_enabled():
+            context._agnes_pg_start = time.perf_counter()
 
     @event.listens_for(engine, "after_cursor_execute")
     def _after(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
-        if _request_store.get() is None:
-            return
         started = getattr(context, "_agnes_pg_start", None)
         if started is None:
             return
+        ms = (time.perf_counter() - started) * 1000.0
         rows: int | None = None
         try:
             rows = cursor.rowcount
         except Exception:
             pass
+        # (b) comprehensive log — every statement, every context, gated on DEBUG.
+        # Emitted at INFO (the gate is _debug_enabled(), so it is dev-only) so it
+        # is visible without flipping the whole app to DEBUG-level logging.
+        if _debug_enabled():
+            _query_log.info("pg %.2fms rows=%s | %s", ms, rows, _oneline(statement))
+        # (panel) request-scoped capture — no-op when no toolbar request store.
         record_query("postgres", statement, parameters, started, rows)
 
     @event.listens_for(engine, "handle_error")
     def _error(exc_ctx):  # noqa: ANN001
-        if _request_store.get() is None:
-            return
         ec = exc_ctx.execution_context
         started = getattr(ec, "_agnes_pg_start", None) if ec is not None else None
         if started is None:
             started = time.perf_counter()
-        record_query(
-            "postgres",
-            exc_ctx.statement or "",
-            exc_ctx.parameters,
-            started,
-            None,
-            repr(exc_ctx.original_exception),
-        )
+        stmt = exc_ctx.statement or ""
+        if _debug_enabled():
+            _query_log.warning("pg ERROR | %s | %s", _oneline(stmt), repr(exc_ctx.original_exception))
+        record_query("postgres", stmt, exc_ctx.parameters, started, None, repr(exc_ctx.original_exception))
 
     engine._agnes_pg_instrumented = True
 
