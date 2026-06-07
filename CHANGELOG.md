@@ -15,11 +15,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
-- **Postgres: flea-market LLM security reviews are now backend-agnostic.** `run_llm_review` (the background task that reviews a submitted plugin/skill/agent) was hardcoded to DuckDB (`conn_factory=get_system_db`): on a Postgres-backed instance it looked the submission up in an empty DuckDB, logged "submission vanished", and returned with no verdict — leaving **every** submission stuck at `pending_llm` ("Under review") forever, regardless of whether the LLM provider key was set. DuckDB-backed instances were unaffected. It now resolves `store_submissions` / `store_entities` / `audit` through the `src.repositories` factory (the same `use_pg()` switch the rest of the app uses), so it follows the configured backend (the `conn_factory` argument is retained for call-site/test compatibility but no longer used). Same root cause as the stuck-review reaper fix in v0.67.2; covered by a cross-engine contract test. (#567)
 
 ### Removed
 
 ### Internal
+
+## [0.68.2] — 2026-06-07
+
+### Fixed
+- **Postgres: flea-market LLM security reviews are now backend-agnostic.** `run_llm_review` (the background task that reviews a submitted plugin/skill/agent) was hardcoded to DuckDB (`conn_factory=get_system_db`): on a Postgres-backed instance it looked the submission up in an empty DuckDB, logged "submission vanished", and returned with no verdict — leaving **every** submission stuck at `pending_llm` ("Under review") forever, regardless of whether the LLM provider key was set. DuckDB-backed instances were unaffected. It now resolves `store_submissions` / `store_entities` / `audit` through the `src.repositories` factory (the same `use_pg()` switch the rest of the app uses), so it follows the configured backend (the `conn_factory` argument is retained for call-site/test compatibility but no longer used). Same root cause as the stuck-review reaper fix in v0.67.2; covered by a cross-engine contract test. (#567)
 
 ## [0.68.1] — 2026-06-06
 
