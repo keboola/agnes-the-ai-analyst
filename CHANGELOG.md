@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.68.7] — 2026-06-08
+
+### Fixed
+- **Dark mode: form controls and their surfaces no longer render white.** Two parts. (1) `color-scheme: light`/`dark` is now set on the theme roots (`design-tokens.css`) so browser-default inputs/selects/textareas + scrollbars adopt the dark UA palette instead of staying white. (2) The hardcoded-white form surfaces that `color-scheme` can't reach are tokenized to `var(--ds-surface)`/`var(--ds-border)`/`var(--ds-text-*)`: the search/filter inputs on `admin_sync`/`admin_groups`/`admin_mcp_sources`/`admin_access`, the `store_upload` fields + type-tiles + drop-zone, the `news_editor` panels/textareas/preview/labels (it was a fully hardcoded-light admin page), the `catalog` hero search-row, and the JS-built `chip-input` component (container + dropdown). The `marketplace` page was light-locked via a full light palette scoped to `.mp-page` (`--surface`/`--text-primary`/`--text-secondary`/`--border-light` pinned to fixed values) — those now flip to the design-system tokens, plus its hero search-row. Verified across ~28 routes with an in-browser crawler: every previously-white form surface now flips light↔dark, and light mode is unchanged. Complements the edit-group modal fix (#560). Part of #497 §8/§9. (#497, #563)
+
 ## [0.68.6] — 2026-06-08
 
 ### Fixed
