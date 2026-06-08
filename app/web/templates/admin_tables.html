@@ -199,8 +199,12 @@
         }
 
         /* CSS tooltip — shown on hover via data-tooltip (avoids the
-           browser's native title delay appearing alongside our chip) */
-        .btn-icon[data-tooltip]:hover::after {
+           browser's native title delay appearing alongside our chip).
+           #405: also reused by the disabled Keboola discover buttons
+           (.btn-secondary) to explain why they're inert off-Keboola. */
+        .btn-secondary[data-tooltip] { position: relative; }
+        .btn-icon[data-tooltip]:hover::after,
+        .btn-secondary[data-tooltip]:hover::after {
             content: attr(data-tooltip);
             position: absolute;
             bottom: calc(100% + 5px);
@@ -217,6 +221,14 @@
             pointer-events: none;
             z-index: 200;
             box-shadow: 0 2px 6px rgba(0,0,0,.18);
+        }
+        /* #405: these buttons float to the modal's right edge, so the centered
+           chip above overflows and clips. Anchor it to the button's right edge
+           so the (wider) text grows leftward into the modal instead. */
+        .btn-secondary[data-tooltip]:hover::after {
+            left: auto;
+            right: 0;
+            transform: none;
         }
 
         /* ── Badges ── */
@@ -1351,18 +1363,18 @@
                             <div class="form-hint">Split on the last <code>.</code> into Bucket + Source Table.</div>
                         </div>
 
-                        {# Discover/List tables backend currently routes by instance's data_source.type
-                           ignoring the `source` query param. Hiding the buttons on non-Keboola instances
-                           prevents wrong-shape responses; inputs stay for manual entry. Future fix: make
-                           /api/admin/discover-tables accept ?source=keboola and remove this guard. #}
+                        {# Discover/List tables backend routes by instance's data_source.type, ignoring
+                           the `source` query param — on a non-Keboola instance it would return
+                           wrong-shape data. So off-Keboola these buttons render disabled (no onclick →
+                           a click can never hit the endpoint) with a tooltip, rather than being hidden;
+                           inputs stay for manual entry. Future fix: make /api/admin/discover-tables
+                           accept ?source=keboola and drop the guard entirely. #}
                         <div class="form-group kb-source-table">
                             <label class="form-label" for="kbBucket">
                                 Bucket
-                                {% if data_source_type == 'keboola' %}
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        onclick="discoverKeboolaBuckets('kbBucketList')"
+                                        {% if data_source_type == 'keboola' %}onclick="discoverKeboolaBuckets('kbBucketList')"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
                                         style="float:right; margin-top:-3px;">Discover</button>
-                                {% endif %}
                             </label>
                             <input type="text" class="form-input" id="kbBucket"
                                    list="kbBucketList" placeholder="e.g. in.c-sales">
@@ -1371,11 +1383,9 @@
                         <div class="form-group kb-source-table">
                             <label class="form-label" for="kbSourceTable">
                                 Source Table
-                                {% if data_source_type == 'keboola' %}
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        onclick="discoverKeboolaTables('kbBucket', 'kbTableList')"
+                                        {% if data_source_type == 'keboola' %}onclick="discoverKeboolaTables('kbBucket', 'kbTableList')"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
                                         style="float:right; margin-top:-3px;">List tables</button>
-                                {% endif %}
                             </label>
                             <input type="text" class="form-input" id="kbSourceTable"
                                    list="kbTableList" placeholder="e.g. orders">
@@ -1384,14 +1394,12 @@
                         <div class="form-group kb-source-custom" style="display:none;">
                             <label class="form-label" for="kbSourceQuery">
                                 SQL
-                                {% if data_source_type == 'keboola' %}
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        onclick="prefillFromKeboolaTable('kbSourceQuery')"
-                                        style="float:right; margin-top:-3px;"
-                                        title="Prefill SELECT * FROM kbc.bucket.table so you only edit the WHERE / projection">
+                                        {% if data_source_type == 'keboola' %}onclick="prefillFromKeboolaTable('kbSourceQuery')"
+                                        title="Prefill SELECT * FROM kbc.bucket.table so you only edit the WHERE / projection"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
+                                        style="float:right; margin-top:-3px;">
                                     Use table as base
                                 </button>
-                                {% endif %}
                             </label>
                             <textarea class="form-textarea" id="kbSourceQuery" rows="8"></textarea>
                             <div class="form-hint">SELECT against <code>kbc."bucket"."table"</code>.
@@ -1580,18 +1588,18 @@
                             </div>
                         </div>
 
-                        {# Discover/List tables backend currently routes by instance's data_source.type
-                           ignoring the `source` query param. Hiding the buttons on non-Keboola instances
-                           prevents wrong-shape responses; inputs stay for manual entry. Future fix: make
-                           /api/admin/discover-tables accept ?source=keboola and remove this guard. #}
+                        {# Discover/List tables backend routes by instance's data_source.type, ignoring
+                           the `source` query param — on a non-Keboola instance it would return
+                           wrong-shape data. So off-Keboola these buttons render disabled (no onclick →
+                           a click can never hit the endpoint) with a tooltip, rather than being hidden;
+                           inputs stay for manual entry. Future fix: make /api/admin/discover-tables
+                           accept ?source=keboola and drop the guard entirely. #}
                         <div class="form-group editkb-source-table">
                             <label class="form-label" for="editKbBucket">
                                 Bucket
-                                {% if data_source_type == 'keboola' %}
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        onclick="discoverKeboolaBuckets('editKbBucketList')"
+                                        {% if data_source_type == 'keboola' %}onclick="discoverKeboolaBuckets('editKbBucketList')"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
                                         style="float:right; margin-top:-3px;">Discover</button>
-                                {% endif %}
                             </label>
                             <input type="text" class="form-input" id="editKbBucket"
                                    list="editKbBucketList" placeholder="e.g. in.c-sales">
@@ -1600,11 +1608,9 @@
                         <div class="form-group editkb-source-table">
                             <label class="form-label" for="editKbSourceTable">
                                 Source Table
-                                {% if data_source_type == 'keboola' %}
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        onclick="discoverKeboolaTables('editKbBucket', 'editKbTableList')"
+                                        {% if data_source_type == 'keboola' %}onclick="discoverKeboolaTables('editKbBucket', 'editKbTableList')"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
                                         style="float:right; margin-top:-3px;">List tables</button>
-                                {% endif %}
                             </label>
                             <input type="text" class="form-input" id="editKbSourceTable"
                                    list="editKbTableList" placeholder="e.g. orders">
@@ -1613,14 +1619,12 @@
                         <div class="form-group editkb-source-custom" style="display:none;">
                             <label class="form-label" for="editKbSourceQuery">
                                 SQL
-                                {% if data_source_type == 'keboola' %}
                                 <button type="button" class="btn btn-secondary btn-sm"
-                                        onclick="prefillFromKeboolaTable('editKbSourceQuery')"
-                                        style="float:right; margin-top:-3px;"
-                                        title="Prefill SELECT * FROM kbc.bucket.table so you only edit the WHERE / projection">
+                                        {% if data_source_type == 'keboola' %}onclick="prefillFromKeboolaTable('editKbSourceQuery')"
+                                        title="Prefill SELECT * FROM kbc.bucket.table so you only edit the WHERE / projection"{% else %}disabled data-tooltip="Keboola not connected — set token in Instance settings"{% endif %}
+                                        style="float:right; margin-top:-3px;">
                                     Use table as base
                                 </button>
-                                {% endif %}
                             </label>
                             <textarea class="form-textarea" id="editKbSourceQuery" rows="8"></textarea>
                         </div>
