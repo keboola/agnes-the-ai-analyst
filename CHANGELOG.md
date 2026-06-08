@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- Cleaned up half-rebranded UI spots where a brand-green element still used the old pre-rebrand blue `#0056A3` (the legacy `--primary-dark`) — 6 spots across 4 templates, now `var(--ds-primary-dark)`: the `marketplace_plugin_detail` hero gradient (was green→blue, now green→green-dark), the `news_editor` primary-button hover, and the generic `.badge` text in `memory_domain_detail` + `admin_corporate_memory` (was green bg + blue text, now green-on-green). Left intentionally untouched: the semantic `.qm-remote` status color (part of a local/remote/materialized colour-coded family) and the legacy `--primary` blue palette. (#497)
 
 ### Removed
 
