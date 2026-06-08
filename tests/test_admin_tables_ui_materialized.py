@@ -308,11 +308,13 @@ def test_bq_edit_modal_renders_as_dom_overlay(seeded_app, bq_instance):
         assert 'id="editBqDataset"' not in edit_modal  # BQ fields aren't here anymore
 
 
-def test_keboola_discover_buttons_hidden_on_bigquery_instance(seeded_app, monkeypatch):
-    """C1: Discover/List/Use-as-base buttons in the Keboola tab are
-    UI-hidden when the instance's data_source.type isn't keboola, because
-    /api/admin/discover-tables routes by instance type and would return
-    BQ data on a BQ instance."""
+def test_keboola_discover_buttons_disabled_on_bigquery_instance(seeded_app, monkeypatch):
+    """C1 / #405: Discover/List/Use-as-base buttons in the Keboola tab render
+    DISABLED with an explanatory tooltip (rather than being hidden) when the
+    instance's data_source.type isn't keboola. /api/admin/discover-tables
+    routes by instance type and would return BQ data on a BQ instance, so the
+    buttons must stay inert — `disabled` (no onclick) guarantees that while
+    still telling the admin why."""
     fake_cfg = {"data_source": {"type": "bigquery", "bigquery": {"project": "p"}}}
     monkeypatch.setattr(
         "app.instance_config.load_instance_config",
@@ -328,14 +330,15 @@ def test_keboola_discover_buttons_hidden_on_bigquery_instance(seeded_app, monkey
         # Inputs stay (manual entry works).
         assert 'id="kbBucket"' in html
         assert 'id="kbSourceTable"' in html
-        # Buttons hidden — match the actual CALL SITES, not the
-        # function definitions or JS comments that may reference the
-        # names verbatim. #347 moved several Keboola edit-modal
-        # helpers (incl. `prefillFromKeboolaTable`) out from under
-        # the keboola Jinja guard so they're now defined as dead code
-        # on every instance, but the `onclick="..."` call sites and
-        # the Discover buttons themselves still respect the guard,
-        # which is what actually matters for runtime behavior.
+        # #405: the buttons now render (visible) but disabled, carrying a
+        # tooltip that explains Keboola isn't connected.
+        assert 'data-tooltip="Keboola not connected' in html
+        # The functional guarantee that actually matters: no live call sites
+        # on a non-keboola instance, so a click can never reach
+        # /api/admin/discover-tables. Match the actual CALL SITES, not the
+        # function definitions or JS comments that reference the names
+        # verbatim (#347 moved several helpers out from under the keboola
+        # Jinja guard, so they're defined as dead code on every instance).
         assert 'onclick="discoverKeboolaBuckets(' not in html
         assert 'onclick="discoverKeboolaTables(' not in html
         assert 'onclick="prefillFromKeboolaTable(' not in html

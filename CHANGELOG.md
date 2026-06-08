@@ -13,6 +13,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
+- Admin Tables: on non-Keboola instances, the Keboola **Discover** / **List tables** / **Use table as base** buttons in the register & edit modals now render disabled with an explanatory tooltip (*"Keboola not connected — set token in Instance settings"*) instead of being hidden — the inputs were already shown, so the buttons were silently vanishing with no explanation. The disabled buttons carry no click handler, so they still can't reach the instance-type-routed discover endpoint. (#405)
 
 ### Fixed
 
