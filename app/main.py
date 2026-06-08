@@ -267,6 +267,7 @@ from app.api.cowork_bundle import (
 )
 from app.api.mcp_http import make_sse_app as _make_mcp_sse_app
 from app.api.cache_warmup import router as cache_warmup_router
+from app.api.debug_tracemalloc import router as debug_tracemalloc_router
 from app.api.bq_metadata_refresh import router as bq_metadata_refresh_router
 from app.api.activity import router as activity_router
 from app.api.observability import router as observability_router
@@ -1110,6 +1111,7 @@ def create_app() -> FastAPI:
     app.mount("/api/mcp", _make_mcp_sse_app())
 
     app.include_router(cache_warmup_router)
+    app.include_router(debug_tracemalloc_router)
     app.include_router(bq_metadata_refresh_router)
     app.include_router(activity_router)
     app.include_router(observability_router)
