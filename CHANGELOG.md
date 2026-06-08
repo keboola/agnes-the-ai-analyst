@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Adoption dashboard (`/admin/adoption`).** A business-facing view of how the system is actually used — distinct from the technical telemetry/sessions/activity pages. Top KPI cards (active users, time spent active + wall-clock, sessions, skill usage, tokens, prompts) over a 24h/7d/30d window toggle; a 30-day daily-trend chart section (inline SVG, one small-multiple per metric); a top-skills table; and a "users by activity" list (top 10 by active time, searchable) that links to a per-user drill-down at `/admin/adoption/users/{id}` with that user's KPIs, daily trends, and top skills/tools. Backed by new `/api/admin/adoption/*` endpoints aggregating `usage_session_summary` (time/sessions/tokens/prompts via `active_seconds`/`wall_seconds`, already computed by the session processor) and `usage_events` (distinct-users-per-day, skill events) on the fly — no new tables or data collection. Admin-only, audit-logged. (FAI-32)
 
 ### Changed
 

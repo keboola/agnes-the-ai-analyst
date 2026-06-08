@@ -1,0 +1,191 @@
+{% extends "base_page.html" %}
+{% block title %}Adoption · {{ target_user_email }} — Admin{% endblock %}
+
+{% set page_hero_eyebrow = "Adoption · User" %}
+{% set page_hero_title = target_user_email or "User" %}
+{% set page_hero_subtitle = "Per-user adoption — time spent, sessions, skills, and tools." %}
+
+{% block head_extra %}
+<style>
+.adopt{ font: 14px/1.5 var(--ds-font); color: var(--ds-text-primary); }
+.adopt-bar{ display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+.adopt-back{ color:var(--ds-primary-dark); text-decoration:none; font-size:13px; }
+.adopt-back:hover{ text-decoration:underline; }
+
+.adopt-window{ display:inline-flex; border:1px solid var(--ds-border); border-radius:999px; overflow:hidden; }
+.adopt-window button{ border:0; padding:7px 16px; font:inherit; font-size:13px; background:var(--ds-surface);
+  color:var(--ds-text-secondary); cursor:pointer; }
+.adopt-window button.is-active{ background:var(--ds-primary); color:#fff; font-weight:600; }
+
+.obs-kpis{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:8px; }
+@media(max-width:1100px){ .obs-kpis{ grid-template-columns:repeat(3,1fr); } }
+@media(max-width:620px){ .obs-kpis{ grid-template-columns:repeat(2,1fr); } }
+.obs-kpi{ padding:14px 16px; border:1px solid var(--ds-border); border-radius:8px; background:var(--ds-surface);
+  display:flex; flex-direction:column; gap:4px; }
+.obs-kpi-label{ font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:var(--ds-text-secondary); }
+.obs-kpi-value{ font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
+.obs-kpi-sub{ font-size:12px; color:var(--ds-text-secondary); font-variant-numeric:tabular-nums; }
+
+.adopt-section-head{ display:flex; align-items:baseline; justify-content:space-between; gap:16px; margin:28px 0 12px; }
+.adopt-section-head h2{ font-size:15px; font-weight:600; margin:0; }
+.adopt-section-head .hint{ font-size:12px; color:var(--ds-text-muted); }
+
+.adopt-charts{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+@media(max-width:1000px){ .adopt-charts{ grid-template-columns:repeat(2,1fr); } }
+@media(max-width:620px){ .adopt-charts{ grid-template-columns:1fr; } }
+.adopt-chart-card{ border:1px solid var(--ds-border); border-radius:8px; background:var(--ds-surface); padding:14px 16px; }
+.adopt-chart-card .ct{ font-size:12px; text-transform:uppercase; letter-spacing:.4px; color:var(--ds-text-secondary); }
+.adopt-chart-card .cv{ font-size:20px; font-weight:600; font-variant-numeric:tabular-nums; margin-top:2px; }
+.adopt-chart-card .cv small{ font-size:12px; font-weight:500; color:var(--ds-text-muted); }
+.adopt-chart-card svg{ display:block; width:100%; height:70px; margin-top:8px; overflow:visible; }
+
+.adopt-two-col{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:8px; }
+@media(max-width:820px){ .adopt-two-col{ grid-template-columns:1fr; } }
+.obs-table-wrap{ border:1px solid var(--ds-border); border-radius:8px; overflow:hidden; background:var(--ds-surface); }
+.obs-table{ width:100%; border-collapse:collapse; font-size:13px; }
+.obs-table thead th{ text-align:left; padding:10px 12px; background:var(--ds-border-light); border-bottom:1px solid var(--ds-border);
+  font-weight:600; color:var(--ds-text-secondary); font-size:11px; text-transform:uppercase; letter-spacing:.4px; }
+.obs-table tbody td{ padding:9px 12px; border-bottom:1px solid var(--ds-border-light); }
+.obs-table tbody tr:last-child td{ border-bottom:none; }
+.obs-table tbody tr:hover{ background:var(--ds-border-light); }
+.obs-num{ text-align:right; font-variant-numeric:tabular-nums; }
+.obs-empty{ padding:24px 16px; text-align:center; color:var(--ds-text-muted); font-size:13px; }
+</style>
+{% endblock %}
+
+{% block toolbar %}
+<div class="adopt-bar">
+  <a class="adopt-back" href="/admin/adoption">← Adoption</a>
+  <div class="adopt-window" id="adoptWindow" role="tablist" aria-label="Time window">
+    <button type="button" data-win="24h">24h</button>
+    <button type="button" data-win="7d" class="is-active">7d</button>
+    <button type="button" data-win="30d">30d</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block page %}
+<div class="adopt" data-user-id="{{ target_user_id }}">
+
+  <section class="obs-kpis" aria-label="Per-user adoption metrics">
+    <div class="obs-kpi"><span class="obs-kpi-label">Time spent</span><span class="obs-kpi-value" id="k-active">—</span><span class="obs-kpi-sub" id="k-wall">—</span></div>
+    <div class="obs-kpi"><span class="obs-kpi-label">Sessions</span><span class="obs-kpi-value" id="k-sessions">—</span><span class="obs-kpi-sub" id="k-days">—</span></div>
+    <div class="obs-kpi"><span class="obs-kpi-label">Prompts</span><span class="obs-kpi-value" id="k-prompts">—</span><span class="obs-kpi-sub">user messages</span></div>
+    <div class="obs-kpi"><span class="obs-kpi-label">Tokens</span><span class="obs-kpi-value" id="k-tokens">—</span><span class="obs-kpi-sub">in + out + cache</span></div>
+    <div class="obs-kpi"><span class="obs-kpi-label">Tool calls</span><span class="obs-kpi-value" id="k-tools">—</span><span class="obs-kpi-sub" id="k-errs">—</span></div>
+    <div class="obs-kpi"><span class="obs-kpi-label">Distinct skills</span><span class="obs-kpi-value" id="k-dskills">—</span><span class="obs-kpi-sub">used</span></div>
+    <div class="obs-kpi"><span class="obs-kpi-label">Distinct tools</span><span class="obs-kpi-value" id="k-dtools">—</span><span class="obs-kpi-sub">used</span></div>
+    <div class="obs-kpi"><span class="obs-kpi-label">Primary model</span><span class="obs-kpi-value" id="k-model" style="font-size:15px">—</span><span class="obs-kpi-sub">most used</span></div>
+  </section>
+
+  <div class="adopt-section-head"><h2>Daily trends</h2><span class="hint">last 30 days · per day</span></div>
+  <div class="adopt-charts" id="adopt-charts"></div>
+
+  <div class="adopt-two-col">
+    <div>
+      <div class="adopt-section-head" style="margin-top:0"><h2>Top skills</h2></div>
+      <div class="obs-table-wrap"><table class="obs-table">
+        <thead><tr><th>Skill</th><th class="obs-num">Invocations</th></tr></thead>
+        <tbody id="skills-body"><tr><td colspan="2" class="obs-empty">Loading…</td></tr></tbody>
+      </table></div>
+    </div>
+    <div>
+      <div class="adopt-section-head" style="margin-top:0"><h2>Top tools</h2></div>
+      <div class="obs-table-wrap"><table class="obs-table">
+        <thead><tr><th>Tool</th><th class="obs-num">Invocations</th></tr></thead>
+        <tbody id="tools-body"><tr><td colspan="2" class="obs-empty">Loading…</td></tr></tbody>
+      </table></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  const UID = document.querySelector('.adopt[data-user-id]').dataset.userId;
+  const BASE = '/api/admin/adoption/users/' + encodeURIComponent(UID);
+  const state = { window: '7d' };
+  const $ = id => document.getElementById(id);
+
+  function fmtN(n){ n=Number(n)||0;
+    if(n>=1e6) return (n/1e6).toFixed(1)+'M';
+    if(n>=1e4) return (n/1e3).toFixed(0)+'k';
+    if(n>=1e3) return (n/1e3).toFixed(1)+'k';
+    return String(n); }
+  function esc(s){ const d=document.createElement('div'); d.textContent=(s==null?'':s); return d.innerHTML; }
+  async function getJSON(url){ const r=await fetch(url,{credentials:'same-origin'}); if(!r.ok) throw new Error(r.status); return r.json(); }
+
+  function drawLineChart(values,color){
+    const W=300,H=70,P=4; if(!values.length) return '';
+    const max=Math.max(...values,1),min=Math.min(...values,0),span=(max-min)||1,n=values.length;
+    const x=i=> n===1 ? W/2 : P+i*(W-2*P)/(n-1);
+    const pts=values.map((v,i)=>[x(i),H-P-((v-min)/span)*(H-2*P)]);
+    const line=pts.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+    const area=`${P},${H-P} `+line+` ${W-P},${H-P}`; const last=pts[pts.length-1];
+    return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+      <polygon points="${area}" fill="${color}" opacity="0.10"/>
+      <polyline points="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.6" fill="${color}"/></svg>`;
+  }
+
+  async function loadKpis(){
+    const d = await getJSON(BASE + '/kpis?window=' + state.window);
+    $('k-active').textContent   = d.active_hours + 'h';
+    $('k-wall').textContent     = d.wall_hours + 'h wall-clock';
+    $('k-sessions').textContent = fmtN(d.sessions);
+    $('k-days').textContent     = 'active ' + d.active_days + ' days';
+    $('k-prompts').textContent  = fmtN(d.prompts);
+    $('k-tokens').textContent   = fmtN(d.tokens);
+    $('k-tools').textContent    = fmtN(d.tool_calls);
+    $('k-errs').textContent     = fmtN(d.tool_errors) + ' errors';
+    $('k-dskills').textContent  = fmtN(d.distinct_skills);
+    $('k-dtools').textContent   = fmtN(d.distinct_tools);
+    $('k-model').textContent    = (d.models && d.models.length) ? d.models[0].model : '—';
+  }
+
+  const GREEN='var(--ds-primary)';
+  const CHARTS=[
+    {t:'Active hours / day',      key:'active_hours',      fmt:v=>v+'h'},
+    {t:'Sessions / day',          key:'sessions',          fmt:v=>fmtN(v)},
+    {t:'Prompts / day',           key:'prompts',           fmt:v=>fmtN(v)},
+    {t:'Tokens / day',            key:'tokens',            fmt:v=>fmtN(v)},
+    {t:'Tool calls / day',        key:'tool_calls',        fmt:v=>fmtN(v)},
+    {t:'Skill invocations / day', key:'skill_invocations', fmt:v=>fmtN(v)},
+  ];
+  async function loadSeries(){
+    const d = await getJSON(BASE + '/series');
+    $('adopt-charts').innerHTML = CHARTS.map(c=>{
+      const vals=d.days.map(x=>x[c.key]||0);
+      const cur=vals.length?vals[vals.length-1]:0;
+      return `<div class="adopt-chart-card"><div class="ct">${c.t}</div>
+        <div class="cv">${c.fmt(cur)} <small>today</small></div>${drawLineChart(vals,GREEN)}</div>`;
+    }).join('');
+  }
+
+  async function loadSkills(){
+    const d=await getJSON(BASE + '/top-skills?window=' + state.window);
+    const b=$('skills-body');
+    b.innerHTML = d.rows.length
+      ? d.rows.map(r=>`<tr><td>${esc(r.skill_name)}</td><td class="obs-num">${fmtN(r.invocations)}</td></tr>`).join('')
+      : '<tr><td colspan="2" class="obs-empty">No skills in this window.</td></tr>';
+  }
+  async function loadTools(){
+    const d=await getJSON(BASE + '/top-tools?window=' + state.window);
+    const b=$('tools-body');
+    b.innerHTML = d.rows.length
+      ? d.rows.map(r=>`<tr><td>${esc(r.tool_name)}</td><td class="obs-num">${fmtN(r.invocations)}</td></tr>`).join('')
+      : '<tr><td colspan="2" class="obs-empty">No tools in this window.</td></tr>';
+  }
+
+  function refreshWindowed(){ loadKpis().catch(()=>{}); loadSkills().catch(()=>{}); loadTools().catch(()=>{}); }
+  $('adoptWindow').addEventListener('click', e=>{
+    const btn=e.target.closest('button'); if(!btn) return;
+    [...e.currentTarget.children].forEach(x=>x.classList.toggle('is-active', x===btn));
+    state.window=btn.dataset.win; refreshWindowed();
+  });
+
+  refreshWindowed();
+  loadSeries().catch(()=>{});
+})();
+</script>
+{% endblock %}

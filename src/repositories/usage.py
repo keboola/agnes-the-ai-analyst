@@ -391,6 +391,218 @@ class UsageRepository:
         return dict(zip(_KEYS, row))
 
     # ------------------------------------------------------------------
+    # adoption dashboard reads (DuckDB).  Mirrored in UsagePgRepository.
+    #
+    # Time / sessions / tokens / prompts / skill_invocations are read
+    # from usage_session_summary (bucketed on started_at); distinct
+    # users-per-day and skill *events* come from usage_events (bucketed
+    # on occurred_at). User identity is COALESCE(user_id, username)
+    # everywhere so a person appearing under both keys counts once.
+    # Seconds stay raw ints here; the API layer converts to hours.
+    # ------------------------------------------------------------------
+
+    _TOKEN_SUM = ("input_tokens + output_tokens "
+                  "+ cache_read_tokens + cache_creation_tokens")
+
+    def adoption_kpis(self, since: datetime) -> dict:
+        s = self.conn.execute(
+            f"""SELECT COALESCE(SUM(active_seconds), 0),
+                       COALESCE(SUM(wall_seconds), 0),
+                       COUNT(*),
+                       COALESCE(SUM(user_messages), 0),
+                       COALESCE(SUM(skill_invocations), 0),
+                       COALESCE(SUM({self._TOKEN_SUM}), 0),
+                       COALESCE(SUM(tool_calls), 0),
+                       COALESCE(SUM(tool_errors), 0),
+                       COUNT(DISTINCT COALESCE(user_id, username))
+                  FROM usage_session_summary WHERE started_at >= ?""",
+            [since],
+        ).fetchone()
+        dskills = self.conn.execute(
+            "SELECT COUNT(DISTINCT skill_name) FROM usage_events "
+            "WHERE occurred_at >= ? AND skill_name IS NOT NULL",
+            [since],
+        ).fetchone()[0]
+        return {
+            "active_seconds": int(s[0] or 0), "wall_seconds": int(s[1] or 0),
+            "sessions": int(s[2] or 0), "prompts": int(s[3] or 0),
+            "skill_invocations": int(s[4] or 0), "tokens": int(s[5] or 0),
+            "tool_calls": int(s[6] or 0), "tool_errors": int(s[7] or 0),
+            "active_users": int(s[8] or 0), "distinct_skills": int(dskills or 0),
+        }
+
+    def adoption_sessions_series(self, start_date: date) -> Dict[date, dict]:
+        rows = self.conn.execute(
+            f"""SELECT CAST(started_at AS DATE) AS day,
+                       COALESCE(SUM(active_seconds), 0),
+                       COALESCE(SUM(wall_seconds), 0),
+                       COUNT(*),
+                       COALESCE(SUM(user_messages), 0),
+                       COALESCE(SUM({self._TOKEN_SUM}), 0),
+                       COALESCE(SUM(tool_calls), 0)
+                  FROM usage_session_summary
+                  WHERE CAST(started_at AS DATE) >= ?
+                  GROUP BY day ORDER BY day""",
+            [start_date],
+        ).fetchall()
+        return {r[0]: {"active_seconds": int(r[1] or 0), "wall_seconds": int(r[2] or 0),
+                       "sessions": int(r[3] or 0), "prompts": int(r[4] or 0),
+                       "tokens": int(r[5] or 0), "tool_calls": int(r[6] or 0)}
+                for r in rows}
+
+    def adoption_events_series(self, start_date: date) -> Dict[date, dict]:
+        rows = self.conn.execute(
+            """SELECT CAST(occurred_at AS DATE) AS day,
+                      COUNT(DISTINCT COALESCE(user_id, username)),
+                      SUM(CASE WHEN skill_name IS NOT NULL THEN 1 ELSE 0 END)
+                 FROM usage_events
+                 WHERE CAST(occurred_at AS DATE) >= ?
+                 GROUP BY day ORDER BY day""",
+            [start_date],
+        ).fetchall()
+        return {r[0]: {"active_users": int(r[1] or 0), "skill_events": int(r[2] or 0)}
+                for r in rows}
+
+    def adoption_top_users(self, since: datetime, limit: int = 10,
+                           q: Optional[str] = None) -> List[dict]:
+        where = ["started_at >= ?"]
+        params: list = [since]
+        if q:
+            where.append("(username LIKE ? OR user_id LIKE ?)")
+            like = f"%{q}%"; params.extend([like, like])
+        params.append(limit)
+        rows = self.conn.execute(
+            f"""SELECT MAX(user_id), MAX(username),
+                       COALESCE(SUM(active_seconds), 0) AS total_active,
+                       COUNT(*),
+                       COALESCE(SUM(user_messages), 0),
+                       COALESCE(SUM({self._TOKEN_SUM}), 0),
+                       MAX(ended_at)
+                  FROM usage_session_summary
+                  WHERE {' AND '.join(where)}
+                  GROUP BY COALESCE(user_id, username)
+                  ORDER BY total_active DESC LIMIT ?""",
+            params,
+        ).fetchall()
+        return [{"user_id": r[0], "username": r[1], "active_seconds": int(r[2] or 0),
+                 "sessions": int(r[3] or 0), "prompts": int(r[4] or 0),
+                 "tokens": int(r[5] or 0),
+                 "last_active": r[6].isoformat() if r[6] else None} for r in rows]
+
+    def adoption_top_skills(self, since: datetime, limit: int = 10) -> List[dict]:
+        rows = self.conn.execute(
+            """SELECT skill_name, COUNT(*) AS n,
+                      COUNT(DISTINCT COALESCE(user_id, username)) AS users
+                 FROM usage_events
+                 WHERE occurred_at >= ? AND skill_name IS NOT NULL
+                 GROUP BY skill_name ORDER BY n DESC LIMIT ?""",
+            [since, limit],
+        ).fetchall()
+        return [{"skill_name": r[0], "invocations": int(r[1]), "distinct_users": int(r[2])}
+                for r in rows]
+
+    # ── per-user variants (one user_id + legacy username) ──────────────
+
+    def adoption_user_kpis(self, since: datetime, user_id: str, username: str) -> dict:
+        s = self.conn.execute(
+            f"""SELECT COALESCE(SUM(active_seconds), 0),
+                       COALESCE(SUM(wall_seconds), 0),
+                       COUNT(*),
+                       COALESCE(SUM(user_messages), 0),
+                       COALESCE(SUM({self._TOKEN_SUM}), 0),
+                       COALESCE(SUM(tool_calls), 0),
+                       COALESCE(SUM(tool_errors), 0),
+                       MAX(ended_at)
+                  FROM usage_session_summary
+                  WHERE started_at >= ? AND (user_id = ? OR username = ?)""",
+            [since, user_id, username],
+        ).fetchone()
+        e = self.conn.execute(
+            """SELECT COUNT(DISTINCT tool_name),
+                      COUNT(DISTINCT skill_name),
+                      COUNT(DISTINCT CAST(occurred_at AS DATE))
+                 FROM usage_events
+                 WHERE occurred_at >= ? AND (user_id = ? OR username = ?)""",
+            [since, user_id, username],
+        ).fetchone()
+        models = self.conn.execute(
+            """SELECT primary_model, COUNT(*) AS n
+                 FROM usage_session_summary
+                 WHERE started_at >= ? AND (user_id = ? OR username = ?)
+                   AND primary_model IS NOT NULL
+                 GROUP BY primary_model ORDER BY n DESC""",
+            [since, user_id, username],
+        ).fetchall()
+        return {
+            "active_seconds": int(s[0] or 0), "wall_seconds": int(s[1] or 0),
+            "sessions": int(s[2] or 0), "prompts": int(s[3] or 0),
+            "tokens": int(s[4] or 0), "tool_calls": int(s[5] or 0),
+            "tool_errors": int(s[6] or 0),
+            "last_active": s[7].isoformat() if s[7] else None,
+            "distinct_tools": int(e[0] or 0), "distinct_skills": int(e[1] or 0),
+            "active_days": int(e[2] or 0),
+            "models": [{"model": m[0], "count": int(m[1])} for m in models],
+        }
+
+    def adoption_user_sessions_series(self, start_date: date, user_id: str,
+                                      username: str) -> Dict[date, dict]:
+        rows = self.conn.execute(
+            f"""SELECT CAST(started_at AS DATE) AS day,
+                       COALESCE(SUM(active_seconds), 0),
+                       COALESCE(SUM(wall_seconds), 0),
+                       COUNT(*),
+                       COALESCE(SUM(user_messages), 0),
+                       COALESCE(SUM({self._TOKEN_SUM}), 0),
+                       COALESCE(SUM(tool_calls), 0)
+                  FROM usage_session_summary
+                  WHERE CAST(started_at AS DATE) >= ?
+                    AND (user_id = ? OR username = ?)
+                  GROUP BY day ORDER BY day""",
+            [start_date, user_id, username],
+        ).fetchall()
+        return {r[0]: {"active_seconds": int(r[1] or 0), "wall_seconds": int(r[2] or 0),
+                       "sessions": int(r[3] or 0), "prompts": int(r[4] or 0),
+                       "tokens": int(r[5] or 0), "tool_calls": int(r[6] or 0)}
+                for r in rows}
+
+    def adoption_user_events_series(self, start_date: date, user_id: str,
+                                    username: str) -> Dict[date, dict]:
+        rows = self.conn.execute(
+            """SELECT CAST(occurred_at AS DATE) AS day,
+                      SUM(CASE WHEN skill_name IS NOT NULL THEN 1 ELSE 0 END)
+                 FROM usage_events
+                 WHERE CAST(occurred_at AS DATE) >= ?
+                   AND (user_id = ? OR username = ?)
+                 GROUP BY day ORDER BY day""",
+            [start_date, user_id, username],
+        ).fetchall()
+        return {r[0]: {"skill_events": int(r[1] or 0)} for r in rows}
+
+    def adoption_user_top_skills(self, since: datetime, user_id: str, username: str,
+                                 limit: int = 10) -> List[dict]:
+        rows = self.conn.execute(
+            """SELECT skill_name, COUNT(*) AS n
+                 FROM usage_events
+                 WHERE occurred_at >= ? AND (user_id = ? OR username = ?)
+                   AND skill_name IS NOT NULL
+                 GROUP BY skill_name ORDER BY n DESC LIMIT ?""",
+            [since, user_id, username, limit],
+        ).fetchall()
+        return [{"skill_name": r[0], "invocations": int(r[1])} for r in rows]
+
+    def adoption_user_top_tools(self, since: datetime, user_id: str, username: str,
+                                limit: int = 10) -> List[dict]:
+        rows = self.conn.execute(
+            """SELECT tool_name, COUNT(*) AS n
+                 FROM usage_events
+                 WHERE occurred_at >= ? AND (user_id = ? OR username = ?)
+                   AND tool_name IS NOT NULL
+                 GROUP BY tool_name ORDER BY n DESC LIMIT ?""",
+            [since, user_id, username, limit],
+        ).fetchall()
+        return [{"tool_name": r[0], "invocations": int(r[1])} for r in rows]
+
+    # ------------------------------------------------------------------
     # write methods
     # ------------------------------------------------------------------
 
