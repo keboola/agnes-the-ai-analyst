@@ -50,8 +50,10 @@ A new `/api/*` endpoint is not done when it returns 200. It must also be:
   passthrough row (`app/api/mcp/tools_generator.py:132`).
 - Refresh `tests/snapshots/openapi.json`: `make update-openapi-snapshot`.
 
-Exempt: health checks, webhooks, OAuth callbacks, internal/SSE. No structural
-gate enforces this yet — it is review-enforced (see CONTRIBUTING.md → API coverage).
+Exempt: health checks, webhooks, OAuth callbacks, internal/SSE. Two structural
+gates enforce this: `tests/test_documentation_api_triple_surface.py` (new endpoints
+must be classified triple-surface or exempt) and `tests/test_api_docs_coverage.py`
+(docs). See CONTRIBUTING.md → API coverage.
 
 ## Steps
 
