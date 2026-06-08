@@ -13,6 +13,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
+- Tokenized the remaining hardcoded brand-green tints in templates: 30 `rgba(46, 168, 119, α)` literals across 10 templates (`store_upload`, `_profile_tokens`, `admin_tokens`, `admin_corporate_memory`, `install`, `marketplace_plugin_detail`, `memory_domain_detail`, `catalog_package_detail`, `home_onboarded`, `admin_tables`) → `color-mix(in srgb, var(--ds-primary) X%, transparent)`, so the tints follow the operator's brand color (e.g. they go blue under the blue theme) instead of staying green. Finishes #510's hex sweep, which only covered the 6 CSS files; visually identical under the default (green) theme. (#497 §5)
 
 ### Fixed
 
