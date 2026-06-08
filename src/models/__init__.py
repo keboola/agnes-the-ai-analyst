@@ -70,6 +70,7 @@ from src.models.rbac import (
     UserGroup,
     UserGroupMember,
 )
+from src.models.vault import SystemSecret
 
 
 __all__ = [
@@ -108,6 +109,7 @@ __all__ = [
     "StoreSubmission",
     "SyncHistory",
     "SyncState",
+    "SystemSecret",
     "TableProfile",
     "TableRegistry",
     "TelegramLink",

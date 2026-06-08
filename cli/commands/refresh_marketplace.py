@@ -55,6 +55,33 @@ refresh_marketplace_app = typer.Typer(
 _CREDENTIAL_HELPER = '!f() { printf "username=x\\npassword=%s\\n" "$AGNES_TOKEN"; }; f'
 
 
+def _claude_base_cmd() -> Optional[list[str]]:
+    """Resolve how to launch the `claude` CLI, or None when it's not on PATH.
+
+    Returns the argv prefix every `claude …` subprocess call should splat in
+    front of its arguments. On POSIX (and for a native `.exe`/no-extension
+    binary on Windows) that's just ``[exe]``. On Windows, npm installs
+    `claude` as a `.cmd`/`.bat` shim, and those cannot be launched via
+    CreateProcess (shell=False) even given their fully-resolved path — they
+    must be routed through `cmd.exe`, so we return ``["cmd", "/c", exe]``.
+
+    A bare ``["claude", …]`` argv (the pre-fix behavior) crashes on Windows
+    with FileNotFoundError [WinError 2]: CreateProcess doesn't apply PATHEXT
+    to a bare name, so the `.cmd` shim is never found. `shutil.which` finds
+    the resolved path (fixing the PATHEXT half), but launching that `.cmd`
+    directly still fails — hence the `cmd /c` wrapper.
+
+    None signals "claude not installed"; callers map that to their existing
+    claude-missing semantics rather than crashing.
+    """
+    exe = shutil.which("claude")
+    if exe is None:
+        return None
+    if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
+        return ["cmd", "/c", exe]
+    return [exe]
+
+
 @refresh_marketplace_app.callback(invoke_without_command=True)
 def refresh_marketplace(
     check: bool = typer.Option(
@@ -294,10 +321,11 @@ def _register_clone_with_claude(clone_dir: Path) -> bool:
     caller exit non-zero with the actual `add` stderr, which is the signal
     the operator needs to fix their machine state.
     """
-    if shutil.which("claude") is None:
+    base = _claude_base_cmd()
+    if base is None:
         return True
     add = subprocess.run(
-        ["claude", "plugin", "marketplace", "add", str(clone_dir)],
+        [*base, "plugin", "marketplace", "add", str(clone_dir)],
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     if add.returncode != 0:
@@ -323,11 +351,12 @@ def _claude_marketplace_is_registered() -> bool:
     that as "not registered" and run the add path, which is the correct
     fail-safe (worst case: a redundant add that itself errors out cleanly).
     """
-    if shutil.which("claude") is None:
+    base = _claude_base_cmd()
+    if base is None:
         return False
     try:
         result = subprocess.run(
-            ["claude", "plugin", "marketplace", "list"],
+            [*base, "plugin", "marketplace", "list"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         )
     except FileNotFoundError:
@@ -361,7 +390,7 @@ def _ensure_marketplace_registered() -> bool:
     registration was already in place OR `claude` is not on PATH (the
     latter matches `_register_clone_with_claude`'s soft-pass behavior).
     """
-    if shutil.which("claude") is None:
+    if _claude_base_cmd() is None:
         return True
     if _claude_marketplace_is_registered():
         return True
@@ -522,7 +551,8 @@ def _git_fetch_and_reset(token: str) -> bool:
 
 def _claude_marketplace_update() -> None:
     """Tell Claude Code to re-read the marketplace clone. Soft-fail if `claude` is missing."""
-    if shutil.which("claude") is None:
+    base = _claude_base_cmd()
+    if base is None:
         typer.echo(
             "warn: `claude` not in PATH — git fetch succeeded, but Claude Code "
             "won't see the changes until the next session start.",
@@ -530,7 +560,7 @@ def _claude_marketplace_update() -> None:
         )
         return
     result = subprocess.run(
-        ["claude", "plugin", "marketplace", "update", MARKETPLACE_NAME],
+        [*base, "plugin", "marketplace", "update", MARKETPLACE_NAME],
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     if result.returncode != 0:
@@ -564,7 +594,8 @@ def _reconcile_with_manifest(
     Don't auto-uninstall plugins that disappeared from the manifest — a
     transient empty manifest from the server would wipe the user's stack.
     """
-    if shutil.which("claude") is None:
+    base = _claude_base_cmd()
+    if base is None:
         return
 
     manifest = _read_marketplace_plugin_versions()
@@ -596,7 +627,7 @@ def _reconcile_with_manifest(
     for name in to_install:
         target = f"{name}@{MARKETPLACE_NAME}"
         result = subprocess.run(
-            ["claude", "plugin", "install", target, "--scope", "project"],
+            [*base, "plugin", "install", target, "--scope", "project"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         )
         if result.returncode != 0:
@@ -614,7 +645,7 @@ def _reconcile_with_manifest(
     for name in to_update:
         target = f"{name}@{MARKETPLACE_NAME}"
         result = subprocess.run(
-            ["claude", "plugin", "update", target, "--scope", "project"],
+            [*base, "plugin", "update", target, "--scope", "project"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         )
         if result.returncode != 0:
@@ -699,11 +730,12 @@ def _list_installed_agnes_plugins_in_cwd() -> Optional[dict[str, str]]:
     `projectPath == cwd` so plugins from sibling workspaces don't get
     counted. None on any structured-answer failure.
     """
-    if shutil.which("claude") is None:
+    base = _claude_base_cmd()
+    if base is None:
         return None
     try:
         result = subprocess.run(
-            ["claude", "plugin", "list", "--json"],
+            [*base, "plugin", "list", "--json"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         )
     except FileNotFoundError:

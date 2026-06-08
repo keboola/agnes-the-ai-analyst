@@ -213,6 +213,32 @@ async def skills() -> dict:
         return r.json()
 
 
+@mcp.tool()
+async def documentation_api() -> str:
+    """Return the curated Agnes REST API reference as Markdown.
+
+    Mirrors the in-app ``/documentation/api`` page and the ``agnes docs api``
+    CLI command — three surfaces in lockstep so a public endpoint is reachable
+    everywhere it can be looked up. Useful when an agent is composing a
+    request against ``/api/*`` and needs to know payload shapes, auth
+    requirements, or the inventory of available endpoints without leaving the
+    chat.
+    """
+    from pathlib import Path
+
+    md_path = (
+        Path(__file__).resolve().parent.parent.parent
+        / "docs" / "api-reference.md"
+    )
+    try:
+        return md_path.read_text(encoding="utf-8")
+    except OSError:
+        return (
+            "# API reference unavailable\n\n"
+            "The source markdown file is missing from this deployment."
+        )
+
+
 # ── auth middleware ─────────────────────────────────────────────────────────────
 
 class _AuthMiddleware:

@@ -103,6 +103,14 @@ def get_engine() -> sa.Engine:
                 pool_pre_ping=True,
             )
             _session_factory = sessionmaker(bind=_engine, future=True, expire_on_commit=False)
+            # Attach the dev debug-toolbar query capture (idempotent; a no-op on
+            # every non-debug request and in prod — see app/debug/postgres_panel.py).
+            try:
+                from app.debug.postgres_panel import instrument_engine
+
+                instrument_engine(_engine)
+            except Exception:
+                pass
         return _engine
 
 

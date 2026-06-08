@@ -46,9 +46,12 @@ def _validate_color(value: Optional[str]) -> Optional[str]:
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.repositories import data_packages_repo, tool_registry_repo
+from src.repositories import (
+    data_packages_repo,
+    table_registry_repo,
+    tool_registry_repo,
+)
 from src.repositories.audit import AuditRepository
-from src.repositories.table_registry import TableRegistryRepository
 
 logger = logging.getLogger(__name__)
 
@@ -600,7 +603,11 @@ async def add_table_to_package(
     repo = data_packages_repo()
     if not repo.get(pkg_id):
         raise HTTPException(status_code=404, detail="data_package_not_found")
-    table_repo = TableRegistryRepository(conn)
+    # Backend-aware factory — NOT TableRegistryRepository(conn): the raw
+    # _get_db conn is always DuckDB, so on a Postgres deployment it never sees
+    # tables that live in PG and the attach 404s (table_not_found) for tables
+    # that ARE in the catalog. The factory routes to the active backend.
+    table_repo = table_registry_repo()
     table = table_repo.get(payload.table_id)
     if not table:
         raise HTTPException(status_code=404, detail="table_not_found")

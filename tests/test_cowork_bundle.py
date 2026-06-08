@@ -102,6 +102,15 @@ class TestGenerateBundle:
         for path in curated:
             assert path in names, f"Curated skill missing from bundle: {path}"
 
+        # The skill-router agent must ship in every bundle, with frontmatter and
+        # the Skill tool so it can activate the skills it selects.
+        router = f"{folder}/.claude/agents/skill-router.md"
+        assert router in names, f"skill-router agent missing from bundle: {router}"
+        router_md = zf.read(router).decode()
+        assert router_md.startswith("---"), "skill-router must have YAML frontmatter"
+        assert "name: skill-router" in router_md
+        assert "Skill" in router_md, "skill-router must be allowed the Skill tool"
+
     def test_bundled_scripts_verify_tls_by_default(self, seeded_app):
         """mcp_server.py / agnes.py / setup.py must verify TLS against the
         bundled CA by default; CERT_NONE is only reachable via the explicit

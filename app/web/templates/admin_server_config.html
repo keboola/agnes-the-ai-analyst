@@ -303,6 +303,46 @@
       <span class="chat-test-result" hidden style="margin-left: 8px; font-size: 13px;"></span>
     </div>
   </section>
+
+  <!-- Slack bot secrets — server-wide tokens stored encrypted in the vault
+       (system_secrets), routed through the env > vault > none resolver. Like
+       Cloud chat, these are NOT part of the instance.yaml form: presence/source
+       comes from /admin/slack-secrets, writes hit PUT /admin/slack-secrets/{name}. -->
+  <section class="cfg-section" id="slack-secrets-section">
+    <header>
+      <div>
+        <h3>Slack bot secrets</h3>
+        <div class="section-help">
+          Tokens for the Slack bot, stored encrypted in the server vault.
+          Environment variables (e.g. set via Terraform) always take
+          precedence — a token shown as <code>env</code> can't be changed
+          here. Storing a token requires <code>AGNES_VAULT_KEY</code> on the
+          server.
+        </div>
+      </div>
+    </header>
+    <div class="section-body">
+      <div id="slack-secrets-status" class="cfg-loading">Loading…</div>
+      <div class="iw-form-field">
+        <label for="slack-bot-token">SLACK_BOT_TOKEN</label>
+        <input type="password" id="slack-bot-token" data-secret="SLACK_BOT_TOKEN"
+               placeholder="(leave blank to keep existing)" autocomplete="off">
+      </div>
+      <div class="iw-form-field">
+        <label for="slack-app-token">SLACK_APP_TOKEN</label>
+        <input type="password" id="slack-app-token" data-secret="SLACK_APP_TOKEN"
+               placeholder="(leave blank to keep existing)" autocomplete="off">
+      </div>
+      <div class="iw-form-field">
+        <label for="slack-signing-secret">SLACK_SIGNING_SECRET</label>
+        <input type="password" id="slack-signing-secret" data-secret="SLACK_SIGNING_SECRET"
+               placeholder="(leave blank to keep existing)" autocomplete="off">
+      </div>
+    </div>
+    <div class="section-actions">
+      <button type="button" class="btn btn-primary" id="slack-secrets-save-btn">Save secrets</button>
+    </div>
+  </section>
     </div><!-- /.cfg-main -->
   </div><!-- /.cfg-body -->
 </div><!-- /.cfg-page -->
@@ -1811,5 +1851,109 @@ async function chatTestSecrets(btn) {
 document.getElementById("chat-save-btn").addEventListener("click", (e) => chatSaveSecrets(e.currentTarget));
 document.getElementById("chat-test-btn").addEventListener("click", (e) => chatTestSecrets(e.currentTarget));
 chatReadinessLoad();
+
+// ════════════════════════════════════════════════════════════════════════
+// Slack bot secrets — vault-backed server-wide tokens. Same lifecycle as the
+// Cloud chat keys: presence/source from GET /admin/slack-secrets, write-only
+// rotation via PUT /admin/slack-secrets/{name}. Cookie-session auth
+// (credentials: "include"), same showBanner() feedback.
+// ════════════════════════════════════════════════════════════════════════
+
+const SLACK_SECRETS_API = "/api/admin/slack-secrets";
+const SLACK_SECRET_INPUTS = [
+  "slack-bot-token",
+  "slack-app-token",
+  "slack-signing-secret",
+];
+
+function slackSourceBadge(source) {
+  if (source === "env") return '<span style="color: #888;">env (from environment, locked)</span>';
+  if (source === "vault") return '<span style="color: #2a8c4a;">✓ vault</span>';
+  return '<span style="color: #888;">— unset</span>';
+}
+
+async function slackSecretsLoad() {
+  const el = document.getElementById("slack-secrets-status");
+  if (!el) return;
+  try {
+    const r = await fetch(SLACK_SECRETS_API, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const s = await r.json();
+    el.className = "";
+    el.innerHTML =
+      '<ul style="list-style: none; padding: 0; margin: 0;">' +
+      (s.secrets || []).map((row) => {
+        // Only vault-stored tokens can be cleared from the UI: env tokens are
+        // owned by the environment, unset tokens have nothing to clear.
+        const clear = row.source === "vault"
+          ? ` <button type="button" class="btn btn-secondary btn-sm" data-slack-clear="${escHtml(row.name)}" style="margin-left: 6px;">Clear</button>`
+          : "";
+        return `<li style="padding: 2px 0;"><code>${escHtml(row.name)}</code> — ${slackSourceBadge(row.source)}${clear}</li>`;
+      }).join("") +
+      '</ul>';
+    el.querySelectorAll("[data-slack-clear]").forEach((btn) =>
+      btn.addEventListener("click", (e) => slackSecretClear(e.currentTarget))
+    );
+  } catch (e) {
+    el.className = "";
+    el.innerHTML = '<span style="color: #c0392b;">Failed to load Slack secrets: ' + escHtml(e.message) + '</span>';
+  }
+}
+
+async function slackSecretClear(btn) {
+  const name = btn.dataset.slackClear;
+  btn.disabled = true;
+  try {
+    const r = await fetch(SLACK_SECRETS_API + "/" + encodeURIComponent(name), {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    showBanner("Cleared " + name + ".", "success");
+  } catch (e) {
+    showBanner("Failed to clear " + name + ": " + e.message, "error");
+  } finally {
+    slackSecretsLoad();
+  }
+}
+
+async function slackSecretsSave(btn) {
+  const entered = SLACK_SECRET_INPUTS
+    .map((id) => document.getElementById(id))
+    .filter((inp) => inp && inp.value.trim())
+    .map((inp) => ({ inp, name: inp.dataset.secret, value: inp.value.trim() }));
+  if (entered.length === 0) {
+    showBanner("No secret entered.", "error");
+    return;
+  }
+  btn.disabled = true;
+  const saved = [];
+  try {
+    for (const { inp, name, value } of entered) {
+      const r = await fetch(SLACK_SECRETS_API + "/" + encodeURIComponent(name), {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value }),
+      });
+      if (r.status === 409) {
+        showBanner("AGNES_VAULT_KEY is not configured on the server — cannot store Slack secrets.", "error");
+        return;
+      }
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      inp.value = "";  // don't let the secret linger in the DOM
+      saved.push(name);
+    }
+    showBanner("Saved " + saved.join(", ") + ".", "success");
+  } catch (e) {
+    showBanner("Failed to save Slack secrets: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+    slackSecretsLoad();
+  }
+}
+
+document.getElementById("slack-secrets-save-btn").addEventListener("click", (e) => slackSecretsSave(e.currentTarget));
+slackSecretsLoad();
 </script>
 {% endblock %}
