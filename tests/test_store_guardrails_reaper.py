@@ -65,7 +65,7 @@ def _seed_pending(conn, name: str, age_seconds: int) -> str:
 class TestReaper:
     def test_reaps_old_pending_llm(self, conn):
         sub_id = _seed_pending(conn, "old-stuck", age_seconds=3600)
-        result = reap_stuck_llm_reviews(conn, grace_seconds=1800)
+        result = reap_stuck_llm_reviews(grace_seconds=1800)
         assert result["reaped"] == 1
 
         sub = StoreSubmissionsRepository(conn).get(sub_id)
@@ -81,7 +81,7 @@ class TestReaper:
 
     def test_skips_recent_pending_llm(self, conn):
         sub_id = _seed_pending(conn, "fresh", age_seconds=60)  # 1 min old
-        result = reap_stuck_llm_reviews(conn, grace_seconds=1800)
+        result = reap_stuck_llm_reviews(grace_seconds=1800)
         assert result["reaped"] == 0
 
         sub = StoreSubmissionsRepository(conn).get(sub_id)
@@ -89,7 +89,7 @@ class TestReaper:
 
     def test_grace_zero_short_circuits(self, conn):
         sub_id = _seed_pending(conn, "old-but-disabled", age_seconds=10000)
-        result = reap_stuck_llm_reviews(conn, grace_seconds=0)
+        result = reap_stuck_llm_reviews(grace_seconds=0)
         assert result["skipped"] is True
 
         sub = StoreSubmissionsRepository(conn).get(sub_id)
@@ -97,8 +97,8 @@ class TestReaper:
 
     def test_idempotent(self, conn):
         sub_id = _seed_pending(conn, "twice", age_seconds=3600)
-        first = reap_stuck_llm_reviews(conn, grace_seconds=1800)
-        second = reap_stuck_llm_reviews(conn, grace_seconds=1800)
+        first = reap_stuck_llm_reviews(grace_seconds=1800)
+        second = reap_stuck_llm_reviews(grace_seconds=1800)
         assert first["reaped"] == 1
         assert second["reaped"] == 0
 
@@ -106,7 +106,7 @@ class TestReaper:
         assert sub["status"] == "review_error"
 
     def test_no_pending_rows_is_noop(self, conn):
-        result = reap_stuck_llm_reviews(conn, grace_seconds=1800)
+        result = reap_stuck_llm_reviews(grace_seconds=1800)
         assert result["reaped"] == 0
         assert result["skipped"] is False
 
@@ -132,7 +132,7 @@ class TestReaper:
             [backdated, sub_id],
         )
 
-        result = reap_stuck_llm_reviews(conn, grace_seconds=1800)
+        result = reap_stuck_llm_reviews(grace_seconds=1800)
         assert result["reaped"] == 0
 
         sub = StoreSubmissionsRepository(conn).get(sub_id)

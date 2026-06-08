@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import sqlalchemy as sa
@@ -220,6 +220,39 @@ class StoreSubmissionsPgRepository:
                     "id": id,
                 },
             )
+
+    def reap_stuck_pending_llm(
+        self,
+        *,
+        grace_seconds: int,
+        error_payload: Dict[str, Any],
+    ) -> List[Tuple[str, str]]:
+        """Postgres mirror of
+        ``StoreSubmissionsRepository.reap_stuck_pending_llm``. One atomic
+        ``UPDATE … WHERE status='pending_llm' AND created_at < cutoff
+        RETURNING`` does the flip and reports the reaped rows so the
+        reaper writes audit entries without a second round-trip.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=grace_seconds)
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """UPDATE store_submissions
+                          SET status = 'review_error',
+                              llm_findings = CAST(:lf AS JSONB),
+                              updated_at = :now
+                        WHERE status = 'pending_llm'
+                          AND created_at < :cutoff
+                    RETURNING id, submitter_id"""
+                ),
+                {
+                    "lf": json.dumps(error_payload),
+                    "now": now,
+                    "cutoff": cutoff,
+                },
+            ).all()
+        return [(r[0], r[1]) for r in rows]
 
     def count_for_submitter(self, submitter_id: str, exclude_id: Optional[str] = None) -> int:
         with self._engine.connect() as conn:

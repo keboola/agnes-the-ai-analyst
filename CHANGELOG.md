@@ -21,6 +21,83 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.68.5] — 2026-06-08
+
+### Changed
+- Tokenized the remaining hardcoded brand-green tints in templates: 30 `rgba(46, 168, 119, α)` literals across 10 templates (`store_upload`, `_profile_tokens`, `admin_tokens`, `admin_corporate_memory`, `install`, `marketplace_plugin_detail`, `memory_domain_detail`, `catalog_package_detail`, `home_onboarded`, `admin_tables`) → `color-mix(in srgb, var(--ds-primary) X%, transparent)`, so the tints follow the operator's brand color (e.g. they go blue under the blue theme) instead of staying green. Finishes #510's hex sweep, which only covered the 6 CSS files; visually identical under the default (green) theme. Also fixes an adjacent rebrand leftover flagged in review — `.hero-action-btn:hover` hardcoded the old pre-rebrand blue `#0056A3` (`--primary-dark`) → `var(--ds-primary-dark)`, so the hover darkens on-brand instead of jumping to blue. (#497 §5, #570)
+
+## [0.68.4] — 2026-06-08
+
+### Changed
+- `/admin/server-config`: bespoke `.danger-pill` / `.secret-pill` badges now use the canonical `.badge` / `.badge--danger` / `.badge--success` classes (token-based, so they flip correctly in dark mode), and the page's duplicated `.modal-*` CSS was dropped in favor of the global design-system modal styles (page-specific `.diff-*` kept). (#497, #549)
+
+## [0.68.3] — 2026-06-07
+
+### Fixed
+- **Windows: `agnes refresh-marketplace` (both `--bootstrap` and the default refresh) crashed with `FileNotFoundError [WinError 2]`.** Every `claude` subprocess call passed the bare command name, but Windows `CreateProcess` doesn't apply `PATHEXT` to a bare name, and the npm-installed `claude` shim (`.cmd`/`.bat`) can't be launched directly even via its fully-resolved path — it must be routed through `cmd.exe`. A new `_claude_base_cmd()` helper now resolves the executable via `shutil.which`, wraps a `.cmd`/`.bat` shim in `cmd /c` on Windows, and every claude invocation site splats its result; when `claude` isn't installed the helper returns `None` and each caller falls back to its existing claude-missing behavior. (#568)
+
+## [0.68.2] — 2026-06-07
+
+### Fixed
+- **Postgres: flea-market LLM security reviews are now backend-agnostic.** `run_llm_review` (the background task that reviews a submitted plugin/skill/agent) was hardcoded to DuckDB (`conn_factory=get_system_db`): on a Postgres-backed instance it looked the submission up in an empty DuckDB, logged "submission vanished", and returned with no verdict — leaving **every** submission stuck at `pending_llm` ("Under review") forever, regardless of whether the LLM provider key was set. DuckDB-backed instances were unaffected. It now resolves `store_submissions` / `store_entities` / `audit` through the `src.repositories` factory (the same `use_pg()` switch the rest of the app uses), so it follows the configured backend (the `conn_factory` argument is retained for call-site/test compatibility but no longer used). Same root cause as the stuck-review reaper fix in v0.67.2; covered by a cross-engine contract test. (#567)
+
+## [0.68.1] — 2026-06-06
+
+### Fixed
+- **Setup page no longer serves a stale install script after a redeploy.** Server-rendered HTML responses now carry `Cache-Control: no-store`, so browsers re-render `/home`, `/setup`, and `/install` against the live build on every load. Previously the page had no cache directive: a browser-cached setup hero kept handing out the wheel filename baked in at its original render time, and after a redeploy that version-pinned `/cli/wheel/{name}` URL 404s (the new build replaced the wheel on disk), breaking a fresh install end-to-end. Scoped to `text/html` — JSON APIs and the immutable-cached static / marketplace-image assets are untouched. (#569)
+
+## [0.68.0] — 2026-06-05
+
+### Added
+- **Per-plugin Cowork export + Cowork download UI.** Plugins can now be downloaded individually as Claude Cowork-uploadable zips. New `GET /marketplace/cowork/{prefixed_name}.zip` (same PAT/cookie auth and RBAC filtering as `marketplace.zip`) repackages a single plugin into the shape Cowork's stricter validator accepts — matched against a known-good reference upload. It keeps all plugin content (`data/`, `scripts/`, `vendor/`, `global-rules/`, `CLAUDE.md`, `settings.json`, agent `tools:`) and only: puts the plugin at the zip root (no `marketplace.json` wrapper); coerces `plugin.json` to a semver `version` + required `author` + dropped `homepage`; whitelists SKILL.md frontmatter to `name`/`description`/`compatibility` (drops Claude-Code-only `argument-hint`/`user-invocable`) with `<`/`>`/`"` sanitized out of descriptions; concatenates the per-directory `.md` files under `data/` into `_all.md` (keeps every byte while staying under Cowork's 5000-file cap — a docs/Confluence dump can be tens of thousands of files); renames Next.js route path segments (`[x]`→`dyn-x`, `(y)`→`grp-y`); and strips `.DS_Store` + Agnes-only paths. `/me/cowork` describes both Cowork flows — the bundled project (skills + live MCP data, scoped to one project folder) and per-plugin packages (uploaded via Customize, skills work across all Cowork projects) — and hosts the per-plugin download list; each marketplace plugin detail page also gains a "Download for Cowork" button. New module `app/marketplace_server/cowork_packager.py`. (#488)
+- **In-app API documentation, three surfaces.** A curated API Reference guide (`docs/api-reference.md`) is now reachable from three surfaces in lockstep, so a public endpoint is documented everywhere an analyst or agent might reach for: (a) web — `/documentation/api` (login-gated, no admin requirement; Documentation group in the Admin nav links the guide alongside Swagger UI and ReDoc); (b) CLI — `agnes docs api` renders the same guide in the terminal via Rich's Markdown formatter; (c) MCP — `documentation_api` tool on the HTTP MCP server returns the raw Markdown so Claude Desktop / Cursor / Cline can look up the REST surface without leaving the chat. Single source of truth (`docs/api-reference.md`), Markdown rendered or echoed at each surface — adds the triple-surface policy floor for future endpoints (see `tests/test_documentation_api_triple_surface.py`). (#565)
+- **CI gate: public API endpoint coverage.** A new test (`tests/test_api_docs_coverage.py`) requires every public `/api/*` route in the FastAPI app to be listed in `docs/api-reference.md`; CI fails when a new endpoint ships without a matching entry in the guide, preventing silent documentation drift. The match is token-bounded — `/api/health` does NOT count as documenting `/api/health/detailed` (a separate admin diagnostics endpoint), closing the substring-overlap false-pass flagged in Devin Review on #565 (BUG_0001). (#565)
+- **Admin menu highlights on `/documentation` pages.** The Admin nav trigger now shows the active state when the user is anywhere under `/documentation`, consistent with the existing `/admin/*` highlight behaviour. (#565)
+
+## [0.67.6] — 2026-06-05
+
+### Fixed
+- **Keboola discovery now opens the suggestions dropdown.** After clicking Discover (buckets) or List tables in the register or edit Keboola-table modal, the freshly populated `<datalist>` opens its native suggestion popup automatically — the associated input is focused and an `input` event dispatched — so the loaded buckets/tables are visible without a second click into the field. No-op when discovery returns nothing; degrades gracefully on browsers that ignore the nudge (the populated datalist + success toast are unchanged). (#556, #561)
+
+## [0.67.5] — 2026-06-05
+
+### Internal
+- Anti-regression guard in `tests/test_design_system_contract.py`: page-level
+  templates must `{% extends %}` a design-system base, not ship their own
+  `<html>`/`<head>`/`<body>` scaffold. Closes the one unimplemented item from
+  the standalone→`base_ds` migration plan (#284/#481/#482) — the migration
+  itself landed, but the contract test meant to lock it in never did, so
+  nothing stopped a future page from re-introducing the dead-Admin-dropdown
+  class of bug (shared infra like `app.js`/theme/nav lived only in the base).
+  `admin_chat.html` is the lone known standalone left, tolerated via an
+  explicit `_STANDALONE_ALLOWLIST`; a companion test fails if an allowlist
+  entry goes stale (page migrated or removed) so the list can't silently rot. (#551)
+
+## [0.67.4] — 2026-06-05
+
+### Fixed
+- **Postgres: admins can grant data tables to analysts again.** `POST /api/admin/data-packages/{id}/tables` resolved the table via `TableRegistryRepository(conn)` on the always-DuckDB `_get_db` connection, so on a Postgres-backed deployment it never found tables that live in PG and returned `404 table_not_found` for tables that are present in `/api/v2/catalog` — analysts could not be granted any data package. The lookup now goes through the backend-aware `table_registry_repo()` factory. (#562)
+- **Postgres: deleting a group that carries grants no longer 500s.** `DELETE /api/admin/groups/{id}` cascaded members + grants via raw `conn.execute(...)` (DuckDB) before `repo.delete()` (Postgres), so on a Postgres deployment the children were never removed and the parent delete hit a `resource_grants.group_id` foreign-key violation. The cascade now routes through the `user_group_members_repo()` / `resource_grants_repo()` factories, matching the parent delete's backend. (#562)
+
+### Internal
+- Cross-backend parity regression test (`tests/db_pg/test_parity_data_packages_groups.py`) driving the data-package table-attach and group-delete endpoints on both DuckDB and Postgres; retired the now-fixed `TableRegistryRepository` entry for `app/api/data_packages.py` from the backend-split direct-instantiation allow-list. (#562)
+
+## [0.67.3] — 2026-06-05
+
+### Internal
+- Planning docs for the ORM-on-state migration land under `docs/planning/`: an inventory of every raw-SQL callsite (`agnes-orm-rawsql-audit.md` + per-subsystem inventories for `app`, `src`, `cli/conn/svc`), a phased migration plan (`orm-state-migration.md`), and three rounds of Codex adversary review (`orm-migration-adversary-review.md` → v2 → v3) that progressively patched factual errors and tightened the cut/rollback plan. No code change — pure planning artifact, locks the scope before any callsite is touched. (#555)
+
+## [0.67.2] — 2026-06-05
+
+### Changed
+- **PG debug-toolbar panel now captures data-XHR queries.** v0.67.1 pinned the toolbar to document navigations to stop background polls (`/api/version`, `/api/health`, …) from wiping the panel — but that also hid the queries from data XHRs like `/api/marketplace/items` and `/api/store/entities`, which is exactly what an operator wants to inspect. The skip list is now narrow (a handful of named pollers) and everything else — document navigations AND data XHRs — is instrumented. `/api/health` is exact-match so the separate authenticated admin diagnostics endpoint `/api/health/detailed` stays observable. (#559)
+
+### Added
+- **`agnes.db.postgres` per-statement query log (DEBUG-gated).** New stdlib logger emits one line per Postgres statement (op, table, ms, params, errors) for every request — including async/threadpool paths the toolbar can't pin to. Silent in prod (gated on `DEBUG=1` / `LOCAL_DEV_MODE=1`). Pairs with the toolbar's PG panel for comprehensive, request-independent capture. (#559)
+
+### Fixed
+- The stuck-review reaper now works on Postgres-backed instances. It was DuckDB-only: `POST /api/admin/run-reap-stuck-reviews` injected a DuckDB connection and the reaper ran raw DuckDB SQL against it, so on a Postgres deployment it queried an empty local DuckDB, found nothing, and returned `200 reaped=0` every 15 minutes while real `pending_llm` submissions sat in Postgres forever. A flea-market submission whose LLM review never completed (e.g. the LLM provider key was unset when it was uploaded, so no review was scheduled) would then show "Under review" indefinitely instead of flipping to `review_error` with a Retry button. The flip SQL now lives on the repositories (`reap_stuck_pending_llm` on both the DuckDB and Postgres `store_submissions` repos) and the reaper resolves the repo from the factory, so it flips rows on whichever backend holds them. Covered by a cross-engine contract test. (#558)
+
 ## [0.67.1] — 2026-06-05
 
 ### Added
@@ -1296,6 +1373,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Dual-backend: `mcp_sources_pg.py`, `tool_registry_pg.py`, `setup_tokens_pg.py` — Postgres counterparts for all three new v63-v67 repositories; factory functions registered in `src/repositories/__init__.py`. `DataPackagesPgRepository` extended with `add_tool`, `remove_tool`, `list_tools` to match the DuckDB sibling.
 - SQLAlchemy models (`src/models/mcp.py`) and Alembic migration `0014_cowork_mcp_v63_v67` covering all v63–v67 tables: `setup_tokens`, `mcp_sources`, `tool_registry`, `tool_grants`, `mcp_secrets`, `mcp_user_secrets`, `data_package_tools`.
 - `scripts/migrate_duckdb_to_pg/_PK_COLUMNS` extended with non-`id` PKs for v63–v67 tables (`tool_registry`, `tool_grants`, `mcp_secrets`, `mcp_user_secrets`, `data_package_tools`) — fixes `SELECT id FROM mcp_secrets` `UndefinedColumn` in migrator tests.
+
+### Fixed
+- **Cowork zip cache correctness.** The per-plugin Cowork zip cache is now keyed by `(prefixed_name, version)` instead of `prefixed_name` alone — per-user store bundles (e.g. `flea`) share one `prefixed_name` but differ in content, so the old key could serve one user's bundle to another on a TTL hit. The cache is also now invalidated on store/marketplace entity create/update/archive (not only on nightly sync), so edited plugin content stops being served stale within the 300 s TTL.
+- **Cowork zip arcname dedup keeps skills valid.** Arcname collisions (two source dirs sanitizing to one path, e.g. `[id]/` and `dyn-id/`) now resolve at the directory level (`skills/dyn-id` → `skills/dyn-id-1`) instead of renaming the file, so a colliding `SKILL.md` is never turned into `SKILL-1.md` (which would make Cowork stop recognising the skill). The root-level filename fallback now splits on the filename only, so a dot in a parent directory can no longer corrupt the path. A missing per-file size guard in the store-bundle branch was added to match the on-disk-plugin branch.
 
 ## [0.57.2] — 2026-06-01
 

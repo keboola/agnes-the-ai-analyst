@@ -9,7 +9,7 @@
 {% import "_components.html" as ds %}
 <style>
   .plugin-detail {
-    --primary-light: rgba(46, 168, 119, 0.12);
+    --primary-light: color-mix(in srgb, var(--ds-primary) 12%, transparent);
     --border-light: #eceff1;
     --text-primary: #202124;
     --text-secondary: #5f6368;
@@ -27,7 +27,7 @@
     border-radius: 14px;
     padding: 22px 28px 28px;
     margin-bottom: 24px;
-    box-shadow: 0 4px 16px rgba(46, 168, 119, 0.18);
+    box-shadow: 0 4px 16px color-mix(in srgb, var(--ds-primary) 18%, transparent);
     color: #fff;
   }
   .plugin-detail .crumbs {
@@ -246,6 +246,29 @@
   .plugin-detail .btn-remove:hover {
     background: rgba(220, 38, 38, 0.85); color: #fff;
     border-color: rgba(220, 38, 38, 0.95);
+  }
+  /* Cowork export — secondary outlined action on its OWN line below the
+     stack/remove row, right-aligned. Padding/font/border mirror .btn-remove
+     so the two stacked actions read as the same control size; align-self
+     flex-end pins it to the right edge of the column-flex .actions box. */
+  .plugin-detail .btn-cowork {
+    align-self: flex-end;
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer; text-decoration: none;
+    /* box-sizing + line-height pinned to match the <button>.btn-remove UA
+       defaults — an <a> otherwise inherits the hero's larger line-height
+       and renders a visibly taller box despite identical padding. */
+    box-sizing: border-box; line-height: normal;
+    padding: 11px 22px; border-radius: 9px;
+    font-size: 13px; font-weight: 600; font-family: inherit;
+    background: transparent; color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.55);
+    transition: all 0.15s ease;
+    white-space: nowrap;
+  }
+  .plugin-detail .btn-cowork:hover {
+    background: rgba(0, 0, 0, 0.2);
+    border-color: rgba(255, 255, 255, 0.8);
   }
   .plugin-detail .btn-remove:focus-visible {
     outline: 2px solid rgba(254, 202, 202, 0.85); outline-offset: 2px;
@@ -636,7 +659,7 @@
   }
   .plugin-detail .inner-card:hover {
     border-color: var(--ds-primary);
-    box-shadow: 0 4px 14px rgba(46, 168, 119, 0.10);
+    box-shadow: 0 4px 14px color-mix(in srgb, var(--ds-primary) 10%, transparent);
     transform: translateY(-1px);
   }
   .plugin-detail .inner-card .photo {
@@ -872,6 +895,13 @@
         <span class="status-pill" id="status-pill" hidden>✓ In your stack</span>
         <button class="btn-remove" id="remove-btn" type="button" hidden>✕ Remove from stack</button>
       </div>
+      {# Cowork export — its own line UNDER the stack/remove row, right-
+         aligned via align-self:flex-end. Downloads this plugin transformed
+         into a single Cowork-uploadable zip. Href + visibility set by JS
+         once the detail payload resolves (curated plugins have a stable
+         prefixed_name; see GET /marketplace/cowork/<prefixed>.zip). #}
+      <a class="btn-cowork" id="cowork-btn" hidden
+         title="Download this plugin as a single zip to upload in Claude Cowork (claude.ai)">&darr; Download for Cowork</a>
       <div class="stack-hint" id="stack-hint" hidden>
         <div class="head">
           <span class="title" id="stack-hint-title">✓ Added to your stack</span>
@@ -1144,6 +1174,31 @@
     removeBtn.hidden = !installed;
   }
   renderInstallState(!!d.installed);
+
+  // ── Cowork export link ────────────────────────────────────────────
+  // Curated plugins map cleanly to a served prefixed_name
+  // (<marketplace_id>-<plugin_name>); store-type plugins use store-<id>.
+  // Skill/agent flea entities are folded into the shared "flea" bundle
+  // and have no standalone per-plugin zip, so the button stays hidden
+  // for them. The endpoint 404s anything not in the caller's grant set.
+  (function wireCowork() {
+    const btn = document.getElementById('cowork-btn');
+    if (!btn) return;
+    let prefixed = null;
+    if (source === 'curated' && marketplaceId && pluginName) {
+      prefixed = `${marketplaceId}-${pluginName}`;
+    } else if (d.prefixed_name) {
+      prefixed = d.prefixed_name;
+    } else if (source === 'flea' && d.type === 'plugin' && entityId) {
+      prefixed = `store-${entityId}`;
+    }
+    if (!prefixed) return;
+    btn.href = `/marketplace/cowork/${encodeURIComponent(prefixed)}.zip`;
+    // Pin the saved filename client-side so a cached 304 (no
+    // Content-Disposition) can't reuse a stale download name.
+    btn.setAttribute('download', `${prefixed}.zip`);
+    btn.hidden = false;
+  })();
 
   // v32+ quarantine: when the entity is non-approved (only owner +
   // admin land here in that state — gated server-side), disable the
