@@ -56,7 +56,7 @@
     display: inline-block; padding: 2px 8px; border-radius: 4px;
     font-size: 10px; font-weight: 600;
     text-transform: uppercase; letter-spacing: 0.4px;
-    background: rgba(46, 168, 119, 0.12); color: #0056A3;
+    background: color-mix(in srgb, var(--ds-primary) 12%, transparent); color: #0056A3;
   }
   .badge--category    { background: rgba(124, 58, 237, 0.14); color: #6d28d9; }
   .badge--source      { background: rgba(16, 183, 127, 0.14); color: #0e9b6a; }
@@ -92,7 +92,7 @@
   .memory-item__votes button:hover {
     border-color: var(--ds-primary);
     color: var(--ds-primary);
-    background: rgba(46, 168, 119, 0.06);
+    background: color-mix(in srgb, var(--ds-primary) 6%, transparent);
   }
   .memory-item__votes button[data-vote="down"]:hover {
     border-color: #b91c1c; color: #b91c1c;
@@ -105,7 +105,7 @@
   }
   .memory-item__avatar {
     width: 22px; height: 22px; border-radius: 50%;
-    background: rgba(46, 168, 119, 0.18); color: #0056A3;
+    background: color-mix(in srgb, var(--ds-primary) 18%, transparent); color: #0056A3;
     font-size: 10px; font-weight: 600;
     display: inline-flex; align-items: center; justify-content: center;
   }

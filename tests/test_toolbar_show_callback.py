@@ -1,9 +1,11 @@
-"""_toolbar_show_callback gates which requests own the debug toolbar.
+"""_toolbar_show_callback gates which requests the debug toolbar attaches to.
 
-Background fetch/XHR (incl. the dashboard's /api polling) must NOT be
-instrumented, or each one rewrites the dtRefresh cookie and refresh.js wipes the
-request-scoped query panels (DuckDB/Postgres) the developer is viewing. Only
-document navigations and the toolbar's own /_debug_toolbar endpoints qualify.
+Document navigations AND data XHRs (e.g. /api/marketplace/items) are
+instrumented so their — often async/XHR-loaded — queries show in the panels.
+Only the toolbar's own /_debug_toolbar endpoints (always allowed) and a small
+set of high-frequency background pollers (_TOOLBAR_SKIP_PREFIXES) are
+special-cased; the pollers are skipped because each instrumented response
+repoints the toolbar (dtRefresh) and wipes the panel you're viewing.
 """
 import pytest
 
@@ -25,23 +27,33 @@ def test_document_navigation_instrumented():
     assert _toolbar_show_callback(_Req("/dashboard", "document"), None) is True
 
 
-def test_non_browser_request_instrumented():
-    # curl / tests send no Sec-Fetch-Dest — keep the toolbar working there.
-    assert _toolbar_show_callback(_Req("/dashboard", None), None) is True
+def test_data_xhr_instrumented():
+    # The whole point: data-loading XHRs must be captured so their PG queries
+    # (marketplace/flea listings, store entities) appear in the panel.
+    assert _toolbar_show_callback(_Req("/api/marketplace/items", "empty"), None) is True
+    assert _toolbar_show_callback(_Req("/api/store/entities", "empty"), None) is True
 
 
 def test_toolbar_own_endpoints_always_allowed():
-    # render_panel + static are XHR; must stay allowed or panels never load.
     assert _toolbar_show_callback(_Req("/_debug_toolbar", "empty"), None) is True
 
 
-def test_background_xhr_skipped():
-    assert _toolbar_show_callback(_Req("/dashboard", "empty"), None) is False
+def test_background_pollers_skipped():
+    for p in ("/api/version", "/api/health", "/api/memory/stats", "/api/notifications"):
+        assert _toolbar_show_callback(_Req(p, "empty"), None) is False, p
 
 
-def test_api_poll_skipped():
-    assert _toolbar_show_callback(_Req("/api/memory/stats", "empty"), None) is False
-    assert _toolbar_show_callback(_Req("/api/anything", "document"), None) is False
+def test_health_detailed_NOT_skipped():
+    """/api/health is exact-match only — /api/health/detailed is a separate
+    admin diagnostics endpoint (app/api/health.py) and must be instrumented."""
+    assert _toolbar_show_callback(_Req("/api/health/detailed", "empty"), None) is True
+
+
+def test_notifications_subpaths_skipped():
+    """/api/notifications is a prefix — the whole subtree (poll, etc.) is a
+    poll surface and stays out of the toolbar."""
+    for p in ("/api/notifications", "/api/notifications/poll", "/api/notifications/123"):
+        assert _toolbar_show_callback(_Req(p, "empty"), None) is False, p
 
 
 def test_disabled_when_debug_off(monkeypatch):

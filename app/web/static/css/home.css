@@ -1694,6 +1694,7 @@
     text-decoration: underline;
 }
 
+
 /* `.code-output` extracted to shared
    app/web/static/css/components.css — markup renamed accordingly
    (`<div class="expected-output">` → `<div class="code-output">`). */

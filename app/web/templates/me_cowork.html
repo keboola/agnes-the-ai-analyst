@@ -230,6 +230,29 @@
   color: var(--ds-text-primary);
   margin-bottom: var(--space-1);
 }
+
+/* Plugin packages — one tappable row per RBAC-granted plugin, populated by
+   JS from /marketplace/info. Each row links to the per-plugin Cowork zip. */
+.cowork-plugin-list { display: flex; flex-direction: column; gap: var(--space-2); }
+.cowork-plugin-empty { font-size: var(--text-sm); color: var(--ds-text-muted); margin: var(--space-1) 0; }
+.cowork-plugin-empty a { color: var(--ds-primary); }
+a.cowork-plugin-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--radius-lg);
+  background: var(--ds-surface-dim);
+  text-decoration: none;
+  color: var(--ds-text-primary);
+  font-size: var(--text-sm);
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--ds-surface); }
+.cowork-plugin-name { font-weight: 600; }
+.cowork-plugin-ver { color: var(--ds-text-muted); font-family: var(--ds-font-mono, monospace); font-size: var(--text-xs); }
+.cowork-plugin-dl { margin-left: auto; color: var(--ds-primary); font-weight: 600; white-space: nowrap; }
 </style>
 {% endblock %}
 
@@ -241,10 +264,20 @@
 
 <div class="profile-page">
 
-  {# ── Setup ──────────────────────────────────────────────────────────── #}
-  {% call ds.panel(title='Setup', tag='section',
+  {# ── Bundled project setup (bundle + MCP) ───────────────────────────── #}
+  {% call ds.panel(title='Bundled Project Setup with MCP', tag='section',
                    klass='section-card',
-                   attrs='aria-label="Cowork setup"') %}
+                   attrs='aria-label="Bundled project setup with MCP"') %}
+    <div class="cowork-skills-note">
+      <strong>What this is:</strong> a ready-made Cowork <em>project folder</em> —
+      your Agnes skills plus a live MCP connection to your data (catalog, schema,
+      query …). Best for working <em>with your data</em> in Cowork.
+      <strong>Scope:</strong> it only works inside this one project — you open the
+      downloaded folder as a Cowork project and Agnes is wired up there. It does
+      <strong>not</strong> follow you into your other Cowork projects. To use your
+      skills everywhere, add them as <em>packages</em> below.
+    </div>
+
     <div class="cowork-prereq">
       Requires <a href="https://claude.ai/download" target="_blank" rel="noopener">Claude Desktop</a>.
       The bundle expires in 24 hours and is single-use.
@@ -298,6 +331,34 @@
       <ul id="cowork-token-list" style="list-style:none; padding:0; margin:var(--space-2) 0 0; font-size:var(--text-xs); display:flex; flex-direction:column; gap:var(--space-2);"></ul>
     </details>
   {% endcall %}
+
+  {# ── Plugin packages — open by default, the cross-project flow ───────── #}
+  <details class="ds-card section-card" aria-label="Plugin packages" open>
+    <summary>Plugin packages <span class="badge" id="cowork-pkg-badge" style="margin-left:6px;">0</span></summary>
+    <div style="margin-top:var(--space-4);">
+      <div class="cowork-skills-note">
+        <strong>What this is:</strong> each package is one marketplace plugin — its
+        skills, agents and commands — as a single Cowork-uploadable
+        <code>.zip</code>. You add a package once via
+        <strong>Customize</strong>, and its skills then work across
+        <strong>all</strong> your Cowork projects — not just one folder. Best when
+        you want your Agnes skills available everywhere in Cowork.
+        <br><br>
+        <strong>How to add one:</strong> download a package below, then in Claude
+        Desktop → Cowork open <strong>Customize → Personal plugins → + → Create
+        plugin → Upload plugin</strong> and pick the <code>.zip</code> —
+        <strong>one package per zip</strong>, repeat for each. (Packages carry
+        skills/agents/commands; for live data access use the bundled project
+        above, which includes the MCP connection.)
+      </div>
+      {# Populated by JS from /marketplace/info (same RBAC-filtered set the
+         analyst's Claude Code marketplace serves). Each link hits
+         GET /marketplace/cowork/<prefixed>.zip. #}
+      <div class="cowork-plugin-list" id="cowork-plugin-list" aria-live="polite">
+        <p class="cowork-plugin-empty">Loading your packages&hellip;</p>
+      </div>
+    </div>
+  </details>
 
   {# ── Connection — collapsible ─────────────────────────────────────── #}
   <details class="ds-card section-card" aria-label="Connection">
@@ -499,6 +560,55 @@
   });
 
   loadTokens();
+
+  // ── Plugin packages download list ───────────────────────────────────
+  // Pulls the caller's RBAC-filtered plugin set from /marketplace/info and
+  // renders one download link per plugin → the per-plugin Cowork zip
+  // endpoint. Same-origin cookie auth; fails soft to an empty-state.
+  var coworkList = document.getElementById('cowork-plugin-list');
+  var pkgBadge = document.getElementById('cowork-pkg-badge');
+  if (coworkList) {
+    fetch('/marketplace/info', { credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (info) {
+        var plugins = (info && [].concat(info.plugins || [], info.store_plugins || [])) || [];
+        if (pkgBadge) {
+          pkgBadge.textContent = plugins.length;
+          if (plugins.length) pkgBadge.classList.add('badge--info');
+        }
+        if (!plugins.length) {
+          coworkList.innerHTML =
+            '<p class="cowork-plugin-empty">No packages available for your account yet. ' +
+            'Browse the <a href="/marketplace">marketplace</a> to add some.</p>';
+          return;
+        }
+        var rows = plugins.map(function (p) {
+          var name = p.name || p.prefixed_name || 'plugin';
+          var ver = p.version ? (' v' + p.version) : '';
+          var href = '/marketplace/cowork/' + encodeURIComponent(p.prefixed_name) + '.zip';
+          var a = document.createElement('a');
+          a.className = 'cowork-plugin-row';
+          a.href = href;
+          // Pin the saved filename client-side so a cached 304 (no
+          // Content-Disposition) can't reuse a stale download name.
+          a.setAttribute('download', p.prefixed_name + '.zip');
+          a.innerHTML =
+            '<span class="cowork-plugin-name"></span>' +
+            '<span class="cowork-plugin-ver"></span>' +
+            '<span class="cowork-plugin-dl">Download .zip &darr;</span>';
+          a.querySelector('.cowork-plugin-name').textContent = name;
+          a.querySelector('.cowork-plugin-ver').textContent = ver;
+          return a;
+        });
+        coworkList.innerHTML = '';
+        rows.forEach(function (a) { coworkList.appendChild(a); });
+      })
+      .catch(function () {
+        coworkList.innerHTML =
+          '<p class="cowork-plugin-empty">Couldn\'t load your packages. ' +
+          'Try the <a href="/marketplace">marketplace</a>.</p>';
+      });
+  }
 })();
 </script>
 {% endblock %}

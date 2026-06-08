@@ -101,7 +101,11 @@ def with_token(tmp_path, monkeypatch) -> str:
 
 @pytest.fixture
 def claude_in_path(monkeypatch):
-    monkeypatch.setattr(rm_module.shutil, "which", lambda name: "/fake/claude" if name == "claude" else None)
+    # `shutil.which` returns the bare name (not a `/fake/...` path) so that on
+    # POSIX `_claude_base_cmd()` yields `["claude", ...]` — the argv prefix the
+    # scripts/assertions below match against. (The Windows `.cmd`-shim wrapping
+    # is covered directly in test_claude_base_cmd_* below.)
+    monkeypatch.setattr(rm_module.shutil, "which", lambda name: "claude" if name == "claude" else None)
 
 
 @pytest.fixture
@@ -1383,3 +1387,33 @@ def test_reload_hint_printed_when_only_enable_changes(
     # No install or update should have been triggered.
     assert not any(c.cmd[:3] == ["claude", "plugin", "install"] for c in recorder.calls)
     assert not any(c.cmd[:3] == ["claude", "plugin", "update"] for c in recorder.calls)
+
+
+# --- _claude_base_cmd: how the `claude` CLI gets launched cross-platform --------
+
+
+def test_claude_base_cmd_returns_none_when_claude_missing(monkeypatch):
+    """`claude` not on PATH → None, so callers hit their claude-missing path."""
+    monkeypatch.setattr(rm_module.shutil, "which", lambda name: None)
+    assert rm_module._claude_base_cmd() is None
+
+
+def test_claude_base_cmd_posix_returns_bare_exe(monkeypatch):
+    """POSIX: launch the resolved executable directly, no shell wrapper."""
+    monkeypatch.setattr(rm_module.os, "name", "posix")
+    monkeypatch.setattr(
+        rm_module.shutil, "which",
+        lambda name: "/usr/local/bin/claude" if name == "claude" else None,
+    )
+    assert rm_module._claude_base_cmd() == ["/usr/local/bin/claude"]
+
+
+def test_claude_base_cmd_windows_cmd_shim_routes_through_cmd(monkeypatch):
+    """Windows: a `.cmd`/`.bat` npm shim can't be CreateProcess'd directly even
+    with its full path — it must go through `cmd /c`."""
+    monkeypatch.setattr(rm_module.os, "name", "nt")
+    monkeypatch.setattr(
+        rm_module.shutil, "which",
+        lambda name: "C:\\path\\claude.cmd" if name == "claude" else None,
+    )
+    assert rm_module._claude_base_cmd() == ["cmd", "/c", "C:\\path\\claude.cmd"]

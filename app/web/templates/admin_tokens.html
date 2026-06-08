@@ -122,7 +122,7 @@
     color: var(--text-primary, #111827);
   }
   .chip-btn[aria-pressed="true"] {
-    background: rgba(46, 168, 119, 0.10);
+    background: color-mix(in srgb, var(--ds-primary) 10%, transparent);
     border-color: var(--ds-primary);
     color: var(--ds-primary);
     font-weight: 600;
@@ -184,7 +184,7 @@
   .search-wrap input[type="search"]:focus {
     outline: none;
     border-color: var(--ds-primary);
-    box-shadow: 0 0 0 3px rgba(46, 168, 119, 0.15);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ds-primary) 15%, transparent);
   }
 
   .clear-link {
@@ -442,7 +442,7 @@
   .tokens-empty .empty-clear:hover {
     border-color: var(--ds-primary);
     color: var(--ds-primary);
-    background: rgba(46, 168, 119, 0.04);
+    background: color-mix(in srgb, var(--ds-primary) 4%, transparent);
   }
 
   /* ── Modal ─────────────────────────────────────────────────────────────── */
