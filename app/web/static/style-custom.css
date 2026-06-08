@@ -3491,6 +3491,17 @@ button.app-user-menu-item {
     font-family: inherit; cursor: pointer;
 }
 
+/* Onboarding launcher — the "?" help icon in the header that re-opens the
+   guided tour. Borderless icon button that sits next to the user menu. */
+.app-onboarding-launch {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 34px; height: 34px; padding: 0;
+    border: 0; border-radius: 8px; background: transparent;
+    color: var(--text-secondary, #6b7280); cursor: pointer;
+}
+.app-onboarding-launch:hover { background: var(--border-light, #f3f4f6); color: var(--text-primary, #111827); }
+.app-onboarding-launch:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
+
 /* ── Admin nav dropdown — same vocabulary as user menu, scoped under nav links ── */
 .app-nav-menu { position: relative; display: inline-flex; }
 /* .app-nav-menu-trigger styling flows entirely from .app-nav-link above.

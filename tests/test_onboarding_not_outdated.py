@@ -1,0 +1,123 @@
+"""The onboarding tour must not silently go stale as the UI churns.
+
+`app/web/onboarding.py` is the single source of truth for the guided-tour
+steps. These tests assert that every step still points at:
+  • a registered route, and
+  • a DOM anchor (`data-tour="<anchor>"`) that actually exists in a template.
+
+So if someone removes a nav item, renames its anchor, or deletes a route,
+the tour step that referenced it turns this suite red instead of shipping a
+dead spotlight. They also pin the audience split (admin vs non-admin) and the
+server-side wiring that feeds the steps to the engine — guarding the "single
+source of truth" property itself (no hardcoded steps creep back into JS).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from app.web.onboarding import ONBOARDING_STEPS, steps_for
+
+TEMPLATES = Path("app/web/templates")
+STATIC = Path("app/web/static")
+
+VALID_AUDIENCES = {"all", "admin", "non_admin"}
+
+
+def _all_template_text() -> str:
+    return "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(TEMPLATES.rglob("*.html"))
+    )
+
+
+def _registered_paths() -> set[str]:
+    # Use the web router directly (lightweight) — every page the tour walks
+    # is an HTML route declared there.
+    from app.web.router import router as web_router
+
+    return {getattr(r, "path", None) for r in web_router.routes}
+
+
+def test_every_step_audience_is_valid() -> None:
+    bad = [(s.key, s.audience) for s in ONBOARDING_STEPS if s.audience not in VALID_AUDIENCES]
+    assert not bad, f"invalid audience values: {bad}"
+
+
+def test_every_step_anchor_exists_in_templates() -> None:
+    """A step's spotlight anchor must be a `data-tour="<anchor>"` that some
+    template actually renders — otherwise the spotlight lands on nothing."""
+    blob = _all_template_text()
+    missing = [
+        s.key
+        for s in ONBOARDING_STEPS
+        if s.anchor and f'data-tour="{s.anchor}"' not in blob
+    ]
+    assert not missing, (
+        "onboarding steps reference data-tour anchors absent from all templates "
+        f"(nav changed without updating app/web/onboarding.py): {missing}"
+    )
+
+
+def test_every_step_route_is_registered() -> None:
+    """A step's route must still be served — a deleted/renamed page makes the
+    step a dead end."""
+    paths = _registered_paths()
+    missing = [
+        (s.key, s.route)
+        for s in ONBOARDING_STEPS
+        if s.route and s.route not in paths
+    ]
+    assert not missing, (
+        "onboarding steps reference routes that are no longer registered: "
+        f"{missing}"
+    )
+
+
+def test_audience_filtering_splits_admin_and_non_admin() -> None:
+    admin_keys = {s.key for s in ONBOARDING_STEPS if s.audience == "admin"}
+    assert admin_keys, "expected at least one admin-only step to exercise the split"
+
+    non_admin = {s["key"] for s in steps_for(is_admin=False)}
+    admin = {s["key"] for s in steps_for(is_admin=True)}
+
+    # Admin-only steps are hidden from non-admins and shown to admins.
+    assert not (admin_keys & non_admin), "admin-only steps leaked to non-admins"
+    assert admin_keys <= admin, "admin-only steps missing for admins"
+    # `all` steps appear for everyone.
+    all_keys = {s.key for s in ONBOARDING_STEPS if s.audience == "all"}
+    assert all_keys <= non_admin and all_keys <= admin
+
+
+def test_is_admin_is_coerced_to_bool() -> None:
+    """Jinja hands `session.user.is_admin`, which for an anonymous/missing
+    user is a falsy _SilentUndefined — steps_for must treat it as non-admin
+    rather than crash."""
+    class _Falsy:
+        def __bool__(self) -> bool:
+            return False
+
+    keys = {s["key"] for s in steps_for(is_admin=_Falsy())}
+    admin_keys = {s.key for s in ONBOARDING_STEPS if s.audience == "admin"}
+    assert not (admin_keys & keys)
+
+
+def test_steps_are_server_injected_not_hardcoded_in_js() -> None:
+    """Single-source-of-truth guard: the partial feeds steps via the
+    `onboarding_steps` Jinja global, and the engine reads them from the
+    injected JSON — not a hardcoded array."""
+    partial = (TEMPLATES / "_tour.html").read_text(encoding="utf-8")
+    assert "onboarding_steps(" in partial, "_tour.html must inject server-filtered steps"
+    assert 'id="agnesOnboardingSteps"' in partial
+
+    engine = (STATIC / "js" / "tour.js").read_text(encoding="utf-8")
+    assert "agnesOnboardingSteps" in engine, "tour.js must read the injected steps"
+
+
+def test_reopen_launcher_present_in_header_and_profile() -> None:
+    """The tour must be re-openable: a [data-tour-start] hook in the header
+    (help icon) and on the profile page."""
+    header = (TEMPLATES / "_app_header.html").read_text(encoding="utf-8")
+    profile = (TEMPLATES / "profile.html").read_text(encoding="utf-8")
+    assert "data-tour-start" in header, "header is missing the tour launcher"
+    assert "data-tour-start" in profile, "profile page is missing the tour launcher"

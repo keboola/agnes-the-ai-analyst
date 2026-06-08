@@ -42,3 +42,28 @@ def test_tour_not_rendered_when_unauthenticated(seeded_app):
     c = seeded_app["client"]
     resp = c.get("/login")
     assert "id=\"agnesTour\"" not in resp.text
+
+
+def test_intro_modal_and_injected_steps_present(seeded_app):
+    """First-visit consent modal + the server-injected step JSON are rendered
+    (the engine reads the steps from the page, not a hardcoded array)."""
+    c = seeded_app["client"]
+    body = c.get("/dashboard", headers=_auth(seeded_app["analyst_token"])).text
+
+    assert 'id="agnesOnboardingIntro"' in body
+    assert "Show me around" in body
+    assert 'id="agnesOnboardingSteps"' in body
+    # The injected JSON carries the non-admin steps.
+    assert '"key": "home"' in body or '"key":"home"' in body
+
+
+def test_injected_steps_are_role_split(seeded_app):
+    """Admin sees the admin-only step in the injected JSON; non-admin doesn't.
+    Proves the audience split happens server-side, before the browser."""
+    c = seeded_app["client"]
+    analyst = c.get("/dashboard", headers=_auth(seeded_app["analyst_token"])).text
+    admin = c.get("/dashboard", headers=_auth(seeded_app["admin_token"])).text
+
+    # The admin-only step keys off the nav-admin anchor.
+    assert "nav-admin" in admin, "admin should receive the admin onboarding step"
+    assert "nav-admin" not in analyst, "non-admin must not receive the admin step"

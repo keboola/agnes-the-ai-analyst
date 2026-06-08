@@ -226,6 +226,15 @@ def _posthog_user_block(request: Optional[Request]) -> Optional[dict]:
 templates.env.globals["posthog_config"] = _posthog_config_global()
 templates.env.globals["posthog_user_block"] = _posthog_user_block
 
+# Onboarding / guided-tour steps. Exposed as a Jinja global so the global
+# `_tour.html` partial (included by both base layouts) can render the
+# audience-filtered step list as JSON without each route having to thread it
+# through its own context. The single source of truth lives in
+# app/web/onboarding.py — see tests/test_onboarding_not_outdated.py.
+from app.web.onboarding import steps_for as _onboarding_steps_for
+
+templates.env.globals["onboarding_steps"] = _onboarding_steps_for
+
 
 class _FlexDict(dict):
     """Dict that returns empty _FlexDict for missing keys and attributes.

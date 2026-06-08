@@ -1,84 +1,36 @@
-/* Walking guide / product tour engine.
+/* Onboarding / guided-tour engine.
  *
  * A small, dependency-free spotlight tour that walks a signed-in user
- * through the primary navigation. The nav lives in `_app_header.html`
- * and renders on every authed page, so the whole tour runs in place on
- * whatever page the user happens to be on — no cross-page state machine,
- * no backend persistence. Progress + "already seen" live in
- * localStorage, mirroring the existing `agnes-admin-nav-*` pattern.
+ * through the primary navigation. The nav lives in `_app_header.html` and
+ * renders on every authed page, so the whole tour runs in place on whatever
+ * page the user is on — no cross-page state machine, no backend persistence.
  *
- * Entry points:
- *   • Auto: first authed visit (no `seen` flag) → starts after a beat.
- *   • Manual: any element with [data-tour-start] (user menu item).
+ * Steps are NOT defined here. They come from app/web/onboarding.py, filtered
+ * by audience (admin vs non-admin) server-side, and injected into the page as
+ * a JSON <script id="agnesOnboardingSteps">. This engine just renders them —
+ * which is what lets the contract test guarantee they never go stale.
  *
- * Steps target [data-tour="<key>"] anchors in the header. Steps whose
- * target is absent (e.g. Chat link hidden without a grant) are skipped
- * automatically, so the same step list works for every user.
+ * Flow:
+ *   • First authed visit (no `seen` flag) → the intro consent modal pops once.
+ *       "Show me around" → run the spotlight steps.  "Not now" → dismiss.
+ *     Either choice sets the `seen` flag, so it never auto-pops again.
+ *   • Re-open: any [data-tour-start] element (header help icon, profile page)
+ *     starts the spotlight steps directly, skipping the consent modal.
+ *
+ * Each step can be skipped or ended (Skip / ✕ / Esc). Steps whose target
+ * anchor is absent for the viewer (e.g. Chat without a grant) are dropped.
  */
 (function () {
     "use strict";
 
-    var SEEN_KEY = "agnes-tour-v1-seen";
+    var SEEN_KEY = "agnes-onboarding-v1-seen";
     var root = document.getElementById("agnesTour");
     if (!root) return;
-
-    var instance = root.getAttribute("data-instance") || "Agnes";
-
-    // Step list. `target` is a [data-tour] key or null for a centered card.
-    var STEPS = [
-        {
-            target: null,
-            eyebrow: "Quick tour",
-            title: "Welcome to " + instance,
-            body: "Take 30 seconds to see how things are laid out. You can skip anytime and reopen this from your profile menu."
-        },
-        {
-            target: "nav-home",
-            eyebrow: "Step",
-            title: "Home",
-            body: "Your starting point — a dashboard of what's available to you and shortcuts to get going."
-        },
-        {
-            target: "nav-chat",
-            eyebrow: "Step",
-            title: "Chat",
-            body: "Ask questions about your data in natural language, right in the browser."
-        },
-        {
-            target: "nav-marketplace",
-            eyebrow: "Step",
-            title: "Marketplace",
-            body: "Discover skills and plugins that extend what your AI agent can do — install them into your workspace."
-        },
-        {
-            target: "nav-catalog",
-            eyebrow: "Step",
-            title: "Data Packages",
-            body: "Browse the datasets you have access to. Each package shows its tables, schema, and how to query it locally."
-        },
-        {
-            target: "nav-memory",
-            eyebrow: "Step",
-            title: "Memory",
-            body: "Shared organizational knowledge — canonical metric definitions and business rules your agent should follow."
-        },
-        {
-            target: "user-menu",
-            eyebrow: "Step",
-            title: "Your menu",
-            body: "Your profile, AI Cowork setup, recent activity, and sign-out all live here."
-        },
-        {
-            target: null,
-            eyebrow: "All set",
-            title: "You're ready to go",
-            body: "That's the lay of the land. Reopen this tour anytime from your profile menu → “Take a tour”."
-        }
-    ];
 
     var els = {
         backdrop: root.querySelector(".agnes-tour__backdrop"),
         spot: root.querySelector(".agnes-tour__spot"),
+        intro: root.querySelector(".agnes-tour__intro"),
         pop: root.querySelector(".agnes-tour__pop"),
         eyebrow: root.querySelector(".agnes-tour__eyebrow"),
         title: root.querySelector(".agnes-tour__title"),
@@ -86,25 +38,41 @@
         dots: root.querySelector(".agnes-tour__dots"),
         skip: root.querySelector('[data-act="skip"]'),
         back: root.querySelector('[data-act="back"]'),
-        next: root.querySelector('[data-act="next"]')
+        next: root.querySelector('[data-act="next"]'),
+        end: root.querySelector('[data-act="end"]'),
+        introStart: root.querySelector('[data-act="intro-start"]'),
+        introSkip: root.querySelector('[data-act="intro-skip"]')
     };
 
-    var active = [];   // steps whose target resolves (or is null)
+    // Steps injected by the server (already audience-filtered). Parse once.
+    var allSteps = [];
+    try {
+        var raw = document.getElementById("agnesOnboardingSteps");
+        if (raw) allSteps = JSON.parse(raw.textContent) || [];
+    } catch (e) { allSteps = []; }
+
+    var active = [];   // steps whose target resolves (or is target-less)
     var idx = 0;
 
+    function seen() {
+        try { return !!localStorage.getItem(SEEN_KEY); } catch (e) { return true; }
+    }
+    function markSeen() {
+        try { localStorage.setItem(SEEN_KEY, "1"); } catch (e) {}
+    }
+
     function resolve(step) {
-        if (!step.target) return null;
-        var el = document.querySelector('[data-tour="' + step.target + '"]');
+        if (!step.anchor) return null;            // target-less (centered) step
+        var el = document.querySelector('[data-tour="' + step.anchor + '"]');
+        if (!el) return false;
         // Treat off-screen / display:none anchors as absent.
-        if (el && el.offsetParent === null && el.getClientRects().length === 0) {
-            return false;
-        }
-        return el || false;
+        if (el.offsetParent === null && el.getClientRects().length === 0) return false;
+        return el;
     }
 
     function buildActive() {
-        active = STEPS.filter(function (s) {
-            return s.target === null || resolve(s) !== false;
+        active = allSteps.filter(function (s) {
+            return !s.anchor || resolve(s) !== false;
         });
     }
 
@@ -120,15 +88,9 @@
     function placePop(rect) {
         var pop = els.pop;
         pop.classList.remove("is-centered");
-        // Measure after content is set.
-        var pw = pop.offsetWidth;
-        var ph = pop.offsetHeight;
-        var gap = 14;
-        var vw = window.innerWidth;
-        var vh = window.innerHeight;
-
+        var pw = pop.offsetWidth, ph = pop.offsetHeight, gap = 14;
+        var vw = window.innerWidth, vh = window.innerHeight;
         var top, left;
-        // Prefer below the target; flip above if it would overflow.
         if (rect.bottom + gap + ph <= vh) {
             top = rect.bottom + gap;
         } else if (rect.top - gap - ph >= 0) {
@@ -136,26 +98,21 @@
         } else {
             top = Math.max(gap, (vh - ph) / 2);
         }
-        // Align left edge to target, clamped to viewport.
-        left = rect.left;
-        left = Math.min(left, vw - pw - gap);
+        left = Math.min(rect.left, vw - pw - gap);
         left = Math.max(gap, left);
-
         pop.style.top = top + "px";
         pop.style.left = left + "px";
     }
 
     function render() {
         var step = active[idx];
-        var el = step.target ? resolve(step) : null;
+        var el = step.anchor ? resolve(step) : null;
 
-        els.eyebrow.textContent = step.eyebrow || "";
-        els.title.textContent = step.title;
-        els.body.textContent = step.body;
-
+        els.eyebrow.textContent = idx === active.length - 1 ? "All set" : ("Step " + (idx + 1) + " of " + active.length);
+        els.title.textContent = step.title || "";
+        els.body.textContent = step.body || "";
         els.back.disabled = idx === 0;
         els.next.textContent = idx === active.length - 1 ? "Done" : "Next";
-
         renderDots();
 
         if (el && el.getBoundingClientRect) {
@@ -180,12 +137,11 @@
     }
 
     function reposition() {
-        if (root.hidden) return;
+        if (root.hidden || els.pop.hidden) return;
         render();
     }
 
-    function open() {
-        // Close any open header dropdowns so they don't overlap the spot.
+    function closeDropdowns() {
         Array.prototype.forEach.call(
             document.querySelectorAll(".app-user-menu-panel, .app-nav-menu-panel"),
             function (p) { p.hidden = true; }
@@ -194,26 +150,55 @@
             document.querySelectorAll('[aria-haspopup="menu"]'),
             function (t) { t.setAttribute("aria-expanded", "false"); }
         );
+    }
 
-        buildActive();
-        if (!active.length) return;
-        idx = 0;
+    function showOverlay() {
         root.hidden = false;
-        render();
-        els.next.focus();
         window.addEventListener("resize", reposition);
         window.addEventListener("scroll", reposition, true);
     }
 
-    function close() {
+    function hideOverlay() {
         root.hidden = true;
+        els.intro.hidden = true;
+        els.pop.hidden = true;
+        els.spot.hidden = true;
         window.removeEventListener("resize", reposition);
         window.removeEventListener("scroll", reposition, true);
-        try { localStorage.setItem(SEEN_KEY, "1"); } catch (e) {}
+    }
+
+    // Intro consent modal (first-visit welcome).
+    function showIntro() {
+        if (!els.intro) { startSteps(); return; }
+        closeDropdowns();
+        els.pop.hidden = true;
+        els.spot.hidden = true;
+        els.backdrop.classList.add("is-dim");
+        els.intro.hidden = false;
+        showOverlay();
+        if (els.introStart) els.introStart.focus();
+    }
+
+    // Run the spotlight steps.
+    function startSteps() {
+        closeDropdowns();
+        buildActive();
+        if (!active.length) { hideOverlay(); return; }
+        idx = 0;
+        els.intro.hidden = true;
+        els.pop.hidden = false;
+        showOverlay();
+        render();
+        els.next.focus();
+    }
+
+    function end() {
+        hideOverlay();
+        markSeen();
     }
 
     function next() {
-        if (idx >= active.length - 1) { close(); return; }
+        if (idx >= active.length - 1) { end(); return; }
         idx++;
         render();
     }
@@ -224,33 +209,43 @@
         render();
     }
 
-    els.next.addEventListener("click", next);
-    els.back.addEventListener("click", back);
-    els.skip.addEventListener("click", close);
+    // Wire controls.
+    if (els.next) els.next.addEventListener("click", next);
+    if (els.back) els.back.addEventListener("click", back);
+    if (els.skip) els.skip.addEventListener("click", end);
+    if (els.end) els.end.addEventListener("click", end);
+    if (els.introStart) els.introStart.addEventListener("click", function () {
+        markSeen();
+        startSteps();
+    });
+    if (els.introSkip) els.introSkip.addEventListener("click", function () {
+        markSeen();
+        hideOverlay();
+    });
 
     document.addEventListener("keydown", function (e) {
         if (root.hidden) return;
-        if (e.key === "Escape") { e.preventDefault(); close(); }
-        else if (e.key === "ArrowRight" || e.key === "Enter") { e.preventDefault(); next(); }
-        else if (e.key === "ArrowLeft") { e.preventDefault(); back(); }
+        if (e.key === "Escape") { e.preventDefault(); end(); return; }
+        if (!els.pop.hidden) {  // step navigation only while a step is showing
+            if (e.key === "ArrowRight" || e.key === "Enter") { e.preventDefault(); next(); }
+            else if (e.key === "ArrowLeft") { e.preventDefault(); back(); }
+        }
     });
 
-    // Manual launchers.
+    // Manual launchers (header help icon, profile page button). Re-opening
+    // skips the consent modal and goes straight into the spotlight.
     Array.prototype.forEach.call(
         document.querySelectorAll("[data-tour-start]"),
         function (btn) {
             btn.addEventListener("click", function (e) {
                 e.preventDefault();
-                open();
+                startSteps();
             });
         }
     );
 
-    // Auto-start on first authed visit.
-    var seen;
-    try { seen = localStorage.getItem(SEEN_KEY); } catch (e) { seen = "1"; }
-    if (!seen) {
-        // Let the header settle (fonts, dropdown wiring) before measuring.
-        setTimeout(open, 800);
+    // Auto-show the consent modal once, on the first authed visit.
+    if (!seen() && allSteps.length) {
+        setTimeout(showIntro, 800);   // let the header settle before measuring
     }
 })();
