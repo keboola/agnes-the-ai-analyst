@@ -180,11 +180,11 @@
   }
 
   // ── users by activity ──────────────────────────────────────
-  let USERS = [];
+  // Search is server-side (the API's `q` param) so it spans ALL users, not
+  // just the top-10 page currently rendered. Debounced to avoid a request
+  // per keystroke.
   function initials(name){ return (name||'?').split(/[\s._-]+/).filter(Boolean).map(w=>w[0]).slice(0,2).join('').toUpperCase() || '?'; }
-  function renderUsers(filter){
-    const f = (filter||'').toLowerCase();
-    const rows = USERS.filter(u => !f || (u.username||'').toLowerCase().includes(f));
+  function renderUsers(rows){
     const b = $('users-body');
     if(!rows.length){ b.innerHTML='<tr><td colspan="7" class="obs-empty">No users match.</td></tr>'; return; }
     b.innerHTML = rows.map((u,i)=>{
@@ -208,9 +208,10 @@
     }).join('');
   }
   async function loadUsers(){
-    const d = await getJSON('/api/admin/adoption/top-users?window=' + state.window + '&limit=10');
-    USERS = d.rows;
-    renderUsers($('userSearch').value);
+    const q = $('userSearch').value.trim();
+    const qs = q ? '&q=' + encodeURIComponent(q) : '';
+    const d = await getJSON('/api/admin/adoption/top-users?window=' + state.window + '&limit=10' + qs);
+    renderUsers(d.rows);
   }
 
   // ── wiring ─────────────────────────────────────────────────
@@ -221,7 +222,11 @@
     state.window = btn.dataset.win;
     refreshWindowed();
   });
-  $('userSearch').addEventListener('input', e=>renderUsers(e.target.value));
+  let searchTimer;
+  $('userSearch').addEventListener('input', ()=>{
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(()=>loadUsers().catch(()=>{}), 250);
+  });
 
   refreshWindowed();
   loadSeries().catch(()=>{});
