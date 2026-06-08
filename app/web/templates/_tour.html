@@ -37,9 +37,14 @@
     {# Per-step spotlight card. #}
     <div class="agnes-tour__pop" role="dialog" aria-modal="true" aria-labelledby="agnesTourTitle" hidden>
         <button type="button" class="agnes-tour__close" data-act="end" aria-label="End tour" title="End tour">&times;</button>
-        <p class="agnes-tour__eyebrow"></p>
+        <div class="agnes-tour__bar" aria-hidden="true"><span class="agnes-tour__bar-fill"></span></div>
+        <div class="agnes-tour__head">
+            <span class="agnes-tour__icon" aria-hidden="true"></span>
+            <p class="agnes-tour__eyebrow"></p>
+        </div>
         <h3 class="agnes-tour__title" id="agnesTourTitle"></h3>
         <p class="agnes-tour__body"></p>
+        <ul class="agnes-tour__tips" hidden></ul>
         <div class="agnes-tour__foot">
             <span class="agnes-tour__dots" aria-hidden="true"></span>
             <div class="agnes-tour__btns">

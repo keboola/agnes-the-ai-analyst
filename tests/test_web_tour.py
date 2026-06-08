@@ -57,6 +57,36 @@ def test_intro_modal_and_injected_steps_present(seeded_app):
     assert '"key": "home"' in body or '"key":"home"' in body
 
 
+def test_card_chrome_renders(seeded_app):
+    """The polished card chrome — progress bar, the icon slot, and the step
+    header — must ship so the engine has elements to populate."""
+    c = seeded_app["client"]
+    body = c.get("/dashboard", headers=_auth(seeded_app["analyst_token"])).text
+
+    assert "agnes-tour__bar-fill" in body, "progress bar missing from the card"
+    assert "agnes-tour__icon" in body, "step icon slot missing from the card"
+    assert "agnes-tour__head" in body
+    assert "agnes-tour__tips" in body, "per-step tips list missing from the card"
+
+
+def test_injected_steps_carry_tips(seeded_app):
+    """The guide's substance — the per-step bullets — must reach the browser
+    in the injected JSON, not just the title/body."""
+    c = seeded_app["client"]
+    body = c.get("/dashboard", headers=_auth(seeded_app["analyst_token"])).text
+    assert '"tips"' in body, "steps JSON must carry the tips bullets"
+
+
+def test_injected_steps_carry_route_and_icon(seeded_app):
+    """Cross-page walk + wayfinding glyph both depend on the server emitting
+    `route` and `icon` on each step in the injected JSON."""
+    c = seeded_app["client"]
+    body = c.get("/dashboard", headers=_auth(seeded_app["analyst_token"])).text
+
+    assert '"route"' in body, "steps JSON must carry a route for cross-page navigation"
+    assert '"icon"' in body, "steps JSON must carry an icon"
+
+
 def test_injected_steps_are_role_split(seeded_app):
     """Admin sees the admin-only step in the injected JSON; non-admin doesn't.
     Proves the audience split happens server-side, before the browser."""

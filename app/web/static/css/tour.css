@@ -48,6 +48,24 @@
         0 0 0 7px rgba(46, 168, 119, 0.28);
     pointer-events: none;
     transition: top .22s ease, left .22s ease, width .22s ease, height .22s ease;
+    animation: agnes-tour-pulse 2s ease-in-out infinite;
+}
+
+/* Gentle breathing glow that draws the eye to the lit cut-out. The inner
+   ring + dim stay constant; only the outer halo pulses. */
+@keyframes agnes-tour-pulse {
+    0%, 100% {
+        box-shadow:
+            0 0 0 9999px rgba(14, 21, 37, 0.62),
+            0 0 0 3px var(--ds-primary),
+            0 0 0 7px rgba(46, 168, 119, 0.28);
+    }
+    50% {
+        box-shadow:
+            0 0 0 9999px rgba(14, 21, 37, 0.62),
+            0 0 0 3px var(--ds-primary),
+            0 0 0 11px rgba(46, 168, 119, 0.16);
+    }
 }
 
 /* When a step has no target (welcome / closing card) the spot is hidden
@@ -75,6 +93,65 @@
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
+}
+
+/* Card entrance — a quick fade + lift, re-triggered on every step via the
+   `is-enter` class (JS forces a reflow between removes). The centered closing
+   card keeps its translate transform, so it animates opacity only. */
+.agnes-tour__pop.is-enter {
+    animation: agnes-tour-pop-in .22s ease both;
+}
+
+.agnes-tour__pop.is-centered.is-enter {
+    animation: agnes-tour-pop-in-centered .22s ease both;
+}
+
+@keyframes agnes-tour-pop-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes agnes-tour-pop-in-centered {
+    from { opacity: 0; transform: translate(-50%, calc(-50% + 6px)); }
+    to { opacity: 1; transform: translate(-50%, -50%); }
+}
+
+/* Progress bar across the top of the card. */
+.agnes-tour__bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    border-radius: 14px 14px 0 0;
+    background: var(--ds-surface-dim);
+    overflow: hidden;
+}
+
+.agnes-tour__bar-fill {
+    display: block;
+    height: 100%;
+    width: 0;
+    background: var(--ds-primary);
+    border-radius: 14px 0 0 0;
+    transition: width .28s ease;
+}
+
+/* Header row: step icon + the "Step N of M" eyebrow. */
+.agnes-tour__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0 6px;
+}
+
+.agnes-tour__icon {
+    font-size: 18px;
+    line-height: 1;
+}
+
+.agnes-tour__icon[hidden] {
+    display: none;
 }
 
 /* Close (✕) — ends the tour from any step. */
@@ -141,7 +218,7 @@
     letter-spacing: .08em;
     text-transform: uppercase;
     color: var(--ds-primary);
-    margin: 0 0 6px;
+    margin: 0;
 }
 
 .agnes-tour__title {
@@ -157,6 +234,38 @@
     line-height: 1.55;
     color: var(--ds-text-secondary);
     margin: 0 0 18px;
+}
+
+/* "What you can do here" bullets — the substance of each step. */
+.agnes-tour__tips {
+    list-style: none;
+    margin: 0 0 18px;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.agnes-tour__tips[hidden] {
+    display: none;
+}
+
+.agnes-tour__tips li {
+    position: relative;
+    padding-left: 20px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--ds-text-secondary);
+}
+
+/* Check-style marker drawn from a token color (no raw hex). */
+.agnes-tour__tips li::before {
+    content: "✓";
+    position: absolute;
+    left: 0;
+    top: 0;
+    font-weight: 700;
+    color: var(--ds-primary);
 }
 
 .agnes-tour__foot {
@@ -245,7 +354,14 @@
 @media (prefers-reduced-motion: reduce) {
     .agnes-tour__spot,
     .agnes-tour__pop,
-    .agnes-tour__dot {
+    .agnes-tour__dot,
+    .agnes-tour__bar-fill {
         transition: none;
+    }
+
+    .agnes-tour__spot,
+    .agnes-tour__pop.is-enter,
+    .agnes-tour__pop.is-centered.is-enter {
+        animation: none;
     }
 }

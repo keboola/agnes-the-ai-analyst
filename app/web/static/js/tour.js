@@ -2,13 +2,19 @@
  *
  * A small, dependency-free spotlight tour that walks a signed-in user
  * through the primary navigation. The nav lives in `_app_header.html` and
- * renders on every authed page, so the whole tour runs in place on whatever
- * page the user is on — no cross-page state machine, no backend persistence.
+ * renders on every authed page, so every step resolves on whatever page the
+ * user lands on.
  *
  * Steps are NOT defined here. They come from app/web/onboarding.py, filtered
  * by audience (admin vs non-admin) server-side, and injected into the page as
  * a JSON <script id="agnesOnboardingSteps">. This engine just renders them —
  * which is what lets the contract test guarantee they never go stale.
+ *
+ * Cross-page walkthrough: each step carries a `route`. Clicking Next/Back
+ * navigates to the step's page when it differs from the current one, stashing
+ * the tour position in sessionStorage so the engine resumes mid-walk after the
+ * reload. There is no backend persistence — sessionStorage is per-tab and
+ * cleared the moment the tour ends.
  *
  * Flow:
  *   • First authed visit (no `seen` flag) → the intro consent modal pops once.
@@ -24,17 +30,27 @@
     "use strict";
 
     var SEEN_KEY = "agnes-onboarding-v1-seen";
+    var RUN_KEY = "agnes-onboarding-v1-run";   // sessionStorage: resume position across page nav
     var root = document.getElementById("agnesTour");
     if (!root) return;
+
+    var reduceMotion = false;
+    try {
+        reduceMotion = window.matchMedia &&
+            window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    } catch (e) { reduceMotion = false; }
 
     var els = {
         backdrop: root.querySelector(".agnes-tour__backdrop"),
         spot: root.querySelector(".agnes-tour__spot"),
         intro: root.querySelector(".agnes-tour__intro"),
         pop: root.querySelector(".agnes-tour__pop"),
+        bar: root.querySelector(".agnes-tour__bar-fill"),
+        icon: root.querySelector(".agnes-tour__icon"),
         eyebrow: root.querySelector(".agnes-tour__eyebrow"),
         title: root.querySelector(".agnes-tour__title"),
         body: root.querySelector(".agnes-tour__body"),
+        tips: root.querySelector(".agnes-tour__tips"),
         dots: root.querySelector(".agnes-tour__dots"),
         skip: root.querySelector('[data-act="skip"]'),
         back: root.querySelector('[data-act="back"]'),
@@ -59,6 +75,35 @@
     }
     function markSeen() {
         try { localStorage.setItem(SEEN_KEY, "1"); } catch (e) {}
+    }
+
+    // sessionStorage run-state: { idx } while a cross-page navigation is in flight.
+    function saveRun(at) {
+        try { sessionStorage.setItem(RUN_KEY, JSON.stringify({ idx: at })); } catch (e) {}
+    }
+    function readRun() {
+        try {
+            var v = sessionStorage.getItem(RUN_KEY);
+            if (!v) return null;
+            var o = JSON.parse(v);
+            return (o && typeof o.idx === "number") ? o.idx : null;
+        } catch (e) { return null; }
+    }
+    function clearRun() {
+        try { sessionStorage.removeItem(RUN_KEY); } catch (e) {}
+    }
+
+    // Compare a step.route against where we actually are. Trailing slashes and
+    // an empty/`/` home both normalize so we don't navigate to the page we're on.
+    function normPath(p) {
+        if (!p) return "";
+        p = p.split("?")[0].split("#")[0];
+        if (p.length > 1 && p.charAt(p.length - 1) === "/") p = p.slice(0, -1);
+        return p;
+    }
+    function onStepPage(step) {
+        if (!step || !step.route) return true;   // routeless step renders in place
+        return normPath(step.route) === normPath(window.location.pathname);
     }
 
     function resolve(step) {
@@ -104,16 +149,40 @@
         pop.style.left = left + "px";
     }
 
+    // Re-trigger the card's entrance animation each render (unless reduced motion).
+    function animateCard() {
+        if (reduceMotion) return;
+        els.pop.classList.remove("is-enter");
+        // force reflow so the class re-add restarts the keyframe
+        void els.pop.offsetWidth;
+        els.pop.classList.add("is-enter");
+    }
+
     function render() {
         var step = active[idx];
         var el = step.anchor ? resolve(step) : null;
+        var last = idx === active.length - 1;
 
-        els.eyebrow.textContent = idx === active.length - 1 ? "All set" : ("Step " + (idx + 1) + " of " + active.length);
+        els.icon.textContent = step.icon || "";
+        els.icon.hidden = !step.icon;
+        els.eyebrow.textContent = last ? "All set" : ("Step " + (idx + 1) + " of " + active.length);
         els.title.textContent = step.title || "";
         els.body.textContent = step.body || "";
+        if (els.tips) {
+            els.tips.innerHTML = "";
+            var tips = step.tips || [];
+            for (var t = 0; t < tips.length; t++) {
+                var li = document.createElement("li");
+                li.textContent = tips[t];
+                els.tips.appendChild(li);
+            }
+            els.tips.hidden = tips.length === 0;
+        }
         els.back.disabled = idx === 0;
-        els.next.textContent = idx === active.length - 1 ? "Done" : "Next";
+        els.next.textContent = last ? "Done" : "Next";
+        if (els.bar) els.bar.style.width = Math.round(((idx + 1) / active.length) * 100) + "%";
         renderDots();
+        animateCard();
 
         if (el && el.getBoundingClientRect) {
             el.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -179,12 +248,15 @@
         if (els.introStart) els.introStart.focus();
     }
 
-    // Run the spotlight steps.
-    function startSteps() {
+    // Run the spotlight steps. `at` lets resume() jump to a saved position.
+    function startSteps(at) {
+        // Once a tour begins by any path, never auto-pop the intro again — even
+        // if a cross-page nav loses the run flag on the destination page.
+        markSeen();
         closeDropdowns();
         buildActive();
         if (!active.length) { hideOverlay(); return; }
-        idx = 0;
+        idx = Math.max(0, Math.min(typeof at === "number" ? at : 0, active.length - 1));
         els.intro.hidden = true;
         els.pop.hidden = false;
         showOverlay();
@@ -193,20 +265,33 @@
     }
 
     function end() {
+        clearRun();
         hideOverlay();
         markSeen();
     }
 
+    // Move to `target` index, navigating across pages when the destination
+    // step lives on another route (resuming there via sessionStorage).
+    function goTo(target) {
+        if (target < 0 || target > active.length - 1) { end(); return; }
+        var step = active[target];
+        if (!onStepPage(step)) {
+            saveRun(target);
+            window.location.assign(step.route);
+            return;
+        }
+        idx = target;
+        render();
+    }
+
     function next() {
         if (idx >= active.length - 1) { end(); return; }
-        idx++;
-        render();
+        goTo(idx + 1);
     }
 
     function back() {
         if (idx === 0) return;
-        idx--;
-        render();
+        goTo(idx - 1);
     }
 
     // Wire controls.
@@ -215,11 +300,11 @@
     if (els.skip) els.skip.addEventListener("click", end);
     if (els.end) els.end.addEventListener("click", end);
     if (els.introStart) els.introStart.addEventListener("click", function () {
-        markSeen();
         startSteps();
     });
     if (els.introSkip) els.introSkip.addEventListener("click", function () {
         markSeen();
+        clearRun();
         hideOverlay();
     });
 
@@ -239,13 +324,20 @@
         function (btn) {
             btn.addEventListener("click", function (e) {
                 e.preventDefault();
-                startSteps();
+                clearRun();
+                startSteps(0);
             });
         }
     );
 
-    // Auto-show the consent modal once, on the first authed visit.
-    if (!seen() && allSteps.length) {
+    // Resume a cross-page walk if one is in flight; otherwise auto-show the
+    // consent modal once on the first authed visit.
+    var resumeAt = readRun();
+    if (resumeAt !== null && allSteps.length) {
+        clearRun();   // consume immediately so a manual refresh doesn't relaunch
+        // Let the header + page settle before measuring the target rect.
+        setTimeout(function () { startSteps(resumeAt); }, reduceMotion ? 0 : 250);
+    } else if (!seen() && allSteps.length) {
         setTimeout(showIntro, 800);   // let the header settle before measuring
     }
 })();

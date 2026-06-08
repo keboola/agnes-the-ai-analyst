@@ -74,6 +74,32 @@ def test_every_step_route_is_registered() -> None:
     )
 
 
+def test_every_spotlight_step_has_a_route_to_navigate_to() -> None:
+    """The tour is a cross-page walk: every step that spotlights an anchor
+    must carry a route the engine can navigate to. Only the target-less
+    closing card (no anchor) is allowed to omit it."""
+    orphan = [s.key for s in ONBOARDING_STEPS if s.anchor and not s.route]
+    assert not orphan, f"anchored steps without a route can't be walked to: {orphan}"
+
+
+def test_every_step_has_an_icon() -> None:
+    """Each step renders a wayfinding glyph in the card header — keep the set
+    complete so the UI never shows a blank icon slot."""
+    missing = [s.key for s in ONBOARDING_STEPS if not s.icon]
+    assert not missing, f"onboarding steps missing an icon: {missing}"
+
+
+def test_every_step_has_substantive_tips() -> None:
+    """The guide's substance lives in the per-step bullets. Guard that every
+    step carries at least two concrete tips so the tour stays informative and
+    nobody trims it back down to one-line spotlights."""
+    thin = [s.key for s in ONBOARDING_STEPS if len(s.tips) < 2]
+    assert not thin, f"onboarding steps with too few tips (need >=2): {thin}"
+    # Tips must be real strings, not blanks.
+    blank = [s.key for s in ONBOARDING_STEPS if any(not t.strip() for t in s.tips)]
+    assert not blank, f"onboarding steps with empty tip bullets: {blank}"
+
+
 def test_audience_filtering_splits_admin_and_non_admin() -> None:
     admin_keys = {s.key for s in ONBOARDING_STEPS if s.audience == "admin"}
     assert admin_keys, "expected at least one admin-only step to exercise the split"
@@ -112,6 +138,16 @@ def test_steps_are_server_injected_not_hardcoded_in_js() -> None:
 
     engine = (STATIC / "js" / "tour.js").read_text(encoding="utf-8")
     assert "agnesOnboardingSteps" in engine, "tour.js must read the injected steps"
+
+
+def test_engine_resumes_across_page_navigation() -> None:
+    """The cross-page walk relies on the engine stashing its position in
+    sessionStorage before navigating and resuming on the next page — guard
+    that wiring so a refactor can't silently turn it back into an in-place
+    tour that never leaves the current page."""
+    engine = (STATIC / "js" / "tour.js").read_text(encoding="utf-8")
+    assert "sessionStorage" in engine, "tour.js must persist its resume position"
+    assert "window.location.assign" in engine, "tour.js must navigate between step pages"
 
 
 def test_reopen_launcher_present_in_header_and_profile() -> None:

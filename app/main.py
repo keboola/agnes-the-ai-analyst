@@ -795,10 +795,21 @@ def _is_truthy_env(name: str) -> bool:
     return os.environ.get(name, "").lower() in ("1", "true", "yes")
 
 
-# DEBUG turns the toolbar on; LOCAL_DEV_MODE implies it (auth-bypassed dev
-# environment is by definition a debugging context — no point in making
-# operators set both).
-DEBUG = _is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")
+def _debug_enabled() -> bool:
+    """Whether the FastAPI debug toolbar is mounted.
+
+    LOCAL_DEV_MODE (auth-bypassed dev) implies DEBUG so operators needn't set
+    both. But an *explicit* DEBUG env wins either way — set ``DEBUG=0`` to run
+    local-dev WITHOUT the toolbar, whose per-request instrumentation
+    (incl. the compose healthcheck) can peg CPU on heavy HTML pages.
+    """
+    raw = os.environ.get("DEBUG")
+    if raw is not None and raw.strip() != "":
+        return _is_truthy_env("DEBUG")
+    return _is_truthy_env("LOCAL_DEV_MODE")
+
+
+DEBUG = _debug_enabled()
 
 
 def _toolbar_show_callback(request, settings) -> bool:
@@ -820,7 +831,7 @@ def _toolbar_show_callback(request, settings) -> bool:
     to flickered and reset to the latest poll's count. Gating on
     ``Sec-Fetch-Dest`` keeps the toolbar pinned to the page under inspection.
     """
-    if not (_is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")):
+    if not _debug_enabled():
         return False
     path = request.url.path
     # The toolbar's own render_panel + static endpoints are XHR — always allow,
