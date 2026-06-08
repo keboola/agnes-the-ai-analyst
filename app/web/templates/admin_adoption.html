@@ -188,11 +188,17 @@
     const b = $('users-body');
     if(!rows.length){ b.innerHTML='<tr><td colspan="7" class="obs-empty">No users match.</td></tr>'; return; }
     b.innerHTML = rows.map((u,i)=>{
-      const link = u.user_id ? encodeURIComponent(u.user_id) : encodeURIComponent(u.username||'');
       const name = u.username || u.user_id || '—';
+      // Drill-down resolves by user_id (a stable UUID). Legacy rows ingested
+      // before the v45 backfill (or not yet reprocessed) have no user_id —
+      // the username is the email local-part, which the per-user route can't
+      // resolve, so we render those as plain text instead of a dead link.
+      const nameCell = u.user_id
+        ? `<a class="adopt-link" href="/admin/adoption/users/${encodeURIComponent(u.user_id)}">${esc(name)}</a>`
+        : `<span title="No stable user id yet — drill-down available once this user's sessions are processed">${esc(name)}</span>`;
       return `<tr>
         <td><span class="adopt-rank">${i+1}</span></td>
-        <td><span class="adopt-avatar">${esc(initials(name))}</span><a class="adopt-link" href="/admin/adoption/users/${link}">${esc(name)}</a></td>
+        <td><span class="adopt-avatar">${esc(initials(name))}</span>${nameCell}</td>
         <td class="obs-num">${u.active_hours}h</td>
         <td class="obs-num">${fmtN(u.sessions)}</td>
         <td class="obs-num">${fmtN(u.prompts)}</td>
