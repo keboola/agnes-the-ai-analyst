@@ -9,7 +9,7 @@
   .mp-page {
     --surface: var(--ds-surface);
     --primary-light: color-mix(in srgb, var(--ds-primary) 12%, transparent);
-    --border-light: var(--ds-border);
+    --border-light: var(--ds-border-light);
     --text-primary: var(--ds-text-primary);
     --text-secondary: var(--ds-text-secondary);
     --success-color: #10b77f;
