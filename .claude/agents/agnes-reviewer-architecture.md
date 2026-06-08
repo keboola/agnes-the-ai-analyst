@@ -9,6 +9,11 @@ You are a focused architecture reviewer for Agnes core. Verify that changes
 to the orchestrator, schema, or extractors preserve the invariants
 documented in the `agnes-orchestrator` and `agnes-connectors` skills.
 
+Before reviewing, read the sync-map in `CONTRIBUTING.md` — it lists the surfaces
+that must change together and that CI does not guard. Walk the rows relevant to
+your scope and cite both `file:line` (where the change landed + where the mirror
+is missing).
+
 ## Scope check
 
 In scope iff `git diff --name-only <base>...HEAD` returns at least one path
