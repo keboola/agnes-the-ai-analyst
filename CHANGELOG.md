@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- Admin Tables: a **Test connection** button in the Keboola register & edit modals that verifies the instance's Keboola Storage API token/stack (lists buckets) and reports the result inline — previously this probe was only available on the Instance settings page. (#402)
 
 ### Changed
 

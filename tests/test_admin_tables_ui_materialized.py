@@ -364,6 +364,22 @@ def test_keboola_discover_buttons_visible_on_keboola_instance(seeded_app, monkey
         reset_cache()
 
 
+def test_keboola_test_connection_button_in_register_and_edit_modals(seeded_app):
+    """#402: the Keboola register & edit modals expose a Test-connection
+    button wired to the existing /api/admin/keboola/test-connection probe,
+    with an inline result element and a self-contained onTestKeboola handler."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    html = c.get("/admin/tables", headers=_auth(token)).text
+    # Button rendered in BOTH modal footers (register + edit).
+    assert html.count('onclick="onTestKeboola(this)"') >= 2
+    assert "Test connection" in html
+    # Inline result element + handler defined + hits the existing endpoint.
+    assert 'class="kbc-test-result"' in html
+    assert "function onTestKeboola(" in html
+    assert "/api/admin/keboola/test-connection" in html
+
+
 def test_admin_tables_keboola_branch_unchanged(seeded_app, monkeypatch):
     """Phase E: the BQ form is always rendered (inside #tab-content-bigquery)
     regardless of data_source.type. On a Keboola instance the BQ tab is

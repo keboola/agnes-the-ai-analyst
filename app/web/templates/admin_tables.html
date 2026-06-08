@@ -1512,6 +1512,10 @@
                         </div>
                     </div>
                     <div class="modal-footer">
+                        <div class="kbc-test-wrap" style="margin-right:auto; display:flex; align-items:center; gap:10px;">
+                            <button type="button" class="btn btn-secondary" onclick="onTestKeboola(this)">Test connection</button>
+                            <span class="kbc-test-result" hidden style="font-size:13px;"></span>
+                        </div>
                         <button class="btn btn-secondary" onclick="closeRegisterKeboolaModal()">Cancel</button>
                         <button class="btn btn-primary" id="registerKeboolaSubmitBtn"
                                 onclick="registerKeboolaTable()">Register</button>
@@ -1720,6 +1724,10 @@
                         </div>
                     </div>
                     <div class="modal-footer">
+                        <div class="kbc-test-wrap" style="margin-right:auto; display:flex; align-items:center; gap:10px;">
+                            <button type="button" class="btn btn-secondary" onclick="onTestKeboola(this)">Test connection</button>
+                            <span class="kbc-test-result" hidden style="font-size:13px;"></span>
+                        </div>
                         <button class="btn btn-secondary" onclick="closeEditKeboolaModal()">Cancel</button>
                         <button class="btn btn-primary" id="editKeboolaSubmitBtn"
                                 onclick="saveKeboolaTabEdit()">Save Changes</button>
@@ -3710,6 +3718,43 @@
             source_table: sourceTable,
             source_query: 'SELECT * FROM kbc."' + bucket + '"."' + sourceTable + '"',
         });
+    }
+
+    // ── Keboola test connection (#402) — verify the instance's Keboola
+    //    Storage API token/stack from the register/edit modals, mirroring
+    //    the probe on /admin/server-config. Self-contained: writes into the
+    //    sibling `.kbc-test-result` span next to the clicked button.
+    async function onTestKeboola(btn) {
+        var resultEl = btn.parentElement.querySelector('.kbc-test-result');
+        resultEl.hidden = false;
+        resultEl.textContent = 'Testing…';
+        resultEl.style.color = '';
+        btn.disabled = true;
+        try {
+            var r = await fetch('/api/admin/keboola/test-connection', {
+                method: 'POST',
+                credentials: 'include',
+            });
+            if (r.ok) {
+                var body = await r.json();
+                resultEl.textContent = '✓ ok (' + body.elapsed_ms + ' ms; ' + body.bucket_count
+                    + ' bucket' + (body.bucket_count !== 1 ? 's' : '') + ')';
+                resultEl.style.color = '#2a8c4a';
+            } else {
+                var ebody;
+                try { ebody = await r.json(); } catch (_) { ebody = await r.text(); }
+                var detail = ebody && typeof ebody === 'object' ? ebody.detail : ebody;
+                var kind = detail && typeof detail === 'object' ? (detail.kind || 'error') : 'error';
+                var hint = detail && typeof detail === 'object' ? (detail.hint || detail.message || '') : String(detail);
+                resultEl.textContent = '✗ ' + kind + (hint ? ' — ' + hint : '');
+                resultEl.style.color = '#c0392b';
+            }
+        } catch (e) {
+            resultEl.textContent = '✗ network error — ' + e.message;
+            resultEl.style.color = '#c0392b';
+        } finally {
+            btn.disabled = false;
+        }
     }
 
     function registerKeboolaTable() {
