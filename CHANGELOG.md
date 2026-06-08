@@ -15,7 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
-- Cleaned up half-rebranded UI spots where a brand-green element still used the old pre-rebrand blue `#0056A3` (the legacy `--primary-dark`) — 7 spots across 5 templates, now `var(--ds-primary-dark)`: the `marketplace_plugin_detail` hero gradient (was green→blue, now green→green-dark), the `news_editor` primary-button hover, and the green-tinted badge text in `memory_domain_detail`, `admin_corporate_memory`, and `catalog_package_detail`'s `.qm-remote` (were green bg + blue text, now green-on-green — the LOCAL/REMOTE/MATERIALIZED labels carry the distinction). Left untouched: the legacy `--primary` blue palette (internally consistent; a separate migration). (#497)
+- Cleaned up half-rebranded UI spots where a brand-green element still used the old pre-rebrand blue `#0056A3` (the legacy `--primary-dark`), now `var(--ds-primary-dark)`: the `marketplace_plugin_detail` hero gradient (was green→blue, now green→green-dark), the `news_editor` primary-button hover, and the green-tinted status/type badges in `memory_domain_detail`, `admin_corporate_memory`, `catalog_package_detail` (`.qm-remote`), and `marketplace.css` (`.type-badge[data-type=plugin]`) — were green bg + blue text, now green-on-green (the LOCAL/REMOTE/MATERIALIZED + PLUGIN/SKILL/AGENT labels carry the distinction). Left untouched: the legacy `--primary` blue palette (internally consistent; a separate migration). (#497)
 
 ### Removed
 
