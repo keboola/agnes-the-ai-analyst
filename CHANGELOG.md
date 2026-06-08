@@ -13,13 +13,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
-- `/admin/server-config`: bespoke `.danger-pill` / `.secret-pill` badges now use the canonical `.badge` / `.badge--danger` / `.badge--success` classes (token-based, so they flip correctly in dark mode), and the page's duplicated `.modal-*` CSS was dropped in favor of the global design-system modal styles (page-specific `.diff-*` kept). (#497)
 
 ### Fixed
 
 ### Removed
 
 ### Internal
+
+## [0.68.4] — 2026-06-08
+
+### Changed
+- `/admin/server-config`: bespoke `.danger-pill` / `.secret-pill` badges now use the canonical `.badge` / `.badge--danger` / `.badge--success` classes (token-based, so they flip correctly in dark mode), and the page's duplicated `.modal-*` CSS was dropped in favor of the global design-system modal styles (page-specific `.diff-*` kept). (#497, #549)
 
 ## [0.68.3] — 2026-06-07
 
