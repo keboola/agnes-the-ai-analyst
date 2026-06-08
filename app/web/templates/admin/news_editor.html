@@ -156,7 +156,7 @@ document.addEventListener('DOMContentLoaded', function () {
             // through. Empty sandbox = strictest possible posture.
             var html = '<style>body{font-family:Inter,system-ui,sans-serif;font-size:14px;color:#111827;margin:0;padding:18px;}</style>'
                 + '<div>' + (data.intro || '') + '</div>'
-                + '<hr style="border:0;border-top:1px solid var(--ds-border);margin:14px 0">'
+                + '<hr style="border:0;border-top:1px solid #e4e7ee;margin:14px 0">'
                 + '<div>' + (data.content || '') + '</div>';
             previewFrame.setAttribute('srcdoc', html);
         }).catch(function () { /* ignore preview failures silently */ });
