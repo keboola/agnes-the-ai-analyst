@@ -13,6 +13,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
+- Tokenized hardcoded font-sizes in `style-custom.css` to the `--text-*` scale — 27 value-preserving swaps (`0.875rem`→`var(--text-base)`, `0.75rem`→`var(--text-sm)`, `1rem`→`var(--text-md)`, `1.5rem`→`var(--text-xl)`; each token equals the literal it replaces at the 16px root, so rendering is unchanged). Addresses the font-size half of #400 (the absorbed-`style.css` legacy section); the neutral-color half is already handled by the legacy `--text`/`--border` token aliases, and the remaining hardcoded colors there are intentional semantic tints (alert states) / a dark code block. Sizes with no exact token (13px `0.8125rem`, 22px `1.375rem`, …) are left as-is — rounding them to the nearest token would change rendering, so they're better standardised per-component. (#400)
 
 ### Fixed
 
