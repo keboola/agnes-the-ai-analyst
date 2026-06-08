@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.68.12] — 2026-06-08
+
+### Fixed
+- The server Docker image now bundles `slack_sdk` (the `[slack-socket]` extra is added to the `uv pip install` line in the Dockerfile), so the optional Slack **Socket Mode** inbound transport works out-of-the-box. Previously the extra was documented but never installed in the image, so a `chat.slack.transport: socket` / `SLACK_TRANSPORT=socket` deployment fail-closed at startup (logged + Slack left disabled) on the stock image — Socket Mode effectively required a custom build. HTTP transport (the default) is unaffected and the `slack_sdk` import stays lazy, so HTTP-only deployments pay nothing at runtime. (#576)
+
 ## [0.68.11] — 2026-06-08
 
 ### Added

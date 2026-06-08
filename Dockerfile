@@ -72,8 +72,11 @@ RUN uv build --wheel --out-dir /app/dist
 
 # Install production dependencies from pyproject.toml. The `[server]` extra
 # pulls in connectors-only deps (kbcstorage) that the CLI wheel deliberately
-# omits — see [project.optional-dependencies].server in pyproject.toml.
-RUN uv pip install --system --no-cache ".[server]"
+# omits; `[slack-socket]` adds slack_sdk so the optional Slack Socket Mode
+# inbound transport works out-of-the-box in the server image (HTTP-only
+# deployments simply never enable it; the import stays lazy + fail-closed).
+# See [project.optional-dependencies] in pyproject.toml.
+RUN uv pip install --system --no-cache ".[server,slack-socket]"
 
 # Run as non-root user for container hardening (C13).
 # uid/gid pinned to 999 so host-side chown in startup-script.sh.tpl can match
