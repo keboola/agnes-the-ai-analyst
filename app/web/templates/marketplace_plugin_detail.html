@@ -9,7 +9,7 @@
 {% import "_components.html" as ds %}
 <style>
   .plugin-detail {
-    --primary-light: rgba(46, 168, 119, 0.12);
+    --primary-light: color-mix(in srgb, var(--ds-primary) 12%, transparent);
     --border-light: #eceff1;
     --text-primary: #202124;
     --text-secondary: #5f6368;
@@ -27,7 +27,7 @@
     border-radius: 14px;
     padding: 22px 28px 28px;
     margin-bottom: 24px;
-    box-shadow: 0 4px 16px rgba(46, 168, 119, 0.18);
+    box-shadow: 0 4px 16px color-mix(in srgb, var(--ds-primary) 18%, transparent);
     color: #fff;
   }
   .plugin-detail .crumbs {
@@ -659,7 +659,7 @@
   }
   .plugin-detail .inner-card:hover {
     border-color: var(--ds-primary);
-    box-shadow: 0 4px 14px rgba(46, 168, 119, 0.10);
+    box-shadow: 0 4px 14px color-mix(in srgb, var(--ds-primary) 10%, transparent);
     transform: translateY(-1px);
   }
   .plugin-detail .inner-card .photo {
