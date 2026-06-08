@@ -12,6 +12,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.69.0] — 2026-06-08
+
+### Added
+
 - Dev-agent kit: a Claude Code dev-agent kit under `.claude/` — `/agnes-review` scope-gated review team (rules / architecture / rbac / parity + consolidator), `agnes-builder` + `agnes-conventions` (five code-verified playbooks), `/agnes-build` parallel build team (`agnes-decomposer` + `agnes-integrator`), a `CONTRIBUTING.md` change-safety sync-map, and a PostToolUse ruff/mypy quality hook (`scripts/post-edit-quality.sh`). A router table in `CLAUDE.md` indexes it.
 - API coverage: the `/api/* → CLI + MCP` triple-surface check (`tests/test_documentation_api_triple_surface.py`) is now a ratchet — a new endpoint must be classified triple-surface (`_COHORT`) or consciously REST-only (`_EXEMPT`); existing endpoints are grandfathered (`tests/api_triple_surface_grandfathered.txt`). Complements the docs-coverage gate from #565.
 
