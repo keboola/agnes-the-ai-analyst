@@ -48,21 +48,18 @@ def test_cli_subcommands_registered():
     from cli.main import app
 
     # Top-level groups (name → registered Typer instance).
-    groups: dict[str, object] = {
-        g.name: g.typer_instance for g in app.registered_groups if g.name
-    }
+    groups: dict[str, object] = {g.name: g.typer_instance for g in app.registered_groups if g.name}
 
     for path, (cli_cmd, _mcp_tool) in _COHORT.items():
         head, tail = cli_cmd.split(" ", 1)
         assert head in groups, (
-            f"CLI group '{head}' missing for {path} — register via "
-            f"`app.add_typer(...)` in cli/main.py"
+            f"CLI group '{head}' missing for {path} — register via `app.add_typer(...)` in cli/main.py"
         )
         sub = groups[head]
         sub_names = {c.name for c in sub.registered_commands if c.name}  # type: ignore[attr-defined]
         assert tail in sub_names, (
             f"CLI subcommand '{cli_cmd}' missing for {path} — define "
-            f"`@{head}_app.command(\"{tail}\")` in cli/commands/{head}.py"
+            f'`@{head}_app.command("{tail}")` in cli/commands/{head}.py'
         )
 
 
@@ -80,6 +77,49 @@ def test_mcp_tools_registered():
     names = {t.name for t in tools}
     for path, (_cli_cmd, mcp_tool) in _COHORT.items():
         assert mcp_tool in names, (
-            f"MCP tool '{mcp_tool}' missing for {path} — register via "
-            f"`@mcp.tool()` in app/api/mcp_http.py"
+            f"MCP tool '{mcp_tool}' missing for {path} — register via `@mcp.tool()` in app/api/mcp_http.py"
         )
+
+
+import os
+from pathlib import Path
+
+_BASELINE_PATH = Path(__file__).resolve().parent / "api_triple_surface_grandfathered.txt"
+
+# Endpoints consciously REST-only (admin mutations, internal, webhooks). Reason
+# required. New endpoints go here OR in _COHORT — never silently.
+_EXEMPT: dict[str, str] = {}
+
+
+def _load_grandfathered() -> frozenset[str]:
+    if not _BASELINE_PATH.exists():
+        return frozenset()
+    return frozenset(
+        ln.strip()
+        for ln in _BASELINE_PATH.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.startswith("#")
+    )
+
+
+def _live_surface_paths() -> set[str]:
+    os.environ.setdefault("TESTING", "1")
+    from app.main import create_app
+
+    return {p for p in create_app().openapi()["paths"] if p.startswith(("/api/", "/documentation/"))}
+
+
+def test_new_endpoints_are_classified():
+    live = _live_surface_paths()
+    assert len(live) > 150, "openapi returned too few paths — gate would be vacuous"
+    grandfathered = _load_grandfathered()
+    assert grandfathered, (
+        "grandfather baseline empty/missing — run `.venv/bin/python -m scripts.seed_triple_surface_baseline`"
+    )
+    stale = grandfathered - live
+    assert not stale, f"baseline lists paths no longer live (remove them): {sorted(stale)}"
+    unclassified = live - set(_COHORT) - set(_EXEMPT) - grandfathered
+    assert not unclassified, (
+        f"{len(unclassified)} new endpoint(s) not classified — add each to "
+        f"_COHORT (triple-surface: land CLI + MCP) or _EXEMPT (REST-only, with a "
+        f"reason):\n" + "\n".join(f"  {p}" for p in sorted(unclassified))
+    )

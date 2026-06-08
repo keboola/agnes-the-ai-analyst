@@ -314,14 +314,40 @@ Full recipe, deploy workflows, manual rollback runbook, weekly tag-housekeeping,
 - **Run the full test suite before every push** — `.venv/bin/pytest tests/ --tb=short -n auto -q` (this is what CI runs). Failures in code you touched: fix before pushing. Failures unrelated to your diff: confirm with `git stash` they reproduce on a clean branch, note them in the PR body, don't block on them.
 - **Watch the post-merge `release.yml` run.** On `main` pushes a `smoke-test` job pulls the just-built `:stable` image and runs a docker-compose stack; if it fails, the `rollback-on-smoke-fail` job calls the reusable `rollback.yml` workflow which re-points `:stable` to the previous known-good build and opens a tracking issue labeled `bug`. Success signal after merge = `smoke-test` green + `rollback-on-smoke-fail` skipped. If the rollback fires, the merge shipped a broken image to GHCR — investigate the tracking issue before any further push (the issue body has the failing image, commit SHA, deprecated tag, and rollback target). Manual rollback / forced target / weekly tag-pruning operator commands are in [`docs/RELEASING.md`](docs/RELEASING.md).
 
-## Specialized agents and skills
+## Specialized agents, skills & commands
 
-Two committed locations carry Agnes-specific Claude Code behavior:
+Agnes ships a Claude Code dev-agent kit under `.claude/` (auto-discovered). Pick
+the right tool:
 
-- `.claude/skills/agnes-*.md` — knowledge skills (`agnes-orchestrator`, `agnes-rbac`, `agnes-connectors`, `agnes-release-process`). Loaded into the main agent's context when their description matches the work, or invoked explicitly via `Skill(<name>)`. Read these before editing the corresponding part of the codebase.
-- `.claude/agents/agnes-*.md` — specialist subagents (`agnes-reviewer-rules`, `agnes-reviewer-rbac`, `agnes-reviewer-architecture`, `agnes-releaser`). Spawned via the Agent tool at the end of PR work (reviewers, in parallel) or explicitly before/after merge (releaser).
+| Need | Use | How |
+|---|---|---|
+| Review a change before merge | `/agnes-review` | scope-gated review **team** (rules / architecture / rbac / parity — only the in-scope subset fires) + `agnes-review-consolidator` → one advisory report (`file:line` + severity, ≤15 findings). Read-only working tree; optional comment-only PR post. |
+| Implement a whole plan in parallel | `/agnes-build` | decomposes a plan into independent tasks (sync-map coupling), builds each in its own git worktree via `agnes-builder`, integrates (migration serialized last), then runs `/agnes-review`. |
+| Implement a feature (connector / endpoint / web page / repo method / migration) | `agnes-builder` | disciplined implementer (TDD-first, DuckDB↔PG parity in the same change, migration-ladder sync, CHANGELOG, vendor-agnostic, scope discipline). Routes to the `agnes-conventions` playbooks. |
+| Cut a release / tag | `agnes-releaser` | per the release process. |
+| Deep knowledge while editing a subsystem | `agnes-*` knowledge skills | auto-loaded by description. |
 
-Design rationale: `docs/superpowers/specs/2026-05-15-agnes-agents-design.md`.
+**Agents** (`.claude/agents/`): `agnes-reviewer-rules`, `agnes-reviewer-architecture`,
+`agnes-reviewer-rbac`, `agnes-reviewer-parity`
++ `agnes-review-consolidator` (the review team), `agnes-builder` (implementer),
+`agnes-decomposer` + `agnes-integrator` (the build team),
+`agnes-releaser` (release).
+
+**Commands** (`.claude/commands/`): `/agnes-review`, `/agnes-build`.
+
+**Skills** (`.claude/skills/`): knowledge — `agnes-orchestrator`, `agnes-rbac`,
+`agnes-connectors`, `agnes-release-process`; implementation playbooks —
+`agnes-conventions` (`SKILL.md` + `references/{connector,repo-parity,migration,endpoint-rbac,web-page}.md`).
+Read the relevant one before editing that part of the codebase.
+
+**Invariants & guards:** the change-safety **sync-map** lives in `CONTRIBUTING.md`
+(walked by the review team — surfaces that must change together, incl. DuckDB↔PG
+parity and REST×CLI×MCP coverage). A PostToolUse **quality hook**
+(`scripts/post-edit-quality.sh`, wired in `.claude/settings.json`) runs ruff
+fix/format + mypy on every edited Python file.
+
+Design rationale: `docs/superpowers/specs/2026-05-15-agnes-agents-design.md`,
+`docs/superpowers/specs/2026-06-05-agnes-dev-agent-kit-design.md`.
 
 ## Project conventions
 
@@ -339,6 +365,7 @@ Non-negotiable rules:
 
 - **Add a method to `src/repositories/X.py` (DuckDB)? Add the matching method to `src/repositories/X_pg.py` (PG) in the same PR.** No exceptions for "I'll do PG later". The DuckDB-bias drift in the codebase happens commit-by-commit; one PR with only `_pg.py` change is the canonical first step toward unmaintainable parity gaps.
 - **Cross-engine contract tests must stay green.** `tests/db_pg/test_<cluster>_contract.py` parametrizes both backends through the same assertion set. If you add a method, extend the contract test in the same PR.
+- **Reach repos through the factory, never instantiate them directly.** Backend selection lives in `src/repositories/__init__.py` (a `{backend: (module, class)}` dispatch table keyed off `use_pg()` / `DATABASE_URL`); callsites import factory functions (`*_repo()`), not repo classes. Two guards enforce this: `tests/test_backend_split_guard.py` is a **static** ratchet that scans for `get_system_db()` callers + direct repo instantiation (the backend-split bug class), and the **dynamic** status-parity sweeps (`tests/db_pg/_parity_sweep_util.py`) drive both backends through a `TestClient` and diff the HTTP status of every parameter-free route to catch handlers reading off a raw `Depends(_get_db)` connection.
 - **Alembic migration for PG? Matching `_vN_to_v(N+1)` step in `src/db.py` for DuckDB.** Both ladders must reach the same schema endpoint; `tests/test_db_schema_version.py` is the integration gate.
 - **No PG-only optimizations without a DuckDB fallback path.** If a query has a PG-native window function, the DuckDB sibling either uses the same syntax (DuckDB ⊇ PG in most window-function support) or implements an equivalent in DuckDB's flavor.
 - **DuckDB extensions (BQ, FTS, etc.) are not "DuckDB legacy".** They live next to the PG repos; analytics and state both ride DuckDB where appropriate.
