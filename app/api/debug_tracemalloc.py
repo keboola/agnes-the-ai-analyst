@@ -101,6 +101,30 @@ async def tm_top(
     }
 
 
+@router.post("/api/admin/debug/malloc_trim")
+async def malloc_trim(user: dict = Depends(require_admin)):
+    """Call glibc malloc_trim(0) to force freed-but-retained heap back to the
+    OS. Proves whether high RSS is freeable allocator retention (RSS drops)
+    vs genuinely-live memory (RSS unchanged)."""
+    import ctypes
+    before = _rss_mb()
+    gc.collect()
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        ret = int(libc.malloc_trim(0))
+    except Exception as e:
+        return {"error": str(e), "rss_mb": before}
+    after = _rss_mb()
+    return {
+        "malloc_trim_ret": ret,
+        "rss_before_mb": round(before, 1),
+        "rss_after_mb": round(after, 1),
+        "freed_mb": round(before - after, 1),
+        "malloc_arena_max": os.environ.get("MALLOC_ARENA_MAX", "(unset)"),
+        "malloc_trim_threshold": os.environ.get("MALLOC_TRIM_THRESHOLD_", "(unset)"),
+    }
+
+
 @router.get("/api/admin/debug/meminfo")
 async def meminfo(user: dict = Depends(require_admin)):
     gc.collect()
