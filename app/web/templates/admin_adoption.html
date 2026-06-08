@@ -1,0 +1,224 @@
+{% extends "base_page.html" %}
+{% block title %}Adoption — Admin{% endblock %}
+
+{% set page_hero_eyebrow = "Activity Center" %}
+{% set page_hero_title = "Adoption" %}
+{% set page_hero_subtitle = "How the system is really being used — active users, time spent, skills, and sessions. The cards reflect the selected window; trends below always cover the last 30 days." %}
+
+{% block head_extra %}
+<style>
+/* Page-local component styles. Mirrors the .obs-* family from
+   admin_usage.html, re-pointed at --ds-* design tokens. */
+.adopt{ font: 14px/1.5 var(--ds-font); color: var(--ds-text-primary); }
+
+.adopt-window{ display:inline-flex; border:1px solid var(--ds-border); border-radius:999px; overflow:hidden; }
+.adopt-window button{ border:0; padding:7px 16px; font:inherit; font-size:13px; background:var(--ds-surface);
+  color:var(--ds-text-secondary); cursor:pointer; }
+.adopt-window button.is-active{ background:var(--ds-primary); color:#fff; font-weight:600; }
+
+.obs-kpis{ display:grid; grid-template-columns:repeat(6,1fr); gap:12px; margin-bottom:8px; }
+@media(max-width:1100px){ .obs-kpis{ grid-template-columns:repeat(3,1fr); } }
+@media(max-width:620px){ .obs-kpis{ grid-template-columns:repeat(2,1fr); } }
+.obs-kpi{ padding:14px 16px; border:1px solid var(--ds-border); border-radius:8px; background:var(--ds-surface);
+  display:flex; flex-direction:column; gap:4px; }
+.obs-kpi-label{ font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:var(--ds-text-secondary); }
+.obs-kpi-value{ font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
+.obs-kpi-sub{ font-size:12px; color:var(--ds-text-secondary); font-variant-numeric:tabular-nums; }
+
+.adopt-section-head{ display:flex; align-items:baseline; justify-content:space-between; gap:16px; margin:28px 0 12px; }
+.adopt-section-head h2{ font-size:15px; font-weight:600; margin:0; }
+.adopt-section-head .hint{ font-size:12px; color:var(--ds-text-muted); }
+
+.adopt-charts{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+@media(max-width:1000px){ .adopt-charts{ grid-template-columns:repeat(2,1fr); } }
+@media(max-width:620px){ .adopt-charts{ grid-template-columns:1fr; } }
+.adopt-chart-card{ border:1px solid var(--ds-border); border-radius:8px; background:var(--ds-surface); padding:14px 16px; }
+.adopt-chart-card .ct{ font-size:12px; text-transform:uppercase; letter-spacing:.4px; color:var(--ds-text-secondary); }
+.adopt-chart-card .cv{ font-size:20px; font-weight:600; font-variant-numeric:tabular-nums; margin-top:2px; }
+.adopt-chart-card .cv small{ font-size:12px; font-weight:500; color:var(--ds-text-muted); }
+.adopt-chart-card svg{ display:block; width:100%; height:70px; margin-top:8px; overflow:visible; }
+
+.obs-table-wrap{ border:1px solid var(--ds-border); border-radius:8px; overflow:hidden; background:var(--ds-surface); }
+.obs-table{ width:100%; border-collapse:collapse; font-size:13px; }
+.obs-table thead th{ text-align:left; padding:10px 12px; background:var(--ds-border-light); border-bottom:1px solid var(--ds-border);
+  font-weight:600; color:var(--ds-text-secondary); font-size:11px; text-transform:uppercase; letter-spacing:.4px; white-space:nowrap; }
+.obs-table tbody td{ padding:9px 12px; border-bottom:1px solid var(--ds-border-light); vertical-align:middle; }
+.obs-table tbody tr:last-child td{ border-bottom:none; }
+.obs-table tbody tr:hover{ background:var(--ds-border-light); }
+.obs-num{ text-align:right; font-variant-numeric:tabular-nums; }
+.obs-empty{ padding:32px 16px; text-align:center; color:var(--ds-text-muted); font-size:13px; }
+.adopt-link{ color:var(--ds-primary-dark); text-decoration:none; font-weight:600; }
+.adopt-link:hover{ text-decoration:underline; }
+.adopt-rank{ display:inline-block; width:22px; color:var(--ds-text-muted); font-variant-numeric:tabular-nums; }
+.adopt-avatar{ display:inline-flex; width:24px; height:24px; border-radius:50%; background:var(--ds-primary-light);
+  color:var(--ds-primary-dark); align-items:center; justify-content:center; font-size:11px; font-weight:700; margin-right:8px; vertical-align:middle; }
+</style>
+{% endblock %}
+
+{% block toolbar %}
+<div class="adopt-window" id="adoptWindow" role="tablist" aria-label="Time window">
+  <button type="button" data-win="24h">24h</button>
+  <button type="button" data-win="7d" class="is-active">7d</button>
+  <button type="button" data-win="30d">30d</button>
+</div>
+{% endblock %}
+
+{% block page %}
+<div class="adopt">
+
+  <section class="obs-kpis" aria-label="Adoption metrics">
+    <div class="obs-kpi"><span class="obs-kpi-label">Active users</span><span class="obs-kpi-value" id="k-users">—</span><span class="obs-kpi-sub">distinct people</span></div>
+    <div class="obs-kpi"><span class="obs-kpi-label">Time spent</span><span class="obs-kpi-value" id="k-active">—</span><span class="obs-kpi-sub" id="k-wall">—</span></div>
+    <div class="obs-kpi"><span class="obs-kpi-label">Sessions</span><span class="obs-kpi-value" id="k-sessions">—</span><span class="obs-kpi-sub">Claude Code</span></div>
+    <div class="obs-kpi"><span class="obs-kpi-label">Skill usage</span><span class="obs-kpi-value" id="k-skills">—</span><span class="obs-kpi-sub" id="k-skills-sub">—</span></div>
+    <div class="obs-kpi"><span class="obs-kpi-label">Tokens</span><span class="obs-kpi-value" id="k-tokens">—</span><span class="obs-kpi-sub">in + out + cache</span></div>
+    <div class="obs-kpi"><span class="obs-kpi-label">Prompts</span><span class="obs-kpi-value" id="k-prompts">—</span><span class="obs-kpi-sub">user messages</span></div>
+  </section>
+
+  <div class="adopt-section-head"><h2>Daily trends</h2><span class="hint">last 30 days · per day</span></div>
+  <div class="adopt-charts" id="adopt-charts"></div>
+
+  <div class="adopt-section-head"><h2>Top skills</h2><span class="hint">selected window</span></div>
+  <div class="obs-table-wrap">
+    <table class="obs-table">
+      <thead><tr><th>Skill</th><th class="obs-num">Invocations</th><th class="obs-num">Users</th></tr></thead>
+      <tbody id="skills-body"><tr><td colspan="3" class="obs-empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="adopt-section-head"><h2>Users by activity</h2>
+    <input class="search-input" id="userSearch" type="search" placeholder="Search user…" autocomplete="off">
+  </div>
+  <div class="obs-table-wrap">
+    <table class="obs-table">
+      <thead><tr><th>#</th><th>User</th><th class="obs-num">Time spent</th><th class="obs-num">Sessions</th><th class="obs-num">Prompts</th><th class="obs-num">Tokens</th><th class="obs-num">Last active</th></tr></thead>
+      <tbody id="users-body"><tr><td colspan="7" class="obs-empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  const state = { window: '7d' };
+  const $ = id => document.getElementById(id);
+
+  // ── formatting ─────────────────────────────────────────────
+  function fmtN(n){
+    n = Number(n) || 0;
+    if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+    if (n >= 1e4) return (n/1e3).toFixed(0) + 'k';
+    if (n >= 1e3) return (n/1e3).toFixed(1) + 'k';
+    return String(n);
+  }
+  function esc(s){ const d=document.createElement('div'); d.textContent=(s==null?'':s); return d.innerHTML; }
+  function relTime(iso){
+    if(!iso) return '—';
+    const sec = Math.max(0,(Date.now()-new Date(iso).getTime())/1000);
+    if(sec<3600) return Math.floor(sec/60)+'m ago';
+    if(sec<86400) return Math.floor(sec/3600)+'h ago';
+    return Math.floor(sec/86400)+'d ago';
+  }
+  async function getJSON(url){ const r=await fetch(url,{credentials:'same-origin'}); if(!r.ok) throw new Error(r.status); return r.json(); }
+
+  // ── inline SVG line chart (no library) ─────────────────────
+  function drawLineChart(values, color){
+    const W=300,H=70,P=4;
+    if(!values.length) return '';
+    const max=Math.max(...values,1), min=Math.min(...values,0), span=(max-min)||1;
+    const n=values.length;
+    const x=i => n===1 ? W/2 : P + i*(W-2*P)/(n-1);
+    const pts=values.map((v,i)=>[x(i), H-P-((v-min)/span)*(H-2*P)]);
+    const line=pts.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+    const area=`${P},${H-P} `+line+` ${W-P},${H-P}`;
+    const last=pts[pts.length-1];
+    return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+      <polygon points="${area}" fill="${color}" opacity="0.10"/>
+      <polyline points="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.6" fill="${color}"/></svg>`;
+  }
+
+  // ── KPI cards ──────────────────────────────────────────────
+  async function loadKpis(){
+    const d = await getJSON('/api/admin/adoption/kpis?window=' + state.window);
+    $('k-users').textContent    = fmtN(d.active_users);
+    $('k-active').textContent   = d.active_hours + 'h';
+    $('k-wall').textContent     = d.wall_hours + 'h wall-clock';
+    $('k-sessions').textContent = fmtN(d.sessions);
+    $('k-skills').textContent   = fmtN(d.skill_invocations);
+    $('k-skills-sub').textContent = d.distinct_skills + ' distinct skills';
+    $('k-tokens').textContent   = fmtN(d.tokens);
+    $('k-prompts').textContent  = fmtN(d.prompts);
+  }
+
+  // ── trend charts (always 30d) ──────────────────────────────
+  const GREEN = 'var(--ds-primary)';
+  const CHARTS = [
+    {t:'Active users / day',     key:'active_users',      fmt:v=>fmtN(v)},
+    {t:'Active hours / day',     key:'active_hours',      fmt:v=>v+'h'},
+    {t:'Sessions / day',         key:'sessions',          fmt:v=>fmtN(v)},
+    {t:'Skill invocations / day',key:'skill_invocations', fmt:v=>fmtN(v)},
+    {t:'Prompts / day',          key:'prompts',           fmt:v=>fmtN(v)},
+    {t:'Tokens / day',           key:'tokens',            fmt:v=>fmtN(v)},
+  ];
+  async function loadSeries(){
+    const d = await getJSON('/api/admin/adoption/series');
+    $('adopt-charts').innerHTML = CHARTS.map(c=>{
+      const vals = d.days.map(x => x[c.key] || 0);
+      const cur = vals.length ? vals[vals.length-1] : 0;
+      return `<div class="adopt-chart-card"><div class="ct">${c.t}</div>
+        <div class="cv">${c.fmt(cur)} <small>today</small></div>${drawLineChart(vals, GREEN)}</div>`;
+    }).join('');
+  }
+
+  // ── top skills ─────────────────────────────────────────────
+  async function loadSkills(){
+    const d = await getJSON('/api/admin/adoption/top-skills?window=' + state.window);
+    const b = $('skills-body');
+    if(!d.rows.length){ b.innerHTML='<tr><td colspan="3" class="obs-empty">No skill usage in this window.</td></tr>'; return; }
+    b.innerHTML = d.rows.map(r=>`<tr><td>${esc(r.skill_name)}</td><td class="obs-num">${fmtN(r.invocations)}</td><td class="obs-num">${fmtN(r.distinct_users)}</td></tr>`).join('');
+  }
+
+  // ── users by activity ──────────────────────────────────────
+  let USERS = [];
+  function initials(name){ return (name||'?').split(/[\s._-]+/).filter(Boolean).map(w=>w[0]).slice(0,2).join('').toUpperCase() || '?'; }
+  function renderUsers(filter){
+    const f = (filter||'').toLowerCase();
+    const rows = USERS.filter(u => !f || (u.username||'').toLowerCase().includes(f));
+    const b = $('users-body');
+    if(!rows.length){ b.innerHTML='<tr><td colspan="7" class="obs-empty">No users match.</td></tr>'; return; }
+    b.innerHTML = rows.map((u,i)=>{
+      const link = u.user_id ? encodeURIComponent(u.user_id) : encodeURIComponent(u.username||'');
+      const name = u.username || u.user_id || '—';
+      return `<tr>
+        <td><span class="adopt-rank">${i+1}</span></td>
+        <td><span class="adopt-avatar">${esc(initials(name))}</span><a class="adopt-link" href="/admin/adoption/users/${link}">${esc(name)}</a></td>
+        <td class="obs-num">${u.active_hours}h</td>
+        <td class="obs-num">${fmtN(u.sessions)}</td>
+        <td class="obs-num">${fmtN(u.prompts)}</td>
+        <td class="obs-num">${fmtN(u.tokens)}</td>
+        <td class="obs-num">${relTime(u.last_active)}</td>
+      </tr>`;
+    }).join('');
+  }
+  async function loadUsers(){
+    const d = await getJSON('/api/admin/adoption/top-users?window=' + state.window + '&limit=10');
+    USERS = d.rows;
+    renderUsers($('userSearch').value);
+  }
+
+  // ── wiring ─────────────────────────────────────────────────
+  function refreshWindowed(){ loadKpis().catch(()=>{}); loadSkills().catch(()=>{}); loadUsers().catch(()=>{}); }
+  $('adoptWindow').addEventListener('click', e=>{
+    const btn = e.target.closest('button'); if(!btn) return;
+    [...e.currentTarget.children].forEach(x=>x.classList.toggle('is-active', x===btn));
+    state.window = btn.dataset.win;
+    refreshWindowed();
+  });
+  $('userSearch').addEventListener('input', e=>renderUsers(e.target.value));
+
+  refreshWindowed();
+  loadSeries().catch(()=>{});
+})();
+</script>
+{% endblock %}

@@ -2519,6 +2519,38 @@ async def admin_sessions_page(
     return templates.TemplateResponse(request, "admin_sessions.html", ctx)
 
 
+@router.get("/admin/adoption", response_class=HTMLResponse)
+async def admin_adoption_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Adoption dashboard — system-wide KPI cards (24h/7d/30d), 30-day
+    daily trend charts, top skills, and a users-by-activity list. A shell;
+    data loads client-side from /api/admin/adoption/*."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_adoption.html", ctx)
+
+
+@router.get("/admin/adoption/users/{user_id}", response_class=HTMLResponse)
+async def admin_adoption_user_page(
+    user_id: str,
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Per-user adoption drill-down. Resolves the target user (404 if
+    unknown) and renders a shell; data loads from
+    /api/admin/adoption/users/{id}/*."""
+    target = users_repo().get_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    ctx = _build_context(
+        request, user=user,
+        target_user_id=user_id,
+        target_user_email=target.get("email") or "",
+    )
+    return templates.TemplateResponse(request, "admin_adoption_user.html", ctx)
+
+
 @router.get("/admin/sessions/{username}/{session_file}", response_class=HTMLResponse)
 async def admin_session_detail(
     request: Request,
