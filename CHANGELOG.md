@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.69.1] — 2026-06-09
+
+### Fixed
+- The `[slack-socket]` extra now also installs `aiohttp` (`slack_sdk`'s `SocketModeClient` uses the aiohttp transport at `services/slack_bot/socket_mode_client.py`, but `slack_sdk` does not depend on `aiohttp` itself). Without it, a `chat.slack.transport: socket` deployment still fail-closed at startup with `ModuleNotFoundError: No module named 'aiohttp'` even after the image bundled `slack_sdk` (#576). Follow-up to #576; HTTP transport unaffected. Found during live Socket Mode E2E testing.
+
 ## [0.69.0] — 2026-06-08
 
 ### Added
