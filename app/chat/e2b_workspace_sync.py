@@ -48,15 +48,23 @@ class WorkspaceTooLarge(Exception):
 
 def _iter_files(root: Path) -> Iterable[Path]:
     """Yield every regular file under ``root`` (following symlinks),
-    skipping excluded build / runtime directories."""
+    skipping excluded build / runtime directories.
+
+    Subdirs and files are visited in sorted order so the cap-breach error
+    in ``upload_workspace`` mentions a deterministic running total instead
+    of whichever file the filesystem happened to return first (inode order
+    on Linux, lexical on macOS — caused a CI flake in
+    ``test_workspace_too_large_carries_byte_count``).
+    """
     if not root.exists():
         return
     # We can't use rglob alone because we need to prune directory descent
     # for excluded dirs. os.walk lets us prune via the dirs list.
     for current_dir, subdirs, files in os.walk(root, followlinks=True):
         # Prune excluded dirs in-place so os.walk doesn't descend into them.
-        subdirs[:] = [d for d in subdirs if d not in _EXCLUDE_DIRS]
-        for fname in files:
+        # Sort for deterministic descent order (parity with the file sort below).
+        subdirs[:] = sorted(d for d in subdirs if d not in _EXCLUDE_DIRS)
+        for fname in sorted(files):
             if fname.endswith(_EXCLUDE_FILE_SUFFIXES):
                 continue
             yield Path(current_dir) / fname

@@ -20,10 +20,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
-## [0.71.0] — 2026-06-09
+## [0.70.5] — 2026-06-09
 
 ### Added
-- Slack identity binding is now a **one-click magic link** instead of a copy-paste code. When an unbound Slack user messages Agnes, the bot replies with a `…/slack/bind?code=NNNNNN` link; opening it while signed in to Agnes redeems the code server-side via the new auth-gated `GET /slack/bind` route and stamps `users.slack_user_id` — no copy-paste, and it's a one-time bind per Slack user. Security is unchanged: the route requires an Agnes login, so the code in the URL is inert on its own (it only binds the signed-in account). This also fills a gap — there was previously **no frontend UI at all** to redeem the code the bot handed out (the bot pointed at `/setup?slack=1`, which has no bind form), so binding could not actually be completed through the browser. Requires `PUBLIC_URL` (or `server.public_url`) set so the link is absolute.
+- Slack identity binding is now a **one-click magic link** instead of a copy-paste code. When an unbound Slack user messages Agnes, the bot replies with a `…/slack/bind?code=NNNNNN` link; opening it while signed in to Agnes redeems the code server-side via the new auth-gated `GET /slack/bind` route and stamps `users.slack_user_id` — no copy-paste, and it's a one-time bind per Slack user. Security is unchanged: the route requires an Agnes login, so the code in the URL is inert on its own (it only binds the signed-in account). This also fills a gap — there was previously **no frontend UI at all** to redeem the code the bot handed out (the bot pointed at `/setup?slack=1`, which has no bind form), so binding could not actually be completed through the browser. Requires `PUBLIC_URL` (or `server.public_url`) set so the link is absolute. (#584)
+
+## [0.70.4] — 2026-06-09
+
+### Fixed
+- **Bounded process memory on data-source-heavy instances (no more allocator-driven OOM crash-loops).** On instances serving BigQuery/DuckDB query traffic, anonymous (heap) memory grew without bound until the container hit its `mem_limit` and the cgroup OOM-killed the server — raising `mem_limit` only deferred the kill. Root cause was *allocator retention*, not a code leak: glibc's default per-CPU malloc arenas hold freed memory and never return it to the OS, and on a host with Transparent Huge Pages = `always` each retained region is backed by a 2 MiB huge page, so RSS ratchets up to the largest concurrent native working set (Arrow/DuckDB buffers) and stays there. Two complementary mitigations: the container image now sets `MALLOC_ARENA_MAX=2` + `MALLOC_TRIM_THRESHOLD_=131072` (Dockerfile), and the `customer-instance` provisioning module sets host THP to `madvise` (startup script, re-applied every boot). Heap was confirmed flat under churn (no Python/object leak); the fix is allocator-level. Negligible CPU impact for this I/O-bound workload. (#583)
+
+### Internal
+- `app/chat/e2b_workspace_sync._iter_files` now sorts subdirs and filenames so workspace uploads visit files in a deterministic, cross-platform order (was filesystem-dependent: lexical on macOS, inode order on Linux). Caused a `test_workspace_too_large_carries_byte_count` CI flake; surfaced while CI'ing #583. (#583)
+
+## [0.70.3] — 2026-06-09
+
+### Fixed
+- **Cloud chat: every chat turn stalled without an answer on E2B SDK 2.x.** `app/chat/e2b_provider.py` calls `sandbox.commands.run()` to spawn the agent runner, then streams the user's prompt via `commands.send_stdin()`. E2B SDK 2.x gates interactive stdin behind a new `stdin=True` flag on `run()` — without it the runner gets EOF and exits, and every subsequent `send_stdin()` fails with `SandboxException: Code.internal: error writing to stdin: stdin not enabled or closed`. The "agent never responds after Slack binding" symptom seen during live E2E testing turned out to be this — not a Slack/auth issue. Both web `/chat` and Slack bound-DM sessions are affected; SDK 1.x deployments are not (the kwarg didn't exist there) but the floor is raised to `e2b>=2.0.0` so a downstream resolver can't silently land on 1.x and break with `TypeError` instead (Devin Review on #585). (#585)
 
 ## [0.70.2] — 2026-06-09
 
