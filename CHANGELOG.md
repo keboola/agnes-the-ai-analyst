@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.70.3] — 2026-06-09
+
+### Fixed
+- **Cloud chat: every chat turn stalled without an answer on E2B SDK 2.x.** `app/chat/e2b_provider.py` calls `sandbox.commands.run()` to spawn the agent runner, then streams the user's prompt via `commands.send_stdin()`. E2B SDK 2.x gates interactive stdin behind a new `stdin=True` flag on `run()` — without it the runner gets EOF and exits, and every subsequent `send_stdin()` fails with `SandboxException: Code.internal: error writing to stdin: stdin not enabled or closed`. The "agent never responds after Slack binding" symptom seen during live E2E testing turned out to be this — not a Slack/auth issue. Both web `/chat` and Slack bound-DM sessions are affected; SDK 1.x deployments are not (the kwarg didn't exist there) but the floor is raised to `e2b>=2.0.0` so a downstream resolver can't silently land on 1.x and break with `TypeError` instead (Devin Review on #585). (#585)
+
 ## [0.70.2] — 2026-06-09
 
 ### Added

@@ -23,7 +23,7 @@ wheels = [
 
 [[package]]
 name = "agnes-the-ai-analyst"
-version = "0.69.1"
+version = "0.70.3"
 source = { editable = "." }
 dependencies = [
     { name = "a2wsgi" },
@@ -126,7 +126,7 @@ requires-dist = [
     { name = "claude-agent-sdk", specifier = ">=0.2.87,<0.3.0" },
     { name = "duckdb", specifier = ">=1.5.2" },
     { name = "dulwich", specifier = ">=1.2.5" },
-    { name = "e2b", specifier = ">=1.0.0,<3.0.0" },
+    { name = "e2b", specifier = ">=2.0.0,<3.0.0" },
     { name = "faker", marker = "extra == 'dev'", specifier = ">=24.0.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastapi-debug-toolbar", marker = "extra == 'server'", specifier = ">=0.6.3" },
