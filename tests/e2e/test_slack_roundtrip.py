@@ -10,10 +10,11 @@ The three legs:
 
   1. **Unbound DM**: an unknown ``slack_user_id`` DMs the bot. The
      ``_handle_dm`` path issues a 6-digit verification code and
-     replies in-thread with the bind instructions.
-  2. **Bind**: the user (logged in via the test auth override) POSTs
-     the code to ``/api/slack/bind``. Success returns 200; the
-     ``users.slack_user_id`` column gets the Slack ID stamped.
+     replies in-thread with a one-click ``/slack/bind?code=`` magic link.
+  2. **Bind**: the user (logged in via the test auth override) opens the
+     magic link, which redeems the code server-side via
+     ``/api/slack/bind``. Success stamps the ``users.slack_user_id`` column
+     with the Slack ID.
   3. **Bound DM**: a second DM from the same Slack user hits the
      bound branch — creates a chat session, attaches the sink bridge,
      forwards the user text to the manager. With the fake-agent

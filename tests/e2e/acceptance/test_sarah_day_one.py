@@ -277,10 +277,10 @@ def test_act2_step1_unbound_dm_issues_verification_code(cfg: Cfg, admin_client: 
         text="hey",
     )
     # Helper returns the captured outbound chat.postMessage payload(s)
-    code_msg = next((m for m in sent if "6-digit code" in m.get("text", "")), None)
+    code_msg = next((m for m in sent if "/slack/bind?code=" in m.get("text", "")), None)
     assert code_msg is not None, f"no verification-code DM emitted: {sent}"
-    code_match = re.search(r"\*(\d{6})\*", code_msg["text"])
-    assert code_match, f"no 6-digit code in DM: {code_msg['text']}"
+    code_match = re.search(r"/slack/bind\?code=(\d{6})", code_msg["text"])
+    assert code_match, f"no bind magic-link in DM: {code_msg['text']}"
     code = code_match.group(1)
 
     # Bind via /api/slack/bind (as Sarah)

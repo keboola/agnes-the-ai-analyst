@@ -109,9 +109,9 @@ async def _handle_dm(app, event: dict) -> None:
     repo = app.state.chat_repo
     user_email = lookup_user_email(repo, slack_user_id)
     if user_email is None:
-        # First DM from an unbound user: mint a 6-digit code so the user
-        # can paste it at /setup?slack=1 while logged into Agnes.  Without
-        # this the bot used to say "go to /setup" with no code to redeem.
+        # First DM from an unbound user: mint a 6-digit code and reply with
+        # a one-click /slack/bind?code= magic link (bind_prompt). Opening it
+        # while signed in to Agnes redeems the code — no copy-paste.
         code = issue_verification_code(repo._conn, slack_user_id=slack_user_id)
         public_url = getattr(app.state, "public_url", "")
         await send_thread_reply(channel, thread_ts, bind_prompt(public_url, code))
