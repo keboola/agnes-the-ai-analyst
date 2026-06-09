@@ -1,4 +1,5 @@
 """Slack event dispatcher — routes incoming events to handlers."""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,6 +8,7 @@ import re
 from typing import Any, Awaitable, Callable, Coroutine, Optional
 
 from services.slack_bot.binding import (
+    bind_prompt,
     issue_verification_code,
     is_channel_allowlisted,
     lookup_user_email,
@@ -112,15 +114,7 @@ async def _handle_dm(app, event: dict) -> None:
         # this the bot used to say "go to /setup" with no code to redeem.
         code = issue_verification_code(repo._conn, slack_user_id=slack_user_id)
         public_url = getattr(app.state, "public_url", "")
-        setup_link = f"{public_url}/setup?slack=1" if public_url else "/setup?slack=1"
-        await send_thread_reply(
-            channel, thread_ts,
-            (
-                "Welcome! To bind your Slack identity to Agnes:\n"
-                f"1. Visit {setup_link} while logged in.\n"
-                f"2. Paste this 6-digit code: *{code}* (expires in 10 minutes)."
-            ),
-        )
+        await send_thread_reply(channel, thread_ts, bind_prompt(public_url, code))
         return
     # Cloud chat is an RBAC resource (default-deny). A bound Slack user still
     # needs the grant on their group, same as the web surface — check before
@@ -128,18 +122,22 @@ async def _handle_dm(app, event: dict) -> None:
     from app.auth.access import can_access
     from app.resource_types import ResourceType
     from src.repositories.users import UserRepository
+
     _u = UserRepository(repo._conn).get_by_email(user_email)
     if not _u or not can_access(_u["id"], ResourceType.CHAT.value, "chat", repo._conn):
         await send_thread_reply(
-            channel, thread_ts,
-            "You don't have access to Agnes chat yet — ask an admin to grant "
-            "your group access on /admin/access.",
+            channel,
+            thread_ts,
+            "You don't have access to Agnes chat yet — ask an admin to grant your group access on /admin/access.",
         )
         return
     mgr = app.state.chat_manager
     from app.chat.types import Surface
+
     session = await mgr.create_session(
-        user_email=user_email, surface=Surface.SLACK_DM, slack_channel_id=channel,
+        user_email=user_email,
+        surface=Surface.SLACK_DM,
+        slack_channel_id=channel,
     )
     # Attach a SlackSinkBridge if no pump is running for this session yet.
     # The bridge forwards assistant_message frames to send_thread_reply so
@@ -147,8 +145,11 @@ async def _handle_dm(app, event: dict) -> None:
     if not _is_attached(mgr, session.id):
         web_base = getattr(app.state, "public_url", "")
         sink = SlackSinkBridge(
-            channel=channel, thread_ts=thread_ts,
-            chat_id=session.id, owner=user_email, web_base=web_base,
+            channel=channel,
+            thread_ts=thread_ts,
+            chat_id=session.id,
+            owner=user_email,
+            web_base=web_base,
         )
         _schedule(mgr.attach(session.id, sink))
         # Give attach() a beat to set up the pump and emit `ready` before
@@ -178,9 +179,7 @@ async def _handle_mention(app, event: dict) -> None:
 
     # 3. Allowlist (direct Everyone grant — never can_access).
     if not is_channel_allowlisted(conn, channel):
-        await send_ephemeral_to_user(
-            channel, slack_user_id, "Agnes isn't enabled in this channel."
-        )
+        await send_ephemeral_to_user(channel, slack_user_id, "Agnes isn't enabled in this channel.")
         return
 
     # 4. Identity binding.
@@ -188,33 +187,27 @@ async def _handle_mention(app, event: dict) -> None:
     if user_email is None:
         code = issue_verification_code(conn, slack_user_id=slack_user_id)
         public_url = getattr(app.state, "public_url", "")
-        setup_link = f"{public_url}/setup?slack=1" if public_url else "/setup?slack=1"
-        await send_ephemeral_to_user(
-            channel, slack_user_id,
-            (
-                "To use Agnes here, bind your Slack identity:\n"
-                f"1. Visit {setup_link} while logged in.\n"
-                f"2. Paste this 6-digit code: *{code}* (expires in 10 minutes)."
-            ),
-        )
+        await send_ephemeral_to_user(channel, slack_user_id, bind_prompt(public_url, code))
         return
 
     # 5. CHAT grant.
     from app.auth.access import can_access
     from app.resource_types import ResourceType
     from src.repositories.users import UserRepository
+
     _u = UserRepository(conn).get_by_email(user_email)
     if not _u or not can_access(_u["id"], ResourceType.CHAT.value, "chat", conn):
         await send_ephemeral_to_user(
-            channel, slack_user_id,
-            "You don't have access to Agnes chat yet — ask an admin to grant "
-            "your group access on /admin/access.",
+            channel,
+            slack_user_id,
+            "You don't have access to Agnes chat yet — ask an admin to grant your group access on /admin/access.",
         )
         return
 
     # 6. Thread session: reuse or create; reject if owned by someone else.
     mgr = app.state.chat_manager
     from app.chat.types import Surface
+
     existing = repo.get_slack_thread_session(channel, thread_ts)
     if existing is not None and existing.user_email != user_email:
         owner_row = conn.execute(
@@ -222,9 +215,7 @@ async def _handle_mention(app, event: dict) -> None:
             [existing.user_email],
         ).fetchone()
         owner_ref = f"<@{owner_row[0]}>" if owner_row and owner_row[0] else "another user"
-        await send_ephemeral_to_user(
-            channel, slack_user_id, f"This thread belongs to {owner_ref}."
-        )
+        await send_ephemeral_to_user(channel, slack_user_id, f"This thread belongs to {owner_ref}.")
         return
     session = await mgr.create_session(
         user_email=user_email,
@@ -239,8 +230,11 @@ async def _handle_mention(app, event: dict) -> None:
     # 8. Attach (NOT awaited — keep the 3s ack budget).
     if not _is_attached(mgr, session.id):
         sink = SlackSinkBridge(
-            channel=channel, thread_ts=thread_ts, chat_id=session.id,
-            owner=user_email, web_base=getattr(app.state, "public_url", ""),
+            channel=channel,
+            thread_ts=thread_ts,
+            chat_id=session.id,
+            owner=user_email,
+            web_base=getattr(app.state, "public_url", ""),
         )
         _schedule(mgr.attach(session.id, sink))
         await asyncio.sleep(0.1)

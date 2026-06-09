@@ -29,16 +29,13 @@ exercised (sigverify) without coupling to Anthropic.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 import json
-import os
 import re
 import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import duckdb
 import pytest
@@ -66,7 +63,8 @@ _TEST_CHANNEL = "D_F10"
 
 
 def _build_app(
-    *, captured_slack_calls: list[tuple[str, str, str]],
+    *,
+    captured_slack_calls: list[tuple[str, str, str]],
 ) -> tuple[FastAPI, duckdb.DuckDBPyConnection, SimpleNamespace]:
     """Build a minimal FastAPI app with the real Slack + Chat routers.
 
@@ -96,6 +94,7 @@ def _build_app(
     # the table init now so the very first DM doesn't crash on a
     # missing column.
     from services.slack_bot.binding import _ensure_table as _ensure_binding_table
+
     _ensure_binding_table(conn)
 
     app.state.chat_repo = repo
@@ -111,8 +110,7 @@ def _build_app(
         live=[],
     )
 
-    async def create_session(*, user_email, surface, slack_channel_id=None,
-                             slack_thread_ts=None, title=None):
+    async def create_session(*, user_email, surface, slack_channel_id=None, slack_thread_ts=None, title=None):
         s = ChatSession(
             id="sess-f10",
             user_email=user_email,
@@ -133,10 +131,12 @@ def _build_app(
         # Drive one round-trip through the bridge: ready → assistant_message.
         # SlackSinkBridge translates the latter into send_thread_reply.
         await sink.send_json({"type": "ready"})
-        await sink.send_json({
-            "type": "assistant_message",
-            "content": "echo: hello agnes",
-        })
+        await sink.send_json(
+            {
+                "type": "assistant_message",
+                "content": "echo: hello agnes",
+            }
+        )
 
     async def send_user_message(chat_id, text):
         state.sent.append((chat_id, text))
@@ -191,9 +191,7 @@ def _shared_e2e_db(monkeypatch):
     _ensure_schema(shared)
     # This module imported get_system_db at module load, so patch that binding
     # (not just src.db's) plus the repo factory's.
-    monkeypatch.setattr(
-        "tests.e2e.test_slack_roundtrip.get_system_db", lambda: shared, raising=False
-    )
+    monkeypatch.setattr("tests.e2e.test_slack_roundtrip.get_system_db", lambda: shared, raising=False)
     monkeypatch.setattr("src.db.get_system_db", lambda: shared)
     monkeypatch.setattr("src.repositories.get_system_db", lambda: shared)
     yield shared
@@ -218,19 +216,23 @@ def slack_app(monkeypatch):
     # imports it for the bound assistant_message bridge.
     from services.slack_bot import events as events_mod
     from services.slack_bot import sink as sink_mod
+
     monkeypatch.setattr(events_mod, "send_thread_reply", fake_send)
     monkeypatch.setattr(sink_mod, "send_thread_reply", fake_send)
+
     # With chat_id wired in the DM handler, the sink uses post_thread_reply_with_blocks
     # for the first assistant turn. Capture those too so assertions still hold.
     async def fake_post_blocks(channel: str, thread_ts: str, text: str, blocks: list) -> str:
         captured.append((channel, thread_ts, text))
         return "msg-fake"
+
     monkeypatch.setattr(sink_mod, "post_thread_reply_with_blocks", fake_post_blocks)
     # Chat is a default-deny RBAC resource; the bound-DM branch checks the
     # user's grant before spawning. This roundtrip exercises the bind →
     # bound-reply plumbing, not the gate, so grant access. (Default-deny is
     # covered by test_chat_api::test_chat_requires_rbac_grant.)
     import app.auth.access as _access
+
     monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
 
     app, conn, state = _build_app(captured_slack_calls=captured)
@@ -275,12 +277,13 @@ def test_f10_slack_dm_verification_bind_then_bound_reply(slack_app):
             break
         time.sleep(0.05)
 
-    # Should have captured exactly one outbound reply with a 6-digit code.
+    # Should have captured exactly one outbound reply with a one-click
+    # /slack/bind?code=NNNNNN magic-link (replaces the old "*NNNNNN*" paste flow).
     assert len(captured) == 1, captured
     ch, _ts, text = captured[0]
     assert ch == _TEST_CHANNEL
-    code_match = re.search(r"\*(\d{6})\*", text)
-    assert code_match, f"expected *NNNNNN* in reply; got: {text!r}"
+    code_match = re.search(r"/slack/bind\?code=(\d{6})", text)
+    assert code_match, f"expected a /slack/bind?code=NNNNNN link in reply; got: {text!r}"
     code = code_match.group(1)
 
     # Slack manager hasn't created/attached anything yet — that's the
@@ -293,9 +296,7 @@ def test_f10_slack_dm_verification_bind_then_bound_reply(slack_app):
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True}
 
-    bound_id = conn.execute(
-        "SELECT slack_user_id FROM users WHERE email = ?", [_TEST_USER_EMAIL]
-    ).fetchone()[0]
+    bound_id = conn.execute("SELECT slack_user_id FROM users WHERE email = ?", [_TEST_USER_EMAIL]).fetchone()[0]
     assert bound_id == _TEST_SLACK_USER_ID
 
     # --- Leg 3: second DM lands on the bound branch ------------------------
@@ -355,9 +356,9 @@ def test_f10_slack_dm_verification_bind_then_bound_reply(slack_app):
         "expected an outbound Slack reply from the assistant message; "
         f"state.sent={state.sent}, state.attached={state.attached}"
     )
-    assert any(
-        text == "echo: hello agnes" for _ch, _ts, text in captured
-    ), f"expected 'echo: hello agnes' reply; got: {captured!r}"
+    assert any(text == "echo: hello agnes" for _ch, _ts, text in captured), (
+        f"expected 'echo: hello agnes' reply; got: {captured!r}"
+    )
 
 
 def test_f10_invalid_signature_is_rejected(slack_app):
@@ -380,6 +381,7 @@ def test_bind_brute_force_returns_429(slack_app):
     client, _conn, _state, _captured = slack_app
     # _MAX_REDEEM_ATTEMPTS wrong guesses → 400 each (invalid code).
     from services.slack_bot.binding import _MAX_REDEEM_ATTEMPTS
+
     for _ in range(_MAX_REDEEM_ATTEMPTS):
         r = client.post("/api/slack/bind", json={"code": "000000"})
         assert r.status_code == 400, r.text

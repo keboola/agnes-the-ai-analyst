@@ -1,0 +1,23 @@
+{% extends "base_ds.html" %}
+
+{% block content %}
+<div class="container">
+  {% if bind_status == "ok" %}
+    <h1>✅ Slack connected</h1>
+    <p>Your Slack identity is now linked to <strong>{{ user.email }}</strong>.</p>
+    <p>Head back to Slack and message <strong>Agnes</strong> — it will recognize you and answer with your data. You only need to do this once.</p>
+  {% elif bind_status == "invalid" %}
+    <h1>Link expired or invalid</h1>
+    <p>That binding link is no longer valid — codes expire after 10 minutes and can only be used once. Message <strong>Agnes</strong> in Slack again to get a fresh link.</p>
+  {% elif bind_status == "throttled" %}
+    <h1>Too many attempts</h1>
+    <p>Too many binding attempts in a short window. Please wait a few minutes, then open the link from Slack again.</p>
+  {% elif bind_status == "missing" %}
+    <h1>Nothing to bind</h1>
+    <p>This page links your Slack identity to Agnes. Open it from the link <strong>Agnes</strong> sends you in a Slack DM.</p>
+  {% else %}
+    <h1>Something went wrong</h1>
+    <p>The binding couldn't be completed. Message <strong>Agnes</strong> in Slack again for a fresh link.</p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -8,13 +8,18 @@ This module owns its own _schedule + _run_logged (Phase 0's copies live
 in events.py but are not depended upon here — verified absent at authoring
 time; keeping them local makes this phase self-contained).
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 from typing import Any, Optional
 
-from services.slack_bot.binding import issue_verification_code, lookup_user_email
+from services.slack_bot.binding import (
+    bind_prompt,
+    issue_verification_code,
+    lookup_user_email,
+)
 from services.slack_bot.sender import open_im, send_ephemeral
 from services.slack_bot.sink import EphemeralCommandSink
 
@@ -45,8 +50,7 @@ async def _run_logged(coro, *, response_url: Optional[str] = None) -> None:
             try:
                 await send_ephemeral(
                     response_url,
-                    ":warning: Something went wrong handling that command. "
-                    "Please try again.",
+                    ":warning: Something went wrong handling that command. Please try again.",
                 )
             except Exception:
                 logger.exception("failed to post error ephemeral")
@@ -95,21 +99,14 @@ async def _cmd_agnes(app, cmd: dict) -> None:
     if user_email is None:
         code = issue_verification_code(repo._conn, slack_user_id=slack_user_id)
         public_url = getattr(app.state, "public_url", "")
-        setup_link = f"{public_url}/setup?slack=1" if public_url else "/setup?slack=1"
-        await send_ephemeral(
-            response_url,
-            "To use Agnes from Slack, bind your identity first:\n"
-            f"1. Visit {setup_link} while logged in.\n"
-            f"2. Paste this 6-digit code: *{code}* (expires in 10 minutes).",
-        )
+        await send_ephemeral(response_url, bind_prompt(public_url, code))
         return
 
     _u = UserRepository(repo._conn).get_by_email(user_email)
     if not _u or not can_access(_u["id"], ResourceType.CHAT.value, "chat", repo._conn):
         await send_ephemeral(
             response_url,
-            "You don't have access to Agnes chat yet — ask an admin to grant "
-            "your group access on /admin/access.",
+            "You don't have access to Agnes chat yet — ask an admin to grant your group access on /admin/access.",
         )
         return
 
@@ -120,7 +117,9 @@ async def _cmd_agnes(app, cmd: dict) -> None:
 
     try:
         session = await mgr.create_session(
-            user_email=user_email, surface=Surface.SLACK_DM, slack_channel_id=im_channel,
+            user_email=user_email,
+            surface=Surface.SLACK_DM,
+            slack_channel_id=im_channel,
         )
     except ConcurrencyCapHit:
         cap = mgr._config.concurrency_per_user
@@ -207,13 +206,7 @@ async def _cmd_status(app, cmd: dict) -> None:
     if user_email is None:
         code = issue_verification_code(repo._conn, slack_user_id=slack_user_id)
         public_url = getattr(app.state, "public_url", "")
-        setup_link = f"{public_url}/setup?slack=1" if public_url else "/setup?slack=1"
-        await send_ephemeral(
-            response_url,
-            "Bind your Slack identity to Agnes first:\n"
-            f"1. Visit {setup_link} while logged in.\n"
-            f"2. Paste this 6-digit code: *{code}* (expires in 10 minutes).",
-        )
+        await send_ephemeral(response_url, bind_prompt(public_url, code))
         return
 
     active = mgr.active_count_for_user(user_email)
@@ -222,6 +215,5 @@ async def _cmd_status(app, cmd: dict) -> None:
     chat_link = f"{public_url}/chat" if public_url else "/chat"
     await send_ephemeral(
         response_url,
-        f"*Agnes status* — active sessions: *{active}* / {cap}\n"
-        f"Open the full chat UI: {chat_link}",
+        f"*Agnes status* — active sessions: *{active}* / {cap}\nOpen the full chat UI: {chat_link}",
     )
