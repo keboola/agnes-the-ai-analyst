@@ -15,11 +15,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
-- **Bounded process memory on data-source-heavy instances (no more allocator-driven OOM crash-loops).** On instances serving BigQuery/DuckDB query traffic, anonymous (heap) memory grew without bound until the container hit its `mem_limit` and the cgroup OOM-killed the server — raising `mem_limit` only deferred the kill. Root cause was *allocator retention*, not a code leak: glibc's default per-CPU malloc arenas hold freed memory and never return it to the OS, and on a host with Transparent Huge Pages = `always` each retained region is backed by a 2 MiB huge page, so RSS ratchets up to the largest concurrent native working set (Arrow/DuckDB buffers) and stays there. Two complementary mitigations: the container image now sets `MALLOC_ARENA_MAX=2` + `MALLOC_TRIM_THRESHOLD_=131072` (Dockerfile), and the `customer-instance` provisioning module sets host THP to `madvise` (startup script, re-applied every boot). Heap was confirmed flat under churn (no Python/object leak); the fix is allocator-level. Negligible CPU impact for this I/O-bound workload.
 
 ### Removed
 
 ### Internal
+
+## [0.70.4] — 2026-06-09
+
+### Fixed
+- **Bounded process memory on data-source-heavy instances (no more allocator-driven OOM crash-loops).** On instances serving BigQuery/DuckDB query traffic, anonymous (heap) memory grew without bound until the container hit its `mem_limit` and the cgroup OOM-killed the server — raising `mem_limit` only deferred the kill. Root cause was *allocator retention*, not a code leak: glibc's default per-CPU malloc arenas hold freed memory and never return it to the OS, and on a host with Transparent Huge Pages = `always` each retained region is backed by a 2 MiB huge page, so RSS ratchets up to the largest concurrent native working set (Arrow/DuckDB buffers) and stays there. Two complementary mitigations: the container image now sets `MALLOC_ARENA_MAX=2` + `MALLOC_TRIM_THRESHOLD_=131072` (Dockerfile), and the `customer-instance` provisioning module sets host THP to `madvise` (startup script, re-applied every boot). Heap was confirmed flat under churn (no Python/object leak); the fix is allocator-level. Negligible CPU impact for this I/O-bound workload. (#583)
+
+### Internal
+- `app/chat/e2b_workspace_sync._iter_files` now sorts subdirs and filenames so workspace uploads visit files in a deterministic, cross-platform order (was filesystem-dependent: lexical on macOS, inode order on Linux). Caused a `test_workspace_too_large_carries_byte_count` CI flake; surfaced while CI'ing #583. (#583)
 
 ## [0.70.3] — 2026-06-09
 
