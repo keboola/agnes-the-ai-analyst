@@ -13,6 +13,19 @@ ENV RELEASE_CHANNEL=${RELEASE_CHANNEL}
 ENV AGNES_COMMIT_SHA=${AGNES_COMMIT_SHA}
 ENV AGNES_TAG=${AGNES_TAG}
 
+# Memory-allocator tuning. BigQuery/DuckDB query churn produces large transient
+# native allocations; glibc's default per-CPU arenas (≈8×cores) retain freed
+# memory and never return it to the OS, and on a host with Transparent Huge
+# Pages = always each retained region is backed by a 2 MiB huge page — so RSS
+# ratchets up to the largest concurrent working set and stays there, eventually
+# tripping the cgroup OOM killer on data-source-heavy instances. Capping arenas
+# to 2 and lowering the trim threshold (128 KiB) forces glibc to release freed
+# memory back to the kernel. Negligible CPU cost for this I/O-bound workload
+# (DuckDB manages its own buffer pool). Host-side THP=madvise is the companion
+# mitigation, applied in infra/modules/customer-instance/startup-script.sh.tpl.
+ENV MALLOC_ARENA_MAX=2
+ENV MALLOC_TRIM_THRESHOLD_=131072
+
 WORKDIR /app
 
 COPY . .

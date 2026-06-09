@@ -34,6 +34,21 @@ fi
 # take the full-fidelity PyYAML path (which preserves non-database YAML keys).
 apt-get install -y --no-install-recommends python3-yaml
 
+# --- 1c. Kernel memory tuning: Transparent Huge Pages = madvise ---
+# THP=always (the distro default on many images) backs every large anonymous
+# allocation with 2 MiB huge pages. Combined with glibc arena retention, the
+# DuckDB/BigQuery query churn ratchets RSS up to its largest working set and
+# never releases it, tripping the cgroup OOM killer on data-source-heavy
+# instances. 'madvise' (the setting Postgres and other DB workloads recommend)
+# uses huge pages only where explicitly requested, removing the amplifier.
+# Re-applied on every boot, so it survives reboots without a grub/sysctl change.
+# The companion app-side mitigation (MALLOC_ARENA_MAX / MALLOC_TRIM_THRESHOLD_)
+# is baked into the container image's Dockerfile.
+if [ -w /sys/kernel/mm/transparent_hugepage/enabled ]; then
+    echo madvise > /sys/kernel/mm/transparent_hugepage/enabled || true
+    echo "THP set to: $(cat /sys/kernel/mm/transparent_hugepage/enabled)"
+fi
+
 # --- 2. Persistent data disk mount ---
 DATA_DEV="/dev/disk/by-id/google-data"
 DATA_MNT="/data"
