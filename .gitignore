@@ -2,6 +2,8 @@
 .claude/*
 !.claude/agents/
 !.claude/skills/
+!.claude/commands/
+!.claude/settings.json
 CLAUDE.local.md
 
 # Local dev data (copied from server for testing)

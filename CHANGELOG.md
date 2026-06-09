@@ -21,6 +21,56 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.70.0] — 2026-06-09
+
+### Added
+- **Adoption dashboard (`/admin/adoption`).** A business-facing view of how the system is actually used — distinct from the technical telemetry/sessions/activity pages. Top KPI cards (active users, time spent active + wall-clock, sessions, skill usage, tokens, prompts) over a 24h/7d/30d window toggle; a 30-day daily-trend chart section (inline SVG, one small-multiple per metric); a top-skills table; and a "users by activity" list (top 10 by active time, searchable) that links to a per-user drill-down at `/admin/adoption/users/{id}` with that user's KPIs, daily trends, and top skills/tools. Backed by new `/api/admin/adoption/*` endpoints aggregating `usage_session_summary` (time/sessions/tokens/prompts via `active_seconds`/`wall_seconds`, already computed by the session processor) and `usage_events` (distinct-users-per-day, skill events) on the fly — no new tables or data collection. Admin-only, audit-logged. (FAI-32, #579)
+
+## [0.69.1] — 2026-06-09
+
+### Fixed
+- The `[slack-socket]` extra now also installs `aiohttp` (`slack_sdk`'s `SocketModeClient` uses the aiohttp transport at `services/slack_bot/socket_mode_client.py`, but `slack_sdk` does not depend on `aiohttp` itself). Without it, a `chat.slack.transport: socket` deployment still fail-closed at startup with `ModuleNotFoundError: No module named 'aiohttp'` even after the image bundled `slack_sdk` (#576). Follow-up to #576; HTTP transport unaffected. Found during live Socket Mode E2E testing.
+
+## [0.69.0] — 2026-06-08
+
+### Added
+
+- Dev-agent kit: a Claude Code dev-agent kit under `.claude/` — `/agnes-review` scope-gated review team (rules / architecture / rbac / parity + consolidator), `agnes-builder` + `agnes-conventions` (five code-verified playbooks), `/agnes-build` parallel build team (`agnes-decomposer` + `agnes-integrator`), a `CONTRIBUTING.md` change-safety sync-map, and a PostToolUse ruff/mypy quality hook (`scripts/post-edit-quality.sh`). A router table in `CLAUDE.md` indexes it.
+- API coverage: the `/api/* → CLI + MCP` triple-surface check (`tests/test_documentation_api_triple_surface.py`) is now a ratchet — a new endpoint must be classified triple-surface (`_COHORT`) or consciously REST-only (`_EXEMPT`); existing endpoints are grandfathered (`tests/api_triple_surface_grandfathered.txt`). Complements the docs-coverage gate from #565.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.68.12] — 2026-06-08
+
+### Fixed
+- The server Docker image now bundles `slack_sdk` (the `[slack-socket]` extra is added to the `uv pip install` line in the Dockerfile), so the optional Slack **Socket Mode** inbound transport works out-of-the-box. Previously the extra was documented but never installed in the image, so a `chat.slack.transport: socket` / `SLACK_TRANSPORT=socket` deployment fail-closed at startup (logged + Slack left disabled) on the stock image — Socket Mode effectively required a custom build. HTTP transport (the default) is unaffected and the `slack_sdk` import stays lazy, so HTTP-only deployments pay nothing at runtime. (#576)
+
+## [0.68.11] — 2026-06-08
+
+### Added
+- Admin Tables: a **Test connection** button in the Keboola register & edit modals that verifies the instance's Keboola Storage API token/stack (lists buckets) and reports the result inline — previously this probe was only available on the Instance settings page. Both modals clear any stale result on reopen so a previously-passed badge isn't shown on a freshly-reset form. (#402, #575)
+
+## [0.68.10] — 2026-06-08
+
+### Changed
+- Admin Tables: on non-Keboola instances, the Keboola **Discover** / **List tables** / **Use table as base** buttons in the register & edit modals now render disabled with an explanatory tooltip (*"Keboola not connected — set token in Instance settings"*) instead of being hidden — the inputs were already shown, so the buttons were silently vanishing with no explanation. The disabled buttons carry no click handler, so they still can't reach the instance-type-routed discover endpoint. (#405, #574)
+
+## [0.68.9] — 2026-06-08
+
+### Changed
+- Tokenized hardcoded font-sizes in `style-custom.css` to the `--text-*` scale — 27 value-preserving swaps (`0.875rem`→`var(--text-base)`, `0.75rem`→`var(--text-sm)`, `1rem`→`var(--text-md)`, `1.5rem`→`var(--text-xl)`; each token equals the literal it replaces at the 16px root, so rendering is unchanged). Addresses the font-size half of #400 (the absorbed-`style.css` legacy section); the neutral-color half is already handled by the legacy `--text`/`--border` token aliases, and the remaining hardcoded colors there are intentional semantic tints (alert states) / a dark code block. Sizes with no exact token (13px `0.8125rem`, 22px `1.375rem`, …) are left as-is — rounding them to the nearest token would change rendering, so they're better standardised per-component. (#400, #572)
+
+## [0.68.8] — 2026-06-08
+
+### Fixed
+- Cleaned up half-rebranded UI spots where a brand-green element still used the old pre-rebrand blue `#0056A3` (the legacy `--primary-dark`), now `var(--ds-primary-dark)`: the `marketplace_plugin_detail` hero gradient (was green→blue, now green→green-dark), the `news_editor` primary-button hover, and the green-tinted status/type badges in `memory_domain_detail`, `admin_corporate_memory`, `catalog_package_detail` (`.qm-remote`), and `marketplace.css` (`.type-badge[data-type=plugin]`) — were green bg + blue text, now green-on-green (the LOCAL/REMOTE/MATERIALIZED + PLUGIN/SKILL/AGENT labels carry the distinction). Left untouched: the legacy `--primary` blue palette (internally consistent; a separate migration). (#497, #571)
+
 ## [0.68.7] — 2026-06-08
 
 ### Fixed

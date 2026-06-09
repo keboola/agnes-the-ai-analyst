@@ -719,6 +719,17 @@ checks against.
 - /api/admin/observability/views
 - /api/admin/observability/views/{view_id}
 
+### `/api/admin/adoption` — Adoption dashboard (admin)
+
+- /api/admin/adoption/kpis
+- /api/admin/adoption/series
+- /api/admin/adoption/top-skills
+- /api/admin/adoption/top-users
+- /api/admin/adoption/users/{user_id}/kpis
+- /api/admin/adoption/users/{user_id}/series
+- /api/admin/adoption/users/{user_id}/top-skills
+- /api/admin/adoption/users/{user_id}/top-tools
+
 ### `/api/admin/telemetry` — Query telemetry
 
 - /api/admin/telemetry/ask

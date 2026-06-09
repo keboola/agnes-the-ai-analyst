@@ -172,7 +172,7 @@ body {
 
 /* Dashboard */
 .dashboard h2 {
-    font-size: 1.5rem;
+    font-size: var(--text-xl);
     font-weight: 600;
     margin-bottom: 24px;
     color: var(--text);
@@ -217,7 +217,7 @@ nav {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     color: var(--text-light);
 }
 
@@ -234,7 +234,7 @@ nav {
     justify-content: center;
     gap: 8px;
     padding: 10px 20px;
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     font-weight: 500;
     text-decoration: none;
     border-radius: var(--radius);
@@ -276,7 +276,7 @@ nav {
 
 .btn-sm {
     padding: 6px 12px;
-    font-size: 0.75rem;
+    font-size: var(--text-sm);
 }
 
 .btn-google {
@@ -284,7 +284,7 @@ nav {
     color: var(--text);
     border: 1px solid var(--border);
     padding: 14px 28px;
-    font-size: 1rem;
+    font-size: var(--text-md);
     font-weight: 500;
     width: 100%;
     max-width: 280px;
@@ -318,7 +318,7 @@ nav {
 }
 
 .card h3 {
-    font-size: 1rem;
+    font-size: var(--text-md);
     font-weight: 600;
     margin-bottom: 16px;
     color: var(--text);
@@ -352,7 +352,7 @@ nav {
 
 .manual-setup summary {
     cursor: pointer;
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     color: var(--text-light);
     padding: 8px 0;
 }
@@ -400,7 +400,7 @@ nav {
 .badge {
     display: inline-block;
     padding: 2px 8px;
-    font-size: 0.75rem;
+    font-size: var(--text-sm);
     font-weight: 500;
     border-radius: 4px;
     background-color: var(--bg);
@@ -491,7 +491,7 @@ code {
 
 .command-row .command-label {
     font-weight: 500;
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     min-width: 70px;
     color: var(--text-light);
 }
@@ -510,7 +510,7 @@ code {
 
 .ssh-config-details summary {
     cursor: pointer;
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     font-weight: 500;
     color: var(--primary);
     padding: 4px 0;
@@ -586,7 +586,7 @@ code {
     padding: 14px 18px;
     border-radius: var(--radius);
     margin-bottom: 12px;
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     font-weight: 500;
 }
 
@@ -662,7 +662,7 @@ code {
 .login-description {
     color: var(--text-light);
     margin-bottom: 32px;
-    font-size: 1rem;
+    font-size: var(--text-md);
     line-height: 1.5;
 }
 
@@ -677,7 +677,7 @@ code {
     display: flex;
     align-items: center;
     gap: 10px;
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     color: var(--text-light);
     padding: 6px 0;
 }
@@ -692,7 +692,7 @@ code {
     background-color: var(--primary);
     color: white;
     border-radius: 50%;
-    font-size: 0.75rem;
+    font-size: var(--text-sm);
     font-weight: 600;
     flex-shrink: 0;
 }
@@ -746,7 +746,7 @@ code {
 
 .ai-hint code {
     display: inline;
-    font-size: 0.75rem;
+    font-size: var(--text-sm);
     color: var(--primary);
 }
 
@@ -760,12 +760,12 @@ code {
 }
 
 .manual-content code {
-    font-size: 0.75rem;
+    font-size: var(--text-sm);
 }
 
 .manual-content .help-text {
     margin: 0;
-    font-size: 0.75rem;
+    font-size: var(--text-sm);
 }
 
 .login-note {
@@ -923,7 +923,7 @@ footer {
 
 .help-details {
     margin-top: 12px;
-    font-size: 0.875rem;
+    font-size: var(--text-base);
 }
 
 .help-details summary {
@@ -1036,13 +1036,13 @@ footer {
     color: white;
     padding: 8px 10px;
     border-radius: 4px;
-    font-size: 0.75rem;
+    font-size: var(--text-sm);
     margin-bottom: 6px;
 }
 
 .cc-setup-card .cli-hint .cli-desc {
     color: rgba(255, 255, 255, 0.7);
-    font-size: 0.75rem;
+    font-size: var(--text-sm);
 }
 
 /* Support info banner */
@@ -1102,7 +1102,7 @@ footer {
 
 .tab-description {
     color: var(--text-light);
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     margin-bottom: 20px;
     text-align: center;
 }
@@ -1127,7 +1127,7 @@ footer {
 .login-form .form-group label {
     display: block;
     font-weight: 500;
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     margin-bottom: 6px;
     color: var(--text);
 }
@@ -1154,7 +1154,7 @@ footer {
 
 .login-form .form-hint {
     display: block;
-    font-size: 0.75rem;
+    font-size: var(--text-sm);
     color: var(--text-light);
     margin-top: 4px;
 }
@@ -1168,7 +1168,7 @@ footer {
     color: var(--primary);
     border: none;
     padding: 8px 4px;
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     cursor: pointer;
     text-decoration: none;
 }
@@ -1203,7 +1203,7 @@ footer {
     align-items: center;
     margin: 24px 0;
     color: var(--text-light);
-    font-size: 0.875rem;
+    font-size: var(--text-base);
 }
 
 .divider::before,
@@ -5181,7 +5181,7 @@ details.section-card > summary {
 }
 .error-title {
     margin: 0 0 var(--space-3);
-    font-size: 1.5rem;
+    font-size: var(--text-xl);
     font-weight: 600;
 }
 .error-message {
@@ -5219,7 +5219,7 @@ details.section-card > summary {
 }
 .error-traceback pre {
     margin: var(--space-3) 0 0;
-    font-size: 0.75rem;
+    font-size: var(--text-sm);
     line-height: 1.4;
     overflow-x: auto;
     white-space: pre-wrap;
