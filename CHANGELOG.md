@@ -21,6 +21,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.70.1] — 2026-06-09
+
+### Fixed
+- **Postgres: catalog table-page renders `platforms` / `gotchas` lists correctly again.** `TableRegistryPgRepository._decode_row` was returning the raw `json.dumps()`'d TEXT for `platforms` and `gotchas` (only the JSONB `sample_questions` / `pairs_well_with` arrived pre-decoded), so the catalog UI iterated the JSON string character-by-character (`[ · " · w · e · b · " · , ...]`) and the gotchas section showed a long run of empty rows before the text. JSON-decoded on read now. DuckDB-backed instances were unaffected. Also closes the latent parity gap flagged in Devin Review (ANALYSIS_0001): all four list-shaped docs fields (`platforms`, `gotchas`, `sample_questions`, `pairs_well_with`) now normalize `None` / empty-string / parse-failure / non-list-parsed-value to `[]`, matching the DuckDB backend byte-for-byte — current consumers were safe via `or []` guards, but the first consumer without one would have hit cross-backend behaviour drift. Locked by 6 parity tests. (#582)
+
 ## [0.70.0] — 2026-06-09
 
 ### Added

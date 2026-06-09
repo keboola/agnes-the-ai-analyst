@@ -126,6 +126,31 @@ class TableRegistryPgRepository:
             row_dict["primary_key"] = _decode_primary_key(row_dict["primary_key"])
         if "where_filters" in row_dict:
             row_dict["where_filters"] = _decode_where_filters(row_dict["where_filters"])
+        # ``platforms`` / ``gotchas`` are TEXT columns holding a json.dumps()'d
+        # value (unlike the JSONB ``sample_questions`` / ``pairs_well_with`` which
+        # the driver returns already-decoded). Without decoding, reads return the
+        # raw JSON string and downstream consumers iterate it character-by-character
+        # (e.g. the catalog table-page UI).
+        #
+        # Mirrors DuckDB ``TableRegistryRepository._decode_row``: every list-shaped
+        # docs field is normalized to ``[]`` for NULL / empty-string / parse-failure
+        # / non-list-parsed-value so behaviour matches across backends. Current
+        # consumers all guard with ``or []``, so this only closes a latent gap —
+        # but the gap was real (Devin Review on #582, ANALYSIS_0001).
+        for k in ("sample_questions", "pairs_well_with", "platforms", "gotchas"):
+            if k not in row_dict:
+                continue
+            v = row_dict[k]
+            if v is None or v == "":
+                row_dict[k] = []
+                continue
+            if isinstance(v, list):
+                continue
+            try:
+                parsed = json.loads(v) if isinstance(v, str) else v
+                row_dict[k] = parsed if isinstance(parsed, list) else []
+            except (ValueError, TypeError):
+                row_dict[k] = []
         return row_dict
 
     def update_docs(
