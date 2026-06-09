@@ -146,6 +146,19 @@
                 <a class="app-user-menu-item {% if _path.startswith('/me/cowork') or _path.startswith('/me/mcp') %}is-active{% endif %}" role="menuitem" href="/me/cowork">AI Cowork</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
                 <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>
+                {# Appearance — Light / Dark / System. Drives window.__agnesTheme
+                   (defined pre-paint in _theme_resolve.html); wired in app.js.
+                   The choice is per-browser (localStorage) and overrides the
+                   instance default + OS setting. #}
+                <div class="app-user-menu-sep" role="separator"></div>
+                <div class="app-theme-toggle" id="themeToggle" role="radiogroup" aria-label="Theme">
+                    <span class="app-theme-toggle-label">Theme</span>
+                    <div class="app-theme-toggle-options">
+                        <button type="button" role="radio" aria-checked="false" tabindex="-1" data-theme-choice="light" class="app-theme-toggle-btn">Light</button>
+                        <button type="button" role="radio" aria-checked="false" tabindex="-1" data-theme-choice="dark" class="app-theme-toggle-btn">Dark</button>
+                        <button type="button" role="radio" aria-checked="false" tabindex="-1" data-theme-choice="system" class="app-theme-toggle-btn">System</button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
