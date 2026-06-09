@@ -126,6 +126,18 @@ class TableRegistryPgRepository:
             row_dict["primary_key"] = _decode_primary_key(row_dict["primary_key"])
         if "where_filters" in row_dict:
             row_dict["where_filters"] = _decode_where_filters(row_dict["where_filters"])
+        # ``platforms`` / ``gotchas`` are TEXT columns holding a json.dumps()'d
+        # value (unlike the JSONB ``sample_questions`` / ``pairs_well_with`` which
+        # the driver returns already-decoded). Without this, reads return the raw
+        # JSON string and downstream consumers iterate it character-by-character
+        # (e.g. the catalog table-page UI). Mirrors the DuckDB backend's get().
+        for _k in ("platforms", "gotchas"):
+            _v = row_dict.get(_k)
+            if isinstance(_v, str):
+                try:
+                    row_dict[_k] = json.loads(_v)
+                except (ValueError, TypeError):
+                    pass
         return row_dict
 
     def update_docs(
