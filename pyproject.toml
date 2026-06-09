@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.69.0"
+version = "0.69.1"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -173,6 +173,11 @@ slack-socket = [
     # deployments need not install it. A missing import is a fail-closed
     # gate at lifespan init (logs + disables Slack, never a dead WS).
     "slack_sdk>=3.27",
+    # slack_sdk's SocketModeClient (the aiohttp variant imported in
+    # services/slack_bot/socket_mode_client.py) needs aiohttp at runtime;
+    # slack_sdk does NOT pull it in, so Socket Mode fail-closed with
+    # `ModuleNotFoundError: No module named 'aiohttp'` until it is declared here.
+    "aiohttp>=3.9",
 ]
 dev = [
     "pytest>=9.0.0",
