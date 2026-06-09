@@ -88,7 +88,20 @@ _BASELINE_PATH = Path(__file__).resolve().parent / "api_triple_surface_grandfath
 
 # Endpoints consciously REST-only (admin mutations, internal, webhooks). Reason
 # required. New endpoints go here OR in _COHORT — never silently.
-_EXEMPT: dict[str, str] = {}
+_ADOPTION_REASON = (
+    "admin-only Adoption dashboard — web UI only, no CLI/MCP analogue "
+    "(read-only aggregates rendered as cards/charts in the browser)"
+)
+_EXEMPT: dict[str, str] = {
+    "/api/admin/adoption/kpis": _ADOPTION_REASON,
+    "/api/admin/adoption/series": _ADOPTION_REASON,
+    "/api/admin/adoption/top-skills": _ADOPTION_REASON,
+    "/api/admin/adoption/top-users": _ADOPTION_REASON,
+    "/api/admin/adoption/users/{user_id}/kpis": _ADOPTION_REASON,
+    "/api/admin/adoption/users/{user_id}/series": _ADOPTION_REASON,
+    "/api/admin/adoption/users/{user_id}/top-skills": _ADOPTION_REASON,
+    "/api/admin/adoption/users/{user_id}/top-tools": _ADOPTION_REASON,
+}
 
 
 def _load_grandfathered() -> frozenset[str]:
