@@ -3485,6 +3485,41 @@ a.app-header-logo:focus-visible {
 .app-user-menu-item:hover { background: var(--border-light, #f3f4f6); }
 .app-user-menu-item.is-active { background: var(--primary-light); color: var(--primary); font-weight: 500; }
 
+/* ── Theme toggle — Light / Dark / System segmented control in the user menu.
+   Built only from tokens that flip under [data-theme="dark"] (--surface,
+   --surface-dim, --border, --text-*, --shadow-sm), so it themes itself in both
+   modes with no dark-specific rules. Wiring: app.js → window.__agnesTheme. ── */
+.app-user-menu-sep { height: 1px; background: var(--border-light, #f3f4f6); margin: 6px 4px; }
+.app-theme-toggle { padding: 6px 8px 4px; }
+.app-theme-toggle-label {
+    display: block; margin-bottom: 6px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px;
+    color: var(--text-secondary, #6b7280);
+}
+.app-theme-toggle-options {
+    display: flex; gap: 3px; padding: 3px;
+    background: var(--surface-dim, #f0f2f6);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+}
+.app-theme-toggle-btn {
+    flex: 1; border: 1px solid transparent; border-radius: 6px;
+    padding: 5px 6px;
+    font: inherit; font-size: 12px; line-height: 1.4;
+    color: var(--text-secondary, #6b7280);
+    background: transparent; cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.app-theme-toggle-btn:hover { color: var(--text-primary, #111827); }
+.app-theme-toggle-btn.is-active {
+    background: var(--surface, #fff);
+    border-color: var(--border, #e5e7eb);
+    color: var(--text-primary, #111827);
+    font-weight: 600;
+    box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.08));
+}
+.app-theme-toggle-btn:focus-visible { outline: 2px solid var(--primary, #2563eb); outline-offset: 2px; }
+
 /* ── Admin nav dropdown — same vocabulary as user menu, scoped under nav links ── */
 .app-nav-menu { position: relative; display: inline-flex; }
 /* .app-nav-menu-trigger styling flows entirely from .app-nav-link above.

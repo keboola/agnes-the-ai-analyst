@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- A **Light / Dark / System** theme switcher in the user (avatar) menu. Agnes already shipped a dark palette and an OS-aware `auto` mode, but only operators could select it via `instance.yaml` — this adds a per-user, in-app control. The choice persists per-browser (`localStorage`), overrides the instance default and the OS setting, and is applied before first paint so there's no flash on reload. **System** tracks the OS `prefers-color-scheme` live. Pages with legacy hardcoded colors may still need per-page dark touch-ups (the dark palette is documented as a work-in-progress).
 
 ### Changed
 

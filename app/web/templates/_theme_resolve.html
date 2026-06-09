@@ -1,16 +1,58 @@
-{# OS-aware "auto" theme resolver. When the server renders
-   `data-theme="auto"` (instance.theme: auto), resolve light vs the dark
-   palette from the OS `prefers-color-scheme`, and live-update if it
-   changes mid-session. Runs inline in <head> before first paint, so
-   there's no light→dark flash. For any explicit theme (blue/navy/dark)
-   this is a no-op. Keep this include ABOVE the stylesheet links. #}
+{# Theme resolver + manual user override. Resolves the effective light/dark
+   theme BEFORE first paint (inline in <head>, above the stylesheet links) so
+   there's no light→dark flash, and exposes a tiny `window.__agnesTheme` API that
+   the avatar-menu toggle (app.js) drives.
+
+   Resolution order, highest wins:
+     1. the user's stored choice — localStorage 'agnes-color-scheme': light|dark|system
+     2. the instance default     — server-rendered data-theme: blue|navy|dark|auto
+
+   'system' (and a server `auto` default with no stored choice) follow the OS
+   `prefers-color-scheme` and live-update mid-session via a SINGLE listener owned
+   here (centralising it avoids a stale-listener bug when the user switches away
+   from System). `lightTheme` is the value that means "light" for this instance —
+   blue/navy/auto map to themselves; a dark-by-default instance falls back to the
+   app default brand — so an `auto` instance with no stored choice resolves
+   exactly as it did before. Keep this include ABOVE the stylesheet links. #}
 <script>
   (function () {
     var el = document.documentElement;
-    if (el.dataset.theme !== 'auto') return;
+    var server = el.dataset.theme || 'blue';             // blue | navy | dark | auto
+    var lightTheme = (server === 'dark') ? 'blue' : server;
+    var KEY = 'agnes-color-scheme';
     var mq = window.matchMedia('(prefers-color-scheme: dark)');
-    var apply = function () { el.dataset.theme = mq.matches ? 'dark' : 'auto'; };
-    apply();
-    if (mq.addEventListener) mq.addEventListener('change', apply);
+    var bound = false;
+
+    function applySystem() { el.dataset.theme = mq.matches ? 'dark' : lightTheme; }
+    function bindSystem(on) {
+      if (!mq.addEventListener) return;
+      if (on && !bound) { mq.addEventListener('change', applySystem); bound = true; }
+      else if (!on && bound) { mq.removeEventListener('change', applySystem); bound = false; }
+    }
+
+    function stored() {
+      var p = null;
+      try { p = localStorage.getItem(KEY); } catch (e) { /* storage disabled */ }
+      return (p === 'light' || p === 'dark' || p === 'system') ? p : null;
+    }
+
+    // The toggle position to show when nothing is stored — mirror the instance
+    // default so the control reflects reality on first load.
+    function current() {
+      var p = stored();
+      if (p) return p;
+      if (server === 'dark') return 'dark';
+      return (server === 'auto') ? 'system' : 'light';
+    }
+
+    function apply(choice, persist) {
+      if (persist) { try { localStorage.setItem(KEY, choice); } catch (e) { /* no-op */ } }
+      if (choice === 'dark') { bindSystem(false); el.dataset.theme = 'dark'; }
+      else if (choice === 'light') { bindSystem(false); el.dataset.theme = lightTheme; }
+      else { applySystem(); bindSystem(true); }           // 'system'
+    }
+
+    window.__agnesTheme = { current: current, apply: apply, lightTheme: lightTheme };
+    apply(current(), false);                              // resolve pre-paint
   })();
 </script>
