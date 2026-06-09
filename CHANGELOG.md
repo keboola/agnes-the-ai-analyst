@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.70.3] — 2026-06-09
+
+### Fixed
+- **Cloud chat was completely broken on E2B SDK 2.x** — every chat turn (web `/chat` *and* the Slack bound-DM session) stalled because the user's message never reached the agent. The E2B sandbox spawns and the workspace syncs, but `commands.run(background=True)` in `app/chat/e2b_provider.py` omitted the `stdin=True` flag that SDK 2.x requires to keep a writable stdin; without it the runner process gets EOF and exits, and every `commands.send_stdin(...)` then fails with `error writing to stdin: stdin not enabled or closed`. Adding `stdin=True` restores message delivery. (The bind-but-no-answer / "agent never responds" symptom was this, not a Slack or auth issue.)
+
 ## [0.70.2] — 2026-06-09
 
 ### Added
