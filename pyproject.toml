@@ -72,7 +72,11 @@ dependencies = [
     # microVM (`AsyncSandbox`); `app/chat/e2b_provider.py` adapts the SDK's
     # background-command + filesystem APIs to our `SandboxProvider`
     # Protocol. See `docs/cloud-chat.md` for operator setup.
-    "e2b>=1.0.0,<3.0.0",
+    # 2.0+ floor: the cloud chat runner relies on the `stdin=True` parameter
+    # on `sandbox.commands.run()` which was added in 2.0. On SDK 1.x the
+    # kwarg raises TypeError and every chat session stalls without an answer
+    # (Devin Review on #585).
+    "e2b>=2.0.0,<3.0.0",
     # Per-IP rate limiting on auth endpoints (#45). In-process counters by
     # default — fine for single-replica deploys. Multi-replica rollouts can
     # swap the storage backend via slowapi's `storage_uri` (Redis, Memcached).

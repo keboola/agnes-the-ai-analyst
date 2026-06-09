@@ -27,6 +27,7 @@ Reality findings against e2b==1.11.1 that drove the design:
   ``.stdout`` StreamReader — output flows through the callbacks
   registered on ``run()``. Hence the queue→reader adapter below.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -34,7 +35,7 @@ import logging
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 # Imported as a module-level name so unit tests can ``patch("app.chat.
 # e2b_provider.AsyncSandbox")``.
@@ -270,8 +271,12 @@ class E2BProvider:
         # loop), so we ship it as text alongside sandbox spawn.
         if self._upload_runner:
             try:
-                runner_src = Path(__file__).with_name("runner.py").read_text(
-                    encoding="utf-8",
+                runner_src = (
+                    Path(__file__)
+                    .with_name("runner.py")
+                    .read_text(
+                        encoding="utf-8",
+                    )
                 )
                 await sandbox.files.write(f"{SANDBOX_WORKDIR}/runner.py", runner_src)
             except Exception:
@@ -305,6 +310,13 @@ class E2BProvider:
         cmd_handle = await sandbox.commands.run(
             cmd,
             background=True,
+            # ``stdin=True`` keeps the process's stdin OPEN so the runner can
+            # receive user messages via ``commands.send_stdin(pid, ...)``. E2B
+            # SDK 2.x gates an interactive stdin behind this flag — without it
+            # the process gets EOF on stdin and exits immediately, and every
+            # ``send_stdin`` then fails with "stdin not enabled or closed",
+            # so no chat message (web OR Slack) ever reaches the agent.
+            stdin=True,
             cwd=SANDBOX_WORKDIR,
             user="user",
             envs=dict(env),
