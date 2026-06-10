@@ -11,7 +11,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
-- **Per-snapshot TTL expiry for local snapshots (#407).** `agnes snapshot create --ttl <7d|24h|90m>` stamps an `expires_at` instant on the snapshot; `agnes refresh --ttl …` re-anchors it. A lazy sweep at the start of `agnes pull` deletes any snapshots whose TTL has elapsed (best-effort, never blocks a pull; skipped under `--dry-run`/`--json`, one quiet stderr notice per swept snapshot otherwise), and `agnes snapshot prune --expired` runs the same sweep on demand. `agnes snapshot list` now shows an `EXPIRES` column. There is no global default TTL — only `--ttl` snapshots ever expire; existing snapshots and legacy `meta.json` files (no `expires_at` key) are unaffected.
 
 ### Changed
 
@@ -20,6 +19,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+## [0.70.17] — 2026-06-10
+
+### Added
+- **Per-snapshot TTL expiry for local snapshots (#407).** `agnes snapshot create --ttl <7d|24h|90m>` stamps an `expires_at` instant on the snapshot; `agnes refresh --ttl …` re-anchors it. A lazy sweep at the start of `agnes pull` deletes any snapshots whose TTL has elapsed (best-effort, never blocks a pull; skipped under `--dry-run`/`--json`, one quiet stderr notice per swept snapshot otherwise), and `agnes snapshot prune --expired` runs the same sweep on demand. `agnes snapshot list` now shows an `EXPIRES` column. There is no global default TTL — only `--ttl` snapshots ever expire; existing snapshots and legacy `meta.json` files (no `expires_at` key) are unaffected. The lazy sweep re-reads + re-verifies the expiry under `snapshot_lock` (closing a TOCTOU race against a concurrent `agnes snapshot refresh --ttl <d>` that re-anchors `expires_at`, Devin Review BUG_0001). (#599)
 
 ## [0.70.16] — 2026-06-10
 
