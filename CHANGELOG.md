@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.70.16] — 2026-06-10
+
+### Added
+- **Per-source partial rebuilds.** `POST /api/sync/trigger?source=<source_type>` (and the new `agnes admin sync --source <type>`) scope a sync to a single registered source: only that source's local + materialized rows are rebuilt, leaving the other source's `extract.duckdb` untouched. Useful on dual-source deployments where a BigQuery refresh should not pay the cost of re-extracting every Keboola table. A bare trigger / `agnes admin sync` still rebuilds everything. Unknown source types fail fast with `422`. (#602)
+
 ## [0.70.15] — 2026-06-10
 
 ### Added
