@@ -50,8 +50,16 @@
 .adopt-link{ color:var(--ds-primary-dark); text-decoration:none; font-weight:600; }
 .adopt-link:hover{ text-decoration:underline; }
 .adopt-rank{ display:inline-block; width:22px; color:var(--ds-text-muted); font-variant-numeric:tabular-nums; }
-.adopt-avatar{ display:inline-flex; width:24px; height:24px; border-radius:50%; background:var(--ds-primary-light);
-  color:var(--ds-primary-dark); align-items:center; justify-content:center; font-size:11px; font-weight:700; margin-right:8px; vertical-align:middle; }
+/* Registered users get an inline background:hsl(…) from AgnesIdentity (so
+   the circle matches /admin/users). The .is-empty variant is used for
+   unregistered session identities — a muted ring with no initials. */
+.adopt-avatar{ display:inline-flex; width:24px; height:24px; border-radius:50%;
+  color:#fff; align-items:center; justify-content:center; font-size:11px; font-weight:700; margin-right:8px; vertical-align:middle; flex-shrink:0; }
+.adopt-avatar.is-empty{ background:var(--ds-border); }
+/* name + email stacked in the user cell, mirroring /admin/users */
+.adopt-user{ display:inline-flex; align-items:center; gap:0; }
+.adopt-user-meta{ display:inline-flex; flex-direction:column; min-width:0; line-height:1.25; }
+.adopt-user-meta .email{ font-size:11px; font-weight:400; color:var(--ds-text-secondary); }
 </style>
 {% endblock %}
 
@@ -183,22 +191,35 @@
   // Search is server-side (the API's `q` param) so it spans ALL users, not
   // just the top-10 page currently rendered. Debounced to avoid a request
   // per keystroke.
-  function initials(name){ return (name||'?').split(/[\s._-]+/).filter(Boolean).map(w=>w[0]).slice(0,2).join('').toUpperCase() || '?'; }
   function renderUsers(rows){
     const b = $('users-body');
     if(!rows.length){ b.innerHTML='<tr><td colspan="7" class="obs-empty">No users match.</td></tr>'; return; }
     b.innerHTML = rows.map((u,i)=>{
-      const name = u.username || u.user_id || '—';
-      // Drill-down resolves by user_id (a stable UUID). Legacy rows ingested
-      // before the v45 backfill (or not yet reprocessed) have no user_id —
-      // the username is the email local-part, which the per-user route can't
-      // resolve, so we render those as plain text instead of a dead link.
-      const nameCell = u.user_id
-        ? `<a class="adopt-link" href="/admin/adoption/users/${encodeURIComponent(u.user_id)}">${esc(name)}</a>`
-        : `<span title="No stable user id yet — drill-down available once this user's sessions are processed">${esc(name)}</span>`;
+      // Identity is enriched server-side from the users table, so the circle
+      // (initials + stable color via AgnesIdentity) and name match
+      // /admin/users exactly. Registered → name over email; unregistered
+      // session identities (no matching user) → bare email/username with an
+      // empty circle.
+      let userCell;
+      if (u.registered) {
+        const color = AgnesIdentity.avatarColor(u.email || u.user_id || u.username || '');
+        const avatar = `<span class="adopt-avatar" style="background:${color}">${esc(AgnesIdentity.initials(u.name || u.email))}</span>`;
+        const meta = `<span class="adopt-user-meta">${esc(u.name || u.email || '—')}` +
+          (u.name && u.email ? `<span class="email">${esc(u.email)}</span>` : '') + `</span>`;
+        // Drill-down resolves by user_id (a stable UUID). Rows matched only
+        // by email local-part have no user_id, so render those as text.
+        userCell = u.user_id
+          ? `<a class="adopt-link adopt-user" href="/admin/adoption/users/${encodeURIComponent(u.user_id)}">${avatar}${meta}</a>`
+          : `<span class="adopt-user">${avatar}${meta}</span>`;
+      } else {
+        const label = u.username || u.user_id || '—';
+        userCell = `<span class="adopt-user" title="No registered user matches this session identity">` +
+          `<span class="adopt-avatar is-empty"></span>` +
+          `<span class="adopt-user-meta">${esc(label)}</span></span>`;
+      }
       return `<tr>
         <td><span class="adopt-rank">${i+1}</span></td>
-        <td><span class="adopt-avatar">${esc(initials(name))}</span>${nameCell}</td>
+        <td>${userCell}</td>
         <td class="obs-num">${u.active_hours}h</td>
         <td class="obs-num">${fmtN(u.sessions)}</td>
         <td class="obs-num">${fmtN(u.prompts)}</td>
