@@ -90,6 +90,12 @@ class LiveSession:
     linger_task: Optional[asyncio.Task] = None
     # Session workdir; set at spawn/resume so helpers can access it.
     session_dir: Optional[Path] = None
+    # Active-time accounting for max_session_seconds (Task 9).
+    # active_since: monotonic timestamp when this spawn/resume made the session
+    # ACTIVE. Pause folds (now - active_since) into active_seconds_accum and
+    # resets active_since. Resume/spawn resets active_since to now.
+    active_seconds_accum: float = 0.0
+    active_since: float = field(default_factory=time.monotonic)
     # Serializes the stdin write+drain pair so two participants' concurrent
     # turns can never interleave partial JSON lines on the shared stdin
     # (spec §6.2).
@@ -249,36 +255,84 @@ class ChatManager:
             except Exception:
                 logger.exception("error killing session %s on shutdown", chat_id)
 
-    # --- attach + runtime methods (Task 5.2) --------------------------------
+    # --- attach + runtime methods (Task 5.2 / Task 8) -----------------------
 
     async def attach(self, chat_id: str, ws, *, is_primary: bool = True) -> None:
+        """Ensure the session is running and seat ws as a sink.
+
+        Decision tree (Task 8):
+        1. Live ACTIVE  → cancel any linger task, seat sink.
+        2. Live PAUSED  → resume provider, restart tasks, seat sink.
+        3. No live entry but repo row has sandbox refs → _resume_from_row (post-restart).
+        4. Otherwise    → _spawn_live (today's spawn body).
+
+        attach() is now fast: it returns after seating the sink. The pump/wait
+        tasks run independently — attach no longer awaits them. The caller is
+        responsible for keeping ws reading until it wants to disconnect, then
+        calling detach_sink().
+        """
+        live = self._live.get(chat_id)
+        if live is not None and live.state == SessionState.ACTIVE:
+            self._cancel_linger(live)
+            await self._seat_sink(live, ws, is_primary=is_primary)
+            return
+        if live is not None and live.state == SessionState.PAUSED:
+            await self._resume_live(live)
+            await self._seat_sink(live, ws, is_primary=is_primary)
+            return
         session = self._repo.get_session(chat_id)
         if session is None:
             raise SessionNotFound(chat_id)
+        if session.sandbox_id is not None and session.runner_pid is not None:
+            live = await self._resume_from_row(session)
+            if live is not None:
+                await self._seat_sink(live, ws, is_primary=is_primary)
+                return
+            # resume failed → refs cleared by _resume_from_row, fall through
+            session = self._repo.get_session(chat_id)
+        live = await self._spawn_live(session)
+        await self._seat_sink(live, ws, is_primary=is_primary)
 
+    async def _seat_sink(self, live: "LiveSession", ws, *, is_primary: bool) -> None:
+        """Replay history + turn buffer to ws, append to sinks, send ready."""
+        for msg in self._repo.list_messages(live.chat_id):
+            await ws.send_json(
+                {
+                    "type": "assistant_message" if msg.role == "assistant" else "user_msg",
+                    "content": msg.content,
+                    "sender_email": msg.sender_email,
+                }
+            )
+        for frame in list(live.turn_buffer):
+            await ws.send_json(frame)
+        if is_primary:
+            live.sinks.insert(0, SinkEntry(participant_email=live.user_email, sink=ws))
+        else:
+            live.sinks.append(SinkEntry(participant_email=live.user_email, sink=ws))
+        await ws.send_json({"type": "ready"})
+
+    async def _spawn_live(self, session: "ChatSession") -> "LiveSession":
+        """Spawn a fresh sandbox, register refs, start pump/wait tasks.
+
+        Returns the new LiveSession registered in self._live. Does NOT await
+        the pump/wait tasks — they run independently (Task 8 contract).
+        """
+        chat_id = session.id
         if session.is_co_session:
-            # SR-6: co-sessions get a fresh ephemeral workspace — never a
-            # personal directory, never CLAUDE.local.md.
             parts = self._repo.get_session_participants(chat_id)
             emails = [p.user_email for p in parts if p.left_at is None]
             from src.grant_intersection import compute_grant_intersection
 
             inter = compute_grant_intersection(emails, self._repo._conn)
-            session_dir = self._workdir_mgr.prepare_ephemeral_session_dir(
-                chat_id,
-                emails,
-                inter,
-            )
+            session_dir = self._workdir_mgr.prepare_ephemeral_session_dir(chat_id, emails, inter)
         else:
-            emails = [session.user_email]
+            emails = []  # participant_emails is empty for single-user sessions
             self._workdir_mgr.ensure_user_workdir(session.user_email)
             session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, chat_id)
 
         handle = await self._spawn_runner(session, session_dir)
-        # 5a seats the primary sink unconditionally. is_primary is part of
-        # the spec §6.3 attach contract so 5b co-drive can attach a runner
-        # without a primary seat (it seats collaborators via add_sink); 5a
-        # never passes is_primary=False, so the primary is always present.
+        import time as _t
+
         live = LiveSession(
             chat_id=chat_id,
             user_email=session.user_email,
@@ -286,26 +340,193 @@ class ChatManager:
             handle=handle,
             started_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
-            sinks=([SinkEntry(participant_email=session.user_email, sink=ws)] if is_primary else []),
+            sinks=[],
             participant_emails=emails,
+            session_dir=session_dir,
+            active_since=_t.monotonic(),
         )
         self._live[chat_id] = live
-        if is_primary:
-            # A non-primary ws is seated via add_sink (which sends its own
-            # "ready" after replaying history); sending "ready" here to a ws
-            # that was never added to live.sinks would leave it half-initialized.
-            await ws.send_json({"type": "ready"})
-
+        self._repo.set_sandbox_ref(chat_id, sandbox_id=handle.sandbox_id, runner_pid=handle.pid)
         pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
         wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
         live.tasks = [pump_task, wait_task]
         live.current_pump = pump_task
         live.current_wait = wait_task
+        return live
+
+    # --- detach / linger / pause --------------------------------------------
+
+    async def detach_sink(self, chat_id: str, ws) -> None:
+        """Remove ws from the session's sink list. When the last sink leaves,
+        trigger the on_detach policy (linger→pause or kill)."""
+        live = self._live.get(chat_id)
+        if live is None:
+            return
+        live.sinks = [e for e in live.sinks if e.sink is not ws]
+        if not live.sinks:
+            self._on_all_sinks_gone(live)
+
+    def _cancel_linger(self, live: "LiveSession") -> None:
+        if live.linger_task is not None and not live.linger_task.done():
+            live.linger_task.cancel()
+        live.linger_task = None
+
+    def _on_all_sinks_gone(self, live: "LiveSession") -> None:
+        if self._config.on_detach == "kill":
+            asyncio.create_task(self.kill(live.chat_id, reason="ws_disconnect"))
+            return
+        self._cancel_linger(live)
+        live.linger_task = asyncio.create_task(self._linger_then_pause(live))
+
+    async def _linger_then_pause(self, live: "LiveSession") -> None:
+        # Wait for any in-flight turn to complete first.
+        while live.turn_in_flight:
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(self._config.detach_linger_seconds)
+        if live.sinks or live.state != SessionState.ACTIVE:
+            return  # a sink came back, or state already changed
+        await self._pause_live(live)
+
+    async def _pause_live(self, live: "LiveSession") -> None:
+        """Snapshot the sandbox and mark the session PAUSED.
+
+        Sets state=PAUSED FIRST so _wait_for_exit_and_respawn (which holds
+        the crash-respawn loop) sees the state change and treats the
+        subsequent EOF as intentional rather than a crash.
+        """
+        live.state = SessionState.PAUSED
+        for t in live.tasks:
+            t.cancel()
+        live.tasks = []
+        live.current_pump = None
+        live.current_wait = None
+        try:
+            if live.handle is not None:
+                await self._provider.pause(live.handle)
+        except Exception:
+            logger.exception("pause failed for %s — falling back to kill", live.chat_id)
+            live.state = SessionState.ACTIVE  # let kill() handle teardown + partial-save
+            await self.kill(live.chat_id, reason="pause_failed")
+            return
+        live.handle = None
+        self._repo.set_sandbox_paused_at(live.chat_id, datetime.now(timezone.utc))
+
+    async def _resume_live(self, live: "LiveSession") -> None:
+        """Resume a PAUSED in-memory session by reconnecting the sandbox."""
+        session = self._repo.get_session(live.chat_id)
+        if session is None or session.sandbox_id is None:
+            await self._respawn_fresh(live)
+            return
+        import time as _t
 
         try:
-            await asyncio.gather(*live.tasks, return_exceptions=True)
-        finally:
-            await self.kill(chat_id, reason="ws_disconnect")
+            handle = await self._provider.resume(
+                sandbox_id=session.sandbox_id,
+                runner_pid=session.runner_pid,
+                env={},
+            )
+        except Exception:
+            logger.warning("resume failed for %s — fresh spawn fallback", live.chat_id)
+            self._repo.clear_sandbox_ref(live.chat_id)
+            await self._respawn_fresh(live)
+            return
+        live.handle = handle
+        live.state = SessionState.ACTIVE
+        live.active_since = _t.monotonic()
+        pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
+        wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, live.session_dir or Path("/tmp")))
+        live.tasks = [pump_task, wait_task]
+        live.current_pump = pump_task
+        live.current_wait = wait_task
+        self._repo.set_sandbox_paused_at(live.chat_id, None)
+
+    async def _resume_from_row(self, session: "ChatSession") -> Optional["LiveSession"]:
+        """Post-restart resume: no LiveSession in memory, but repo row has refs.
+
+        Returns a new LiveSession on success, None on failure (refs cleared).
+        """
+        import time as _t
+
+        try:
+            handle = await self._provider.resume(
+                sandbox_id=session.sandbox_id,
+                runner_pid=session.runner_pid,
+                env={},
+            )
+        except Exception:
+            logger.warning(
+                "_resume_from_row failed for %s — clearing refs for fresh spawn",
+                session.id,
+            )
+            self._repo.clear_sandbox_ref(session.id)
+            return None
+        session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, session.id)
+        live = LiveSession(
+            chat_id=session.id,
+            user_email=session.user_email,
+            state=SessionState.ACTIVE,
+            handle=handle,
+            started_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
+            sinks=[],
+            session_dir=session_dir,
+            active_since=_t.monotonic(),
+        )
+        self._live[session.id] = live
+        self._repo.set_sandbox_paused_at(session.id, None)
+        pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
+        wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
+        live.tasks = [pump_task, wait_task]
+        live.current_pump = pump_task
+        live.current_wait = wait_task
+        return live
+
+    async def _respawn_fresh(self, live: "LiveSession") -> None:
+        """Spawn a new sandbox for an existing LiveSession and replay history.
+
+        Factored from _wait_for_exit_and_respawn's crash-respawn block so
+        resume-failure and reaper-kill fallbacks can reuse it.
+        """
+        session = self._repo.get_session(live.chat_id)
+        if session is None:
+            return
+        import time as _t
+
+        session_dir = live.session_dir or self._workdir_mgr.prepare_session_dir(session.user_email, live.chat_id)
+        new_handle = await self._spawn_runner(session, session_dir)
+        live.handle = new_handle
+        live.state = SessionState.ACTIVE
+        live.active_since = _t.monotonic()
+        self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
+        await self._broadcast(live, {"type": "ready"})
+        # Replay last 3 user turns.
+        history = self._repo.list_messages(live.chat_id)[-3:]
+        live_emails = set(live.participant_emails) or {live.user_email}
+        for msg in history:
+            if msg.role != "user":
+                continue
+            author = getattr(msg, "sender_email", None) or live.user_email
+            if live.participant_emails and author not in live_emails:
+                continue
+            payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
+            async with live._stdin_lock:
+                new_handle.stdin.write(payload.encode("utf-8"))
+                await new_handle.stdin.drain()
+        old_pump = live.current_pump
+        if old_pump is not None and not old_pump.done():
+            old_pump.cancel()
+            try:
+                await old_pump
+            except (asyncio.CancelledError, Exception):
+                pass
+        if old_pump is not None and old_pump in live.tasks:
+            live.tasks.remove(old_pump)
+        new_pump = asyncio.create_task(self._pump_subprocess_to_ws(live))
+        live.current_pump = new_pump
+        live.tasks.append(new_pump)
+        new_wait = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
+        live.current_wait = new_wait
+        live.tasks.append(new_wait)
 
     async def add_sink(self, chat_id: str, sink, participant_email: str) -> None:
         """Attach an additional output sink to an already-live session.
@@ -537,7 +758,8 @@ class ChatManager:
         while True:
             assert live.handle is not None
             rc = await live.handle.wait()
-            if rc == 0 or live.state == SessionState.DEAD:
+            # Return for intentional terminations: clean exit, kill(), or pause.
+            if rc == 0 or live.state in (SessionState.DEAD, SessionState.PAUSED):
                 return
             # Crash path
             live.crash_count += 1
@@ -596,6 +818,21 @@ class ChatManager:
 
     async def send_user_message(self, chat_id: str, text: str, *, sender_email: Optional[str] = None) -> None:
         live = self._live.get(chat_id)
+        # Resume on-demand: PAUSED live session (Slack DM after hours, web race).
+        if live is not None and live.state == SessionState.PAUSED:
+            await self._resume_live(live)
+        elif live is None:
+            # Post-restart: no LiveSession in memory, but repo row may have sandbox refs.
+            session = self._repo.get_session(chat_id)
+            if session is not None and session.sandbox_id is not None:
+                live = await self._resume_from_row(session)
+                if live is None:
+                    # _resume_from_row cleared refs; try a fresh spawn
+                    session = self._repo.get_session(chat_id)
+                    if session is not None:
+                        live = await self._spawn_live(session)
+            # After recovery attempt, re-fetch from _live
+            live = self._live.get(chat_id)
         if live is None or live.handle is None or live.state == SessionState.DEAD:
             raise SessionNotFound(chat_id)
         # SR-10: key all per-user budget/rate checks on the actual SENDER,
