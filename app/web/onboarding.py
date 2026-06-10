@@ -9,16 +9,16 @@ the guided tour from silently going stale as the UI churns:
     (`static/js/tour.js`) just renders whatever it receives.
 
   • The **contract test** (`tests/test_onboarding_not_outdated.py`) imports
-    ``ONBOARDING_STEPS`` and asserts every step still points at a registered
-    route and a DOM anchor that exists in the templates. Delete a nav item
-    or rename its ``data-tour`` anchor and the test goes red — the tour can't
-    drift out of sync with the app without CI noticing.
+    ``ONBOARDING_STEPS`` and asserts every step still points at a DOM anchor
+    that exists in the templates. Delete a nav item or rename its anchor and
+    the test goes red — the tour can't drift out of sync with the app without
+    CI noticing.
 
-The tour is a real cross-page walkthrough: each step carries a ``route``,
-and the engine navigates there (persisting its position in ``sessionStorage``
-across the reload) so the spotlight lands on the live page, not just a nav
-link. ``route is None`` means "render in place on whatever page the user is
-on" (the closing card).
+All tour steps spotlight nav items. The nav header is present on every
+authenticated page, so every step renders in place on whatever page the user
+is on when they start the tour — no cross-page navigation. ``route`` is left
+as an optional field for future use but is intentionally ``None`` on all
+current steps.
 
 Keep the content generic and vendor-agnostic: this is the OSS distribution,
 and the tour must read sensibly on any instance regardless of branding,
@@ -41,13 +41,13 @@ class OnboardingStep:
 
     ``anchor`` is the ``data-tour="<anchor>"`` element the spotlight lands
     on; ``None`` renders a centered card with no target (closing card).
-    ``route`` is the registered path the step lives on — the engine
-    navigates there before spotlighting, and the contract test asserts it's
-    still routable. ``icon`` is a short, vendor-agnostic glyph shown in the
-    card header for visual wayfinding. ``tips`` is an optional list of
-    concrete "what you can do here" bullets shown under the body — this is
-    where the substance of the guide lives. ``audience`` controls who sees
-    the step; the server filters before the step ever reaches the browser.
+    ``route`` is reserved for future use — all current steps set it to
+    ``None`` because every anchor lives in the nav header, which is present
+    on every authenticated page. ``icon`` is a short, vendor-agnostic glyph
+    shown in the card header for visual wayfinding. ``tips`` is an optional
+    list of concrete "what you can do here" bullets shown under the body.
+    ``audience`` controls who sees the step; the server filters before the
+    step ever reaches the browser.
     """
 
     key: str
@@ -68,7 +68,6 @@ ONBOARDING_STEPS: tuple[OnboardingStep, ...] = (
         key="home",
         icon="🏠",
         anchor="nav-home",
-        route="/dashboard",
         title="Home base",
         body="Your starting point — a live overview of everything you can "
         "access and shortcuts to get going. You'll come back here often.",
@@ -82,7 +81,6 @@ ONBOARDING_STEPS: tuple[OnboardingStep, ...] = (
         key="chat",
         icon="💬",
         anchor="nav-chat",
-        route="/chat",
         title="Chat with your data",
         body="Ask questions in plain language and get answers grounded in your "
         "own datasets — no SQL required.",
@@ -97,7 +95,6 @@ ONBOARDING_STEPS: tuple[OnboardingStep, ...] = (
         key="marketplace",
         icon="🧩",
         anchor="nav-marketplace",
-        route="/marketplace",
         title="Extend your agent",
         body="The Marketplace is where you discover skills and plugins that "
         "teach your AI agent new tricks, then install them into your workspace.",
@@ -111,7 +108,6 @@ ONBOARDING_STEPS: tuple[OnboardingStep, ...] = (
         key="catalog",
         icon="📦",
         anchor="nav-catalog",
-        route="/catalog",
         title="Browse your data",
         body="Every dataset you're granted shows up here as a package — with its "
         "tables, schema, and copy-paste instructions for querying it locally.",
@@ -126,7 +122,6 @@ ONBOARDING_STEPS: tuple[OnboardingStep, ...] = (
         key="memory",
         icon="🧠",
         anchor="nav-memory",
-        route="/corporate-memory",
         title="Shared knowledge",
         body="Canonical metric definitions and business rules your agent should "
         "follow live here — so everyone (and every agent) computes the same way.",
@@ -140,7 +135,6 @@ ONBOARDING_STEPS: tuple[OnboardingStep, ...] = (
         key="admin",
         icon="⚙️",
         anchor="nav-admin",
-        route="/admin/tables",
         title="Admin control center",
         body="As an admin, this menu is mission control for the whole instance.",
         tips=(
@@ -154,7 +148,6 @@ ONBOARDING_STEPS: tuple[OnboardingStep, ...] = (
         key="profile",
         icon="👤",
         anchor="user-menu",
-        route="/me/profile",
         title="Your menu",
         body="Your profile, AI Cowork setup, recent activity, and sign-out live "
         "here.",

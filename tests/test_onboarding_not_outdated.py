@@ -31,13 +31,6 @@ def _all_template_text() -> str:
     )
 
 
-def _registered_paths() -> set[str]:
-    # Use the web router directly (lightweight) — every page the tour walks
-    # is an HTML route declared there.
-    from app.web.router import router as web_router
-
-    return {getattr(r, "path", None) for r in web_router.routes}
-
 
 def test_every_step_audience_is_valid() -> None:
     bad = [(s.key, s.audience) for s in ONBOARDING_STEPS if s.audience not in VALID_AUDIENCES]
@@ -58,28 +51,6 @@ def test_every_step_anchor_exists_in_templates() -> None:
         f"(nav changed without updating app/web/onboarding.py): {missing}"
     )
 
-
-def test_every_step_route_is_registered() -> None:
-    """A step's route must still be served — a deleted/renamed page makes the
-    step a dead end."""
-    paths = _registered_paths()
-    missing = [
-        (s.key, s.route)
-        for s in ONBOARDING_STEPS
-        if s.route and s.route not in paths
-    ]
-    assert not missing, (
-        "onboarding steps reference routes that are no longer registered: "
-        f"{missing}"
-    )
-
-
-def test_every_spotlight_step_has_a_route_to_navigate_to() -> None:
-    """The tour is a cross-page walk: every step that spotlights an anchor
-    must carry a route the engine can navigate to. Only the target-less
-    closing card (no anchor) is allowed to omit it."""
-    orphan = [s.key for s in ONBOARDING_STEPS if s.anchor and not s.route]
-    assert not orphan, f"anchored steps without a route can't be walked to: {orphan}"
 
 
 def test_every_step_has_an_icon() -> None:
@@ -150,10 +121,7 @@ def test_engine_resumes_across_page_navigation() -> None:
     assert "window.location.assign" in engine, "tour.js must navigate between step pages"
 
 
-def test_reopen_launcher_present_in_header_and_profile() -> None:
-    """The tour must be re-openable: a [data-tour-start] hook in the header
-    (help icon) and on the profile page."""
+def test_reopen_launcher_present_in_header() -> None:
+    """The tour must be re-openable via the (?) help icon in the nav header."""
     header = (TEMPLATES / "_app_header.html").read_text(encoding="utf-8")
-    profile = (TEMPLATES / "profile.html").read_text(encoding="utf-8")
     assert "data-tour-start" in header, "header is missing the tour launcher"
-    assert "data-tour-start" in profile, "profile page is missing the tour launcher"

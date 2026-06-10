@@ -28,15 +28,6 @@
    auto-imported by base_ds.html. #}
 
 <div class="profile-page">
-  {# Re-open the onboarding tour. The button carries [data-tour-start], the
-     same hook the header help icon uses; tour.js binds it globally. #}
-  {% call ds.panel(title='Getting started', tag='section',
-                   klass='section-card',
-                   attrs='aria-label="Getting started"') %}
-    <p>New here, or want a refresher? Take a quick guided tour of the main areas.</p>
-    {{ ds.button('Take a tour', variant='secondary', attrs='data-tour-start') }}
-  {% endcall %}
-
   {% call ds.panel(title='Account', tag='section',
                    klass='section-card',
                    attrs='aria-label="Account details"') %}

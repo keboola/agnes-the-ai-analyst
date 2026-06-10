@@ -158,8 +158,6 @@
                 <a class="app-user-menu-item {% if _path == '/me/profile' %}is-active{% endif %}" role="menuitem" href="/me/profile">Profile</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/cowork') or _path.startswith('/me/mcp') %}is-active{% endif %}" role="menuitem" href="/me/cowork">AI Cowork</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
-                {# Re-open the walking-guide tour. tour.js binds [data-tour-start]. #}
-                <button type="button" class="app-user-menu-item" role="menuitem" data-tour-start>Take a tour</button>
                 <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>
                 {# Appearance — Light / Dark / System. Drives window.__agnesTheme
                    (defined pre-paint in _theme_resolve.html); wired in app.js.
