@@ -206,6 +206,25 @@ def get_home_route() -> str:
     return route
 
 
+def get_public_url() -> str:
+    """Absolute base URL of this instance (scheme + host, no trailing slash).
+
+    Resolution order: ``PUBLIC_URL`` env var (Terraform-friendly, overrides
+    everything) > ``server.public_url`` in instance.yaml > ``""`` (unset).
+    The env-overrides-yaml shape mirrors :func:`get_home_route`.
+
+    Needed by surfaces that have no inbound HTTP request to derive the host
+    from — notably the Slack bot, which runs over Socket Mode and must mint
+    *absolute* ``/slack/bind`` magic links and ``/chat`` deep links. Callers
+    fall back to a root-relative path when this is empty, so an unset value
+    degrades gracefully rather than crashing.
+    """
+    raw = os.environ.get("PUBLIC_URL") or get_value(
+        "server", "public_url", default=""
+    )
+    return (raw or "").strip().rstrip("/")
+
+
 def get_gws_oauth_credentials() -> dict:
     """Pre-configured Google Workspace CLI OAuth client (client_id + secret).
 
