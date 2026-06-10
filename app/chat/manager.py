@@ -202,6 +202,33 @@ class ChatManager:
     def list_live(self) -> list[LiveSession]:
         return list(self._live.values())
 
+    async def wait_until_live(self, chat_id: str, *, timeout: float = 30.0) -> bool:
+        """Block until ``chat_id`` is registered with a live, usable handle.
+
+        ``attach()`` does not return for the lifetime of a session — it awaits
+        the session's pump/wait tasks (see the ``asyncio.gather`` at the end of
+        ``attach``). So request-less callers (the Slack bot) cannot ``await``
+        attach() to learn when the session is ready: they schedule it
+        fire-and-forget and then await *this*. Spawning the sandbox inside
+        attach() takes several seconds — far longer than the fixed 0.1s sleep
+        the callers used to rely on — so without this the immediately-following
+        ``send_user_message`` races attach() and raises ``SessionNotFound``,
+        silently dropping the user's first message.
+
+        Returns True once the live session exists with a non-dead handle, or
+        False if ``timeout`` elapses first. Polls the in-process registry; no
+        external I/O.
+        """
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        while True:
+            live = self._live.get(chat_id)
+            if live is not None and live.handle is not None and live.state != SessionState.DEAD:
+                return True
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(0.1)
+
     async def shutdown(self) -> None:
         chat_ids = list(self._live.keys())
         for chat_id in chat_ids:

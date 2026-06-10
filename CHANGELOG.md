@@ -21,6 +21,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.70.9] — 2026-06-10
+
+### Fixed
+- Slack chat dropped the **first message after binding** with `SessionNotFound`. The DM / mention / `/agnes` handlers schedule `ChatManager.attach()` fire-and-forget (it spawns the E2B sandbox — several seconds — and never returns for the session's lifetime) and then waited a fixed `asyncio.sleep(0.1)` before `send_user_message`. The sleep raced attach() registering the live session, so the turn was injected before the session existed. Added `ChatManager.wait_until_live(chat_id, timeout=…)` which polls the live registry, and the three handlers now await it (and post a friendly "still starting up — resend" notice on timeout) instead of a blind sleep. The `/agnes` slash-command path also uses the strong-ref `_schedule()` helper for the fire-and-forget attach (Devin Review BUG_0001): with the 30s wait window the bare `asyncio.create_task()` it used to use could be GC-collected mid-flight, silently dropping the turn. (#589)
+- A Slack `message` event with no `user` field (message edits/deletions and other subtypes) crashed the event dispatch: `_handle_dm` fell through to `issue_verification_code(slack_user_id=None)`, tripping the `slack_binding_codes.slack_user_id` NOT NULL constraint. `_handle_dm` now early-returns on a user-less event, mirroring the guard `_handle_mention` already had. (#589)
+
+## [0.70.8] — 2026-06-10
+
+### Changed
+- Setup wizard (`/setup`): migrated from the `base_login` centered card to the standard `base_ds` app shell + `.container--narrow` (800px), dropping the hardcoded `max-width: 520px` inline styles so its width and gutters match every other page. (#586, #590)
+
+## [0.70.7] — 2026-06-10
+
+### Added
+- The `customer-instance` Terraform module now exposes a `home_route` variable, so instances built on the upstream module (not just self-contained infra) can pin the post-auth landing page to `/home` (state-aware onboarding) instead of the `/dashboard` default. It writes `AGNES_HOME_ROUTE` into `/opt/agnes/.env` **only when set non-empty** — left empty (the default) it omits the line entirely, so the route stays operator-settable at runtime via `instance.home_route` / `/admin/server-config` (the env tier shadows the YAML tier, so pinning both is a footgun). Closes a parity gap where module-based instances had no declarative way to opt into `/home`. (#588)
+
+### Internal
+- `docs/CONFIGURATION.md` is now the single authoritative map of every per-instance knob — env override, `instance.yaml` path, default, and resolver for all 33 `get_*` resolvers — with the env > YAML > default resolution order, the Initial Workspace Template tier, and the infra-pattern reachability caveat documented up front. A new ratchet test (`tests/test_config_reference_coverage.py`) fails when a resolver in `app/instance_config.py` is undocumented (or an exemption names a deleted resolver), so the reference can't silently drift behind the code — the same anti-drift discipline already applied to DuckDB↔Postgres parity and REST×CLI×MCP coverage. (#588)
+
+## [0.70.6] — 2026-06-10
+
+### Fixed
+- Slack magic-link binding (and Slack `/chat` deep links) were always **root-relative** (`/slack/bind?code=…`) and therefore not clickable from Slack — even with `PUBLIC_URL` set — because the bot's request-less handlers read `app.state.public_url`, which nothing ever assigned. Resolve the instance base URL at startup via a new `get_public_url()` (`PUBLIC_URL` env > `server.public_url` in instance.yaml > unset, mirroring `get_home_route`) and stash it on `app.state.public_url` before the Socket Mode dispatcher starts, so the bot mints **absolute** links. Unset still degrades gracefully to a relative path. This makes good on the `0.70.5` "Requires `PUBLIC_URL` set so the link is absolute" contract, which the wiring never fulfilled. (#587)
+
 ## [0.70.5] — 2026-06-09
 
 ### Added
