@@ -215,7 +215,7 @@ def _build_slack_app_state():
 
 
 def test_slack_dm_unbound_user_gets_verification_code(monkeypatch):
-    """First DM from an unbound user → bot DMs a 6-digit code."""
+    """First DM from an unbound user → bot DMs a /slack/bind?code= link."""
     import asyncio
     import re
 
@@ -244,9 +244,9 @@ def test_slack_dm_unbound_user_gets_verification_code(monkeypatch):
     asyncio.run(ev.dispatch_event(app, event))
 
     assert sent, "bot must reply to the unbound user"
-    # The plan asserts a 6-digit code wrapped in *...* (Slack bold).
+    # Bot now replies with a one-click /slack/bind?code= magic link.
     assert any(
-        "6-digit" in text and re.search(r"\*\d{6}\*", text)
+        re.search(r"/slack/bind\?code=\d{6}", text)
         for _ch, _ts, text in sent
     ), sent
 
@@ -595,7 +595,7 @@ def test_mention_unbound_user_gets_code(monkeypatch):
     mgr = _FakeMgr()
     app = _FakeApp(conn=conn, mgr=mgr)
     asyncio.run(ev._handle_mention(app, {"channel": "C_OK", "ts": "1.0", "user": "U_NEW", "text": "<@U07BOT> hi"}))
-    assert posts and "6-digit code" in posts[0][2]
+    assert posts and "/slack/bind?code=" in posts[0][2]
     assert mgr.created == []
 
 
