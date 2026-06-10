@@ -11,7 +11,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
-- The `customer-instance` Terraform module now exposes a `home_route` variable, so instances built on the upstream module (not just self-contained infra) can pin the post-auth landing page to `/home` (state-aware onboarding) instead of the `/dashboard` default. It writes `AGNES_HOME_ROUTE` into `/opt/agnes/.env` **only when set non-empty** — left empty (the default) it omits the line entirely, so the route stays operator-settable at runtime via `instance.home_route` / `/admin/server-config` (the env tier shadows the YAML tier, so pinning both is a footgun). Closes a parity gap where module-based instances had no declarative way to opt into `/home`.
 
 ### Changed
 
@@ -20,7 +19,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
-- `docs/CONFIGURATION.md` is now the single authoritative map of every per-instance knob — env override, `instance.yaml` path, default, and resolver for all 33 `get_*` resolvers — with the env > YAML > default resolution order, the Initial Workspace Template tier, and the infra-pattern reachability caveat documented up front. A new ratchet test (`tests/test_config_reference_coverage.py`) fails when a resolver in `app/instance_config.py` is undocumented (or an exemption names a deleted resolver), so the reference can't silently drift behind the code — the same anti-drift discipline already applied to DuckDB↔Postgres parity and REST×CLI×MCP coverage.
+
+## [0.70.7] — 2026-06-10
+
+### Added
+- The `customer-instance` Terraform module now exposes a `home_route` variable, so instances built on the upstream module (not just self-contained infra) can pin the post-auth landing page to `/home` (state-aware onboarding) instead of the `/dashboard` default. It writes `AGNES_HOME_ROUTE` into `/opt/agnes/.env` **only when set non-empty** — left empty (the default) it omits the line entirely, so the route stays operator-settable at runtime via `instance.home_route` / `/admin/server-config` (the env tier shadows the YAML tier, so pinning both is a footgun). Closes a parity gap where module-based instances had no declarative way to opt into `/home`. (#588)
+
+### Internal
+- `docs/CONFIGURATION.md` is now the single authoritative map of every per-instance knob — env override, `instance.yaml` path, default, and resolver for all 33 `get_*` resolvers — with the env > YAML > default resolution order, the Initial Workspace Template tier, and the infra-pattern reachability caveat documented up front. A new ratchet test (`tests/test_config_reference_coverage.py`) fails when a resolver in `app/instance_config.py` is undocumented (or an exemption names a deleted resolver), so the reference can't silently drift behind the code — the same anti-drift discipline already applied to DuckDB↔Postgres parity and REST×CLI×MCP coverage. (#588)
 
 ## [0.70.6] — 2026-06-10
 
