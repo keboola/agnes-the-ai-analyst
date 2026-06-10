@@ -496,3 +496,40 @@ def test_keboola_materialize_uses_tmp_path_during_copy(tmp_path, fake_storage_cl
     assert not (output_dir / "tmp_path_test.parquet.tmp").exists()
     assert result["path"].endswith(".parquet")
     assert not result["path"].endswith(".tmp")
+
+
+# ---- consolidation-connection resource caps (#431 / #432) ------------------
+
+def test_consolidation_conn_applies_memory_and_thread_caps():
+    """``_open_consolidation_conn`` must apply the three resource caps that
+    keep the materialize CSV->parquet COPY inside a small cgroup container:
+    ``memory_limit`` capped (normalizes to ~1.8 GiB for the '2GB' source
+    constant), ``threads=2``, and ``preserve_insertion_order=false``.
+
+    Asserted via observable DuckDB ``current_setting`` state, not by reading
+    source strings — a regression that drops or changes any SET fails here.
+    """
+    # Pin the source-of-truth constants so a silent value change is caught.
+    assert kbe._CONSOLIDATION_MEMORY_LIMIT == "2GB"
+    assert kbe._CONSOLIDATION_THREADS == 2
+
+    conn = kbe._open_consolidation_conn()
+    try:
+        threads = conn.execute("SELECT current_setting('threads')").fetchone()[0]
+        assert int(threads) == 2
+
+        preserve = conn.execute(
+            "SELECT current_setting('preserve_insertion_order')"
+        ).fetchone()[0]
+        # DuckDB returns this as a bool (or a 'false' string on older builds).
+        assert preserve in (False, "false")
+
+        # DuckDB normalizes '2GB' to '1.8 GiB' (2e9 bytes). Assert the
+        # banded/normalized form — an exact '2GB' string compare would
+        # false-fail. The cap must be well below the DuckDB default
+        # (80% of host RAM), so a numeric prefix <= 2.0 GiB proves it.
+        mem = conn.execute("SELECT current_setting('memory_limit')").fetchone()[0]
+        assert "GiB" in mem, mem
+        assert float(mem.split()[0]) <= 2.0, mem
+    finally:
+        conn.close()

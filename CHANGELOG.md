@@ -21,6 +21,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.70.11] — 2026-06-10
+
+### Internal
+- **Regression tests anchoring the materialize memory-cap + disk-space pre-flight invariants (#431/#433).** Added unit coverage that the Keboola consolidation connection sets `memory_limit='2GB'` (+ `threads=2`, `preserve_insertion_order=false`), that `_download_single` performs its disk-space pre-flight check, and that the BigQuery pool-acquire path enforces its memory cap — locking these guardrails against silent regression. Tests only; no production behavior change. (#432, #591)
+
+## [0.70.10] — 2026-06-10
+
+### Internal
+- Anti-regression guards for the `/setup` design-system unification (#586 / #590): `test_setup_html_uses_design_system_base` in `tests/test_design_system_contract.py` locks `setup.html` on `base_ds.html` + `.container--narrow` (no regression to `base_login.html` or hardcoded `max-width: 520px`), and a new `tests/test_setup_page_unified.py::test_first_time_setup_renders_all_wizard_fields` is an end-to-end render check that all four wizard steps, progress dots, and key inputs survive the migration. Locks the v0.70.8 fix; no behaviour change. (#592)
+
 ## [0.70.9] — 2026-06-10
 
 ### Fixed
