@@ -15,11 +15,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
-- **`agnes pull` now revokes local query access when a data package leaves your stack.** After an analyst removed a data package, `agnes pull` left the package's parquets under `server/parquet/` and their DuckDB views in place, so the tables stayed locally queryable — and for admins the flat `manifest["tables"]` dict over-listed every accessible table regardless of subscription (the server-side `can_access_table` Admin short-circuit bypasses the stack). When the manifest carries the typed v49 stack sections (`data_packages[].tables[]` + `direct_tables[]`), `run_pull` now restricts the download set to the authorized table names and prunes any `server/parquet/<name>.parquet` (plus its `sync_state` row and, via the unconditional view rebuild, its now-orphaned view) that left the stack. Pre-v49 servers emit no typed sections, so their behavior is unchanged. New `PullResult.tables_removed` counts the prune. (#506)
 
 ### Removed
 
 ### Internal
+
+## [0.70.13] — 2026-06-10
+
+### Fixed
+- **`agnes pull` now revokes local query access when a data package leaves your stack.** After an analyst removed a data package, `agnes pull` left the package's parquets under `server/parquet/` and their DuckDB views in place, so the tables stayed locally queryable — and for admins the flat `manifest["tables"]` dict over-listed every accessible table regardless of subscription (the server-side `can_access_table` Admin short-circuit bypasses the stack). When the manifest carries the typed v49 stack sections (`data_packages[].tables[]` + `direct_tables[]`), `run_pull` now restricts the download set to the authorized table names and prunes any `server/parquet/<name>.parquet` (plus its `sync_state` row and, via the unconditional view rebuild, its now-orphaned view) that left the stack. Pre-v49 servers emit no typed sections, so their behavior is unchanged. `PullResult.tables_removed` counts the prune and is surfaced in `agnes pull --json`, the MCP `pull` tool's return dict, and the human-readable summary line (Devin Review BUG_0001). (#506, #594)
 
 ## [0.70.12] — 2026-06-10
 
