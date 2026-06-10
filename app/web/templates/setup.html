@@ -1,16 +1,18 @@
-{% extends "base_login.html" %}
+{% extends "base_ds.html" %}
 
 {% block title %}Setup - {{ instance_brand or "Agnes" }} {{ instance_name or "AI Data Analyst" }}{% endblock %}
 
+{# issue 586: match the rest of the app — base_ds shell + the standard .container
+   at the narrow (800px) width used for single-form / setup flows, instead of
+   the old base_login centered card with a hardcoded 520px max-width. #}
+{% block container_modifier %}container--narrow{% endblock %}
+
 {% block content %}
-{# Design-system component macros — all 7 wizard buttons render via
-   `ds.button`. The hidden ones (`#btn-next-sync`, `#btn-dashboard`)
-   use inline `style="display: none;"` rather than the `hidden` attr
-   because the JS toggles them via `btn.style.display`. #}
-{% import "_components.html" as ds %}
-<div class="login-page">
-    <div class="login-card-wrapper" style="max-width: 520px; margin: 40px auto; padding: 0 20px;">
-        <div class="login-card" style="max-width: 520px;">
+{# All 7 wizard buttons render via `ds.button`; base_ds auto-imports `ds`, so
+   no _components.html import is needed. The hidden buttons (`#btn-next-sync`,
+   `#btn-dashboard`) use inline `style="display: none;"` rather than the
+   `hidden` attr because the JS toggles them via `btn.style.display`. #}
+<div class="card">
             <h2 id="wizard-title">Setup {{ instance_brand or "Agnes" }}</h2>
             <p class="login-description" id="wizard-description">
                 Create your admin account to get started.
@@ -115,8 +117,6 @@
                              klass='btn-block',
                              attrs='style="margin-top: 12px; display: none; text-align: center;"') }}
             </div>
-        </div>
-    </div>
 </div>
 
 <script>

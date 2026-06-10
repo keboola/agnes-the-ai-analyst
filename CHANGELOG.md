@@ -12,6 +12,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 - **Onboarding / guided tour.** A client-side spotlight tour that walks a signed-in user through the app. On the first authed visit an intro consent modal pops once ("Take a tour?"); accepting runs the spotlight, and either choice (or completing/exiting) sets a `localStorage` flag so it never auto-pops again. Each step can be skipped or ended (Skip / ✕ / Esc), and arrow keys / Enter drive it. Re-openable anytime from the `(?)` help icon in the nav header. The tour **renders in place on whatever page the user is on** — all spotlighted elements are nav anchors present in the header on every authenticated page, so no cross-page navigation occurs. Each step carries a wayfinding icon, a richer description, and a list of concrete "what you can do here" bullets, plus a progress bar; the spotlight breathes and the card animates in (all `prefers-reduced-motion`-aware). The steps are **role-split** (admin vs non-admin) and filtered server-side, so non-admins never receive admin-only steps. Steps are the single source of truth in `app/web/onboarding.py` — injected as JSON, never hardcoded in JS — and a contract test (`tests/test_onboarding_not_outdated.py`) fails if any step points at a nav anchor that no longer exists, drops its icon, or thins its tips below two, so the tour can't silently go stale or hollow out as the UI changes. Generic + vendor-agnostic; styles read `--ds-*` tokens (flips with blue/dark themes). New `app/web/onboarding.py`, `app/web/static/css/tour.css`, `app/web/static/js/tour.js`, and `_tour.html` partial included by both base layouts.
+- **`agnes update-workspace`** — safe re-apply of the Initial Workspace Template into an already-initialised workspace, **without losing analyst edits**. Reads the server URL + PAT from saved config (like `agnes pull`, no `--server-url`), warns + requires a literal `YES` (or `--yes` for the slash-command flow), and does a 3-way diff against a per-workspace baseline: files the analyst changed are backed up to `<name>.bak.<timestamp>` before being refreshed, files they hadn't touched are updated in place, new template files are created, and files not in the template are left untouched. `--dry-run` previews the plan. **IWT-only** — a clean no-op (touches nothing, exits 0) on instances with no Initial Workspace Template configured; it never re-pulls parquets. The baseline is the exact installed template zip, stored **client-side** under `~/.config/agnes/workspace-baselines/` (keyed by a hash of the workspace path, so it never pollutes the workspace tree or lands in a git commit), written on the first override `agnes init` so the first update has a reference point (older workspaces with no baseline conservatively back up every changed file). A canonical `/update-workspace` slash command ships under `cli/templates/commands/` for IWT admins to copy into their template repo. (FAI-24)
 
 ### Changed
 
@@ -21,6 +22,45 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 - **`DEBUG=0` can now override the `LOCAL_DEV_MODE` debug-toolbar default.** `LOCAL_DEV_MODE` still implies `DEBUG` (so dev gets the toolbar without setting both), but an explicit `DEBUG` env now wins either way — set `DEBUG=0` to run an auth-bypassed local-dev instance *without* the debug toolbar, whose per-request instrumentation (it also profiles the compose healthcheck) can saturate the event loop and peg CPU on heavy HTML pages. `docker-compose.local-dev.yml` sets `DEBUG=0` by default for a snappy UI preview; set it to `1` to get the toolbar back.
+
+## [0.70.13] — 2026-06-10
+
+### Fixed
+- **`agnes pull` now revokes local query access when a data package leaves your stack.** After an analyst removed a data package, `agnes pull` left the package's parquets under `server/parquet/` and their DuckDB views in place, so the tables stayed locally queryable — and for admins the flat `manifest["tables"]` dict over-listed every accessible table regardless of subscription (the server-side `can_access_table` Admin short-circuit bypasses the stack). When the manifest carries the typed v49 stack sections (`data_packages[].tables[]` + `direct_tables[]`), `run_pull` now restricts the download set to the authorized table names and prunes any `server/parquet/<name>.parquet` (plus its `sync_state` row and, via the unconditional view rebuild, its now-orphaned view) that left the stack. Pre-v49 servers emit no typed sections, so their behavior is unchanged. `PullResult.tables_removed` counts the prune and is surfaced in `agnes pull --json`, the MCP `pull` tool's return dict, and the human-readable summary line (Devin Review BUG_0001). (#506, #594)
+
+## [0.70.12] — 2026-06-10
+
+### Fixed
+- **CLI out-of-date banner no longer prints a copy-paste command that 404s after a server upgrade.** The `agnes` out-of-date notice (`cli/update_check.py:format_outdated_notice`) used to emit `uv tool install --force <server>/cli/wheel/agnes-X.Y.Z-py3-none-any.whl` — a version-pinned URL the CLI caches for up to 24h. `GET /cli/wheel/{name}` serves only the *current* wheel, so once the server upgrades, the old pinned wheel is gone and the cached command 404s. The banner now recommends `agnes self-upgrade`, the supported path that re-probes `/cli/latest`, installs the current wheel, smoke-tests it, and rolls back on failure — it never 404s and always converges to the true latest even if the banner's version number lags. `UpdateInfo.download_url` is still populated and still consumed by `agnes self-upgrade`; server endpoints (`/cli/latest`, `/cli/wheel/{name}`, `/cli/download`) and the first-install setup-page instructions are unchanged. (#521, #593)
+
+## [0.70.11] — 2026-06-10
+
+### Internal
+- **Regression tests anchoring the materialize memory-cap + disk-space pre-flight invariants (#431/#433).** Added unit coverage that the Keboola consolidation connection sets `memory_limit='2GB'` (+ `threads=2`, `preserve_insertion_order=false`), that `_download_single` performs its disk-space pre-flight check, and that the BigQuery pool-acquire path enforces its memory cap — locking these guardrails against silent regression. Tests only; no production behavior change. (#432, #591)
+
+## [0.70.10] — 2026-06-10
+
+### Internal
+- Anti-regression guards for the `/setup` design-system unification (#586 / #590): `test_setup_html_uses_design_system_base` in `tests/test_design_system_contract.py` locks `setup.html` on `base_ds.html` + `.container--narrow` (no regression to `base_login.html` or hardcoded `max-width: 520px`), and a new `tests/test_setup_page_unified.py::test_first_time_setup_renders_all_wizard_fields` is an end-to-end render check that all four wizard steps, progress dots, and key inputs survive the migration. Locks the v0.70.8 fix; no behaviour change. (#592)
+
+## [0.70.9] — 2026-06-10
+
+### Fixed
+- Slack chat dropped the **first message after binding** with `SessionNotFound`. The DM / mention / `/agnes` handlers schedule `ChatManager.attach()` fire-and-forget (it spawns the E2B sandbox — several seconds — and never returns for the session's lifetime) and then waited a fixed `asyncio.sleep(0.1)` before `send_user_message`. The sleep raced attach() registering the live session, so the turn was injected before the session existed. Added `ChatManager.wait_until_live(chat_id, timeout=…)` which polls the live registry, and the three handlers now await it (and post a friendly "still starting up — resend" notice on timeout) instead of a blind sleep. The `/agnes` slash-command path also uses the strong-ref `_schedule()` helper for the fire-and-forget attach (Devin Review BUG_0001): with the 30s wait window the bare `asyncio.create_task()` it used to use could be GC-collected mid-flight, silently dropping the turn. (#589)
+- A Slack `message` event with no `user` field (message edits/deletions and other subtypes) crashed the event dispatch: `_handle_dm` fell through to `issue_verification_code(slack_user_id=None)`, tripping the `slack_binding_codes.slack_user_id` NOT NULL constraint. `_handle_dm` now early-returns on a user-less event, mirroring the guard `_handle_mention` already had. (#589)
+
+## [0.70.8] — 2026-06-10
+
+### Changed
+- Setup wizard (`/setup`): migrated from the `base_login` centered card to the standard `base_ds` app shell + `.container--narrow` (800px), dropping the hardcoded `max-width: 520px` inline styles so its width and gutters match every other page. (#586, #590)
+
+## [0.70.7] — 2026-06-10
+
+### Added
+- The `customer-instance` Terraform module now exposes a `home_route` variable, so instances built on the upstream module (not just self-contained infra) can pin the post-auth landing page to `/home` (state-aware onboarding) instead of the `/dashboard` default. It writes `AGNES_HOME_ROUTE` into `/opt/agnes/.env` **only when set non-empty** — left empty (the default) it omits the line entirely, so the route stays operator-settable at runtime via `instance.home_route` / `/admin/server-config` (the env tier shadows the YAML tier, so pinning both is a footgun). Closes a parity gap where module-based instances had no declarative way to opt into `/home`. (#588)
+
+### Internal
+- `docs/CONFIGURATION.md` is now the single authoritative map of every per-instance knob — env override, `instance.yaml` path, default, and resolver for all 33 `get_*` resolvers — with the env > YAML > default resolution order, the Initial Workspace Template tier, and the infra-pattern reachability caveat documented up front. A new ratchet test (`tests/test_config_reference_coverage.py`) fails when a resolver in `app/instance_config.py` is undocumented (or an exemption names a deleted resolver), so the reference can't silently drift behind the code — the same anti-drift discipline already applied to DuckDB↔Postgres parity and REST×CLI×MCP coverage. (#588)
 
 ## [0.70.6] — 2026-06-10
 
