@@ -434,7 +434,7 @@ Every override workflow writes audit rows. Query them via
 | `initial_workspace.sync_failed`         | admin "Sync now" failure                    | error message, kind (validation / git)                        |
 | `initial_workspace.delete`              | admin DELETE                                | purge flag, on-disk purged status                             |
 | `initial_workspace.fetch_started`       | server-side, on `GET /api/initial-workspace.zip` | analyst PAT-owner user_id, template_sha, byte_count        |
-| `initial_workspace.applied`             | CLI `POST /api/initial-workspace/applied`   | mode (`force_overwrite` / `fresh_install`), files counts      |
+| `initial_workspace.applied`             | CLI `POST /api/initial-workspace/applied`   | mode (`force_overwrite` / `fresh_install` / `update`), files counts |
 
 The `fetch_started` event is the **authoritative anchor** — it is
 written server-side and cannot be spoofed by a PAT-holder. A
