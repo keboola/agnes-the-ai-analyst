@@ -120,7 +120,26 @@ def sweep_expired_snapshots(snap_dir: Path) -> list[str]:
 
     swept: list[str] = []
     with snapshot_lock(snap_dir):
+        # Re-read meta under the lock and re-verify expiry: a concurrent
+        # `agnes snapshot refresh --ttl <d>` (which acquires the same
+        # `snapshot_lock`) may have re-anchored `expires_at` between our
+        # initial read and the lock acquisition. Mirrors the TOCTOU guard
+        # in `create_cmd` (cli/commands/snapshot.py: "re-check existence
+        # here to close the TOCTOU window"). Devin Review BUG_0001 on #599.
+        now_under_lock = datetime.now(timezone.utc)
         for name in expired:
+            meta = read_meta(snap_dir, name)
+            if meta is None or not meta.expires_at:
+                continue
+            try:
+                exp = datetime.fromisoformat(meta.expires_at.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            if exp > now_under_lock:
+                # Refreshed between unlocked read and the lock — skip.
+                continue
             if delete_snapshot(snap_dir, name):
                 swept.append(name)
     return sorted(swept)
