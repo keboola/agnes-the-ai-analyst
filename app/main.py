@@ -354,6 +354,16 @@ async def lifespan(app):
     from app.auth.jwt import validate_jwt_secret_or_raise
     validate_jwt_secret_or_raise()
 
+    # Resolve the instance's absolute base URL once and stash it on app.state
+    # so request-less surfaces can build absolute links. The Slack bot (Socket
+    # Mode) has no inbound request to derive the host from, so without this its
+    # /slack/bind magic links and /chat deep links come out root-relative and
+    # are not clickable from Slack. Set before _start_slack_socket_transport so
+    # the dispatcher's handlers see it. Empty when PUBLIC_URL / server.public_url
+    # is unset — callers degrade to a relative path.
+    from app.instance_config import get_public_url
+    app.state.public_url = get_public_url()
+
     # Issue #81 Group A — log the effective remote_attach allowlist at
     # startup so an operator's typo in AGNES_REMOTE_ATTACH_EXTENSIONS
     # (which REPLACES, not extends, the default) is visible.
