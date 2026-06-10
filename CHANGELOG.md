@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.70.10] — 2026-06-10
+
+### Internal
+- Anti-regression guards for the `/setup` design-system unification (#586 / #590): `test_setup_html_uses_design_system_base` in `tests/test_design_system_contract.py` locks `setup.html` on `base_ds.html` + `.container--narrow` (no regression to `base_login.html` or hardcoded `max-width: 520px`), and a new `tests/test_setup_page_unified.py::test_first_time_setup_renders_all_wizard_fields` is an end-to-end render check that all four wizard steps, progress dots, and key inputs survive the migration. Locks the v0.70.8 fix; no behaviour change. (#592)
+
 ## [0.70.9] — 2026-06-10
 
 ### Fixed
