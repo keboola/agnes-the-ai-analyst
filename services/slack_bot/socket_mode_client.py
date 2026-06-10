@@ -14,6 +14,17 @@ from __future__ import annotations
 
 import logging
 
+# events' and commands' _run_logged/_schedule are INCOMPATIBLE variants:
+# events' _run_logged takes on_failure=(callback); commands' takes
+# response_url= and itself posts the recovery ephemeral. The commands pair
+# is aliased _cmd_* so the two can't be accidentally cross-used (same
+# convention as app/api/slack.py).
+from services.slack_bot.commands import (
+    _help_body,
+    _run_logged as _cmd_run_logged,
+    _schedule as _cmd_schedule,
+    dispatch_command,
+)
 from services.slack_bot.events import _run_logged, _schedule, dispatch_event
 
 logger = logging.getLogger(__name__)
@@ -75,17 +86,41 @@ class SocketModeDispatcher:
         # start(), after slack_sdk imported successfully — so this never hits ImportError.
         from slack_sdk.socket_mode.response import SocketModeResponse
 
+        # For slash_commands the ack body doubles as the command response —
+        # same payloads the HTTP endpoint returns synchronously: the /agnes
+        # help text (answered entirely in the ack, no dispatch), or an
+        # interim "working on it" ephemeral while the real answer arrives
+        # via response_url.
+        ack_payload = None
+        is_slash = req.type == "slash_commands"
+        slash_is_help = False
+        if is_slash:
+            command = (req.payload.get("command") or "").strip()
+            text = (req.payload.get("text") or "").strip()
+            slash_is_help = command == "/agnes" and text in ("", "help")
+            ack_payload = {
+                "response_type": "ephemeral",
+                "text": _help_body() if slash_is_help else "_Working on it…_",
+            }
+
         await client.send_socket_mode_response(
-            SocketModeResponse(envelope_id=req.envelope_id)
+            SocketModeResponse(envelope_id=req.envelope_id, payload=ack_payload)
         )
-        # 2. Funnel into the SAME dispatcher the HTTP webhook uses. No
+        # 2. Funnel into the SAME dispatchers the HTTP webhooks use. No
         #    payload translation — req.payload["event"] is byte-identical
-        #    to the HTTP body's payload["event"]. on_failure=None here for
-        #    the same reason as the HTTP call site: _handle_dm emits its own
-        #    inline replies (the recovery seam is used by later phases).
+        #    to the HTTP body's payload["event"], and the slash payload dict
+        #    carries the same fields as the HTTP form body (command, text,
+        #    user_id, channel_id, response_url). on_failure=None on the
+        #    events path for the same reason as the HTTP call site:
+        #    _handle_dm emits its own inline replies.
         if req.type == "events_api" and req.payload.get("type") == "event_callback":
             _schedule(_run_logged(dispatch_event(self._app, req.payload["event"])))
-        # slash_commands / interactive routing arrives in later phases.
+        elif is_slash and not slash_is_help:
+            _cmd_schedule(_cmd_run_logged(
+                dispatch_command(self._app, req.payload),
+                response_url=req.payload.get("response_url"),
+            ))
+        # interactive routing arrives in a later phase.
 
     async def start(self) -> None:
         """Connect the WS. Lazy-imports slack_sdk; ImportError -> actionable

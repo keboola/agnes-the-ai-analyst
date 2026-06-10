@@ -16,6 +16,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- **Slash commands now work on Socket Mode deployments.** The Socket Mode dispatcher only routed `events_api` envelopes, so `SLACK_TRANSPORT=socket` instances silently dropped `/agnes`, `/agnes-new` and `/agnes-status` (the command never reached the server). `slash_commands` envelopes are now acked within the 3s contract — `/agnes help` is answered entirely inside the ack payload, everything else acks with an interim "working on it" ephemeral — and then routed through the same `dispatch_command` path the HTTP endpoint uses, with the same `response_url` recovery backstop. Interactive (button) routing over Socket Mode remains a later phase.
 - **Admin Adoption dashboard now renders users from the `users` table.** The `/admin/adoption` list and per-user drill-down used to display the email local-part from `usage_session_summary` and guess initials/avatar from it, so names, circle initials, and the circle color all disagreed with `/admin/users`. The `/api/admin/adoption/top-users` rows are now enriched server-side with the real `name`/`email`/`registered` flag (joined by `user_id`, with an unambiguous email-local-part fallback for pre-v45 rows), and both pages render the avatar circle via a shared `AgnesIdentity` helper (`app/web/static/js/identity.js`) — identical initials and stable color to `/admin/users`. Session identities with no matching user show the bare email with an empty circle.
 
 ### Removed
