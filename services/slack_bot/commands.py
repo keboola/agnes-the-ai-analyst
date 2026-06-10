@@ -134,7 +134,10 @@ async def _cmd_agnes(app, cmd: dict) -> None:
     # sink keeps streaming on web/DM.
     if not _is_attached(mgr, session.id):
         sink = EphemeralCommandSink(response_url=response_url)
-        asyncio.create_task(mgr.attach(session.id, sink))
+        # _schedule (not bare create_task) retains a strong ref so the GC can't
+        # cancel this in-flight task — it must survive the up-to-30s
+        # wait_until_live poll below, far longer than the old 0.1s sleep.
+        _schedule(mgr.attach(session.id, sink))
         # attach() spawns the sandbox (seconds) before registering the live
         # session and never returns, so wait (bounded) for it instead of a
         # fixed sleep that raced it and dropped the turn with SessionNotFound.

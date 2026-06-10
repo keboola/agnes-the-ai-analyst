@@ -707,8 +707,15 @@ def test_mention_same_thread_reuses_session(monkeypatch):
 
 
 def test_mention_attach_not_awaited_returns_under_budget(monkeypatch):
-    """attach() blocks forever; the handler must still return promptly because
-    attach is create_task'd, not awaited (3s-ack contract)."""
+    """Smoke test: the handler never blocks on a hanging attach().
+
+    attach() is scheduled fire-and-forget and blocks for the session's
+    lifetime, so the handler must reach send_user_message without awaiting it.
+    It awaits liveness via wait_until_live (mocked True by _FakeMgr here), not
+    attach() — this guards against anyone reintroducing a direct
+    ``await mgr.attach(...)`` that would deadlock the dispatch. (The original
+    3s-ack framing no longer applies: these handlers run post-ack in
+    background tasks.)"""
     import asyncio
     import services.slack_bot.events as ev
     monkeypatch.setattr(ev, "send_ephemeral_to_user", lambda *a, **k: None)
