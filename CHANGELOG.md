@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **`agnes update-workspace`** — safe re-apply of the Initial Workspace Template into an already-initialised workspace, **without losing analyst edits**. Reads the server URL + PAT from saved config (like `agnes pull`, no `--server-url`), warns + requires a literal `YES` (or `--yes` for the slash-command flow), and does a 3-way diff against a per-workspace baseline: files the analyst changed are backed up to `<name>.bak.<timestamp>` before being refreshed, files they hadn't touched are updated in place, new template files are created, and files not in the template are left untouched. `--dry-run` previews the plan. **IWT-only** — a clean no-op (touches nothing, exits 0) on instances with no Initial Workspace Template configured; it never re-pulls parquets. The baseline is the exact installed template zip, stored **client-side** under `~/.config/agnes/workspace-baselines/` (keyed by a hash of the workspace path, so it never pollutes the workspace tree or lands in a git commit), written on the first override `agnes init` so the first update has a reference point (older workspaces with no baseline conservatively back up every changed file). A canonical `/update-workspace` slash command ships under `cli/templates/commands/` for IWT admins to copy into their template repo. (FAI-24)
 
 ### Changed
 
@@ -20,6 +21,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+## [0.70.13] — 2026-06-10
+
+### Fixed
+- **`agnes pull` now revokes local query access when a data package leaves your stack.** After an analyst removed a data package, `agnes pull` left the package's parquets under `server/parquet/` and their DuckDB views in place, so the tables stayed locally queryable — and for admins the flat `manifest["tables"]` dict over-listed every accessible table regardless of subscription (the server-side `can_access_table` Admin short-circuit bypasses the stack). When the manifest carries the typed v49 stack sections (`data_packages[].tables[]` + `direct_tables[]`), `run_pull` now restricts the download set to the authorized table names and prunes any `server/parquet/<name>.parquet` (plus its `sync_state` row and, via the unconditional view rebuild, its now-orphaned view) that left the stack. Pre-v49 servers emit no typed sections, so their behavior is unchanged. `PullResult.tables_removed` counts the prune and is surfaced in `agnes pull --json`, the MCP `pull` tool's return dict, and the human-readable summary line (Devin Review BUG_0001). (#506, #594)
 
 ## [0.70.12] — 2026-06-10
 
