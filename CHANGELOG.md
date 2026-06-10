@@ -13,13 +13,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
-- Setup wizard (`/setup`): migrated from the `base_login` centered card to the standard `base_ds` app shell + `.container--narrow` (800px), dropping the hardcoded `max-width: 520px` inline styles so its width and gutters match every other page. (#586)
 
 ### Fixed
 
 ### Removed
 
 ### Internal
+
+## [0.70.8] — 2026-06-10
+
+### Changed
+- Setup wizard (`/setup`): migrated from the `base_login` centered card to the standard `base_ds` app shell + `.container--narrow` (800px), dropping the hardcoded `max-width: 520px` inline styles so its width and gutters match every other page. (#586, #590)
 
 ## [0.70.7] — 2026-06-10
 
