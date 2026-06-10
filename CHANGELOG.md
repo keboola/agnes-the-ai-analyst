@@ -11,12 +11,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- Chat sessions survive browser disconnects: in-flight turns always complete and
+  persist; orphaned sessions pause their sandbox (memory snapshot) and resume with
+  full agent context on reconnect or on the next Slack message. New knobs:
+  `chat.on_detach` (`pause`|`kill`, default `pause`), `chat.detach_linger_seconds`
+  (default 60), `chat.paused_ttl_seconds` (default 7 days). Mid-turn reconnects
+  replay the in-progress turn to the new WebSocket; force-killed mid-turn output is
+  persisted as an interrupted assistant message. Paused sandboxes are
+  garbage-collected after `chat.paused_ttl_seconds`. Active-time accounting for
+  `chat.max_session_seconds` excludes paused intervals. Keepalive heartbeat extends
+  the sandbox's external timeout while sinks are attached; `lifecycle on_timeout=pause`
+  acts as a crash net. Session listing exposes a `paused` boolean field. The web UI
+  shows "Resuming session…" status between WS open and the ready frame, and a "paused"
+  chip in the sidebar for paused sessions.
 
 ### Changed
 
 ### Fixed
 
 ### Removed
+
+### Deprecated
+- `chat.e2b_kill_on_ws_disconnect` — use `chat.on_detach: kill` instead. The old key
+  still maps to `on_detach: kill` with a deprecation warning in the server log, but
+  will be removed in a future minor version.
 
 ### Internal
 
