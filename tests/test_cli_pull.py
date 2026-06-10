@@ -24,6 +24,9 @@ class _FakePullResult:
     duration_s = 0.0
     errors: list = []
     stack_sync = None
+    # Added in #594 (data-package prune): the human-readable pull summary
+    # reads `result.tables_removed`, so the fake must carry the field too.
+    tables_removed = 0
 
 
 def _write_legacy_settings(workspace):

@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import json
 from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -31,6 +32,12 @@ class SnapshotMeta:
     bytes_local: int
     estimated_scan_bytes_at_fetch: int
     result_hash_md5: str
+    # TTL expiry (#407). ISO 8601 UTC instant after which a lazy sweep is
+    # allowed to delete this snapshot. None = no TTL (never auto-expires).
+    # MUST stay the LAST field with a default so a legacy `meta.json` written
+    # before TTL existed (no `expires_at` key) still deserializes via
+    # `SnapshotMeta(**data)`.
+    expires_at: Optional[str] = None
 
 
 def _meta_path(snap_dir: Path, name: str) -> Path:
@@ -74,6 +81,68 @@ def delete_snapshot(snap_dir: Path, name: str) -> bool:
     if meta.exists():
         meta.unlink(); removed = True
     return removed
+
+
+def sweep_expired_snapshots(snap_dir: Path) -> list[str]:
+    """Delete every snapshot whose `expires_at` is in the past (#407).
+
+    Iterates `list_snapshots`, deletes the parquet + meta of each expired
+    snapshot under the `snapshot_lock`, and returns the names swept (sorted).
+
+    Tolerant by design — this runs on the lazy `agnes pull` path and must
+    never block a pull:
+    - snapshots with `expires_at=None` (no TTL) are left alone;
+    - a future-dated `expires_at` is left alone;
+    - an unparsable `expires_at` is left alone (treated as "no opinion"),
+      never raised.
+
+    The lock is acquired only when there is something to delete, so a pull
+    against a TTL-free snapshot dir does no extra locking.
+    """
+    snaps = list_snapshots(snap_dir)
+    now = datetime.now(timezone.utc)
+    expired: list[str] = []
+    for s in snaps:
+        if not s.expires_at:
+            continue
+        try:
+            exp = datetime.fromisoformat(s.expires_at.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            # Unparsable timestamp — don't guess, don't delete.
+            continue
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp <= now:
+            expired.append(s.name)
+
+    if not expired:
+        return []
+
+    swept: list[str] = []
+    with snapshot_lock(snap_dir):
+        # Re-read meta under the lock and re-verify expiry: a concurrent
+        # `agnes snapshot refresh --ttl <d>` (which acquires the same
+        # `snapshot_lock`) may have re-anchored `expires_at` between our
+        # initial read and the lock acquisition. Mirrors the TOCTOU guard
+        # in `create_cmd` (cli/commands/snapshot.py: "re-check existence
+        # here to close the TOCTOU window"). Devin Review BUG_0001 on #599.
+        now_under_lock = datetime.now(timezone.utc)
+        for name in expired:
+            meta = read_meta(snap_dir, name)
+            if meta is None or not meta.expires_at:
+                continue
+            try:
+                exp = datetime.fromisoformat(meta.expires_at.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            if exp > now_under_lock:
+                # Refreshed between unlocked read and the lock — skip.
+                continue
+            if delete_snapshot(snap_dir, name):
+                swept.append(name)
+    return sorted(swept)
 
 
 @contextlib.contextmanager

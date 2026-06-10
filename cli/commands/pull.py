@@ -97,6 +97,23 @@ def pull(
         except Exception:
             pass
 
+    # Lazy TTL sweep (#407): drop any `--ttl` snapshots whose expiry has
+    # elapsed before refreshing. Best-effort and fully wrapped — a sweep
+    # failure (locking quirk, permissions) must NEVER block a pull, which is
+    # the load-bearing SessionStart hook. Skip under --dry-run (no disk
+    # writes anywhere) and --json (machine-readable output stays clean).
+    if not dry_run:
+        try:
+            from cli.snapshot_meta import sweep_expired_snapshots
+
+            swept = sweep_expired_snapshots(workspace / "user" / "snapshots")
+            if swept and not (quiet or as_json):
+                for name in swept:
+                    typer.echo(f"swept expired snapshot: {name}", err=True)
+        except Exception:
+            # Intentionally swallowed — see the comment above.
+            pass
+
     # Show progress unless quiet (SessionStart hooks) or json (machine-
     # readable output where Rich's terminal-control sequences would be
     # garbage in the consumer's parser).
