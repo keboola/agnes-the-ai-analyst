@@ -772,3 +772,57 @@ class TestBqSessionPool:
         )
         with bq.duckdb_session() as conn:
             assert conn is sentinel
+
+
+# ---- apply_bq_session_settings resource caps (#431 follow-up / #432) -------
+
+class TestApplyBqSessionSettings:
+    def test_apply_bq_session_settings_applies_resource_caps(self):
+        """``apply_bq_session_settings`` must apply the three core DuckDB
+        resource caps UNCONDITIONALLY — before the BQ-extension-setting
+        early-exit and on every pool acquire. The caps are core DuckDB, so
+        this works hermetically on a plain in-memory conn with no BQ
+        extension loaded (the BQ-only ``bq_query_timeout_ms`` SET logs and
+        does not raise, which this test tolerates).
+        """
+        import duckdb
+        from connectors.bigquery.access import apply_bq_session_settings
+
+        conn = duckdb.connect(":memory:")
+        try:
+            # Capture the default memory_limit BEFORE applying the caps — the
+            # DuckDB default is 80% of host RAM, meaningfully larger than the
+            # 2 GiB cap. Proving BEFORE != AFTER is the regression guard for
+            # the "caps run before the extension early-exit" lift.
+            before = conn.execute(
+                "SELECT current_setting('memory_limit')"
+            ).fetchone()[0]
+
+            apply_bq_session_settings(conn)
+
+            threads = conn.execute(
+                "SELECT current_setting('threads')"
+            ).fetchone()[0]
+            assert int(threads) == 2
+
+            preserve = conn.execute(
+                "SELECT current_setting('preserve_insertion_order')"
+            ).fetchone()[0]
+            assert preserve in (False, "false")
+
+            after = conn.execute(
+                "SELECT current_setting('memory_limit')"
+            ).fetchone()[0]
+            # Normalized/banded assertion: '2GB' -> '1.8 GiB'. An exact
+            # string compare would false-fail. The band check (≤ 2 GiB) is
+            # what pins correctness — we deliberately don't assert
+            # `before != after` because on a host with ~2.5 GB RAM, DuckDB's
+            # 80%-of-RAM default rounds to the same 2 GB cap as the explicit
+            # SET, making the two values identical even though the SET ran
+            # (Devin Review on #591). `before` is captured purely for the
+            # diagnostic on the band assertion's failure message, not for
+            # change detection.
+            assert "GiB" in after, (before, after)
+            assert float(after.split()[0]) <= 2.0, (before, after)
+        finally:
+            conn.close()
