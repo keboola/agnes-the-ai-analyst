@@ -257,6 +257,67 @@ def workspace_has_agnes_hooks(workspace: Path) -> bool:
     return False
 
 
+# Substrings that identify a workspace bootstrapped by the OLD server flow
+# (pre-`agnes init`). These workspaces have a SessionEnd/SessionStart hook
+# that uploaded sessions via the server's `collect_session` script and
+# never install the `agnes self-upgrade` / `agnes pull` SessionStart hooks
+# — so the CLI sits on a stale version indefinitely. Matched by substring
+# so any variant of the old layout (direct python invocation, a wrapper
+# shell script under server/scripts/, …) is caught.
+_LEGACY_COMMAND_MARKERS = (
+    "collect_session",
+    "server/scripts/",
+)
+
+
+def workspace_has_legacy_hooks(workspace: Path) -> bool:
+    """True iff ``workspace/.claude/settings.json`` carries a hook from the
+    OLD server flow (a SessionStart/SessionEnd command referencing
+    ``collect_session`` or ``server/scripts/``) AND the workspace does not
+    already have modern Agnes hooks.
+
+    Legacy-flow workspaces never invoke ``agnes self-upgrade`` (it is only
+    wired by ``agnes init``), so their CLI drifts stale indefinitely.
+    ``agnes pull`` calls this to emit a one-line nudge pointing the analyst
+    at ``agnes init``. We do NOT auto-migrate — the analyst owns when their
+    hook layout changes.
+
+    The ``not workspace_has_agnes_hooks`` guard ensures a workspace already
+    on the modern layout is never flagged, even if a stray legacy entry
+    lingers alongside the new hooks — once ``agnes init`` has run, the
+    self-upgrade hook is wired and the nudge is moot. Returns False on
+    missing / malformed settings.json.
+    """
+    settings_path = workspace / ".claude" / "settings.json"
+    if not settings_path.exists():
+        return False
+    try:
+        cfg = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    if not isinstance(cfg, dict):
+        return False
+    hooks = cfg.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return False
+    has_legacy = False
+    for event in ("SessionStart", "SessionEnd"):
+        entries = hooks.get(event, [])
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            for h in entry.get("hooks", []) or []:
+                cmd = h.get("command", "") if isinstance(h, dict) else ""
+                if any(marker in cmd for marker in _LEGACY_COMMAND_MARKERS):
+                    has_legacy = True
+    if not has_legacy:
+        return False
+    # Already on the modern layout → no nudge (self-upgrade is wired).
+    return not workspace_has_agnes_hooks(workspace)
+
+
 def maybe_refresh_claude_hooks(workspace: Path) -> bool:
     """Idempotently re-install Agnes hooks if ``workspace`` already looks like
     an Agnes workspace, otherwise no-op.

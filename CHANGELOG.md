@@ -21,6 +21,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.70.18] — 2026-06-10
+
+### Added
+- **Legacy-hook nudge on `agnes pull`.** Workspaces bootstrapped by the old server-upload flow (a `SessionEnd`/`SessionStart` hook referencing `collect_session` or `server/scripts/`, with none of the modern `agnes init` hooks) never invoke `agnes self-upgrade`, so the CLI drifts stale indefinitely. `agnes pull` now detects this layout via `workspace_has_legacy_hooks()` and emits a single stderr nudge — `This workspace uses an outdated hook layout — run \`agnes init\` to enable auto-update.` — pointing the analyst at `agnes init`. It does NOT auto-migrate; the analyst owns when their hook layout changes. Suppressed under `--quiet` (the SessionStart hook path) and `--json`. (#601)
+
+### Fixed
+- **Silent `agnes self-upgrade` failures now surface.** The SessionStart hook runs `agnes self-upgrade --quiet 2>/dev/null || true`, so a failing auto-update (network, uv/pip resolution, smoke-test rollback) was invisible and the CLI could sit stale for weeks. Each self-upgrade outcome is now persisted to `$AGNES_CONFIG_DIR/upgrade_status.json` (`last_attempt_ts`, `last_outcome`, `consecutive_failures`); the quiet path stays silent but increments the counter on failure / resets it on success, and the next NON-quiet `agnes` command warns once — `agnes self-upgrade has failed N times — run \`agnes self-upgrade\` to see the error.` — when three or more attempts in a row have failed. `--quiet` commands and the in-progress smoke-test subprocess stay silent. A transient network blip (server unreachable without `--force`) no longer resets the consecutive-failure counter — the offline branch now takes no opinion on the CLI state (Devin Review BUG_0001). (#601)
+
+## [0.70.17] — 2026-06-10
+
+### Added
+- **Per-snapshot TTL expiry for local snapshots (#407).** `agnes snapshot create --ttl <7d|24h|90m>` stamps an `expires_at` instant on the snapshot; `agnes refresh --ttl …` re-anchors it. A lazy sweep at the start of `agnes pull` deletes any snapshots whose TTL has elapsed (best-effort, never blocks a pull; skipped under `--dry-run`/`--json`, one quiet stderr notice per swept snapshot otherwise), and `agnes snapshot prune --expired` runs the same sweep on demand. `agnes snapshot list` now shows an `EXPIRES` column. There is no global default TTL — only `--ttl` snapshots ever expire; existing snapshots and legacy `meta.json` files (no `expires_at` key) are unaffected. The lazy sweep re-reads + re-verifies the expiry under `snapshot_lock` (closing a TOCTOU race against a concurrent `agnes snapshot refresh --ttl <d>` that re-anchors `expires_at`, Devin Review BUG_0001). (#599)
+
+## [0.70.16] — 2026-06-10
+
+### Added
+- **Per-source partial rebuilds.** `POST /api/sync/trigger?source=<source_type>` (and the new `agnes admin sync --source <type>`) scope a sync to a single registered source: only that source's local + materialized rows are rebuilt, leaving the other source's `extract.duckdb` untouched. Useful on dual-source deployments where a BigQuery refresh should not pay the cost of re-extracting every Keboola table. A bare trigger / `agnes admin sync` still rebuilds everything. Unknown source types fail fast with `422`. (#602)
+
 ## [0.70.15] — 2026-06-10
 
 ### Added

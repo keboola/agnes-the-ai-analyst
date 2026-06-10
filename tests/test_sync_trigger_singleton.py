@@ -151,7 +151,9 @@ def test_trigger_accepts_both_body_shapes(body, expected_tables):
         else:
             resp = client.post("/api/sync/trigger", json=body)
     assert resp.status_code == 200, resp.text
-    run_mock.assert_called_once_with(expected_tables)
+    # `source` defaults to None (full sweep); it's threaded as the second
+    # positional arg into `_run_sync(tables, source_type_filter)`.
+    run_mock.assert_called_once_with(expected_tables, None)
 
 
 @pytest.mark.parametrize("bad_body", [
