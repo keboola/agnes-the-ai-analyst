@@ -1,16 +1,20 @@
 """Tests for `agnes update-workspace` — safe backup-aware IWT re-apply.
 
 Layers:
-  * src.initial_workspace — baseline storage + 3-way diff engine
+  * src.initial_workspace — pure 3-way diff engine
     (classify_workspace_update / update_workspace_from_template)
-  * cli.lib.initial_workspace.apply_override — writes the baseline on init
+  * cli.lib.initial_workspace — baseline storage (in the client config dir,
+    NOT the workspace) + apply_override writing the baseline on init
   * cli.commands.update_workspace — the Typer command (IWT guard, dry-run,
     confirm/--yes, report) end-to-end with mocked endpoints
 
-Note: workspace files are written with ``write_bytes`` (never
-``write_text``) — on Windows text mode rewrites ``\\n`` to ``\\r\\n``,
-which would diverge from the LF bytes the template zip carries and make
-"unchanged" files look modified.
+Notes:
+  * Workspace files are written with ``write_bytes`` (never ``write_text``)
+    — on Windows text mode rewrites ``\\n`` to ``\\r\\n``, which would
+    diverge from the LF bytes the template zip carries and make "unchanged"
+    files look modified.
+  * Every test that touches the baseline sets ``AGNES_CONFIG_DIR`` so the
+    baseline lands under a tmp dir, never the real ``~/.config/agnes``.
 """
 
 from __future__ import annotations
@@ -46,24 +50,44 @@ def _make_zip(entries: dict[str, bytes]) -> bytes:
     return buf.getvalue()
 
 
+def _isolate_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+
+
 # ===========================================================================
-# Layer 1: engine — baseline storage + 3-way diff
+# Layer 1: baseline storage (cli.lib) — lives in config dir, keyed by path
 # ===========================================================================
 
 
-def test_baseline_roundtrip(tmp_path):
-    from src.initial_workspace import (
+def test_baseline_roundtrip(tmp_path, monkeypatch):
+    _isolate_config(monkeypatch, tmp_path)
+    from cli.config import _config_dir
+    from cli.lib.initial_workspace import (
         _baseline_path,
         load_template_baseline,
         save_template_baseline,
     )
 
-    assert load_template_baseline(tmp_path) is None
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    assert load_template_baseline(ws) is None
     data = _make_zip({"CLAUDE.md": b"x\n"})
-    path = save_template_baseline(tmp_path, data)
-    assert path == _baseline_path(tmp_path)
-    assert path == tmp_path / ".claude" / "agnes" / "installed-template.zip"
-    assert load_template_baseline(tmp_path) == data
+    path = save_template_baseline(ws, data)
+    # Stored in the config dir, NOT inside the workspace.
+    assert path == _baseline_path(ws)
+    assert _config_dir() in path.parents
+    assert ws not in path.parents
+    assert load_template_baseline(ws) == data
+
+
+def test_baseline_keyed_per_workspace(tmp_path, monkeypatch):
+    """Two workspaces on one machine get distinct baseline files."""
+    _isolate_config(monkeypatch, tmp_path)
+    from cli.lib.initial_workspace import _baseline_path
+
+    a = _baseline_path(tmp_path / "wsA")
+    b = _baseline_path(tmp_path / "wsB")
+    assert a != b
 
 
 def test_unique_bak_path(tmp_path):
@@ -77,15 +101,15 @@ def test_unique_bak_path(tmp_path):
     assert _unique_bak_path(p) == tmp_path / "x.bak.TS.2"
 
 
+# ===========================================================================
+# Layer 2: pure 3-way diff engine (src)
+# ===========================================================================
+
+
 def test_classify_three_way(tmp_path):
-    from src.initial_workspace import (
-        classify_workspace_update,
-        load_template_baseline,
-        save_template_baseline,
-    )
+    from src.initial_workspace import classify_workspace_update
 
     base = _make_zip({"a.md": b"a1\n", "b.md": b"b1\n", "same.md": b"s\n"})
-    save_template_baseline(tmp_path, base)
     _w(tmp_path / "a.md", b"MINE\n")    # analyst changed → backed_up
     _w(tmp_path / "b.md", b"b1\n")       # unchanged → updated
     _w(tmp_path / "same.md", b"s\n")     # identical to new → no-op
@@ -97,28 +121,23 @@ def test_classify_three_way(tmp_path):
         "same.md": b"s\n",
         "c.md": b"c\n",     # new → created
     })
-    plan = classify_workspace_update(tmp_path, new, load_template_baseline(tmp_path))
+    plan = classify_workspace_update(tmp_path, new, base)
     assert plan.created == ["c.md"]
     assert plan.updated == ["b.md"]
     assert plan.backed_up == ["a.md"]
 
 
 def test_update_applies_three_way_with_backup(tmp_path):
-    from src.initial_workspace import (
-        load_template_baseline,
-        save_template_baseline,
-        update_workspace_from_template,
-    )
+    from src.initial_workspace import update_workspace_from_template
 
     base = _make_zip({"a.md": b"a1\n", "b.md": b"b1\n"})
-    save_template_baseline(tmp_path, base)
     _w(tmp_path / "a.md", b"MINE\n")
     _w(tmp_path / "b.md", b"b1\n")
     _w(tmp_path / "extra.txt", b"keep\n")
 
     new = _make_zip({"a.md": b"a2\n", "b.md": b"b2\n", "c.md": b"c\n"})
     result = update_workspace_from_template(
-        tmp_path, new, load_template_baseline(tmp_path),
+        tmp_path, new, base,
         agnes_version="9.9", server_url="http://x",
         template_source="repo", template_sha="newsha",
     )
@@ -137,17 +156,15 @@ def test_update_applies_three_way_with_backup(tmp_path):
     assert (tmp_path / "c.md").read_bytes() == b"c\n"
     # extra.txt: preserved
     assert (tmp_path / "extra.txt").read_bytes() == b"keep\n"
-    # baseline rewritten to the new zip
-    assert load_template_baseline(tmp_path) == new
-    # sentinel refreshed
+    # sentinel refreshed (baseline persistence is the CLI's job, not the engine's)
     sentinel = (tmp_path / ".claude" / "init-complete").read_text()
     assert "override: true" in sentinel
     assert "template_sha: newsha" in sentinel
 
 
 def test_update_without_baseline_backs_up_every_change(tmp_path):
-    """Older workspace, no baseline → any differing file is treated as
-    analyst-modified and backed up (conservative)."""
+    """No baseline → any differing file is treated as analyst-modified and
+    backed up (conservative)."""
     from src.initial_workspace import update_workspace_from_template
 
     _w(tmp_path / "CLAUDE.md", b"local\n")
@@ -176,13 +193,15 @@ def test_update_rejects_unsafe_entry_writes_nothing(tmp_path):
 
 
 # ===========================================================================
-# Layer 2: apply_override persists the baseline on first init
+# Layer 3: apply_override persists the baseline on first init
 # ===========================================================================
 
 
 def test_apply_override_writes_baseline(tmp_path, monkeypatch):
+    _isolate_config(monkeypatch, tmp_path)
     from cli.lib import initial_workspace as iw
 
+    ws = tmp_path / "ws"
     zip_bytes = _make_zip({"CLAUDE.md": b"# Template\n"})
     status = iw.StatusInfo(
         configured=True, synced=True,
@@ -194,16 +213,17 @@ def test_apply_override_writes_baseline(tmp_path, monkeypatch):
     monkeypatch.setattr(iw, "_fetch_connector_params", lambda *a, **k: None)
 
     result = iw.apply_override(
-        tmp_path, status, "http://x", "t", force=False, agnes_version="9.9",
+        ws, status, "http://x", "t", force=False, agnes_version="9.9",
     )
-    assert (tmp_path / "CLAUDE.md").read_bytes() == b"# Template\n"
+    assert (ws / "CLAUDE.md").read_bytes() == b"# Template\n"
     assert result.created == ["CLAUDE.md"]
-    baseline = tmp_path / ".claude" / "agnes" / "installed-template.zip"
-    assert baseline.read_bytes() == zip_bytes
+    # Baseline stored in the config dir, not the workspace.
+    assert iw.load_template_baseline(ws) == zip_bytes
+    assert not (ws / ".claude" / "agnes" / "installed-template.zip").exists()
 
 
 # ===========================================================================
-# Layer 3: `agnes update-workspace` command end-to-end
+# Layer 4: `agnes update-workspace` command end-to-end
 # ===========================================================================
 
 
@@ -291,8 +311,8 @@ def test_command_exits_when_not_synced(tmp_path, monkeypatch):
 
 def _prep_ws_with_baseline(ws: Path):
     """Workspace where the analyst changed a.md, left b.md, added extra.txt;
-    baseline reflects the original {a1,b1}."""
-    from src.initial_workspace import save_template_baseline
+    baseline reflects the original {a1,b1}. Requires AGNES_CONFIG_DIR set."""
+    from cli.lib.initial_workspace import save_template_baseline
 
     ws.mkdir(parents=True, exist_ok=True)
     base = _make_zip({"a.md": b"a1\n", "b.md": b"b1\n"})
@@ -331,7 +351,7 @@ def test_command_dry_run_writes_nothing(tmp_path, monkeypatch):
 
 
 def test_command_yes_applies_with_backup(tmp_path, monkeypatch):
-    from src.initial_workspace import load_template_baseline
+    from cli.lib.initial_workspace import load_template_baseline
 
     _setenv(monkeypatch, tmp_path)
     ws = tmp_path / "ws"
@@ -351,7 +371,7 @@ def test_command_yes_applies_with_backup(tmp_path, monkeypatch):
     # c.md created; extra.txt preserved
     assert (ws / "c.md").read_bytes() == b"c\n"
     assert (ws / "extra.txt").read_bytes() == b"keep\n"
-    # baseline rewritten
+    # baseline rewritten by the CLI layer
     assert load_template_baseline(ws) == new_zip
     out = _clean(result.output)
     assert "Backed up: 1" in out
@@ -390,7 +410,7 @@ def test_command_prompt_YES_applies(tmp_path, monkeypatch):
 
 
 def test_command_already_up_to_date(tmp_path, monkeypatch):
-    from src.initial_workspace import save_template_baseline
+    from cli.lib.initial_workspace import save_template_baseline
 
     _setenv(monkeypatch, tmp_path)
     ws = tmp_path / "ws"
