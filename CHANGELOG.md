@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.70.20] — 2026-06-10
+
+### Fixed
+- **MCP `pull` tool now returns wall-clock duration.** The tool used to read `result.elapsed_s` with a `hasattr` guard — but `PullResult` exposes `duration_s`, so the guard always returned `False` and every MCP `pull` response carried `"elapsed_s": None`, silently erasing the real call duration that REST + `agnes pull --json` correctly surface. The response key is now `duration_s` (matching `PullResult` and the rest of the codebase) and reads the right attribute. Devin Review BUG_0001 follow-up from #594.
+
 ## [0.70.19] — 2026-06-10
 
 ### Fixed
