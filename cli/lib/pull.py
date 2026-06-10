@@ -47,6 +47,9 @@ class PullResult:
 
     Fields:
     - `tables_updated`: count of parquets actually re-downloaded this run.
+    - `tables_removed`: count of local `server/parquet/<name>.parquet` files
+      pruned this run because the table left the authorized typed (v49)
+      stack. Always 0 against a pre-v49 server that emits no typed sections.
     - `parquets_total`: count of non-remote tables visible in the manifest.
     - `rules_count`: number of `km_*.md` files written to `.claude/rules/`.
     - `duration_s`: wall time of the call.
@@ -56,6 +59,7 @@ class PullResult:
     """
 
     tables_updated: int = 0
+    tables_removed: int = 0
     parquets_total: int = 0
     rules_count: int = 0
     duration_s: float = 0.0
@@ -345,6 +349,53 @@ def run_pull(
         local_state = get_sync_state()
         local_tables = local_state.get("tables", {})
 
+        # #506 — make the legacy flat `server/parquet/` tree obey the stack.
+        #
+        # `agnes query` reads <workspace>/user/duckdb/analytics.duckdb whose
+        # views are rebuilt over <workspace>/server/parquet/*.parquet. The
+        # legacy flat `manifest["tables"]` dict is gated server-side by
+        # `can_access_table`, whose Admin short-circuit bypasses the stack —
+        # so for an admin it over-lists every accessible table regardless of
+        # subscription, and for everyone there is no prune on authorization
+        # loss. The typed v49 sections (``data_packages[].tables[]`` +
+        # ``direct_tables[]``) ARE stack-scoped via StackResolver, but
+        # historically run_pull consumed only the flat dict. Net: removing a
+        # data package dropped it from ``data_packages[]`` yet left its
+        # parquet + DuckDB view locally queryable.
+        #
+        # When the manifest carries the typed sections (same key-presence gate
+        # the v49 stack-sync block at the end of run_pull uses), the authorized
+        # table-name set is the union of every typed entry's ``name`` field —
+        # which equals the flat parquet stem == sync_state.table_id ==
+        # registry name == _meta.table_name. We use that set both to (1) filter
+        # the download set (kills admin over-listing without touching server
+        # authz) and (2) prune already-downloaded parquets that left the stack.
+        #
+        # A pre-v49 server emits none of these keys → fall back to the flat
+        # dict exactly as before (no filter, no prune). A typed-sections-present
+        # but empty stack is a legitimate "subscribed to zero packages" state:
+        # the authorized set is empty and ALL flat parquets are pruned, which is
+        # the intended behavior (the server wraps each section builder in
+        # try/except returning [] on error, and StackResolver returns [] only
+        # for a genuinely empty stack — so an empty typed set is never an error
+        # signal that would wrongly nuke the local tree).
+        has_typed_sections = any(
+            k in manifest
+            for k in ("direct_tables", "data_packages", "memory_domains")
+        )
+        authorized_names: set[str] | None = None
+        if has_typed_sections:
+            authorized_names = set()
+            for pkg in manifest.get("data_packages", []) or []:
+                for t in pkg.get("tables", []) or []:
+                    name = t.get("name")
+                    if name:
+                        authorized_names.add(name)
+            for t in manifest.get("direct_tables", []) or []:
+                name = t.get("name")
+                if name:
+                    authorized_names.add(name)
+
         # 2. Compute the download set, skipping remote-mode tables (no
         # parquet on the server) and unchanged hashes.
         #
@@ -368,6 +419,12 @@ def run_pull(
                 # Operator opt-out for first-init. Materialized rows are
                 # still discoverable via `agnes catalog` and queryable
                 # the next time `agnes pull` runs without --skip-materialize.
+                continue
+            # #506 — when typed sections are present, the stack is the unit of
+            # access: never download a flat-dict table the typed stack omits
+            # (admin god-mode over-list). Pre-v49 servers have
+            # `authorized_names is None` → no filter.
+            if authorized_names is not None and tid not in authorized_names:
                 continue
             non_remote_total += 1
             local_hash = local_tables.get(tid, {}).get("hash", "")
@@ -526,6 +583,28 @@ def run_pull(
             else:
                 local_tables[tid] = entry
                 result.tables_updated += 1
+
+        # 4b. #506 — prune local parquets that left the authorized typed
+        # stack. Runs only when the manifest carries typed sections (else
+        # ``authorized_names is None`` and this is a no-op — pre-v49 servers
+        # are untouched). For any ``server/parquet/<stem>.parquet`` on disk
+        # whose stem is not authorized, unlink the file and drop its
+        # ``local_tables[stem]`` sync_state row. The unconditional view
+        # rebuild in step 6 then drops the now-orphaned view automatically
+        # (it DROPs all views, then recreates only from parquets still on
+        # disk). Remote/materialized tables have no flat parquet so they're
+        # untouched; user-created BASE TABLEs live in analytics.duckdb (not
+        # under server/parquet/) so they're never pruned. Done before
+        # save_sync_state so the dropped rows persist, and before
+        # _rebuild_duckdb_views so the orphaned views disappear.
+        if authorized_names is not None and parquet_dir.exists():
+            for pq_file in sorted(parquet_dir.glob("*.parquet")):
+                stem = pq_file.stem
+                if stem in authorized_names:
+                    continue
+                pq_file.unlink(missing_ok=True)
+                local_tables.pop(stem, None)
+                result.tables_removed += 1
 
         # 5. Persist sync state (only on real runs).
         # TODO(workspace-scoped-sync-state): currently saved to
