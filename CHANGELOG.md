@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- **Security: Agnes now protects its own PAT on disk and reduces its transcript exposure (#580, Findings 1-min + 2).** Plaintext token files are written with mode `0o600` (owner-only) instead of being left at the ambient umask (commonly `0o644`, world-readable) — at all three write sites: `cli.config.save_token` (`~/.config/agnes/token.json`) and the generated Cowork `setup.py` (`token.json` + both `.agnes-creds.json` copies). Each uses an atomic write (temp file chmod'd before rename) and is best-effort + Windows-safe (the chmod is skipped where the platform/filesystem doesn't honor it; native ACLs apply). `agnes init` now deletes the transient `~/.agnes/token` bootstrap file once it has consumed the token, and the setup prompt gained an explicit note that the heredoc PAT lands in the uploaded session transcript, with a `/agnes-private` reminder to keep the bootstrap session out of `agnes push`. (Storing the PAT in the OS keychain — Finding 3 — is deferred pending a security review; `0o600` plaintext is the accepted baseline.)
 
 ### Removed
 
