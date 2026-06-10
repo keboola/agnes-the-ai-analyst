@@ -502,6 +502,10 @@ def test_e2b_pause_resume_real():
         cmd_handle = await sandbox.commands.run(
             "python3 -u /tmp/echo.py",
             background=True,
+            # stdin=True is load-bearing (same as E2BProvider.spawn): without
+            # it the process gets EOF on stdin and exits immediately, and the
+            # post-resume send_stdin fails with "process not found".
+            stdin=True,
             on_stdout=lambda c: pre_stdout.feed(c if isinstance(c, bytes) else c.encode("utf-8", "replace")),
             on_stderr=lambda c: pre_stderr.feed(c if isinstance(c, bytes) else c.encode("utf-8", "replace")),
             timeout=0,
