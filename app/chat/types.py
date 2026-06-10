@@ -1,4 +1,5 @@
 """Chat-feature shared dataclasses and enums (referenced cross-module)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ class SessionState(str, Enum):
     NEW = "NEW"
     ACTIVE = "ACTIVE"
     IDLE = "IDLE"
+    PAUSED = "PAUSED"
     DEAD = "DEAD"
 
 
@@ -34,6 +36,11 @@ class ChatSession:
     archived: bool
     is_co_session: bool = False
     ephemeral: bool = False
+    # Sandbox lifecycle refs (pause/resume). Nullable; cleared on real kill.
+    # NOTE: never index these columns — DuckDB 1.5.3 FK+index bug (src/db.py).
+    sandbox_id: Optional[str] = None
+    runner_pid: Optional[int] = None
+    sandbox_paused_at: Optional[datetime] = None
 
 
 @dataclass
