@@ -35,9 +35,15 @@ from cli.client import api_get, api_post
 from cli.error_render import render_error
 from src.initial_workspace import (
     ExtractResult,
+    UpdatePlan,
+    UpdateResult,
+    classify_workspace_update,
     extract_zip_to_workspace as _extract_zip_pure,
     initialize_workspace_from_template,
     is_override_workspace,
+    load_template_baseline,
+    save_template_baseline,
+    update_workspace_from_template,
 )
 
 logger = logging.getLogger(__name__)
@@ -300,6 +306,114 @@ def report_applied(
         logger.exception("audit event /applied failed")
 
 
+# ---------------------------------------------------------------------------
+# `agnes update-workspace` — backup-aware re-apply of the IWT into an
+# existing workspace. Unlike `agnes init --force`, this:
+#   * reads server URL + PAT from saved config (no --server-url),
+#   * does NOT re-pull parquets,
+#   * BACKS UP analyst-modified files to `<name>.bak.<ts>` (3-way diff
+#     against the stored baseline) instead of overwriting blind.
+# ---------------------------------------------------------------------------
+
+
+def preview_update(workspace: Path, new_zip_bytes: bytes) -> UpdatePlan:
+    """Classify what an update would do, without touching disk.
+
+    Reads the stored baseline (``None`` for workspaces initialised by an
+    older CLI — then every changed file is treated as analyst-modified and
+    gets a ``.bak``).
+    """
+    baseline = load_template_baseline(workspace)
+    return classify_workspace_update(workspace, new_zip_bytes, baseline)
+
+
+def prompt_update_confirmation(workspace: Path, plan: UpdatePlan) -> bool:
+    """Print the update plan + require literal ``YES`` to proceed.
+
+    Uppercase-strict (same rationale as :func:`prompt_force_confirmation`):
+    a fat-finger shouldn't trigger it, and a Claude Code session is less
+    likely to auto-acknowledge. Returns True iff the operator typed ``YES``.
+    """
+    typer.echo("")
+    typer.echo("⚠️  Update workspace from the Initial Workspace Template.")
+    typer.echo("")
+    typer.echo(f"Workspace: {workspace}")
+    typer.echo("")
+    if plan.backed_up:
+        typer.echo(
+            f"Files YOU changed — backed up to <name>.bak.<timestamp>, "
+            f"then updated ({len(plan.backed_up)}):"
+        )
+        for rel in plan.backed_up[:50]:
+            typer.echo(f"  ~ {rel}")
+        if len(plan.backed_up) > 50:
+            typer.echo(f"  … and {len(plan.backed_up) - 50} more")
+        typer.echo("")
+    if plan.updated:
+        typer.echo(f"Files updated in place — you hadn't changed them ({len(plan.updated)}):")
+        for rel in plan.updated[:50]:
+            typer.echo(f"  · {rel}")
+        if len(plan.updated) > 50:
+            typer.echo(f"  … and {len(plan.updated) - 50} more")
+        typer.echo("")
+    if plan.created:
+        typer.echo(f"New files added ({len(plan.created)}):")
+        for rel in plan.created[:50]:
+            typer.echo(f"  + {rel}")
+        if len(plan.created) > 50:
+            typer.echo(f"  … and {len(plan.created) - 50} more")
+        typer.echo("")
+    typer.echo("Files not in the template are left untouched.")
+    typer.echo("This action is logged on the server.")
+    typer.echo("")
+    response = typer.prompt(
+        "Type YES to continue, anything else to abort",
+        type=str,
+        default="",
+        show_default=False,
+    )
+    return response.strip() == "YES"
+
+
+def apply_update(
+    workspace: Path,
+    new_zip_bytes: bytes,
+    status: StatusInfo,
+    server_url: str,
+    token: str,
+    *,
+    agnes_version: str,
+) -> UpdateResult:
+    """Execute the backup-aware re-apply, then POST the audit event.
+
+    Renders a typed ``initial_workspace_unsafe_entry`` error and exits on an
+    unsafe zip entry (defense in depth — the server already validates).
+    """
+    try:
+        result = update_workspace_from_template(
+            workspace,
+            new_zip_bytes,
+            load_template_baseline(workspace),
+            agnes_version=agnes_version,
+            server_url=server_url,
+            template_source=status.template_source,
+            template_sha=status.template_sha,
+        )
+    except ValueError as exc:
+        _render_unsafe_entry_error(exc)
+        raise  # unreachable — _render_unsafe_entry_error always raises typer.Exit
+
+    report_applied(
+        server_url,
+        token,
+        mode="update",
+        template_sha=status.template_sha,
+        overwritten_count=len(result.updated) + len(result.backed_up),
+        created_count=len(result.created),
+    )
+    return result
+
+
 def _dotenv_quote(value: str) -> str:
     """Quote a value for a POSIX dotenv file. Strings without shell
     metacharacters and without whitespace ship bare; everything else
@@ -550,6 +664,16 @@ def apply_override(
     except ValueError as exc:
         _render_unsafe_entry_error(exc)
         raise  # unreachable — _render_unsafe_entry_error always raises typer.Exit
+
+    # Store the installed zip as the workspace baseline so a later
+    # `agnes update-workspace` can tell apart analyst edits from upstream
+    # template changes (3-way diff). Best-effort: a failed baseline write
+    # must not abort init — the update command degrades to "back up every
+    # changed file" when the baseline is missing.
+    try:
+        save_template_baseline(workspace, zip_bytes)
+    except Exception:
+        logger.exception("save_template_baseline failed; baseline not written")
 
     # Operator-provisioned per-tenant params → <workspace>/.claude/agnes/.env.
     # Best-effort: a missing or empty overlay is fine, seed skills fall
