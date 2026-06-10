@@ -6,6 +6,7 @@ import os
 import json as json_lib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 import duckdb
 import httpx
@@ -16,7 +17,7 @@ import typer
 
 from cli.snapshot_meta import (
     list_snapshots, read_meta, write_meta, delete_snapshot,
-    snapshot_lock, SnapshotMeta,
+    snapshot_lock, sweep_expired_snapshots, SnapshotMeta,
 )
 from cli.v2_client import api_post_arrow, api_post_json, V2ClientError
 
@@ -52,7 +53,10 @@ def list_cmd(
     if not snaps:
         typer.echo("(no snapshots)")
         return
-    typer.echo(f"{'NAME':30s}  {'ROWS':>10s}  {'SIZE':>10s}  {'AGE':>10s}  {'TABLE':30s}  WHERE")
+    typer.echo(
+        f"{'NAME':30s}  {'ROWS':>10s}  {'SIZE':>10s}  {'AGE':>10s}  "
+        f"{'EXPIRES':>20s}  {'TABLE':30s}  WHERE"
+    )
     now = datetime.now(timezone.utc)
     for s in sorted(snaps, key=lambda x: x.name):
         try:
@@ -60,11 +64,34 @@ def list_cmd(
             age_str = f"{age.days}d" if age.days else f"{int(age.total_seconds() // 3600)}h"
         except (ValueError, TypeError):
             age_str = "?"
+        expires_str = _format_expires(s.expires_at, now)
         where = (s.where or "")[:40]
         typer.echo(
             f"{s.name:30s}  {s.rows:>10,}  {_format_size(s.bytes_local):>10s}  "
-            f"{age_str:>10s}  {s.table_id:30s}  {where}"
+            f"{age_str:>10s}  {expires_str:>20s}  {s.table_id:30s}  {where}"
         )
+
+
+def _format_expires(expires_at: Optional[str], now: datetime) -> str:
+    """Render `expires_at` for `snapshot list`.
+
+    None → "-" (no TTL). A past instant → "expired". A future instant → the
+    remaining time until expiry (e.g. "6d", "12h").
+    """
+    if not expires_at:
+        return "-"
+    try:
+        exp = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return "?"
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    remaining = exp - now
+    if remaining.total_seconds() <= 0:
+        return "expired"
+    if remaining.days:
+        return f"in {remaining.days}d"
+    return f"in {int(remaining.total_seconds() // 3600)}h"
 
 
 @snapshot_app.command("drop")
@@ -92,6 +119,13 @@ def drop_cmd(name: str):
 def refresh_cmd(
     name: str,
     where: str = typer.Option(None, "--where", help="Override stored WHERE"),
+    ttl: str = typer.Option(
+        None, "--ttl",
+        help=(
+            "Reset the snapshot's TTL (e.g. 7d / 24h / 90m), re-anchored to "
+            "now. Omit to keep the existing expiry unchanged."
+        ),
+    ),
 ):
     """Re-fetch a snapshot using its stored fetch parameters (spec §4.2)."""
     snap_dir = _snap_dir()
@@ -99,6 +133,16 @@ def refresh_cmd(
     if meta is None:
         typer.echo(f"Error: snapshot {name!r} not found", err=True)
         raise typer.Exit(2)
+
+    if ttl is not None:
+        try:
+            _parse_duration(ttl)
+        except ValueError:
+            typer.echo(
+                f"Error: invalid --ttl {ttl!r}. Use a duration like 7d, 24h, or 90m.",
+                err=True,
+            )
+            raise typer.Exit(2)
 
     req = {
         "table_id": meta.table_id,
@@ -122,7 +166,13 @@ def refresh_cmd(
         old_bytes = meta.bytes_local
         new_rows = int(table.num_rows)
         new_bytes = parquet_path.stat().st_size
-        now = datetime.now(timezone.utc).isoformat()
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        # --ttl re-anchors the expiry to now; otherwise keep the stored one.
+        expires_at = (
+            (now_dt + _parse_duration(ttl)).isoformat() if ttl is not None
+            else meta.expires_at
+        )
         new_meta = SnapshotMeta(
             name=name, table_id=meta.table_id,
             select=req.get("select"), where=req.get("where"),
@@ -131,6 +181,7 @@ def refresh_cmd(
             rows=new_rows, bytes_local=new_bytes,
             estimated_scan_bytes_at_fetch=meta.estimated_scan_bytes_at_fetch,
             result_hash_md5=new_hash,
+            expires_at=expires_at,
         )
         write_meta(snap_dir, new_meta)
 
@@ -145,10 +196,45 @@ def refresh_cmd(
 def prune_cmd(
     older_than: str = typer.Option(None, "--older-than", help="e.g. 7d, 24h"),
     larger_than: str = typer.Option(None, "--larger-than", help="e.g. 1g, 500m"),
+    expired: bool = typer.Option(
+        False, "--expired",
+        help="Drop snapshots whose --ttl has elapsed (same sweep `agnes pull` runs).",
+    ),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ):
     """Drop snapshots matching predicates."""
     snap_dir = _snap_dir()
+
+    # --expired delegates to the shared sweep helper so the manual command
+    # and the lazy `agnes pull` sweep can never drift apart (#407). It's a
+    # standalone selector — combining it with --older-than / --larger-than
+    # would mix TTL-expiry with age/size predicates, so treat it exclusively.
+    if expired:
+        if dry_run:
+            now = datetime.now(timezone.utc)
+            matched = False
+            for s in list_snapshots(snap_dir):
+                if not s.expires_at:
+                    continue
+                try:
+                    exp = datetime.fromisoformat(s.expires_at.replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    continue
+                if exp.tzinfo is None:
+                    exp = exp.replace(tzinfo=timezone.utc)
+                if exp <= now:
+                    matched = True
+                    typer.echo(f"would drop: {s.name}  (expired {s.expires_at})")
+            if not matched:
+                typer.echo("(no matches)")
+            return
+        swept = sweep_expired_snapshots(snap_dir)
+        for name in swept:
+            typer.echo(f"dropped: {name}")
+        if not swept:
+            typer.echo("(no matches)")
+        return
+
     snaps = list_snapshots(snap_dir)
 
     matches = []
@@ -218,9 +304,28 @@ def create_cmd(
     estimate: bool = typer.Option(False, "--estimate", help="Run dry-run only, do not fetch"),
     no_estimate: bool = typer.Option(False, "--no-estimate", help="Skip the pre-fetch estimate"),
     force: bool = typer.Option(False, "--force", help="Overwrite existing snapshot of the same name"),
+    ttl: str = typer.Option(
+        None, "--ttl",
+        help=(
+            "Time-to-live, e.g. 7d / 24h / 90m. After it elapses the snapshot "
+            "is removed by the lazy sweep on the next `agnes pull` (or "
+            "`agnes snapshot prune --expired`). Omit for no expiry."
+        ),
+    ),
 ):
     """Create a snapshot — fetch a filtered subset of a remote table locally."""
     name = as_name or table_id
+
+    # Validate --ttl up-front (before any network call) so a typo fails fast.
+    if ttl is not None:
+        try:
+            _parse_duration(ttl)
+        except ValueError:
+            typer.echo(
+                f"Error: invalid --ttl {ttl!r}. Use a duration like 7d, 24h, or 90m.",
+                err=True,
+            )
+            raise typer.Exit(2)
     # Snapshot name lands in DuckDB CREATE VIEW as a quoted identifier; a `"`
     # in the name would break out and enable arbitrary SQL execution against
     # the user's local analytics.duckdb. Validate up-front with the same
@@ -342,7 +447,9 @@ def create_cmd(
 
         # Compute hash + write meta
         result_hash = hashlib.md5(parquet_path.read_bytes()[:1_000_000]).hexdigest()
-        now = datetime.now(timezone.utc).isoformat()
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        expires_at = (now_dt + _parse_duration(ttl)).isoformat() if ttl else None
         meta = SnapshotMeta(
             name=name, table_id=table_id,
             select=req.get("select"), where=req.get("where"),
@@ -352,10 +459,14 @@ def create_cmd(
             bytes_local=parquet_path.stat().st_size,
             estimated_scan_bytes_at_fetch=int(est.get("estimated_scan_bytes", 0)) if est is not None else 0,
             result_hash_md5=result_hash,
+            expires_at=expires_at,
         )
         write_meta(snap_dir, meta)
 
-    typer.echo(f"Fetched {table.num_rows:,} rows -> {name}")
+    if ttl:
+        typer.echo(f"Fetched {table.num_rows:,} rows -> {name} (expires {expires_at})")
+    else:
+        typer.echo(f"Fetched {table.num_rows:,} rows -> {name}")
 
 
 def _parse_duration(s: str) -> timedelta:
