@@ -189,12 +189,21 @@ def check(
 def format_outdated_notice(info: UpdateInfo) -> str:
     """One-line stderr warning when the CLI is out of date.
 
-    `download_url` may be absent (stale cache entry written by an older client,
-    or server returned a version without a download path). Don't emit the
-    literal string "None" into a copy-pasteable command — drop the upgrade
-    snippet in that case.
+    Always recommends `agnes self-upgrade` as the upgrade action. We used to
+    emit `uv tool install --force {info.download_url}` with the version-pinned
+    `/cli/wheel/{name}` URL the server returned — but that URL serves only the
+    *current* wheel, so after a server upgrade the cached pinned URL 404s
+    (issue #521). `agnes self-upgrade` re-probes `/cli/latest`, installs the
+    real current wheel, smoke-tests it, and rolls back on failure — it never
+    404s and always converges to the true latest, even if this banner's version
+    number lags by up to the cache TTL.
+
+    `download_url` is intentionally NOT referenced here (it stays on
+    `UpdateInfo` because `agnes self-upgrade` still uses it as the install
+    mechanism) — so the banner can never leak a pinned URL or the literal
+    string "None".
     """
-    msg = f"[update] agnes {info.installed} is out of date — latest on this server is {info.latest}."
-    if info.download_url:
-        msg += f" Upgrade: uv tool install --force {info.download_url}"
-    return msg
+    return (
+        f"[update] agnes {info.installed} is out of date — latest on this "
+        f"server is {info.latest}. Upgrade: run `agnes self-upgrade`."
+    )
