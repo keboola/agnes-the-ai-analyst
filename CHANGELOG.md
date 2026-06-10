@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.70.19] — 2026-06-10
+
+### Fixed
+- **Slash commands now work on Socket Mode deployments.** The Socket Mode dispatcher only routed `events_api` envelopes, so `SLACK_TRANSPORT=socket` instances silently dropped `/agnes`, `/agnes-new` and `/agnes-status` (the command never reached the server). `slash_commands` envelopes are now acked within the 3s contract — `/agnes help` is answered entirely inside the ack payload, everything else acks with an interim "working on it" ephemeral — and then routed through the same `dispatch_command` path the HTTP endpoint uses, with the same `response_url` recovery backstop. Interactive (button) routing over Socket Mode remains a later phase. (#606)
+
 ## [0.70.18] — 2026-06-10
 
 ### Added
