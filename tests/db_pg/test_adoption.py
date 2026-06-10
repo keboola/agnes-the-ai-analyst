@@ -207,6 +207,67 @@ def test_adoption_top_users(seeded_app_both):
         assert "user_id" in x and "username" in x and "last_active" in x
 
 
+def test_adoption_top_users_enriched_from_users_table(seeded_app_both):
+    """Rows carry the real users-table identity (name/email/registered) so
+    the UI renders the same person as /admin/users. Resolution is by
+    user_id; an unmatched session identity is registered=False."""
+    from src.repositories import usage_repo
+    repo = usage_repo()
+    # Matches the seeded analyst1 / analyst@test.com / "Analyst" user by id.
+    repo.upsert_summary(_summary(
+        session_file="analyst/s1.jsonl", username="analyst", user_id="analyst1",
+        active_seconds=3600,
+    ), processor_version=1)
+    # No matching user — username is not a local-part of any registered email.
+    repo.upsert_summary(_summary(
+        session_file="ghost/s2.jsonl", username="ghost", user_id=None,
+        active_seconds=60,
+    ), processor_version=1)
+
+    r = seeded_app_both["client"].get(
+        "/api/admin/adoption/top-users?window=7d",
+        headers=_h(seeded_app_both["admin_token"]),
+    )
+    assert r.status_code == 200, r.text
+    rows = {x["username"]: x for x in r.json()["rows"]}
+    assert rows["analyst"]["registered"] is True
+    assert rows["analyst"]["name"] == "Analyst"
+    assert rows["analyst"]["email"] == "analyst@test.com"
+    assert rows["ghost"]["registered"] is False
+    assert rows["ghost"]["name"] is None and rows["ghost"]["email"] is None
+
+
+def test_adoption_top_users_local_part_fallback(seeded_app_both):
+    """Legacy rows without a user_id resolve by matching the username
+    against the email local-part — but only when it is unambiguous."""
+    from src.repositories import usage_repo, users_repo
+    # Two users sharing the local-part "dup" → ambiguous, must NOT resolve.
+    users_repo().create(id="d1", email="dup@a.com", name="Dup A")
+    users_repo().create(id="d2", email="dup@b.com", name="Dup B")
+    repo = usage_repo()
+    repo.upsert_summary(_summary(
+        session_file="analyst/s1.jsonl", username="analyst", user_id=None,
+        active_seconds=3600,
+    ), processor_version=1)
+    repo.upsert_summary(_summary(
+        session_file="dup/s2.jsonl", username="dup", user_id=None,
+        active_seconds=60,
+    ), processor_version=1)
+
+    r = seeded_app_both["client"].get(
+        "/api/admin/adoption/top-users?window=7d",
+        headers=_h(seeded_app_both["admin_token"]),
+    )
+    assert r.status_code == 200, r.text
+    rows = {x["username"]: x for x in r.json()["rows"]}
+    # Unique local-part "analyst" → resolves to analyst@test.com.
+    assert rows["analyst"]["registered"] is True
+    assert rows["analyst"]["email"] == "analyst@test.com"
+    # Ambiguous local-part "dup" → left unresolved.
+    assert rows["dup"]["registered"] is False
+    assert rows["dup"]["email"] is None
+
+
 def test_adoption_top_skills(seeded_app_both):
     from src.repositories import usage_repo
     _seed_overall(usage_repo())

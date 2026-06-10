@@ -143,6 +143,17 @@ def _query_remote(sql: str, fmt: str, limit: int):
     _output(data["columns"], data["rows"], fmt)
     if data.get("truncated"):
         typer.echo(f"(truncated at {limit} rows)", err=True)
+    # BigQuery dry-run scan estimate — present only for query_mode='remote'
+    # rows; local queries return None and emit no line. Written to STDERR so
+    # json/csv stdout stays pure (#393).
+    if data.get("bytes_scanned") is not None:
+        from cli.commands.snapshot import _format_size
+
+        typer.echo(
+            f"BigQuery scanned ~{_format_size(data['bytes_scanned'])} "
+            "(dry-run estimate)",
+            err=True,
+        )
 
 
 def _output(columns: list, rows: list, fmt: str):

@@ -261,6 +261,9 @@ class QueryResponse(BaseModel):
     rows: list
     row_count: int
     truncated: bool = False
+    # BigQuery dry-run scan estimate (bytes) for `query_mode='remote'`
+    # queries; ``None`` for local DuckDB queries (no BQ tables involved).
+    bytes_scanned: Optional[int] = None
 
 
 def _run_internal_query(
@@ -611,19 +614,22 @@ def execute_query(
                 str(v) if v is not None and not isinstance(v, (int, float, bool, str)) else v
                 for v in row
             ])
+        # bytes_scanned from _dry_run_set (pinned to entry 0 after _bq_quota_and_cap_guard).
+        # Computed before building the response so it can be surfaced to
+        # REST/CLI/MCP consumers; ``None`` for local queries (no BQ tables).
+        _bytes_scanned = sum(b for _, _, b in _dry_run_set) if _dry_run_set else None
         response = QueryResponse(
             columns=columns,
             rows=serializable_rows,
             row_count=len(serializable_rows),
             truncated=truncated,
+            bytes_scanned=_bytes_scanned,
         )
         # Determine action: remote when BQ tables were involved (_dry_run_set non-empty),
         # local otherwise.
         _action = "query.remote" if _dry_run_set else "query.local"
         _first_table = _first_table_from_sql(request.sql)
         _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
-        # bytes_scanned from _dry_run_set (pinned to entry 0 after _bq_quota_and_cap_guard).
-        _bytes_scanned = sum(b for _, _, b in _dry_run_set) if _dry_run_set else None
         try:
             audit_repo().log(
                 user_id=user.get("id"),
