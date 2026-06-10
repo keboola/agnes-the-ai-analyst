@@ -819,3 +819,390 @@ def test_kill_between_turns_persists_nothing_extra(manager: ChatManager):
             assert not interrupted, "no interrupted marker expected after full turn"
 
     asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Task 8 tests: manager owns session lifecycle — detach/linger/pause/resume
+# ---------------------------------------------------------------------------
+
+from tests.chat_fakes import FakeProvider  # noqa: E402
+
+
+def _make_pause_manager(tmp_path, linger_seconds=0):
+    """ChatManager with FakeProvider and on_detach='pause'."""
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    provider = FakeProvider()
+    return ChatManager(
+        provider=provider,
+        workdir_mgr=workdir_mgr,
+        repo=repo,
+        config=ChatConfig(
+            enabled=True,
+            concurrency_per_user=5,
+            on_detach="pause",
+            detach_linger_seconds=linger_seconds,
+            paused_ttl_seconds=7 * 24 * 3600,
+            idle_ttl_seconds=10**9,
+        ),
+    )
+
+
+def _make_kill_manager(tmp_path):
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    provider = FakeProvider()
+    return ChatManager(
+        provider=provider,
+        workdir_mgr=workdir_mgr,
+        repo=repo,
+        config=ChatConfig(
+            enabled=True,
+            concurrency_per_user=5,
+            on_detach="kill",
+            detach_linger_seconds=0,
+            paused_ttl_seconds=7 * 24 * 3600,
+            idle_ttl_seconds=10**9,
+        ),
+    )
+
+
+def monkeypatch_workdir(mgr: ChatManager) -> None:
+    """Bypass the real WorkdirManager filesystem operations for testing."""
+    import unittest.mock as mock
+
+    mgr._workdir_mgr.ensure_user_workdir = mock.MagicMock()
+    mgr._workdir_mgr.prepare_session_dir = mock.MagicMock(return_value=Path("/tmp/fake-session-dir"))
+
+
+def test_detach_last_sink_does_not_kill(tmp_path):
+    """With on_detach='pause', removing the last sink must NOT kill the session;
+    it stays in _live with state ACTIVE through the linger window."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=999)
+        monkeypatch_workdir(mgr)
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        assert s.id in mgr._live
+        await mgr.detach_sink(s.id, ws)
+        await asyncio.sleep(0.05)
+        # Session must still be alive (linger window is 999 s)
+        assert s.id in mgr._live, "session killed immediately on detach — expected linger"
+        live = mgr._live[s.id]
+        assert live.state == SessionState.ACTIVE
+        # Cleanup
+        await mgr.kill(s.id, reason="test_done")
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_linger_then_pause_persists_refs(tmp_path):
+    """linger_seconds=0: provider.pause called, repo row has sandbox refs, state PAUSED."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        await mgr.detach_sink(s.id, ws)
+        await asyncio.sleep(0.15)  # linger=0, pause should have fired
+        # Provider should have paused the sandbox
+        assert provider.paused, "expected sandbox to be paused in provider"
+        # Repo row should reflect the pause
+        session = mgr._repo.get_session(s.id)
+        assert session is not None
+        assert session.sandbox_id is not None
+        assert session.runner_pid is not None
+        assert session.sandbox_paused_at is not None
+        # Live entry state should be PAUSED
+        live = mgr._live.get(s.id)
+        assert live is None or live.state == SessionState.PAUSED
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_reattach_during_linger_cancels_pause(tmp_path):
+    """A new sink arriving inside the linger window must cancel the pause task."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=999)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
+        await asyncio.sleep(0.05)
+        await mgr.detach_sink(s.id, ws1)
+        await asyncio.sleep(0.02)  # inside linger window
+        # Re-attach before linger expires
+        ws2 = FakeWS()
+        await mgr.add_sink(s.id, ws2, "u@x")
+        await asyncio.sleep(0.05)
+        # Pause must NOT have been called
+        assert not provider.paused, "pause should not fire when sink returned during linger"
+        live = mgr._live.get(s.id)
+        assert live is not None and live.state == SessionState.ACTIVE
+
+        await mgr.kill(s.id, reason="test_done")
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_pause_waits_for_inflight_turn(tmp_path):
+    """When turn_in_flight is True, _linger_then_pause waits for it to clear."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        live = mgr._live[s.id]
+        # Mark a turn in flight before detaching
+        live.turn_in_flight = True
+        await mgr.detach_sink(s.id, ws)
+        await asyncio.sleep(0.15)  # linger=0 but turn still in flight
+        # Pause should NOT have fired yet
+        assert not provider.paused, "pause should wait for in-flight turn"
+        # Simulate turn completing
+        live.turn_in_flight = False
+        await asyncio.sleep(0.15)
+        # Now pause should fire
+        assert provider.paused, "expected pause after turn_in_flight cleared"
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_attach_to_paused_resumes_same_handle(tmp_path):
+    """attach() to a PAUSED live session resumes it; state becomes ACTIVE,
+    paused_at cleared, and the pump delivers frames to the new sink."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
+        await asyncio.sleep(0.05)
+        await mgr.detach_sink(s.id, ws1)
+        await asyncio.sleep(0.15)  # let pause fire
+        assert provider.paused
+
+        # Re-attach: should resume
+        ws2 = FakeWS()
+        attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
+        await asyncio.sleep(0.1)
+        live = mgr._live.get(s.id)
+        assert live is not None
+        assert live.state == SessionState.ACTIVE
+        session = mgr._repo.get_session(s.id)
+        assert session.sandbox_paused_at is None
+
+        # Emit a frame and verify ws2 receives it
+        live.handle.emit({"type": "token", "text": "hi"})
+        await asyncio.sleep(0.05)
+        token_frames = [f for f in ws2.sent if f.get("type") == "token"]
+        assert token_frames, "resumed session should deliver frames to new sink"
+
+        await mgr.kill(s.id, reason="test_done")
+        for t in [attach_task, attach_task2]:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    asyncio.run(_run())
+
+
+def test_attach_to_live_session_does_not_spawn_second_runner(tmp_path):
+    """attach() to an already-ACTIVE session must not spawn a new handle."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=999)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        attach_task1 = asyncio.create_task(mgr.attach(s.id, ws1))
+        await asyncio.sleep(0.05)
+        assert len(provider.spawned) == 1
+
+        ws2 = FakeWS()
+        attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
+        await asyncio.sleep(0.05)
+        assert len(provider.spawned) == 1, "second attach must NOT spawn another runner"
+
+        await mgr.kill(s.id, reason="test_done")
+        for t in [attach_task1, attach_task2]:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    asyncio.run(_run())
+
+
+def test_resume_failure_falls_back_to_fresh_spawn(tmp_path):
+    """When provider.resume raises, clear_sandbox_ref + fresh spawn + state ACTIVE."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
+        await asyncio.sleep(0.05)
+        await mgr.detach_sink(s.id, ws1)
+        await asyncio.sleep(0.15)  # pause fires
+        assert provider.paused
+        # Make resume fail
+        provider.fail_resume = True
+
+        ws2 = FakeWS()
+        attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
+        await asyncio.sleep(0.2)
+        live = mgr._live.get(s.id)
+        assert live is not None
+        assert live.state == SessionState.ACTIVE, "should fall back to fresh spawn"
+        assert len(provider.spawned) == 2, "expected a second spawn on resume failure"
+        session = mgr._repo.get_session(s.id)
+        assert session.sandbox_paused_at is None
+
+        await mgr.kill(s.id, reason="test_done")
+        for t in [attach_task, attach_task2]:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    asyncio.run(_run())
+
+
+def test_send_user_message_resumes_paused_session(tmp_path):
+    """send_user_message to a PAUSED session resumes it first (Slack path)."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
+        await asyncio.sleep(0.05)
+        await mgr.detach_sink(s.id, ws1)
+        await asyncio.sleep(0.15)  # pause fires
+        assert provider.paused
+
+        # send_user_message should resume first
+        await mgr.send_user_message(s.id, "hello after pause")
+        live = mgr._live.get(s.id)
+        assert live is not None
+        assert live.state == SessionState.ACTIVE
+
+        await mgr.kill(s.id, reason="test_done")
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_attach_after_restart_resumes_from_repo_row(tmp_path):
+    """Post-restart: _live cleared, but repo row has sandbox refs — attach resumes."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
+        await asyncio.sleep(0.05)
+        await mgr.detach_sink(s.id, ws1)
+        await asyncio.sleep(0.15)  # pause fires, refs persisted in repo
+        assert provider.paused
+
+        # Simulate server restart: clear in-memory _live
+        mgr._live.clear()
+
+        # Re-attach must resume purely from repo row
+        ws2 = FakeWS()
+        attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
+        await asyncio.sleep(0.15)
+        live = mgr._live.get(s.id)
+        assert live is not None
+        assert live.state == SessionState.ACTIVE
+
+        await mgr.kill(s.id, reason="test_done")
+        for t in [attach_task, attach_task2]:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    asyncio.run(_run())
+
+
+def test_on_detach_kill_preserves_legacy_behavior(tmp_path):
+    """on_detach='kill': last-sink detach must kill the session immediately."""
+
+    async def _run():
+        mgr = _make_kill_manager(tmp_path)
+        monkeypatch_workdir(mgr)
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        await mgr.detach_sink(s.id, ws)
+        await asyncio.sleep(0.1)
+        assert s.id not in mgr._live, "on_detach=kill: session should be dead after detach"
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
