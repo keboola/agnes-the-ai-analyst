@@ -25,7 +25,6 @@ import logging
 import os
 import shutil
 import subprocess
-import tempfile
 import threading
 import zipfile
 from dataclasses import dataclass, field
@@ -70,12 +69,6 @@ _WORKSPACE_SUBDIR = "workspace"
 # admin must commit + push a fix.
 _RESERVED_PATHS: tuple[str, ...] = (
     ".claude/init-complete",
-    # Per-workspace baseline of the last-installed template, written by
-    # ``save_template_baseline`` so ``agnes update-workspace`` can tell
-    # apart "the analyst edited this file" from "the template changed
-    # upstream" (3-way diff). If an admin's repo shipped it, a re-apply
-    # would clobber the baseline and break that comparison.
-    ".claude/agnes/installed-template.zip",
 )
 
 
@@ -613,57 +606,13 @@ def initialize_workspace_from_template(
 
 
 # ---------------------------------------------------------------------------
-# Baseline storage + backup-aware re-apply (`agnes update-workspace`)
+# Backup-aware re-apply (`agnes update-workspace`) — pure 3-way diff engine.
 #
-# The baseline is the EXACT zip Agnes last installed into this workspace,
-# kept at ``<workspace>/.claude/agnes/installed-template.zip``. It is the
-# reference point that lets a re-apply tell apart:
-#   * "the analyst edited this file"  (disk != baseline) → back it up
-#   * "the template changed upstream" (disk == baseline) → silent overwrite
-# Written on first override `agnes init` and rewritten after every update.
+# The baseline (the zip Agnes last installed) is passed in as bytes; this
+# module does not decide WHERE it is stored — that's a client concern owned
+# by ``cli/lib/initial_workspace.py`` (kept out of the workspace so it can't
+# collide with template content). Here we only compare and write.
 # ---------------------------------------------------------------------------
-
-_BASELINE_REL = Path(".claude") / "agnes" / "installed-template.zip"
-
-
-def _baseline_path(workspace: Path) -> Path:
-    return workspace / _BASELINE_REL
-
-
-def save_template_baseline(workspace: Path, zip_bytes: bytes) -> Path:
-    """Persist ``zip_bytes`` as the workspace's installed-template baseline.
-
-    Best-effort atomic write (temp file in the same dir + ``os.replace``).
-    Returns the baseline path.
-    """
-    path = _baseline_path(workspace)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_str = tempfile.mkstemp(prefix=".installed-template.", dir=str(path.parent))
-    tmp_path = Path(tmp_str)
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(zip_bytes)
-        os.replace(tmp_path, path)
-    except Exception:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-    return path
-
-
-def load_template_baseline(workspace: Path) -> Optional[bytes]:
-    """Return the stored baseline zip bytes, or ``None`` when the workspace
-    has no baseline (older CLI installed it, or it was deleted).
-    """
-    path = _baseline_path(workspace)
-    if not path.is_file():
-        return None
-    try:
-        return path.read_bytes()
-    except OSError:
-        return None
 
 
 def _zip_entries(zip_bytes: bytes) -> dict[str, bytes]:
@@ -779,9 +728,10 @@ def update_workspace_from_template(
     function executes the plan: ``created``/``updated`` files are written in
     place, ``backed_up`` files have their on-disk content copied to
     ``<name>.bak.<ts>`` first. Files on disk but absent from the template
-    are left untouched. After a clean pass the baseline is rewritten to
-    ``new_zip_bytes`` and the override sentinel refreshed with the new
-    ``template_sha``.
+    are left untouched. After a clean pass the override sentinel is
+    refreshed with the new ``template_sha``. Persisting the new baseline is
+    the caller's job (it owns the storage location) — see
+    ``cli/lib/initial_workspace.py``.
 
     Raises ``ValueError`` (via :func:`_assert_safe_entry`) on any unsafe
     entry, before writing anything — caller decides how to surface it.
@@ -812,8 +762,8 @@ def update_workspace_from_template(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(new_files[name])
 
-    # Persist the new baseline + refresh the sentinel only after a clean pass.
-    save_template_baseline(workspace, new_zip_bytes)
+    # Refresh the sentinel only after a clean pass. The caller persists the
+    # new baseline (it owns the storage location, outside the workspace).
     write_sentinel(
         workspace,
         agnes_version=agnes_version,
