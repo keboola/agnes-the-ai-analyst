@@ -15,11 +15,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
-- Slack magic-link binding (and Slack `/chat` deep links) were always **root-relative** (`/slack/bind?code=…`) and therefore not clickable from Slack — even with `PUBLIC_URL` set — because the bot's request-less handlers read `app.state.public_url`, which nothing ever assigned. Resolve the instance base URL at startup via a new `get_public_url()` (`PUBLIC_URL` env > `server.public_url` in instance.yaml > unset, mirroring `get_home_route`) and stash it on `app.state.public_url` before the Socket Mode dispatcher starts, so the bot mints **absolute** links. Unset still degrades gracefully to a relative path. This makes good on the `0.70.5` "Requires `PUBLIC_URL` set so the link is absolute" contract, which the wiring never fulfilled.
 
 ### Removed
 
 ### Internal
+
+## [0.70.6] — 2026-06-10
+
+### Fixed
+- Slack magic-link binding (and Slack `/chat` deep links) were always **root-relative** (`/slack/bind?code=…`) and therefore not clickable from Slack — even with `PUBLIC_URL` set — because the bot's request-less handlers read `app.state.public_url`, which nothing ever assigned. Resolve the instance base URL at startup via a new `get_public_url()` (`PUBLIC_URL` env > `server.public_url` in instance.yaml > unset, mirroring `get_home_route`) and stash it on `app.state.public_url` before the Socket Mode dispatcher starts, so the bot mints **absolute** links. Unset still degrades gracefully to a relative path. This makes good on the `0.70.5` "Requires `PUBLIC_URL` set so the link is absolute" contract, which the wiring never fulfilled. (#587)
 
 ## [0.70.5] — 2026-06-09
 
