@@ -3,8 +3,8 @@
 Uses asyncio.run() per the project convention (no pytest-asyncio required).
 See tests/test_chat_subprocess_provider.py for precedent.
 """
+
 import asyncio
-import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -12,9 +12,10 @@ import duckdb
 import pytest
 
 from src.db import _ensure_schema
+from tests.chat_fakes import FakeHandle, FakeWS
 
 from app.chat.config import ChatConfig
-from app.chat.manager import ChatManager, ConcurrencyCapHit, SinkEntry
+from app.chat.manager import ChatManager, SinkEntry
 from app.chat.persistence import ChatRepository
 from app.chat.types import SessionState, Surface
 from app.chat.workdir import WorkdirManager
@@ -54,6 +55,7 @@ def manager(tmp_path: Path) -> ChatManager:
 # ---------------------------------------------------------------------------
 # Task 5.1 tests
 # ---------------------------------------------------------------------------
+
 
 def test_create_session_persists(manager: ChatManager):
     async def _run():
@@ -102,7 +104,9 @@ def test_create_session_slack_dm_does_not_run_empty_gc(manager: ChatManager):
     async def _run():
         # First Slack DM session, no messages.
         a = await manager.create_session(
-            user_email="u@x", surface=Surface.SLACK_DM, slack_channel_id="C1",
+            user_email="u@x",
+            surface=Surface.SLACK_DM,
+            slack_channel_id="C1",
         )
         # Create a WEB session for the same user — must not touch `a`.
         _ = await manager.create_session(user_email="u@x", surface=Surface.WEB)
@@ -128,76 +132,12 @@ def test_create_session_disabled_raises(manager: ChatManager):
     asyncio.run(_run())
 
 
-# ---------------------------------------------------------------------------
-# Fake helpers for Task 5.2 tests
-# ---------------------------------------------------------------------------
-
-class FakeWS:
-    def __init__(self) -> None:
-        self.sent: list[dict] = []
-        self.closed = False
-
-    async def send_json(self, data: dict) -> None:
-        self.sent.append(data)
-
-    async def close(self) -> None:
-        self.closed = True
-
-
-class FakeHandle:
-    def __init__(self) -> None:
-        self.pid = 1234
-        self._lines: asyncio.Queue[bytes] = asyncio.Queue()
-        self._stdin_buf: list[bytes] = []
-        self.killed = False
-
-    @property
-    def stdin(self):
-        outer = self
-
-        class S:
-            def write(self, b: bytes) -> None:
-                outer._stdin_buf.append(b)
-
-            async def drain(self) -> None:
-                return None
-
-        return S()
-
-    @property
-    def stdout(self):
-        outer = self
-
-        class O:
-            async def readline(self) -> bytes:
-                return await outer._lines.get()
-
-        return O()
-
-    @property
-    def stderr(self):
-        return self.stdout
-
-    async def wait(self) -> int:
-        # block until killed
-        while not self.killed:
-            await asyncio.sleep(0.01)
-        return 137
-
-    async def kill(self, *, grace_sec: float = 5.0) -> None:
-        self.killed = True
-
-    # Test helpers
-    def emit(self, payload: dict) -> None:
-        self._lines.put_nowait((json.dumps(payload) + "\n").encode())
-
-    def emit_eof(self) -> None:
-        self._lines.put_nowait(b"")
-
+# FakeHandle and FakeWS live in tests/chat_fakes (imported above).
 
 # ---------------------------------------------------------------------------
 # Task 5.2 tests
 # ---------------------------------------------------------------------------
+
 
 def test_spawn_sets_agnes_server_not_agnes_api(manager: ChatManager, tmp_path, monkeypatch):
     """The runner env must carry AGNES_SERVER (the var the CLI reads) sourced
@@ -280,22 +220,19 @@ def test_cancel_emits_synthetic_tool_result(manager: ChatManager):
         # Synthetic tool_result must be emitted before the `cancelled` frame
         # so the agent sees the cancellation in its conversation history.
         synthetic = [
-            m for m in ws.sent
+            m
+            for m in ws.sent
             if m.get("type") == "tool_result"
             and isinstance(m.get("result"), dict)
             and m["result"].get("cancelled") is True
         ]
-        assert synthetic, (
-            f"expected synthetic tool_result with cancelled=true; got {ws.sent}"
-        )
+        assert synthetic, f"expected synthetic tool_result with cancelled=true; got {ws.sent}"
         # And it must be persisted so crash-respawn replay sees it too.
         msgs = manager._repo.list_messages(s.id)
         persisted_cancels = [
-            m for m in msgs
-            if m.tool_calls and any(
-                isinstance(tc, dict) and tc.get("cancelled") is True
-                for tc in m.tool_calls
-            )
+            m
+            for m in msgs
+            if m.tool_calls and any(isinstance(tc, dict) and tc.get("cancelled") is True for tc in m.tool_calls)
         ]
         assert persisted_cancels, "expected persisted cancel marker in chat_messages"
         await manager.kill(s.id, reason="test_done")
@@ -351,13 +288,17 @@ def test_send_user_message_rejects_when_rate_limit_exceeded(tmp_path):
     provider = MagicMock()
     provider.spawn = AsyncMock()
     cfg = ChatConfig(
-        enabled=True, concurrency_per_user=5,
+        enabled=True,
+        concurrency_per_user=5,
         rate_messages_per_hour=3,
         daily_anthropic_spend_usd=10**6,
         max_session_tokens=10**9,
     )
     mgr = ChatManager(
-        provider=provider, workdir_mgr=workdir_mgr, repo=repo, config=cfg,
+        provider=provider,
+        workdir_mgr=workdir_mgr,
+        repo=repo,
+        config=cfg,
     )
 
     async def _run():
@@ -365,7 +306,9 @@ def test_send_user_message_rejects_when_rate_limit_exceeded(tmp_path):
         ws = MagicMock()
         ws.send_json = AsyncMock()
         mgr._live[s.id] = LiveSession(
-            chat_id=s.id, user_email="u@x", state=SessionState.ACTIVE,
+            chat_id=s.id,
+            user_email="u@x",
+            state=SessionState.ACTIVE,
             handle=FakeHandle(),
             started_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
@@ -401,12 +344,16 @@ def test_send_user_message_rejects_when_session_tokens_exhausted(tmp_path):
     provider = MagicMock()
     provider.spawn = AsyncMock()
     cfg = ChatConfig(
-        enabled=True, concurrency_per_user=5,
+        enabled=True,
+        concurrency_per_user=5,
         max_session_tokens=100,
         daily_anthropic_spend_usd=10**6,  # disable daily cap
     )
     mgr = ChatManager(
-        provider=provider, workdir_mgr=workdir_mgr, repo=repo, config=cfg,
+        provider=provider,
+        workdir_mgr=workdir_mgr,
+        repo=repo,
+        config=cfg,
     )
 
     async def _run():
@@ -414,13 +361,19 @@ def test_send_user_message_rejects_when_session_tokens_exhausted(tmp_path):
         # Stuff history past the cap.
         for _ in range(3):
             repo.append_message(
-                session_id=s.id, role="assistant", content="x",
-                tokens_in=30, tokens_out=30, model="fake",
+                session_id=s.id,
+                role="assistant",
+                content="x",
+                tokens_in=30,
+                tokens_out=30,
+                model="fake",
             )
         ws = MagicMock()
         ws.send_json = AsyncMock()
         mgr._live[s.id] = LiveSession(
-            chat_id=s.id, user_email="u@x", state=SessionState.ACTIVE,
+            chat_id=s.id,
+            user_email="u@x",
+            state=SessionState.ACTIVE,
             handle=FakeHandle(),
             started_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
@@ -429,9 +382,7 @@ def test_send_user_message_rejects_when_session_tokens_exhausted(tmp_path):
         with pytest.raises(RuntimeError, match="max_session_tokens_exhausted"):
             await mgr.send_user_message(s.id, "next")
         # Refusal frame surfaced to the WS.
-        kinds = [
-            c.args[0].get("kind") for c in ws.send_json.call_args_list
-        ]
+        kinds = [c.args[0].get("kind") for c in ws.send_json.call_args_list]
         assert "max_session_tokens" in kinds
 
     asyncio.run(_run())
@@ -456,13 +407,17 @@ def test_idle_reaper_kills_sessions_older_than_max_session_seconds(tmp_path):
     provider = MagicMock()
     provider.spawn = AsyncMock()
     cfg = ChatConfig(
-        enabled=True, concurrency_per_user=5,
+        enabled=True,
+        concurrency_per_user=5,
         # Pin a tiny wallclock cap so the test is fast and deterministic.
         max_session_seconds=1,
         idle_ttl_seconds=10**9,  # disable idle path
     )
     mgr = ChatManager(
-        provider=provider, workdir_mgr=workdir_mgr, repo=repo, config=cfg,
+        provider=provider,
+        workdir_mgr=workdir_mgr,
+        repo=repo,
+        config=cfg,
     )
 
     async def _run():
@@ -472,7 +427,9 @@ def test_idle_reaper_kills_sessions_older_than_max_session_seconds(tmp_path):
         ws.send_json = AsyncMock()
         # Inject an "old" live session — started > max_session_seconds ago.
         mgr._live[s.id] = LiveSession(
-            chat_id=s.id, user_email="u@x", state=SessionState.ACTIVE,
+            chat_id=s.id,
+            user_email="u@x",
+            state=SessionState.ACTIVE,
             handle=None,
             started_at=now - timedelta(seconds=5),
             last_activity=now,
@@ -494,6 +451,7 @@ def test_crash_respawn_does_not_accumulate_pump_tasks(manager: ChatManager):
     latest read from the live handle — a leak; tests can also see it
     grow unboundedly.
     """
+
     async def _run():
         handles = [FakeHandle(), FakeHandle(), FakeHandle()]
         spawn_calls = iter(handles)
@@ -520,9 +478,7 @@ def test_crash_respawn_does_not_accumulate_pump_tasks(manager: ChatManager):
         # After respawn, still exactly two tasks (one wait + one pump),
         # not three.  current_pump points at the NEW pump.
         post_crash_tasks = [t for t in live.tasks if not t.done()]
-        assert len(post_crash_tasks) == 2, (
-            f"expected 2 live tasks after crash respawn, got {len(post_crash_tasks)}"
-        )
+        assert len(post_crash_tasks) == 2, f"expected 2 live tasks after crash respawn, got {len(post_crash_tasks)}"
         assert live.current_pump is not None
         assert live.current_pump in post_crash_tasks
 
@@ -531,9 +487,7 @@ def test_crash_respawn_does_not_accumulate_pump_tasks(manager: ChatManager):
         handles[1].killed = True
         await asyncio.sleep(0.1)
         post_crash2_tasks = [t for t in live.tasks if not t.done()]
-        assert len(post_crash2_tasks) == 2, (
-            f"expected 2 live tasks after 2nd respawn, got {len(post_crash2_tasks)}"
-        )
+        assert len(post_crash2_tasks) == 2, f"expected 2 live tasks after 2nd respawn, got {len(post_crash2_tasks)}"
 
         # Cleanup
         try:
@@ -576,7 +530,10 @@ def test_daily_tokens_cached_per_user(tmp_path):
         rate_messages_per_hour=10**6,
     )
     mgr = ChatManager(
-        provider=provider, workdir_mgr=workdir_mgr, repo=repo, config=cfg,
+        provider=provider,
+        workdir_mgr=workdir_mgr,
+        repo=repo,
+        config=cfg,
     )
 
     async def _run():
@@ -584,7 +541,9 @@ def test_daily_tokens_cached_per_user(tmp_path):
         ws = MagicMock()
         ws.send_json = AsyncMock()
         mgr._live[s.id] = LiveSession(
-            chat_id=s.id, user_email="u@x", state=SessionState.ACTIVE,
+            chat_id=s.id,
+            user_email="u@x",
+            state=SessionState.ACTIVE,
             handle=FakeHandle(),
             started_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
