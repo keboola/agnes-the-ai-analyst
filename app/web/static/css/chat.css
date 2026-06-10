@@ -1394,3 +1394,28 @@ body.chat-page-body main { margin: 0; padding: 0; }
 .cloud-chat-shell.is-mini .cloud-chat-surface-badge {
   display: none;
 }
+
+/* --- Paused-session chip -----------------------------------------------
+ * Shown when the server reports sandbox_paused_at is set (session is
+ * memory-snapshotted, will resume on next connect). Uses the warning-
+ * accent tokens so it reads as a quiet "attention" state without alarming
+ * the user. Tokens only (var(--ds-*)); no raw hex. */
+.cloud-chat-paused-badge {
+  flex: 0 0 auto;
+  margin-left: var(--space-2);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--ds-accent-warn-line, var(--ds-border));
+  border-radius: var(--radius-pill, 999px);
+  background: var(--ds-accent-warn-bg, var(--ds-surface-dim));
+  color: var(--ds-accent-warn-ink, var(--ds-text-secondary));
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  pointer-events: none;
+  user-select: none;
+}
+
+.cloud-chat-shell.is-mini .cloud-chat-paused-badge {
+  display: none;
+}

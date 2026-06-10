@@ -295,6 +295,17 @@ function _makeSidebarItem(s) {
     li.appendChild(badge);
   }
 
+  // Paused badge: shown when the server reports sandbox_paused_at is set,
+  // indicating the session's sandbox is memory-snapshotted and will resume
+  // on the next connect or message.
+  if (s.paused) {
+    const pausedBadge = document.createElement("span");
+    pausedBadge.className = "cloud-chat-paused-badge";
+    pausedBadge.textContent = "paused";
+    pausedBadge.setAttribute("aria-label", "session paused");
+    li.appendChild(pausedBadge);
+  }
+
   const del = document.createElement("button");
   del.type = "button";
   del.className = "cloud-chat-list-del";
@@ -453,6 +464,11 @@ async function openSession(chatId, wsUrlOverride) {
 
   const proto = location.protocol === "https:" ? "wss" : "ws";
   resetServerReady();
+  // Show a "Resuming session…" status immediately after the TCP handshake and
+  // before the ready frame arrives. For a fresh spawn this reads as a brief
+  // connecting state; for a paused session (~1–2 s resume) it tells the user
+  // something is happening. The ready frame handler replaces it with "Connected."
+  setStatus("Resuming session…", "info");
   ws = new WebSocket(`${proto}://${location.host}${wsUrl}`);
   ws.onmessage = (ev) => handleFrame(JSON.parse(ev.data));
   ws.onclose = () => {
