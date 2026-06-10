@@ -1,11 +1,11 @@
 """ChatManager: session state machine, lifecycle, WS attachment."""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import os
-import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -46,6 +46,7 @@ class SinkEntry:
     a web WebSocket or a SlackSinkBridge — both expose ``send_json`` and
     ``close``. ``participant_email`` attributes the sink to a principal so
     leave/teardown can drop exactly one sink (used by co-drive in 5b)."""
+
     participant_email: str
     sink: object
 
@@ -80,6 +81,15 @@ class LiveSession:
     # attached principal (web WS or SlackSinkBridge). The primary sink is
     # seated by attach(); add_sink() appends late joiners (co-drive, 5b).
     sinks: list["SinkEntry"] = field(default_factory=list)
+    # Frames of the in-progress turn (token/tool_call/...), replayed to
+    # late-seated sinks and persisted as an interrupted message on forced
+    # death. Cleared when the turn's assistant_message lands.
+    turn_buffer: list[dict] = field(default_factory=list)
+    turn_in_flight: bool = False
+    # Linger task: fires _linger_then_pause after the last sink detaches.
+    linger_task: Optional[asyncio.Task] = None
+    # Session workdir; set at spawn/resume so helpers can access it.
+    session_dir: Optional[Path] = None
     # Serializes the stdin write+drain pair so two participants' concurrent
     # turns can never interleave partial JSON lines on the shared stdin
     # (spec §6.2).
@@ -109,6 +119,7 @@ class ChatManager:
         # Each entry is a deque of monotonic timestamps in the last hour.
         # Trimmed on each send; entries older than 3600 s evicted.
         from collections import deque
+
         self._user_msg_window: dict[str, "deque[float]"] = {}
         self._deque_cls = deque
         # TTL cache: user_email → (monotonic_timestamp, (tokens_in, tokens_out))
@@ -143,8 +154,7 @@ class ChatManager:
         active = self._active_count_for_user(user_email)
         if active >= self._config.concurrency_per_user:
             raise ConcurrencyCapHit(
-                f"user {user_email} has {active} active sessions; cap = "
-                f"{self._config.concurrency_per_user}"
+                f"user {user_email} has {active} active sessions; cap = {self._config.concurrency_per_user}"
             )
         # De-dupe Slack DM / thread to existing live session.
         # intentional: no await between SELECT and INSERT — Slack uniqueness without DB partial unique index
@@ -173,7 +183,9 @@ class ChatManager:
         if surface == Surface.WEB:
             try:
                 self._repo.archive_empty_user_sessions(
-                    user_email, surface=Surface.WEB, exclude_id=created.id,
+                    user_email,
+                    surface=Surface.WEB,
+                    exclude_id=created.id,
                 )
             except Exception:
                 logger.exception(
@@ -250,9 +262,12 @@ class ChatManager:
             parts = self._repo.get_session_participants(chat_id)
             emails = [p.user_email for p in parts if p.left_at is None]
             from src.grant_intersection import compute_grant_intersection
+
             inter = compute_grant_intersection(emails, self._repo._conn)
             session_dir = self._workdir_mgr.prepare_ephemeral_session_dir(
-                chat_id, emails, inter,
+                chat_id,
+                emails,
+                inter,
             )
         else:
             emails = [session.user_email]
@@ -271,10 +286,7 @@ class ChatManager:
             handle=handle,
             started_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
-            sinks=(
-                [SinkEntry(participant_email=session.user_email, sink=ws)]
-                if is_primary else []
-            ),
+            sinks=([SinkEntry(participant_email=session.user_email, sink=ws)] if is_primary else []),
             participant_emails=emails,
         )
         self._live[chat_id] = live
@@ -317,20 +329,26 @@ class ChatManager:
         if live.participant_emails:  # truthy only for co-sessions
             parts = self._repo.get_session_participants(chat_id)
             if not any(p.user_email == participant_email and p.left_at is None for p in parts):
-                raise PermissionError(
-                    f"{participant_email} is not a live participant of {chat_id}"
-                )
+                raise PermissionError(f"{participant_email} is not a live participant of {chat_id}")
         for msg in self._repo.list_messages(chat_id):
-            await sink.send_json({
-                "type": "assistant_message" if msg.role == "assistant" else "user_msg",
-                "content": msg.content,
-                "sender_email": msg.sender_email,
-            })
+            await sink.send_json(
+                {
+                    "type": "assistant_message" if msg.role == "assistant" else "user_msg",
+                    "content": msg.content,
+                    "sender_email": msg.sender_email,
+                }
+            )
+        # Replay the in-progress turn buffer so a mid-turn reconnect/join
+        # picks up exactly the frames the runner has already emitted.
+        # Snapshot first to avoid racing the pump task.
+        for frame in list(live.turn_buffer):
+            await sink.send_json(frame)
         live.sinks.append(SinkEntry(participant_email=participant_email, sink=sink))
         await sink.send_json({"type": "ready"})
 
     async def _spawn_runner(self, session: ChatSession, session_dir: Path):
         from app.auth.access import mint_session_jwt, mint_co_session_jwt
+
         if session.is_co_session:
             # SR-5: NO seed fallback for co-sessions. A mint failure re-raises
             # and aborts the spawn — never inject a seed token (which carries no
@@ -360,9 +378,7 @@ class ChatManager:
             # back to AGNES_INTERNAL_URL then loopback. Operators running
             # cloud chat must set SERVER_URL for the data rails to work.
             "AGNES_SERVER": (
-                os.environ.get("SERVER_URL")
-                or os.environ.get("AGNES_INTERNAL_URL")
-                or "http://127.0.0.1:8000"
+                os.environ.get("SERVER_URL") or os.environ.get("AGNES_INTERNAL_URL") or "http://127.0.0.1:8000"
             ),
             "AGNES_SESSION_ID": session.id,
             "AGNES_USER_EMAIL": session.user_email,
@@ -413,6 +429,7 @@ class ChatManager:
                 upload_agnes_wheel,
                 upload_workspace,
             )
+
             max_bytes = getattr(self._config, "e2b_workspace_max_bytes", 100 * 1024 * 1024)
             sandbox = getattr(handle, "_sandbox", None)
             if sandbox is not None:
@@ -437,8 +454,8 @@ class ChatManager:
                     await upload_agnes_wheel(sandbox)
                 except Exception:
                     logger.exception(
-                        "agnes wheel upload failed; `agnes` CLI will be absent "
-                        "in sandbox for session %s", session.id,
+                        "agnes wheel upload failed; `agnes` CLI will be absent in sandbox for session %s",
+                        session.id,
                     )
         return handle
 
@@ -454,7 +471,11 @@ class ChatManager:
                 continue
             live.last_activity = datetime.now(timezone.utc)
             await self._broadcast(live, frame)
-            if frame.get("type") == "assistant_message":
+            ftype = frame.get("type")
+            # Accumulate in-flight turn frames for mid-turn replay and partial save.
+            if ftype in ("token", "tool_call"):
+                live.turn_buffer.append(frame)
+            if ftype == "assistant_message":
                 self._repo.append_message(
                     session_id=live.chat_id,
                     role="assistant",
@@ -464,6 +485,8 @@ class ChatManager:
                     tokens_out=frame.get("tokens_out"),
                     model=frame.get("model"),
                 )
+                live.turn_buffer.clear()
+                live.turn_in_flight = False
                 # Auto-title: the first assistant_message in a session
                 # is the trigger to ask Haiku for a short title. We
                 # check the per-session flag (not just the persisted
@@ -471,7 +494,10 @@ class ChatManager:
                 # crash-respawn replay don't both fire the call.
                 if not live.auto_title_started:
                     self._maybe_start_auto_title(live)
-            elif frame.get("type") == "tool_call":
+            elif ftype == "done":
+                live.turn_buffer.clear()
+                live.turn_in_flight = False
+            if ftype == "tool_call":
                 write_audit(
                     self._repo._conn,
                     user_email=live.user_email,
@@ -515,11 +541,14 @@ class ChatManager:
                 return
             # Crash path
             live.crash_count += 1
-            await self._broadcast(live, {
-                "type": "error",
-                "kind": "subprocess_crashed",
-                "auto_respawn": live.crash_count < 3,
-            })
+            await self._broadcast(
+                live,
+                {
+                    "type": "error",
+                    "kind": "subprocess_crashed",
+                    "auto_respawn": live.crash_count < 3,
+                },
+            )
             if live.crash_count >= 3:
                 live.state = SessionState.DEAD
                 return
@@ -574,19 +603,18 @@ class ChatManager:
         sender = sender_email or live.user_email
         # Enforce daily Anthropic spend cap (result is TTL-cached — see _cached_daily_tokens)
         tokens_in, tokens_out = self._cached_daily_tokens(sender)
-        spent_usd = (
-            tokens_in * _PRICE_IN_PER_MTOK / 1_000_000
-            + tokens_out * _PRICE_OUT_PER_MTOK / 1_000_000
-        )
+        spent_usd = tokens_in * _PRICE_IN_PER_MTOK / 1_000_000 + tokens_out * _PRICE_OUT_PER_MTOK / 1_000_000
         if spent_usd >= self._config.daily_anthropic_spend_usd:
-            await self._broadcast(live, {
-                "type": "error",
-                "kind": "daily_budget",
-                "message": (
-                    f"Daily spend cap of ${self._config.daily_anthropic_spend_usd:.2f} reached. "
-                    "Try again tomorrow."
-                ),
-            })
+            await self._broadcast(
+                live,
+                {
+                    "type": "error",
+                    "kind": "daily_budget",
+                    "message": (
+                        f"Daily spend cap of ${self._config.daily_anthropic_spend_usd:.2f} reached. Try again tomorrow."
+                    ),
+                },
+            )
             raise RuntimeError("daily_budget_exhausted")
         # Per-session token cap — operators set max_session_tokens in
         # instance.yaml; previously the knob was dead config. Tokens already
@@ -595,41 +623,52 @@ class ChatManager:
         # documented in persistence.py).
         session_tokens = self._repo.session_total_tokens(chat_id)
         if session_tokens >= self._config.max_session_tokens:
-            await self._broadcast(live, {
-                "type": "error",
-                "kind": "max_session_tokens",
-                "message": (
-                    f"Per-session token cap of {self._config.max_session_tokens} reached "
-                    f"(used {session_tokens}). Start a new chat session."
-                ),
-            })
+            await self._broadcast(
+                live,
+                {
+                    "type": "error",
+                    "kind": "max_session_tokens",
+                    "message": (
+                        f"Per-session token cap of {self._config.max_session_tokens} reached "
+                        f"(used {session_tokens}). Start a new chat session."
+                    ),
+                },
+            )
             raise RuntimeError("max_session_tokens_exhausted")
         # Per-user sliding-window message-rate cap keyed on the SENDER (SR-10).
         # Trim entries older than one hour, then check the count.
         import time as _time
+
         now_mono = _time.monotonic()
         window = self._user_msg_window.setdefault(sender, self._deque_cls())
         while window and (now_mono - window[0]) > 3600:
             window.popleft()
         if len(window) >= self._config.rate_messages_per_hour:
-            await self._broadcast(live, {
-                "type": "error",
-                "kind": "rate_limit",
-                "message": (
-                    f"Rate limit hit: {self._config.rate_messages_per_hour} messages/hour. "
-                    "Slow down or wait an hour."
-                ),
-            })
+            await self._broadcast(
+                live,
+                {
+                    "type": "error",
+                    "kind": "rate_limit",
+                    "message": (
+                        f"Rate limit hit: {self._config.rate_messages_per_hour} messages/hour. "
+                        "Slow down or wait an hour."
+                    ),
+                },
+            )
             raise RuntimeError("rate_limit_exceeded")
         window.append(now_mono)
         self._repo.append_message(
-            session_id=chat_id, role="user", content=text,
+            session_id=chat_id,
+            role="user",
+            content=text,
             sender_email=sender_email or live.user_email,
         )
         payload = json.dumps({"type": "user_msg", "text": text}) + "\n"
         async with live._stdin_lock:
             live.handle.stdin.write(payload.encode("utf-8"))
             await live.handle.stdin.drain()
+        live.turn_buffer.clear()
+        live.turn_in_flight = True
         live.last_activity = datetime.now(timezone.utc)
         live.state = SessionState.ACTIVE
 
@@ -668,9 +707,12 @@ class ChatManager:
         if session is None:
             return
         from src.grant_intersection import compute_grant_intersection
+
         inter = compute_grant_intersection(live.participant_emails, self._repo._conn)
         session_dir = self._workdir_mgr.prepare_ephemeral_session_dir(
-            live.chat_id, live.participant_emails, inter,
+            live.chat_id,
+            live.participant_emails,
+            inter,
         )
         # Cancel the crash-respawn wait task BEFORE killing the handle: this
         # respawn is intentional, and a running _wait_for_exit_and_respawn
@@ -748,7 +790,8 @@ class ChatManager:
         }
         await self._broadcast(live, synthetic)
         self._repo.append_message(
-            session_id=chat_id, role="assistant",
+            session_id=chat_id,
+            role="assistant",
             content="",
             tool_calls=[{"cancelled": True}],
         )
@@ -759,10 +802,25 @@ class ChatManager:
         if live is None:
             return
         live.state = SessionState.DEAD
+        # Partial-save: if a turn was in flight, persist the accumulated token
+        # text as an interrupted assistant message so it's not lost.
+        if live.turn_buffer:
+            partial = "".join(f.get("text", "") for f in live.turn_buffer if f.get("type") == "token").strip()
+            if partial:
+                self._repo.append_message(
+                    session_id=chat_id,
+                    role="assistant",
+                    content=partial,
+                    tool_calls=[{"interrupted": True, "reason": reason}],
+                    tokens_in=None,
+                    tokens_out=None,
+                    model=None,
+                )
         if live.handle is not None:
             await live.handle.kill()
         for t in live.tasks:
             t.cancel()
+        self._repo.clear_sandbox_ref(chat_id)
         write_audit(
             self._repo._conn,
             user_email=live.user_email,
@@ -802,6 +860,7 @@ class ChatManager:
         cosmetic enhancement, not a load-bearing piece of the chat
         pipeline."""
         from app.chat.auto_title import generate_title
+
         try:
             first_user = self._repo.get_first_user_message(live.chat_id)
             if not first_user:
@@ -818,11 +877,14 @@ class ChatManager:
             # raise if the socket has dropped — swallow it; the
             # persisted title will surface on the next sidebar load.
             try:
-                await self._broadcast(live, {
-                    "type": "session_renamed",
-                    "chat_id": live.chat_id,
-                    "title": title,
-                })
+                await self._broadcast(
+                    live,
+                    {
+                        "type": "session_renamed",
+                        "chat_id": live.chat_id,
+                        "title": title,
+                    },
+                )
             except Exception:
                 logger.debug(
                     "auto-title: ws.send_json failed for %s; title still persisted",

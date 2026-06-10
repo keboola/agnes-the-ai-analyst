@@ -625,3 +625,197 @@ def test_active_count_for_user_matches_private(monkeypatch):
     }
     assert mgr.active_count_for_user("x@e.com") == 2
     assert mgr.active_count_for_user("x@e.com") == mgr._active_count_for_user("x@e.com")
+
+
+# ---------------------------------------------------------------------------
+# Task 7 tests: per-turn frame buffer — mid-turn sink replay + partial save
+# ---------------------------------------------------------------------------
+
+
+def _attach_fake_live_with_fake_handle(mgr: ChatManager, chat_id: str, user_email: str, sink):
+    """Insert a LiveSession with FakeHandle (has emit/readline) and one sink."""
+    from datetime import datetime, timezone
+    from app.chat.manager import LiveSession
+
+    handle = FakeHandle()
+    live = LiveSession(
+        chat_id=chat_id,
+        user_email=user_email,
+        state=SessionState.ACTIVE,
+        handle=handle,
+        started_at=datetime.now(timezone.utc),
+        last_activity=datetime.now(timezone.utc),
+        sinks=[SinkEntry(participant_email=user_email, sink=sink)],
+    )
+    mgr._live[chat_id] = live
+    return live
+
+
+def test_midturn_sink_gets_buffered_frames_replayed(manager: ChatManager):
+    """A sink added mid-turn receives the buffered token frames exactly once;
+    ws1 does not receive duplicates."""
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", ws1)
+
+        # Simulate a user message to set turn_in_flight=True, turn_buffer cleared
+        await manager.send_user_message(s.id, "hello")
+
+        # Pump two token frames (no assistant_message yet)
+        pump_task = asyncio.create_task(manager._pump_subprocess_to_ws(live))
+        live.handle.emit({"type": "token", "text": "Hel"})
+        live.handle.emit({"type": "token", "text": "lo"})
+        await asyncio.sleep(0.05)  # let pump process frames
+
+        # Now add ws2 mid-turn — must see the two buffered token frames
+        ws2 = FakeWS()
+        await manager.add_sink(s.id, ws2, "u@x")
+
+        token_frames_ws2 = [f for f in ws2.sent if f.get("type") == "token"]
+        assert len(token_frames_ws2) == 2, f"ws2 should see 2 buffered token frames, got {token_frames_ws2}"
+
+        # ws1 must NOT see duplicates: still exactly 2 tokens (already received before add_sink)
+        token_frames_ws1 = [f for f in ws1.sent if f.get("type") == "token"]
+        assert len(token_frames_ws1) == 2, f"ws1 should see 2 tokens without duplicates, got {token_frames_ws1}"
+
+        # Cleanup
+        pump_task.cancel()
+        try:
+            await pump_task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_run())
+
+
+def test_turn_buffer_cleared_after_assistant_message(manager: ChatManager):
+    """After a full turn completes (assistant_message frame), a newly added
+    sink must NOT receive any token replay."""
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", ws1)
+
+        await manager.send_user_message(s.id, "hello")
+
+        # Pump token + assistant_message (full turn)
+        pump_task = asyncio.create_task(manager._pump_subprocess_to_ws(live))
+        live.handle.emit({"type": "token", "text": "Hi"})
+        live.handle.emit(
+            {
+                "type": "assistant_message",
+                "content": "Hi",
+                "tokens_in": 1,
+                "tokens_out": 1,
+            }
+        )
+        await asyncio.sleep(0.05)
+
+        # Add a sink after the turn completed — should see no token replay
+        ws2 = FakeWS()
+        await manager.add_sink(s.id, ws2, "u@x")
+
+        token_frames_ws2 = [f for f in ws2.sent if f.get("type") == "token"]
+        assert len(token_frames_ws2) == 0, (
+            f"buffer should be cleared after assistant_message; ws2 got {token_frames_ws2}"
+        )
+        assert not live.turn_in_flight, "turn_in_flight should be False after assistant_message"
+        assert live.turn_buffer == [], "turn_buffer should be empty after assistant_message"
+
+        pump_task.cancel()
+        try:
+            await pump_task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_run())
+
+
+def test_kill_midturn_persists_partial_assistant_message(manager: ChatManager):
+    """kill() mid-turn must persist accumulated token text as an interrupted
+    assistant message with tool_calls=[{interrupted: True, reason: ...}]."""
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", ws)
+
+        await manager.send_user_message(s.id, "hello")
+
+        # Pump two token frames — no assistant_message (mid-turn)
+        pump_task = asyncio.create_task(manager._pump_subprocess_to_ws(live))
+        live.handle.emit({"type": "token", "text": "Hel"})
+        live.handle.emit({"type": "token", "text": "lo"})
+        await asyncio.sleep(0.05)
+
+        # Kill mid-turn
+        await manager.kill(s.id, reason="idle_ttl")
+
+        pump_task.cancel()
+        try:
+            await pump_task
+        except asyncio.CancelledError:
+            pass
+
+        msgs = manager._repo.list_messages(s.id)
+        assistant_rows = [m for m in msgs if m.role == "assistant"]
+        assert assistant_rows, "expected at least one assistant row after kill mid-turn"
+        partial = assistant_rows[-1]
+        assert partial.content == "Hello", f"expected 'Hello' content, got {partial.content!r}"
+        assert partial.tool_calls is not None, "expected tool_calls metadata"
+        interrupted = [tc for tc in partial.tool_calls if isinstance(tc, dict) and tc.get("interrupted") is True]
+        assert interrupted, f"expected interrupted=True in tool_calls, got {partial.tool_calls}"
+        assert interrupted[0].get("reason") == "idle_ttl"
+
+    asyncio.run(_run())
+
+
+def test_kill_between_turns_persists_nothing_extra(manager: ChatManager):
+    """kill() after a completed turn must NOT add an extra interrupted row."""
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", ws)
+
+        await manager.send_user_message(s.id, "hello")
+
+        # Complete a full turn
+        pump_task = asyncio.create_task(manager._pump_subprocess_to_ws(live))
+        live.handle.emit(
+            {
+                "type": "assistant_message",
+                "content": "A",
+                "tokens_in": 1,
+                "tokens_out": 1,
+            }
+        )
+        await asyncio.sleep(0.05)
+
+        # Kill between turns (buffer should be empty)
+        await manager.kill(s.id, reason="test_done")
+
+        pump_task.cancel()
+        try:
+            await pump_task
+        except asyncio.CancelledError:
+            pass
+
+        msgs = manager._repo.list_messages(s.id)
+        assistant_rows = [m for m in msgs if m.role == "assistant"]
+        assert len(assistant_rows) == 1, f"expected exactly 1 assistant row, got {len(assistant_rows)}"
+        # No interrupted marker
+        if assistant_rows[0].tool_calls:
+            interrupted = [
+                tc for tc in assistant_rows[0].tool_calls if isinstance(tc, dict) and tc.get("interrupted") is True
+            ]
+            assert not interrupted, "no interrupted marker expected after full turn"
+
+    asyncio.run(_run())
