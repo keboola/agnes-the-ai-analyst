@@ -101,6 +101,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Knob | Env override | `instance.yaml` path | Default | Resolver |
 |------|--------------|----------------------|---------|----------|
 | Data source type (`keboola`/`bigquery`/`local`) | `DATA_SOURCE` | `data_source.type` | `local` | `get_data_source_type()` |
+| Public base URL (used by Slack bot to mint **absolute** `/slack/bind` magic-link + `/chat` deep links — request-less code paths can't synthesize a base URL otherwise) | `PUBLIC_URL` | `server.public_url` | unset (links degrade to root-relative) | `get_public_url()` |
 | Inbound Slack transport (`http`/`socket`) | `SLACK_TRANSPORT` | `chat.slack.transport` | `http` | `get_slack_transport()` |
 | Allowed login email domains | — | `auth.allowed_domain` | `[]` | `get_allowed_domains()` |
 | Full auth block | — | `auth` | `{}` | `get_auth_config()` |
