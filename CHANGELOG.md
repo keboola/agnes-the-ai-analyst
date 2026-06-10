@@ -37,6 +37,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   will be removed in a future minor version.
 
 ### Internal
+- Schema v73: `chat_sessions` gains nullable `sandbox_id`, `runner_pid`,
+  `sandbox_paused_at` (DuckDB `_v72_to_v73` + Alembic `0020_chat_sandbox_refs_v73`;
+  deliberately un-indexed — DuckDB 1.5.3 FK+index constraint).
+- Test suite: per-xdist-worker `DATA_DIR` isolation removes sporadic cross-worker
+  `system.duckdb` file-lock failures.
 
 ## [0.70.11] — 2026-06-10
 
