@@ -93,6 +93,10 @@ server:
   hostname: ""                    # DNS name (e.g., "data.acme.com")
   host: ""                        # IP address
   app_dir: "/opt/data-analyst"    # Installation directory
+  # public_url: ""                # Absolute base URL, e.g. "https://data.acme.com".
+                                  # Used to build absolute links from request-less
+                                  # surfaces — notably the Slack bot's /slack/bind
+                                  # magic links. The PUBLIC_URL env var overrides this.
   # --- Client setup (shown in "Get Started" on dashboard) ---
   # ssh_alias: "data-analyst"     # SSH config Host alias for analysts (default: "data-analyst")
   # ssh_key: "~/.ssh/data_analyst_server"  # SSH key path for analysts (default: "~/.ssh/data_analyst_server")
