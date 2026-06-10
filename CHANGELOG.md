@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.70.6] — 2026-06-10
+
+### Added
 - The `customer-instance` Terraform module now exposes a `home_route` variable, so instances built on the upstream module (not just self-contained infra) can pin the post-auth landing page to `/home` (state-aware onboarding) instead of the `/dashboard` default. It writes `AGNES_HOME_ROUTE` into `/opt/agnes/.env` **only when set non-empty** — left empty (the default) it omits the line entirely, so the route stays operator-settable at runtime via `instance.home_route` / `/admin/server-config` (the env tier shadows the YAML tier, so pinning both is a footgun). Closes a parity gap where module-based instances had no declarative way to opt into `/home`.
 
 ### Changed
