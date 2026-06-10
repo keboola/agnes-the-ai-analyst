@@ -137,14 +137,51 @@ Per-user defaults (configurable in `/admin/server-config`):
 | Per-tool-call wall clock | 90 s |
 | BigQuery scan per session | 20 GiB |
 | Workspace push cap | 100 MB |
-| Kill sandbox on WS disconnect | yes |
+| Sandbox pause after disconnect linger | 60 s (`chat.detach_linger_seconds`) |
+| Paused sandbox GC TTL | 7 days (`chat.paused_ttl_seconds`) |
+| On-detach policy | `pause` (`chat.on_detach`) |
 
-**Sandbox billing.** Each chat session spawns a fresh E2B microVM
-billed for its lifetime by E2B. The session ends when (a) the WebSocket
-closes (`e2b_kill_on_ws_disconnect`, default on, per Q3), (b) the idle
-TTL fires, (c) the max-session-seconds wall-clock fires, or (d) the
-runner exits. Operators monitor cost in the E2B dashboard — Agnes does
-not yet surface per-session sandbox cost in its admin UI.
+**Session lifecycle.** Each chat session spawns a fresh E2B microVM.
+When the last WebSocket disconnects, Agnes waits for any in-flight turn
+to finish (so the answer is never lost), then holds the sandbox alive for
+a linger window (`chat.detach_linger_seconds`, default 60 s). If no
+client reconnects during the linger window, the sandbox is
+**paused** — the E2B microVM takes a memory snapshot preserving the
+running Claude Code process and its full agent context. The sandbox
+billingmeter stops while paused.
+
+When the user reconnects (web or Slack), Agnes **resumes** the paused
+sandbox: the same process reattaches with its in-memory context intact,
+and any in-progress turn output is replayed to the new WebSocket so
+mid-turn reconnects are seamless.
+
+**Active-time cap.** `chat.max_session_seconds` counts only time the
+session is ACTIVE (not the wall-clock including paused intervals), so
+pausing does not burn the session's allotted active time.
+
+**Paused-TTL GC.** Sandboxes that have been paused for longer than
+`chat.paused_ttl_seconds` (default 7 days) are garbage-collected
+by the reaper: the E2B sandbox is destroyed and the session row is
+cleared. The session history remains in the DB for the user to browse.
+
+**Keepalive heartbeat.** While sinks are attached the manager sends a
+periodic keepalive to the E2B sandbox so its external timeout always
+exceeds the in-process idle-TTL horizon. The `lifecycle on_timeout=pause`
+flag on every sandbox acts as a crash net — if the heartbeat misses, the
+sandbox pauses rather than dies.
+
+**Crash-net for mid-turn kills.** If a session is force-killed while a
+turn is in flight (e.g. an admin kill or idle-TTL expiry during streaming),
+the partial token output accumulated so far is persisted as an interrupted
+assistant message so the conversation history is never silently truncated.
+
+**Legacy kill-on-disconnect.** Set `chat.on_detach: kill` to restore the
+pre-pause behavior (sandbox is hard-killed when the last WS disconnects).
+The old `chat.e2b_kill_on_ws_disconnect` key still maps to this but is
+deprecated — use `on_detach: kill` instead.
+
+Operators monitor sandbox cost in the E2B dashboard — Agnes does not yet
+surface per-session cost in its admin UI.
 
 ## Security model
 
