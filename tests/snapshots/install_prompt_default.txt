@@ -93,6 +93,14 @@ real problem.
    piping the token through a file keeps it out of the command-
    line argv entirely.
 
+   NOTE: the heredoc below contains the literal PAT, so it lands in
+   this Claude Code session's transcript — which `agnes push` uploads
+   to the server. Treat the token as exposed once this prompt is in a
+   stored transcript. To keep this bootstrap session out of the upload,
+   run `/agnes-private` BEFORE pasting these commands; `agnes init`
+   deletes `~/.agnes/token` once it has consumed it, but the transcript
+   copy persists unless the session is marked private.
+
    mkdir -p ~/.agnes && umask 077 && cat > ~/.agnes/token <<'AGNES_PAT'
 {token}
 AGNES_PAT
