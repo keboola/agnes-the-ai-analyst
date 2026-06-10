@@ -24,7 +24,10 @@ responsibility-transfer contract.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -32,6 +35,7 @@ from typing import Optional
 import typer
 
 from cli.client import api_get, api_post
+from cli.config import _config_dir
 from cli.error_render import render_error
 from src.initial_workspace import (
     ExtractResult,
@@ -41,8 +45,6 @@ from src.initial_workspace import (
     extract_zip_to_workspace as _extract_zip_pure,
     initialize_workspace_from_template,
     is_override_workspace,
-    load_template_baseline,
-    save_template_baseline,
     update_workspace_from_template,
 )
 
@@ -316,6 +318,53 @@ def report_applied(
 # ---------------------------------------------------------------------------
 
 
+def _baseline_path(workspace: Path) -> Path:
+    """Where this workspace's installed-template baseline is stored.
+
+    Kept in the client config dir (NOT inside the workspace, so it never
+    pollutes the analyst's tree, never lands in a git commit, and can't
+    collide with template content) — alongside ``config.yaml`` /
+    ``token.json``. Keyed by a hash of the resolved absolute workspace path
+    so multiple workspaces on one machine don't clobber each other. A moved
+    workspace simply loses its baseline and the next update degrades to the
+    conservative "back up every changed file" path.
+    """
+    key = hashlib.sha256(str(workspace.resolve()).encode("utf-8")).hexdigest()[:16]
+    return _config_dir() / "workspace-baselines" / f"{key}.zip"
+
+
+def save_template_baseline(workspace: Path, zip_bytes: bytes) -> Path:
+    """Persist ``zip_bytes`` as the workspace's baseline (atomic write)."""
+    path = _baseline_path(workspace)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_str = tempfile.mkstemp(prefix=".baseline.", dir=str(path.parent))
+    tmp_path = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(zip_bytes)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+def load_template_baseline(workspace: Path) -> Optional[bytes]:
+    """Return the stored baseline zip bytes, or ``None`` when this workspace
+    has no baseline yet (initialised by an older CLI, moved, or cleared).
+    """
+    path = _baseline_path(workspace)
+    if not path.is_file():
+        return None
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
 def preview_update(workspace: Path, new_zip_bytes: bytes) -> UpdatePlan:
     """Classify what an update would do, without touching disk.
 
@@ -402,6 +451,14 @@ def apply_update(
     except ValueError as exc:
         _render_unsafe_entry_error(exc)
         raise  # unreachable — _render_unsafe_entry_error always raises typer.Exit
+
+    # Persist the new baseline for the next update's 3-way diff. Best-effort:
+    # a failed write just means the next update degrades to "back up every
+    # changed file" — the workspace itself is already correct.
+    try:
+        save_template_baseline(workspace, new_zip_bytes)
+    except Exception:
+        logger.exception("save_template_baseline failed after update")
 
     report_applied(
         server_url,

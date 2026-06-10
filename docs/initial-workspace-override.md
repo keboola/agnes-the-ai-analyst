@@ -360,14 +360,17 @@ How it decides what to touch (a 3-way diff):
 | On disk, **changed by the analyst** (differs from baseline) | original copied to `<name>.bak.<timestamp>`, then **updated** |
 | On disk, **not in the template**                       | **preserved** (left untouched)                           |
 
-The "baseline" is the exact template zip Agnes last installed, stored
-per-workspace at **`.claude/agnes/installed-template.zip`** (an
-Agnes-reserved path — your template repo must not ship it). It's written
-on the first override `agnes init` and rewritten after every successful
-update, so the comparison always reflects "what the analyst started
-from". Workspaces initialised by an older CLI have no baseline; the first
-`agnes update-workspace` then conservatively backs up *every* changed
-file and establishes the baseline going forward.
+The "baseline" is the exact template zip Agnes last installed. It is
+stored **client-side**, outside the workspace, under
+**`~/.config/agnes/workspace-baselines/`** (keyed by a hash of the
+workspace's absolute path) — so it never pollutes the analyst's tree,
+never lands in a git commit, and can't collide with template content. It's
+written on the first override `agnes init` and rewritten after every
+successful update, so the comparison always reflects "what the analyst
+started from". Workspaces initialised by an older CLI (or moved to a new
+path) have no baseline; the first `agnes update-workspace` then
+conservatively backs up *every* changed file and establishes the baseline
+going forward.
 
 `agnes update-workspace` reads the server URL + PAT from the analyst's
 saved config (like `agnes pull`) and **does not re-pull parquets**. On an
@@ -474,7 +477,7 @@ not flag these as regressions.
 For implementation details, see:
 - `app/api/initial_workspace.py` — admin + analyst endpoints
 - `src/initial_workspace.py` — clone/validate/zip
-- `cli/lib/initial_workspace.py` — probe/download/extract/confirm/report + update orchestration (`preview_update`, `prompt_update_confirmation`, `apply_update`)
+- `cli/lib/initial_workspace.py` — probe/download/extract/confirm/report + update orchestration (`preview_update`, `prompt_update_confirmation`, `apply_update`) + client-side baseline storage (`save_template_baseline` / `load_template_baseline`)
 - `cli/commands/update_workspace.py` — `agnes update-workspace` command
-- `src/initial_workspace.py` — baseline storage + `classify_workspace_update` / `update_workspace_from_template` (3-way diff engine)
+- `src/initial_workspace.py` — pure 3-way diff engine (`classify_workspace_update` / `update_workspace_from_template`)
 - `cli/lib/override.py` — single source of truth for override detection
