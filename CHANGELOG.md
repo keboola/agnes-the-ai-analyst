@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- **`/setup` page now uses the standard app layout width.** `setup.html` extended `base_login.html` with an inline `max-width: 520px`, rendering narrower than the rest of the app; it now extends `base_ds.html` with the canonical `.container--narrow` (800px) design-system shell for width consistency. The setup fields and flow are unchanged. (#586)
 
 ### Removed
 

@@ -1,122 +1,123 @@
-{% extends "base_login.html" %}
+{% extends "base_ds.html" %}
 
 {% block title %}Setup - {{ instance_brand or "Agnes" }} {{ instance_name or "AI Data Analyst" }}{% endblock %}
 
+{# Single-form wizard flow opts into the canonical 800px narrow shell
+   (var(--width-narrow)) — same as other single-form/wizard pages on the
+   design-system base — rather than the bespoke 520px login card it carried
+   when it rode the login base. See issue 586. #}
+{% block container_modifier %}container--narrow{% endblock %}
+
 {% block content %}
 {# Design-system component macros — all 7 wizard buttons render via
-   `ds.button`. The hidden ones (`#btn-next-sync`, `#btn-dashboard`)
-   use inline `style="display: none;"` rather than the `hidden` attr
-   because the JS toggles them via `btn.style.display`. #}
-{% import "_components.html" as ds %}
-<div class="login-page">
-    <div class="login-card-wrapper" style="max-width: 520px; margin: 40px auto; padding: 0 20px;">
-        <div class="login-card" style="max-width: 520px;">
-            <h2 id="wizard-title">Setup {{ instance_brand or "Agnes" }}</h2>
-            <p class="login-description" id="wizard-description">
-                Create your admin account to get started.
-            </p>
+   `ds.button`. base_ds already auto-imports `_components.html` as `ds`,
+   so no explicit import is needed here. The hidden buttons
+   (`#btn-next-sync`, `#btn-dashboard`) use inline `style="display: none;"`
+   rather than the `hidden` attr because the JS toggles them via
+   `btn.style.display`. #}
+<h2 id="wizard-title">Setup {{ instance_brand or "Agnes" }}</h2>
+<p class="login-description" id="wizard-description">
+    Create your admin account to get started.
+</p>
 
-            <!-- Progress -->
-            <div style="display: flex; gap: 8px; margin-bottom: 24px;">
-                <div id="step-dot-1" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-primary);"></div>
-                <div id="step-dot-2" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-border);"></div>
-                <div id="step-dot-3" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-border);"></div>
-                <div id="step-dot-4" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-border);"></div>
-            </div>
+<!-- Progress -->
+<div style="display: flex; gap: 8px; margin-bottom: 24px;">
+    <div id="step-dot-1" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-primary);"></div>
+    <div id="step-dot-2" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-border);"></div>
+    <div id="step-dot-3" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-border);"></div>
+    <div id="step-dot-4" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-border);"></div>
+</div>
 
-            <!-- Status message -->
-            <div id="status-msg" style="display: none; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; font-size: 14px;"></div>
+<!-- Status message -->
+<div id="status-msg" style="display: none; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; font-size: 14px;"></div>
 
-            <!-- Step 1: Create Admin -->
-            <div id="step-1">
-                <form id="admin-form" onsubmit="return createAdmin(event)">
-                    <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Email</label>
-                    <input type="email" id="admin-email" required placeholder="admin@company.com"
-                        style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
+<!-- Step 1: Create Admin -->
+<div id="step-1">
+    <form id="admin-form" onsubmit="return createAdmin(event)">
+        <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Email</label>
+        <input type="email" id="admin-email" required placeholder="admin@company.com"
+            style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
 
-                    <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Password</label>
-                    <input type="password" id="admin-password" required minlength="8" placeholder="Min. 8 characters"
-                        style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
+        <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Password</label>
+        <input type="password" id="admin-password" required minlength="8" placeholder="Min. 8 characters"
+            style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
 
-                    {{ ds.button('Create Admin Account', variant='primary',
-                                 type='submit', id='btn-admin',
-                                 klass='btn-block') }}
-                </form>
-            </div>
+        {{ ds.button('Create Admin Account', variant='primary',
+                     type='submit', id='btn-admin',
+                     klass='btn-block') }}
+    </form>
+</div>
 
-            <!-- Step 2: Data Source -->
-            <div id="step-2" style="display: none;">
-                <form id="source-form" onsubmit="return configureSource(event)">
-                    <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Data Source</label>
-                    <select id="data-source" onchange="toggleSourceFields()"
-                        style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
-                        <option value="keboola">Keboola</option>
-                        <option value="bigquery">BigQuery</option>
-                        <option value="local">Local / CSV</option>
-                    </select>
+<!-- Step 2: Data Source -->
+<div id="step-2" style="display: none;">
+    <form id="source-form" onsubmit="return configureSource(event)">
+        <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Data Source</label>
+        <select id="data-source" onchange="toggleSourceFields()"
+            style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
+            <option value="keboola">Keboola</option>
+            <option value="bigquery">BigQuery</option>
+            <option value="local">Local / CSV</option>
+        </select>
 
-                    <div id="keboola-fields">
-                        <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Keboola URL</label>
-                        <input type="url" id="keboola-url" placeholder="https://connection.keboola.com"
-                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
+        <div id="keboola-fields">
+            <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Keboola URL</label>
+            <input type="url" id="keboola-url" placeholder="https://connection.keboola.com"
+                style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
 
-                        <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Storage API Token</label>
-                        <input type="password" id="keboola-token" placeholder="Your Keboola storage token"
-                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
-                    </div>
-
-                    <div id="bigquery-fields" style="display: none;">
-                        <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">GCP Project</label>
-                        <input type="text" id="bq-project" placeholder="my-gcp-project"
-                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
-
-                        <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Location</label>
-                        <input type="text" id="bq-location" value="us" placeholder="us"
-                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
-                    </div>
-
-                    {{ ds.button('Configure Data Source', variant='primary',
-                                 type='submit', id='btn-source',
-                                 klass='btn-block') }}
-                    {{ ds.button('Skip (configure later)', variant='secondary',
-                                 type='button', id='btn-skip-source',
-                                 klass='btn-block',
-                                 attrs='onclick="skipToStep(4)" style="margin-top: 8px;"') }}
-                </form>
-            </div>
-
-            <!-- Step 3: Discover Tables -->
-            <div id="step-3" style="display: none;">
-                <p style="font-size: 14px; color: var(--ds-text-muted); margin-bottom: 16px;">
-                    Discover and register tables from your data source.
-                </p>
-                {{ ds.button('Discover Tables', variant='primary',
-                             type='button', id='btn-discover',
-                             klass='btn-block',
-                             attrs='onclick="discoverTables()"') }}
-                <div id="discover-result" style="display: none; margin-top: 12px; padding: 12px; background: var(--ds-accent-success-bg); border-radius: 6px; font-size: 14px;"></div>
-                {{ ds.button('Continue', variant='primary',
-                             type='button', id='btn-next-sync',
-                             klass='btn-block',
-                             attrs='onclick="goToStep(4)" style="margin-top: 12px; display: none;"') }}
-            </div>
-
-            <!-- Step 4: First Sync & Done -->
-            <div id="step-4" style="display: none;">
-                <p style="font-size: 14px; color: var(--ds-text-muted); margin-bottom: 16px;">
-                    Start the first data sync and go to your dashboard.
-                </p>
-                {{ ds.button('Start First Sync', variant='primary',
-                             type='button', id='btn-sync',
-                             klass='btn-block',
-                             attrs='onclick="triggerSync()"') }}
-                {{ ds.button('Go to Dashboard', variant='primary',
-                             href='/dashboard', id='btn-dashboard',
-                             klass='btn-block',
-                             attrs='style="margin-top: 12px; display: none; text-align: center;"') }}
-            </div>
+            <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Storage API Token</label>
+            <input type="password" id="keboola-token" placeholder="Your Keboola storage token"
+                style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
         </div>
-    </div>
+
+        <div id="bigquery-fields" style="display: none;">
+            <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">GCP Project</label>
+            <input type="text" id="bq-project" placeholder="my-gcp-project"
+                style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
+
+            <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Location</label>
+            <input type="text" id="bq-location" value="us" placeholder="us"
+                style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
+        </div>
+
+        {{ ds.button('Configure Data Source', variant='primary',
+                     type='submit', id='btn-source',
+                     klass='btn-block') }}
+        {{ ds.button('Skip (configure later)', variant='secondary',
+                     type='button', id='btn-skip-source',
+                     klass='btn-block',
+                     attrs='onclick="skipToStep(4)" style="margin-top: 8px;"') }}
+    </form>
+</div>
+
+<!-- Step 3: Discover Tables -->
+<div id="step-3" style="display: none;">
+    <p style="font-size: 14px; color: var(--ds-text-muted); margin-bottom: 16px;">
+        Discover and register tables from your data source.
+    </p>
+    {{ ds.button('Discover Tables', variant='primary',
+                 type='button', id='btn-discover',
+                 klass='btn-block',
+                 attrs='onclick="discoverTables()"') }}
+    <div id="discover-result" style="display: none; margin-top: 12px; padding: 12px; background: var(--ds-accent-success-bg); border-radius: 6px; font-size: 14px;"></div>
+    {{ ds.button('Continue', variant='primary',
+                 type='button', id='btn-next-sync',
+                 klass='btn-block',
+                 attrs='onclick="goToStep(4)" style="margin-top: 12px; display: none;"') }}
+</div>
+
+<!-- Step 4: First Sync & Done -->
+<div id="step-4" style="display: none;">
+    <p style="font-size: 14px; color: var(--ds-text-muted); margin-bottom: 16px;">
+        Start the first data sync and go to your dashboard.
+    </p>
+    {{ ds.button('Start First Sync', variant='primary',
+                 type='button', id='btn-sync',
+                 klass='btn-block',
+                 attrs='onclick="triggerSync()"') }}
+    {{ ds.button('Go to Dashboard', variant='primary',
+                 href='/dashboard', id='btn-dashboard',
+                 klass='btn-block',
+                 attrs='style="margin-top: 12px; display: none; text-align: center;"') }}
 </div>
 
 <script>

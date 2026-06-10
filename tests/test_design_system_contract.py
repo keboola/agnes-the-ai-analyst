@@ -499,6 +499,36 @@ def test_no_new_standalone_page_templates() -> None:
     )
 
 
+def test_setup_html_uses_design_system_base() -> None:
+    """The first-time-setup wizard (`setup.html`, served at /first-time-setup)
+    must ride the canonical design-system base, not the bespoke
+    `base_login.html` card chrome (#586). It opts into the 800px narrow shell
+    via `.container--narrow` and carries none of the login-card wrapper divs
+    or their hardcoded `max-width: 520px` inline widths."""
+    text = (TEMPLATES / "setup.html").read_text(encoding="utf-8")
+    # (a) extends the design-system base, not base_login.
+    assert '{% extends "base_ds.html" %}' in text, (
+        "setup.html must extend base_ds.html"
+    )
+    assert "base_login.html" not in text, (
+        "setup.html must no longer reference base_login.html"
+    )
+    # (b) the hardcoded card width is gone (both inline occurrences).
+    assert "max-width: 520px" not in text, (
+        "setup.html must not hardcode `max-width: 520px`"
+    )
+    # (c) opts into the canonical narrow shell.
+    assert "container--narrow" in text, (
+        "setup.html must opt into the .container--narrow design-system shell"
+    )
+    # (d) the login-card chrome wrapper divs are removed.
+    for cls in ('class="login-page"', 'class="login-card-wrapper"',
+                'class="login-card"'):
+        assert cls not in text, (
+            f"setup.html must not carry the login-chrome wrapper ({cls})"
+        )
+
+
 def test_standalone_allowlist_has_no_stale_entries() -> None:
     """Every _STANDALONE_ALLOWLIST entry must still exist AND still be a
     standalone (no `{% extends %}`). When a page is migrated onto a base its
