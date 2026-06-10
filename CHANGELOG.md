@@ -19,6 +19,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- **Regression tests anchoring the materialize memory-cap + disk-space pre-flight invariants (#431/#433).** Added unit coverage that the Keboola consolidation connection sets `memory_limit='2GB'` (+ `threads=2`, `preserve_insertion_order=false`), that `_download_single` performs its disk-space pre-flight check, and that the BigQuery pool-acquire path enforces its memory cap — locking these guardrails against silent regression. Tests only; no production behavior change. (#432)
 
 ## [0.70.9] — 2026-06-10
 
