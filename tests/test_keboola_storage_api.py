@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
+import connectors.keboola.storage_api as sapi
 from connectors.keboola.storage_api import (
     FILE_TYPE_CSV,
     FILE_TYPE_PARQUET,
@@ -638,3 +639,102 @@ class TestGetTableInfo:
         import pytest
         with pytest.raises(StorageApiError):
             client.get_table_info("missing.table")
+
+
+# ---- _download_single disk-space pre-flight (#431 / #432) ------------------
+
+def _streaming_resp(*, headers, chunks):
+    """Build a MagicMock that behaves like a streaming ``requests`` response
+    used as a context manager: ``with session.get(...) as r``."""
+    resp = MagicMock()
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    resp.raise_for_status = MagicMock()
+    # Real dict so ``r.headers.get('Content-Length')`` returns the literal
+    # value (or None) we control — a bare MagicMock would return a MagicMock
+    # and silently fall through the pre-flight via the int() TypeError path.
+    resp.headers = dict(headers)
+    resp.iter_content = MagicMock(return_value=list(chunks))
+    return resp
+
+
+class TestDownloadDiskPreflight:
+    @pytest.mark.parametrize(
+        "gunzip_on_read, free, should_raise",
+        [
+            # expected_bytes = 1e9. non-gunzip needs 1.25x = 1.25e9;
+            # gunzip needs 5x = 5e9. free=2e9 clears the 1.25x bar but
+            # not the 5x bar -> pins the multiplier branch.
+            (False, 2_000_000_000, False),
+            (True, 2_000_000_000, True),
+            # tiny free always fails, both branches.
+            (False, 100, True),
+            (True, 100, True),
+        ],
+    )
+    def test_multiplier_branch(self, tmp_path, gunzip_on_read, free, should_raise):
+        sess = MagicMock()
+        resp = _streaming_resp(
+            headers={"Content-Length": "1000000000"},
+            chunks=[b"PAR1payload"],
+        )
+        sess.get.return_value = resp
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        dest = tmp_path / "out.parquet"
+
+        fake_usage = MagicMock(return_value=MagicMock(free=free))
+        with patch.object(sapi.shutil, "disk_usage", fake_usage):
+            if should_raise:
+                with pytest.raises(StorageApiError, match="insufficient disk space"):
+                    c._download_single(
+                        "https://signed/x", dest, gunzip_on_read=gunzip_on_read
+                    )
+                # The raise must fire BEFORE the write loop.
+                resp.iter_content.assert_not_called()
+                assert not dest.exists()
+            else:
+                c._download_single(
+                    "https://signed/x", dest, gunzip_on_read=gunzip_on_read
+                )
+                resp.iter_content.assert_called()
+                assert dest.exists()
+
+    def test_raises_storage_api_error_when_free_below_needed(self, tmp_path):
+        """Insufficient free space -> StorageApiError raised BEFORE the write
+        loop (iter_content never touched)."""
+        sess = MagicMock()
+        resp = _streaming_resp(
+            headers={"Content-Length": "1000000000"},
+            chunks=[b"PAR1payload"],
+        )
+        sess.get.return_value = resp
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        dest = tmp_path / "out.parquet"
+
+        with patch.object(
+            sapi.shutil, "disk_usage", return_value=MagicMock(free=100)
+        ):
+            with pytest.raises(StorageApiError, match="insufficient disk space"):
+                c._download_single(
+                    "https://signed/x", dest, gunzip_on_read=False
+                )
+        resp.iter_content.assert_not_called()
+        assert not dest.exists()
+
+    def test_absent_content_length_falls_through(self, tmp_path):
+        """No Content-Length header -> the whole pre-flight block is skipped:
+        no exception, the file is written, and shutil.disk_usage is never
+        called."""
+        sess = MagicMock()
+        resp = _streaming_resp(headers={}, chunks=[b"PAR1data"])
+        sess.get.return_value = resp
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        dest = tmp_path / "out.parquet"
+
+        fake_usage = MagicMock()
+        with patch.object(sapi.shutil, "disk_usage", fake_usage):
+            c._download_single("https://signed/x", dest, gunzip_on_read=False)
+
+        assert dest.exists()
+        assert dest.read_bytes() == b"PAR1data"
+        fake_usage.assert_not_called()

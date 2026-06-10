@@ -772,3 +772,56 @@ class TestBqSessionPool:
         )
         with bq.duckdb_session() as conn:
             assert conn is sentinel
+
+
+# ---- apply_bq_session_settings resource caps (#431 follow-up / #432) -------
+
+class TestApplyBqSessionSettings:
+    def test_apply_bq_session_settings_applies_resource_caps(self):
+        """``apply_bq_session_settings`` must apply the three core DuckDB
+        resource caps UNCONDITIONALLY — before the BQ-extension-setting
+        early-exit and on every pool acquire. The caps are core DuckDB, so
+        this works hermetically on a plain in-memory conn with no BQ
+        extension loaded (the BQ-only ``bq_query_timeout_ms`` SET logs and
+        does not raise, which this test tolerates).
+        """
+        import duckdb
+        from connectors.bigquery.access import apply_bq_session_settings
+
+        conn = duckdb.connect(":memory:")
+        try:
+            # Capture the default memory_limit BEFORE applying the caps — the
+            # DuckDB default is 80% of host RAM, meaningfully larger than the
+            # 2 GiB cap. Proving BEFORE != AFTER is the regression guard for
+            # the "caps run before the extension early-exit" lift.
+            before = conn.execute(
+                "SELECT current_setting('memory_limit')"
+            ).fetchone()[0]
+
+            apply_bq_session_settings(conn)
+
+            threads = conn.execute(
+                "SELECT current_setting('threads')"
+            ).fetchone()[0]
+            assert int(threads) == 2
+
+            preserve = conn.execute(
+                "SELECT current_setting('preserve_insertion_order')"
+            ).fetchone()[0]
+            assert preserve in (False, "false")
+
+            after = conn.execute(
+                "SELECT current_setting('memory_limit')"
+            ).fetchone()[0]
+            # Normalized/banded assertion: '2GB' -> '1.8 GiB'. An exact
+            # string compare would false-fail.
+            assert "GiB" in after, after
+            assert float(after.split()[0]) <= 2.0, after
+
+            # The cap was actually applied: the post-apply value differs from
+            # the (much larger) default. On the rare host where the default
+            # already happens to be <= 2 GiB this still holds because the
+            # band assertion above pins the result regardless.
+            assert before != after, (before, after)
+        finally:
+            conn.close()
