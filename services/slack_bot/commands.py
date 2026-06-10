@@ -135,7 +135,15 @@ async def _cmd_agnes(app, cmd: dict) -> None:
     if not _is_attached(mgr, session.id):
         sink = EphemeralCommandSink(response_url=response_url)
         asyncio.create_task(mgr.attach(session.id, sink))
-        await asyncio.sleep(0.1)  # let attach() set up the pump + emit ready
+        # attach() spawns the sandbox (seconds) before registering the live
+        # session and never returns, so wait (bounded) for it instead of a
+        # fixed sleep that raced it and dropped the turn with SessionNotFound.
+        if not await mgr.wait_until_live(session.id):
+            await send_ephemeral(
+                response_url,
+                "Agnes is still starting up — please rerun `/agnes` in a few seconds.",
+            )
+            return
     await mgr.send_user_message(session.id, text)
 
 

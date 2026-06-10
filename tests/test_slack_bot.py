@@ -197,10 +197,14 @@ def _build_slack_app_state():
     async def send_user_message(chat_id, text):
         sent_msgs.append((chat_id, text))
 
+    async def wait_until_live(chat_id, *, timeout=30.0):
+        return True
+
     mgr = SimpleNamespace(
         list_live=lambda: [],
         create_session=create_session,
         attach=attach,
+        wait_until_live=wait_until_live,
         send_user_message=send_user_message,
         _created=created_sessions,
         _attached=attached,
@@ -537,6 +541,9 @@ class _FakeMgr:
     async def attach(self, chat_id, sink):
         self.attached.append((chat_id, sink))
 
+    async def wait_until_live(self, chat_id, *, timeout=30.0):
+        return True
+
     async def send_user_message(self, chat_id, text):
         self.sent.append((chat_id, text))
 
@@ -759,3 +766,42 @@ def test_slack_app_mention_dispatches(monkeypatch):
     # Channel not allowlisted → ephemeral "isn't enabled" deny, no session created.
     assert posts and "isn't enabled" in posts[0][2]
     assert mgr.created == []
+
+
+def test_slack_dm_posts_starting_up_when_session_never_lives(monkeypatch):
+    """Bug B timeout branch: if the session never becomes live (sandbox fails
+    to come up), the bound DM handler posts a 'starting up' notice and does NOT
+    call send_user_message — which would raise SessionNotFound."""
+    import asyncio
+
+    from services.slack_bot import events as ev
+
+    sent: list = []
+
+    async def fake_send(ch, ts, text):
+        sent.append((ch, ts, text))
+
+    monkeypatch.setattr(ev, "send_thread_reply", fake_send)
+    import app.auth.access as _access
+    monkeypatch.setattr(_access, "can_access", lambda *a, **k: True)
+
+    app, _repo, mgr, conn = _build_slack_app_state()
+
+    async def _never_live(chat_id, *, timeout=30.0):
+        return False
+
+    mgr.wait_until_live = _never_live
+
+    from services.slack_bot.binding import _ensure_table
+
+    _ensure_table(conn)
+    conn.execute("UPDATE users SET slack_user_id = 'U123' WHERE email = 'bob@example.com'")
+
+    event = {
+        "type": "message", "channel_type": "im", "channel": "D1",
+        "user": "U123", "ts": "1.1", "text": "hello agnes",
+    }
+    asyncio.run(ev.dispatch_event(app, event))
+
+    assert mgr._sent == [], "must not inject the turn when the session never became live"
+    assert any("starting up" in t for _ch, _ts, t in sent), sent

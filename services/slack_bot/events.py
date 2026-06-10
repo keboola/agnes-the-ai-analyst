@@ -103,6 +103,13 @@ async def _handle_dm(app, event: dict) -> None:
     if event.get("channel_type") != "im" or event.get("bot_id"):
         return
     slack_user_id = event.get("user")
+    # Some "message" events carry no user — message edits/deletions and other
+    # subtypes, unfurl side-effects. Without this guard such an event falls
+    # through to issue_verification_code(slack_user_id=None) below and trips the
+    # slack_binding_codes.slack_user_id NOT NULL constraint, crashing dispatch.
+    # Mirrors the guard _handle_mention already applies.
+    if not slack_user_id:
+        return
     text = event.get("text", "")
     channel = event["channel"]
     thread_ts = event.get("thread_ts") or event["ts"]
@@ -152,9 +159,18 @@ async def _handle_dm(app, event: dict) -> None:
             web_base=web_base,
         )
         _schedule(mgr.attach(session.id, sink))
-        # Give attach() a beat to set up the pump and emit `ready` before
-        # we feed the user message into the runner stdin.
-        await asyncio.sleep(0.1)
+        # attach() never returns during a session's lifetime (it awaits the
+        # pump), so we can't await it — but it spawns the sandbox first, which
+        # takes several seconds. Wait (bounded) for the live session to register
+        # before injecting the turn; a fixed sleep raced attach() and dropped
+        # the user's first message with SessionNotFound.
+        if not await mgr.wait_until_live(session.id):
+            await send_thread_reply(
+                channel,
+                thread_ts,
+                "Agnes is still starting up — please resend your message in a few seconds.",
+            )
+            return
     await mgr.send_user_message(session.id, text)
 
 
@@ -237,7 +253,16 @@ async def _handle_mention(app, event: dict) -> None:
             web_base=getattr(app.state, "public_url", ""),
         )
         _schedule(mgr.attach(session.id, sink))
-        await asyncio.sleep(0.1)
+        # Bounded wait for the live session — attach() spawns the sandbox
+        # (seconds) before registering, so a fixed sleep raced it and dropped
+        # the first turn with SessionNotFound. attach() itself never returns.
+        if not await mgr.wait_until_live(session.id):
+            await send_ephemeral_to_user(
+                channel,
+                slack_user_id,
+                "Agnes is still starting up — please resend in a few seconds.",
+            )
+            return
 
     # 9. Inject the user turn. send_user_message(chat_id, text) — no sender_email
     #    (per-sender attribution arrives with Phase 5a's multi-sink refactor).
