@@ -1,4 +1,5 @@
 """Chat feature config (loaded from instance.yaml `chat:` block)."""
+
 from __future__ import annotations
 
 import logging
@@ -47,9 +48,13 @@ class ChatConfig:
     # Per-spawn workspace push cap (Q1, 100 MB default). Files past this
     # cap → WorkspaceTooLarge → user-facing error frame.
     e2b_workspace_max_bytes: int = 100 * 1024 * 1024
-    # Q3 (additional gate alongside idle_ttl_seconds): kill the sandbox
-    # the moment the WS disconnects rather than letting the idle reaper
-    # close it later. Cuts billable sandbox-minutes on UI close.
+    # Lifecycle when the last sink detaches: "pause" (E2B snapshot, resumable)
+    # or "kill" (legacy cost-minimizing behavior).
+    # Deprecated: use on_detach instead of e2b_kill_on_ws_disconnect.
+    on_detach: str = "pause"
+    detach_linger_seconds: int = 60
+    paused_ttl_seconds: int = 7 * 24 * 3600
+    # Back-compat echo only — new code reads on_detach, never this field.
     e2b_kill_on_ws_disconnect: bool = True
     # When true, the runner bootstraps the user's RBAC-filtered marketplace
     # plugins into each sandbox at spawn (clone + `claude plugin install` +
@@ -69,11 +74,24 @@ def _parse_slack_config(raw_chat: dict) -> SlackConfig:
     transport = str(raw_value).strip().lower() if raw_value is not None else ""
     if transport not in ("http", "socket"):
         logger.warning(
-            "unknown slack transport %r in chat.slack.transport — "
-            "falling back to 'http'", transport,
+            "unknown slack transport %r in chat.slack.transport — falling back to 'http'",
+            transport,
         )
         transport = "http"
     return SlackConfig(transport=transport)
+
+
+def _parse_on_detach(raw: dict) -> str:
+    on_detach = str(raw.get("on_detach", "")).strip().lower()
+    if on_detach not in ("pause", "kill"):
+        if on_detach:
+            logger.warning("unknown chat.on_detach %r — falling back to 'pause'", on_detach)
+        if "e2b_kill_on_ws_disconnect" in raw and bool(raw["e2b_kill_on_ws_disconnect"]):
+            logger.warning("chat.e2b_kill_on_ws_disconnect is deprecated; use chat.on_detach: kill")
+            on_detach = "kill"
+        else:
+            on_detach = "pause"
+    return on_detach
 
 
 def load_chat_config(instance_yaml: Path) -> ChatConfig:
@@ -96,6 +114,9 @@ def load_chat_config(instance_yaml: Path) -> ChatConfig:
         marketplace_sha_debounce_seconds=int(raw.get("marketplace_sha_debounce_seconds", 5 * 60)),
         e2b_template_id=raw.get("e2b_template_id") or None,
         e2b_workspace_max_bytes=int(raw.get("e2b_workspace_max_bytes", 100 * 1024 * 1024)),
+        on_detach=_parse_on_detach(raw),
+        detach_linger_seconds=int(raw.get("detach_linger_seconds", 60)),
+        paused_ttl_seconds=int(raw.get("paused_ttl_seconds", 7 * 24 * 3600)),
         e2b_kill_on_ws_disconnect=bool(raw.get("e2b_kill_on_ws_disconnect", True)),
         bootstrap_marketplace=bool(raw.get("bootstrap_marketplace", False)),
         slack=_parse_slack_config(raw),
