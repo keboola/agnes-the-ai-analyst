@@ -11,10 +11,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Legacy-hook nudge on `agnes pull`.** Workspaces bootstrapped by the old server-upload flow (a `SessionEnd`/`SessionStart` hook referencing `collect_session` or `server/scripts/`, with none of the modern `agnes init` hooks) never invoke `agnes self-upgrade`, so the CLI drifts stale indefinitely. `agnes pull` now detects this layout via `workspace_has_legacy_hooks()` and emits a single stderr nudge — `This workspace uses an outdated hook layout — run \`agnes init\` to enable auto-update.` — pointing the analyst at `agnes init`. It does NOT auto-migrate; the analyst owns when their hook layout changes. Suppressed under `--quiet` (the SessionStart hook path) and `--json`. (#478)
 
 ### Changed
 
 ### Fixed
+- **Silent `agnes self-upgrade` failures now surface.** The SessionStart hook runs `agnes self-upgrade --quiet 2>/dev/null || true`, so a failing auto-update (network, uv/pip resolution, smoke-test rollback) was invisible and the CLI could sit stale for weeks. Each self-upgrade outcome is now persisted to `$AGNES_CONFIG_DIR/upgrade_status.json` (`last_attempt_ts`, `last_outcome`, `consecutive_failures`); the quiet path stays silent but increments the counter on failure / resets it on success, and the next NON-quiet `agnes` command warns once — `agnes self-upgrade has failed N times — run \`agnes self-upgrade\` to see the error.` — when three or more attempts in a row have failed. `--quiet` commands and the in-progress smoke-test subprocess stay silent. (#478)
 
 ### Removed
 

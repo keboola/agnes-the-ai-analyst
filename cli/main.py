@@ -115,6 +115,48 @@ def _maybe_warn_outdated() -> None:
             typer.echo(format_outdated_notice(info), err=True)
     except Exception:
         pass  # best-effort: never fail a command on the probe
+    _maybe_warn_upgrade_failures()
+
+
+def _command_is_quiet() -> bool:
+    """True if the current invocation passed --quiet (the SessionStart hook
+    path). The root callback runs for every command, but the silent
+    self-upgrade-failure warning must only surface on NON-quiet commands —
+    so quiet hooks stay quiet. We inspect argv rather than the parsed
+    options because the root callback fires before per-command parsing."""
+    return "--quiet" in sys.argv[1:]
+
+
+def _maybe_warn_upgrade_failures() -> None:
+    """Surface repeated SILENT self-upgrade failures (#478).
+
+    The SessionStart hook runs `agnes self-upgrade --quiet 2>/dev/null
+    || true`, so its failures are invisible. `agnes self-upgrade` records
+    each outcome in `$AGNES_CONFIG_DIR/upgrade_status.json`; once N attempts
+    in a row have failed, the NEXT non-quiet `agnes` command warns once.
+
+    Skipped entirely:
+    - under `--quiet` (keeps the SessionStart hook silent), and
+    - while a self-upgrade subprocess is running (the recursion sentinel),
+      so the smoke-test `agnes --version` never emits the warning.
+
+    Best-effort: never raises."""
+    try:
+        import os
+        if os.environ.get("AGNES_SELF_UPGRADE_IN_PROGRESS") == "1":
+            return
+        if _command_is_quiet():
+            return
+        from cli.upgrade_status import (
+            format_failure_notice,
+            mark_warned,
+            should_warn,
+        )
+        if should_warn():
+            typer.echo(format_failure_notice(), err=True)
+            mark_warned()  # warn once per failure level — don't spam
+    except Exception:
+        pass  # best-effort: never fail a command on the status probe
 
 # Register subcommands
 app.add_typer(auth_app, name="auth")

@@ -17,6 +17,16 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
+def _isolate_config_dir(tmp_path, monkeypatch):
+    """Point `_config_dir()` at a per-test tmp dir so self-upgrade's
+    on-disk bookkeeping (last_known_good.json, update_check.json, and the
+    upgrade_status.json failure counter added in #478) never touches the
+    developer's real ~/.config/agnes and can't leak across tests."""
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_agnes_cfg"))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _ensure_no_sentinel_leak(monkeypatch, request):
     """Pytest test order is not guaranteed; explicitly clear the recursion
     sentinel before every test so a leaked value from a prior test doesn't
@@ -569,3 +579,91 @@ def test_python_is_uv_tool_install_uv_tool_dir_nonzero_exit(monkeypatch):
         lambda *a, **kw: MagicMock(returncode=1, stdout=""),
     )
     assert su._python_is_uv_tool_install() is False
+
+
+# ---------------------------------------------------------------------------
+# upgrade_status recording — silent self-upgrade failure surfacing (#478)
+# ---------------------------------------------------------------------------
+
+
+def test_install_failure_increments_failure_counter(monkeypatch, tmp_path):
+    """A failed (quiet) self-upgrade increments the persisted failure
+    counter so repeated silent failures become visible later."""
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
+    from cli import upgrade_status as us
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade.shutil.which", return_value="/usr/local/bin/uv"), \
+         patch("cli.commands.self_upgrade.subprocess.run") as mock_run, \
+         patch("cli.commands.self_upgrade._read_last_known_good", return_value=None):
+        mock_run.return_value = MagicMock(returncode=42)  # install fails
+        result = runner.invoke(app, ["self-upgrade", "--quiet"])
+        assert result.exit_code == 1
+    assert us.consecutive_failures() == 1
+    assert us.read_status()["last_outcome"] == "failure"
+
+
+def test_successful_install_resets_failure_counter(monkeypatch, tmp_path):
+    """A successful self-upgrade resets the counter to 0 even after prior
+    failures."""
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
+    from cli import upgrade_status as us
+    us.record_outcome(success=False)
+    us.record_outcome(success=False)
+    assert us.consecutive_failures() == 2
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade.shutil.which", return_value="/usr/local/bin/uv"), \
+         patch("cli.commands.self_upgrade.subprocess.run") as mock_run, \
+         patch("cli.commands.self_upgrade._smoke_test_new_binary", return_value=_smoke_pass()), \
+         patch("cli.commands.self_upgrade._read_last_known_good", return_value=None), \
+         patch("cli.commands.self_upgrade._record_last_known_good"), \
+         patch("cli.commands.self_upgrade._invalidate_update_cache"), \
+         patch("cli.commands.self_upgrade.maybe_refresh_claude_hooks"):
+        mock_run.return_value = MagicMock(returncode=0)
+        result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 0
+    assert us.consecutive_failures() == 0
+    assert us.read_status()["last_outcome"] == "success"
+
+
+def test_current_cli_resets_failure_counter(monkeypatch, tmp_path):
+    """`agnes self-upgrade` when already current (info is None) records a
+    success — the CLI is in a known-good state, so prior failures clear."""
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
+    from cli import upgrade_status as us
+    us.record_outcome(success=False)
+    us.record_outcome(success=False)
+    us.record_outcome(success=False)
+    assert us.should_warn() is True
+    with patch("cli.commands.self_upgrade.check", return_value=_current_info()), \
+         patch("cli.commands.self_upgrade.maybe_refresh_claude_hooks"):
+        result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 0
+    assert us.consecutive_failures() == 0
+    assert us.should_warn() is False
+
+
+def test_smoke_fail_rollback_records_failure(monkeypatch, tmp_path):
+    """A smoke-test rollback (forward install ok, new binary broken) counts
+    as a failure for the counter."""
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
+    from cli import upgrade_status as us
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade.shutil.which", return_value="/usr/local/bin/uv"), \
+         patch("cli.commands.self_upgrade.subprocess.run") as mock_run, \
+         patch("cli.commands.self_upgrade._smoke_test_new_binary", return_value=_smoke_fail()), \
+         patch("cli.commands.self_upgrade._read_last_known_good", return_value=_PRIOR_URL), \
+         patch("cli.commands.self_upgrade._record_last_known_good"):
+        mock_run.return_value = MagicMock(returncode=0)
+        result = runner.invoke(app, ["self-upgrade", "--quiet"])
+        assert result.exit_code == 1
+    assert us.consecutive_failures() == 1
+
+
+def test_check_only_does_not_touch_failure_counter(monkeypatch, tmp_path):
+    """`--check-only` is read-only intent — it must not record an outcome."""
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
+    from cli import upgrade_status as us
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()):
+        result = runner.invoke(app, ["self-upgrade", "--check-only"])
+        assert result.exit_code == 1
+    assert us.read_status() == {}  # nothing recorded

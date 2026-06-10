@@ -77,6 +77,26 @@ def pull(
 
     workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
 
+    # Legacy-hook nudge (#478): workspaces bootstrapped by the OLD server
+    # flow (a `collect_session` / `server/scripts/` SessionEnd hook, no
+    # `agnes init` hooks) never invoke `agnes self-upgrade`, so their CLI
+    # drifts stale forever. Emit ONE stderr line pointing the analyst at
+    # `agnes init`. We do NOT auto-migrate — the analyst owns when their
+    # hook layout changes. Suppressed under --quiet (the SessionStart hook
+    # path, kept silent) and --json (machine-readable output). Best-effort:
+    # a malformed settings.json must never abort the pull.
+    if not (quiet or as_json):
+        try:
+            from cli.lib.hooks import workspace_has_legacy_hooks
+            if workspace_has_legacy_hooks(workspace):
+                typer.echo(
+                    "This workspace uses an outdated hook layout — "
+                    "run `agnes init` to enable auto-update.",
+                    err=True,
+                )
+        except Exception:
+            pass
+
     # Show progress unless quiet (SessionStart hooks) or json (machine-
     # readable output where Rich's terminal-control sequences would be
     # garbage in the consumer's parser).

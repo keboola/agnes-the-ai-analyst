@@ -17,6 +17,7 @@ import typer
 from cli.config import _config_dir, get_server_url
 from cli.lib.hooks import maybe_refresh_claude_hooks
 from cli.update_check import UpdateInfo, check, format_outdated_notice
+from cli.upgrade_status import record_outcome
 
 self_upgrade_app = typer.Typer(
     name="self-upgrade",
@@ -335,22 +336,34 @@ def self_upgrade(
             raise typer.Exit(1)
 
         if isinstance(info, _Unreachable):
+            # --force + server unreachable: an attempted upgrade that
+            # couldn't even probe. Record a failure so repeated silent
+            # SessionStart failures (network down for days) surface on the
+            # next non-quiet command. (#478)
+            record_outcome(success=False)
             sys.stderr.write(
                 f"agnes self-upgrade: cannot reach {get_server_url()}/cli/latest\n"
             )
             raise typer.Exit(1)
 
         if info is None:
-            # CLI already current — still attempt hook refresh in case the
+            # CLI already current (or offline without --force) — nothing to
+            # install, so the CLI is in a known-good state. Reset the
+            # failure counter. Still attempt hook refresh in case the
             # workspace was initialized on an older CLI whose hook layout
             # has since changed (e.g. v0.48 → v0.49 introduced the
             # capture-session SessionStart entry). The refresh is a no-op
             # for directories that don't look like Agnes workspaces, so
             # an `agnes self-upgrade` invoked from ~/  won't write there.
+            record_outcome(success=True)
             _try_refresh_hooks(quiet=quiet)
             raise typer.Exit(0)
 
         rc = _do_install_with_smoke_and_rollback(info, quiet=quiet)
+        # Persist the outcome so a string of silent SessionStart failures
+        # (install error, smoke-test rollback) becomes visible on the next
+        # non-quiet command. Success resets the counter. (#478)
+        record_outcome(success=(rc == 0))
         if rc == 0:
             # After a successful install of the new wheel, refresh the
             # workspace hooks so any wire-format change in the new release

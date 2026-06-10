@@ -8,6 +8,7 @@ from cli.lib.hooks import (
     install_claude_hooks,
     maybe_refresh_claude_hooks,
     workspace_has_agnes_hooks,
+    workspace_has_legacy_hooks,
 )
 
 
@@ -587,3 +588,102 @@ def test_maybe_refresh_preserves_third_party_hooks(tmp_path):
     assert "echo hi from another tool" in starts, (
         f"Third-party hook must survive refresh; got: {starts!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# workspace_has_legacy_hooks — old server-flow detection (#478)
+# ---------------------------------------------------------------------------
+
+
+def _write_legacy_collect_session_settings(workspace: Path) -> None:
+    """A workspace bootstrapped by the OLD server flow: a SessionEnd hook
+    pointing at `server/scripts/collect_session.py` and NO `agnes init`
+    hooks. These workspaces never invoke `agnes self-upgrade`, so the CLI
+    sits stale indefinitely."""
+    sp = workspace / ".claude" / "settings.json"
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(json.dumps({
+        "hooks": {
+            "SessionEnd": [
+                {"hooks": [{"type": "command",
+                            "command": "python server/scripts/collect_session.py"}]},
+            ],
+        }
+    }), encoding="utf-8")
+
+
+def test_legacy_hooks_true_for_collect_session_workspace(tmp_path):
+    """A legacy-only settings.json (collect_session, no agnes hooks) →
+    has_legacy_hooks True and has_agnes_hooks False."""
+    _write_legacy_collect_session_settings(tmp_path)
+    assert workspace_has_legacy_hooks(tmp_path) is True
+    assert workspace_has_agnes_hooks(tmp_path) is False
+
+
+def test_legacy_hooks_true_for_server_scripts_session_start(tmp_path):
+    """A SessionStart command referencing `server/scripts/` (the old server
+    flow) with no agnes hooks counts as legacy."""
+    sp = tmp_path / ".claude" / "settings.json"
+    sp.parent.mkdir(parents=True)
+    sp.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command",
+                            "command": "bash server/scripts/sync_session.sh"}]},
+            ],
+        }
+    }), encoding="utf-8")
+    assert workspace_has_legacy_hooks(tmp_path) is True
+    assert workspace_has_agnes_hooks(tmp_path) is False
+
+
+def test_legacy_hooks_false_for_modern_workspace(tmp_path):
+    """A modern `agnes init` workspace must NOT be flagged legacy — no
+    double-nudge once a workspace is already on the new layout."""
+    install_claude_hooks(tmp_path)
+    assert workspace_has_agnes_hooks(tmp_path) is True
+    assert workspace_has_legacy_hooks(tmp_path) is False
+
+
+def test_legacy_hooks_false_for_mixed_workspace_with_agnes_hooks(tmp_path):
+    """Even if a legacy `collect_session` entry lingers alongside the modern
+    agnes hooks, the workspace already has agnes hooks → not legacy (the
+    `agnes init` SessionStart self-upgrade is wired, so the nudge is moot)."""
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    cfg["hooks"].setdefault("SessionEnd", []).append(
+        {"hooks": [{"type": "command",
+                    "command": "python server/scripts/collect_session.py"}]}
+    )
+    (tmp_path / ".claude" / "settings.json").write_text(
+        json.dumps(cfg), encoding="utf-8"
+    )
+    assert workspace_has_agnes_hooks(tmp_path) is True
+    assert workspace_has_legacy_hooks(tmp_path) is False
+
+
+def test_legacy_hooks_false_for_missing_settings(tmp_path):
+    assert workspace_has_legacy_hooks(tmp_path) is False
+
+
+def test_legacy_hooks_false_for_invalid_json(tmp_path):
+    sp = tmp_path / ".claude" / "settings.json"
+    sp.parent.mkdir(parents=True)
+    sp.write_text("not json {", encoding="utf-8")
+    assert workspace_has_legacy_hooks(tmp_path) is False
+
+
+def test_legacy_hooks_false_for_third_party_only(tmp_path):
+    """A workspace with only unrelated third-party hooks (no legacy server
+    markers, no agnes markers) is not legacy — we only nudge the specific
+    old-server-flow layout, not arbitrary non-Agnes workspaces."""
+    sp = tmp_path / ".claude" / "settings.json"
+    sp.parent.mkdir(parents=True)
+    sp.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": "echo hello"}]},
+            ],
+        }
+    }), encoding="utf-8")
+    assert workspace_has_legacy_hooks(tmp_path) is False
