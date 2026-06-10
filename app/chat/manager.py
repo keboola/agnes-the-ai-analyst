@@ -8,7 +8,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -248,8 +248,23 @@ class ChatManager:
             await asyncio.sleep(0.1)
 
     async def shutdown(self) -> None:
+        """Gracefully shut down all live sessions.
+
+        When on_detach='pause', ACTIVE sessions are paused so they survive the
+        restart (sandboxes preserve memory + running processes). When
+        on_detach='kill' (or pause fails), the session is killed as before.
+        """
         chat_ids = list(self._live.keys())
         for chat_id in chat_ids:
+            live = self._live.get(chat_id)
+            if live is None:
+                continue
+            if live.state == SessionState.ACTIVE and self._config.on_detach == "pause":
+                try:
+                    await self._pause_live(live)
+                    continue
+                except Exception:
+                    logger.exception("shutdown pause failed for %s — killing instead", chat_id)
             try:
                 await self.kill(chat_id, reason="server_shutdown")
             except Exception:
@@ -393,7 +408,12 @@ class ChatManager:
         Sets state=PAUSED FIRST so _wait_for_exit_and_respawn (which holds
         the crash-respawn loop) sees the state change and treats the
         subsequent EOF as intentional rather than a crash.
+        Folds the current active segment into active_seconds_accum so the
+        max_session_seconds cap counts only real active time.
         """
+        # Fold active-time segment before changing state.
+        if live.state == SessionState.ACTIVE:
+            live.active_seconds_accum += time.monotonic() - live.active_since
         live.state = SessionState.PAUSED
         for t in live.tasks:
             t.cancel()
@@ -1144,22 +1164,75 @@ class ChatManager:
     async def _reap_once(self) -> None:
         """One sweep of the reaper.
 
-        Kills sessions that have either:
-        - been idle longer than ``idle_ttl_seconds`` (reason ``idle_ttl``), or
-        - been running longer than ``max_session_seconds`` (reason
-          ``max_session_seconds``), regardless of recent activity.
+        For live sessions (ACTIVE/IDLE):
+        - Idle longer than ``idle_ttl_seconds``: pause (on_detach='pause') or kill.
+        - Active time (accumulated + current segment) exceeds ``max_session_seconds``:
+          pause or kill. Active time only counts while ACTIVE — pause stops the clock.
+        - Keepalive heartbeat: for ACTIVE sessions with sinks, extend the sandbox
+          external timeout so it outlives the in-process reaper horizon.
 
-        The wallclock cap was previously dead config (knob in instance.yaml
-        nobody read). Operators setting it now actually get the behavior.
+        Paused-TTL sweep (repo rows, no live session required):
+        - Sessions whose sandbox_paused_at is older than ``paused_ttl_seconds``
+          have their sandbox destroyed and refs cleared.
         """
         idle_cutoff = self._config.idle_ttl_seconds
-        max_wallclock = self._config.max_session_seconds
+        max_active = self._config.max_session_seconds
         now = datetime.now(timezone.utc)
+        now_mono = time.monotonic()
+
+        to_pause: list[str] = []
         to_kill: list[tuple[str, str]] = []
+
         for chat_id, live in list(self._live.items()):
+            if live.state not in (SessionState.ACTIVE, SessionState.IDLE):
+                continue
+            # Active-time cap: accumulator + current active segment.
+            active_total = live.active_seconds_accum
+            if live.state == SessionState.ACTIVE:
+                active_total += now_mono - live.active_since
+            if active_total > max_active:
+                if self._config.on_detach == "pause":
+                    to_pause.append(chat_id)
+                else:
+                    to_kill.append((chat_id, "max_session_seconds"))
+                continue
+            # Idle TTL: last_activity recency check.
             if (now - live.last_activity).total_seconds() > idle_cutoff:
-                to_kill.append((chat_id, "idle_ttl"))
-            elif (now - live.started_at).total_seconds() > max_wallclock:
-                to_kill.append((chat_id, "max_session_seconds"))
+                if self._config.on_detach == "pause":
+                    to_pause.append(chat_id)
+                else:
+                    to_kill.append((chat_id, "idle_ttl"))
+                continue
+            # Keepalive heartbeat for ACTIVE sessions with at least one sink.
+            if live.state == SessionState.ACTIVE and live.sinks and live.handle is not None:
+                try:
+                    await self._provider.keepalive(
+                        live.handle,
+                        timeout_seconds=idle_cutoff + 300,
+                    )
+                except Exception:
+                    logger.debug("keepalive failed for %s", chat_id)
+
+        for chat_id in to_pause:
+            live = self._live.get(chat_id)
+            if live is not None:
+                try:
+                    await self._pause_live(live)
+                except Exception:
+                    logger.exception("reaper pause failed for %s — killing", chat_id)
+                    await self.kill(chat_id, reason="reaper_pause_failed")
+
         for chat_id, reason in to_kill:
             await self.kill(chat_id, reason=reason)
+
+        # Paused-TTL sweep: destroy sandboxes that have been paused too long.
+        # Works purely from repo rows — catches pre-restart leftovers too.
+        paused_cutoff = now - timedelta(seconds=self._config.paused_ttl_seconds)
+        for session in self._repo.list_paused_sessions(paused_before=paused_cutoff):
+            try:
+                await self._provider.destroy(sandbox_id=session.sandbox_id)
+            except Exception:
+                logger.debug("destroy sandbox %s failed (already gone?)", session.sandbox_id)
+            self._repo.clear_sandbox_ref(session.id)
+            # Drop any in-memory entry
+            self._live.pop(session.id, None)

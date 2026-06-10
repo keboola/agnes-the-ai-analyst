@@ -412,6 +412,7 @@ def test_idle_reaper_kills_sessions_older_than_max_session_seconds(tmp_path):
         # Pin a tiny wallclock cap so the test is fast and deterministic.
         max_session_seconds=1,
         idle_ttl_seconds=10**9,  # disable idle path
+        on_detach="kill",  # test the kill path specifically
     )
     mgr = ChatManager(
         provider=provider,
@@ -425,16 +426,20 @@ def test_idle_reaper_kills_sessions_older_than_max_session_seconds(tmp_path):
         now = datetime.now(timezone.utc)
         ws = MagicMock()
         ws.send_json = AsyncMock()
-        # Inject an "old" live session — started > max_session_seconds ago.
-        mgr._live[s.id] = LiveSession(
+        # Inject an "old" live session — active_seconds_accum already past the cap.
+        # No sinks: with no attached browser the reaper kills outright (no pause).
+        live = LiveSession(
             chat_id=s.id,
             user_email="u@x",
             state=SessionState.ACTIVE,
             handle=None,
             started_at=now - timedelta(seconds=5),
             last_activity=now,
-            sinks=[SinkEntry(participant_email="u@x", sink=ws)],
+            sinks=[],
         )
+        # Set accumulated active time past max_session_seconds=1 so the reaper fires.
+        live.active_seconds_accum = 5.0
+        mgr._live[s.id] = live
 
         await mgr._reap_once()  # single sweep; no sleep loop
         assert s.id not in mgr._live, "expected stale session to be killed"
@@ -1199,6 +1204,205 @@ def test_on_detach_kill_preserves_legacy_behavior(tmp_path):
         await asyncio.sleep(0.1)
         assert s.id not in mgr._live, "on_detach=kill: session should be dead after detach"
 
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Task 9 tests: reaper pauses, paused-TTL GC, active-time cap, shutdown pauses
+# ---------------------------------------------------------------------------
+
+
+def test_idle_ttl_pauses_instead_of_kills(tmp_path):
+    """Reaper on an idle ACTIVE session with no sinks → PAUSED, sandbox alive in provider."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        live = mgr._live[s.id]
+        # Empty sinks without triggering linger
+        live.sinks = []
+        # Force last_activity into the past
+        from datetime import datetime as _dt, timedelta, timezone as _tz
+
+        live.last_activity = _dt.now(_tz.utc) - timedelta(seconds=1)
+
+        # Patch config to use idle_ttl=0 for fast reap
+        original_config = mgr._config
+
+        class _PatchedConfig:
+            def __getattr__(self, name):
+                if name == "idle_ttl_seconds":
+                    return 0
+                return getattr(original_config, name)
+
+        mgr._config = _PatchedConfig()
+        await mgr._reap_once()
+        mgr._config = original_config
+
+        live = mgr._live.get(s.id)
+        assert live is None or live.state == SessionState.PAUSED
+        assert provider.paused, "sandbox must be in provider.paused after idle reaper"
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_paused_ttl_really_kills(tmp_path):
+    """Repo row paused before cutoff → provider.destroy called + sandbox refs cleared."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        await mgr.detach_sink(s.id, ws)
+        await asyncio.sleep(0.15)  # pause fires
+        assert provider.paused
+
+        # Push sandbox_paused_at into the past past the TTL
+        from datetime import datetime as _dt, timedelta, timezone as _tz
+
+        mgr._repo.set_sandbox_paused_at(
+            s.id,
+            _dt.now(_tz.utc) - timedelta(seconds=mgr._config.paused_ttl_seconds + 1),
+        )
+        # Clear _live so it tests the repo-row-only path
+        mgr._live.clear()
+
+        await mgr._reap_once()
+
+        session = mgr._repo.get_session(s.id)
+        assert session.sandbox_id is None, "sandbox ref must be cleared after paused-TTL GC"
+        assert session.runner_pid is None
+        assert session.sandbox_paused_at is None
+        assert provider.destroyed, "provider.destroy must be called for expired paused sandbox"
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_max_session_seconds_counts_active_time_only(tmp_path):
+    """max_session_seconds uses accumulated active time; pause stops the clock."""
+
+    async def _run():
+        import time as _time
+
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        live = mgr._live[s.id]
+        # 1 hour accumulated, currently paused (active_since barely recent)
+        live.active_seconds_accum = 3600.0
+        live.active_since = _time.monotonic() - 10  # only 10 s since last resume
+        live.state = SessionState.PAUSED  # pause stops the clock
+
+        # max_session_seconds=4h: total active ≈ 1h 10s ≪ 4h → should NOT reap
+        original_config = mgr._config
+
+        class _PatchedConfig:
+            def __getattr__(self, name):
+                if name == "max_session_seconds":
+                    return 4 * 3600
+                if name == "idle_ttl_seconds":
+                    return 10**9  # disable idle path
+                return getattr(original_config, name)
+
+        mgr._config = _PatchedConfig()
+        await mgr._reap_once()
+        assert s.id in mgr._live, "paused session with only ~1h active time must not be reaped at 4h cap"
+
+        # Now exceed the cap
+        live.active_seconds_accum = 4 * 3600 + 1
+        await mgr._reap_once()
+        remaining = mgr._live.get(s.id)
+        assert remaining is None or remaining.state in (
+            SessionState.DEAD,
+            SessionState.PAUSED,
+        ), "session past active cap must be killed or paused"
+
+        mgr._config = original_config
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_shutdown_pauses_active_sessions(tmp_path):
+    """shutdown() with on_detach='pause' pauses ACTIVE sessions instead of killing."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=999)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        assert s.id in mgr._live
+
+        await mgr.shutdown()
+
+        assert provider.paused, "shutdown with on_detach=pause should pause active sandboxes"
+        session = mgr._repo.get_session(s.id)
+        assert session.sandbox_paused_at is not None, "sandbox_paused_at must be set after shutdown-pause"
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_keepalive_heartbeat_extends_timeout_while_sinks_attached(tmp_path):
+    """The reaper tick calls provider.keepalive for ACTIVE sessions with sinks."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=999)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        live = mgr._live.get(s.id)
+        assert live is not None and live.sinks  # has a sink
+
+        await mgr._reap_once()
+        assert provider.keepalive_calls, "keepalive should be called for ACTIVE session with sinks"
+
+        await mgr.kill(s.id, reason="test_done")
         attach_task.cancel()
         try:
             await attach_task
