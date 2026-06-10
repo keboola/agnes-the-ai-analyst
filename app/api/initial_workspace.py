@@ -107,7 +107,7 @@ class AnalystInitialWorkspaceResponse(BaseModel):
 class AppliedRequest(BaseModel):
     """CLI audit event after the analyst's workspace has been extracted."""
 
-    mode: str  # "force_overwrite" | "fresh_install"
+    mode: str  # "force_overwrite" | "fresh_install" | "update"
     template_sha: Optional[str] = None
     files_overwritten: int = 0
     files_created: int = 0
@@ -681,10 +681,13 @@ async def analyst_applied(
     a fetch_started without a matching applied = the analyst downloaded
     but never confirmed extraction (useful signal for operators).
     """
-    if body.mode not in ("force_overwrite", "fresh_install"):
+    if body.mode not in ("force_overwrite", "fresh_install", "update"):
         raise HTTPException(
             status_code=422,
-            detail=f"mode must be one of: force_overwrite, fresh_install (got {body.mode!r})",
+            detail=(
+                "mode must be one of: force_overwrite, fresh_install, update "
+                f"(got {body.mode!r})"
+            ),
         )
     _audit(
         conn,
