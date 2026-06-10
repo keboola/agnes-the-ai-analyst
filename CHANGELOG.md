@@ -20,6 +20,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.70.9] — 2026-06-10
+
+### Fixed
+- Slack chat dropped the **first message after binding** with `SessionNotFound`. The DM / mention / `/agnes` handlers schedule `ChatManager.attach()` fire-and-forget (it spawns the E2B sandbox — several seconds — and never returns for the session's lifetime) and then waited a fixed `asyncio.sleep(0.1)` before `send_user_message`. The sleep raced attach() registering the live session, so the turn was injected before the session existed. Added `ChatManager.wait_until_live(chat_id, timeout=…)` which polls the live registry, and the three handlers now await it (and post a friendly "still starting up — resend" notice on timeout) instead of a blind sleep. The `/agnes` slash-command path also uses the strong-ref `_schedule()` helper for the fire-and-forget attach (Devin Review BUG_0001): with the 30s wait window the bare `asyncio.create_task()` it used to use could be GC-collected mid-flight, silently dropping the turn. (#589)
+- A Slack `message` event with no `user` field (message edits/deletions and other subtypes) crashed the event dispatch: `_handle_dm` fell through to `issue_verification_code(slack_user_id=None)`, tripping the `slack_binding_codes.slack_user_id` NOT NULL constraint. `_handle_dm` now early-returns on a user-less event, mirroring the guard `_handle_mention` already had. (#589)
+
 ## [0.70.8] — 2026-06-10
 
 ### Changed

@@ -183,8 +183,12 @@ def _agnes_app(monkeypatch, *, bound=True, can_chat=True):
     async def send_user_message(chat_id, text):
         sent.append((chat_id, text))
 
+    async def wait_until_live(chat_id, *, timeout=30.0):
+        return True
+
     mgr = SimpleNamespace(
         list_live=lambda: [], create_session=create_session, attach=attach,
+        wait_until_live=wait_until_live,
         send_user_message=send_user_message,
         _config=SimpleNamespace(concurrency_per_user=3),
         _created=created, _attached=attached, _sent=sent,
