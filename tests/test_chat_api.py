@@ -4,6 +4,7 @@ Fixture pattern: build a minimal FastAPI app with the chat router attached,
 set up app.state manually (chat_manager + chat_repo), and override the
 get_current_user dependency to inject a test user dict.
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -17,7 +18,6 @@ from src.db import _ensure_schema
 from app.chat.persistence import ChatRepository
 from app.chat.config import ChatConfig
 from app.chat.manager import ChatManager
-from app.chat.types import Surface
 from app.auth.dependencies import get_current_user
 
 
@@ -87,6 +87,7 @@ def _make_app(*, chat_enabled: bool = True) -> FastAPI:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def api_client() -> TestClient:
     return TestClient(_make_app(chat_enabled=True))
@@ -106,6 +107,7 @@ def logged_in_user():
 # ---------------------------------------------------------------------------
 # Tests (5 per plan Step 1)
 # ---------------------------------------------------------------------------
+
 
 def test_create_web_session(api_client: TestClient, logged_in_user):
     r = api_client.post("/api/chat/sessions", json={"surface": "web"})
@@ -182,7 +184,9 @@ def test_reissue_ticket_404_for_other_users_session(api_client: TestClient, logg
     # Re-override auth as a DIFFERENT user; ticket endpoint must refuse.
     app = api_client.app
     app.dependency_overrides[get_current_user] = lambda: {
-        "id": "user2", "email": "bob@test.com", "is_admin": False,
+        "id": "user2",
+        "email": "bob@test.com",
+        "is_admin": False,
     }
     try:
         r = api_client.post(f"/api/chat/sessions/{chat_id}/ticket")
@@ -195,6 +199,129 @@ def test_reissue_ticket_404_for_other_users_session(api_client: TestClient, logg
 # ---------------------------------------------------------------------------
 # RBAC gate — chat is default-deny
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Task 10: ws disconnect detaches (not kills) + paused flag in session list
+# ---------------------------------------------------------------------------
+
+
+def _make_app_with_fake_provider() -> "FastAPI":
+    """Like _make_app but wires a real FakeProvider so attach/detach_sink work."""
+    from fastapi import FastAPI
+    from app.api.chat import router as chat_router
+    from app.chat.config import ChatConfig
+    from app.chat.workdir import WorkdirManager
+
+    import duckdb
+    from src.db import _ensure_schema
+    from tests.chat_fakes import FakeProvider
+
+    app = FastAPI()
+    app.include_router(chat_router)
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+
+    fake_provider = FakeProvider()
+    workdir_mgr = MagicMock(spec=WorkdirManager)
+    workdir_mgr.ensure_user_workdir = MagicMock()
+    workdir_mgr.prepare_session_dir = MagicMock(return_value="/tmp/fake")
+
+    config = ChatConfig(
+        enabled=True,
+        concurrency_per_user=3,
+        on_detach="pause",
+        detach_linger_seconds=0,
+    )
+    mgr = ChatManager(
+        provider=fake_provider,
+        workdir_mgr=workdir_mgr,
+        repo=repo,
+        config=config,
+    )
+    app.state.chat_manager = mgr
+    app.state.chat_repo = repo
+    app.state._fake_provider = fake_provider
+
+    from app.api.chat import require_chat_access
+    from app.auth.dependencies import get_current_user
+
+    async def _granted_user(user: dict = Depends(get_current_user)) -> dict:
+        return user
+
+    app.dependency_overrides[get_current_user] = lambda: TEST_USER
+    app.dependency_overrides[require_chat_access] = _granted_user
+    return app
+
+
+@pytest.fixture
+def fake_provider_client():
+    return TestClient(_make_app_with_fake_provider())
+
+
+def test_ws_disconnect_detaches_but_does_not_kill(fake_provider_client: TestClient):
+    """After WS closes, the manager session stays in _live (ACTIVE or linger),
+    the runner handle is not killed — only the sink is detached."""
+    app = fake_provider_client.app
+    mgr = app.state.chat_manager
+    provider = app.state._fake_provider
+
+    created = fake_provider_client.post("/api/chat/sessions", json={"surface": "web"}).json()
+    chat_id = created["id"]
+    ticket_resp = fake_provider_client.post(f"/api/chat/sessions/{chat_id}/ticket").json()
+    ws_url = ticket_resp["ws_url"]
+
+    with fake_provider_client.websocket_connect(ws_url) as ws:
+        # Drain the ready frame emitted by _seat_sink.
+        frame = ws.receive_json()
+        assert frame["type"] == "ready"
+        # WS disconnects here (context manager exit).
+
+    # Session must still be in the live registry (not killed).
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    try:
+        live = mgr._live.get(chat_id)
+        assert live is not None, "session was removed from _live on WS close — should stay"
+        # Handle must not have been killed (linger_task may or may not have fired
+        # yet, but if it fired with linger=0 and paused, handle becomes None after
+        # pause — the important invariant is we never called handle.kill()).
+        provider_handle = provider.spawned[0] if provider.spawned else None
+        if provider_handle is not None:
+            assert not provider_handle.killed, "handle was hard-killed on WS disconnect"
+    finally:
+        loop.close()
+
+
+def test_sessions_list_exposes_paused(fake_provider_client: TestClient):
+    """GET /api/chat/sessions includes 'paused': true for paused sessions."""
+    created = fake_provider_client.post("/api/chat/sessions", json={"surface": "web"}).json()
+    chat_id = created["id"]
+
+    # Directly set paused_at on the repo row to simulate a paused session.
+    from datetime import datetime, timezone
+
+    repo = fake_provider_client.app.state.chat_repo
+    repo.set_sandbox_paused_at(chat_id, datetime.now(timezone.utc))
+
+    r = fake_provider_client.get("/api/chat/sessions")
+    assert r.status_code == 200
+    sessions = r.json()
+    assert len(sessions) == 1
+    assert sessions[0]["paused"] is True
+
+
+def test_sessions_list_not_paused_for_active(fake_provider_client: TestClient):
+    """GET /api/chat/sessions includes 'paused': false for non-paused sessions."""
+    fake_provider_client.post("/api/chat/sessions", json={"surface": "web"})
+    r = fake_provider_client.get("/api/chat/sessions")
+    assert r.status_code == 200
+    sessions = r.json()
+    assert len(sessions) == 1
+    assert sessions[0]["paused"] is False
+
 
 def test_chat_requires_rbac_grant():
     """Default-deny: a user with no chat grant (and not admin) is refused 403
