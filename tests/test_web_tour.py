@@ -26,14 +26,13 @@ def test_tour_overlay_renders_on_authed_page(seeded_app):
 
 def test_tour_anchors_present_on_nav(seeded_app):
     """The nav exposes the data-tour anchors the engine spotlights, plus the
-    manual "Take a tour" launcher in the user menu."""
+    (?) help icon launcher in the header."""
     c = seeded_app["client"]
     body = c.get("/dashboard", headers=_auth(seeded_app["analyst_token"])).text
 
     for key in ("nav-home", "nav-marketplace", "nav-catalog", "nav-memory", "user-menu"):
         assert f'data-tour="{key}"' in body, f"missing data-tour anchor: {key}"
     assert "data-tour-start" in body
-    assert ">Take a tour<" in body
 
 
 def test_tour_not_rendered_when_unauthenticated(seeded_app):
