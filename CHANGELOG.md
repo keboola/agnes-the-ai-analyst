@@ -11,16 +11,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
-- **`agnes update-workspace`** — safe re-apply of the Initial Workspace Template into an already-initialised workspace, **without losing analyst edits**. Reads the server URL + PAT from saved config (like `agnes pull`, no `--server-url`), warns + requires a literal `YES` (or `--yes` for the slash-command flow), and does a 3-way diff against a per-workspace baseline: files the analyst changed are backed up to `<name>.bak.<timestamp>` before being refreshed, files they hadn't touched are updated in place, new template files are created, and files not in the template are left untouched. `--dry-run` previews the plan. **IWT-only** — a clean no-op (touches nothing, exits 0) on instances with no Initial Workspace Template configured; it never re-pulls parquets. The baseline is the exact installed template zip, stored **client-side** under `~/.config/agnes/workspace-baselines/` (keyed by a hash of the workspace path, so it never pollutes the workspace tree or lands in a git commit), written on the first override `agnes init` so the first update has a reference point (older workspaces with no baseline conservatively back up every changed file). A canonical `/update-workspace` slash command ships under `cli/templates/commands/` for IWT admins to copy into their template repo. (FAI-24)
 
 ### Changed
 
 ### Fixed
-- **Security: Agnes now protects its own PAT on disk and reduces its transcript exposure (#580, Findings 1-min + 2).** Plaintext token files are written with mode `0o600` (owner-only) instead of being left at the ambient umask (commonly `0o644`, world-readable) — at all three write sites: `cli.config.save_token` (`~/.config/agnes/token.json`) and the generated Cowork `setup.py` (`token.json` + both `.agnes-creds.json` copies). Each uses an atomic write (temp file chmod'd before rename) and is best-effort + Windows-safe (the chmod is skipped where the platform/filesystem doesn't honor it; native ACLs apply). `agnes init` now deletes the transient `~/.agnes/token` bootstrap file once it has consumed the token, and the setup prompt gained an explicit note that the heredoc PAT lands in the uploaded session transcript, with a `/agnes-private` reminder to keep the bootstrap session out of `agnes push`. (Storing the PAT in the OS keychain — Finding 3 — is deferred pending a security review; `0o600` plaintext is the accepted baseline.)
 
 ### Removed
 
 ### Internal
+
+## [0.70.14] — 2026-06-10
+
+### Added
+- **`agnes update-workspace`** — safe re-apply of the Initial Workspace Template into an already-initialised workspace, **without losing analyst edits**. Reads the server URL + PAT from saved config (like `agnes pull`, no `--server-url`), warns + requires a literal `YES` (or `--yes` for the slash-command flow), and does a 3-way diff against a per-workspace baseline: files the analyst changed are backed up to `<name>.bak.<timestamp>` before being refreshed, files they hadn't touched are updated in place, new template files are created, and files not in the template are left untouched. `--dry-run` previews the plan. **IWT-only** — a clean no-op (touches nothing, exits 0) on instances with no Initial Workspace Template configured; it never re-pulls parquets. The baseline is the exact installed template zip, stored **client-side** under `~/.config/agnes/workspace-baselines/` (keyed by a hash of the workspace path, so it never pollutes the workspace tree or lands in a git commit), written on the first override `agnes init` so the first update has a reference point (older workspaces with no baseline conservatively back up every changed file). A canonical `/update-workspace` slash command ships under `cli/templates/commands/` for IWT admins to copy into their template repo. (FAI-24, #595)
+
+### Fixed
+- **Security: Agnes now protects its own PAT on disk and reduces its transcript exposure (#580, Findings 1-min + 2).** Plaintext token files are written with mode `0o600` (owner-only) instead of being left at the ambient umask (commonly `0o644`, world-readable) — at all three write sites: `cli.config.save_token` (`~/.config/agnes/token.json`) and the generated Cowork `setup.py` (`token.json` + both `.agnes-creds.json` copies). Each uses an atomic write (temp file chmod'd before rename) and is best-effort + Windows-safe (the chmod is skipped where the platform/filesystem doesn't honor it; native ACLs apply). `agnes init` now deletes the transient `~/.agnes/token` bootstrap file once it has consumed the token, and the setup prompt gained an explicit note that the heredoc PAT lands in the uploaded session transcript, with a `/agnes-private` reminder to keep the bootstrap session out of `agnes push`. (Storing the PAT in the OS keychain — Finding 3 — is deferred pending a security review; `0o600` plaintext is the accepted baseline.) (#580, #600)
 
 ## [0.70.13] — 2026-06-10
 
