@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **`bytes_scanned` on the query API + `agnes query --remote` output (#393).** `POST /api/query` now returns the BigQuery dry-run scan estimate as `bytes_scanned` (bytes) for `query_mode='remote'` queries (`None` for local DuckDB queries — no BQ tables involved), exposing it to REST and MCP consumers. `agnes query --remote` prints a human-readable `BigQuery scanned ~<size> (dry-run estimate)` line to STDERR (mirroring the existing `truncated` notice), so json/csv stdout stays pure.
 
 ### Changed
 
