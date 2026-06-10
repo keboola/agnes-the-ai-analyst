@@ -2,7 +2,7 @@
 {% block title %}Adoption · {{ target_user_email }} — Admin{% endblock %}
 
 {% set page_hero_eyebrow = "Adoption · User" %}
-{% set page_hero_title = target_user_email or "User" %}
+{% set page_hero_title = target_user_name or target_user_email or "User" %}
 {% set page_hero_subtitle = "Per-user adoption — time spent, sessions, skills, and tools." %}
 
 {% block head_extra %}
@@ -50,6 +50,15 @@
 .obs-table tbody tr:hover{ background:var(--ds-border-light); }
 .obs-num{ text-align:right; font-variant-numeric:tabular-nums; }
 .obs-empty{ padding:24px 16px; text-align:center; color:var(--ds-text-muted); font-size:13px; }
+
+/* Identity block — avatar circle + full name over email, same look as
+   /admin/users. The circle initials + color are hydrated from AgnesIdentity. */
+.adopt-identity{ display:flex; align-items:center; gap:12px; margin-bottom:20px; }
+.adopt-identity .avatar{ width:44px; height:44px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+  font-size:16px; font-weight:600; color:#fff; flex-shrink:0; background:var(--ds-border); }
+.adopt-identity .meta{ display:flex; flex-direction:column; min-width:0; }
+.adopt-identity .meta .name{ font-size:18px; font-weight:600; color:var(--ds-text-primary); }
+.adopt-identity .meta .email{ font-size:13px; color:var(--ds-text-secondary); }
 </style>
 {% endblock %}
 
@@ -66,6 +75,15 @@
 
 {% block page %}
 <div class="adopt" data-user-id="{{ target_user_id }}">
+
+  <div class="adopt-identity">
+    <span class="avatar" id="adopt-id-avatar"
+          data-name="{{ target_user_name }}" data-email="{{ target_user_email }}" data-id="{{ target_user_id }}"></span>
+    <span class="meta">
+      <span class="name">{{ target_user_name or target_user_email or "User" }}</span>
+      {% if target_user_name and target_user_email %}<span class="email">{{ target_user_email }}</span>{% endif %}
+    </span>
+  </div>
 
   <section class="obs-kpis" aria-label="Per-user adoption metrics">
     <div class="obs-kpi"><span class="obs-kpi-label">Time spent</span><span class="obs-kpi-value" id="k-active">—</span><span class="obs-kpi-sub" id="k-wall">—</span></div>
@@ -182,6 +200,16 @@
     const btn=e.target.closest('button'); if(!btn) return;
     [...e.currentTarget.children].forEach(x=>x.classList.toggle('is-active', x===btn));
     state.window=btn.dataset.win; refreshWindowed();
+  });
+
+  // Hydrate the avatar circle from the shared helper. Runs on
+  // DOMContentLoaded so the deferred identity.js has executed by then.
+  document.addEventListener('DOMContentLoaded', function(){
+    const a = document.getElementById('adopt-id-avatar');
+    if (!a || !window.AgnesIdentity) return;
+    const name = a.dataset.name, email = a.dataset.email, id = a.dataset.id;
+    a.textContent = AgnesIdentity.initials(name || email);
+    a.style.background = AgnesIdentity.avatarColor(email || id || name || '');
   });
 
   refreshWindowed();
