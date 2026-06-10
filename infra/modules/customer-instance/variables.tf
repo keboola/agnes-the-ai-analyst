@@ -223,3 +223,13 @@ variable "acme_email" {
   type        = string
   default     = ""
 }
+
+variable "home_route" {
+  description = "Landing page after auth, applied instance-wide by writing AGNES_HOME_ROUTE into /opt/agnes/.env. One of /home (state-aware onboarding), /dashboard (legacy table inventory), /setup, /catalog. Empty (default) omits the env line entirely so the app falls through to instance.home_route in instance.yaml and then its built-in /dashboard default — keeping the route operator-settable at runtime via /admin/server-config. Set a non-empty value to pin it at deploy time (the env var overrides the YAML, so don't do both). Per-VM divergence isn't exposed yet; it applies to prod + all dev VMs in the instance."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.home_route == "" || contains(["/home", "/dashboard", "/setup", "/catalog"], var.home_route)
+    error_message = "home_route must be empty or one of: /home, /dashboard, /setup, /catalog"
+  }
+}

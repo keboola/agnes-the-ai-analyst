@@ -1,17 +1,146 @@
 # Configuration Reference
 
-## instance.yaml
+This is the single authoritative map of everything an operator can customize
+per instance. Three independent tiers feed an instance's behavior; the knob
+table below names every resolver, its env override, its `instance.yaml` path,
+and its default.
 
-The main configuration file for your AI Data Analyst instance. Located at `config/instance.yaml`.
-See `config/instance.yaml.example` for the full annotated template.
+> The per-instance knob table is guarded by
+> `tests/test_config_reference_coverage.py`: every `get_*` resolver in
+> `app/instance_config.py` must appear here, so this doc cannot silently drift
+> behind the code.
 
-### Instance Branding
+## How configuration resolves
+
+Most knobs resolve in this order — **first non-empty wins**:
+
+1. **Environment variable** (e.g. `AGNES_HOME_ROUTE`, `DATA_SOURCE`,
+   `SLACK_TRANSPORT`) — set in `.env` / by Terraform. **Overrides everything.**
+2. **`instance.yaml`** — the static base at `config/instance.yaml` deep-merged
+   with the admin overlay written to `${DATA_DIR}/state/instance.yaml` by
+   `/admin/server-config`. The overlay wins per-leaf.
+3. **Built-in default** — baked into the resolver in `app/instance_config.py`.
+
+> **Footgun:** because the env var wins over `instance.yaml`, an instance that
+> pins a knob via an env var **cannot** later change it through the
+> `/admin/server-config` UI — the UI writes the YAML tier, which the env tier
+> shadows. Pin via env **or** manage via YAML, not both. (This is exactly why
+> the Terraform `home_route` knob below writes its env line *only* when set to a
+> non-empty value — see [Infra patterns](#infra-patterns-and-knob-reachability).)
+
+A few structural knobs (lists/objects that don't round-trip through env vars —
+`datasets`, `theme`, `custom_scripts`, …) are **YAML-only**; their rows show
+`—` in the env column.
+
+### A separate tier: the Initial Workspace Template
+
+The **analyst workspace payload** and the **init prompt** rendered on `/home`
+are NOT in this file's tier system — they come from a registered *Initial
+Workspace Template* (IWT) seed repo, resolved as **operator IWT clone > bundled
+snapshot in the wheel**. See
+[`initial-workspace-override.md`](initial-workspace-override.md) and
+[`seed-repo-contract.md`](seed-repo-contract.md). Configure it at
+`/admin/server-config` → *Initial Workspace Template*.
+
+### Infra patterns and knob reachability
+
+Whether the **env-var tier** is reachable at deploy time depends on the infra
+pattern serving the instance:
+
+- **Self-contained infra** (the deployment writes its own `/opt/agnes/.env`):
+  can set any `AGNES_*` env knob directly.
+- **Upstream `infra/modules/customer-instance` module** (consumed via an
+  `infra-vX.Y.Z` tag): can only set the env knobs the module exposes as
+  Terraform variables. If the module doesn't expose a knob, that instance falls
+  through to the `instance.yaml` tier (admin UI) for it.
+
+The module's `home_route` variable is the canonical example — it writes
+`AGNES_HOME_ROUTE` only when set, otherwise leaving the route YAML-settable.
+
+---
+
+## Per-instance knob reference
+
+Every resolver lives in [`app/instance_config.py`](../app/instance_config.py).
+Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
+
+### Branding & UI
+
+| Knob | Env override | `instance.yaml` path | Default | Resolver |
+|------|--------------|----------------------|---------|----------|
+| Deployment display name (page titles, email subjects) | — | `instance.name` | `AI Data Analyst` | `get_instance_name()` |
+| Header subtitle | — | `instance.subtitle` | `""` | `get_instance_subtitle()` |
+| Product brand string (hero copy, CTAs, setup script) | `AGNES_INSTANCE_BRAND` | `instance.brand` | `Agnes` | `get_instance_brand()` |
+| Inline `<svg>` logo for the header brand slot | `AGNES_INSTANCE_LOGO_SVG` | `instance.logo_svg` | `""` (text brand) | `get_instance_logo_svg()` |
+| UI theme/palette (`blue`/`navy`/`dark`/`auto`) | `AGNES_INSTANCE_THEME` | `instance.theme` | `blue` | `get_instance_theme()` |
+| Analyst workspace folder name (`~/<name>`) | `AGNES_WORKSPACE_DIR_NAME` | `instance.workspace_dir` | derived from brand (non-alphanumerics stripped) | `get_workspace_dir_name()` |
+| Operator-injected HTML/JS blocks (analytics, widgets) | — | `instance.custom_scripts` | `[]` | `get_custom_scripts()` |
+| Legacy theme block (colors/fonts) | — | `theme` | `{}` | `get_theme()` |
+
+### Onboarding & `/home`
+
+| Knob | Env override | `instance.yaml` path | Default | Resolver |
+|------|--------------|----------------------|---------|----------|
+| Landing route after auth (`/home` vs `/dashboard`) | `AGNES_HOME_ROUTE` | `instance.home_route` | `/dashboard` | `get_home_route()` |
+| Show the "turn on auto-accept mode" install block | `AGNES_HOME_SHOW_AUTOMODE` | `instance.home.show_automode` | `true` | `get_home_automode_visibility()` |
+| Show the homepage status frame (sync/sessions/tokens) | `AGNES_HOME_SHOW_STATUS_FRAME` | `instance.home.show_status_frame` | `true` | `get_home_status_frame_visibility()` |
+| Operator-authored Overview HTML on `/home` | `AGNES_INSTANCE_OVERVIEW` | `instance.overview` | `""` (hidden) | `get_instance_overview()` |
+| Operator-authored Support HTML on `/home` | `AGNES_INSTANCE_SUPPORT` | `instance.support` | `""` (hidden) | `get_instance_support()` |
+| Admin contact address for user-side "email admin" prompts | `AGNES_INSTANCE_ADMIN_EMAIL` | `instance.admin_email` | `""` | `get_instance_admin_email()` |
+| Refresh-cadence string shown in the welcome prompt | — | `instance.sync_interval` | `1 hour` | `get_sync_interval()` |
+
+### Connector pre-provisioning
+
+| Knob | Env override | `instance.yaml` path | Default | Resolver |
+|------|--------------|----------------------|---------|----------|
+| Shared Google Workspace CLI OAuth client (id/secret/project/insecure-transport) | `AGNES_GWS_CLIENT_ID`, `AGNES_GWS_CLIENT_SECRET`, `AGNES_GWS_PROJECT_ID`, `AGNES_GWS_OAUTHLIB_INSECURE_TRANSPORT` | `instance.gws.{client_id,client_secret,project_id,oauthlib_insecure_transport}` | unset / `1` | `get_gws_oauth_credentials()` |
+| Atlassian Cloud site URL baked into the connector prompt | `AGNES_ATLASSIAN_BASE_URL` | `instance.atlassian.base_url` | `""` (ask user) | `get_atlassian_base_url()` |
+
+### Data source, auth & structural sections
+
+| Knob | Env override | `instance.yaml` path | Default | Resolver |
+|------|--------------|----------------------|---------|----------|
+| Data source type (`keboola`/`bigquery`/`local`) | `DATA_SOURCE` | `data_source.type` | `local` | `get_data_source_type()` |
+| Inbound Slack transport (`http`/`socket`) | `SLACK_TRANSPORT` | `chat.slack.transport` | `http` | `get_slack_transport()` |
+| Allowed login email domains | — | `auth.allowed_domain` | `[]` | `get_allowed_domains()` |
+| Full auth block | — | `auth` | `{}` | `get_auth_config()` |
+| Dataset registry | — | `datasets` | `{}` | `get_datasets()` |
+| Corporate Memory block | — | `corporate_memory` | `{}` | `get_corporate_memory_config()` |
+
+### Flea-market upload guardrails
+
+See [`STORE_GUARDRAILS.md`](STORE_GUARDRAILS.md) for the pipeline these tune.
+
+| Knob | `instance.yaml` path | Default | Resolver |
+|------|----------------------|---------|----------|
+| Guardrail block | `guardrails` | `{}` | `get_guardrails_config()` |
+| Pipeline enabled (operator intent) | `guardrails.enabled` | `true` | `get_guardrails_enabled()` |
+| LLM review model tier | `guardrails.review_model` | `haiku` | `get_guardrails_review_model()` |
+| Per-submitter blocked-row quota / day | `guardrails.blocked_quota_per_day` | `50` | `get_guardrails_blocked_quota_per_day()` |
+| Blocked-bundle byte TTL (days) | `guardrails.blocked_bundle_ttl_days` | `30` | `get_guardrails_blocked_bundle_ttl_days()` |
+| Stuck-review reaper grace (seconds) | `guardrails.stuck_review_grace_seconds` | `1800` | `get_guardrails_stuck_review_grace_seconds()` |
+| Min description chars | `guardrails.min_description_chars` | `60` | `get_guardrails_min_description_chars()` |
+| Min slash-command description chars | `guardrails.min_command_description_chars` | `25` | `get_guardrails_min_command_description_chars()` |
+| Min distinct words in a description | `guardrails.min_distinct_words` | `5` | `get_guardrails_min_distinct_words()` |
+| Min skill/agent body chars | `guardrails.min_body_chars` | `200` | `get_guardrails_min_body_chars()` |
+
+---
+
+## Annotated `instance.yaml` examples
+
+The main configuration file lives at `config/instance.yaml`. See
+`config/instance.yaml.example` for the full annotated template.
+
+### Instance branding
 
 ```yaml
 instance:
-  name: "AI Data Analyst"        # UI title, email subjects
-  subtitle: "Acme Corp"          # Header subtitle
+  name: "AI Data Analyst"        # UI title, email subjects (get_instance_name)
+  subtitle: "Acme Corp"          # Header subtitle (get_instance_subtitle)
   copyright: "Acme Corp"         # Footer copyright
+  brand: "Acme Analyst"          # Product brand string (get_instance_brand)
+  theme: "blue"                  # UI palette (get_instance_theme)
+  home_route: "/home"            # Landing after auth (get_home_route)
 ```
 
 ### Authentication
@@ -22,7 +151,8 @@ auth:
 ```
 
 Only emails from this domain can log in via Google OAuth or email magic link.
-Google OAuth is optional — if not configured, only email magic link auth is available.
+Google OAuth is optional — if not configured, only email magic link auth is
+available.
 
 ### Email
 
@@ -36,9 +166,9 @@ email:
   smtp_password: "${SMTP_PASSWORD}"
 ```
 
-Used for magic link authentication. Without SMTP configured, magic links are shown
-directly in the browser (development mode). Compatible with any SMTP relay (Gmail,
-Mailgun, SendGrid SMTP, etc.).
+Used for magic link authentication. Without SMTP configured, magic links are
+shown directly in the browser (development mode). Compatible with any SMTP relay
+(Gmail, Mailgun, SendGrid SMTP, etc.).
 
 ### Server
 
@@ -61,7 +191,7 @@ desktop:
 
 ```yaml
 data_source:
-  type: "keboola"               # keboola, bigquery, local
+  type: "keboola"               # keboola, bigquery, local (get_data_source_type)
 ```
 
 ### Users
@@ -105,10 +235,13 @@ catalog:
   order: ["sales", "hr"]
 ```
 
-## Environment Variables (.env)
+---
 
-Copy `config/.env.template` to `.env` and fill in values. The template contains
-the full variable list with comments. Never commit `.env`.
+## .env infrastructure variables
+
+These are deployment secrets and infrastructure paths — distinct from the
+per-instance knobs above. Copy `config/.env.template` to `.env` and fill in
+values. Never commit `.env`.
 
 ### Required
 
@@ -151,3 +284,15 @@ the full variable list with comments. Never commit `.env`.
 | `CONFIG_DIR` | Override config directory path |
 | `LOG_LEVEL` | Logging level: `debug`, `info`, `warning`, `error` |
 | `DOMAIN` | Public hostname for Caddy TLS (production profile) |
+
+---
+
+## Related docs
+
+- [`initial-workspace-override.md`](initial-workspace-override.md) — analyst
+  workspace payload + init prompt (the IWT tier).
+- [`seed-repo-contract.md`](seed-repo-contract.md) — seed-repo layout +
+  install-prompt placeholders.
+- [`STORE_GUARDRAILS.md`](STORE_GUARDRAILS.md) — flea-market guardrail pipeline.
+- `infra/modules/customer-instance/variables.tf` — Terraform knobs the upstream
+  module exposes (incl. `home_route`).
