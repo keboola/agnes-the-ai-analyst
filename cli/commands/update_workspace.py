@@ -8,8 +8,8 @@ parquets and requires an explicit `--server-url`), this command:
   `agnes pull` — no `--server-url`/`--token` needed,
 - does NOT re-pull parquets (that's `agnes pull` / the SessionStart hook),
 - BACKS UP files the analyst changed to `<name>.bak.<timestamp>` before
-  overwriting (3-way diff against the stored baseline at
-  `.claude/agnes/installed-template.zip`),
+  overwriting (3-way diff against the stored baseline, kept client-side at
+  `~/.config/agnes/workspace-baselines/<hash>.zip`),
 - leaves files not in the template untouched.
 
 IWT-ONLY. On an instance with no Initial Workspace Template configured the
