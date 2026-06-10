@@ -312,8 +312,11 @@
         if (root.hidden) return;
         if (e.key === "Escape") { e.preventDefault(); end(); return; }
         if (!els.pop.hidden) {  // step navigation only while a step is showing
-            if (e.key === "ArrowRight" || e.key === "Enter") { e.preventDefault(); next(); }
-            else if (e.key === "ArrowLeft") { e.preventDefault(); back(); }
+            if (e.key === "ArrowRight" || e.key === "Enter") {
+                // If a button inside the card is focused, let the browser fire its click.
+                if (e.key === "Enter" && els.pop.contains(document.activeElement)) return;
+                e.preventDefault(); next();
+            } else if (e.key === "ArrowLeft") { e.preventDefault(); back(); }
         }
     });
 

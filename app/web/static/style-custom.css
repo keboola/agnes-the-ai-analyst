@@ -3484,13 +3484,6 @@ a.app-header-logo:focus-visible {
 }
 .app-user-menu-item:hover { background: var(--border-light, #f3f4f6); }
 .app-user-menu-item.is-active { background: var(--primary-light); color: var(--primary); font-weight: 500; }
-/* When the menu item is a <button> (e.g. "Take a tour"), reset native
-   chrome so it reads identically to the <a> items above it. */
-button.app-user-menu-item {
-    width: 100%; text-align: left; border: 0; background: none;
-    font-family: inherit; cursor: pointer;
-}
-
 /* Onboarding launcher — the "?" help icon in the header that re-opens the
    guided tour. Borderless icon button that sits next to the user menu. */
 .app-onboarding-launch {
