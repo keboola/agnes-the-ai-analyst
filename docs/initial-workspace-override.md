@@ -332,9 +332,58 @@ incrementally, rather than writing one from scratch.
 
 **Existing analyst workspaces do not auto-upgrade.** When you push a
 new commit, current analyst workspaces continue running the older
-template. Analysts must explicitly re-run `agnes init --force` to pick
-up new content. This is intentional: silent workspace mutations under
-analysts' feet would be hostile UX.
+template. Analysts pick up new content by explicitly running
+**`agnes update-workspace`** (the safe, backup-aware path — see below),
+or `agnes init --force` for a full re-bootstrap. This is intentional:
+silent workspace mutations under analysts' feet would be hostile UX.
+
+## Updating an existing workspace (`agnes update-workspace`)
+
+`agnes init --force` is a *bootstrap* command: it requires an explicit
+`--server-url`, re-pulls all parquets, and overwrites template files in
+place with no backup. To **re-apply a newer template into a workspace an
+analyst has already been working in**, use `agnes update-workspace`
+instead — it is purpose-built to preserve their edits.
+
+```bash
+agnes update-workspace --dry-run   # preview: created / updated / backed-up
+agnes update-workspace             # warns, asks for YES, then applies
+```
+
+How it decides what to touch (a 3-way diff):
+
+| Situation                                              | Action                                                   |
+|--------------------------------------------------------|----------------------------------------------------------|
+| File in template, **not** on disk                      | **created**                                              |
+| On disk, identical to the new template                 | no-op                                                    |
+| On disk, **unchanged by the analyst** (matches baseline)| **updated** in place, no backup                          |
+| On disk, **changed by the analyst** (differs from baseline) | original copied to `<name>.bak.<timestamp>`, then **updated** |
+| On disk, **not in the template**                       | **preserved** (left untouched)                           |
+
+The "baseline" is the exact template zip Agnes last installed, stored
+per-workspace at **`.claude/agnes/installed-template.zip`** (an
+Agnes-reserved path — your template repo must not ship it). It's written
+on the first override `agnes init` and rewritten after every successful
+update, so the comparison always reflects "what the analyst started
+from". Workspaces initialised by an older CLI have no baseline; the first
+`agnes update-workspace` then conservatively backs up *every* changed
+file and establishes the baseline going forward.
+
+`agnes update-workspace` reads the server URL + PAT from the analyst's
+saved config (like `agnes pull`) and **does not re-pull parquets**. On an
+instance with **no Initial Workspace Template configured it is a clean
+no-op** (touches nothing, exits 0).
+
+### Shipping the slash command
+
+Agnes provides a canonical `/update-workspace` slash command body under
+`cli/templates/commands/update-workspace.md` (a thin wrapper that runs
+`--dry-run`, shows the plan, asks the analyst to confirm, then runs
+`--yes`). Because override mode hands `.claude/commands/` to your repo,
+Agnes does **not** auto-install it. To give analysts the slash command,
+copy that file into your template repo at
+`workspace/.claude/commands/update-workspace.md` (next to your
+`update-agnes-plugins.md` / `agnes-private.md`) and `Sync now`.
 
 ## PAT rotation
 
@@ -402,10 +451,15 @@ not flag these as regressions.
    was added). Override workspaces do NOT receive them automatically.
    Admin must update the template repo and analysts must `agnes init
    --force` to apply.
-2. **`--force` on override workspaces does NOT back up `CLAUDE.md`.**
-   No `CLAUDE.md.bak.<timestamp>` file is written. Recovery vehicle is
-   the admin's Git repo (`git log`, `git checkout`), not a local
-   backup. Not a regression of #164.
+2. **`agnes init --force` on override workspaces does NOT back up files.**
+   `init --force` is a full bootstrap (it also re-pulls parquets) and
+   overwrites template files in place without a local backup. For a
+   *safe* re-apply that preserves analyst edits, use
+   **`agnes update-workspace`** (see "Updating an existing workspace"
+   below) — it backs up changed files to `<name>.bak.<timestamp>`.
+   `init --force` itself is intentionally left blunt; recovery for it is
+   the admin's Git repo (`git log`, `git checkout`). Not a regression of
+   #164.
 3. **`.claude/CLAUDE.local.md` IS overwritten** when the admin's repo
    includes it. The default-mode "never overwrite CLAUDE.local.md"
    promise is a default-mode promise; override mode hands the file to
@@ -420,5 +474,7 @@ not flag these as regressions.
 For implementation details, see:
 - `app/api/initial_workspace.py` — admin + analyst endpoints
 - `src/initial_workspace.py` — clone/validate/zip
-- `cli/lib/initial_workspace.py` — probe/download/extract/confirm/report
+- `cli/lib/initial_workspace.py` — probe/download/extract/confirm/report + update orchestration (`preview_update`, `prompt_update_confirmation`, `apply_update`)
+- `cli/commands/update_workspace.py` — `agnes update-workspace` command
+- `src/initial_workspace.py` — baseline storage + `classify_workspace_update` / `update_workspace_from_template` (3-way diff engine)
 - `cli/lib/override.py` — single source of truth for override detection
