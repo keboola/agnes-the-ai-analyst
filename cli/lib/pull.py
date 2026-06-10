@@ -363,8 +363,7 @@ def run_pull(
         # data package dropped it from ``data_packages[]`` yet left its
         # parquet + DuckDB view locally queryable.
         #
-        # When the manifest carries the typed sections (same key-presence gate
-        # the v49 stack-sync block at the end of run_pull uses), the authorized
+        # When the manifest carries the query-table typed sections, the authorized
         # table-name set is the union of every typed entry's ``name`` field —
         # which equals the flat parquet stem == sync_state.table_id ==
         # registry name == _meta.table_name. We use that set both to (1) filter
@@ -379,12 +378,18 @@ def run_pull(
         # try/except returning [] on error, and StackResolver returns [] only
         # for a genuinely empty stack — so an empty typed set is never an error
         # signal that would wrongly nuke the local tree).
-        has_typed_sections = any(
-            k in manifest
-            for k in ("direct_tables", "data_packages", "memory_domains")
+        # Gate on the query-table typed sections only (``data_packages`` /
+        # ``direct_tables``) — NOT ``memory_domains``. Memory domains carry no
+        # query tables (no flat parquet), so a manifest that arrives with only
+        # ``memory_domains`` (a partial or hand-crafted delivery) must NOT build
+        # an empty authorized set and prune every local parquet. The end-of-run
+        # stack-sync gate keeps ``memory_domains`` (see below) — that path
+        # legitimately fires on memory domains alone.
+        has_query_table_sections = any(
+            k in manifest for k in ("direct_tables", "data_packages")
         )
         authorized_names: set[str] | None = None
-        if has_typed_sections:
+        if has_query_table_sections:
             authorized_names = set()
             for pkg in manifest.get("data_packages", []) or []:
                 for t in pkg.get("tables", []) or []:
@@ -592,9 +597,11 @@ def run_pull(
         # ``local_tables[stem]`` sync_state row. The unconditional view
         # rebuild in step 6 then drops the now-orphaned view automatically
         # (it DROPs all views, then recreates only from parquets still on
-        # disk). Remote/materialized tables have no flat parquet so they're
-        # untouched; user-created BASE TABLEs live in analytics.duckdb (not
-        # under server/parquet/) so they're never pruned. Done before
+        # disk). Remote tables have no flat parquet so they're untouched;
+        # materialized tables DO have a flat parquet and are pruned like any
+        # other table when they leave the stack (intended). User-created BASE
+        # TABLEs live in analytics.duckdb (not under server/parquet/) so they're
+        # never pruned. Done before
         # save_sync_state so the dropped rows persist, and before
         # _rebuild_duckdb_views so the orphaned views disappear.
         if authorized_names is not None and parquet_dir.exists():

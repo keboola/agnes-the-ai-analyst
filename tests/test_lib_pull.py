@@ -420,6 +420,33 @@ def test_run_pull_legacy_server_without_typed_sections_no_prune(
     assert result.tables_removed == 0
 
 
+def test_run_pull_memory_domains_only_manifest_does_not_prune(
+    tmp_path, monkeypatch,
+):
+    """#594 guard: a manifest carrying ONLY ``memory_domains`` (no
+    ``data_packages`` / ``direct_tables``) must NOT build an empty authorized
+    set and prune every local parquet. Memory domains carry no query tables, so
+    the prune path stays a no-op; the end-of-run stack-sync gate (which does
+    include memory_domains) is separate. Both an in-flat-dict table and an
+    on-disk orphan survive; tables_removed == 0."""
+    _seed_local_parquet(tmp_path, "tbl_existing", "tbl_orphan")
+    manifest = {
+        "tables": {"tbl_existing": {"hash": "h", "query_mode": "local"}},
+        "memory_domains": [{"slug": "d", "name": "domain1"}],
+        # deliberately NO data_packages / direct_tables
+    }
+    _patch_pull_io(monkeypatch, manifest)
+
+    result = run_pull(server_url="http://x", token="t", workspace=tmp_path)
+
+    pq_dir = tmp_path / "server" / "parquet"
+    assert (pq_dir / "tbl_existing.parquet").exists(), \
+        "memory_domains-only manifest must not prune a listed table"
+    assert (pq_dir / "tbl_orphan.parquet").exists(), \
+        "#594: memory_domains-only manifest must not prune an on-disk orphan"
+    assert result.tables_removed == 0
+
+
 def test_run_pull_prune_preserves_user_base_table(tmp_path, monkeypatch):
     """A user-created BASE TABLE in analytics.duckdb must survive a prune that
     unlinks an orphaned parquet; no error is recorded for the base table."""
