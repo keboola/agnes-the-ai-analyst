@@ -38,6 +38,18 @@ class _Unreachable:
 _UNREACHABLE = _Unreachable()
 
 
+class _Offline:
+    """Sentinel returned by _resolve_info when --force was NOT specified and
+    the server probe failed. Distinguishes 'couldn't check, take no opinion'
+    (exit 0, silent, don't touch failure counter) from 'CLI is current' —
+    so a transient network blip during the SessionStart hook does not reset
+    the consecutive-failure count an analyst has accumulated from real
+    install failures (Devin BUG_0001 on #601)."""
+
+
+_OFFLINE = _Offline()
+
+
 def _invalidate_update_cache() -> None:
     """Drop update_check.json so the next CLI invocation re-probes /cli/latest."""
     (_config_dir() / "update_check.json").unlink(missing_ok=True)
@@ -223,11 +235,12 @@ def _try_refresh_hooks(*, quiet: bool) -> None:
             sys.stderr.write(f"agnes self-upgrade: hook refresh failed: {exc}\n")
 
 
-def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, None]:
+def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, _Offline, None]:
     """Returns:
       UpdateInfo  — install this wheel
       _UNREACHABLE — --force specified, server probe failed
-      None        — nothing to do (current, or offline without --force)
+      _OFFLINE    — --force NOT specified, server probe failed (no opinion)
+      None        — CLI is genuinely current, nothing to do
     """
     # Always invalidate the cache — an explicit `agnes self-upgrade` is
     # the user asking "is there a newer version RIGHT NOW", not "use the
@@ -238,7 +251,7 @@ def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, None]:
     _invalidate_update_cache()
     info = check(get_server_url(), bypass_disabled=True)
     if info is None:
-        return _UNREACHABLE if force else None
+        return _UNREACHABLE if force else _OFFLINE
     if not info.download_url:
         return None
     if not force and not info.is_outdated():
@@ -327,10 +340,14 @@ def self_upgrade(
         info = _resolve_info(force)
 
         # --check-only is read-only intent — never exit non-zero on
-        # transport errors. If unreachable, treat as "can't tell, current"
-        # and exit 0 silently.
+        # transport errors. If unreachable or offline, treat as "can't
+        # tell, current" and exit 0 silently.
         if check_only:
-            if isinstance(info, _Unreachable) or info is None or not info.is_outdated():
+            if (
+                isinstance(info, (_Unreachable, _Offline))
+                or info is None
+                or not info.is_outdated()
+            ):
                 raise typer.Exit(0)
             typer.echo(format_outdated_notice(info), err=True)
             raise typer.Exit(1)
@@ -346,15 +363,29 @@ def self_upgrade(
             )
             raise typer.Exit(1)
 
+        if isinstance(info, _Offline):
+            # No --force, server unreachable: we have no opinion on
+            # whether an upgrade is needed. Do NOT touch the failure
+            # counter — a transient network blip (server restart, VPN
+            # drop) during the SessionStart hook would otherwise reset
+            # the consecutive-failure count that real install failures
+            # are accumulating, hiding the warning the feature exists
+            # to surface (Devin BUG_0001 on #601). Still attempt hook
+            # refresh (workspace layout may have shifted) and exit 0
+            # silently — quiet path is non-noisy by contract.
+            _try_refresh_hooks(quiet=quiet)
+            raise typer.Exit(0)
+
         if info is None:
-            # CLI already current (or offline without --force) — nothing to
-            # install, so the CLI is in a known-good state. Reset the
-            # failure counter. Still attempt hook refresh in case the
-            # workspace was initialized on an older CLI whose hook layout
-            # has since changed (e.g. v0.48 → v0.49 introduced the
-            # capture-session SessionStart entry). The refresh is a no-op
-            # for directories that don't look like Agnes workspaces, so
-            # an `agnes self-upgrade` invoked from ~/  won't write there.
+            # CLI already current — server responded, version matches,
+            # so the CLI is in a known-good state. Reset the failure
+            # counter. Still attempt hook refresh in case the workspace
+            # was initialized on an older CLI whose hook layout has
+            # since changed (e.g. v0.48 → v0.49 introduced the
+            # capture-session SessionStart entry). The refresh is a
+            # no-op for directories that don't look like Agnes
+            # workspaces, so an `agnes self-upgrade` invoked from ~/
+            # won't write there.
             record_outcome(success=True)
             _try_refresh_hooks(quiet=quiet)
             raise typer.Exit(0)

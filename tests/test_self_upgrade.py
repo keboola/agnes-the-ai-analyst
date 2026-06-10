@@ -207,6 +207,37 @@ def test_offline_without_force_is_silent():
         assert "self-upgrade:" not in result.stderr
 
 
+def test_offline_without_force_does_not_touch_failure_counter():
+    """Regression — Devin BUG_0001 on #601.
+
+    Server-unreachable without `--force` (the implicit SessionStart hook
+    path on a transient network blip) must NOT call `record_outcome(True)`
+    — that would reset the consecutive-failure count an analyst has
+    accumulated from real install failures, silently disarming the warning
+    this feature exists to surface. Likewise it must NOT call
+    `record_outcome(False)` — we have no opinion."""
+    with patch("cli.commands.self_upgrade.check", return_value=None), \
+         patch("cli.commands.self_upgrade._invalidate_update_cache"), \
+         patch("cli.commands.self_upgrade.record_outcome") as mock_record:
+        result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 0
+        mock_record.assert_not_called()
+
+
+def test_current_resets_failure_counter():
+    """Companion to the offline test: when the server responds *and* the
+    CLI is genuinely current, `record_outcome(True)` SHOULD fire — we have
+    confirmation the CLI is in a known-good state. Locks the distinction
+    the BUG_0001 fix introduces (_OFFLINE vs None)."""
+    with patch("cli.commands.self_upgrade.check", return_value=_current_info()), \
+         patch("cli.commands.self_upgrade._invalidate_update_cache"), \
+         patch("cli.commands.self_upgrade.record_outcome") as mock_record, \
+         patch("cli.commands.self_upgrade._try_refresh_hooks"):
+        result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 0
+        mock_record.assert_called_once_with(success=True)
+
+
 def test_self_upgrade_passes_bypass_disabled_to_check():
     """AGNES_NO_UPDATE_CHECK silences the implicit warning loop, but
     explicit `agnes self-upgrade` must NOT be a silent no-op when set."""
