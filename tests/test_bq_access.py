@@ -814,14 +814,15 @@ class TestApplyBqSessionSettings:
                 "SELECT current_setting('memory_limit')"
             ).fetchone()[0]
             # Normalized/banded assertion: '2GB' -> '1.8 GiB'. An exact
-            # string compare would false-fail.
-            assert "GiB" in after, after
-            assert float(after.split()[0]) <= 2.0, after
-
-            # The cap was actually applied: the post-apply value differs from
-            # the (much larger) default. On the rare host where the default
-            # already happens to be <= 2 GiB this still holds because the
-            # band assertion above pins the result regardless.
-            assert before != after, (before, after)
+            # string compare would false-fail. The band check (≤ 2 GiB) is
+            # what pins correctness — we deliberately don't assert
+            # `before != after` because on a host with ~2.5 GB RAM, DuckDB's
+            # 80%-of-RAM default rounds to the same 2 GB cap as the explicit
+            # SET, making the two values identical even though the SET ran
+            # (Devin Review on #591). `before` is captured purely for the
+            # diagnostic on the band assertion's failure message, not for
+            # change detection.
+            assert "GiB" in after, (before, after)
+            assert float(after.split()[0]) <= 2.0, (before, after)
         finally:
             conn.close()
