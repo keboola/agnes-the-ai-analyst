@@ -13,6 +13,7 @@ DuckDB 1.5.x limitations that affect the original plan design:
     → test_partial_unique_index_dedupes_slack_dm is skipped;
        uniqueness for slack_dm / slack_thread is enforced at the app layer.
 """
+
 import duckdb
 import pytest
 
@@ -20,8 +21,74 @@ from src.db import SCHEMA_VERSION, _ensure_schema
 
 
 # ---------------------------------------------------------------------------
+# v72 → v73 migration: sandbox pause/resume refs on chat_sessions
+# ---------------------------------------------------------------------------
+
+
+def _make_v72_db(tmp_path) -> duckdb.DuckDBPyConnection:
+    """Return a file-backed DuckDB connection at schema version 72.
+
+    Builds the minimal set of tables that ``_ensure_schema`` expects to
+    find on an upgrade path (schema_version + chat_sessions with all
+    columns present in v72 but without the three v73 sandbox columns).
+    """
+    conn = duckdb.connect(str(tmp_path / "system.duckdb"))
+    conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (72)")
+    conn.execute("""
+        CREATE TABLE chat_sessions (
+            id               VARCHAR PRIMARY KEY,
+            user_email       VARCHAR NOT NULL,
+            surface          VARCHAR NOT NULL,
+            slack_channel_id VARCHAR,
+            slack_thread_ts  VARCHAR,
+            title            VARCHAR,
+            started_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_message_at  TIMESTAMP,
+            message_count    INTEGER NOT NULL DEFAULT 0,
+            archived         BOOLEAN NOT NULL DEFAULT FALSE,
+            is_co_session    BOOLEAN NOT NULL DEFAULT FALSE,
+            ephemeral        BOOLEAN NOT NULL DEFAULT FALSE
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE chat_messages (
+            id          VARCHAR PRIMARY KEY,
+            session_id  VARCHAR NOT NULL REFERENCES chat_sessions(id),
+            role        VARCHAR NOT NULL,
+            content     TEXT NOT NULL,
+            tool_calls  JSON,
+            tokens_in   INTEGER,
+            tokens_out  INTEGER,
+            model       VARCHAR,
+            sender_email VARCHAR,
+            created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    return conn
+
+
+def test_v73_adds_sandbox_ref_columns(tmp_path):
+    """A v72 DB migrated to current schema has the three sandbox columns."""
+    conn = _make_v72_db(tmp_path)
+    _ensure_schema(conn)
+    cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name='chat_sessions'"
+        ).fetchall()
+    }
+    assert {"sandbox_id", "runner_pid", "sandbox_paused_at"} <= cols
+    # regression: the new columns must not be indexed (DuckDB 1.5.3 FK+index bug)
+    idx = conn.execute("SELECT sql FROM duckdb_indexes() WHERE table_name='chat_sessions'").fetchall()
+    assert not any("sandbox" in (r[0] or "") for r in idx)
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
 
 def _fresh_conn():
     """Return a migrated in-memory DuckDB connection."""
@@ -34,6 +101,7 @@ def _fresh_conn():
 # Test 1: tables + columns exist after migration
 # ---------------------------------------------------------------------------
 
+
 def test_migration_creates_chat_tables():
     conn = _fresh_conn()
 
@@ -45,8 +113,16 @@ def test_migration_creates_chat_tables():
     # PRAGMA table_info returns (cid, name, type, notnull, dflt_value, pk)
     cols = {row[1] for row in conn.execute("PRAGMA table_info(chat_sessions)").fetchall()}
     assert {
-        "id", "user_email", "surface", "slack_channel_id", "slack_thread_ts",
-        "title", "started_at", "last_message_at", "message_count", "archived",
+        "id",
+        "user_email",
+        "surface",
+        "slack_channel_id",
+        "slack_thread_ts",
+        "title",
+        "started_at",
+        "last_message_at",
+        "message_count",
+        "archived",
     }.issubset(cols)
 
     # Chat tables landed in the v67→v68 migration (renumbered from the
@@ -60,6 +136,7 @@ def test_migration_creates_chat_tables():
 # (DuckDB 1.5.x does not support partial/filtered unique indexes — this test
 #  is skipped; the constraint is enforced at the app layer in ChatRepository.)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.skip(
     reason=(
@@ -95,6 +172,7 @@ def test_partial_unique_index_dedupes_slack_dm():
 # Test 3: multiple web sessions for the same user are allowed
 # ---------------------------------------------------------------------------
 
+
 def test_partial_unique_allows_multiple_web():
     conn = _fresh_conn()
 
@@ -118,6 +196,7 @@ def test_partial_unique_allows_multiple_web():
 #  first, and GDPR hard-delete will follow the same pattern.
 #  Re-enable when DuckDB gains CASCADE support.)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.skip(
     reason=(
