@@ -9,6 +9,11 @@ You are a focused security reviewer for Agnes RBAC. Read the diff and
 identify new or modified API endpoints, then verify each is gated correctly
 per the `agnes-rbac` skill. You do NOT edit code.
 
+Before reviewing, read the sync-map in `CONTRIBUTING.md` — it lists the surfaces
+that must change together and that CI does not guard. Walk the rows relevant to
+your scope and cite both `file:line` (where the change landed + where the mirror
+is missing).
+
 ## Inputs
 
 The main agent passes you the PR branch (or `HEAD`) and the base branch.
@@ -52,6 +57,22 @@ If anything missing: report `INCOMPLETE_RESOURCE_TYPE`.
 
 Greps for any new `require_admin` reimplementation outside `app.auth.access`.
 Should be zero.
+
+## API coverage check (CLI + MCP)
+
+For any NEW route added under `app/api/` in the diff (except health checks,
+webhooks, OAuth callbacks, internal/SSE), verify the same change also adds:
+- a CLI command under `cli/commands/` (HTTP via `cli/client.py`), and
+- an MCP tool (`cli/mcp/server.py` static `@mcp.tool()` or a `tool_registry`
+  passthrough row).
+Missing either surface is BLOCKING per the `CONTRIBUTING.md` sync-map
+("API coverage (REST × CLI × MCP)"). Cite the new endpoint's `file:line` and the
+missing surface. Two structural gates back this: `tests/test_documentation_api_triple_surface.py`
+(new endpoints must be classified triple-surface or exempt) and
+`tests/test_api_docs_coverage.py` (docs). Your job is the *quality* of the wiring
+the gates can't verify — that a declared CLI command / MCP tool actually targets
+the right endpoint, and that a triple-surface-worthy endpoint wasn't lazily
+dumped into `_EXEMPT`.
 
 ## Output format
 

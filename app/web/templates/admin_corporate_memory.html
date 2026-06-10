@@ -300,8 +300,8 @@
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.4px;
-            background: rgba(46, 168, 119, 0.12);
-            color: #0056A3;
+            background: color-mix(in srgb, var(--ds-primary) 12%, transparent);
+            color: var(--ds-primary-dark);
         }
         .badge--category { background: rgba(124, 58, 237, 0.14); color: #6d28d9; }
         .badge--source   { background: rgba(16, 183, 127, 0.14); color: #0e9b6a; }
@@ -356,8 +356,8 @@
             width: 22px;
             height: 22px;
             border-radius: 50%;
-            background: rgba(46, 168, 119, 0.18);
-            color: #0056A3;
+            background: color-mix(in srgb, var(--ds-primary) 18%, transparent);
+            color: var(--ds-primary-dark);
             font-size: 10px;
             font-weight: 600;
             display: inline-flex;
@@ -894,7 +894,7 @@
         }
         .tag-input-widget:focus-within {
             border-color: var(--ds-primary);
-            box-shadow: 0 0 0 2px rgba(46, 168, 119, 0.15);
+            box-shadow: 0 0 0 2px color-mix(in srgb, var(--ds-primary) 15%, transparent);
         }
         .tag-input-widget .tag-pill {
             display: inline-flex; align-items: center; gap: 4px;

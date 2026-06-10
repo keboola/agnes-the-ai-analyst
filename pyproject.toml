@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.67.1"
+version = "0.70.4"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -72,7 +72,11 @@ dependencies = [
     # microVM (`AsyncSandbox`); `app/chat/e2b_provider.py` adapts the SDK's
     # background-command + filesystem APIs to our `SandboxProvider`
     # Protocol. See `docs/cloud-chat.md` for operator setup.
-    "e2b>=1.0.0,<3.0.0",
+    # 2.0+ floor: the cloud chat runner relies on the `stdin=True` parameter
+    # on `sandbox.commands.run()` which was added in 2.0. On SDK 1.x the
+    # kwarg raises TypeError and every chat session stalls without an answer
+    # (Devin Review on #585).
+    "e2b>=2.0.0,<3.0.0",
     # Per-IP rate limiting on auth endpoints (#45). In-process counters by
     # default — fine for single-replica deploys. Multi-replica rollouts can
     # swap the storage backend via slowapi's `storage_uri` (Redis, Memcached).
@@ -173,6 +177,11 @@ slack-socket = [
     # deployments need not install it. A missing import is a fail-closed
     # gate at lifespan init (logs + disables Slack, never a dead WS).
     "slack_sdk>=3.27",
+    # slack_sdk's SocketModeClient (the aiohttp variant imported in
+    # services/slack_bot/socket_mode_client.py) needs aiohttp at runtime;
+    # slack_sdk does NOT pull it in, so Socket Mode fail-closed with
+    # `ModuleNotFoundError: No module named 'aiohttp'` until it is declared here.
+    "aiohttp>=3.9",
 ]
 dev = [
     "pytest>=9.0.0",

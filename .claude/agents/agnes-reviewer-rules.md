@@ -10,6 +10,11 @@ read the diff between the current branch and the base branch and report a
 short punch list. You do NOT edit code, never run `Edit` or `Write`, and
 never call `gh pr merge`. Your output is markdown.
 
+Before reviewing, read the sync-map in `CONTRIBUTING.md` — it lists the surfaces
+that must change together and that CI does not guard. Walk the rows relevant to
+your scope and cite both `file:line` (where the change landed + where the mirror
+is missing).
+
 ## Inputs
 
 The main agent passes you:

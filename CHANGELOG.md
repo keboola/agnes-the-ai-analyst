@@ -22,6 +22,166 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 - **`DEBUG=0` can now override the `LOCAL_DEV_MODE` debug-toolbar default.** `LOCAL_DEV_MODE` still implies `DEBUG` (so dev gets the toolbar without setting both), but an explicit `DEBUG` env now wins either way — set `DEBUG=0` to run an auth-bypassed local-dev instance *without* the debug toolbar, whose per-request instrumentation (it also profiles the compose healthcheck) can saturate the event loop and peg CPU on heavy HTML pages. `docker-compose.local-dev.yml` sets `DEBUG=0` by default for a snappy UI preview; set it to `1` to get the toolbar back.
 
+## [0.70.4] — 2026-06-09
+
+### Fixed
+- **Bounded process memory on data-source-heavy instances (no more allocator-driven OOM crash-loops).** On instances serving BigQuery/DuckDB query traffic, anonymous (heap) memory grew without bound until the container hit its `mem_limit` and the cgroup OOM-killed the server — raising `mem_limit` only deferred the kill. Root cause was *allocator retention*, not a code leak: glibc's default per-CPU malloc arenas hold freed memory and never return it to the OS, and on a host with Transparent Huge Pages = `always` each retained region is backed by a 2 MiB huge page, so RSS ratchets up to the largest concurrent native working set (Arrow/DuckDB buffers) and stays there. Two complementary mitigations: the container image now sets `MALLOC_ARENA_MAX=2` + `MALLOC_TRIM_THRESHOLD_=131072` (Dockerfile), and the `customer-instance` provisioning module sets host THP to `madvise` (startup script, re-applied every boot). Heap was confirmed flat under churn (no Python/object leak); the fix is allocator-level. Negligible CPU impact for this I/O-bound workload. (#583)
+
+### Internal
+- `app/chat/e2b_workspace_sync._iter_files` now sorts subdirs and filenames so workspace uploads visit files in a deterministic, cross-platform order (was filesystem-dependent: lexical on macOS, inode order on Linux). Caused a `test_workspace_too_large_carries_byte_count` CI flake; surfaced while CI'ing #583. (#583)
+
+## [0.70.3] — 2026-06-09
+
+### Fixed
+- **Cloud chat: every chat turn stalled without an answer on E2B SDK 2.x.** `app/chat/e2b_provider.py` calls `sandbox.commands.run()` to spawn the agent runner, then streams the user's prompt via `commands.send_stdin()`. E2B SDK 2.x gates interactive stdin behind a new `stdin=True` flag on `run()` — without it the runner gets EOF and exits, and every subsequent `send_stdin()` fails with `SandboxException: Code.internal: error writing to stdin: stdin not enabled or closed`. The "agent never responds after Slack binding" symptom seen during live E2E testing turned out to be this — not a Slack/auth issue. Both web `/chat` and Slack bound-DM sessions are affected; SDK 1.x deployments are not (the kwarg didn't exist there) but the floor is raised to `e2b>=2.0.0` so a downstream resolver can't silently land on 1.x and break with `TypeError` instead (Devin Review on #585). (#585)
+
+## [0.70.2] — 2026-06-09
+
+### Added
+- A **Light / Dark / System** theme switcher in the user (avatar) menu. Agnes already shipped a dark palette and an OS-aware `auto` mode, but only operators could select it via `instance.yaml` — this adds a per-user, in-app control. The choice persists per-browser (`localStorage`), overrides the instance default and the OS setting, and is applied before first paint so there's no flash on reload. **System** tracks the OS `prefers-color-scheme` live. Pages with legacy hardcoded colors may still need per-page dark touch-ups (the dark palette is documented as a work-in-progress). (#581)
+
+## [0.70.1] — 2026-06-09
+
+### Fixed
+- **Postgres: catalog table-page renders `platforms` / `gotchas` lists correctly again.** `TableRegistryPgRepository._decode_row` was returning the raw `json.dumps()`'d TEXT for `platforms` and `gotchas` (only the JSONB `sample_questions` / `pairs_well_with` arrived pre-decoded), so the catalog UI iterated the JSON string character-by-character (`[ · " · w · e · b · " · , ...]`) and the gotchas section showed a long run of empty rows before the text. JSON-decoded on read now. DuckDB-backed instances were unaffected. Also closes the latent parity gap flagged in Devin Review (ANALYSIS_0001): all four list-shaped docs fields (`platforms`, `gotchas`, `sample_questions`, `pairs_well_with`) now normalize `None` / empty-string / parse-failure / non-list-parsed-value to `[]`, matching the DuckDB backend byte-for-byte — current consumers were safe via `or []` guards, but the first consumer without one would have hit cross-backend behaviour drift. Locked by 6 parity tests. (#582)
+
+## [0.70.0] — 2026-06-09
+
+### Added
+- **Adoption dashboard (`/admin/adoption`).** A business-facing view of how the system is actually used — distinct from the technical telemetry/sessions/activity pages. Top KPI cards (active users, time spent active + wall-clock, sessions, skill usage, tokens, prompts) over a 24h/7d/30d window toggle; a 30-day daily-trend chart section (inline SVG, one small-multiple per metric); a top-skills table; and a "users by activity" list (top 10 by active time, searchable) that links to a per-user drill-down at `/admin/adoption/users/{id}` with that user's KPIs, daily trends, and top skills/tools. Backed by new `/api/admin/adoption/*` endpoints aggregating `usage_session_summary` (time/sessions/tokens/prompts via `active_seconds`/`wall_seconds`, already computed by the session processor) and `usage_events` (distinct-users-per-day, skill events) on the fly — no new tables or data collection. Admin-only, audit-logged. (FAI-32, #579)
+
+## [0.69.1] — 2026-06-09
+
+### Fixed
+- The `[slack-socket]` extra now also installs `aiohttp` (`slack_sdk`'s `SocketModeClient` uses the aiohttp transport at `services/slack_bot/socket_mode_client.py`, but `slack_sdk` does not depend on `aiohttp` itself). Without it, a `chat.slack.transport: socket` deployment still fail-closed at startup with `ModuleNotFoundError: No module named 'aiohttp'` even after the image bundled `slack_sdk` (#576). Follow-up to #576; HTTP transport unaffected. Found during live Socket Mode E2E testing.
+
+## [0.69.0] — 2026-06-08
+
+### Added
+
+- Dev-agent kit: a Claude Code dev-agent kit under `.claude/` — `/agnes-review` scope-gated review team (rules / architecture / rbac / parity + consolidator), `agnes-builder` + `agnes-conventions` (five code-verified playbooks), `/agnes-build` parallel build team (`agnes-decomposer` + `agnes-integrator`), a `CONTRIBUTING.md` change-safety sync-map, and a PostToolUse ruff/mypy quality hook (`scripts/post-edit-quality.sh`). A router table in `CLAUDE.md` indexes it.
+- API coverage: the `/api/* → CLI + MCP` triple-surface check (`tests/test_documentation_api_triple_surface.py`) is now a ratchet — a new endpoint must be classified triple-surface (`_COHORT`) or consciously REST-only (`_EXEMPT`); existing endpoints are grandfathered (`tests/api_triple_surface_grandfathered.txt`). Complements the docs-coverage gate from #565.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.68.12] — 2026-06-08
+
+### Fixed
+- The server Docker image now bundles `slack_sdk` (the `[slack-socket]` extra is added to the `uv pip install` line in the Dockerfile), so the optional Slack **Socket Mode** inbound transport works out-of-the-box. Previously the extra was documented but never installed in the image, so a `chat.slack.transport: socket` / `SLACK_TRANSPORT=socket` deployment fail-closed at startup (logged + Slack left disabled) on the stock image — Socket Mode effectively required a custom build. HTTP transport (the default) is unaffected and the `slack_sdk` import stays lazy, so HTTP-only deployments pay nothing at runtime. (#576)
+
+## [0.68.11] — 2026-06-08
+
+### Added
+- Admin Tables: a **Test connection** button in the Keboola register & edit modals that verifies the instance's Keboola Storage API token/stack (lists buckets) and reports the result inline — previously this probe was only available on the Instance settings page. Both modals clear any stale result on reopen so a previously-passed badge isn't shown on a freshly-reset form. (#402, #575)
+
+## [0.68.10] — 2026-06-08
+
+### Changed
+- Admin Tables: on non-Keboola instances, the Keboola **Discover** / **List tables** / **Use table as base** buttons in the register & edit modals now render disabled with an explanatory tooltip (*"Keboola not connected — set token in Instance settings"*) instead of being hidden — the inputs were already shown, so the buttons were silently vanishing with no explanation. The disabled buttons carry no click handler, so they still can't reach the instance-type-routed discover endpoint. (#405, #574)
+
+## [0.68.9] — 2026-06-08
+
+### Changed
+- Tokenized hardcoded font-sizes in `style-custom.css` to the `--text-*` scale — 27 value-preserving swaps (`0.875rem`→`var(--text-base)`, `0.75rem`→`var(--text-sm)`, `1rem`→`var(--text-md)`, `1.5rem`→`var(--text-xl)`; each token equals the literal it replaces at the 16px root, so rendering is unchanged). Addresses the font-size half of #400 (the absorbed-`style.css` legacy section); the neutral-color half is already handled by the legacy `--text`/`--border` token aliases, and the remaining hardcoded colors there are intentional semantic tints (alert states) / a dark code block. Sizes with no exact token (13px `0.8125rem`, 22px `1.375rem`, …) are left as-is — rounding them to the nearest token would change rendering, so they're better standardised per-component. (#400, #572)
+
+## [0.68.8] — 2026-06-08
+
+### Fixed
+- Cleaned up half-rebranded UI spots where a brand-green element still used the old pre-rebrand blue `#0056A3` (the legacy `--primary-dark`), now `var(--ds-primary-dark)`: the `marketplace_plugin_detail` hero gradient (was green→blue, now green→green-dark), the `news_editor` primary-button hover, and the green-tinted status/type badges in `memory_domain_detail`, `admin_corporate_memory`, `catalog_package_detail` (`.qm-remote`), and `marketplace.css` (`.type-badge[data-type=plugin]`) — were green bg + blue text, now green-on-green (the LOCAL/REMOTE/MATERIALIZED + PLUGIN/SKILL/AGENT labels carry the distinction). Left untouched: the legacy `--primary` blue palette (internally consistent; a separate migration). (#497, #571)
+
+## [0.68.7] — 2026-06-08
+
+### Fixed
+- **Dark mode: form controls and their surfaces no longer render white.** Two parts. (1) `color-scheme: light`/`dark` is now set on the theme roots (`design-tokens.css`) so browser-default inputs/selects/textareas + scrollbars adopt the dark UA palette instead of staying white. (2) The hardcoded-white form surfaces that `color-scheme` can't reach are tokenized to `var(--ds-surface)`/`var(--ds-border)`/`var(--ds-text-*)`: the search/filter inputs on `admin_sync`/`admin_groups`/`admin_mcp_sources`/`admin_access`, the `store_upload` fields + type-tiles + drop-zone, the `news_editor` panels/textareas/preview/labels (it was a fully hardcoded-light admin page), the `catalog` hero search-row, and the JS-built `chip-input` component (container + dropdown). The `marketplace` page was light-locked via a full light palette scoped to `.mp-page` (`--surface`/`--text-primary`/`--text-secondary`/`--border-light` pinned to fixed values) — those now flip to the design-system tokens, plus its hero search-row. Verified across ~28 routes with an in-browser crawler: every previously-white form surface now flips light↔dark, and light mode is unchanged. Complements the edit-group modal fix (#560). Part of #497 §8/§9. (#497, #563)
+
+## [0.68.6] — 2026-06-08
+
+### Fixed
+- **Edit-group modal now flips in dark mode.** `admin_group_detail`'s edit modal hardcoded a white card (`background: #fff`) with `#e5e7eb`-bordered inputs, so it stayed a white island in the dark theme. It now adopts the canonical global `.modal-card` — whose token-driven rules (`var(--surface)`/`var(--text-primary)`/`var(--border)`) style the card plus its labels and inputs — and the description field uses the `.form-textarea` canonical. Light mode is unchanged (`--ds-surface` resolves to `#ffffff`, the prior literal); dark mode flips the card, inputs, and labels together. Part of the #497 §8 form-input audit. (#497, #560)
+
+## [0.68.5] — 2026-06-08
+
+### Changed
+- Tokenized the remaining hardcoded brand-green tints in templates: 30 `rgba(46, 168, 119, α)` literals across 10 templates (`store_upload`, `_profile_tokens`, `admin_tokens`, `admin_corporate_memory`, `install`, `marketplace_plugin_detail`, `memory_domain_detail`, `catalog_package_detail`, `home_onboarded`, `admin_tables`) → `color-mix(in srgb, var(--ds-primary) X%, transparent)`, so the tints follow the operator's brand color (e.g. they go blue under the blue theme) instead of staying green. Finishes #510's hex sweep, which only covered the 6 CSS files; visually identical under the default (green) theme. Also fixes an adjacent rebrand leftover flagged in review — `.hero-action-btn:hover` hardcoded the old pre-rebrand blue `#0056A3` (`--primary-dark`) → `var(--ds-primary-dark)`, so the hover darkens on-brand instead of jumping to blue. (#497 §5, #570)
+
+## [0.68.4] — 2026-06-08
+
+### Changed
+- `/admin/server-config`: bespoke `.danger-pill` / `.secret-pill` badges now use the canonical `.badge` / `.badge--danger` / `.badge--success` classes (token-based, so they flip correctly in dark mode), and the page's duplicated `.modal-*` CSS was dropped in favor of the global design-system modal styles (page-specific `.diff-*` kept). (#497, #549)
+
+## [0.68.3] — 2026-06-07
+
+### Fixed
+- **Windows: `agnes refresh-marketplace` (both `--bootstrap` and the default refresh) crashed with `FileNotFoundError [WinError 2]`.** Every `claude` subprocess call passed the bare command name, but Windows `CreateProcess` doesn't apply `PATHEXT` to a bare name, and the npm-installed `claude` shim (`.cmd`/`.bat`) can't be launched directly even via its fully-resolved path — it must be routed through `cmd.exe`. A new `_claude_base_cmd()` helper now resolves the executable via `shutil.which`, wraps a `.cmd`/`.bat` shim in `cmd /c` on Windows, and every claude invocation site splats its result; when `claude` isn't installed the helper returns `None` and each caller falls back to its existing claude-missing behavior. (#568)
+
+## [0.68.2] — 2026-06-07
+
+### Fixed
+- **Postgres: flea-market LLM security reviews are now backend-agnostic.** `run_llm_review` (the background task that reviews a submitted plugin/skill/agent) was hardcoded to DuckDB (`conn_factory=get_system_db`): on a Postgres-backed instance it looked the submission up in an empty DuckDB, logged "submission vanished", and returned with no verdict — leaving **every** submission stuck at `pending_llm` ("Under review") forever, regardless of whether the LLM provider key was set. DuckDB-backed instances were unaffected. It now resolves `store_submissions` / `store_entities` / `audit` through the `src.repositories` factory (the same `use_pg()` switch the rest of the app uses), so it follows the configured backend (the `conn_factory` argument is retained for call-site/test compatibility but no longer used). Same root cause as the stuck-review reaper fix in v0.67.2; covered by a cross-engine contract test. (#567)
+
+## [0.68.1] — 2026-06-06
+
+### Fixed
+- **Setup page no longer serves a stale install script after a redeploy.** Server-rendered HTML responses now carry `Cache-Control: no-store`, so browsers re-render `/home`, `/setup`, and `/install` against the live build on every load. Previously the page had no cache directive: a browser-cached setup hero kept handing out the wheel filename baked in at its original render time, and after a redeploy that version-pinned `/cli/wheel/{name}` URL 404s (the new build replaced the wheel on disk), breaking a fresh install end-to-end. Scoped to `text/html` — JSON APIs and the immutable-cached static / marketplace-image assets are untouched. (#569)
+
+## [0.68.0] — 2026-06-05
+
+### Added
+- **Per-plugin Cowork export + Cowork download UI.** Plugins can now be downloaded individually as Claude Cowork-uploadable zips. New `GET /marketplace/cowork/{prefixed_name}.zip` (same PAT/cookie auth and RBAC filtering as `marketplace.zip`) repackages a single plugin into the shape Cowork's stricter validator accepts — matched against a known-good reference upload. It keeps all plugin content (`data/`, `scripts/`, `vendor/`, `global-rules/`, `CLAUDE.md`, `settings.json`, agent `tools:`) and only: puts the plugin at the zip root (no `marketplace.json` wrapper); coerces `plugin.json` to a semver `version` + required `author` + dropped `homepage`; whitelists SKILL.md frontmatter to `name`/`description`/`compatibility` (drops Claude-Code-only `argument-hint`/`user-invocable`) with `<`/`>`/`"` sanitized out of descriptions; concatenates the per-directory `.md` files under `data/` into `_all.md` (keeps every byte while staying under Cowork's 5000-file cap — a docs/Confluence dump can be tens of thousands of files); renames Next.js route path segments (`[x]`→`dyn-x`, `(y)`→`grp-y`); and strips `.DS_Store` + Agnes-only paths. `/me/cowork` describes both Cowork flows — the bundled project (skills + live MCP data, scoped to one project folder) and per-plugin packages (uploaded via Customize, skills work across all Cowork projects) — and hosts the per-plugin download list; each marketplace plugin detail page also gains a "Download for Cowork" button. New module `app/marketplace_server/cowork_packager.py`. (#488)
+- **In-app API documentation, three surfaces.** A curated API Reference guide (`docs/api-reference.md`) is now reachable from three surfaces in lockstep, so a public endpoint is documented everywhere an analyst or agent might reach for: (a) web — `/documentation/api` (login-gated, no admin requirement; Documentation group in the Admin nav links the guide alongside Swagger UI and ReDoc); (b) CLI — `agnes docs api` renders the same guide in the terminal via Rich's Markdown formatter; (c) MCP — `documentation_api` tool on the HTTP MCP server returns the raw Markdown so Claude Desktop / Cursor / Cline can look up the REST surface without leaving the chat. Single source of truth (`docs/api-reference.md`), Markdown rendered or echoed at each surface — adds the triple-surface policy floor for future endpoints (see `tests/test_documentation_api_triple_surface.py`). (#565)
+- **CI gate: public API endpoint coverage.** A new test (`tests/test_api_docs_coverage.py`) requires every public `/api/*` route in the FastAPI app to be listed in `docs/api-reference.md`; CI fails when a new endpoint ships without a matching entry in the guide, preventing silent documentation drift. The match is token-bounded — `/api/health` does NOT count as documenting `/api/health/detailed` (a separate admin diagnostics endpoint), closing the substring-overlap false-pass flagged in Devin Review on #565 (BUG_0001). (#565)
+- **Admin menu highlights on `/documentation` pages.** The Admin nav trigger now shows the active state when the user is anywhere under `/documentation`, consistent with the existing `/admin/*` highlight behaviour. (#565)
+
+## [0.67.6] — 2026-06-05
+
+### Fixed
+- **Keboola discovery now opens the suggestions dropdown.** After clicking Discover (buckets) or List tables in the register or edit Keboola-table modal, the freshly populated `<datalist>` opens its native suggestion popup automatically — the associated input is focused and an `input` event dispatched — so the loaded buckets/tables are visible without a second click into the field. No-op when discovery returns nothing; degrades gracefully on browsers that ignore the nudge (the populated datalist + success toast are unchanged). (#556, #561)
+
+## [0.67.5] — 2026-06-05
+
+### Internal
+- Anti-regression guard in `tests/test_design_system_contract.py`: page-level
+  templates must `{% extends %}` a design-system base, not ship their own
+  `<html>`/`<head>`/`<body>` scaffold. Closes the one unimplemented item from
+  the standalone→`base_ds` migration plan (#284/#481/#482) — the migration
+  itself landed, but the contract test meant to lock it in never did, so
+  nothing stopped a future page from re-introducing the dead-Admin-dropdown
+  class of bug (shared infra like `app.js`/theme/nav lived only in the base).
+  `admin_chat.html` is the lone known standalone left, tolerated via an
+  explicit `_STANDALONE_ALLOWLIST`; a companion test fails if an allowlist
+  entry goes stale (page migrated or removed) so the list can't silently rot. (#551)
+
+## [0.67.4] — 2026-06-05
+
+### Fixed
+- **Postgres: admins can grant data tables to analysts again.** `POST /api/admin/data-packages/{id}/tables` resolved the table via `TableRegistryRepository(conn)` on the always-DuckDB `_get_db` connection, so on a Postgres-backed deployment it never found tables that live in PG and returned `404 table_not_found` for tables that are present in `/api/v2/catalog` — analysts could not be granted any data package. The lookup now goes through the backend-aware `table_registry_repo()` factory. (#562)
+- **Postgres: deleting a group that carries grants no longer 500s.** `DELETE /api/admin/groups/{id}` cascaded members + grants via raw `conn.execute(...)` (DuckDB) before `repo.delete()` (Postgres), so on a Postgres deployment the children were never removed and the parent delete hit a `resource_grants.group_id` foreign-key violation. The cascade now routes through the `user_group_members_repo()` / `resource_grants_repo()` factories, matching the parent delete's backend. (#562)
+
+### Internal
+- Cross-backend parity regression test (`tests/db_pg/test_parity_data_packages_groups.py`) driving the data-package table-attach and group-delete endpoints on both DuckDB and Postgres; retired the now-fixed `TableRegistryRepository` entry for `app/api/data_packages.py` from the backend-split direct-instantiation allow-list. (#562)
+
+## [0.67.3] — 2026-06-05
+
+### Internal
+- Planning docs for the ORM-on-state migration land under `docs/planning/`: an inventory of every raw-SQL callsite (`agnes-orm-rawsql-audit.md` + per-subsystem inventories for `app`, `src`, `cli/conn/svc`), a phased migration plan (`orm-state-migration.md`), and three rounds of Codex adversary review (`orm-migration-adversary-review.md` → v2 → v3) that progressively patched factual errors and tightened the cut/rollback plan. No code change — pure planning artifact, locks the scope before any callsite is touched. (#555)
+
+## [0.67.2] — 2026-06-05
+
+### Changed
+- **PG debug-toolbar panel now captures data-XHR queries.** v0.67.1 pinned the toolbar to document navigations to stop background polls (`/api/version`, `/api/health`, …) from wiping the panel — but that also hid the queries from data XHRs like `/api/marketplace/items` and `/api/store/entities`, which is exactly what an operator wants to inspect. The skip list is now narrow (a handful of named pollers) and everything else — document navigations AND data XHRs — is instrumented. `/api/health` is exact-match so the separate authenticated admin diagnostics endpoint `/api/health/detailed` stays observable. (#559)
+
+### Added
+- **`agnes.db.postgres` per-statement query log (DEBUG-gated).** New stdlib logger emits one line per Postgres statement (op, table, ms, params, errors) for every request — including async/threadpool paths the toolbar can't pin to. Silent in prod (gated on `DEBUG=1` / `LOCAL_DEV_MODE=1`). Pairs with the toolbar's PG panel for comprehensive, request-independent capture. (#559)
+
+### Fixed
+- The stuck-review reaper now works on Postgres-backed instances. It was DuckDB-only: `POST /api/admin/run-reap-stuck-reviews` injected a DuckDB connection and the reaper ran raw DuckDB SQL against it, so on a Postgres deployment it queried an empty local DuckDB, found nothing, and returned `200 reaped=0` every 15 minutes while real `pending_llm` submissions sat in Postgres forever. A flea-market submission whose LLM review never completed (e.g. the LLM provider key was unset when it was uploaded, so no review was scheduled) would then show "Under review" indefinitely instead of flipping to `review_error` with a Retry button. The flip SQL now lives on the repositories (`reap_stuck_pending_llm` on both the DuckDB and Postgres `store_submissions` repos) and the reaper resolves the repo from the factory, so it flips rows on whichever backend holds them. Covered by a cross-engine contract test. (#558)
+
 ## [0.67.1] — 2026-06-05
 
 ### Added
@@ -1297,6 +1457,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Dual-backend: `mcp_sources_pg.py`, `tool_registry_pg.py`, `setup_tokens_pg.py` — Postgres counterparts for all three new v63-v67 repositories; factory functions registered in `src/repositories/__init__.py`. `DataPackagesPgRepository` extended with `add_tool`, `remove_tool`, `list_tools` to match the DuckDB sibling.
 - SQLAlchemy models (`src/models/mcp.py`) and Alembic migration `0014_cowork_mcp_v63_v67` covering all v63–v67 tables: `setup_tokens`, `mcp_sources`, `tool_registry`, `tool_grants`, `mcp_secrets`, `mcp_user_secrets`, `data_package_tools`.
 - `scripts/migrate_duckdb_to_pg/_PK_COLUMNS` extended with non-`id` PKs for v63–v67 tables (`tool_registry`, `tool_grants`, `mcp_secrets`, `mcp_user_secrets`, `data_package_tools`) — fixes `SELECT id FROM mcp_secrets` `UndefinedColumn` in migrator tests.
+
+### Fixed
+- **Cowork zip cache correctness.** The per-plugin Cowork zip cache is now keyed by `(prefixed_name, version)` instead of `prefixed_name` alone — per-user store bundles (e.g. `flea`) share one `prefixed_name` but differ in content, so the old key could serve one user's bundle to another on a TTL hit. The cache is also now invalidated on store/marketplace entity create/update/archive (not only on nightly sync), so edited plugin content stops being served stale within the 300 s TTL.
+- **Cowork zip arcname dedup keeps skills valid.** Arcname collisions (two source dirs sanitizing to one path, e.g. `[id]/` and `dyn-id/`) now resolve at the directory level (`skills/dyn-id` → `skills/dyn-id-1`) instead of renaming the file, so a colliding `SKILL.md` is never turned into `SKILL-1.md` (which would make Cowork stop recognising the skill). The root-level filename fallback now splits on the filename only, so a dot in a parent directory can no longer corrupt the path. A missing per-file size guard in the store-bundle branch was added to match the on-disk-plugin branch.
 
 ## [0.57.2] — 2026-06-01
 

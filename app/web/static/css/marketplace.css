@@ -7,11 +7,11 @@
  */
 
   .mp-page {
-    --surface: #ffffff;
+    --surface: var(--ds-surface);
     --primary-light: color-mix(in srgb, var(--ds-primary) 12%, transparent);
-    --border-light: #eceff1;
-    --text-primary: #202124;
-    --text-secondary: #5f6368;
+    --border-light: var(--ds-border-light);
+    --text-primary: var(--ds-text-primary);
+    --text-secondary: var(--ds-text-secondary);
     --success-color: #10b77f;
     --warn-color: #b45309;
     --font-medium: 500;
@@ -45,7 +45,7 @@
   .mp-hero .search-row {
     display: flex; align-items: stretch;
     margin-top: 18px;
-    background: #fff;
+    background: var(--ds-surface);
     border-radius: 10px;
     padding: 4px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
@@ -303,7 +303,7 @@
     font-size: 10px; font-weight: var(--font-semibold);
     text-transform: uppercase; letter-spacing: 0.5px;
   }
-  .mp-card .type-badge[data-type="plugin"] { background: color-mix(in srgb, var(--ds-primary) 12%, transparent); color: #0056A3; }
+  .mp-card .type-badge[data-type="plugin"] { background: color-mix(in srgb, var(--ds-primary) 12%, transparent); color: var(--ds-primary-dark); }
   .mp-card .type-badge[data-type="skill"]  { background: rgba(16, 183, 127, 0.14); color: #0e9b6a; }
   .mp-card .type-badge[data-type="agent"]  { background: rgba(124, 58, 237, 0.14); color: #6d28d9; }
   .mp-card .cat-badge {

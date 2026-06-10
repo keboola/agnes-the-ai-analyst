@@ -2352,6 +2352,48 @@ async def marketplace_format_guide(
     )
 
 
+@router.get("/documentation/api", response_class=HTMLResponse)
+async def documentation_api(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Render docs/api-reference.md as a logged-in HTML page.
+
+    Same pattern and rationale as /marketplace/format-guide above: the
+    Markdown source lives in docs/ so it's readable on the GitHub mirror;
+    the web rendering is the in-product entry point (Admin menu →
+    Documentation). Auth is ``get_current_user`` only — the audience is
+    "anyone scripting against the API", which is broader than admins.
+    Freshness is enforced by tests/test_api_docs_coverage.py, which fails
+    CI when a public /api/* route is missing from the document.
+    """
+    from markdown_it import MarkdownIt
+    from pathlib import Path
+
+    from app.version import APP_VERSION
+
+    md_path = (
+        Path(__file__).resolve().parent.parent.parent
+        / "docs" / "api-reference.md"
+    )
+    try:
+        md_text = md_path.read_text(encoding="utf-8")
+    except OSError:
+        md_text = (
+            "# API reference unavailable\n\n"
+            "The source markdown file is missing from this deployment."
+        )
+    rendered = MarkdownIt("commonmark", {"breaks": False}).enable("table").render(md_text)
+    ctx = _build_context(
+        request, user=user,
+        rendered_html=rendered,
+        app_version=APP_VERSION,
+    )
+    return templates.TemplateResponse(
+        request, "documentation_api.html", ctx,
+    )
+
+
 @router.get("/admin/tables", response_class=HTMLResponse)
 async def admin_tables(
     request: Request,
@@ -2484,6 +2526,38 @@ async def admin_sessions_page(
     /api/admin/sessions/{list,kpis,facets}."""
     ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "admin_sessions.html", ctx)
+
+
+@router.get("/admin/adoption", response_class=HTMLResponse)
+async def admin_adoption_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Adoption dashboard — system-wide KPI cards (24h/7d/30d), 30-day
+    daily trend charts, top skills, and a users-by-activity list. A shell;
+    data loads client-side from /api/admin/adoption/*."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_adoption.html", ctx)
+
+
+@router.get("/admin/adoption/users/{user_id}", response_class=HTMLResponse)
+async def admin_adoption_user_page(
+    user_id: str,
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Per-user adoption drill-down. Resolves the target user (404 if
+    unknown) and renders a shell; data loads from
+    /api/admin/adoption/users/{id}/*."""
+    target = users_repo().get_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    ctx = _build_context(
+        request, user=user,
+        target_user_id=user_id,
+        target_user_email=target.get("email") or "",
+    )
+    return templates.TemplateResponse(request, "admin_adoption_user.html", ctx)
 
 
 @router.get("/admin/sessions/{username}/{session_file}", response_class=HTMLResponse)

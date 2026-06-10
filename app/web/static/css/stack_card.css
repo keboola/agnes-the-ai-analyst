@@ -55,7 +55,7 @@
   display: flex;
   align-items: stretch;
   margin-top: 18px;
-  background: #fff;
+  background: var(--ds-surface);
   border-radius: 10px;
   padding: 4px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);

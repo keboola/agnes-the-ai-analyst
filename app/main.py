@@ -277,6 +277,7 @@ from app.api.admin_user_sessions import router as admin_user_sessions_router
 from app.api.admin_sessions import router as admin_sessions_router
 from app.api.admin_usage import router as admin_usage_router
 from app.api.admin_usage_summary import router as admin_usage_summary_router
+from app.api.admin_adoption import router as admin_adoption_router
 from app.api.db_state import router as db_state_router
 from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import make_git_wsgi_app
@@ -812,8 +813,31 @@ def _debug_enabled() -> bool:
 DEBUG = _debug_enabled()
 
 
+# Background poll / low-signal endpoints the debug toolbar must NOT attach to.
+# They run ~no application queries but fire repeatedly, and every instrumented
+# response rewrites the `dtRefresh` cookie — `refresh.js` then repoints the
+# toolbar to that request's (near-empty) store and wipes the panel content you
+# were reading (the "flickers to 0 / stuck spinner" symptom). Skipping ONLY
+# these keeps data XHRs (e.g. /api/marketplace/items, /api/store/entities, whose
+# Postgres queries are exactly what you want to inspect) instrumented while the
+# pollers stay out of the way. Tunable: add high-frequency, low-signal paths.
+#
+# Two sets: EXACT skips only the listed path verbatim (so e.g. `/api/health`
+# does NOT inadvertently skip `/api/health/detailed`, which is a separate
+# authenticated admin diagnostics endpoint — see app/api/health.py). PREFIXES
+# skips the listed path AND any sub-path (whole subtree is a poll surface).
+_TOOLBAR_SKIP_EXACT = (
+    "/api/version",
+    "/api/health",
+    "/api/memory/stats",
+)
+_TOOLBAR_SKIP_PREFIXES = (
+    "/api/notifications",
+)
+
+
 def _toolbar_show_callback(request, settings) -> bool:
-    """Decide whether the debug toolbar shows on a request.
+    """Decide whether the debug toolbar attaches to a request.
 
     Replaces the upstream default (which reads `request.app.debug`) — we keep
     `app.debug=False` so our @app.exception_handler(Exception) runs instead of
@@ -821,29 +845,22 @@ def _toolbar_show_callback(request, settings) -> bool:
     toolbar mounted. Read DEBUG / LOCAL_DEV_MODE env directly so operators who
     flip the env at runtime (rare) see the change without re-import.
 
-    Only top-level document navigations (and the toolbar's own
-    ``/_debug_toolbar`` endpoints) are instrumented. Background ``fetch``/XHR —
-    notably the dashboard's ``/api/...`` polling — must NOT be instrumented:
-    each instrumented response rewrites the ``dtRefresh`` cookie, and the
-    toolbar's ``refresh.js`` then repoints to that request's store and wipes the
-    open panel's content (re-showing the loader). For request-scoped query
-    panels (DuckDB/Postgres) that meant the queries from the page you navigated
-    to flickered and reset to the latest poll's count. Gating on
-    ``Sec-Fetch-Dest`` keeps the toolbar pinned to the page under inspection.
+    Document navigations AND data XHRs are instrumented (so async/XHR-loaded
+    listings show their queries); only the toolbar's own ``/_debug_toolbar``
+    endpoints (always allowed) and the background pollers in
+    ``_TOOLBAR_SKIP_PREFIXES`` are special-cased. See that constant for why the
+    pollers must be excluded. For comprehensive, request-independent capture of
+    EVERY query (incl. async/threadpool), see the DEBUG-gated logger in
+    ``app/debug/postgres_panel.py`` (logger ``agnes.db.postgres``).
     """
     if not _debug_enabled():
         return False
     path = request.url.path
-    # The toolbar's own render_panel + static endpoints are XHR — always allow,
-    # or panels can never lazy-load their content.
     if path.startswith("/_debug_toolbar"):
-        return True
-    # Background fetch/XHR (Sec-Fetch-Dest is "empty"/"cors"/... not "document")
-    # and API polls do not own the toolbar — skip so they don't reset it.
-    dest = request.headers.get("sec-fetch-dest")
-    if dest and dest != "document":
+        return True  # toolbar's own render_panel + static — always, or panels can't load
+    if path in _TOOLBAR_SKIP_EXACT:
         return False
-    if path.startswith("/api/"):
+    if any(path == p or path.startswith(p + "/") for p in _TOOLBAR_SKIP_PREFIXES):
         return False
     return True
 
@@ -882,6 +899,20 @@ def create_app() -> FastAPI:
         if request.url.path.startswith("/api/"):
             response.headers["X-Agnes-Latest-Version"] = APP_VERSION
             response.headers["X-Agnes-Min-Version"] = MIN_COMPAT_CLI_VERSION
+        # Server-rendered HTML must not be heuristically cached by the browser.
+        # The setup hero (/home, /setup, /install) bakes build-pinned values
+        # into the markup at render time — most importantly the current wheel
+        # filename, served from the version-pinned `/cli/wheel/{name}` endpoint
+        # that 404s for any name but the wheel currently on disk. Without an
+        # explicit directive a browser reuses the cached document, so after a
+        # redeploy a user is handed a stale page whose baked wheel URL now 404s
+        # (the new build replaced the wheel). `no-store` forces a fresh render
+        # on every load. Scoped to text/html so JSON APIs and the
+        # immutable-cached static / marketplace-image assets are untouched; an
+        # explicit Cache-Control set by a route still wins.
+        ctype = response.headers.get("content-type", "")
+        if ctype.startswith("text/html") and "cache-control" not in response.headers:
+            response.headers["Cache-Control"] = "no-store"
         return response
 
     # FastAPI debug toolbar — only when DEBUG=1 in env. Injects per-request
@@ -1236,6 +1267,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_sessions_router)
     app.include_router(admin_usage_router)
     app.include_router(admin_usage_summary_router)
+    app.include_router(admin_adoption_router)
     app.include_router(db_state_router)
     app.include_router(marketplace_server_router)
     app.include_router(chat_router)
