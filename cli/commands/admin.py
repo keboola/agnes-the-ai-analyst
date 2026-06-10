@@ -444,6 +444,48 @@ def discover_and_register(
         typer.echo(f"\nDone: {registered} registered, {skipped} already existed, {errors} errors")
 
 
+@admin_app.command("sync")
+def sync(
+    source: str = typer.Option(
+        None, "--source",
+        help=(
+            "Restrict the rebuild to one source_type (keboola | bigquery | "
+            "jira | local). Omit for a full sweep of every registered table."
+        ),
+    ),
+    tables: list[str] = typer.Argument(
+        None,
+        help="Optional table ids to rebuild (default: all due tables).",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Trigger a data sync. `--source` scopes a partial rebuild to one source.
+
+    Posts to `/api/sync/trigger`; `--source` is passed through as the
+    `?source=` query param so only that source's local + materialized rows
+    are rebuilt, leaving the other source's extract untouched. Returns 409
+    if a sync is already running.
+    """
+    params = {"source": source} if source else None
+    json_body = {"tables": list(tables)} if tables else None
+    resp = api_post("/api/sync/trigger", params=params, json=json_body)
+
+    if resp.status_code == 409:
+        typer.echo("A sync is already in progress — try again shortly.", err=True)
+        raise typer.Exit(1)
+    if resp.status_code != 200:
+        typer.echo(f"Failed: {resp.json().get('detail', resp.text)}", err=True)
+        raise typer.Exit(1)
+
+    data = resp.json()
+    if as_json:
+        typer.echo(json.dumps(data, indent=2))
+    else:
+        scope = data.get("source", "all")
+        which = data.get("tables", "all")
+        typer.echo(f"Sync triggered (source={scope}, tables={which}).")
+
+
 @admin_app.command("list-tables")
 def list_tables(as_json: bool = typer.Option(False, "--json")):
     """List registered tables."""

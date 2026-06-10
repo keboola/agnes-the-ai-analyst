@@ -250,6 +250,10 @@ def pull(skip_materialize: bool = False) -> dict:
     )
     return {
         "tables_updated": result.tables_updated,
+        # Surface prune counts so MCP clients can detect that tables were
+        # removed from the workspace (security-relevant — revokes local
+        # query access). Was missing in the original #594 (Devin Review).
+        "tables_removed": result.tables_removed,
         "parquets_total": result.parquets_total,
         "errors": result.errors,
         "elapsed_s": round(result.elapsed_s, 1) if hasattr(result, "elapsed_s") else None,

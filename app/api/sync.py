@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, List
 
-from fastapi import APIRouter, Body, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Body, Depends, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel, Field
 import duckdb
 
@@ -99,6 +99,7 @@ def _run_materialized_pass(
     conn: duckdb.DuckDBPyConnection,
     bq,
     tables: Optional[List[str]] = None,
+    source_type: Optional[str] = None,
 ) -> dict:
     """Walk `table_registry` for `query_mode='materialized'` rows and run any
     that are due, dispatching by ``source_type`` to the correct connector's
@@ -111,6 +112,11 @@ def _run_materialized_pass(
     body) need this, otherwise an admin asking to re-sync `kbc_job` would
     re-process every other materialized row that's also due. Matched
     against both the registry id and name (admins often pass either).
+
+    ``source_type`` (when not None) restricts the pass to rows whose
+    registry ``source_type`` matches — the partial-rebuild path
+    (POST /api/sync/trigger?source=bigquery) uses it so a BQ-only
+    rebuild leaves Keboola materialized rows untouched, and vice versa.
 
     BigQuery rows go through BqAccess + bigquery_query() (jobs API),
     optionally cost-guarded by ``max_bytes_per_materialize``.
@@ -179,6 +185,17 @@ def _run_materialized_pass(
         # manifest because the lookup misses on `id`.
         ref_name = row["name"]
 
+        # Partial-rebuild scoping (POST /api/sync/trigger?source=…). Compute
+        # the row's source_type once, with the same `or "bigquery"` legacy
+        # default the dispatch below uses, so the filter and the dispatch
+        # agree on how a NULL-source_type row is classified.
+        row_source_type = row.get("source_type") or "bigquery"  # legacy default
+        if source_type is not None and row_source_type != source_type:
+            summary["skipped"].append(
+                {"table": ref_name, "reason": "source_filter"}
+            )
+            continue
+
         if target_set is not None and not (
             ref_name in target_set or row.get("id") in target_set
         ):
@@ -204,13 +221,11 @@ def _run_materialized_pass(
             summary["skipped"].append({"table": ref_name, "reason": "due_check"})
             continue
 
-        source_type = row.get("source_type") or "bigquery"  # legacy default
-
         # Dispatch by source_type. BQ rows keep using `_materialize_table`
         # (the existing test seam); Keboola rows use the new Keboola
         # materialize_query via a lazily-initialized KeboolaAccess.
         try:
-            if source_type == "bigquery":
+            if row_source_type == "bigquery":
                 stats = _materialize_table(
                     table_id=ref_name,
                     sql=row["source_query"],
@@ -218,7 +233,7 @@ def _run_materialized_pass(
                     output_dir=bq_output_dir,
                     max_bytes=bq_max_bytes,
                 )
-            elif source_type == "keboola":
+            elif row_source_type == "keboola":
                 if keboola_access is None:
                     # Lazy-init the Storage API client (replaces the old
                     # DuckDB extension `KeboolaAccess`). One client is shared
@@ -290,7 +305,7 @@ def _run_materialized_pass(
                     "table": ref_name,
                     "error": (
                         f"materialized path not supported for "
-                        f"source_type={source_type!r}"
+                        f"source_type={row_source_type!r}"
                     ),
                 })
                 continue
@@ -331,7 +346,7 @@ def _run_materialized_pass(
         parquet_hash = stats.get("hash")
         if not parquet_hash:
             output_dir_for_hash = (
-                bq_output_dir if source_type == "bigquery" else str(kb_output_dir.parent)
+                bq_output_dir if row_source_type == "bigquery" else str(kb_output_dir.parent)
             )
             parquet_path = Path(output_dir_for_hash) / "data" / f"{ref_name}.parquet"
             parquet_hash = _file_hash(parquet_path)
@@ -352,12 +367,30 @@ def _run_materialized_pass(
     return summary
 
 
-def _run_sync(tables: Optional[List[str]] = None):
+def _run_sync(
+    tables: Optional[List[str]] = None,
+    source_type_filter: Optional[str] = None,
+):
     """Run extractor as subprocess + orchestrator rebuild.
 
     Reads table configs from DuckDB (in main process which has the shared
     connection), passes them as JSON via stdin to the extractor subprocess.
     This avoids DuckDB lock conflicts — subprocess never opens system.duckdb.
+
+    ``source_type_filter`` (POST /api/sync/trigger?source=…) restricts the
+    rebuild to a single registered source:
+
+      - the local-mode list is selected with ``list_local(source_type_filter)``
+        so only matching rows reach the extractor subprocess;
+      - the Keboola extractor subprocess (which only knows how to extract
+        Keboola rows) is skipped entirely unless the filter is None or
+        ``"keboola"``;
+      - the materialized pass receives the same filter so only matching
+        ``source_type`` rows are rebuilt.
+
+    The orchestrator rebuild always runs — it re-ATTACHes whatever
+    ``extract.duckdb`` files exist on disk and never rewrites the ones it
+    reads, so a scoped rebuild leaves the other source's extract untouched.
 
     Singleton: only one invocation runs at a time per process (see
     `_sync_lock` module-level). The trigger handler also fast-fails with
@@ -378,6 +411,12 @@ def _run_sync(tables: Optional[List[str]] = None):
         from src.db import get_system_db
 
         source_type = get_data_source_type()
+        # Partial-rebuild scoping: when an explicit `?source=` filter is set,
+        # it overrides the instance's configured source_type for row
+        # selection (a dual-source deployment can ask to rebuild only BQ or
+        # only Keboola). Falls back to the instance source_type for the
+        # default full sweep.
+        effective_source_type = source_type_filter or source_type
         data_dir = _get_data_dir()
 
         # Reclaim orphaned `kbc-export-*` staging dirs left behind when a
@@ -413,7 +452,7 @@ def _run_sync(tables: Optional[List[str]] = None):
                 table_configs = [c for c in all_configs if c is not None]
                 registry_has_tables = bool(table_configs)
             else:
-                table_configs = repo.list_local(source_type) if source_type else repo.list_local()
+                table_configs = repo.list_local(effective_source_type) if effective_source_type else repo.list_local()
                 # Auto-discover gate must consider the WHOLE registry, not
                 # just `local` rows. After the Keboola migration to
                 # materialized (v25→v26), an instance can have 30
@@ -453,7 +492,7 @@ def _run_sync(tables: Optional[List[str]] = None):
                     # Re-read table configs after auto-registration
                     sys_conn2 = get_system_db()
                     try:
-                        table_configs = table_registry_repo().list_local(source_type)
+                        table_configs = table_registry_repo().list_local(effective_source_type)
                     finally:
                         sys_conn2.close()
                 except Exception as e:
@@ -469,13 +508,19 @@ def _run_sync(tables: Optional[List[str]] = None):
         # below (materialized pass, orchestrator rebuild, profiler) runs
         # unconditionally so a registry with materialized rows but no
         # local rows still publishes them.
-        run_extractor_subprocess = bool(table_configs)
+        # The extractor subprocess below only knows how to extract Keboola
+        # rows (it runs `connectors.keboola.extractor`). A partial rebuild
+        # scoped to a non-Keboola source must never invoke it — otherwise a
+        # `?source=bigquery` trigger would rewrite the Keboola extract.duckdb
+        # via the subprocess and the rebuild would not be isolated.
+        keboola_extract_in_scope = source_type_filter in (None, "keboola")
+        run_extractor_subprocess = bool(table_configs) and keboola_extract_in_scope
         if not run_extractor_subprocess:
             logger.info(
-                "No local-mode tables to sync for source_type=%s — "
-                "skipping extractor subprocess; materialized pass + "
-                "orchestrator rebuild still run.",
-                source_type,
+                "No local-mode tables to sync for source_type=%s "
+                "(filter=%s) — skipping extractor subprocess; materialized "
+                "pass + orchestrator rebuild still run.",
+                effective_source_type, source_type_filter,
             )
 
         env = {**os.environ}
@@ -669,6 +714,7 @@ sys.exit(compute_exit_code(result, len(configs)))
             try:
                 mat_summary = _run_materialized_pass(
                     mat_conn, bq_access, tables=tables,
+                    source_type=source_type_filter,
                 )
             finally:
                 mat_conn.close()
@@ -1203,6 +1249,13 @@ async def sync_status():
 async def trigger_sync(
     background_tasks: BackgroundTasks,
     body: Optional[Any] = Body(None),
+    source: Optional[str] = Query(
+        None,
+        description=(
+            "Restrict the rebuild to one registered source_type "
+            "(e.g. `keboola`, `bigquery`). Omit for a full sweep."
+        ),
+    ),
     user: dict = Depends(require_admin),
 ):
     """Trigger data sync from configured source. Admin only. Runs in background.
@@ -1220,6 +1273,12 @@ async def trigger_sync(
     keeps older clients (PR-build CLIs, helper scripts) working while
     surfacing the shape that mirrors the response payload. Anything
     else returns HTTP 422 with a structured detail.
+
+    ``?source=<source_type>`` scopes the rebuild to a single registered
+    source (partial rebuild): only that source's local + materialized
+    rows are rebuilt, and the other source's ``extract.duckdb`` is left
+    untouched. Useful on dual-source deployments where a BQ refresh
+    should not pay the cost of re-extracting every Keboola table.
 
     Returns 409 if a previously-triggered sync is still running. Two
     concurrent extractor subprocesses fight for the same `extract.duckdb`
@@ -1253,6 +1312,24 @@ async def trigger_sync(
             detail="all entries in `tables` must be strings",
         )
 
+    # Normalize + validate the `?source=` partial-rebuild filter. Reuse the
+    # registry's canonical source-type set so an unknown value fails fast
+    # with a clear 422 instead of silently rebuilding nothing.
+    if source is not None:
+        source = source.strip().lower()
+        if not source:
+            source = None
+    if source is not None:
+        from app.api.admin import _VALID_SOURCE_TYPES
+        if source not in _VALID_SOURCE_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"source must be one of {sorted(_VALID_SOURCE_TYPES)}, "
+                    f"got {source!r}"
+                ),
+            )
+
     if _sync_lock.locked():
         try:
             from src.db import get_system_db
@@ -1264,7 +1341,7 @@ async def trigger_sync(
                     (tables[0] if len(tables) == 1 else f"{len(tables)} tables")
                     if tables else "all_tables"
                 )[:256],
-                params={"requested_at": datetime.now(timezone.utc).isoformat(), "tables": tables},
+                params={"requested_at": datetime.now(timezone.utc).isoformat(), "tables": tables, "source": source},
                 result="error.in_progress",
                 client_kind=client_kind_from_user(user),
             )
@@ -1282,7 +1359,7 @@ async def trigger_sync(
     # the host-side ``agnes-auto-upgrade.sh`` defer probe was hitting.
     global _recent_trigger_at
     _recent_trigger_at = _t0
-    background_tasks.add_task(_run_sync, tables)
+    background_tasks.add_task(_run_sync, tables, source)
     try:
         from src.db import get_system_db
         _audit_conn = get_system_db()
@@ -1293,7 +1370,7 @@ async def trigger_sync(
                 (tables[0] if len(tables) == 1 else f"{len(tables)} tables")
                 if tables else "all_tables"
             )[:256],
-            params={"requested_at": datetime.now(timezone.utc).isoformat(), "tables": tables},
+            params={"requested_at": datetime.now(timezone.utc).isoformat(), "tables": tables, "source": source},
             result="success",
             duration_ms=int((time.monotonic() - _t0) * 1000),
             client_kind=client_kind_from_user(user),
@@ -1304,6 +1381,7 @@ async def trigger_sync(
     return {
         "status": "triggered",
         "tables": tables or "all",
+        "source": source or "all",
         "message": "Data sync started in background. Check /api/health for progress.",
     }
 
