@@ -33,6 +33,7 @@ from cli.commands.pull import pull_app
 from cli.commands.push import push_app
 from cli.commands.refresh_marketplace import refresh_marketplace_app
 from cli.commands.statusline import statusline_app
+from cli.commands.update_workspace import update_workspace_app
 from cli.commands.query import query_command
 from cli.commands.status import status_app
 from cli.commands.admin import admin_app
@@ -167,6 +168,7 @@ app.add_typer(push_app, name="push")
 app.add_typer(capture_session_app, name="capture-session")
 app.add_typer(mark_private_app, name="mark-private")
 app.add_typer(statusline_app, name="statusline")
+app.add_typer(update_workspace_app, name="update-workspace")
 app.add_typer(refresh_marketplace_app, name="refresh-marketplace")
 app.command("query")(query_command)
 app.add_typer(status_app, name="status")

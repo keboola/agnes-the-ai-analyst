@@ -4,10 +4,19 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock
 
+from click.testing import CliRunner as ClickCliRunner
+from typer.main import get_command
 from typer.testing import CliRunner
 from cli.main import app
 
 runner = CliRunner()
+# Typer's CliRunner mixes stdout/stderr into a single buffer (Click 8.1-era
+# behaviour), which raises ValueError on `.stderr` access. Click 8.2+ runs
+# them separately by default. Convert the Typer app to a Click command and
+# invoke it via Click's runner for the bytes_scanned tests that need to
+# inspect `result.stderr` (Devin Review BUG_0001 on #598).
+split_runner = ClickCliRunner()
+click_app = get_command(app)
 
 
 @pytest.fixture(autouse=True)
@@ -99,6 +108,56 @@ class TestRemoteQuery:
             result = runner.invoke(app, ["query", "SELECT id FROM t", "--remote", "--limit", "5"])
         assert result.exit_code == 0
         assert "truncated" in result.output
+
+    def test_remote_query_bytes_scanned_notice_on_stderr(self):
+        """#393: a non-null bytes_scanned prints a human-readable dry-run
+        estimate to STDERR (mirrors the `truncated` notice). Uses the
+        module-level ``split_runner`` so result.stderr is captured
+        separately (Devin Review BUG_0001 on #598)."""
+        payload = {
+            "columns": ["id"],
+            "rows": [[1]],
+            "truncated": False,
+            "bytes_scanned": 4_500_000_000,
+        }
+        with patch("cli.client.api_post", return_value=_resp(200, payload)):
+            result = split_runner.invoke(click_app, ["query", "SELECT id FROM web_sessions", "--remote"])
+        assert result.exit_code == 0
+        assert "BigQuery scanned" in result.stderr
+        assert "dry-run estimate" in result.stderr
+        # 4.5e9 bytes ~= 4.2 GB
+        assert "GB" in result.stderr
+
+    def test_remote_query_no_bytes_scanned_notice_when_none(self):
+        """#393: local-style payload (bytes_scanned None) emits no notice."""
+        payload = {"columns": ["id"], "rows": [[1]], "truncated": False, "bytes_scanned": None}
+        with patch("cli.client.api_post", return_value=_resp(200, payload)):
+            result = runner.invoke(app, ["query", "SELECT 1", "--remote"])
+        assert result.exit_code == 0
+        assert "BigQuery scanned" not in result.output
+
+    def test_remote_query_bytes_scanned_keeps_stdout_pure_json(self):
+        """#393: the bytes_scanned notice goes to STDERR only — `--format
+        json` stdout stays parseable JSON. Uses the module-level
+        ``split_runner`` so we can verify stdout stays pure JSON and the
+        notice lands only on stderr (Devin Review BUG_0001 on #598)."""
+        payload = {
+            "columns": ["id"],
+            "rows": [[1]],
+            "truncated": False,
+            "bytes_scanned": 1_073_741_824,
+        }
+        with patch("cli.client.api_post", return_value=_resp(200, payload)):
+            result = split_runner.invoke(
+                click_app, ["query", "SELECT id FROM t", "--remote", "--format", "json"]
+            )
+        assert result.exit_code == 0
+        # stdout is pure JSON — no notice leaked in.
+        parsed = json.loads(result.stdout.strip())
+        assert parsed == [{"id": 1}]
+        assert "BigQuery scanned" not in result.stdout
+        # ...but the notice is present on stderr.
+        assert "BigQuery scanned" in result.stderr
 
     def test_remote_query_uses_long_timeout(self):
         """--remote passes the long-running QUERY_TIMEOUT_S to api_post.

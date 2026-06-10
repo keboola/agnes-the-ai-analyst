@@ -69,6 +69,43 @@ def _username_for_user(user: dict) -> str:
     return email.split("@")[0] if "@" in email else email
 
 
+def _local_part(email: str) -> str:
+    return email.split("@")[0] if email and "@" in email else (email or "")
+
+
+def _enrich_with_users(rows: list[dict]) -> list[dict]:
+    """Attach the real ``users``-table identity (name / email / registered)
+    to adoption rows so the UI renders the same person as ``/admin/users``.
+
+    The adoption source (``usage_session_summary``) carries only a
+    ``user_id`` (UUID == ``users.id``, present for sessions ingested after
+    the v45 backfill) and ``username`` (the email local-part) — there is no
+    full email column. Resolve by ``user_id`` first; for legacy rows without
+    one, fall back to matching the local-part against ``users.email``, but
+    only when it maps to exactly one user (a local-part owned by >1 user
+    across domains is ambiguous and left unresolved). Unresolved rows get
+    ``registered=False`` so the template shows a bare email + empty avatar.
+    """
+    users = users_repo().list_all()
+    by_id: dict = {}
+    by_local: dict = {}
+    for u in users:
+        uid = u.get("id")
+        if uid:
+            by_id[uid] = u
+        lp = _local_part(u.get("email") or "")
+        if lp:
+            # None flags an ambiguous local-part (owned by >1 user) — once
+            # ambiguous it stays unresolved, never silently picking one.
+            by_local[lp] = None if lp in by_local else u
+    for r in rows:
+        match = by_id.get(r.get("user_id")) or by_local.get(r.get("username") or "")
+        r["name"] = match.get("name") if match else None
+        r["email"] = match.get("email") if match else None
+        r["registered"] = match is not None
+    return rows
+
+
 def _audit(user: dict, action: str, params: dict) -> None:
     actor_id = user.get("id") or "anonymous"
     if _should_audit(actor_id, {"endpoint": action, **params}):
@@ -167,6 +204,7 @@ def adoption_top_users(
     """Most active users in the window, ranked by active time."""
     window = _norm_window(window)
     rows = usage_repo().adoption_top_users(_cutoff(window), limit=limit, q=q)
+    rows = _enrich_with_users(rows)
     for r in rows:
         r["active_hours"] = _hours(r["active_seconds"])
     return {"window": window, "rows": rows}

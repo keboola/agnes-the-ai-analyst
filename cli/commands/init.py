@@ -798,6 +798,26 @@ def init(
         )
 
     # ------------------------------------------------------------------
+    # Step final-1: clear the transient bootstrap token file.
+    #
+    # The setup prompt writes the raw PAT to `~/.agnes/token` and feeds it
+    # to `agnes init --token-file ~/.agnes/token`. That file is a transient
+    # *input*, not a credential store — the authoritative copy now lives in
+    # `~/.config/agnes/token.json` (written 0o600 by `save_token` above).
+    # Leaving the plaintext PAT behind in `~/.agnes/token` is an avoidable
+    # exposure (it sits at the default umask and lingers indefinitely), so
+    # delete it once init has consumed it. Best-effort: a removal failure
+    # must never fail an otherwise-successful init. (#580, Finding 1.)
+    # ------------------------------------------------------------------
+    _bootstrap_token = Path(os.path.expanduser("~/.agnes/token"))
+    try:
+        _bootstrap_token.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+    # ------------------------------------------------------------------
     # Final: human-readable summary.
     # ------------------------------------------------------------------
     typer.echo("Workspace ready.")

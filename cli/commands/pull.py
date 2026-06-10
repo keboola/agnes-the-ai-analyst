@@ -127,6 +127,7 @@ def pull(
     if as_json:
         typer.echo(json.dumps({
             "tables_updated": result.tables_updated,
+            "tables_removed": result.tables_removed,
             "parquets_total": result.parquets_total,
             "rules_count": result.rules_count,
             "duration_s": round(result.duration_s, 3),
@@ -145,7 +146,20 @@ def pull(
                 typer.echo(f"warn: {e}", err=True)
         return
 
-    typer.echo(f"Updated {result.tables_updated} tables ({result.parquets_total} total).")
+    # Surface tables_removed alongside tables_updated so an operator who
+    # dropped a data package from their stack sees the prune count in the
+    # primary summary line — not just buried in the per-type status block
+    # below. Pruning is a security-relevant op (revokes local query access);
+    # silent removals were the Devin Review finding on #594.
+    if result.tables_removed:
+        typer.echo(
+            f"Updated {result.tables_updated} tables, removed "
+            f"{result.tables_removed} ({result.parquets_total} total)."
+        )
+    else:
+        typer.echo(
+            f"Updated {result.tables_updated} tables ({result.parquets_total} total)."
+        )
     typer.echo(f"Rules: {result.rules_count}.")
 
     # v49 (Task 8.12): per-type status block surfaced from `SyncReport`.
