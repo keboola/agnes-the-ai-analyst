@@ -47,6 +47,24 @@ def test_render_setup_instructions_wires_all_placeholders():
     assert "T-123" in out
 
 
+def test_init_step_warns_about_transcript_exposure():
+    """#580 Finding 1: the step that writes the raw PAT to ~/.agnes/token
+    must explicitly call out the transcript exposure (the heredoc lands in
+    the uploaded session transcript) and remind the user that `/agnes-private`
+    keeps the bootstrap session out of `agnes push`, and that `agnes init`
+    deletes the transient token file once consumed.
+    """
+    from app.web.setup_instructions import _init_lines
+
+    joined = "\n".join(_init_lines())
+    assert "transcript" in joined.lower()
+    assert "/agnes-private" in joined
+    assert "agnes push" in joined
+    # The deletion guarantee is documented inline so the user understands the
+    # transcript copy — not the on-disk file — is the residual risk.
+    assert "~/.agnes/token" in joined
+
+
 def test_resolve_lines_no_plugins_unified_layout():
     """Unified always-on layout: 1 install, 2 mkdir/cd, 3 init, 4 catalog,
     5 preflight, 6 marketplace, 7 diagnose, 8 connectors, 9 restart-claude,

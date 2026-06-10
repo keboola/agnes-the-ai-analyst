@@ -2,6 +2,7 @@
 
 import json
 import os
+import tempfile
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -75,12 +76,42 @@ def save_token(token: str, email: str, role: Optional[str] = None):
     but is no longer written — authorization derives from group memberships
     server-side, not from a CLI-cached label. Old token.json files with a
     ``role`` field are still readable; the field is simply ignored.
+
+    The file holds a plaintext bearer token, so it is written with mode
+    ``0o600`` (owner read/write only) rather than left at the ambient umask
+    (commonly ``0o644`` — world-readable). The chmod happens on a temp file
+    in the same dir *before* the atomic rename, so a reader never observes a
+    world-readable transient state. ``os.fchmod`` is best-effort and
+    Windows-safe: on filesystems / platforms that don't honor it the token
+    still lands and native ACLs apply (mirrors
+    ``cli/lib/initial_workspace.py``).
     """
-    token_file = _config_dir() / "token.json"
-    token_file.write_text(json.dumps({
+    body = json.dumps({
         "access_token": token,
         "email": email,
-    }, indent=2), encoding="utf-8")
+    }, indent=2)
+    config_dir = _config_dir()
+    token_file = config_dir / "token.json"
+    fd, tmp_str = tempfile.mkstemp(prefix=".token.", dir=str(config_dir))
+    tmp_path = Path(tmp_str)
+    try:
+        try:
+            os.write(fd, body.encode("utf-8"))
+            try:
+                os.fchmod(fd, 0o600)
+            except (AttributeError, NotImplementedError, OSError):
+                # Windows / filesystem that doesn't honor fchmod — native
+                # ACLs apply, token contents still land.
+                pass
+        finally:
+            os.close(fd)
+        os.replace(tmp_path, token_file)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 def clear_token():
