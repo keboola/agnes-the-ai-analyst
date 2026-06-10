@@ -142,10 +142,14 @@ def _build_app(
     async def send_user_message(chat_id, text):
         state.sent.append((chat_id, text))
 
+    async def wait_until_live(chat_id, *, timeout=30.0):
+        return True
+
     mgr = SimpleNamespace(
         list_live=lambda: list(state.live),
         create_session=create_session,
         attach=attach,
+        wait_until_live=wait_until_live,
         send_user_message=send_user_message,
         _state=state,
         # Chat REST endpoints check `_config.enabled`; the slack flow
