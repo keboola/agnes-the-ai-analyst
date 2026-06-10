@@ -79,8 +79,8 @@
 ### Act 2 — Slack DM (5 min)
 
 - [ ] **(2.1)** Sarah opens Slack, DMs `@agnes`: *"hey"*.
-- [ ] Expected: bot DMs back with a 6-digit code + setup link.
-- [ ] **Assertion 8:** Sarah visits `https://agnes.<your-host>/setup?slack=1`, pastes the code, clicks Bind. Response is *"binding success"*. Adam verifies:
+- [ ] Expected: bot DMs back with a one-click `/slack/bind?code=` magic link.
+- [ ] **Assertion 8:** Sarah opens the magic link `https://agnes.<your-host>/slack/bind?code=<code>` while signed in to Agnes. The page redeems the code and shows *"Slack connected"*. Adam verifies:
       ```sql
       SELECT email, slack_user_id FROM users WHERE email = 'sarah@acme.test';
       ```

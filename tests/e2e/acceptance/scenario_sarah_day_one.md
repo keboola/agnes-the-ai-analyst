@@ -117,13 +117,13 @@ She doesn't want to alt-tab to the browser. She remembers Adam mentioning the Sl
 
 ### Step 2.1 — Sarah DMs `@agnes`: "hey"
 
-**What happens:** Slack POSTs `message.im` to `/api/slack/events`. The handler looks up `slack_user_id` → no binding. Issues a 6-digit code, DMs Sarah:
+**What happens:** Slack POSTs `message.im` to `/api/slack/events`. The handler looks up `slack_user_id` → no binding. Issues a 6-digit code, DMs Sarah a one-click magic link:
 
-> *"Welcome! Please bind your Slack to Agnes:*
-> *1. Visit https://agnes.acme.test/setup?slack=1 while logged in*
-> *2. Paste this 6-digit code: **312487** (expires in 10 minutes)"*
+> *"👋 Welcome! To connect your Slack to Agnes, open this link while signed in to Agnes — one click, no copy-paste:*
+> *https://agnes.acme.test/slack/bind?code=312487*
+> *(the link expires in 10 minutes)"*
 
-**Assertion 8 (verification flow):** Sarah pastes `312487` into `/setup`. Server-side: `POST /api/slack/bind` redeems the code, sets `users.slack_user_id = 'U_sarah_xyz'`, removes the code from `slack_binding_codes`. The bind endpoint returns `{"ok": true}`.
+**Assertion 8 (verification flow):** Sarah opens the magic link while signed in. The `/slack/bind?code=312487` page redeems the code server-side via `POST /api/slack/bind`, sets `users.slack_user_id = 'U_sarah_xyz'`, removes the code from `slack_binding_codes`, and shows a "Slack connected" confirmation.
 
 ### Step 2.2 — Sarah re-DMs: "show me region A's last 30 days from my recent snapshot"
 

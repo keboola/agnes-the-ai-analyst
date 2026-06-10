@@ -17,6 +17,7 @@ SR-12 hardening:
   chat_session_participants.user_id — a participant's identity is pinned at
   JOIN time by the invite endpoint (Task 14), making it immutable mid-session.
 """
+
 from __future__ import annotations
 
 import secrets
@@ -26,8 +27,8 @@ from typing import Optional
 import duckdb
 
 _CODE_TTL_SECONDS = 10 * 60
-_MAX_ISSUE_PER_WINDOW = 3      # max codes issued in a 10-minute sliding window
-_MAX_REDEEM_ATTEMPTS = 5      # max FAILED redeem attempts per caller per window
+_MAX_ISSUE_PER_WINDOW = 3  # max codes issued in a 10-minute sliding window
+_MAX_REDEEM_ATTEMPTS = 5  # max FAILED redeem attempts per caller per window
 _REDEEM_WINDOW_SECONDS = 10 * 60  # sliding window for the redeem throttle
 
 
@@ -35,6 +36,28 @@ class BindingThrottled(Exception):
     """Raised by issue_verification_code (issuance rate limit) or
     redeem_verification_code (per-caller redeem rate limit) when the caller
     has exceeded the allowed attempts in the sliding window."""
+
+
+def bind_link(public_url: str, code: str) -> str:
+    """One-click magic-link that binds the Slack user: opening it while signed
+    in to Agnes redeems ``code`` server-side (see ``GET /slack/bind``). Falls
+    back to a root-relative path when ``public_url`` is unset."""
+    base = (public_url or "").rstrip("/")
+    return f"{base}/slack/bind?code={code}"
+
+
+def bind_prompt(public_url: str, code: str) -> str:
+    """The reply Agnes sends an unbound Slack user — a single clickable link,
+    no copy-paste. The link carries the short-lived one-time code; the bind
+    only completes once the caller is signed in to Agnes (the ``/slack/bind``
+    endpoint is auth-gated), so the code in the URL cannot bind anyone on its
+    own."""
+    return (
+        "👋 Welcome! To connect your Slack to Agnes, open this link while "
+        "signed in to Agnes — one click, no copy-paste:\n"
+        f"{bind_link(public_url, code)}\n"
+        "(the link expires in 10 minutes)"
+    )
 
 
 def _ensure_table(conn: duckdb.DuckDBPyConnection) -> None:
@@ -97,20 +120,21 @@ def issue_verification_code(conn: duckdb.DuckDBPyConnection, *, slack_user_id: s
     # sides keeps the expiry correct on any host.
     issued_at = datetime.now(timezone.utc).replace(tzinfo=None)
     conn.execute(
-        "INSERT INTO slack_binding_codes(code, slack_user_id, issued_at, attempts) "
-        "VALUES (?, ?, ?, 0)",
+        "INSERT INTO slack_binding_codes(code, slack_user_id, issued_at, attempts) VALUES (?, ?, ?, 0)",
         [code, slack_user_id, issued_at],
     )
     conn.execute(
-        "INSERT INTO slack_binding_issue_log(slack_user_id, issued_at) "
-        "VALUES (?, current_timestamp)",
+        "INSERT INTO slack_binding_issue_log(slack_user_id, issued_at) VALUES (?, current_timestamp)",
         [slack_user_id],
     )
     return code
 
 
 def redeem_verification_code(
-    conn: duckdb.DuckDBPyConnection, *, user_email: str, code: str,
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    user_email: str,
+    code: str,
 ) -> bool:
     """Redeem a verification code to bind user_email to the Slack user.
 
@@ -148,8 +172,7 @@ def redeem_verification_code(
 
     def _record_failure() -> None:
         conn.execute(
-            "INSERT INTO slack_binding_redeem_log(user_email, attempted_at) "
-            "VALUES (?, current_timestamp)",
+            "INSERT INTO slack_binding_redeem_log(user_email, attempted_at) VALUES (?, current_timestamp)",
             [user_email],
         )
 
@@ -175,6 +198,7 @@ def redeem_verification_code(
     # binding lands in the active state backend (Postgres or DuckDB) — a raw
     # UPDATE on the DuckDB connection never reached the PG-resident users table.
     from src.repositories import users_repo
+
     _u = users_repo().get_by_email(user_email)
     if _u:
         users_repo().update(id=_u["id"], slack_user_id=slack_user_id)
@@ -187,6 +211,7 @@ def redeem_verification_code(
     # so a Slack user id containing JSON metacharacters cannot inject keys.
     try:
         from src.repositories import audit_repo
+
         audit_repo().log(
             user_id=user_email,
             action="slack.bind",
@@ -224,5 +249,6 @@ def lookup_user_email(repo, slack_user_id: str) -> Optional[str]:
     # the raw repo._conn read returned nothing on a Postgres instance. ``repo``
     # is kept for signature/call-site stability.
     from src.repositories import users_repo
+
     u = users_repo().get_by_slack_user_id(slack_user_id)
     return u["email"] if u else None

@@ -5,7 +5,7 @@ Replicates all Flask webapp routes with DuckDB-backed data.
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -20,13 +20,20 @@ import jinja2
 from app.auth.access import is_user_admin, require_admin
 from app.auth.dependencies import get_current_user, get_optional_user, _get_db
 from app.instance_config import (
-    get_instance_name, get_instance_subtitle, get_datasets,
-    get_theme, get_corporate_memory_config, get_home_route,
-    get_gws_oauth_credentials, get_home_automode_visibility,
-    get_instance_admin_email, get_atlassian_base_url,
-    get_instance_brand, get_workspace_dir_name,
-    get_instance_logo_svg, get_instance_overview, get_instance_support,
-    get_instance_theme, get_custom_scripts,
+    get_instance_name,
+    get_instance_subtitle,
+    get_datasets,
+    get_theme,
+    get_corporate_memory_config,
+    get_home_route,
+    get_home_automode_visibility,
+    get_instance_brand,
+    get_workspace_dir_name,
+    get_instance_logo_svg,
+    get_instance_overview,
+    get_instance_support,
+    get_instance_theme,
+    get_custom_scripts,
 )
 from src.repositories import (
     audit_repo,
@@ -87,22 +94,42 @@ router = APIRouter(tags=["web"])
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
 # Make templates tolerant of missing variables (renders empty string instead of error)
 class _SilentUndefined(jinja2.Undefined):
     """Silently handle any access on undefined variables — returns empty/falsy."""
-    def __str__(self): return ""
-    def __iter__(self): return iter([])
-    def __bool__(self): return False
-    def __len__(self): return 0
-    def __getattr__(self, name): return self
-    def __getitem__(self, name): return self
-    def __call__(self, *args, **kwargs): return self
-    def __int__(self): return 0
+
+    def __str__(self):
+        return ""
+
+    def __iter__(self):
+        return iter([])
+
+    def __bool__(self):
+        return False
+
+    def __len__(self):
+        return 0
+
+    def __getattr__(self, name):
+        return self
+
+    def __getitem__(self, name):
+        return self
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    def __int__(self):
+        return 0
+
 
 templates.env.undefined = _SilentUndefined
 
 # Add custom JSON filter that handles _SilentUndefined and _FlexDict
 import json as _json
+
 
 class _SafeEncoder(_json.JSONEncoder):
     def default(self, obj):
@@ -111,6 +138,7 @@ class _SafeEncoder(_json.JSONEncoder):
                 return dict(obj)
             return None
         return super().default(obj)
+
 
 templates.env.policies["json.dumps_function"] = lambda obj, **kw: _json.dumps(obj, cls=_SafeEncoder, **kw)
 
@@ -153,6 +181,7 @@ def _store_display_name(name: str | None) -> str:
     original label instead of the internal `__archived__<epoch>`
     marker. Safe on plain (non-archived) names — no-op."""
     from src.store_naming import strip_archive_suffix
+
     return strip_archive_suffix(name or "")
 
 
@@ -172,6 +201,7 @@ templates.env.filters["store_display_name"] = _store_display_name
 #                               for anonymous renders.
 def _posthog_config_global() -> dict:
     from src.observability import get_posthog
+
     pc = get_posthog()
     if not pc.enabled:
         return {"enabled": False}
@@ -188,6 +218,7 @@ def _posthog_config_global() -> dict:
 
 def _posthog_user_block(request: Optional[Request]) -> Optional[dict]:
     from src.observability import get_posthog
+
     pc = get_posthog()
     if not pc.enabled:
         return None
@@ -230,34 +261,81 @@ templates.env.globals["posthog_user_block"] = _posthog_user_block
 class _FlexDict(dict):
     """Dict that returns empty _FlexDict for missing keys and attributes.
     Prevents Jinja2 UndefinedError when templates access missing nested values."""
+
     def __getattr__(self, name):
         try:
             return self[name]
         except KeyError:
             return _FlexDict()
-    def __bool__(self): return bool(dict.__len__(self))
-    def __str__(self): return ""
-    def __int__(self): return 0
-    def __float__(self): return 0.0
-    def __iter__(self): return iter(dict.values(self)) if dict.__len__(self) else iter([])
-    def __len__(self): return dict.__len__(self)
-    def __call__(self, *args, **kwargs): return ""
-    def __add__(self, other): return other
-    def __radd__(self, other): return other
-    def __sub__(self, other): return 0 - other if isinstance(other, (int, float)) else self
-    def __rsub__(self, other): return other
-    def __mul__(self, other): return 0
-    def __rmul__(self, other): return 0
-    def __truediv__(self, other): return 0
-    def __rtruediv__(self, other): return 0
-    def __mod__(self, other): return 0
-    def __eq__(self, other): return False if dict.__len__(self) == 0 else dict.__eq__(self, other)
-    def __ne__(self, other): return True if dict.__len__(self) == 0 else dict.__ne__(self, other)
-    def __lt__(self, other): return False
-    def __gt__(self, other): return False
-    def __le__(self, other): return True
-    def __ge__(self, other): return True
-    def __contains__(self, item): return dict.__contains__(self, item) if dict.__len__(self) else False
+
+    def __bool__(self):
+        return bool(dict.__len__(self))
+
+    def __str__(self):
+        return ""
+
+    def __int__(self):
+        return 0
+
+    def __float__(self):
+        return 0.0
+
+    def __iter__(self):
+        return iter(dict.values(self)) if dict.__len__(self) else iter([])
+
+    def __len__(self):
+        return dict.__len__(self)
+
+    def __call__(self, *args, **kwargs):
+        return ""
+
+    def __add__(self, other):
+        return other
+
+    def __radd__(self, other):
+        return other
+
+    def __sub__(self, other):
+        return 0 - other if isinstance(other, (int, float)) else self
+
+    def __rsub__(self, other):
+        return other
+
+    def __mul__(self, other):
+        return 0
+
+    def __rmul__(self, other):
+        return 0
+
+    def __truediv__(self, other):
+        return 0
+
+    def __rtruediv__(self, other):
+        return 0
+
+    def __mod__(self, other):
+        return 0
+
+    def __eq__(self, other):
+        return False if dict.__len__(self) == 0 else dict.__eq__(self, other)
+
+    def __ne__(self, other):
+        return True if dict.__len__(self) == 0 else dict.__ne__(self, other)
+
+    def __lt__(self, other):
+        return False
+
+    def __gt__(self, other):
+        return False
+
+    def __le__(self, other):
+        return True
+
+    def __ge__(self, other):
+        return True
+
+    def __contains__(self, item):
+        return dict.__contains__(self, item) if dict.__len__(self) else False
 
 
 def _flex(d):
@@ -340,6 +418,7 @@ def _read_agnes_ca_pem() -> Optional[str]:
 
     try:
         from cryptography import x509
+
         chain = x509.load_pem_x509_certificates(pem.encode("utf-8"))
         if not chain:
             return None
@@ -356,15 +435,13 @@ def _read_agnes_ca_pem() -> Optional[str]:
         # bundle / certifi already accept it.
         try:
             import certifi
+
             with open(certifi.where(), "rb") as fh:
                 trust_pem = fh.read()
         except Exception:
             return pem  # can't enumerate trust → assume bootstrap needed
 
-        trusted_subjects = {
-            ca.subject.rfc4514_string()
-            for ca in x509.load_pem_x509_certificates(trust_pem)
-        }
+        trusted_subjects = {ca.subject.rfc4514_string() for ca in x509.load_pem_x509_certificates(trust_pem)}
         for cert in chain:
             if cert.issuer.rfc4514_string() in trusted_subjects:
                 return None  # publicly trusted; client OS already accepts
@@ -387,6 +464,7 @@ def _build_context(
     RBAC-allowed Claude Code marketplace plugins inlined as install
     commands. Routes that don't render the env-setup-cta block can omit it.
     """
+
     class ConfigProxy:
         INSTANCE_NAME = get_instance_name()
         INSTANCE_SUBTITLE = get_instance_subtitle()
@@ -402,7 +480,9 @@ def _build_context(
         # Same env var the route guard checks — keep them in lock-step so
         # the link never appears when the route would 404, and vice versa.
         DEBUG_AUTH_ENABLED = os.environ.get("AGNES_DEBUG_AUTH", "").strip().lower() in (
-            "1", "true", "yes",
+            "1",
+            "true",
+            "yes",
         )
         # Google Workspace prefix-mapping config — surfaced into templates
         # so client-side JS can derive a friendly display name from the
@@ -410,15 +490,9 @@ def _build_context(
         # strips the prefix and `@domain` for the big line, keeps the
         # full email as subtitle). Read at template render time so an
         # operator can flip these via env without an image rebuild.
-        AGNES_GOOGLE_GROUP_PREFIX = os.environ.get(
-            "AGNES_GOOGLE_GROUP_PREFIX", ""
-        )
-        AGNES_GROUP_ADMIN_EMAIL = os.environ.get(
-            "AGNES_GROUP_ADMIN_EMAIL", ""
-        )
-        AGNES_GROUP_EVERYONE_EMAIL = os.environ.get(
-            "AGNES_GROUP_EVERYONE_EMAIL", ""
-        )
+        AGNES_GOOGLE_GROUP_PREFIX = os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "")
+        AGNES_GROUP_ADMIN_EMAIL = os.environ.get("AGNES_GROUP_ADMIN_EMAIL", "")
+        AGNES_GROUP_EVERYONE_EMAIL = os.environ.get("AGNES_GROUP_EVERYONE_EMAIL", "")
 
         @staticmethod
         def theme_overrides():
@@ -442,15 +516,15 @@ def _build_context(
     # we fall back to resolve_lines() directly with anonymous/no-plugin context.
     if conn is not None:
         from src.welcome_template import render_agent_prompt_banner
-        _script_text = render_agent_prompt_banner(
-            conn, user=user, server_url=ctx_server_url
-        )
+
+        _script_text = render_agent_prompt_banner(conn, user=user, server_url=ctx_server_url)
         setup_instructions_lines = _script_text.split("\n")
     else:
         # No DB connection — use the unauthenticated default (no override possible,
         # no marketplace plugins).
         from app.web.setup_instructions import resolve_lines
         from app.api.cli_artifacts import _find_wheel
+
         _wheel = _find_wheel()
         _wheel_filename = _wheel.name if _wheel else "agnes.whl"
 
@@ -537,9 +611,7 @@ def _build_context(
             from app.auth.access import has_explicit_grant
             from app.resource_types import ResourceType
 
-            ctx["can_chat"] = bool(
-                has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat")
-            )
+            ctx["can_chat"] = bool(has_explicit_grant(user["id"], ResourceType.CHAT.value, "chat"))
     except Exception:
         ctx["can_chat"] = False
     # Flex all extra context values for template compatibility
@@ -551,10 +623,12 @@ def _build_context(
 
 # ---- Navigation ----
 
+
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request, user: Optional[dict] = Depends(get_optional_user)):
     if user:
         from app.instance_config import get_home_route
+
         return RedirectResponse(url=get_home_route(), status_code=302)
     return RedirectResponse(url="/login", status_code=302)
 
@@ -569,6 +643,7 @@ async def setup_wizard(request: Request):
     """
     try:
         from src.repositories import users_repo
+
         if users_repo().count_all() > 0:
             return RedirectResponse(url="/login", status_code=302)
     except Exception:
@@ -579,10 +654,12 @@ async def setup_wizard(request: Request):
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     from app.auth.dependencies import is_local_dev_mode, _get_local_dev_user
+
     if is_local_dev_mode():
         # Only short-circuit to the home route if the dev user is actually
         # seeded. Otherwise a 401 there would bounce back to /login and loop.
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             if _get_local_dev_user(conn):
@@ -598,6 +675,7 @@ async def login_page(request: Request):
     providers = []
     try:
         from app.auth.providers.google import is_available as google_available
+
         if google_available():
             providers.append({"name": "google", "display_name": "Google", "icon": "google"})
     except Exception:
@@ -605,6 +683,7 @@ async def login_page(request: Request):
     providers.append({"name": "password", "display_name": "Email & Password", "icon": "key"})
     try:
         from app.auth.providers.email import is_available as email_available
+
         if email_available():
             providers.append({"name": "email", "display_name": "Email Link", "icon": "mail"})
     except Exception:
@@ -617,17 +696,23 @@ async def login_page(request: Request):
             _url = "/auth/google/login"
             if next_path:
                 _url += f"?next={quote(next_path, safe='')}"
-            login_buttons.append({"url": _url, "text": "Sign in with Google", "css_class": "btn-primary", "icon_html": ""})
+            login_buttons.append(
+                {"url": _url, "text": "Sign in with Google", "css_class": "btn-primary", "icon_html": ""}
+            )
         elif p["name"] == "password":
             _url = "/login/password"
             if next_path:
                 _url += f"?next={quote(next_path, safe='')}"
-            login_buttons.append({"url": _url, "text": "Sign in with Email & Password", "css_class": "btn-secondary", "icon_html": ""})
+            login_buttons.append(
+                {"url": _url, "text": "Sign in with Email & Password", "css_class": "btn-secondary", "icon_html": ""}
+            )
         elif p["name"] == "email":
             _url = "/login/email"
             if next_path:
                 _url += f"?next={quote(next_path, safe='')}"
-            login_buttons.append({"url": _url, "text": "Sign in with Email Link", "css_class": "btn-secondary", "icon_html": ""})
+            login_buttons.append(
+                {"url": _url, "text": "Sign in with Email Link", "css_class": "btn-secondary", "icon_html": ""}
+            )
 
     ctx = _build_context(request, providers=providers, login_buttons=login_buttons, next_path=next_path)
     return templates.TemplateResponse(request, "login.html", ctx)
@@ -642,6 +727,7 @@ async def login_password_page(request: Request):
     google_ok = False
     try:
         from app.auth.providers.google import is_available as google_available
+
         google_ok = google_available()
     except Exception:
         pass
@@ -658,6 +744,7 @@ async def login_email_page(request: Request):
     google_ok = False
     try:
         from app.auth.providers.google import is_available as google_available
+
         google_ok = google_available()
     except Exception:
         pass
@@ -709,7 +796,9 @@ async def dashboard(
             self.groups = []
 
     ctx = _build_context(
-        request, user=user, conn=conn,
+        request,
+        user=user,
+        conn=conn,
         user_info=UserInfo(),
         username=user.get("email", "").split("@")[0],
         total_tables=total_tables,
@@ -781,12 +870,9 @@ async def home_page(
     # stat cards. When either gate is closed we skip the DB read entirely.
     from app.api.me import compute_home_stats
     from app.instance_config import get_home_status_frame_visibility
+
     status_frame_enabled = get_home_status_frame_visibility()
-    home_stats = (
-        compute_home_stats(conn, user, "24h")
-        if (status_frame_enabled and onboarded)
-        else None
-    )
+    home_stats = compute_home_stats(conn, user, "24h") if (status_frame_enabled and onboarded) else None
 
     # Single template renders both states. The post-onboarding view keeps
     # the install-steps + connector prompts + auto-mode card visible —
@@ -820,32 +906,31 @@ async def me_cowork_page(
 
     # Backend-aware reads (mcp_sources / tool grants live in Postgres on a PG
     # instance) — a raw DuckDB conn here showed no MCP tools on Cowork.
-    source_names = {
-        s["id"]: s["name"]
-        for s in mcp_sources_repo().list_all(enabled_only=True)
-    }
+    source_names = {s["id"]: s["name"] for s in mcp_sources_repo().list_all(enabled_only=True)}
     raw_tools = _visible_passthrough_tools(user)
     passthrough_tools = []
     for t in raw_tools:
         sname = source_names.get(t["source_id"])
         if sname:
-            passthrough_tools.append({
-                "exposed_name": t["exposed_name"],
-                "description": t.get("description"),
-                "source_name": sname,
-            })
+            passthrough_tools.append(
+                {
+                    "exposed_name": t["exposed_name"],
+                    "description": t.get("description"),
+                    "source_name": sname,
+                }
+            )
 
     skills = []
     for plugin in _accessible_plugins(user):
         skills.extend(_skills_for_plugin(plugin["marketplace_id"], plugin["name"]))
 
     static_tools = [
-        {"name": "server_info",  "description": "Check Agnes connectivity and your account email."},
-        {"name": "catalog",      "description": "List all tables available to you — name, query_mode, row count."},
-        {"name": "schema",       "description": "Show column names and types for a table."},
-        {"name": "describe",     "description": "Schema + sample rows for a table in one call."},
-        {"name": "query",        "description": "Execute SQL against Agnes data (DuckDB or BigQuery dialect)."},
-        {"name": "skills",       "description": "List marketplace skills you can access — includes full SKILL.md body."},
+        {"name": "server_info", "description": "Check Agnes connectivity and your account email."},
+        {"name": "catalog", "description": "List all tables available to you — name, query_mode, row count."},
+        {"name": "schema", "description": "Show column names and types for a table."},
+        {"name": "describe", "description": "Schema + sample rows for a table in one call."},
+        {"name": "query", "description": "Execute SQL against Agnes data (DuckDB or BigQuery dialect)."},
+        {"name": "skills", "description": "List marketplace skills you can access — includes full SKILL.md body."},
     ]
 
     server_url = str(request.base_url).rstrip("/")
@@ -866,6 +951,7 @@ async def me_cowork_page(
 async def me_mcp_redirect(request: Request):
     """Legacy redirect — /me/mcp → /me/cowork."""
     from fastapi.responses import RedirectResponse
+
     return RedirectResponse("/me/cowork", status_code=301)
 
 
@@ -962,9 +1048,9 @@ async def setup_advanced_page(
     return templates.TemplateResponse(request, "setup_advanced.html", ctx)
 
 
-def _data_package_entry_dict(entry, drilldown_url: str, table_count: int = 0,
-                              source_types: Optional[list] = None,
-                              is_admin_view: bool = False) -> dict:
+def _data_package_entry_dict(
+    entry, drilldown_url: str, table_count: int = 0, source_types: Optional[list] = None, is_admin_view: bool = False
+) -> dict:
     """Adapt a ResourceEntry → template entry dict for the _stack_card macro.
 
     Always renders a meta line (`N tables` — even `0 tables`) and a
@@ -1002,27 +1088,21 @@ def _data_package_entry_dict(entry, drilldown_url: str, table_count: int = 0,
         # convention; admin-authored category tags follow. Concatenated
         # into the single ``tags`` field the macro renders. Duplicates
         # collapsed via dict-order-preserving filter.
-        "tags": list(dict.fromkeys(
-            list(source_types or []) + list(getattr(entry, "tags", None) or [])
-        )),
+        "tags": list(dict.fromkeys(list(source_types or []) + list(getattr(entry, "tags", None) or []))),
         # v56: extended attribution + derived badges. Macro reads these
         # via class hooks (data-card-owner, data-badge="...").
         "owner_name": getattr(entry, "owner_name", None),
         "owner_team": getattr(entry, "owner_team", None),
         "badges": getattr(entry, "badges", None) or [],
         "drilldown_url": drilldown_url,
-        "footer_left": (
-            f"View {table_count} table{'s' if table_count != 1 else ''} →"
-            if table_count else "Open →"
-        ),
+        "footer_left": (f"View {table_count} table{'s' if table_count != 1 else ''} →" if table_count else "Open →"),
     }
     if table_count == 0 and is_admin_view:
         # `entry.id` is a server-generated uuid (data_packages.id), safe to
         # inline. `assign_to` is read by admin_tables.html on load to auto-
         # open the Bulk Assign modal with this package pre-selected.
         out["meta_html"] = (
-            f'0 tables — <a href="/admin/tables?assign_to={entry.id}" '
-            f'style="color:#0073D1;">assign some →</a>'
+            f'0 tables — <a href="/admin/tables?assign_to={entry.id}" style="color:#0073D1;">assign some →</a>'
         )
     return out
 
@@ -1127,7 +1207,8 @@ async def catalog(
     # RBAC grants keep working (BC, not a web surface).
 
     ctx = _build_context(
-        request, user=user,
+        request,
+        user=user,
         entries=entries,
         stack_entries=stack_entries_adapted,
         source_type_chips=source_type_chips,
@@ -1160,8 +1241,9 @@ async def catalog_package_detail(
         raise HTTPException(status_code=404, detail="data_package_not_found")
 
     # Admin bypass via is_user_admin; otherwise require a grant (any tier).
-    if not (is_user_admin(user["id"], conn) or
-            can_access(user["id"], ResourceType.DATA_PACKAGE.value, pkg["id"], conn)):
+    if not (
+        is_user_admin(user["id"], conn) or can_access(user["id"], ResourceType.DATA_PACKAGE.value, pkg["id"], conn)
+    ):
         raise HTTPException(status_code=403, detail="access_denied")
 
     # Telemetry: emit data_package.view (Section 9.2). source=browse|my-stack
@@ -1178,15 +1260,15 @@ async def catalog_package_detail(
         logger.warning("usage_events emit failed for data_package.view")
 
     resolver = StackResolver(conn)
-    effective_required = resolver.is_required(
-        user["id"], ResourceType.DATA_PACKAGE, pkg["id"]
-    )
+    effective_required = resolver.is_required(user["id"], ResourceType.DATA_PACKAGE, pkg["id"])
     # In-stack iff required OR a subscription row exists.
-    in_stack = effective_required or bool(conn.execute(
-        "SELECT 1 FROM user_stack_subscriptions "
-        "WHERE user_id = ? AND resource_type = 'data_package' AND resource_id = ?",
-        [user["id"], pkg["id"]],
-    ).fetchone())
+    in_stack = effective_required or bool(
+        conn.execute(
+            "SELECT 1 FROM user_stack_subscriptions "
+            "WHERE user_id = ? AND resource_type = 'data_package' AND resource_id = ?",
+            [user["id"], pkg["id"]],
+        ).fetchone()
+    )
 
     # Hydrate tables with query_mode + last_sync + v56 extended docs.
     # The extended fields (grain, platforms, partition_col, history,
@@ -1200,28 +1282,31 @@ async def catalog_package_detail(
         full = table_repo.get(tr["id"]) or {}
         st = sync_states.get(tr["id"]) or {}
         size = st.get("file_size_bytes") or 0
-        tables.append({
-            "id": tr["id"],
-            "name": tr["name"],
-            "description": full.get("description"),
-            "query_mode": full.get("query_mode") or "local",
-            "source_type": full.get("source_type"),
-            "last_sync_display": (str(st.get("last_sync"))[:19] if st.get("last_sync") else None),
-            "size_display": _human_size(size) if size else None,
-            "size_bytes": size,
-            # v56 extended per-table docs for the package-detail expand.
-            "grain": full.get("grain"),
-            "platforms": full.get("platforms") or [],
-            "partition_col": full.get("partition_col"),
-            "history": full.get("history"),
-            "gotchas": full.get("gotchas") or [],
-            "sample_questions": full.get("sample_questions") or [],
-        })
+        tables.append(
+            {
+                "id": tr["id"],
+                "name": tr["name"],
+                "description": full.get("description"),
+                "query_mode": full.get("query_mode") or "local",
+                "source_type": full.get("source_type"),
+                "last_sync_display": (str(st.get("last_sync"))[:19] if st.get("last_sync") else None),
+                "size_display": _human_size(size) if size else None,
+                "size_bytes": size,
+                # v56 extended per-table docs for the package-detail expand.
+                "grain": full.get("grain"),
+                "platforms": full.get("platforms") or [],
+                "partition_col": full.get("partition_col"),
+                "history": full.get("history"),
+                "gotchas": full.get("gotchas") or [],
+                "sample_questions": full.get("sample_questions") or [],
+            }
+        )
 
     # v56 virtual badges. Derived in-template-aware here so the router
     # owns the policy (creator-in-admin + 30-day window) and the
     # template stays presentational.
     from datetime import datetime, timedelta, timezone as _tz
+
     badges: list[str] = []
     created_by = pkg.get("created_by")
     if created_by:
@@ -1241,7 +1326,8 @@ async def catalog_package_detail(
 
     total_size = sum(t["size_bytes"] for t in tables)
     ctx = _build_context(
-        request, user=user,
+        request,
+        user=user,
         pkg=pkg,
         tables=tables,
         effective_requirement="required" if effective_required else "available",
@@ -1292,8 +1378,7 @@ async def catalog_table_detail(
                 continue
             parent_packages.append({"slug": p["slug"], "name": p["name"]})
             if not has_grant and not is_admin:
-                if can_access(user["id"], ResourceType.DATA_PACKAGE.value,
-                              p["id"], conn):
+                if can_access(user["id"], ResourceType.DATA_PACKAGE.value, p["id"], conn):
                     has_grant = True
     except Exception:
         logger.warning("could not enumerate parent packages for %s", table_id)
@@ -1303,7 +1388,7 @@ async def catalog_table_detail(
     # Resolve any pairs_well_with ids to (id, name) pairs the template
     # can render as links. Unknown ids (deleted tables) silently dropped.
     pairs = []
-    for related_id in (table.get("pairs_well_with") or []):
+    for related_id in table.get("pairs_well_with") or []:
         related = table_repo.get(related_id)
         if related:
             pairs.append({"id": related["id"], "name": related["name"]})
@@ -1319,13 +1404,16 @@ async def catalog_table_detail(
         ).fetchone()
         if prof_row and prof_row[0]:
             import json as _json
+
             prof = _json.loads(prof_row[0]) if isinstance(prof_row[0], str) else prof_row[0]
-            for col in (prof.get("columns") or []):
-                columns.append({
-                    "name": col.get("name"),
-                    "type": col.get("type"),
-                    "nullable": col.get("nullable", True),
-                })
+            for col in prof.get("columns") or []:
+                columns.append(
+                    {
+                        "name": col.get("name"),
+                        "type": col.get("type"),
+                        "nullable": col.get("nullable", True),
+                    }
+                )
     except Exception:
         logger.warning("could not load profile for %s", table_id)
 
@@ -1340,13 +1428,16 @@ async def catalog_table_detail(
         try:
             from app.api.v2_schema import build_schema_uncached
             from connectors.bigquery.access import BqAccess
+
             sch = build_schema_uncached(conn, table_id, bq=BqAccess(), row=table)
-            for col in (sch.get("columns") or []):
-                columns.append({
-                    "name": col.get("name"),
-                    "type": col.get("type"),
-                    "nullable": col.get("nullable", True),
-                })
+            for col in sch.get("columns") or []:
+                columns.append(
+                    {
+                        "name": col.get("name"),
+                        "type": col.get("type"),
+                        "nullable": col.get("nullable", True),
+                    }
+                )
         except Exception:
             logger.warning("schema introspection fallback failed for %s", table_id)
 
@@ -1362,21 +1453,16 @@ async def catalog_table_detail(
         return f"{n:.1f} PiB"
 
     rows_count = last_sync_state.get("rows")
-    size_bytes = (
-        last_sync_state.get("file_size_bytes")
-        or last_sync_state.get("uncompressed_size_bytes")
-    )
+    size_bytes = last_sync_state.get("file_size_bytes") or last_sync_state.get("uncompressed_size_bytes")
 
     ctx = _build_context(
-        request, user=user,
+        request,
+        user=user,
         table=table,
         parent_packages=parent_packages,
         pairs_well_with=pairs,
         columns=columns,
-        last_sync_display=(
-            str(last_sync_state.get("last_sync"))[:19]
-            if last_sync_state.get("last_sync") else None
-        ),
+        last_sync_display=(str(last_sync_state.get("last_sync"))[:19] if last_sync_state.get("last_sync") else None),
         rows_display=(f"{rows_count:,}" if rows_count else None),
         size_display=_fmt_bytes(size_bytes),
         sample_questions=(table.get("sample_questions") or []),
@@ -1413,13 +1499,14 @@ async def catalog_recipe_detail(
 
     table_repo = table_registry_repo()
     related_tables = []
-    for tid in (recipe.get("related_table_ids") or []):
+    for tid in recipe.get("related_table_ids") or []:
         full = table_repo.get(tid)
         if full:
             related_tables.append({"id": full["id"], "name": full["name"]})
 
     ctx = _build_context(
-        request, user=user,
+        request,
+        user=user,
         recipe=recipe,
         related_tables=related_tables,
     )
@@ -1438,9 +1525,7 @@ def _human_size(n: int) -> str:
     return f"{n:.1f} PB"
 
 
-def _memory_domain_entry_dict(entry, drilldown_url: str,
-                               items_count: int = 0,
-                               required_count: int = 0) -> dict:
+def _memory_domain_entry_dict(entry, drilldown_url: str, items_count: int = 0, required_count: int = 0) -> dict:
     """Adapt a ResourceEntry (memory_domain) → template entry dict.
 
     Always renders a meta line (`N items · K required` — even `0 items`)
@@ -1451,8 +1536,7 @@ def _memory_domain_entry_dict(entry, drilldown_url: str,
     if required_count:
         meta += f" · {required_count} required"
     description = entry.description or (
-        f"Curated knowledge for the {entry.name} domain. "
-        f"Add to your stack to include items in agnes pull."
+        f"Curated knowledge for the {entry.name} domain. Add to your stack to include items in agnes pull."
     )
     return {
         "id": entry.id,
@@ -1471,10 +1555,7 @@ def _memory_domain_entry_dict(entry, drilldown_url: str,
         "meta": meta,
         "tags": [],
         "drilldown_url": drilldown_url,
-        "footer_left": (
-            f"View {items_count} item{'s' if items_count != 1 else ''} →"
-            if items_count else "Open →"
-        ),
+        "footer_left": (f"View {items_count} item{'s' if items_count != 1 else ''} →" if items_count else "Open →"),
     }
 
 
@@ -1516,8 +1597,7 @@ async def corporate_memory(
             if item_ids:
                 placeholders = ",".join(["?"] * len(item_ids))
                 required = conn.execute(
-                    f"SELECT COUNT(*) FROM knowledge_items "
-                    f"WHERE id IN ({placeholders}) AND is_required = TRUE",
+                    f"SELECT COUNT(*) FROM knowledge_items WHERE id IN ({placeholders}) AND is_required = TRUE",
                     item_ids,
                 ).fetchone()[0]
             dom_meta[d["id"]] = {
@@ -1577,14 +1657,13 @@ async def corporate_memory(
     pending_count = 0
     if is_admin_view:
         try:
-            pending_count = conn.execute(
-                "SELECT COUNT(*) FROM knowledge_items WHERE status = 'pending'"
-            ).fetchone()[0]
+            pending_count = conn.execute("SELECT COUNT(*) FROM knowledge_items WHERE status = 'pending'").fetchone()[0]
         except Exception:
             pending_count = 0
 
     ctx = _build_context(
-        request, user=user,
+        request,
+        user=user,
         entries=entries,
         stack_entries=stack_entries_adapted,
         pending_review_count=pending_count,
@@ -1615,8 +1694,9 @@ async def memory_domain_detail(
     domain = domains_repo.get_by_slug(slug)
     if not domain:
         raise HTTPException(status_code=404, detail="memory_domain_not_found")
-    if not (is_user_admin(user["id"], conn) or
-            can_access(user["id"], ResourceType.MEMORY_DOMAIN.value, domain["id"], conn)):
+    if not (
+        is_user_admin(user["id"], conn) or can_access(user["id"], ResourceType.MEMORY_DOMAIN.value, domain["id"], conn)
+    ):
         raise HTTPException(status_code=403, detail="access_denied")
 
     source_hint = request.query_params.get("source", "direct")
@@ -1631,14 +1711,14 @@ async def memory_domain_detail(
         logger.warning("usage_events emit failed for memory_domain.view")
 
     resolver = StackResolver(conn)
-    effective_required = resolver.is_required(
-        user["id"], ResourceType.MEMORY_DOMAIN, domain["id"]
+    effective_required = resolver.is_required(user["id"], ResourceType.MEMORY_DOMAIN, domain["id"])
+    in_stack = effective_required or bool(
+        conn.execute(
+            "SELECT 1 FROM user_stack_subscriptions "
+            "WHERE user_id = ? AND resource_type = 'memory_domain' AND resource_id = ?",
+            [user["id"], domain["id"]],
+        ).fetchone()
     )
-    in_stack = effective_required or bool(conn.execute(
-        "SELECT 1 FROM user_stack_subscriptions "
-        "WHERE user_id = ? AND resource_type = 'memory_domain' AND resource_id = ?",
-        [user["id"], domain["id"]],
-    ).fetchone())
 
     # Hydrate items with votes + contributors + dismissed-by-me + tags.
     summaries = domains_repo.list_items_of_domain(domain["id"], limit=10000)
@@ -1672,14 +1752,20 @@ async def memory_domain_detail(
         items.append(it)
 
     # Sort: required first, then by created_at desc (stable + predictable).
-    items.sort(key=lambda r: (not r.get("is_required"), -((r.get("created_at") or 0).timestamp() if hasattr(r.get("created_at") or 0, "timestamp") else 0)))
+    items.sort(
+        key=lambda r: (
+            not r.get("is_required"),
+            -((r.get("created_at") or 0).timestamp() if hasattr(r.get("created_at") or 0, "timestamp") else 0),
+        )
+    )
 
     # Tag user with is_admin flag for template-side admin affordances.
     user_render = dict(user)
     user_render["is_admin"] = is_user_admin(user["id"], conn)
 
     ctx = _build_context(
-        request, user=user_render,
+        request,
+        user=user_render,
         domain=domain,
         items=items,
         required_count=required_count,
@@ -1730,8 +1816,7 @@ async def corporate_memory_admin(
 
     # Duplicate-candidate badge count (issue #62) — unresolved relations only.
     duplicates_count = conn.execute(
-        "SELECT COUNT(*) FROM knowledge_item_relations "
-        "WHERE relation_type = 'likely_duplicate' AND resolved = FALSE"
+        "SELECT COUNT(*) FROM knowledge_item_relations WHERE relation_type = 'likely_duplicate' AND resolved = FALSE"
     ).fetchone()[0]
 
     # Mandate-form audience picker needs RBAC user_groups, not the
@@ -1743,8 +1828,7 @@ async def corporate_memory_admin(
     _groups_repo = user_groups_repo()
     _members_repo = user_group_members_repo()
     user_groups_for_ui = [
-        {"name": g["name"], "members_count": _members_repo.count_members(g["id"])}
-        for g in _groups_repo.list_all()
+        {"name": g["name"], "members_count": _members_repo.count_members(g["id"])} for g in _groups_repo.list_all()
     ]
 
     # Existing-value pools for the per-item edit form pickers. Before, Category /
@@ -1757,7 +1841,8 @@ async def corporate_memory_admin(
     edit_tags = sorted({t for i in all_items for t in (i.get("tags") or []) if t})
 
     ctx = _build_context(
-        request, user=user,
+        request,
+        user=user,
         pending_items=pending,
         stats={
             "total": len(all_items),
@@ -1769,9 +1854,7 @@ async def corporate_memory_admin(
             # ``is_required`` flag set instead. ``status_counts`` is built off
             # the status column so it can never produce a 'mandatory' bucket
             # again; project from the items list directly.
-            "mandatory_count": sum(
-                1 for i in all_items if i.get("is_required") is True
-            ),
+            "mandatory_count": sum(1 for i in all_items if i.get("is_required") is True),
             "knowledge_count": len(all_items),
             "contradictions": len(contradictions),
             "duplicates": duplicates_count,
@@ -1839,6 +1922,7 @@ async def setup_page(
         # double-brace {{ }} syntax; single-brace {x} pass through unchanged.
         try:
             from src.welcome_template import build_context as _build_banner_ctx
+
             env = Environment(undefined=StrictUndefined, autoescape=False)
             template = env.from_string(override_content)
             ctx_vars = _build_banner_ctx(user=user, server_url=base_url)
@@ -1846,11 +1930,15 @@ async def setup_page(
         except (TemplateError, Exception) as exc:
             logger.warning("setup_page: override render failed (%s); falling back to default", exc)
             setup_script_text = compute_default_agent_prompt(
-                conn, user=user, server_url=base_url,
+                conn,
+                user=user,
+                server_url=base_url,
             )
     else:
         setup_script_text = compute_default_agent_prompt(
-            conn, user=user, server_url=base_url,
+            conn,
+            user=user,
+            server_url=base_url,
         )
 
     # Split for the legacy setup_instructions_lines list variable that the
@@ -1869,6 +1957,47 @@ async def setup_page(
         setup_script_text=setup_script_text,
     )
     return templates.TemplateResponse(request, "install.html", ctx)
+
+
+@router.get("/slack/bind", response_class=HTMLResponse)
+async def slack_bind(
+    request: Request,
+    code: str = "",
+    user: Optional[dict] = Depends(get_optional_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """One-click Slack identity binding — the magic-link Agnes DMs an unbound
+    user. Opening ``/slack/bind?code=<code>`` while signed in to Agnes redeems
+    the code server-side and stamps ``users.slack_user_id`` (no copy-paste).
+
+    The code in the URL is inert on its own: this route is auth-gated, so the
+    bind only completes for the signed-in Agnes account — proving the same
+    person controls both the Slack identity (the code was DM'd to them) and the
+    Agnes account (they're logged in). An unauthenticated visitor is bounced to
+    sign-in and lands back here afterwards (``next=``).
+    """
+    if user is None:
+        nxt = quote(f"/slack/bind?code={code}", safe="")
+        return RedirectResponse(url=f"/login?next={nxt}", status_code=302)
+
+    status = "missing"
+    if code:
+        from services.slack_bot.binding import (
+            BindingThrottled,
+            redeem_verification_code,
+        )
+
+        try:
+            ok = redeem_verification_code(conn, user_email=user["email"], code=code.strip())
+            status = "ok" if ok else "invalid"
+        except BindingThrottled:
+            status = "throttled"
+        except Exception:
+            logger.exception("slack bind redeem failed")
+            status = "error"
+
+    ctx = _build_context(request, user=user, conn=conn, bind_status=status)
+    return templates.TemplateResponse(request, "slack_bind.html", ctx)
 
 
 @router.get("/install", response_class=HTMLResponse)
@@ -1900,6 +2029,7 @@ def _guardrail_thresholds() -> dict[str, int]:
         get_guardrails_min_description_chars,
         get_guardrails_min_distinct_words,
     )
+
     return {
         "min_description_chars": get_guardrails_min_description_chars(),
         "min_command_description_chars": get_guardrails_min_command_description_chars(),
@@ -1916,12 +2046,14 @@ async def store_new(
 ):
     from src.store_categories import STORE_CATEGORIES
     from src.store_naming import TITLE_ACRONYMS, sanitize_username
+
     try:
         owner_username = sanitize_username(user.get("email") or "")
     except ValueError:
         owner_username = ""
     ctx = _build_context(
-        request, user=user,
+        request,
+        user=user,
         categories=list(STORE_CATEGORIES),
         guardrail=_guardrail_thresholds(),
         title_acronyms=TITLE_ACRONYMS,
@@ -1981,8 +2113,10 @@ async def store_edit(
             pending_sub = latest
 
     from src.store_naming import TITLE_ACRONYMS
+
     ctx = _build_context(
-        request, user=user,
+        request,
+        user=user,
         entity=entity,
         is_admin=is_admin,
         is_owner=entity["owner_user_id"] == user["id"],
@@ -2015,9 +2149,11 @@ async def marketplace_listing(
     import json as _json
     from src.category_icons import all_paths
     from app.instance_config import get_value
+
     curators_url = (get_value("marketplace", "curators_url") or "").strip()
     ctx = _build_context(
-        request, user=user,
+        request,
+        user=user,
         category_icons_json=_json.dumps(all_paths()),
         curators_url=curators_url,
     )
@@ -2058,10 +2194,7 @@ async def marketplace_flea_detail(
     is_owner = base_entity.get("owner_user_id") == user.get("id")
     is_admin = is_user_admin(user["id"], conn)
 
-    entity = (
-        repo.get_with_version_approvals(entity_id)
-        if (is_owner or is_admin) else base_entity
-    )
+    entity = repo.get_with_version_approvals(entity_id) if (is_owner or is_admin) else base_entity
 
     # Pull the latest submission so the quarantine banner can render
     # the most recent verdict (inline_checks + llm_findings). v37:
@@ -2078,10 +2211,7 @@ async def marketplace_flea_detail(
         quarantine_sub = store_submissions_repo().latest_for_entity(entity_id)
 
     # v37: the Edit button locks while a submission is under review.
-    edit_in_flight = bool(
-        quarantine_sub
-        and quarantine_sub.get("status") in ("pending_inline", "pending_llm")
-    )
+    edit_in_flight = bool(quarantine_sub and quarantine_sub.get("status") in ("pending_inline", "pending_llm"))
 
     common = dict(
         source="flea",
@@ -2095,22 +2225,28 @@ async def marketplace_flea_detail(
 
     if entity["type"] == "plugin":
         ctx = _build_context(
-            request, user=user,
+            request,
+            user=user,
             plugin_name=entity["name"],
             **common,
         )
         return templates.TemplateResponse(
-            request, "marketplace_plugin_detail.html", ctx,
+            request,
+            "marketplace_plugin_detail.html",
+            ctx,
         )
 
     ctx = _build_context(
-        request, user=user,
+        request,
+        user=user,
         kind=entity["type"],
         item_name=entity["name"],
         **common,
     )
     return templates.TemplateResponse(
-        request, "marketplace_item_detail.html", ctx,
+        request,
+        "marketplace_item_detail.html",
+        ctx,
     )
 
 
@@ -2138,7 +2274,9 @@ async def marketplace_curated_detail(
         plugin_name=plugin_name,
     )
     return templates.TemplateResponse(
-        request, "marketplace_plugin_detail.html", ctx,
+        request,
+        "marketplace_plugin_detail.html",
+        ctx,
     )
 
 
@@ -2163,7 +2301,9 @@ async def marketplace_curated_skill_detail(
         inner_name=skill_name,
     )
     return templates.TemplateResponse(
-        request, "marketplace_item_detail.html", ctx,
+        request,
+        "marketplace_item_detail.html",
+        ctx,
     )
 
 
@@ -2188,7 +2328,9 @@ async def marketplace_curated_agent_detail(
         inner_name=agent_name,
     )
     return templates.TemplateResponse(
-        request, "marketplace_item_detail.html", ctx,
+        request,
+        "marketplace_item_detail.html",
+        ctx,
     )
 
 
@@ -2212,6 +2354,7 @@ async def marketplace_flea_skill_detail(
     """
     from app.api.store import _enforce_visibility
     from app.auth.access import is_user_admin
+
     entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
@@ -2219,8 +2362,10 @@ async def marketplace_flea_skill_detail(
     is_owner = entity.get("owner_user_id") == user.get("id")
     is_admin = is_user_admin(user["id"], conn)
     ctx = _build_context(
-        request, user=user,
-        source="flea", kind="skill",
+        request,
+        user=user,
+        source="flea",
+        kind="skill",
         entity_id=entity_id,
         plugin_name=entity["name"],
         inner_name=skill_name,
@@ -2229,7 +2374,9 @@ async def marketplace_flea_skill_detail(
         is_admin=is_admin,
     )
     return templates.TemplateResponse(
-        request, "marketplace_item_detail.html", ctx,
+        request,
+        "marketplace_item_detail.html",
+        ctx,
     )
 
 
@@ -2250,6 +2397,7 @@ async def marketplace_flea_agent_detail(
     """
     from app.api.store import _enforce_visibility
     from app.auth.access import is_user_admin
+
     entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
@@ -2257,8 +2405,10 @@ async def marketplace_flea_agent_detail(
     is_owner = entity.get("owner_user_id") == user.get("id")
     is_admin = is_user_admin(user["id"], conn)
     ctx = _build_context(
-        request, user=user,
-        source="flea", kind="agent",
+        request,
+        user=user,
+        source="flea",
+        kind="agent",
         entity_id=entity_id,
         plugin_name=entity["name"],
         inner_name=agent_name,
@@ -2267,7 +2417,9 @@ async def marketplace_flea_agent_detail(
         is_admin=is_admin,
     )
     return templates.TemplateResponse(
-        request, "marketplace_item_detail.html", ctx,
+        request,
+        "marketplace_item_detail.html",
+        ctx,
     )
 
 
@@ -2277,7 +2429,8 @@ async def marketplace_guide_curated(
     user: dict = Depends(get_current_user),
 ):
     ctx = _build_context(
-        request, user=user,
+        request,
+        user=user,
         guide_title="Submit a skill or plugin to Curated Marketplace",
         guide_kind="curated",
     )
@@ -2290,7 +2443,8 @@ async def marketplace_guide_flea(
     user: dict = Depends(get_current_user),
 ):
     ctx = _build_context(
-        request, user=user,
+        request,
+        user=user,
         guide_title="Upload to Flea Market",
         guide_kind="flea",
     )
@@ -2322,24 +2476,21 @@ async def marketplace_format_guide(
     from markdown_it import MarkdownIt
     from pathlib import Path
 
-    md_path = (
-        Path(__file__).resolve().parent.parent.parent
-        / "docs" / "curated-marketplace-format.md"
-    )
+    md_path = Path(__file__).resolve().parent.parent.parent / "docs" / "curated-marketplace-format.md"
     try:
         md_text = md_path.read_text(encoding="utf-8")
     except OSError:
-        md_text = (
-            "# Format guide unavailable\n\n"
-            "The source markdown file is missing from this deployment."
-        )
+        md_text = "# Format guide unavailable\n\nThe source markdown file is missing from this deployment."
     rendered = MarkdownIt("commonmark", {"breaks": False}).enable("table").render(md_text)
     ctx = _build_context(
-        request, user=user,
+        request,
+        user=user,
         rendered_html=rendered,
     )
     return templates.TemplateResponse(
-        request, "marketplace_format_guide.html", ctx,
+        request,
+        "marketplace_format_guide.html",
+        ctx,
     )
 
 
@@ -2363,25 +2514,22 @@ async def documentation_api(
 
     from app.version import APP_VERSION
 
-    md_path = (
-        Path(__file__).resolve().parent.parent.parent
-        / "docs" / "api-reference.md"
-    )
+    md_path = Path(__file__).resolve().parent.parent.parent / "docs" / "api-reference.md"
     try:
         md_text = md_path.read_text(encoding="utf-8")
     except OSError:
-        md_text = (
-            "# API reference unavailable\n\n"
-            "The source markdown file is missing from this deployment."
-        )
+        md_text = "# API reference unavailable\n\nThe source markdown file is missing from this deployment."
     rendered = MarkdownIt("commonmark", {"breaks": False}).enable("table").render(md_text)
     ctx = _build_context(
-        request, user=user,
+        request,
+        user=user,
         rendered_html=rendered,
         app_version=APP_VERSION,
     )
     return templates.TemplateResponse(
-        request, "documentation_api.html", ctx,
+        request,
+        "documentation_api.html",
+        ctx,
     )
 
 
@@ -2392,6 +2540,7 @@ async def admin_tables(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     from app.instance_config import get_data_source_type
+
     repo = table_registry_repo()
     tables = repo.list_all()
     # Branch the register-modal layout server-side so the JS doesn't have
@@ -2544,7 +2693,8 @@ async def admin_adoption_user_page(
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     ctx = _build_context(
-        request, user=user,
+        request,
+        user=user,
         target_user_id=user_id,
         target_user_email=target.get("email") or "",
     )
@@ -2586,6 +2736,7 @@ async def admin_group_detail_page(
     """Single-group detail page — header + members table. Resource grants
     live on /admin/grants (deep-linked from here)."""
     from app.api.access import _is_google_managed, _mapped_email
+
     g = user_groups_repo().get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -2748,7 +2899,8 @@ async def admin_store_submissions_page(
         sort_by=valid_sort,
         sort_order=valid_order,
         lifecycle=lifecycle,
-        limit=limit, skip=skip,
+        limit=limit,
+        skip=skip,
     )
 
     # Resolve submitter_id → email for the active-filter chip when set.
@@ -2763,8 +2915,10 @@ async def admin_store_submissions_page(
     current_page = (skip // limit) + 1
 
     ctx = _build_context(
-        request, user=user,
-        items=items, total=total,
+        request,
+        user=user,
+        items=items,
+        total=total,
         status_filter=status or "",
         submitter_filter=submitter or "",
         submitter_email=submitter_email,
@@ -2773,8 +2927,10 @@ async def admin_store_submissions_page(
         version_filter=version or "",
         sort_filter=valid_sort or "",
         order_filter=valid_order or "",
-        limit=limit, skip=skip,
-        pages=pages, current_page=current_page,
+        limit=limit,
+        skip=skip,
+        pages=pages,
+        current_page=current_page,
     )
     return templates.TemplateResponse(request, "admin_store_submissions.html", ctx)
 
@@ -2812,8 +2968,10 @@ async def admin_store_submission_detail_page(
             entity_visibility_status = ent.get("visibility_status")
             entity_version_no = ent.get("version_no")
             from app.api.store import _version_no_for_submission
+
             submission_version_no = _version_no_for_submission(
-                ent, submission_id,
+                ent,
+                submission_id,
             )
             # Build a version-switcher: every submission row linked to
             # this entity, sorted newest first, with its derived v#.
@@ -2845,18 +3003,21 @@ async def admin_store_submission_detail_page(
                 ).fetchall()
             ]
             for row in ent_sub_rows:
-                sibling_submissions.append({
-                    "id": row["id"],
-                    "status": row.get("status"),
-                    "version": row.get("version"),
-                    "created_at": row.get("created_at"),
-                    "version_no": history_by_sub.get(row["id"]),
-                    "reviewed_by_model": row.get("reviewed_by_model"),
-                    "is_current": row["id"] == submission_id,
-                })
+                sibling_submissions.append(
+                    {
+                        "id": row["id"],
+                        "status": row.get("status"),
+                        "version": row.get("version"),
+                        "created_at": row.get("created_at"),
+                        "version_no": history_by_sub.get(row["id"]),
+                        "reviewed_by_model": row.get("reviewed_by_model"),
+                        "is_current": row["id"] == submission_id,
+                    }
+                )
 
     other_count = store_submissions_repo().count_for_submitter(
-        sub["submitter_id"], exclude_id=submission_id,
+        sub["submitter_id"],
+        exclude_id=submission_id,
     )
 
     user_repo = users_repo()
@@ -2891,12 +3052,14 @@ async def admin_store_submission_detail_page(
         submission_id,
     ]
     submission_audit_rows = audit_repo().query_for_resources(
-        submission_resources, limit=100,
+        submission_resources,
+        limit=100,
     )
     entity_audit_rows: list = []
     if sub.get("entity_id"):
         entity_audit_rows = audit_repo().query_for_resources(
-            [f"store_entity:{sub['entity_id']}"], limit=100,
+            [f"store_entity:{sub['entity_id']}"],
+            limit=100,
         )
         # Drop entity-scoped rows that are actually submission audits for
         # OTHER versions of the same entity (the helper writes them at
@@ -2905,8 +3068,7 @@ async def admin_store_submission_detail_page(
         # entity lifecycle (archive / install / delete) here without
         # other versions' verdict noise leaking in.
         entity_audit_rows = [
-            r for r in entity_audit_rows
-            if not (r.get("action") or "").startswith("store.submission.")
+            r for r in entity_audit_rows if not (r.get("action") or "").startswith("store.submission.")
         ]
     actor_cache: dict = {}
 
@@ -2920,14 +3082,17 @@ async def admin_store_submission_detail_page(
                 urow = user_repo.get_by_id(uid)
                 actor_cache[uid] = (urow or {}).get("email") or uid
             row["actor_email"] = actor_cache[uid]
+
     _resolve_actor(submission_audit_rows)
     _resolve_actor(entity_audit_rows)
     # Combine for back-compat with the existing template var name.
     audit_rows = submission_audit_rows
 
     ctx = _build_context(
-        request, user=user,
-        sub=sub, other_count=other_count,
+        request,
+        user=user,
+        sub=sub,
+        other_count=other_count,
         override_email=override_email,
         audit_rows=audit_rows,
         submission_audit_rows=submission_audit_rows,
@@ -2998,7 +3163,6 @@ async def admin_workspace_prompt_page(
     return templates.TemplateResponse(request, "admin_workspace_prompt.html", ctx)
 
 
-
 @router.get("/admin/tokens", response_class=HTMLResponse)
 async def admin_tokens_page(
     request: Request,
@@ -3043,13 +3207,14 @@ async def profile_page(
     # google_sync rows (`grp_acme_legal@workspace.example.com` → `Legal`). The
     # Jinja template just renders these without env lookups.
     from app.api.access import _derive_origin
+
     prefix = os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip().lower()
     for m in memberships:
         m["origin"] = _derive_origin(m)
         if m["origin"] == "google_sync" and m["name"] and m["name"] not in ("Admin", "Everyone"):
             local = m["name"].split("@", 1)[0]
             if prefix and local.lower().startswith(prefix):
-                local = local[len(prefix):]
+                local = local[len(prefix) :]
             local = local.lstrip("_- \t")
             if not local:
                 local = m["name"].split("@", 1)[0]
@@ -3061,9 +3226,7 @@ async def profile_page(
     # troubleshooting section renders the caller's OWN decoded JWT +
     # Google-sync snapshot — their own data, no debug gate on the read.
     _SENSITIVE_USER_COLUMNS = ("password_hash", "setup_token", "reset_token")
-    user_record_safe = {
-        k: v for k, v in user.items() if k not in _SENSITIVE_USER_COLUMNS
-    }
+    user_record_safe = {k: v for k, v in user.items() if k not in _SENSITIVE_USER_COLUMNS}
     raw_token = _read_session_token(request)
 
     ctx = _build_context(
@@ -3105,8 +3268,7 @@ async def me_profile_refetch_groups(
         relevant = [g.lower() for g in fetched_list]
 
     has_ext = conn.execute(
-        "SELECT 1 FROM information_schema.columns "
-        "WHERE table_name = 'user_groups' AND column_name = 'external_id'"
+        "SELECT 1 FROM information_schema.columns WHERE table_name = 'user_groups' AND column_name = 'external_id'"
     ).fetchone()
     select_ext = "g.external_id" if has_ext else "NULL"
     current_rows = conn.execute(
@@ -3248,6 +3410,7 @@ async def chat_page(
     # link is hidden for them too, this guards a direct URL hit.
     from app.auth.access import can_access
     from app.resource_types import ResourceType
+
     if not can_access(user["id"], ResourceType.CHAT.value, "chat", conn):
         return RedirectResponse("/")
     ctx = _build_context(request, user=user, conn=conn, current_user=user)
@@ -3262,9 +3425,7 @@ async def chat_page(
     return templates.TemplateResponse(request, "chat.html", ctx)
 
 
-def _chat_capability_snapshot(
-    conn: duckdb.DuckDBPyConnection, user: dict
-) -> dict:
+def _chat_capability_snapshot(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
     """Compute the empty-state capability panel data server-side.
 
     The previous shape called ``/api/catalog`` + ``/api/marketplaces`` from

@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.70.5] — 2026-06-09
+
+### Added
+- Slack identity binding is now a **one-click magic link** instead of a copy-paste code. When an unbound Slack user messages Agnes, the bot replies with a `…/slack/bind?code=NNNNNN` link; opening it while signed in to Agnes redeems the code server-side via the new auth-gated `GET /slack/bind` route and stamps `users.slack_user_id` — no copy-paste, and it's a one-time bind per Slack user. Security is unchanged: the route requires an Agnes login, so the code in the URL is inert on its own (it only binds the signed-in account). This also fills a gap — there was previously **no frontend UI at all** to redeem the code the bot handed out (the bot pointed at `/setup?slack=1`, which has no bind form), so binding could not actually be completed through the browser. Requires `PUBLIC_URL` (or `server.public_url`) set so the link is absolute. (#584)
+
 ## [0.70.4] — 2026-06-09
 
 ### Fixed

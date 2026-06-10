@@ -231,7 +231,7 @@ def test_agnes_unbound_user_gets_code(monkeypatch):
     cmd = {"command": "/agnes", "text": "hi", "user_id": "U_NEW",
            "channel_id": "C1", "response_url": "https://r/2"}
     __import__("asyncio").run(cmds.dispatch_command(app, cmd))
-    assert eph and "6-digit" in eph[0][1]
+    assert eph and "/slack/bind?code=" in eph[0][1]
     assert app.state.chat_manager._created == []   # no session for unbound
 
 
@@ -359,7 +359,7 @@ def test_agnes_status_unbound_gets_code(monkeypatch):
     cmd = {"command": "/agnes-status", "text": "", "user_id": "U_NEW",
            "channel_id": "C1", "response_url": "https://r/8"}
     __import__("asyncio").run(cmds.dispatch_command(app, cmd))
-    assert eph and "6-digit" in eph[0][1]
+    assert eph and "/slack/bind?code=" in eph[0][1]
 
 
 def test_ephemeral_command_sink_forwards_first_assistant_message(monkeypatch):
