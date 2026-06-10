@@ -100,6 +100,52 @@ class TestRemoteQuery:
         assert result.exit_code == 0
         assert "truncated" in result.output
 
+    def test_remote_query_bytes_scanned_notice_on_stderr(self):
+        """#393: a non-null bytes_scanned prints a human-readable dry-run
+        estimate to STDERR (mirrors the `truncated` notice)."""
+        payload = {
+            "columns": ["id"],
+            "rows": [[1]],
+            "truncated": False,
+            "bytes_scanned": 4_500_000_000,
+        }
+        with patch("cli.client.api_post", return_value=_resp(200, payload)):
+            result = runner.invoke(app, ["query", "SELECT id FROM web_sessions", "--remote"])
+        assert result.exit_code == 0
+        assert "BigQuery scanned" in result.stderr
+        assert "dry-run estimate" in result.stderr
+        # 4.5e9 bytes ~= 4.2 GB
+        assert "GB" in result.stderr
+
+    def test_remote_query_no_bytes_scanned_notice_when_none(self):
+        """#393: local-style payload (bytes_scanned None) emits no notice."""
+        payload = {"columns": ["id"], "rows": [[1]], "truncated": False, "bytes_scanned": None}
+        with patch("cli.client.api_post", return_value=_resp(200, payload)):
+            result = runner.invoke(app, ["query", "SELECT 1", "--remote"])
+        assert result.exit_code == 0
+        assert "BigQuery scanned" not in result.output
+
+    def test_remote_query_bytes_scanned_keeps_stdout_pure_json(self):
+        """#393: the bytes_scanned notice goes to STDERR only — `--format
+        json` stdout stays parseable JSON."""
+        payload = {
+            "columns": ["id"],
+            "rows": [[1]],
+            "truncated": False,
+            "bytes_scanned": 1_073_741_824,
+        }
+        with patch("cli.client.api_post", return_value=_resp(200, payload)):
+            result = runner.invoke(
+                app, ["query", "SELECT id FROM t", "--remote", "--format", "json"]
+            )
+        assert result.exit_code == 0
+        # stdout is pure JSON — no notice leaked in.
+        parsed = json.loads(result.stdout.strip())
+        assert parsed == [{"id": 1}]
+        assert "BigQuery scanned" not in result.stdout
+        # ...but the notice is present on stderr.
+        assert "BigQuery scanned" in result.stderr
+
     def test_remote_query_uses_long_timeout(self):
         """--remote passes the long-running QUERY_TIMEOUT_S to api_post.
 
