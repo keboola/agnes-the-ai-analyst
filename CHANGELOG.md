@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- **CLI out-of-date banner no longer prints a copy-paste command that 404s after a server upgrade.** The `agnes` out-of-date notice (`cli/update_check.py:format_outdated_notice`) used to emit `uv tool install --force <server>/cli/wheel/agnes-X.Y.Z-py3-none-any.whl` — a version-pinned URL the CLI caches for up to 24h. `GET /cli/wheel/{name}` serves only the *current* wheel, so once the server upgrades, the old pinned wheel is gone and the cached command 404s. The banner now recommends `agnes self-upgrade`, the supported path that re-probes `/cli/latest`, installs the current wheel, smoke-tests it, and rolls back on failure — it never 404s and always converges to the true latest even if the banner's version number lags. `UpdateInfo.download_url` is still populated and still consumed by `agnes self-upgrade`; server endpoints (`/cli/latest`, `/cli/wheel/{name}`, `/cli/download`) and the first-install setup-page instructions are unchanged. (#521)
 
 ### Removed
 
