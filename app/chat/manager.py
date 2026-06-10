@@ -415,8 +415,15 @@ class ChatManager:
         if live.state == SessionState.ACTIVE:
             live.active_seconds_accum += time.monotonic() - live.active_since
         live.state = SessionState.PAUSED
-        for t in live.tasks:
+        cancelled = list(live.tasks)
+        for t in cancelled:
             t.cancel()
+        # Drain the cancelled tasks before touching the provider: if pause()
+        # fails and we fall back to kill(), an un-awaited pump task would be
+        # orphaned and could write a frame into a handle kill() has already
+        # torn down.
+        if cancelled:
+            await asyncio.gather(*cancelled, return_exceptions=True)
         live.tasks = []
         live.current_pump = None
         live.current_wait = None
