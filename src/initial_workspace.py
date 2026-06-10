@@ -25,6 +25,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import threading
 import zipfile
 from dataclasses import dataclass, field
@@ -69,6 +70,12 @@ _WORKSPACE_SUBDIR = "workspace"
 # admin must commit + push a fix.
 _RESERVED_PATHS: tuple[str, ...] = (
     ".claude/init-complete",
+    # Per-workspace baseline of the last-installed template, written by
+    # ``save_template_baseline`` so ``agnes update-workspace`` can tell
+    # apart "the analyst edited this file" from "the template changed
+    # upstream" (3-way diff). If an admin's repo shipped it, a re-apply
+    # would clobber the baseline and break that comparison.
+    ".claude/agnes/installed-template.zip",
 )
 
 
@@ -455,6 +462,49 @@ class ExtractResult:
     created: list[str] = field(default_factory=list)
 
 
+@dataclass
+class UpdateResult:
+    """Outcome of :func:`update_workspace_from_template` (the 3-way
+    backup-aware re-apply used by ``agnes update-workspace``).
+
+    - ``created``    — files in the template that did not exist on disk.
+    - ``updated``    — files the analyst had NOT touched (on-disk content
+                       matched the stored baseline) → overwritten in place,
+                       no ``.bak`` needed.
+    - ``backed_up``  — files the analyst HAD changed (on-disk content
+                       differed from the baseline, or no baseline existed)
+                       → original copied to ``<name>.bak.<ts>`` first, then
+                       overwritten. Each tuple is ``(rel_path, bak_rel_path)``.
+
+    Files present on disk but absent from the template are left untouched
+    and are NOT reported here (analyst-local additions survive silently).
+    """
+
+    created: list[str] = field(default_factory=list)
+    updated: list[str] = field(default_factory=list)
+    backed_up: list[tuple[str, str]] = field(default_factory=list)
+
+
+def _assert_safe_entry(name: str, workspace: Path) -> None:
+    """Reject a zip entry name that would escape ``workspace``.
+
+    Raises ``ValueError`` on ``..`` traversal, absolute paths, or an entry
+    that resolves outside ``workspace``. Shared by
+    :func:`extract_zip_to_workspace` and
+    :func:`update_workspace_from_template` so both extraction paths apply
+    the identical path-safety contract.
+    """
+    if name.startswith("/") or ".." in name.split("/"):
+        raise ValueError(f"unsafe zip entry: {name!r}")
+    target = (workspace / name).resolve()
+    try:
+        target.relative_to(workspace)
+    except ValueError as exc:
+        raise ValueError(
+            f"unsafe zip entry escapes workspace: {name!r}"
+        ) from exc
+
+
 def extract_zip_to_workspace(zip_bytes: bytes, workspace: Path) -> ExtractResult:
     """Validate then extract every zip entry into ``workspace``.
 
@@ -472,15 +522,7 @@ def extract_zip_to_workspace(zip_bytes: bytes, workspace: Path) -> ExtractResult
             name = info.filename
             if not name or name.endswith("/"):
                 continue
-            if name.startswith("/") or ".." in name.split("/"):
-                raise ValueError(f"unsafe zip entry: {name!r}")
-            target = (workspace / name).resolve()
-            try:
-                target.relative_to(workspace)
-            except ValueError as exc:
-                raise ValueError(
-                    f"unsafe zip entry escapes workspace: {name!r}"
-                ) from exc
+            _assert_safe_entry(name, workspace)
 
         for info in zf.infolist():
             name = info.filename
@@ -568,6 +610,224 @@ def initialize_workspace_from_template(
         override=True,
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Baseline storage + backup-aware re-apply (`agnes update-workspace`)
+#
+# The baseline is the EXACT zip Agnes last installed into this workspace,
+# kept at ``<workspace>/.claude/agnes/installed-template.zip``. It is the
+# reference point that lets a re-apply tell apart:
+#   * "the analyst edited this file"  (disk != baseline) → back it up
+#   * "the template changed upstream" (disk == baseline) → silent overwrite
+# Written on first override `agnes init` and rewritten after every update.
+# ---------------------------------------------------------------------------
+
+_BASELINE_REL = Path(".claude") / "agnes" / "installed-template.zip"
+
+
+def _baseline_path(workspace: Path) -> Path:
+    return workspace / _BASELINE_REL
+
+
+def save_template_baseline(workspace: Path, zip_bytes: bytes) -> Path:
+    """Persist ``zip_bytes`` as the workspace's installed-template baseline.
+
+    Best-effort atomic write (temp file in the same dir + ``os.replace``).
+    Returns the baseline path.
+    """
+    path = _baseline_path(workspace)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_str = tempfile.mkstemp(prefix=".installed-template.", dir=str(path.parent))
+    tmp_path = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(zip_bytes)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+def load_template_baseline(workspace: Path) -> Optional[bytes]:
+    """Return the stored baseline zip bytes, or ``None`` when the workspace
+    has no baseline (older CLI installed it, or it was deleted).
+    """
+    path = _baseline_path(workspace)
+    if not path.is_file():
+        return None
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _zip_entries(zip_bytes: bytes) -> dict[str, bytes]:
+    """Read a zip into a ``{relative_name: content}`` map, skipping dir
+    entries. Used to build the baseline lookup for the 3-way diff.
+    """
+    out: dict[str, bytes] = {}
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        for info in zf.infolist():
+            name = info.filename
+            if not name or name.endswith("/"):
+                continue
+            out[name] = zf.read(name)
+    return out
+
+
+def _unique_bak_path(path: Path) -> Path:
+    """Return ``path`` if free, else append ``.1``, ``.2``, … until free.
+
+    Guards the (rare) case of two updates landing in the same UTC second
+    on the same file — the timestamp alone would collide and silently
+    overwrite the first backup.
+    """
+    if not path.exists():
+        return path
+    i = 1
+    while True:
+        candidate = path.with_name(f"{path.name}.{i}")
+        if not candidate.exists():
+            return candidate
+        i += 1
+
+
+@dataclass
+class UpdatePlan:
+    """Dry classification of a re-apply — what WOULD happen, nothing written.
+
+    ``backed_up`` holds the relative names that would be backed up (the
+    ``.bak`` filenames are only decided at apply time, since they depend on
+    the timestamp + collision resolution).
+    """
+
+    created: list[str] = field(default_factory=list)
+    updated: list[str] = field(default_factory=list)
+    backed_up: list[str] = field(default_factory=list)
+
+
+def classify_workspace_update(
+    workspace: Path,
+    new_zip_bytes: bytes,
+    baseline_zip_bytes: Optional[bytes],
+) -> UpdatePlan:
+    """Compute the 3-way diff plan WITHOUT touching disk.
+
+    Per file in ``new_zip_bytes`` (compared against on-disk state and the
+    stored baseline):
+
+    1. Not on disk                     → ``created``.
+    2. On disk, identical to template  → no-op (omitted from the plan).
+    3. On disk, == baseline            → analyst didn't touch it → ``updated``.
+    4. On disk, != baseline / no
+       baseline entry                  → analyst changed it → ``backed_up``.
+
+    Shared by :func:`update_workspace_from_template` (decision) and the CLI
+    preview/confirmation so both see the identical classification.
+    """
+    workspace = workspace.resolve()
+    new_files = _zip_entries(new_zip_bytes)
+    baseline_files = _zip_entries(baseline_zip_bytes) if baseline_zip_bytes else {}
+
+    created: list[str] = []
+    updated: list[str] = []
+    backed_up: list[str] = []
+
+    for name, new_content in new_files.items():
+        target = workspace / name
+        if not target.exists():
+            created.append(name)
+            continue
+        try:
+            disk_content: Optional[bytes] = target.read_bytes()
+        except OSError:
+            disk_content = None
+        if disk_content == new_content:
+            # Already matches the template — nothing to do.
+            continue
+        baseline_content = baseline_files.get(name)
+        if baseline_content is None or disk_content != baseline_content:
+            backed_up.append(name)
+        else:
+            updated.append(name)
+
+    return UpdatePlan(
+        created=sorted(created),
+        updated=sorted(updated),
+        backed_up=sorted(backed_up),
+    )
+
+
+def update_workspace_from_template(
+    workspace: Path,
+    new_zip_bytes: bytes,
+    baseline_zip_bytes: Optional[bytes],
+    *,
+    agnes_version: str,
+    server_url: str,
+    template_source: Optional[str],
+    template_sha: Optional[str],
+) -> UpdateResult:
+    """Backup-aware re-apply of the template zip into an existing workspace.
+
+    Classification is delegated to :func:`classify_workspace_update`; this
+    function executes the plan: ``created``/``updated`` files are written in
+    place, ``backed_up`` files have their on-disk content copied to
+    ``<name>.bak.<ts>`` first. Files on disk but absent from the template
+    are left untouched. After a clean pass the baseline is rewritten to
+    ``new_zip_bytes`` and the override sentinel refreshed with the new
+    ``template_sha``.
+
+    Raises ``ValueError`` (via :func:`_assert_safe_entry`) on any unsafe
+    entry, before writing anything — caller decides how to surface it.
+    """
+    workspace = workspace.resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    # Validate the whole archive up front so a single unsafe entry aborts
+    # before any file (or .bak) is written.
+    new_files = _zip_entries(new_zip_bytes)
+    for name in new_files:
+        _assert_safe_entry(name, workspace)
+
+    plan = classify_workspace_update(workspace, new_zip_bytes, baseline_zip_bytes)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backed_up: list[tuple[str, str]] = []
+
+    # Back up analyst-modified files first (preserve their work), then write.
+    for name in plan.backed_up:
+        target = workspace / name
+        disk_content = target.read_bytes()
+        bak = _unique_bak_path(target.with_name(f"{target.name}.bak.{ts}"))
+        bak.write_bytes(disk_content)
+        backed_up.append((name, bak.relative_to(workspace).as_posix()))
+
+    for name in plan.created + plan.updated + plan.backed_up:
+        target = workspace / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(new_files[name])
+
+    # Persist the new baseline + refresh the sentinel only after a clean pass.
+    save_template_baseline(workspace, new_zip_bytes)
+    write_sentinel(
+        workspace,
+        agnes_version=agnes_version,
+        server_url=server_url,
+        template_source=template_source,
+        template_sha=template_sha,
+        override=True,
+    )
+
+    return UpdateResult(
+        created=list(plan.created),
+        updated=list(plan.updated),
+        backed_up=sorted(backed_up),
+    )
 
 
 def initialize_default_workspace(
