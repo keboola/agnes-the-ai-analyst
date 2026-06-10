@@ -227,7 +227,7 @@ def pull(skip_materialize: bool = False) -> dict:
             need remote-mode access.
 
     Returns a summary: ``{"tables_updated": N, "parquets_total": N,
-    "errors": [...], "elapsed_s": N}``.
+    "errors": [...], "duration_s": N}``.
 
     Run at the start of a session to make sure local data is fresh.
     Equivalent to ``agnes pull`` on the command line.
@@ -256,7 +256,13 @@ def pull(skip_materialize: bool = False) -> dict:
         "tables_removed": result.tables_removed,
         "parquets_total": result.parquets_total,
         "errors": result.errors,
-        "elapsed_s": round(result.elapsed_s, 1) if hasattr(result, "elapsed_s") else None,
+        # `PullResult.duration_s` is the wall-clock duration of the call.
+        # Was historically referenced here as `result.elapsed_s` with a
+        # `hasattr` guard that always returned False — every MCP `pull`
+        # response returned `"elapsed_s": None` regardless of how long
+        # the call took (Devin Review BUG_0001 on #594). Renamed the key
+        # to `duration_s` to match `PullResult` + `--json` output.
+        "duration_s": round(result.duration_s, 1),
     }
 
 

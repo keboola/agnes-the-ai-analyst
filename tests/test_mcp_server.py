@@ -285,6 +285,34 @@ class TestPullTool:
         assert result["tables_updated"] == 2
         assert result["parquets_total"] == 5
 
+    def test_pull_returns_duration_s_from_result(self, tmp_path):
+        """Regression — Devin Review BUG_0001 on #594.
+
+        The MCP `pull` tool used to read `result.elapsed_s` (with a
+        `hasattr` guard) and return `"elapsed_s": None` — the actual
+        attribute on `PullResult` is `duration_s`, so every MCP `pull`
+        response erased the real wall-clock duration. The fix renames
+        the response key to `duration_s` and reads the correct attribute.
+        """
+        srv = _import_server()
+        from cli.lib.pull import PullResult
+        mock_result = PullResult(tables_updated=1, parquets_total=3, duration_s=12.345)
+
+        with (
+            patch("cli.mcp.server.get_server_url", return_value="http://localhost:8000"),
+            patch("cli.mcp.server.get_token", return_value="tok_test"),
+            patch("cli.lib.pull.run_pull", return_value=mock_result),
+            patch.dict("os.environ", {"AGNES_LOCAL_DIR": str(tmp_path)}),
+        ):
+            result = srv.pull()
+
+        # The fix: key is duration_s (matches PullResult + --json), value
+        # carries the actual wall-clock seconds, not None.
+        assert "duration_s" in result
+        assert result["duration_s"] == 12.3  # round(12.345, 1)
+        # And the broken key is gone — locks against silent re-introduction.
+        assert "elapsed_s" not in result
+
     def test_pull_raises_without_token(self):
         srv = _import_server()
         with (
