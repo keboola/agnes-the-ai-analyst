@@ -409,11 +409,10 @@ def _chat_env(state_backend, tmp_path, monkeypatch):
         return ChatRepository(conn)
     else:
         # PG path: ChatRepository's __init__ detects use_pg() and delegates.
-        import duckdb
-
         from src.db import _ensure_schema
+        from src.duckdb_conn import _open_duckdb
 
-        conn = duckdb.connect(":memory:")
+        conn = _open_duckdb(":memory:")
         _ensure_schema(conn)
         from app.chat.persistence import ChatRepository
 
