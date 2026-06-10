@@ -392,6 +392,6 @@ class E2BProvider:
     async def destroy(self, *, sandbox_id: str) -> None:
         """Delete a paused sandbox without resuming it. Used by the paused-TTL reaper."""
         try:
-            await AsyncSandbox._cls_kill(sandbox_id=sandbox_id, api_key=self._api_key)
+            await AsyncSandbox.kill(sandbox_id, api_key=self._api_key)
         except Exception:
             logger.exception("destroy: sandbox kill failed for %s", sandbox_id)

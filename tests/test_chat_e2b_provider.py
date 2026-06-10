@@ -434,23 +434,22 @@ def test_keepalive_calls_set_timeout():
 
 
 def test_destroy_kills_sandbox_by_id_without_resuming():
-    """destroy() kills the sandbox via the static class kill without connecting."""
+    """destroy() kills the sandbox via the public class-form kill without connecting."""
 
     async def _run():
         with patch("app.chat.e2b_provider.AsyncSandbox") as MockSandbox:
-            MockSandbox._cls_kill = AsyncMock(return_value=True)
+            MockSandbox.kill = AsyncMock(return_value=True)
             prov = E2BProvider(api_key="sk-destroy", template_id="t")
             await prov.destroy(sandbox_id="sbx_dead_456")
 
             # Must NOT call connect (no resume)
             MockSandbox.connect.assert_not_called()
-            # Must call the static kill
-            MockSandbox._cls_kill.assert_awaited_once()
-            kill_kwargs = MockSandbox._cls_kill.call_args
-            assert kill_kwargs.kwargs.get("sandbox_id") == "sbx_dead_456" or (
-                kill_kwargs.args and kill_kwargs.args[0] == "sbx_dead_456"
-            )
-            assert kill_kwargs.kwargs.get("api_key") == "sk-destroy"
+            # Must call the public class-form kill
+            MockSandbox.kill.assert_awaited_once()
+            kill_call = MockSandbox.kill.call_args
+            # sandbox_id is the first positional arg
+            assert kill_call.args[0] == "sbx_dead_456"
+            assert kill_call.kwargs.get("api_key") == "sk-destroy"
 
     asyncio.run(_run())
 
