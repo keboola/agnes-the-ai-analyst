@@ -158,8 +158,7 @@
                 <button class="copy-btn" data-copy-target="install-cmd-mkdir-unix">Copy</button>
             </div>
             <div class="install-cmd" role="tabpanel" data-os-panel="windows" hidden>
-                <span class="multiline" id="install-cmd-mkdir-windows">New-Item -ItemType Directory -Force -Path "$HOME\Desktop\{{ workspace_dir }}" | Out-Null
-Set-Location "$HOME\Desktop\{{ workspace_dir }}"</span>
+                <span class="multiline" id="install-cmd-mkdir-windows">New-Item -ItemType Directory -Force -Path "$HOME\Desktop\{{ workspace_dir }}" | Out-Null; Set-Location "$HOME\Desktop\{{ workspace_dir }}"</span>
                 <button class="copy-btn" data-copy-target="install-cmd-mkdir-windows">Copy</button>
             </div>
             <div class="callout-hint">
