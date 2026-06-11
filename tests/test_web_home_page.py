@@ -483,6 +483,45 @@ def test_setup_section_renders_for_not_onboarded(fresh_db):
         assert_element(body2, "div", class_="setup-section-header")
 
 
+def test_step2_windows_command_is_single_line(fresh_db):
+    """FAI-50 regression: Step 2 "Pick a folder" Windows/PowerShell command
+    must be ONE physical line so a single paste both creates the folder and
+    `cd`s into it. Previously it was two newline-separated statements; on
+    paste, the embedded newline submitted only the first line (`New-Item`)
+    and left `Set-Location` unsent in the PowerShell input buffer — the
+    shell never entered the new folder. The two statements are joined with
+    `;` (works in Windows PowerShell 5.1 and pwsh 7; `&&` would parse-fail
+    on 5.1), mirroring the macOS/Linux tab's single-line `mkdir … && cd …`."""
+    import re
+
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(
+            conn, email="fai50-step2@example.com", onboarded=False
+        )
+    finally:
+        conn.close()
+        close_system_db()
+
+    body = _client().get("/home", cookies={"access_token": sess}).text
+
+    m = re.search(
+        r'id="install-cmd-mkdir-windows">(.*?)</span>', body, re.DOTALL
+    )
+    assert m, "Step 2 Windows command span not found"
+    cmd = m.group(1)
+
+    # Both statements present, joined by a semicolon on one line.
+    assert "New-Item -ItemType Directory" in cmd
+    assert "Set-Location" in cmd
+    assert "| Out-Null; Set-Location" in cmd
+    # The regression guard: no newline anywhere inside the command — a
+    # multi-line paste is exactly what broke PowerShell execution.
+    assert "\n" not in cmd.strip()
+
+
 def test_welcome_footnotes_render_overview_when_set(fresh_db, monkeypatch):
     """Setting `AGNES_INSTANCE_OVERVIEW` (mirrors `instance.overview`
     yaml) injects raw HTML into the welcome-hero footnotes via the
