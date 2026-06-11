@@ -349,6 +349,28 @@ def run_scan(
         WhereValidationError, QuotaExceededError, FileNotFoundError, PermissionError,
         ValueError, BqAccessError
     """
+    # `from_query` mode (#616): materialize a raw SELECT, reusing /api/query's
+    # RBAC + registry-gating but bypassing the remote_scan_too_large cap. The
+    # raw query carries its own projection, so select/where/order_by are
+    # rejected as mutually exclusive.
+    if isinstance(raw_request, dict) and raw_request.get("from_query"):
+        if any(raw_request.get(k) for k in ("select", "where", "order_by", "limit")):
+            raise ValueError(
+                "from_query is mutually exclusive with select/where/order_by/limit"
+            )
+        from app.api.query import run_remote_select_to_arrow
+        table = run_remote_select_to_arrow(
+            conn, user, raw_request["from_query"], bq=bq, quota=quota,
+        )
+        ipc = arrow_table_to_ipc_bytes(table)
+        if len(ipc) > _max_result_bytes():
+            row_count = table.num_rows
+            avg = max(1, len(ipc) // max(row_count, 1))
+            keep = min(row_count, _max_result_bytes() // max(avg, 1))
+            table = table.slice(0, keep)
+            ipc = arrow_table_to_ipc_bytes(table)
+        return ipc
+
     req = ScanRequest(**raw_request)
     repo = table_registry_repo()
     row = repo.get(req.table_id)

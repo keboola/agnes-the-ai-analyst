@@ -1,5 +1,6 @@
 """Query commands — agnes query."""
 
+import hashlib
 import json
 import os
 import re
@@ -8,6 +9,10 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+
+# Default TTL for auto-snapshots created by the --auto-snapshot fallback
+# (#616). Reused if still fresh, rebuilt once elapsed.
+_AUTO_SNAPSHOT_TTL = "24h"
 
 
 def query_command(
@@ -18,6 +23,15 @@ def query_command(
     json_flag: bool = typer.Option(False, "--json", help="Shortcut for --format json"),
     limit: int = typer.Option(1000, "--limit", help="Max rows to return"),
     stdin: bool = typer.Option(False, "--stdin", help="Read SQL from stdin as JSON {\"sql\": \"...\"}"),
+    auto_snapshot: bool = typer.Option(
+        False, "--auto-snapshot",
+        help=(
+            "On a remote VIEW query that trips the BigQuery scan cap, "
+            "auto-materialize the view as a local snapshot and re-run the "
+            "query against it (reuses a fresh snapshot within 24h). "
+            "Requires --remote; no-op for physical-table queries."
+        ),
+    ),
 ):
     """Execute SQL query against DuckDB."""
     # `--json` is an alias for `--format json` (issue #345 D). Paste-prompts
@@ -60,7 +74,7 @@ def query_command(
         resolved_sql = sql
 
     if remote:
-        _query_remote(resolved_sql, fmt, limit)
+        _query_remote(resolved_sql, fmt, limit, auto_snapshot=auto_snapshot)
     else:
         _query_local(resolved_sql, fmt, limit)
 
@@ -117,7 +131,110 @@ def _query_local(sql: str, fmt: str, limit: int):
         conn.close()
 
 
-def _query_remote(sql: str, fmt: str, limit: int):
+def _normalize_sql(sql: str) -> str:
+    """Normalize SQL for deterministic hashing: collapse all whitespace to
+    single spaces, strip, lowercase. Two queries that differ only in
+    whitespace/case map to the same auto-snapshot id (#616)."""
+    return re.sub(r"\s+", " ", (sql or "").strip()).lower()
+
+
+def _auto_snapshot_id(sql: str) -> str:
+    """Deterministic `auto_<sha8>` snapshot id for a query (#616)."""
+    digest = hashlib.sha256(_normalize_sql(sql).encode("utf-8")).hexdigest()[:8]
+    return f"auto_{digest}"
+
+
+def _snapshot_is_fresh(snapshot_id: str) -> bool:
+    """True if a snapshot named ``snapshot_id`` exists with an unexpired TTL.
+
+    A snapshot with no `expires_at` (manually created without --ttl) is NOT
+    treated as fresh for auto-reuse — auto-snapshots always carry a TTL, so
+    a TTL-less one of the same name is some other artifact we shouldn't lean
+    on. Returns False on any read error (rebuild is the safe default)."""
+    from datetime import datetime, timezone
+
+    from cli.commands.snapshot import _snap_dir
+    from cli.snapshot_meta import read_meta
+
+    try:
+        meta = read_meta(_snap_dir(), snapshot_id)
+    except Exception:
+        return False
+    if meta is None or not meta.expires_at:
+        return False
+    try:
+        exp = datetime.fromisoformat(meta.expires_at.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return False
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    return exp > datetime.now(timezone.utc)
+
+
+def _create_auto_snapshot(*, original_sql, view_target, snapshot_id, ttl):
+    """Materialize the over-cap view as a local snapshot via the
+    `snapshot create --from-query` path (#616).
+
+    Delegates to the snapshot command's create so the materialize, view
+    registration, meta write, and TTL stamping all stay in one place.
+    Raises typer.Exit on failure (propagated to the caller)."""
+    from cli.commands.snapshot import _create_snapshot
+
+    _create_snapshot(
+        table_id=snapshot_id,
+        from_query=original_sql,
+        as_name=snapshot_id,
+        ttl=ttl,
+        force=True,
+        quiet=True,
+    )
+
+
+def _substitute_view(sql: str, view: str, replacement: str) -> str:
+    """Replace word-boundary occurrences of the bare view identifier ``view``
+    with ``replacement`` in ``sql`` (#616). Leaves substrings inside larger
+    identifiers untouched (`\\b` anchors)."""
+    return re.sub(rf"\b{re.escape(view)}\b", replacement, sql)
+
+
+def _try_auto_snapshot_fallback(sql: str, fmt: str, limit: int, detail: dict) -> bool:
+    """Handle a structured `remote_scan_too_large` 400 for VIEW targets by
+    materializing the view(s) as local snapshot(s) and re-running the query
+    locally (#616). Returns True if the fallback ran (success path printed
+    output), False if it doesn't apply (caller falls back to re-raise)."""
+    if detail.get("reason") != "remote_scan_too_large":
+        return False
+    view_targets = detail.get("view_targets") or []
+    if not view_targets:
+        return False
+
+    from cli.commands.snapshot import _format_size
+
+    snapshot_id = _auto_snapshot_id(sql)
+    scan = _format_size(int(detail.get("scan_bytes") or 0))
+    cap = _format_size(int(detail.get("limit_bytes") or 0))
+
+    rewritten = sql
+    for view in view_targets:
+        if not _snapshot_is_fresh(snapshot_id):
+            _create_auto_snapshot(
+                original_sql=sql,
+                view_target=view,
+                snapshot_id=snapshot_id,
+                ttl=_AUTO_SNAPSHOT_TTL,
+            )
+        typer.echo(
+            f"[auto-snapshot] {view} -> {snapshot_id} ({scan} > {cap} cap)",
+            err=True,
+        )
+        rewritten = _substitute_view(rewritten, view, snapshot_id)
+
+    # Re-run the rewritten SQL against the LOCAL snapshot (normal local path).
+    _query_local(rewritten, fmt, limit)
+    return True
+
+
+def _query_remote(sql: str, fmt: str, limit: int, *, auto_snapshot: bool = False):
     """Run query against server DuckDB via API."""
     from cli.client import QUERY_TIMEOUT_S, api_post
     from cli.error_render import render_error
@@ -136,6 +253,17 @@ def _query_remote(sql: str, fmt: str, limit: int):
             body = resp.json()
         except Exception:
             body = resp.text
+        # #616: opt-in auto-recovery from the BigQuery scan cap on VIEW
+        # targets. Only fires for the structured remote_scan_too_large 400
+        # with non-empty view_targets; everything else re-raises unchanged.
+        if (
+            auto_snapshot
+            and resp.status_code == 400
+            and isinstance(body, dict)
+            and isinstance(body.get("detail"), dict)
+        ):
+            if _try_auto_snapshot_fallback(sql, fmt, limit, body["detail"]):
+                return
         typer.echo(render_error(resp.status_code, body), err=True)
         raise typer.Exit(1)
 
