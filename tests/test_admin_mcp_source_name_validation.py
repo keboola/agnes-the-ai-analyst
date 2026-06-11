@@ -63,3 +63,59 @@ def test_rename_rejects_unsafe_name(seeded_app):
     )
     assert r.status_code == 400
     assert "identifier" in r.json()["detail"]
+
+
+def test_rename_strips_whitespace_before_storing(seeded_app):
+    """A padded-but-valid name must be stored STRIPPED — _merge_source_patch
+    used to pass the raw payload value through, so ' padded' bypassed the
+    identifier check at attach time (the orchestrator rejects it)."""
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id="src_pad", name="old_name", transport="http",
+        url="https://up.example.com/mcp",
+    )
+    conn.close()
+    client = seeded_app["client"]
+    r = client.put(
+        "/api/admin/mcp-sources/src_pad",
+        headers=_auth(seeded_app),
+        json={"name": "  padded_name  "},
+    )
+    assert r.status_code == 200
+    g = client.get("/api/admin/mcp-sources/src_pad", headers=_auth(seeded_app))
+    assert g.json()["name"] == "padded_name"
+
+
+def test_rename_padded_same_name_stores_clean(seeded_app):
+    """' existing_name ' equals the existing name after strip — validation is
+    rightly skipped, but the STORED name must stay the clean one."""
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id="src_same", name="same_name", transport="http",
+        url="https://up.example.com/mcp",
+    )
+    conn.close()
+    client = seeded_app["client"]
+    r = client.put(
+        "/api/admin/mcp-sources/src_same",
+        headers=_auth(seeded_app),
+        json={"name": "  same_name  "},
+    )
+    assert r.status_code == 200
+    g = client.get("/api/admin/mcp-sources/src_same", headers=_auth(seeded_app))
+    assert g.json()["name"] == "same_name"
+
+
+def test_rename_whitespace_only_name_rejected(seeded_app):
+    conn = get_system_db()
+    MCPSourceRepository(conn).upsert(
+        id="src_blank", name="keep_name", transport="http",
+        url="https://up.example.com/mcp",
+    )
+    conn.close()
+    r = seeded_app["client"].put(
+        "/api/admin/mcp-sources/src_blank",
+        headers=_auth(seeded_app),
+        json={"name": "   "},
+    )
+    assert r.status_code == 400

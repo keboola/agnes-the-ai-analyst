@@ -472,6 +472,8 @@ async def update_mcp_source(
 
     # If renaming, ensure no collision against a different source.
     new_name = (payload.name or "").strip() if payload.name is not None else None
+    if payload.name is not None and not new_name:
+        raise HTTPException(status_code=400, detail="name is required")
     if new_name and new_name != existing.get("name"):
         _require_safe_source_name(new_name)
         collision = repo.get_by_name(new_name)
@@ -479,6 +481,13 @@ async def update_mcp_source(
             raise HTTPException(status_code=409, detail="name_exists")
 
     merged = _merge_source_patch(existing, payload)
+    if new_name is not None:
+        # Store the STRIPPED name. _merge_source_patch passes the raw payload
+        # value through, so a padded " valid_name" would validate above (on
+        # the stripped form) yet be persisted with whitespace — which the
+        # orchestrator's identifier check then rejects at attach time, the
+        # exact silent failure this validation exists to prevent.
+        merged["name"] = new_name
     before = {k: existing.get(k) for k in ("name", "transport", "command", "url", "enabled")}
     try:
         repo.upsert(**merged)
