@@ -73,6 +73,16 @@ class PullResult:
 
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
 
+# #596 — hash-mismatch recovery in `_download_one`. A download whose bytes
+# don't match the manifest hash is treated as transient (corrupt mid-flight
+# transfer, a server-side parquet rewrite that raced the manifest read) and
+# re-downloaded up to this many extra times before the table is recorded as
+# a hard error. The prior good `<tid>.parquet` is preserved across the whole
+# loop (download lands in a sidecar; only a verified sidecar is promoted), so
+# even a persistent mismatch never leaves the table missing from disk.
+_DOWNLOAD_RETRIES = 2
+_DOWNLOAD_RETRY_BACKOFFS_S = (0.5, 1.0)
+
 
 def _read_progress_interval_seconds() -> float:
     """Seconds between forced progress emissions per file. Default 5 s.
@@ -536,8 +546,24 @@ def run_pull(
             One bound thread per call; stream_download is sync I/O so a
             ThreadPoolExecutor (not asyncio) is the right tool. The
             progress callback is thread-safe — Rich's Progress.update
-            and the textual fallback's lock both serialize internally."""
+            and the textual fallback's lock both serialize internally.
+
+            Durability contract (#596): the prior good `<tid>.parquet`
+            (if any) is NEVER unlinked before a fresh download has
+            verified. The download lands in a sidecar
+            `<tid>.parquet.verify.tmp`, the hash (or, on a hash-less
+            legacy manifest, the PAR1 structural check) is checked
+            there, and only on success is the sidecar `os.replace`d into
+            the final target — atomic, so a reader never sees a
+            half-written or mismatched file. A hash mismatch is treated
+            as transient: the download+verify is retried up to
+            ``_DOWNLOAD_RETRIES`` times (small backoff between attempts)
+            before giving up. On persistent failure the sidecar is
+            removed, the OLD good parquet stays in place, and the table
+            is recorded under ``result.errors`` — the table is never
+            left missing from disk."""
             target = parquet_dir / f"{tid}.parquet"
+            sidecar = parquet_dir / f"{tid}.parquet.verify.tmp"
             expected_hash = server_tables[tid].get("hash", "")
             cb = None
             if progress is not None and tid in progress_tasks:
@@ -547,27 +573,66 @@ def run_pull(
             elif textual is not None:
                 def cb(n: int, _tid=tid):
                     textual.advance(_tid, n)
+
+            last_err: str | None = None
             try:
-                stream_download(f"/api/data/{tid}/download", str(target),
-                                progress_callback=cb)
-                if expected_hash:
-                    actual_hash = _file_md5(target)
-                    if actual_hash != expected_hash:
-                        target.unlink(missing_ok=True)
-                        raise ValueError(
-                            f"hash mismatch: expected {expected_hash[:12]}, got {actual_hash[:12]}"
+                for attempt in range(_DOWNLOAD_RETRIES + 1):
+                    try:
+                        # Download into a sidecar — the real target keeps
+                        # the prior good bytes until verification passes.
+                        stream_download(
+                            f"/api/data/{tid}/download", str(sidecar),
+                            progress_callback=cb,
                         )
-                elif not _is_valid_parquet(target):
-                    target.unlink(missing_ok=True)
-                    raise ValueError("not a valid parquet (missing PAR1 magic)")
-                entry = {
-                    "hash": expected_hash,
-                    "rows": server_tables[tid].get("rows", 0),
-                    "size_bytes": server_tables[tid].get("size_bytes", 0),
-                }
-                return tid, entry, None
-            except Exception as exc:
-                return tid, None, str(exc)
+                        if expected_hash:
+                            actual_hash = _file_md5(sidecar)
+                            if actual_hash != expected_hash:
+                                last_err = (
+                                    f"hash mismatch: expected "
+                                    f"{expected_hash[:12]}, got {actual_hash[:12]}"
+                                )
+                                sidecar.unlink(missing_ok=True)
+                                # Re-download on mismatch before giving up.
+                                if attempt < _DOWNLOAD_RETRIES:
+                                    time.sleep(
+                                        _DOWNLOAD_RETRY_BACKOFFS_S[
+                                            min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)
+                                        ]
+                                    )
+                                    continue
+                                # Persistent mismatch: prior good target
+                                # (if any) is untouched; record + bail.
+                                return tid, None, last_err
+                        elif not _is_valid_parquet(sidecar):
+                            # Pre-v49 / no-hash legacy path — unchanged
+                            # semantics, just verified on the sidecar.
+                            sidecar.unlink(missing_ok=True)
+                            raise ValueError(
+                                "not a valid parquet (missing PAR1 magic)"
+                            )
+                        # Verified — promote the sidecar atomically.
+                        os.replace(sidecar, target)
+                        entry = {
+                            "hash": expected_hash,
+                            "rows": server_tables[tid].get("rows", 0),
+                            "size_bytes": server_tables[tid].get("size_bytes", 0),
+                        }
+                        return tid, entry, None
+                    except Exception as exc:
+                        last_err = str(exc)
+                        sidecar.unlink(missing_ok=True)
+                        if attempt < _DOWNLOAD_RETRIES:
+                            time.sleep(
+                                _DOWNLOAD_RETRY_BACKOFFS_S[
+                                    min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)
+                                ]
+                            )
+                            continue
+                        return tid, None, last_err
+                # Loop exhausted without an explicit return (defensive).
+                return tid, None, last_err or "download failed"
+            finally:
+                sidecar.unlink(missing_ok=True)
 
         try:
             if workers <= 1:

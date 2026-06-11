@@ -210,6 +210,169 @@ def test_run_pull_skips_download_when_hash_matches_and_file_present(
     assert result.tables_updated == 0
 
 
+def test_download_one_retries_on_hash_mismatch_then_succeeds(
+    tmp_path, monkeypatch,
+):
+    """#596 (a): the first download yields md5 != manifest hash, the second
+    yields the matching hash. `_download_one`'s bounded retry loop must
+    re-download and land the parquet — tables_updated == 1, no error."""
+    canned_manifest = {
+        "tables": {"tbl1": {"hash": "good", "rows": 0, "size_bytes": 0}}
+    }
+    canned_memory = {"mandatory": [], "approved": []}
+    parquet_bytes = b"PAR1" + b"\x00" * 1000 + b"PAR1"
+
+    def _api_get(path, *args, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        if path == "/api/sync/manifest":
+            resp.json.return_value = canned_manifest
+        elif path == "/api/memory/bundle":
+            resp.json.return_value = canned_memory
+        resp.raise_for_status = lambda: None
+        return resp
+
+    download_calls = {"count": 0}
+
+    def _stream_download(path, target_path, progress_callback=None):
+        from pathlib import Path as _P
+        download_calls["count"] += 1
+        _P(target_path).write_bytes(parquet_bytes)
+        return len(parquet_bytes)
+
+    # md5 returns the wrong hash on the FIRST verify call, the right hash
+    # on the second (simulating a corrupt mid-flight transfer that clears
+    # on re-download).
+    md5_calls = {"count": 0}
+
+    def _file_md5(path):
+        md5_calls["count"] += 1
+        return "bad" if md5_calls["count"] == 1 else "good"
+
+    monkeypatch.setattr("cli.lib.pull.api_get", _api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.stream_download", _stream_download, raising=False)
+    monkeypatch.setattr("cli.lib.pull._is_valid_parquet", lambda p: True, raising=False)
+    monkeypatch.setattr("cli.lib.pull._file_md5", _file_md5, raising=False)
+    # Don't actually sleep between retries.
+    monkeypatch.setattr("cli.lib.pull.time.sleep", lambda s: None, raising=False)
+
+    result = run_pull(server_url="http://x", token="t", workspace=tmp_path)
+
+    assert download_calls["count"] == 2, (
+        "hash mismatch on attempt 1 must trigger exactly one re-download — "
+        f"got {download_calls['count']} download calls"
+    )
+    target = tmp_path / "server" / "parquet" / "tbl1.parquet"
+    assert target.exists(), "parquet must land after the retry succeeds"
+    assert result.tables_updated == 1
+    assert result.errors == [], "a recovered mismatch must record no error"
+    # The sidecar must not linger.
+    assert not (tmp_path / "server" / "parquet" / "tbl1.parquet.verify.tmp").exists()
+
+
+def test_download_one_preserves_old_file_on_persistent_hash_mismatch(
+    tmp_path, monkeypatch,
+):
+    """#596 (b): every download attempt yields a mismatching md5 AND a prior
+    good `<tid>.parquet` is already on disk. After run_pull the OLD file must
+    still EXIST (never deleted), tables_updated == 0, and the table is
+    recorded in result.errors."""
+    old_bytes = b"PAR1OLDGOODFILE" + b"\x00" * 100 + b"PAR1"
+    new_bytes = b"PAR1" + b"\xff" * 200 + b"PAR1"
+
+    # Seed a prior good parquet + matching sync_state so the download is
+    # forced (server hash differs from the local hash).
+    pq_dir = tmp_path / "server" / "parquet"
+    pq_dir.mkdir(parents=True)
+    target = pq_dir / "tbl1.parquet"
+    target.write_bytes(old_bytes)
+    from cli.config import save_sync_state
+    save_sync_state({
+        "tables": {"tbl1": {"hash": "oldhash", "rows": 0, "size_bytes": 0}},
+        "last_sync": "2026-01-01T00:00:00+00:00",
+    })
+
+    canned_manifest = {
+        "tables": {"tbl1": {"hash": "serverhash", "rows": 0, "size_bytes": 0}}
+    }
+    canned_memory = {"mandatory": [], "approved": []}
+
+    def _api_get(path, *args, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        if path == "/api/sync/manifest":
+            resp.json.return_value = canned_manifest
+        elif path == "/api/memory/bundle":
+            resp.json.return_value = canned_memory
+        resp.raise_for_status = lambda: None
+        return resp
+
+    def _stream_download(path, target_path, progress_callback=None):
+        # Always writes to the SIDECAR (the verify.tmp), never the real target.
+        from pathlib import Path as _P
+        assert target_path.endswith(".verify.tmp"), (
+            "download must land in the sidecar, not the live target — "
+            f"got {target_path}"
+        )
+        _P(target_path).write_bytes(new_bytes)
+        return len(new_bytes)
+
+    monkeypatch.setattr("cli.lib.pull.api_get", _api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.stream_download", _stream_download, raising=False)
+    monkeypatch.setattr("cli.lib.pull._is_valid_parquet", lambda p: True, raising=False)
+    # md5 NEVER matches the manifest hash 'serverhash'.
+    monkeypatch.setattr("cli.lib.pull._file_md5", lambda p: "alwaysbad", raising=False)
+    monkeypatch.setattr("cli.lib.pull.time.sleep", lambda s: None, raising=False)
+
+    result = run_pull(server_url="http://x", token="t", workspace=tmp_path)
+
+    assert target.exists(), "prior good parquet must NOT be deleted on persistent mismatch"
+    assert target.read_bytes() == old_bytes, "prior good bytes must be intact (unchanged)"
+    assert not (pq_dir / "tbl1.parquet.verify.tmp").exists(), "sidecar must be cleaned up"
+    assert result.tables_updated == 0
+    assert any(e.get("table") == "tbl1" for e in result.errors), (
+        "persistent mismatch must be recorded in result.errors"
+    )
+
+
+def test_download_one_legacy_no_hash_path_unchanged(tmp_path, monkeypatch):
+    """Pre-v49 / no-hash manifest still uses the `_is_valid_parquet` fallback.
+    A valid PAR1 sidecar lands; an invalid one is rejected with the same
+    'not a valid parquet' error and never overwrites a prior file."""
+    canned_manifest = {
+        # No "hash" key on the table -> legacy structural-check path.
+        "tables": {"tbl1": {"rows": 0, "size_bytes": 0}}
+    }
+    canned_memory = {"mandatory": [], "approved": []}
+    good = b"PAR1" + b"\x00" * 50 + b"PAR1"
+
+    def _api_get(path, *args, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        if path == "/api/sync/manifest":
+            resp.json.return_value = canned_manifest
+        elif path == "/api/memory/bundle":
+            resp.json.return_value = canned_memory
+        resp.raise_for_status = lambda: None
+        return resp
+
+    def _stream_download(path, target_path, progress_callback=None):
+        from pathlib import Path as _P
+        _P(target_path).write_bytes(good)
+        return len(good)
+
+    monkeypatch.setattr("cli.lib.pull.api_get", _api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.stream_download", _stream_download, raising=False)
+    # Real structural check passes for valid PAR1 bytes.
+    monkeypatch.setattr("cli.lib.pull._is_valid_parquet", lambda p: True, raising=False)
+    monkeypatch.setattr("cli.lib.pull.time.sleep", lambda s: None, raising=False)
+
+    result = run_pull(server_url="http://x", token="t", workspace=tmp_path)
+    assert (tmp_path / "server" / "parquet" / "tbl1.parquet").exists()
+    assert result.tables_updated == 1
+    assert result.errors == []
+
+
 def test_run_pull_dry_run_writes_nothing(tmp_path, fake_server):
     run_pull(server_url="http://x", token="t", workspace=tmp_path, dry_run=True)
     assert not (tmp_path / "server").exists()
