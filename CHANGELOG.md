@@ -11,8 +11,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
-- **Onboarding / guided tour.** A client-side spotlight tour that walks a signed-in user through the app. On the first authed visit an intro consent modal pops once ("Take a tour?"); accepting runs the spotlight, and either choice (or completing/exiting) sets a `localStorage` flag so it never auto-pops again. Each step can be skipped or ended (Skip / ✕ / Esc), and arrow keys / Enter drive it. Re-openable anytime from the `(?)` help icon in the nav header. The tour **renders in place on whatever page the user is on** — all spotlighted elements are nav anchors present in the header on every authenticated page, so no cross-page navigation occurs. Each step carries a wayfinding icon, a richer description, and a list of concrete "what you can do here" bullets, plus a progress bar; the spotlight breathes and the card animates in (all `prefers-reduced-motion`-aware). The steps are **role-split** (admin vs non-admin) and filtered server-side, so non-admins never receive admin-only steps. Steps are the single source of truth in `app/web/onboarding.py` — injected as JSON, never hardcoded in JS — and a contract test (`tests/test_onboarding_not_outdated.py`) fails if any step points at a nav anchor that no longer exists, drops its icon, or thins its tips below two, so the tour can't silently go stale or hollow out as the UI changes. Generic + vendor-agnostic; styles read `--ds-*` tokens (flips with blue/dark themes). New `app/web/onboarding.py`, `app/web/static/css/tour.css`, `app/web/static/js/tour.js`, and `_tour.html` partial included by both base layouts.
-- **`agnes update-workspace`** — safe re-apply of the Initial Workspace Template into an already-initialised workspace, **without losing analyst edits**. Reads the server URL + PAT from saved config (like `agnes pull`, no `--server-url`), warns + requires a literal `YES` (or `--yes` for the slash-command flow), and does a 3-way diff against a per-workspace baseline: files the analyst changed are backed up to `<name>.bak.<timestamp>` before being refreshed, files they hadn't touched are updated in place, new template files are created, and files not in the template are left untouched. `--dry-run` previews the plan. **IWT-only** — a clean no-op (touches nothing, exits 0) on instances with no Initial Workspace Template configured; it never re-pulls parquets. The baseline is the exact installed template zip, stored **client-side** under `~/.config/agnes/workspace-baselines/` (keyed by a hash of the workspace path, so it never pollutes the workspace tree or lands in a git commit), written on the first override `agnes init` so the first update has a reference point (older workspaces with no baseline conservatively back up every changed file). A canonical `/update-workspace` slash command ships under `cli/templates/commands/` for IWT admins to copy into their template repo. (FAI-24)
 
 ### Changed
 
@@ -21,7 +19,112 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+## [0.71.3] — 2026-06-11
+
+### Added
+- **Onboarding / guided tour.** A client-side spotlight tour that walks a signed-in user through the app. On the first authed visit an intro consent modal pops once ("Take a tour?"); accepting runs the spotlight, and either choice (or completing/exiting) sets a `localStorage` flag so it never auto-pops again. Each step can be skipped or ended (Skip / ✕ / Esc), and arrow keys / Enter drive it. Re-openable anytime from the `(?)` help icon in the nav header. The tour **renders in place on whatever page the user is on** — all spotlighted elements are nav anchors present in the header on every authenticated page, so no cross-page navigation occurs. Each step carries a wayfinding icon, a richer description, and a list of concrete "what you can do here" bullets, plus a progress bar; the spotlight breathes and the card animates in (all `prefers-reduced-motion`-aware). The steps are **role-split** (admin vs non-admin) and filtered server-side, so non-admins never receive admin-only steps. Steps are the single source of truth in `app/web/onboarding.py` — injected as JSON, never hardcoded in JS — and a contract test (`tests/test_onboarding_not_outdated.py`) fails if any step points at a nav anchor that no longer exists, drops its icon, or thins its tips below two, so the tour can't silently go stale or hollow out as the UI changes. Generic + vendor-agnostic; styles read `--ds-*` tokens (flips with blue/dark themes). New `app/web/onboarding.py`, `app/web/static/css/tour.css`, `app/web/static/js/tour.js`, and `_tour.html` partial included by both base layouts. (#573)
+
+### Internal
 - **`DEBUG=0` can now override the `LOCAL_DEV_MODE` debug-toolbar default.** `LOCAL_DEV_MODE` still implies `DEBUG` (so dev gets the toolbar without setting both), but an explicit `DEBUG` env now wins either way — set `DEBUG=0` to run an auth-bypassed local-dev instance *without* the debug toolbar, whose per-request instrumentation (it also profiles the compose healthcheck) can saturate the event loop and peg CPU on heavy HTML pages. `docker-compose.local-dev.yml` sets `DEBUG=0` by default for a snappy UI preview; set it to `1` to get the toolbar back.
+
+## [0.71.2] — 2026-06-11
+
+### Fixed
+- **VM auto-upgrade no longer loses a deferred upgrade.** `scripts/ops/agnes-auto-upgrade.sh` detected changes by comparing the local tag digest before/after `docker compose pull` — but when the recreate was deferred because a sync was in flight, that tick's pull had already moved the local tag, so every subsequent tick saw "no change" and the deferred recreate never happened: the VM silently kept running the old image until the *next* release shipped (observed live: 8+ hours on a stale image with the new tag pulled beside it). Detection is now drift-based — the running `app` container's image ID is compared against what the tag points to (stateless; also self-heals a stopped/missing container), and config-file changes are tracked against a marker recording the hash at the last successful recreate (`/opt/agnes/.agnes-config-applied`, lazily initialized) — so a deferred change is re-detected on every tick until the recreate actually succeeds. A failing `docker compose pull` (registry blip) no longer aborts the script before drift detection — a warning is logged and the local tag is consulted either way. VMs pick the fix up automatically via the script's own self-update step. (#610)
+
+## [0.71.1] — 2026-06-11
+
+### Added
+
+### Changed
+
+### Fixed
+- Chat: the idle reaper now garbage-collects DEAD session entries (3x-crash
+  leftovers) from the live registry — previously they leaked one per crashed
+  session for the server's lifetime. (#605 follow-up)
+
+### Removed
+
+### Internal
+
+## [0.71.0] — 2026-06-11
+
+### Fixed
+- **Chat `_linger_then_pause` no longer spins forever on a 3× runner crash.** If a turn was in flight (`turn_in_flight=True`), all sinks disconnected, and the runner then crashed 3 consecutive times (terminal `SessionState.DEAD` set by `_wait_for_exit_and_respawn` without emitting a `done` frame to clear the flag), the linger task spun at 50 ms intervals indefinitely — the `live.state != SessionState.ACTIVE` guard at the bottom of the function was only evaluated *after* the spin exited, which it never did. The `_live` entry also leaked (the reaper skips `DEAD` sessions), making this a slow memory grow on long-running servers. The spin now checks `live.state` each tick and bails cleanly when the session is no longer `ACTIVE`. Devin Review BUG_0001 follow-up from #605.
+
+## [0.70.21] — 2026-06-11
+
+### Added
+- Chat sessions survive browser disconnects: in-flight turns always complete and
+  persist; orphaned sessions pause their sandbox (memory snapshot) and resume with
+  full agent context on reconnect or on the next Slack message. New knobs:
+  `chat.on_detach` (`pause`|`kill`, default `pause`), `chat.detach_linger_seconds`
+  (default 60), `chat.paused_ttl_seconds` (default 7 days). Mid-turn reconnects
+  replay the in-progress turn to the new WebSocket; force-killed mid-turn output is
+  persisted as an interrupted assistant message. Paused sandboxes are
+  garbage-collected after `chat.paused_ttl_seconds`. Active-time accounting for
+  `chat.max_session_seconds` excludes paused intervals. Keepalive heartbeat extends
+  the sandbox's external timeout while sinks are attached; `lifecycle on_timeout=pause`
+  acts as a crash net. Session listing exposes a `paused` boolean field. The web UI
+  shows "Resuming session…" status between WS open and the ready frame, and a "paused"
+  chip in the sidebar for paused sessions. (#605)
+
+### Deprecated
+- `chat.e2b_kill_on_ws_disconnect` — use `chat.on_detach: kill` instead. The old key
+  still maps to `on_detach: kill` with a deprecation warning in the server log, but
+  will be removed in a future minor version. (#605)
+
+### Internal
+- Schema v73: `chat_sessions` gains nullable `sandbox_id`, `runner_pid`,
+  `sandbox_paused_at` (DuckDB `_v72_to_v73` + Alembic `0020_chat_sandbox_refs_v73`;
+  deliberately un-indexed — DuckDB 1.5.3 FK+index constraint).
+- Test suite: per-xdist-worker `DATA_DIR` isolation removes sporadic cross-worker
+  `system.duckdb` file-lock failures. (#605)
+
+## [0.70.20] — 2026-06-10
+
+### Fixed
+- **MCP `pull` tool now returns wall-clock duration.** The tool used to read `result.elapsed_s` with a `hasattr` guard — but `PullResult` exposes `duration_s`, so the guard always returned `False` and every MCP `pull` response carried `"elapsed_s": None`, silently erasing the real call duration that REST + `agnes pull --json` correctly surface. The response key is now `duration_s` (matching `PullResult` and the rest of the codebase) and reads the right attribute. Devin Review BUG_0001 follow-up from #594.
+
+## [0.70.19] — 2026-06-10
+
+### Fixed
+- **Slash commands now work on Socket Mode deployments.** The Socket Mode dispatcher only routed `events_api` envelopes, so `SLACK_TRANSPORT=socket` instances silently dropped `/agnes`, `/agnes-new` and `/agnes-status` (the command never reached the server). `slash_commands` envelopes are now acked within the 3s contract — `/agnes help` is answered entirely inside the ack payload, everything else acks with an interim "working on it" ephemeral — and then routed through the same `dispatch_command` path the HTTP endpoint uses, with the same `response_url` recovery backstop. Interactive (button) routing over Socket Mode remains a later phase. (#606)
+
+## [0.70.18] — 2026-06-10
+
+### Added
+- **Legacy-hook nudge on `agnes pull`.** Workspaces bootstrapped by the old server-upload flow (a `SessionEnd`/`SessionStart` hook referencing `collect_session` or `server/scripts/`, with none of the modern `agnes init` hooks) never invoke `agnes self-upgrade`, so the CLI drifts stale indefinitely. `agnes pull` now detects this layout via `workspace_has_legacy_hooks()` and emits a single stderr nudge — `This workspace uses an outdated hook layout — run \`agnes init\` to enable auto-update.` — pointing the analyst at `agnes init`. It does NOT auto-migrate; the analyst owns when their hook layout changes. Suppressed under `--quiet` (the SessionStart hook path) and `--json`. (#601)
+
+### Fixed
+- **Silent `agnes self-upgrade` failures now surface.** The SessionStart hook runs `agnes self-upgrade --quiet 2>/dev/null || true`, so a failing auto-update (network, uv/pip resolution, smoke-test rollback) was invisible and the CLI could sit stale for weeks. Each self-upgrade outcome is now persisted to `$AGNES_CONFIG_DIR/upgrade_status.json` (`last_attempt_ts`, `last_outcome`, `consecutive_failures`); the quiet path stays silent but increments the counter on failure / resets it on success, and the next NON-quiet `agnes` command warns once — `agnes self-upgrade has failed N times — run \`agnes self-upgrade\` to see the error.` — when three or more attempts in a row have failed. `--quiet` commands and the in-progress smoke-test subprocess stay silent. A transient network blip (server unreachable without `--force`) no longer resets the consecutive-failure counter — the offline branch now takes no opinion on the CLI state (Devin Review BUG_0001). (#601)
+
+## [0.70.17] — 2026-06-10
+
+### Added
+- **Per-snapshot TTL expiry for local snapshots (#407).** `agnes snapshot create --ttl <7d|24h|90m>` stamps an `expires_at` instant on the snapshot; `agnes refresh --ttl …` re-anchors it. A lazy sweep at the start of `agnes pull` deletes any snapshots whose TTL has elapsed (best-effort, never blocks a pull; skipped under `--dry-run`/`--json`, one quiet stderr notice per swept snapshot otherwise), and `agnes snapshot prune --expired` runs the same sweep on demand. `agnes snapshot list` now shows an `EXPIRES` column. There is no global default TTL — only `--ttl` snapshots ever expire; existing snapshots and legacy `meta.json` files (no `expires_at` key) are unaffected. The lazy sweep re-reads + re-verifies the expiry under `snapshot_lock` (closing a TOCTOU race against a concurrent `agnes snapshot refresh --ttl <d>` that re-anchors `expires_at`, Devin Review BUG_0001). (#599)
+
+## [0.70.16] — 2026-06-10
+
+### Added
+- **Per-source partial rebuilds.** `POST /api/sync/trigger?source=<source_type>` (and the new `agnes admin sync --source <type>`) scope a sync to a single registered source: only that source's local + materialized rows are rebuilt, leaving the other source's `extract.duckdb` untouched. Useful on dual-source deployments where a BigQuery refresh should not pay the cost of re-extracting every Keboola table. A bare trigger / `agnes admin sync` still rebuilds everything. Unknown source types fail fast with `422`. (#602)
+
+## [0.70.15] — 2026-06-10
+
+### Added
+- **`bytes_scanned` on the query API + `agnes query --remote` output (#393).** `POST /api/query` now returns the BigQuery dry-run scan estimate as `bytes_scanned` (bytes) for `query_mode='remote'` queries (`None` for local DuckDB queries — no BQ tables involved), exposing it to REST and MCP consumers. `agnes query --remote` prints a human-readable `BigQuery scanned ~<size> (dry-run estimate)` line to STDERR (mirroring the existing `truncated` notice), so json/csv stdout stays pure. (#598)
+
+### Fixed
+- **Admin Adoption dashboard now renders users from the `users` table.** The `/admin/adoption` list and per-user drill-down used to display the email local-part from `usage_session_summary` and guess initials/avatar from it, so names, circle initials, and the circle color all disagreed with `/admin/users`. The `/api/admin/adoption/top-users` rows are now enriched server-side with the real `name`/`email`/`registered` flag (joined by `user_id`, with an unambiguous email-local-part fallback for pre-v45 rows), and both pages render the avatar circle via a shared `AgnesIdentity` helper (`app/web/static/js/identity.js`) — identical initials and stable color to `/admin/users`. Session identities with no matching user show the bare email with an empty circle. (#604)
+
+## [0.70.14] — 2026-06-10
+
+### Added
+- **`agnes update-workspace`** — safe re-apply of the Initial Workspace Template into an already-initialised workspace, **without losing analyst edits**. Reads the server URL + PAT from saved config (like `agnes pull`, no `--server-url`), warns + requires a literal `YES` (or `--yes` for the slash-command flow), and does a 3-way diff against a per-workspace baseline: files the analyst changed are backed up to `<name>.bak.<timestamp>` before being refreshed, files they hadn't touched are updated in place, new template files are created, and files not in the template are left untouched. `--dry-run` previews the plan. **IWT-only** — a clean no-op (touches nothing, exits 0) on instances with no Initial Workspace Template configured; it never re-pulls parquets. The baseline is the exact installed template zip, stored **client-side** under `~/.config/agnes/workspace-baselines/` (keyed by a hash of the workspace path, so it never pollutes the workspace tree or lands in a git commit), written on the first override `agnes init` so the first update has a reference point (older workspaces with no baseline conservatively back up every changed file). A canonical `/update-workspace` slash command ships under `cli/templates/commands/` for IWT admins to copy into their template repo. (FAI-24, #595)
+
+### Fixed
+- **Security: Agnes now protects its own PAT on disk and reduces its transcript exposure (#580, Findings 1-min + 2).** Plaintext token files are written with mode `0o600` (owner-only) instead of being left at the ambient umask (commonly `0o644`, world-readable) — at all three write sites: `cli.config.save_token` (`~/.config/agnes/token.json`) and the generated Cowork `setup.py` (`token.json` + both `.agnes-creds.json` copies). Each uses an atomic write (temp file chmod'd before rename) and is best-effort + Windows-safe (the chmod is skipped where the platform/filesystem doesn't honor it; native ACLs apply). `agnes init` now deletes the transient `~/.agnes/token` bootstrap file once it has consumed the token, and the setup prompt gained an explicit note that the heredoc PAT lands in the uploaded session transcript, with a `/agnes-private` reminder to keep the bootstrap session out of `agnes push`. (Storing the PAT in the OS keychain — Finding 3 — is deferred pending a security review; `0o600` plaintext is the accepted baseline.) (#580, #600)
 
 ## [0.70.13] — 2026-06-10
 

@@ -362,3 +362,93 @@ def test_start_slack_socket_transport_failclosed_on_preflight(monkeypatch, caplo
     asyncio.run(main_mod._start_slack_socket_transport(app))
     assert app.state.slack_socket_dispatcher is None
     assert any("Slack Socket Mode disabled" in r.message for r in caplog.records)
+
+
+def test_socket_dispatcher_routes_slash_commands(monkeypatch):
+    """A slash_commands envelope is acked FIRST (with a 'working on it'
+    ephemeral payload, mirroring the HTTP endpoint's sync ack body) and the
+    raw payload dict — same fields as the HTTP form body — is handed to
+    dispatch_command verbatim."""
+    pytest.importorskip("slack_sdk")
+    from services.slack_bot.socket_mode_client import SocketModeDispatcher
+
+    order: list[str] = []
+    acks: list[tuple[str, object]] = []
+    dispatched: list[dict] = []
+
+    class FakeClient:
+        async def send_socket_mode_response(self, resp):
+            order.append(f"ack:{resp.envelope_id}")
+            acks.append((resp.envelope_id, getattr(resp, "payload", None)))
+
+    class FakeReq:
+        type = "slash_commands"
+        envelope_id = "env-3"
+        payload = {
+            "command": "/agnes-status", "text": "", "user_id": "U1",
+            "channel_id": "C1", "response_url": "https://r/1",
+        }
+
+    async def fake_dispatch(app, cmd):
+        order.append("dispatch")
+        dispatched.append(cmd)
+
+    import services.slack_bot.socket_mode_client as smc
+    monkeypatch.setattr(smc, "dispatch_command", fake_dispatch)
+
+    disp = SocketModeDispatcher(app=object(), app_token="xapp-x", bot_token="xoxb-y")
+
+    async def _run():
+        await disp._on_request(FakeClient(), FakeReq())
+        import asyncio
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    import asyncio
+    asyncio.run(_run())
+
+    assert order[0] == "ack:env-3", order
+    assert order.index("ack:env-3") < order.index("dispatch")
+    assert dispatched == [FakeReq.payload]
+    # The ack carries the interim ephemeral so the user sees feedback <3s.
+    assert acks[0][1] and "Working on it" in str(acks[0][1])
+
+
+def test_socket_dispatcher_slash_help_answers_in_ack(monkeypatch):
+    """`/agnes` with empty/help text is answered synchronously inside the
+    ack payload (mirrors the HTTP endpoint) — no dispatch is scheduled."""
+    pytest.importorskip("slack_sdk")
+    from services.slack_bot.commands import _help_body
+    from services.slack_bot.socket_mode_client import SocketModeDispatcher
+
+    acks: list[object] = []
+    dispatched: list[dict] = []
+
+    class FakeClient:
+        async def send_socket_mode_response(self, resp):
+            acks.append(getattr(resp, "payload", None))
+
+    class FakeReq:
+        type = "slash_commands"
+        envelope_id = "env-4"
+        payload = {"command": "/agnes", "text": "help", "user_id": "U1",
+                   "channel_id": "C1", "response_url": "https://r/2"}
+
+    async def fake_dispatch(app, cmd):
+        dispatched.append(cmd)
+
+    import asyncio
+    import services.slack_bot.socket_mode_client as smc
+    monkeypatch.setattr(smc, "dispatch_command", fake_dispatch)
+
+    disp = SocketModeDispatcher(app=object(), app_token="xapp-x", bot_token="xoxb-y")
+
+    async def _run():
+        await disp._on_request(FakeClient(), FakeReq())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    asyncio.run(_run())
+
+    assert dispatched == []
+    assert acks and acks[0] and acks[0]["text"] == _help_body()

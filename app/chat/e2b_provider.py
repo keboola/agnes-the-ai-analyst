@@ -161,6 +161,7 @@ class E2BSandboxHandle:
     """SandboxHandle adapter wrapping a single E2B background command."""
 
     pid: int
+    sandbox_id: str  # provider-scoped id; populated from sandbox.sandbox_id at spawn/resume
     stdin: _StreamWriterAdapter
     stdout: _StreamReaderAdapter
     stderr: _StreamReaderAdapter
@@ -258,12 +259,16 @@ class E2BProvider:
 
         # Per Q4: allow_internet_access=True. Egress allowlist lives only
         # in the PreToolUse hook bundled with the workspace template.
+        # lifecycle on_timeout=pause: if the in-process reaper misses a session
+        # (e.g. a crashed server) E2B pauses the sandbox instead of destroying
+        # it, keeping the process and its memory intact for later resume.
         sandbox = await AsyncSandbox.create(
             template=self._template_id,
             api_key=self._api_key,
             envs=dict(env),
             timeout=self._timeout,
             allow_internet_access=True,
+            lifecycle={"on_timeout": "pause"},
         )
 
         # Provider-side runner upload. The runner module isn't baked into
@@ -329,9 +334,64 @@ class E2BProvider:
 
         return E2BSandboxHandle(
             pid=cmd_handle.pid,
+            sandbox_id=sandbox.sandbox_id,
             stdin=stdin_adapter,
             stdout=stdout_adapter,
             stderr=stderr_adapter,
             _sandbox=sandbox,
             _cmd_handle=cmd_handle,
         )
+
+    async def pause(self, handle: E2BSandboxHandle) -> None:
+        """Snapshot the sandbox (memory + fs + running processes) and detach.
+
+        The E2B sandbox is frozen but the runner process and its memory
+        survive inside the snapshot. Requires e2b SDK >=2.0.
+        """
+        await handle._sandbox.pause()
+
+    async def resume(
+        self,
+        *,
+        sandbox_id: str,
+        runner_pid: int,
+        env: dict[str, str],  # noqa: ARG002 — accepted for protocol symmetry; E2B restores env from snapshot
+    ) -> E2BSandboxHandle:
+        """Reconnect a paused sandbox and reattach to the still-running runner.
+
+        AsyncSandbox.connect() auto-resumes the paused sandbox. Then
+        commands.connect(pid) reattaches streaming callbacks to the process
+        whose memory survived in the snapshot.
+        """
+        sandbox = await AsyncSandbox.connect(sandbox_id, api_key=self._api_key)
+
+        stdout_adapter = _StreamReaderAdapter()
+        stderr_adapter = _StreamReaderAdapter()
+
+        cmd_handle = await sandbox.commands.connect(
+            runner_pid,
+            on_stdout=lambda c: stdout_adapter.feed(_coerce_to_bytes(c)),
+            on_stderr=lambda c: stderr_adapter.feed(_coerce_to_bytes(c)),
+            timeout=0,
+        )
+
+        return E2BSandboxHandle(
+            pid=runner_pid,
+            sandbox_id=sandbox_id,
+            stdin=_StreamWriterAdapter(sandbox, runner_pid),
+            stdout=stdout_adapter,
+            stderr=stderr_adapter,
+            _sandbox=sandbox,
+            _cmd_handle=cmd_handle,
+        )
+
+    async def keepalive(self, handle: E2BSandboxHandle, *, timeout_seconds: int) -> None:
+        """Extend the sandbox's external timeout so it outlasts the in-process reaper."""
+        await handle._sandbox.set_timeout(timeout_seconds)
+
+    async def destroy(self, *, sandbox_id: str) -> None:
+        """Delete a paused sandbox without resuming it. Used by the paused-TTL reaper."""
+        try:
+            await AsyncSandbox.kill(sandbox_id, api_key=self._api_key)
+        except Exception:
+            logger.exception("destroy: sandbox kill failed for %s", sandbox_id)

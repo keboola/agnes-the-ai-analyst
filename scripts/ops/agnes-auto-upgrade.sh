@@ -135,7 +135,6 @@ hash_config_files() {
       sha256sum "$f" 2>/dev/null || printf 'missing %s\n' "$f"
     done ) | sort | sha256sum | awk '{print $1}'
 }
-CONFIG_BEFORE=$(hash_config_files)
 for f in "${CONFIG_FILES[@]}"; do
   if curl -fsSL "$RAW_BASE/$f" -o "/opt/agnes/$f.new" 2>/dev/null; then
     mv -f "/opt/agnes/$f.new" "/opt/agnes/$f"
@@ -172,21 +171,67 @@ elif [ -s "$STATE_DIR/certs/fullchain.pem" ] && [ -s "$STATE_DIR/certs/privkey.p
     logger -t agnes-auto-upgrade "WARN: certs present but Caddyfile missing/empty — skipping tls overlay"
 fi
 
-BEFORE=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
 # COMPOSE_FILE is exported above; docker compose picks it up automatically.
-docker compose pull >/dev/null 2>&1
-AFTER=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
-if [ "$BEFORE" != "$AFTER" ] || [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ]; then
+# `|| …` so a pull failure (registry outage, transient network/auth blip)
+# doesn't abort the script under `set -e` BEFORE drift detection runs —
+# a pending upgrade whose image was already pulled on a previous tick
+# must still be applied from the local store. The warning keeps the
+# failure visible in syslog instead of silently masking it.
+docker compose pull >/dev/null 2>&1 \
+  || logger -t agnes-auto-upgrade "WARN: docker compose pull failed — proceeding with locally available images"
+
+# Drift-based change detection — STATELESS on the image side, marker-based
+# on the config side. The previous implementation compared the local tag
+# digest before/after the pull; that permanently LOST a deferred upgrade:
+# the deferring tick's pull had already moved the local tag, so the next
+# tick saw before == after, concluded "no change", and never recreated —
+# the container stayed on the old image until the *next* release shipped
+# (observed live: a VM ran a stale image for 8+ hours with the new tag
+# sitting pulled beside it). Comparing what is actually RUNNING against
+# what the tag points to has no such window: drift persists across ticks
+# until a recreate succeeds.
+TAG_ID=$(docker images --no-trunc --format '{{.ID}}' "$IMAGE" | head -1)
+RUNNING_CID=$(docker compose ps -q app 2>/dev/null | head -1)
+RUNNING_ID=""
+if [ -n "$RUNNING_CID" ]; then
+    RUNNING_ID=$(docker inspect --format '{{.Image}}' "$RUNNING_CID" 2>/dev/null || true)
+fi
+# No local tag image (pull failed on a fresh host) → nothing to compare,
+# skip. No running app container → recreate (compose up starts it).
+IMAGE_DRIFT=0
+if [ -n "$TAG_ID" ] && [ "$RUNNING_ID" != "$TAG_ID" ]; then
+    IMAGE_DRIFT=1
+fi
+
+# Config drift had the same lost-defer hole — the re-fetch above already
+# rewrote the files before the defer exits, so a before/after comparison
+# forgets the change by the next tick. Track the hash that was in effect
+# at the last successful recreate in a marker file; drift = current hash
+# != marker. Lazily initialized so the first tick after this script lands
+# on a VM records the status quo instead of forcing a spurious recreate.
+CONFIG_MARKER=/opt/agnes/.agnes-config-applied
+if [ ! -f "$CONFIG_MARKER" ]; then
+    printf '%s\n' "$CONFIG_AFTER" > "$CONFIG_MARKER"
+fi
+CONFIG_APPLIED=$(cat "$CONFIG_MARKER" 2>/dev/null || true)
+CONFIG_DRIFT=0
+if [ "$CONFIG_AFTER" != "$CONFIG_APPLIED" ]; then
+    CONFIG_DRIFT=1
+fi
+
+if [ "$IMAGE_DRIFT" = "1" ] || [ "$CONFIG_DRIFT" = "1" ]; then
     REASON=()
-    [ "$BEFORE" != "$AFTER" ] && REASON+=("image digest")
-    [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ] && REASON+=("config files")
+    [ "$IMAGE_DRIFT" = "1" ] && REASON+=("image drift")
+    [ "$CONFIG_DRIFT" = "1" ] && REASON+=("config files")
 
     # Sync-in-flight defer guard. ``docker compose up -d`` recreates the
     # uvicorn worker, which kills any in-flight extractor / materialized
-    # pass that was holding ``_sync_lock``. The next 5-min cron tick
-    # picks up the same change — we just delay the upgrade until the
-    # current sync finishes (typically minutes for small tables, longer
-    # for big Snowflake UNLOADs). curl with a 5s timeout: if the app is
+    # pass that was holding ``_sync_lock`` — so we delay the upgrade until
+    # the current sync finishes (typically minutes for small tables,
+    # longer for big Snowflake UNLOADs). Deferring is SAFE with the drift
+    # detection above: the drift persists until a recreate actually
+    # succeeds, so the next 5-min tick re-detects the same pending change
+    # — there is no state to lose. curl with a 5s timeout: if the app is
     # unreachable for any reason (already crashed, port not bound,
     # older app version without /api/sync/status), we proceed with the
     # upgrade — being stuck on a wedged previous version is worse than
@@ -208,8 +253,8 @@ if [ "$BEFORE" != "$AFTER" ] || [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ]; then
     # matches). The Dockerfile pins runtime to uid:gid 999:999 today
     # (`useradd --system --uid 999 ... agnes`); read it back from the
     # image config to stay honest if that ever changes. Only relevant
-    # when the image digest actually changed.
-    if [ "$BEFORE" != "$AFTER" ]; then
+    # when the image actually changed.
+    if [ "$IMAGE_DRIFT" = "1" ]; then
         IMAGE_USER=$(docker image inspect -f '{{.Config.User}}' "$IMAGE" 2>/dev/null || true)
         if [ -n "$IMAGE_USER" ] && [ "$IMAGE_USER" != "root" ] && [ "$IMAGE_USER" != "0" ]; then
             # IMAGE_USER may be "agnes" (name) or "999" or "999:999".
@@ -237,6 +282,9 @@ if [ "$BEFORE" != "$AFTER" ] || [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ]; then
     # COMPOSE_FILE (incl. any conditionally-appended overlays) is exported
     # above and picked up by docker compose automatically.
     docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d
+    # Record the config hash that is now in effect — config drift is
+    # declared against this marker on subsequent ticks.
+    printf '%s\n' "$CONFIG_AFTER" > "$CONFIG_MARKER"
     docker image prune -f >/dev/null 2>&1
 fi
 

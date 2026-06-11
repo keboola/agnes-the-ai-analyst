@@ -2706,6 +2706,7 @@ async def admin_adoption_user_page(
         user=user,
         target_user_id=user_id,
         target_user_email=target.get("email") or "",
+        target_user_name=target.get("name") or "",
     )
     return templates.TemplateResponse(request, "admin_adoption_user.html", ctx)
 

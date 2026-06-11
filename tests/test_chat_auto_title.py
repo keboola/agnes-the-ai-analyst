@@ -10,6 +10,7 @@ Covers three layers:
 We never hit the real Anthropic API — :func:`generate_title` is
 monkey-patched. That keeps tests fast, hermetic, and CI-safe.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -164,6 +165,7 @@ class _FakeWS:
 class _FakeHandle:
     def __init__(self) -> None:
         self.pid = 1234
+        self.sandbox_id = "fake-sbx-auto-title"
         self._lines: asyncio.Queue[bytes] = asyncio.Queue()
         self.killed = False
 
@@ -172,7 +174,8 @@ class _FakeHandle:
         outer = self
 
         class S:
-            def write(self, b): outer  # noqa: B018 - ref keeps stdin alive
+            def write(self, b):
+                outer  # noqa: B018 - ref keeps stdin alive
 
             async def drain(self):
                 return None
@@ -183,11 +186,11 @@ class _FakeHandle:
     def stdout(self):
         outer = self
 
-        class O:
+        class _OutReader:
             async def readline(self):
                 return await outer._lines.get()
 
-        return O()
+        return _OutReader()
 
     @property
     def stderr(self):
@@ -257,13 +260,15 @@ def test_assistant_message_triggers_auto_title(tmp_path: Path, monkeypatch):
         manager._repo.append_message(session_id=s.id, role="user", content="Revenue?")
         # The runner would emit assistant_message after its turn; we
         # stand in for that here.
-        handle.emit({
-            "type": "assistant_message",
-            "content": "You had $42 in revenue.",
-            "tokens_in": 10,
-            "tokens_out": 5,
-            "model": "fake",
-        })
+        handle.emit(
+            {
+                "type": "assistant_message",
+                "content": "You had $42 in revenue.",
+                "tokens_in": 10,
+                "tokens_out": 5,
+                "model": "fake",
+            }
+        )
         # Auto-title is scheduled as a separate task; give the event
         # loop room to run it.
         for _ in range(20):
@@ -341,7 +346,9 @@ def test_auto_title_skipped_when_title_preset(tmp_path: Path, monkeypatch):
         handle = _FakeHandle()
         manager._provider.spawn = AsyncMock(return_value=handle)
         s = await manager.create_session(
-            user_email="u@x", surface=Surface.WEB, title="User chose this",
+            user_email="u@x",
+            surface=Surface.WEB,
+            title="User chose this",
         )
         ws = _FakeWS()
         attach_task = asyncio.create_task(manager.attach(s.id, ws))

@@ -248,7 +248,7 @@ def test_run_sync_keboola_timeout_does_not_skip_materialized(tmp_path, monkeypat
     materialized_called = {"count": 0}
     orchestrator_called = {"count": 0}
 
-    def _spy_materialized(_conn, _bq, *, tables=None):
+    def _spy_materialized(_conn, _bq, *, tables=None, source_type=None):
         materialized_called["count"] += 1
         return {"materialized": ["m1"], "skipped": [], "errors": []}
 
@@ -318,7 +318,7 @@ def test_run_sync_runs_materialized_pass_on_bq_only_deployment(
     materialized_called = {"count": 0}
     orchestrator_called = {"count": 0}
 
-    def _spy_materialized_pass(_conn, _bq, *, tables=None):
+    def _spy_materialized_pass(_conn, _bq, *, tables=None, source_type=None):
         materialized_called["count"] += 1
         return {"materialized": ["m1"], "skipped": [], "errors": []}
 

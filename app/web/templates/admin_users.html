@@ -320,17 +320,10 @@ function deriveDisplayName(fullEmail) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 function fmtDate(s) { return s ? (window.AgnesTime.formatDateTime(s) || "—") : "—"; }
-function initials(u) {
-  const src = (u.name || u.email || "?").trim();
-  const parts = src.split(/[\s@.]+/).filter(Boolean);
-  return ((parts[0]?.[0] || "?") + (parts[1]?.[0] || "")).toUpperCase();
-}
-function avatarColor(s) {
-  // Stable hash → hue
-  let h = 0;
-  for (const c of s || "") h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return `hsl(${h % 360}, 55%, 50%)`;
-}
+// Avatar initials + stable color come from the shared AgnesIdentity helper
+// (app/web/static/js/identity.js) so the circle matches /admin/adoption.
+function initials(u) { return AgnesIdentity.initials(u.name || u.email); }
+function avatarColor(s) { return AgnesIdentity.avatarColor(s); }
 
 // ── Toast ──
 function toast(msg, kind = "") {

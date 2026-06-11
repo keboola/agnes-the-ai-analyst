@@ -74,7 +74,35 @@
       ```
       File exists, non-zero size.
 - [ ] **(1.5)** Sarah closes the browser tab.
-- [ ] **Assertion 7:** within 5 seconds, refresh `/admin/chat` (Adam). Sarah's session is gone.
+- [ ] **Assertion 7 (pause/resume — disconnect no longer kills):** Sarah's session
+      **survives** the tab close. Within the linger window (`chat.detach_linger_seconds`,
+      default 60 s) the sandbox stays ACTIVE; after the linger window elapses the session
+      moves to PAUSED (sandbox memory-snapshotted). The session row is **not gone** — Adam
+      refreshes `/admin/chat` and sees it with `sandbox_paused_at` populated. Verify via DB:
+      ```sql
+      SELECT id, sandbox_paused_at FROM chat_sessions
+      WHERE user_email = 'sarah@acme.test'
+      ORDER BY started_at DESC LIMIT 1;
+      ```
+      `sandbox_paused_at` must be non-null. The runner handle must **not** have been killed.
+
+      **Pause/resume walkthrough steps:**
+      - [ ] **(7a) Reload mid-answer.** While the agent is streaming a long reply, Sarah
+            reloads the tab. Expected: streaming continues in the reconnected WS without
+            loss — the in-progress turn buffer is replayed to the new sink.
+      - [ ] **(7b) Close tab > linger > reopen.** Sarah closes the tab, waits longer than
+            `detach_linger_seconds` (use 65 s with the test-config `idle_ttl_seconds: 60`
+            value), then reopens `/chat` and clicks the same conversation. Expected: the
+            sidebar shows a "paused" chip on that row before clicking; after clicking the
+            status bar reads "Resuming session…" briefly then "Connected."; a follow-up
+            question ("what did we just discuss?") receives a context-aware answer, proving
+            agent memory survived the pause.
+      - [ ] **(7c) Slack DM to a paused session.** While the session is paused, Sarah DMs
+            `@agnes` in Slack with a question that requires prior context. Expected: Agnes
+            resumes the sandbox and replies in the Slack thread with a context-aware answer.
+      - [ ] **(7d) Legacy kill mode.** On a dev instance, set `chat.on_detach: kill` in
+            `instance.yaml` and restart. Close the tab — the session must be killed
+            immediately (no linger, no pause), restoring pre-pause legacy behavior.
 
 ### Act 2 — Slack DM (5 min)
 
@@ -137,13 +165,17 @@
       Sarah as a red banner.
 - [ ] **(5.2) Crash + respawn:** Adam terminates the active E2B sandbox via the
       E2B dashboard. In Sarah's open chat, WS receives `{"type":"error","kind":"subprocess_crashed","auto_respawn":true}` then `{"type":"ready"}`. Sarah's next message proceeds normally.
-- [ ] **(5.3) Idle TTL:** Sarah leaves her tab open but inactive for 65 seconds (the test-config TTL). Adam refreshes `/admin/chat` — the session is gone. He queries:
+- [ ] **(5.3) Idle TTL pauses (not kills):** Sarah leaves her tab open but inactive for
+      65 seconds (the test-config TTL). Adam refreshes `/admin/chat` — the session row
+      shows `sandbox_paused_at` non-null (paused, not gone). He queries:
       ```sql
-      SELECT * FROM audit_log
-      WHERE action = 'chat.session_killed' AND user_id = 'sarah@acme.test'
-      ORDER BY timestamp DESC LIMIT 1;
+      SELECT id, sandbox_paused_at FROM chat_sessions
+      WHERE user_email = 'sarah@acme.test'
+      ORDER BY started_at DESC LIMIT 1;
       ```
-      A row exists with reason `idle_ttl`.
+      `sandbox_paused_at` is populated. The session row remains (not archived) because
+      the default `on_detach` is `pause`. With `on_detach: kill`, this reverts to the
+      legacy kill behavior (session gone).
 
 ## Result rollup
 
@@ -155,7 +187,11 @@
 | 4 | Audit log per tool call | ☐ | |
 | 5 | LLM SQL correctness | ☐ | |
 | 6 | Per-user workspace persistence | ☐ | |
-| 7 | Q3 — kill on WS disconnect | ☐ | |
+| 7 | Session survives disconnect — pauses after linger | ☐ | |
+| 7a | Mid-answer reload replays in-progress turn | ☐ | |
+| 7b | Close > linger > reopen → "Resuming…" → context recall | ☐ | |
+| 7c | Slack DM to paused session resumes with context | ☐ | |
+| 7d | on_detach: kill restores legacy behavior | ☐ | |
 | 8 | Slack verification-code binding | ☐ | |
 | 9 | Cross-surface state share | ☐ | |
 | 10 | PreToolUse hook — workspace destruction refused | ☐ | |
@@ -163,7 +199,7 @@
 | 12 | RBAC denial — clean error | ☐ | |
 | 5.1 | Daily budget cap fires | ☐ | |
 | 5.2 | Crash + respawn | ☐ | |
-| 5.3 | Idle TTL kill | ☐ | |
+| 5.3 | Idle TTL pauses session | ☐ | |
 
 **Ship gate:** 12/12 main assertions + 3/3 stress assertions = green light to flip `chat.enabled: true` on this customer.
 
@@ -176,10 +212,12 @@
 | Assertion 3 fails (RBAC leak) | `resource_grants` not respected by catalog endpoint; regression in `app/api/catalog.py` |
 | Assertion 5 fails (wrong number) | Real-LLM path broken — likely missing `ANTHROPIC_API_KEY` forwarding (Task A.1) or runner not loading agnes CLI correctly |
 | Assertion 6 fails (no snapshot file) | Workspace sync download-on-end not working; check `e2b_workspace_sync.download_workspace` |
-| Assertion 7 fails (session not killed) | `chat.e2b_kill_on_ws_disconnect: false` in config, or the disconnect handler not wired |
+| Assertion 7 fails (session killed on disconnect) | `chat.on_detach: kill` in config, or `detach_sink` not wired in `ws_stream` finally block |
+| Assertion 7b fails (no context recall after resume) | Provider resume failed — check `chat.e2b_template_id` and `E2B_API_KEY`; session may have fallen back to fresh spawn |
 | Assertion 9 fails (Slack reply doesn't see snapshot) | Workspace sync race; user_email lookup bug in Slack handler |
 | Assertion 10 or 11 fail (hook didn't fire) | PreToolUse hook not registered in workspace `.claude/settings.json`, or initial workspace override removed it without replacement |
 | Assertion 12 fails (data leak in refusal) | LLM ignored the typed error and synthesized data — needs system-prompt tightening |
 | 5.2 fails (no auto-respawn) | `_wait_for_exit_and_respawn` loop broken (Task B.4) |
+| 5.3 fails (session gone instead of paused) | `chat.on_detach: kill` is set; expected `pause` (the default) |
 
 When any assertion fails, file an issue with the symptom + the suspected commit / file from the table above + attach the WS frame log (DevTools WebSocket panel → right-click → Save as HAR).

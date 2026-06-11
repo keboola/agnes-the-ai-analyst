@@ -723,6 +723,34 @@ def _bundle_setup_py(server_url: str) -> str:
         _override_server = _flag("--server-url")
         _override_token  = _flag("--token")
 
+        # Write a plaintext secret file with mode 0o600 (owner-only). The
+        # chmod happens on a temp file in the same dir BEFORE the atomic
+        # rename, so a reader never observes a world-readable transient.
+        # Best-effort + Windows-safe: where fchmod/chmod isn't honored the
+        # contents still land and native ACLs apply.
+        def _write_secret(path, text):
+            import tempfile
+            _dir = path.parent
+            _dir.mkdir(parents=True, exist_ok=True)
+            _fd, _tmp = tempfile.mkstemp(prefix=".agnes-sec.", dir=str(_dir))
+            _tmp_path = pathlib.Path(_tmp)
+            try:
+                try:
+                    os.write(_fd, text.encode("utf-8"))
+                    try:
+                        os.fchmod(_fd, 0o600)
+                    except (AttributeError, NotImplementedError, OSError):
+                        pass
+                finally:
+                    os.close(_fd)
+                os.replace(_tmp_path, path)
+            except Exception:
+                try:
+                    _tmp_path.unlink()
+                except Exception:
+                    pass
+                raise
+
         if not BUNDLE_FILE.exists():
             print("ERROR: agnes-bundle.json not found. Download a fresh bundle.")
             sys.exit(1)
@@ -780,14 +808,18 @@ def _bundle_setup_py(server_url: str) -> str:
         (config_dir / "config.json").write_text(
             json.dumps({{"server": server_url}}, indent=2)
         )
-        (config_dir / "token.json").write_text(
-            json.dumps({{"access_token": pat}}, indent=2)
+        # token.json holds a plaintext bearer token → 0o600 (owner-only).
+        _write_secret(
+            config_dir / "token.json",
+            json.dumps({{"access_token": pat}}, indent=2),
         )
         # Also write to the project folder — this file is on the Mac filesystem,
         # so it persists across cowork VM restarts (unlike ~/.config/agnes/ which
-        # lives in the VM's home directory and may be ephemeral).
-        (HERE / ".agnes-creds.json").write_text(
-            json.dumps({{"server_url": server_url, "access_token": pat}}, indent=2)
+        # lives in the VM's home directory and may be ephemeral). Same plaintext
+        # token → 0o600.
+        _write_secret(
+            HERE / ".agnes-creds.json",
+            json.dumps({{"server_url": server_url, "access_token": pat}}, indent=2),
         )
         print("Credentials saved.")
 
@@ -886,9 +918,11 @@ def _bundle_setup_py(server_url: str) -> str:
                     (_stable_dir / "cacert.pem").chmod(0o644)
                 # Write credentials alongside the stable copy so mcp_server.py
                 # can find them even after the bundle folder is deleted.
-                (_stable_dir / ".agnes-creds.json").write_text(
+                # Plaintext token → 0o600.
+                _write_secret(
+                    _stable_dir / ".agnes-creds.json",
                     json.dumps({{"server_url": server_url, "access_token": pat}},
-                               indent=2)
+                               indent=2),
                 )
                 # claude_desktop_config.json supports stdio transport only —
                 # "type": "sse" with headers is for claude.ai web, not Desktop.
