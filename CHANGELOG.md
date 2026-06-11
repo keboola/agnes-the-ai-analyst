@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.70.21] — 2026-06-11
+
+### Added
 - Chat sessions survive browser disconnects: in-flight turns always complete and
   persist; orphaned sessions pause their sandbox (memory snapshot) and resume with
   full agent context on reconnect or on the next Slack message. New knobs:
@@ -23,25 +35,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the sandbox's external timeout while sinks are attached; `lifecycle on_timeout=pause`
   acts as a crash net. Session listing exposes a `paused` boolean field. The web UI
   shows "Resuming session…" status between WS open and the ready frame, and a "paused"
-  chip in the sidebar for paused sessions.
-
-### Changed
-
-### Fixed
-
-### Removed
+  chip in the sidebar for paused sessions. (#605)
 
 ### Deprecated
 - `chat.e2b_kill_on_ws_disconnect` — use `chat.on_detach: kill` instead. The old key
   still maps to `on_detach: kill` with a deprecation warning in the server log, but
-  will be removed in a future minor version.
+  will be removed in a future minor version. (#605)
 
 ### Internal
 - Schema v73: `chat_sessions` gains nullable `sandbox_id`, `runner_pid`,
   `sandbox_paused_at` (DuckDB `_v72_to_v73` + Alembic `0020_chat_sandbox_refs_v73`;
   deliberately un-indexed — DuckDB 1.5.3 FK+index constraint).
 - Test suite: per-xdist-worker `DATA_DIR` isolation removes sporadic cross-worker
-  `system.duckdb` file-lock failures.
+  `system.duckdb` file-lock failures. (#605)
 
 ## [0.70.20] — 2026-06-10
 
