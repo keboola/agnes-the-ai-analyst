@@ -349,6 +349,28 @@ def run_scan(
         WhereValidationError, QuotaExceededError, FileNotFoundError, PermissionError,
         ValueError, BqAccessError
     """
+    # `from_query` mode (#616): materialize a raw SELECT, reusing /api/query's
+    # RBAC + registry-gating but bypassing the remote_scan_too_large cap. The
+    # raw query carries its own projection, so select/where/order_by are
+    # rejected as mutually exclusive.
+    if isinstance(raw_request, dict) and raw_request.get("from_query"):
+        if any(raw_request.get(k) for k in ("select", "where", "order_by", "limit")):
+            raise ValueError(
+                "from_query is mutually exclusive with select/where/order_by/limit"
+            )
+        from app.api.query import run_remote_select_to_arrow
+        table = run_remote_select_to_arrow(
+            conn, user, raw_request["from_query"], bq=bq, quota=quota,
+        )
+        ipc = arrow_table_to_ipc_bytes(table)
+        if len(ipc) > _max_result_bytes():
+            row_count = table.num_rows
+            avg = max(1, len(ipc) // max(row_count, 1))
+            keep = min(row_count, _max_result_bytes() // max(avg, 1))
+            table = table.slice(0, keep)
+            ipc = arrow_table_to_ipc_bytes(table)
+        return ipc
+
     req = ScanRequest(**raw_request)
     repo = table_registry_repo()
     row = repo.get(req.table_id)
@@ -476,6 +498,33 @@ def scan_endpoint(
         except Exception:
             logger.exception("audit_log write failed for snapshot.create; continuing")
         return Response(content=ipc, media_type=CONTENT_TYPE)
+    except HTTPException as exc:
+        # `run_remote_select_to_arrow` (from_query mode, #616) raises
+        # HTTPException directly for RBAC / SELECT-only / registry
+        # rejections and for DuckDB execution errors (Devin Review
+        # ANALYSIS_0003 on #620). Without this branch those bypass the
+        # structured error block below — the audit-log error path never
+        # fires and the response shape diverges from the rest of
+        # `scan_endpoint`. Log the error-result audit row, then re-raise
+        # the HTTPException unchanged so the client still sees the
+        # original status + detail. Devin Review ANALYSIS_0001 on #620.
+        try:
+            audit_repo().log(
+                user_id=user.get("id"),
+                action="snapshot.create",
+                resource=resource,
+                params={
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                    "error": str(exc.detail)[:200],
+                },
+                result=f"error.{exc.status_code}",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception(
+                "audit_log write failed on http_exc path for snapshot.create; continuing"
+            )
+        raise
     except (WhereValidationError, QuotaExceededError, FileNotFoundError,
             PermissionError, ValueError, BqAccessError) as exc:
         try:

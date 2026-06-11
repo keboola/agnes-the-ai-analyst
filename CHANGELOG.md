@@ -21,6 +21,31 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.8] — 2026-06-11
+
+### Added
+- **`agnes query --remote --auto-snapshot` auto-recovers from the BigQuery scan cap on VIEW targets.** When a `--remote` query against a BigQuery VIEW / MATERIALIZED VIEW trips the 5 GB `remote_scan_too_large` cap (BigQuery can't push `LIMIT` into a view body), the opt-in `--auto-snapshot` flag now completes the query in one command: it materializes each over-cap view's **raw rows** as a deterministic local snapshot (`auto_<sha8>` keyed on the view name), substitutes the view names for their snapshots in the original SQL, and re-runs it locally — instead of failing with a "go run `agnes snapshot create` yourself" hint. Per-view keying means a JOIN across N over-cap views gets N distinct snapshots (no silent self-join), and the same view shared across two over-cap queries hits one cached snapshot. View-name substitution is case-insensitive so analysts who type any case still hit the canonical-case registry ID. A fresh snapshot (24h TTL, reusing the per-snapshot TTL infra) is reused on repeat invocations; an elapsed one is rebuilt. The flag parses the server's structured `remote_scan_too_large` 400 (no text regex); with the flag OFF, or on a non-view over-cap (empty `view_targets`), or any other error, behavior is byte-for-byte unchanged. Physical-table `--remote` queries are unaffected. Backed by a new `agnes snapshot create --from-query "<sql>"` mode that materializes a snapshot from a raw SELECT executed remotely (mutually exclusive with `--select`/`--where`), and a small server hook on `/api/v2/scan` (`from_query`) that runs the raw SELECT through the same RBAC + registry-gating as `/api/query` but without the scan cap (the analyst explicitly opted in). DuckDB execution errors on the from_query path now map to a structured `duckdb_execution_error` 400 (not a raw 500), and `scan_endpoint` logs the error-result audit row when `run_remote_select_to_arrow` raises so audit coverage matches the rest of the endpoint (Devin Review BUG_0001 + BUG_0002 + ANALYSIS_0001 + ANALYSIS_0003 on #620). (#620)
+
+## [0.71.7] — 2026-06-11
+
+### Added
+- **One-keystroke upgrade flow: `agnes self-update` alias + interactive prompt on version drift.** Added a hidden `agnes self-update` verb that resolves to the same callback as the canonical `agnes self-upgrade` (both point at one Typer instance, so they are byte-for-byte identical and idempotent). On a server-touching command where the local CLI is behind the server's pinned version — and stdin is an interactive TTY, the prompt isn't bypassed, and no skip-state exists for the current server version — the CLI now prompts **once**: `agnes <local> is <N> versions behind the server (latest: <server>). Upgrade now? [Y/n] (5s default Y)`. Accepting (or the 5s timeout) runs the self-upgrade flow and then re-execs the user's original command against the freshly-installed binary (`[upgraded → <server>] running your original command...`), guarded against a re-exec loop by an env sentinel. Declining touches `~/.config/agnes/state/skipped-upgrade-<server-version>` so the prompt stays quiet until the server's pinned version moves forward. Non-TTY contexts (CI, pipes), `--no-update-check`, and `AGNES_NO_UPDATE_CHECK=1` skip the prompt entirely; the existing one-line out-of-date banner remains as the fallback for every declined/skipped/non-interactive path. The banner's earlier pinned-URL → `agnes self-upgrade` replacement shipped previously (#521/#593). New `cli/upgrade_prompt.py`. EOF (Ctrl+D) on the prompt now returns No (deferred, not silent auto-upgrade), and the wrapper honours the install rc + persists the outcome via `record_outcome` + refreshes hooks on success — mirroring the canonical `self_upgrade` callback's wiring (Devin Review BUG_0001 + ANALYSIS_0001 + ANALYSIS_0003 on #619). (#619)
+
+## [0.71.6] — 2026-06-11
+
+### Fixed
+- The Windows PowerShell "one-word shortcut" snippet on `/home` (auto + YOLO modes) and `/setup-advanced` now prefixes the `function` definition it appends to `$PROFILE` with an empty array element (`Add-Content $PROFILE '', 'function …'`). `Add-Content` only adds a *trailing* line terminator, so when the user's existing profile didn't end in a newline (e.g. a trailing `$PSStyle.FileInfo.Directory = "…"` line) the function got glued onto the previous line, producing `ParserError: Unexpected token 'function'` on every new shell. The single-quoted body is preserved so `$env:USERPROFILE` is still written verbatim rather than expanded at append time. (#618, FAI-51)
+
+## [0.71.5] — 2026-06-11
+
+### Fixed
+- Onboarding Step 2 "Pick a folder" — the Windows/PowerShell command is now a single line (`New-Item … | Out-Null; Set-Location …`) so one paste both creates the folder *and* enters it. Previously it was two newline-separated statements; pasting into PowerShell submitted only the first line and left `Set-Location` unsent in the input buffer, so the shell never `cd`'d into the new folder. Mirrors the macOS/Linux tab's single-line `mkdir … && cd …` (`;` is used over `&&` so it also parses in Windows PowerShell 5.1). (#615, FAI-50)
+
+## [0.71.4] — 2026-06-11
+
+### Fixed
+- **MCP source names are now validated as safe SQL identifiers at create/rename.** An admin could register an MCP source whose name the sync engine refuses to attach (e.g. `keboola-crm` with a hyphen): materialize reported success and wrote `/data/extracts/<name>/`, but the orchestrator's scan rejected the directory (`Rejected unsafe source_name identifier` — a server-log WARNING only), so the tables silently never reached analytics/catalog with zero admin-visible feedback. `POST /api/admin/mcp-sources` and the rename path of `PUT /api/admin/mcp-sources/{id}` now reject such names up front with an actionable 400, using the same strict validator (`src/identifier_validation.is_safe_identifier`) the orchestrator enforces — no second regex to drift. (#613)
+
 ## [0.71.3] — 2026-06-11
 
 ### Added

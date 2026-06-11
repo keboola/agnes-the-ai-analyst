@@ -554,7 +554,7 @@
 <pre>echo 'yolo() { cd ~/Desktop/{{ workspace_dir }} &amp;&amp; claude --dangerously-skip-permissions "$@"; }' &gt;&gt; ~/.zshrc &amp;&amp; source ~/.zshrc</pre>
         <p>Windows PowerShell:</p>
 <pre>if (!(Test-Path $PROFILE)) { New-Item $PROFILE -Force }
-Add-Content $PROFILE 'function yolo { Push-Location "$env:USERPROFILE\Desktop\{{ workspace_dir }}"; claude --dangerously-skip-permissions @args }'</pre>
+Add-Content $PROFILE '', 'function yolo { Push-Location "$env:USERPROFILE\Desktop\{{ workspace_dir }}"; claude --dangerously-skip-permissions @args }'</pre>
         <p>Now <code>yolo</code> launches Claude in YOLO mode from your workspace. The reference <code>~/.claude/settings.local.json</code> ships with safe defaults (read freely, run common dev tools, gate destructive ops). Customize as you learn what you trust.</p>
     </section>
 
