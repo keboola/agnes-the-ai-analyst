@@ -11,7 +11,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
-- **`agnes query --remote --auto-snapshot` auto-recovers from the BigQuery scan cap on VIEW targets.** When a `--remote` query against a BigQuery VIEW / MATERIALIZED VIEW trips the 5 GB `remote_scan_too_large` cap (BigQuery can't push `LIMIT` into a view body), the opt-in `--auto-snapshot` flag now completes the query in one command: it materializes the view's data as a deterministic local snapshot (`auto_<sha8>` of the normalized SQL), substitutes the view name for the snapshot in the original SQL, and re-runs it locally — instead of failing with a "go run `agnes snapshot create` yourself" hint. A fresh snapshot (24h TTL, reusing the per-snapshot TTL infra) is reused on repeat invocations; an elapsed one is rebuilt. The flag parses the server's structured `remote_scan_too_large` 400 (no text regex); with the flag OFF, or on a non-view over-cap (empty `view_targets`), or any other error, behavior is byte-for-byte unchanged. Physical-table `--remote` queries are unaffected. Backed by a new `agnes snapshot create --from-query "<sql>"` mode that materializes a snapshot from a raw SELECT executed remotely (mutually exclusive with `--select`/`--where`), and a small server hook on `/api/v2/scan` (`from_query`) that runs the raw SELECT through the same RBAC + registry-gating as `/api/query` but without the scan cap (the analyst explicitly opted in). (#616)
 
 ### Changed
 
@@ -20,6 +19,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+## [0.71.8] — 2026-06-11
+
+### Added
+- **`agnes query --remote --auto-snapshot` auto-recovers from the BigQuery scan cap on VIEW targets.** When a `--remote` query against a BigQuery VIEW / MATERIALIZED VIEW trips the 5 GB `remote_scan_too_large` cap (BigQuery can't push `LIMIT` into a view body), the opt-in `--auto-snapshot` flag now completes the query in one command: it materializes each over-cap view's **raw rows** as a deterministic local snapshot (`auto_<sha8>` keyed on the view name), substitutes the view names for their snapshots in the original SQL, and re-runs it locally — instead of failing with a "go run `agnes snapshot create` yourself" hint. Per-view keying means a JOIN across N over-cap views gets N distinct snapshots (no silent self-join), and the same view shared across two over-cap queries hits one cached snapshot. View-name substitution is case-insensitive so analysts who type any case still hit the canonical-case registry ID. A fresh snapshot (24h TTL, reusing the per-snapshot TTL infra) is reused on repeat invocations; an elapsed one is rebuilt. The flag parses the server's structured `remote_scan_too_large` 400 (no text regex); with the flag OFF, or on a non-view over-cap (empty `view_targets`), or any other error, behavior is byte-for-byte unchanged. Physical-table `--remote` queries are unaffected. Backed by a new `agnes snapshot create --from-query "<sql>"` mode that materializes a snapshot from a raw SELECT executed remotely (mutually exclusive with `--select`/`--where`), and a small server hook on `/api/v2/scan` (`from_query`) that runs the raw SELECT through the same RBAC + registry-gating as `/api/query` but without the scan cap (the analyst explicitly opted in). DuckDB execution errors on the from_query path now map to a structured `duckdb_execution_error` 400 (not a raw 500), and `scan_endpoint` logs the error-result audit row when `run_remote_select_to_arrow` raises so audit coverage matches the rest of the endpoint (Devin Review BUG_0001 + BUG_0002 + ANALYSIS_0001 + ANALYSIS_0003 on #620). (#620)
 
 ## [0.71.7] — 2026-06-11
 
