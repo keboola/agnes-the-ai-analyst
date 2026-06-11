@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.6] — 2026-06-11
+
+### Fixed
+- The Windows PowerShell "one-word shortcut" snippet on `/home` (auto + YOLO modes) and `/setup-advanced` now prefixes the `function` definition it appends to `$PROFILE` with an empty array element (`Add-Content $PROFILE '', 'function …'`). `Add-Content` only adds a *trailing* line terminator, so when the user's existing profile didn't end in a newline (e.g. a trailing `$PSStyle.FileInfo.Directory = "…"` line) the function got glued onto the previous line, producing `ParserError: Unexpected token 'function'` on every new shell. The single-quoted body is preserved so `$env:USERPROFILE` is still written verbatim rather than expanded at append time. (#618, FAI-51)
+
 ## [0.71.5] — 2026-06-11
 
 ### Fixed
