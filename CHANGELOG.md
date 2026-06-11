@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.2] — 2026-06-11
+
+### Fixed
+- **VM auto-upgrade no longer loses a deferred upgrade.** `scripts/ops/agnes-auto-upgrade.sh` detected changes by comparing the local tag digest before/after `docker compose pull` — but when the recreate was deferred because a sync was in flight, that tick's pull had already moved the local tag, so every subsequent tick saw "no change" and the deferred recreate never happened: the VM silently kept running the old image until the *next* release shipped (observed live: 8+ hours on a stale image with the new tag pulled beside it). Detection is now drift-based — the running `app` container's image ID is compared against what the tag points to (stateless; also self-heals a stopped/missing container), and config-file changes are tracked against a marker recording the hash at the last successful recreate (`/opt/agnes/.agnes-config-applied`, lazily initialized) — so a deferred change is re-detected on every tick until the recreate actually succeeds. A failing `docker compose pull` (registry blip) no longer aborts the script before drift detection — a warning is logged and the local tag is consulted either way. VMs pick the fix up automatically via the script's own self-update step. (#610)
+
 ## [0.71.1] — 2026-06-11
 
 ### Added
