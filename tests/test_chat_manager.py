@@ -1019,6 +1019,51 @@ def test_pause_waits_for_inflight_turn(tmp_path):
     asyncio.run(_run())
 
 
+def test_linger_bails_when_runner_dies_during_inflight_turn(tmp_path):
+    """Regression — Devin Review BUG_0001 follow-up on #605.
+
+    If a runner dies (3× crash → SessionState.DEAD) while a turn is
+    in-flight and no sink is attached, `_linger_then_pause` used to spin
+    forever on `while live.turn_in_flight` (no pump alive to clear it)
+    and the `_live` entry leaked (the reaper skips DEAD sessions). The
+    fix adds a state check inside the spin so the linger task bails out
+    cleanly when the session has died."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        live = mgr._live[s.id]
+        # Set up: turn in flight, no sinks, runner declared DEAD
+        # (the 3× crash terminal state — _wait_for_exit_and_respawn sets
+        # this without ever emitting a `done` frame to clear the flag).
+        live.turn_in_flight = True
+        await mgr.detach_sink(s.id, ws)
+        live.state = SessionState.DEAD
+        # The linger task should bail out promptly rather than spinning
+        # forever waiting for the turn to "complete." We grant it a few
+        # tick cycles to notice the state transition.
+        await asyncio.sleep(0.2)
+        assert live.linger_task is None or live.linger_task.done(), (
+            "linger task must complete (not spin) when runner died "
+            "mid-turn with no sinks attached"
+        )
+        # And no pause was issued (state was already DEAD, not ACTIVE).
+        assert not provider.paused, "DEAD session must not be paused"
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
 def test_attach_to_paused_resumes_same_handle(tmp_path):
     """attach() to a PAUSED live session resumes it; state becomes ACTIVE,
     paused_at cleared, and the pump delivers frames to the new sink."""
