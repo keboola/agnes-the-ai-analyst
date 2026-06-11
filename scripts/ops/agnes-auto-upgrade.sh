@@ -172,7 +172,13 @@ elif [ -s "$STATE_DIR/certs/fullchain.pem" ] && [ -s "$STATE_DIR/certs/privkey.p
 fi
 
 # COMPOSE_FILE is exported above; docker compose picks it up automatically.
-docker compose pull >/dev/null 2>&1
+# `|| …` so a pull failure (registry outage, transient network/auth blip)
+# doesn't abort the script under `set -e` BEFORE drift detection runs —
+# a pending upgrade whose image was already pulled on a previous tick
+# must still be applied from the local store. The warning keeps the
+# failure visible in syslog instead of silently masking it.
+docker compose pull >/dev/null 2>&1 \
+  || logger -t agnes-auto-upgrade "WARN: docker compose pull failed — proceeding with locally available images"
 
 # Drift-based change detection — STATELESS on the image side, marker-based
 # on the config side. The previous implementation compared the local tag
