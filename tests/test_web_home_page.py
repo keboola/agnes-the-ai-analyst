@@ -355,6 +355,40 @@ def test_home_cowork_card_links_to_me_cowork(fresh_db):
     assert 'href="/me/cowork"' in body
 
 
+def test_home_powershell_shortcut_guards_against_missing_profile_newline(fresh_db):
+    """FAI-51: the Windows PowerShell shortcut appended the `function`
+    definition to `$PROFILE` via `Add-Content` with no leading newline.
+    `Add-Content` only adds a trailing line terminator — so if the user's
+    existing profile didn't end in a newline (e.g. a trailing
+    `$PSStyle.FileInfo.Directory = "...`"` line), the function got glued
+    onto the previous line:
+
+        $PSStyle.FileInfo.Directory = "`e[34m"function foundryai { ... }
+
+    which throws `ParserError: Unexpected token 'function'` on every new
+    shell. The fix prefixes the appended value with an empty array element
+    (`Add-Content $PROFILE '', 'function ...'`) so Add-Content always
+    starts the function on its own line, regardless of the profile's
+    trailing-newline state — while keeping the single-quoted body so
+    `$env:USERPROFILE` is written verbatim, not expanded at append time.
+    """
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn, onboarded=False)
+    finally:
+        conn.close()
+        close_system_db()
+
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    # The bare-concatenation form (the bug) must be gone…
+    assert "Add-Content $PROFILE 'function " not in body
+    # …and both the auto-mode and yolo-mode Windows snippets must use the
+    # newline-guarded array form.
+    assert body.count("Add-Content $PROFILE '', 'function ") == 2
+
+
 # ── GWS Email-admin button render tests (admin_email knob coverage) ────────
 
 

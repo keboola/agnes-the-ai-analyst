@@ -106,14 +106,22 @@ def _root(
 
 
 def _maybe_warn_outdated() -> None:
-    """Hit /cli/latest on the configured server (cached 24h) and emit a
-    one-line stderr warning if the installed CLI is older. Never raises."""
+    """Hit /cli/latest on the configured server (cached 24h). On version
+    drift, offer the one-time interactive upgrade prompt (TTY only,
+    #617); if that doesn't handle it (declined, skipped, non-TTY,
+    bypassed), emit the one-line out-of-date banner as before. Never
+    raises."""
     try:
         from cli.config import get_server_url
         from cli.update_check import check, format_outdated_notice
+        from cli.upgrade_prompt import maybe_prompt_and_upgrade
         info = check(get_server_url())
         if info and info.is_outdated():
-            typer.echo(format_outdated_notice(info), err=True)
+            # The interactive prompt re-execs on accept (never returns) or
+            # returns True when it handled the drift; on any other path it
+            # returns False and we fall back to the banner.
+            if not maybe_prompt_and_upgrade(info):
+                typer.echo(format_outdated_notice(info), err=True)
     except Exception:
         pass  # best-effort: never fail a command on the probe
     _maybe_warn_upgrade_failures()
@@ -176,6 +184,12 @@ app.add_typer(admin_app, name="admin")
 app.add_typer(diagnose_app, name="diagnose")
 app.add_typer(skills_app, name="skills")
 app.add_typer(self_upgrade_app, name="self-upgrade")
+# Hidden verb alias: `agnes self-update` resolves to the SAME callback as
+# `agnes self-upgrade` (issue #617 asked for `self-update`; `self-upgrade`
+# stays canonical and is what the out-of-date banner recommends). Both
+# point at the one `self_upgrade_app` Typer, so they are byte-for-byte the
+# same implementation — idempotent, no divergence.
+app.add_typer(self_upgrade_app, name="self-update", hidden=True)
 app.add_typer(setup_app, name="setup")
 app.add_typer(server_app, name="server")
 app.add_typer(explore_app, name="explore")
