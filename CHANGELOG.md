@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.7] — 2026-06-11
+
+### Added
+- **One-keystroke upgrade flow: `agnes self-update` alias + interactive prompt on version drift.** Added a hidden `agnes self-update` verb that resolves to the same callback as the canonical `agnes self-upgrade` (both point at one Typer instance, so they are byte-for-byte identical and idempotent). On a server-touching command where the local CLI is behind the server's pinned version — and stdin is an interactive TTY, the prompt isn't bypassed, and no skip-state exists for the current server version — the CLI now prompts **once**: `agnes <local> is <N> versions behind the server (latest: <server>). Upgrade now? [Y/n] (5s default Y)`. Accepting (or the 5s timeout) runs the self-upgrade flow and then re-execs the user's original command against the freshly-installed binary (`[upgraded → <server>] running your original command...`), guarded against a re-exec loop by an env sentinel. Declining touches `~/.config/agnes/state/skipped-upgrade-<server-version>` so the prompt stays quiet until the server's pinned version moves forward. Non-TTY contexts (CI, pipes), `--no-update-check`, and `AGNES_NO_UPDATE_CHECK=1` skip the prompt entirely; the existing one-line out-of-date banner remains as the fallback for every declined/skipped/non-interactive path. The banner's earlier pinned-URL → `agnes self-upgrade` replacement shipped previously (#521/#593). New `cli/upgrade_prompt.py`. EOF (Ctrl+D) on the prompt now returns No (deferred, not silent auto-upgrade), and the wrapper honours the install rc + persists the outcome via `record_outcome` + refreshes hooks on success — mirroring the canonical `self_upgrade` callback's wiring (Devin Review BUG_0001 + ANALYSIS_0001 + ANALYSIS_0003 on #619). (#619)
+
 ## [0.71.6] — 2026-06-11
 
 ### Fixed
