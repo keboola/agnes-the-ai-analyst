@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **An analyst's Claude can now browse and subscribe to stack resources without leaving the chat.** New `GET /api/stack/browse?type=<data_package|memory_domain>` exposes the existing `StackResolver.browse()` candidate set — every RBAC-granted resource for the caller, each annotated with an `in_stack` flag — so the model can discover what it *could* add, not just what is already subscribed. Surfaced on all three contracts: `agnes stack browse [--type] [--json]` (renders an `IN STACK` ✓ column), and three MCP tools (`stack_browse`, `stack_subscribe`, `stack_unsubscribe`). `stack_subscribe` returns a post-subscribe `next_step` hint (`Run \`agnes pull\` to download the new tables.`) so the freshly-subscribed resource becomes usable in the same conversation. Subscriptions are persistent (identical to the web UI "Add to stack" button). User approval rides the MCP client's own tool-permission prompt — no custom mechanism. The workspace `CLAUDE.md` rails now point at the browse → add → pull flow. (#621)
 
 ### Changed
 

@@ -129,6 +129,83 @@ class TestStackList:
         assert req["in_stack"] is True
 
 
+# -------- browse ----------------------------------------------------------
+
+
+class TestStackBrowse:
+    def test_browse_requires_auth(self, seeded_app):
+        resp = seeded_app["client"].get("/api/stack/browse?type=data_package")
+        assert resp.status_code == 401
+
+    def test_browse_rejects_unknown_type(self, seeded_app):
+        resp = seeded_app["client"].get(
+            "/api/stack/browse?type=nope",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 400
+
+    def test_browse_lists_required_and_available(self, seeded_app):
+        """Required → in_stack True even without a subscription; available →
+        in_stack False until subscribed."""
+        gid = _create_group_with_analyst("BrowseSales")
+        req_id = _create_package("browse-req", "BrowseReq")
+        avail_id = _create_package("browse-avail", "BrowseAvail")
+        _grant(gid, "data_package", req_id, "required")
+        _grant(gid, "data_package", avail_id, "available")
+        resp = seeded_app["client"].get(
+            "/api/stack/browse?type=data_package",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 200
+        by_id = {it["id"]: it for it in resp.json()["items"]}
+        assert by_id[req_id]["in_stack"] is True
+        assert by_id[req_id]["requirement"] == "required"
+        assert by_id[avail_id]["in_stack"] is False
+        assert by_id[avail_id]["requirement"] == "available"
+
+    def test_browse_denies_session_principal(self, seeded_app):
+        """A co-session token (SessionPrincipal) cannot manage the stack."""
+        import asyncio
+
+        from app.api.stack import browse_stack
+        from app.auth.session_principal import SessionPrincipal
+        from fastapi import HTTPException
+
+        principal = SessionPrincipal(
+            session_id="s1",
+            participant_user_ids=["analyst1"],
+            participant_emails=["analyst@test.com"],
+            intersection={},
+        )
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(browse_stack(type="data_package", user=principal))
+        assert exc.value.status_code == 403
+
+    def test_browse_flips_in_stack_after_subscribe(self, seeded_app):
+        gid = _create_group_with_analyst("BrowseFlip")
+        pkg_id = _create_package("browse-flip", "BrowseFlip")
+        _grant(gid, "data_package", pkg_id, "available")
+        c = seeded_app["client"]
+        # before: available, not in stack
+        before = c.get(
+            "/api/stack/browse?type=data_package",
+            headers=_auth(seeded_app["analyst_token"]),
+        ).json()["items"]
+        assert next(it for it in before if it["id"] == pkg_id)["in_stack"] is False
+        # subscribe
+        c.post(
+            "/api/stack/subscribe",
+            json={"resource_type": "data_package", "resource_id": pkg_id},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        # after: in stack
+        after = c.get(
+            "/api/stack/browse?type=data_package",
+            headers=_auth(seeded_app["analyst_token"]),
+        ).json()["items"]
+        assert next(it for it in after if it["id"] == pkg_id)["in_stack"] is True
+
+
 # -------- subscribe -------------------------------------------------------
 
 

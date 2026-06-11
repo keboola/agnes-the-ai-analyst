@@ -122,6 +122,42 @@ async def list_stack(
     return {"items": items}
 
 
+@router.get("/browse")
+async def browse_stack(
+    type: str,
+    user: dict = Depends(get_current_user),
+):
+    """List every resource of ``type`` the caller could add to their stack.
+
+    Unlike ``GET /api/stack`` (effective stack only), this returns the full
+    RBAC-granted candidate set — required + available — each annotated with
+    an ``in_stack`` flag so an analyst's Claude can tell what is already
+    subscribed and what is still available to add. This is the
+    "what could I add" discovery surface (issue #621).
+
+    Scoped per-user by ``StackResolver.browse`` (group grants only), so the
+    only authorization gate is authentication — no extra RBAC dependency.
+    """
+    from app.auth.session_principal import SessionPrincipal
+    if isinstance(user, SessionPrincipal):
+        raise HTTPException(403, "co_session cannot manage stack")
+    rt = _validate_type(type)
+    resolver = StackResolver()
+    items = [
+        {
+            "id": e.id,
+            "name": e.name,
+            "description": e.description,
+            "icon": e.icon,
+            "color": e.color,
+            "requirement": e.requirement,
+            "in_stack": e.in_stack,
+        }
+        for e in resolver.browse(user["id"], rt)
+    ]
+    return {"items": items}
+
+
 @router.post("/subscribe")
 async def subscribe(
     payload: SubscribeRequest,
