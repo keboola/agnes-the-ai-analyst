@@ -11,7 +11,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
-- **Host-side watchdog + daily DB backup with restore-verification in the `customer-instance` module.** Every provisioned VM now runs two systemd timers (artifacts ship as module files through the startup script — independent of the pinned app `image_tag`): `agnes-watchdog` (every 5 min) greps container logs for known incident signatures — DuckDB `FatalException` crash loops, the invalidated-database "zombie" state where the app keeps answering `/api/health` 200 while every write returns 500, WAL-salvage data-loss events, index-desync errors — plus container restart bursts, cgroup OOM kills, scheduler HTTP-500 streaks, `/data` disk pressure and a dead health endpoint; `agnes-db-backup` (daily) copies `system.duckdb`+WAL to `/data/backups/system-duckdb/` (7-day retention) and *proves each copy restorable* by opening a scratch copy, replaying the WAL and exercising the statement classes from the 2026-06 index-corruption incident — so silent on-disk corruption surfaces within a day instead of at the next outage. Alerts go to journald + `/var/log/agnes-watchdog.log` and optionally to a Slack/Google-Chat-compatible webhook (new `alert_webhook_url` variable, sensitive; messages carry a per-environment label derived from the VM role). Opt out with `enable_watchdog = false`. Complements `enable_monitoring`'s uptime checks + PD snapshots: those observe the VM from outside; the watchdog reads failure states the health endpoint cannot express, and the canary verify catches corruption a disk snapshot would preserve faithfully.
 
 ### Changed
 
@@ -20,6 +19,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+## [0.71.9] — 2026-06-11
+
+### Added
+- **Host-side watchdog + daily DB backup with restore-verification in the `customer-instance` module.** Every provisioned VM now runs two systemd timers (artifacts ship as module files through the startup script — independent of the pinned app `image_tag`): `agnes-watchdog` (every 5 min) greps container logs for known incident signatures — DuckDB `FatalException` crash loops, the invalidated-database "zombie" state where the app keeps answering `/api/health` 200 while every write returns 500, WAL-salvage data-loss events, index-desync errors — plus container restart bursts, cgroup OOM kills, scheduler HTTP-500 streaks, `/data` disk pressure and a dead health endpoint; `agnes-db-backup` (daily) copies `system.duckdb`+WAL to `/data/backups/system-duckdb/` (7-day retention) and *proves each copy restorable* by opening a scratch copy, replaying the WAL and exercising the statement classes from the 2026-06 index-corruption incident — so silent on-disk corruption surfaces within a day instead of at the next outage. Alerts go to journald + `/var/log/agnes-watchdog.log` and optionally to a Slack/Google-Chat-compatible webhook (new `alert_webhook_url` variable, sensitive; messages carry a per-environment label derived from the VM role). Opt out with `enable_watchdog = false`. Complements `enable_monitoring`'s uptime checks + PD snapshots: those observe the VM from outside; the watchdog reads failure states the health endpoint cannot express, and the canary verify catches corruption a disk snapshot would preserve faithfully. (#623)
 
 ## [0.71.8] — 2026-06-11
 
