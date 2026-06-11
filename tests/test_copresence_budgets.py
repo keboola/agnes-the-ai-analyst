@@ -84,6 +84,8 @@ class _FakeHandle:
     """Fake SandboxHandle with in-memory stdin/stdout pipes."""
     def __init__(self):
         self.killed = False
+        self.pid = 7
+        self.sandbox_id = "fake-co-sbx"  # SandboxHandle protocol (v73 refs)
         self._stdin_buf: list[bytes] = []
         self._stdout_buf: asyncio.Queue = None  # lazily set in async context
         self.stdin = self
@@ -145,7 +147,7 @@ def co_manager_live(tmp_path):
     repo = _make_repo(conn)
     wdm = _make_workdir_mgr(tmp_path, repo)
     provider = MagicMock()
-    provider.spawn = AsyncMock()
+    provider.spawn = AsyncMock(side_effect=lambda **kw: _FakeHandle())
     mgr = ChatManager(
         provider=provider,
         workdir_mgr=wdm,
@@ -268,6 +270,8 @@ class _BlockingHandle:
         self._killed = asyncio.Event()
         self.stdin = self
         self.syncs_workspace = True
+        self.pid = 99
+        self.sandbox_id = "fake-blocking-sbx"  # SandboxHandle protocol (v73 refs)
     def write(self, data: bytes): pass
     async def drain(self): pass
     @property
