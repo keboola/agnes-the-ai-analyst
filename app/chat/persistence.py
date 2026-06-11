@@ -11,6 +11,7 @@ are not indexed and can be UPDATEd safely. Workaround: compute both
 When DuckDB ships the fix, this module's reads can be simplified
 back to plain ``SELECT … FROM chat_sessions WHERE …``.
 """
+
 from __future__ import annotations
 
 import json
@@ -28,10 +29,13 @@ def _gen_id(prefix: str) -> str:
 
 
 def _row_to_session(row: tuple) -> ChatSession:
-    # Row order matches _SESSION_COLS_JOIN below:
-    # id, user_email, surface, slack_channel_id, slack_thread_ts, title,
-    # started_at, last_message_at (derived), message_count (derived), archived,
-    # is_co_session, ephemeral
+    # Row order matches _SESSION_SELECT below:
+    # 0  id, 1 user_email, 2 surface, 3 slack_channel_id, 4 slack_thread_ts,
+    # 5  title, 6 started_at,
+    # 7  last_message_at (derived via LEFT JOIN),
+    # 8  message_count   (derived via LEFT JOIN),
+    # 9  archived, 10 is_co_session, 11 ephemeral,
+    # 12 sandbox_id, 13 runner_pid, 14 sandbox_paused_at
     return ChatSession(
         id=row[0],
         user_email=row[1],
@@ -45,6 +49,9 @@ def _row_to_session(row: tuple) -> ChatSession:
         archived=bool(row[9]),
         is_co_session=bool(row[10]),
         ephemeral=bool(row[11]),
+        sandbox_id=row[12],
+        runner_pid=int(row[13]) if row[13] is not None else None,
+        sandbox_paused_at=row[14],
     )
 
 
@@ -57,13 +64,16 @@ _SESSION_SELECT = (
     "s.title, s.started_at, "
     "MAX(m.created_at) AS last_message_at, "
     "COUNT(m.id) AS message_count, "
-    "s.archived, s.is_co_session, s.ephemeral "
+    "s.archived, s.is_co_session, s.ephemeral, "
+    # Sandbox pause/resume refs — NOT indexed (DuckDB 1.5.3 FK+index bug).
+    "s.sandbox_id, s.runner_pid, s.sandbox_paused_at "
     "FROM chat_sessions s "
     "LEFT JOIN chat_messages m ON m.session_id = s.id"
 )
 _SESSION_GROUP = (
     " GROUP BY s.id, s.user_email, s.surface, s.slack_channel_id, s.slack_thread_ts, "
-    "s.title, s.started_at, s.archived, s.is_co_session, s.ephemeral"
+    "s.title, s.started_at, s.archived, s.is_co_session, s.ephemeral, "
+    "s.sandbox_id, s.runner_pid, s.sandbox_paused_at"
 )
 
 
@@ -156,16 +166,11 @@ class ChatRepository:
 
     def list_sessions(self, user_email: str, *, include_archived: bool = False) -> list[ChatSession]:
         if self._sessions_pg is not None:
-            return self._sessions_pg.list_sessions(
-                user_email, include_archived=include_archived
-            )
+            return self._sessions_pg.list_sessions(user_email, include_archived=include_archived)
         where = " WHERE s.user_email = ?"
         if not include_archived:
             where += " AND s.archived = FALSE"
-        q = (
-            _SESSION_SELECT + where + _SESSION_GROUP
-            + " ORDER BY MAX(m.created_at) DESC NULLS LAST, s.started_at DESC"
-        )
+        q = _SESSION_SELECT + where + _SESSION_GROUP + " ORDER BY MAX(m.created_at) DESC NULLS LAST, s.started_at DESC"
         rows = self._conn.execute(q, [user_email]).fetchall()
         return [_row_to_session(r) for r in rows]
 
@@ -182,12 +187,12 @@ class ChatRepository:
         return _row_to_session(row) if row else None
 
     def get_slack_thread_session(
-        self, slack_channel_id: str, slack_thread_ts: str,
+        self,
+        slack_channel_id: str,
+        slack_thread_ts: str,
     ) -> Optional[ChatSession]:
         if self._sessions_pg is not None:
-            return self._sessions_pg.get_slack_thread_session(
-                slack_channel_id, slack_thread_ts
-            )
+            return self._sessions_pg.get_slack_thread_session(slack_channel_id, slack_thread_ts)
         # intentional: no await between SELECT and INSERT — Slack uniqueness without DB partial unique index
         row = self._conn.execute(
             _SESSION_SELECT
@@ -202,9 +207,7 @@ class ChatRepository:
         if self._sessions_pg is not None:
             self._sessions_pg.archive_session(chat_id)
             return
-        self._conn.execute(
-            "UPDATE chat_sessions SET archived = TRUE WHERE id = ?", [chat_id]
-        )
+        self._conn.execute("UPDATE chat_sessions SET archived = TRUE WHERE id = ?", [chat_id])
 
     def set_title(self, chat_id: str, title: str) -> None:
         """Persist a new title for a session. Safe to call after
@@ -219,9 +222,55 @@ class ChatRepository:
         if self._sessions_pg is not None:
             self._sessions_pg.set_title(chat_id, title)
             return
+        self._conn.execute("UPDATE chat_sessions SET title = ? WHERE id = ?", [title, chat_id])
+
+    # --- sandbox pause/resume refs -----------------------------------------
+    # The three columns (sandbox_id, runner_pid, sandbox_paused_at) are
+    # intentionally NOT indexed — DuckDB 1.5.3 FK+index bug causes a false FK
+    # violation when UPDATE touches any indexed column on chat_sessions after
+    # chat_messages rows exist. Un-indexed column UPDATEs work fine (proof:
+    # set_title above). The paused-TTL reaper query is a plain scan — fine at
+    # chat-session cardinality.
+
+    def set_sandbox_ref(self, session_id: str, *, sandbox_id: str, runner_pid: int) -> None:
+        """Record the E2B sandbox id and runner pid; clear paused_at (live)."""
+        if self._sessions_pg is not None:
+            self._sessions_pg.set_sandbox_ref(session_id, sandbox_id=sandbox_id, runner_pid=runner_pid)
+            return
         self._conn.execute(
-            "UPDATE chat_sessions SET title = ? WHERE id = ?", [title, chat_id]
+            "UPDATE chat_sessions SET sandbox_id = ?, runner_pid = ?, sandbox_paused_at = NULL WHERE id = ?",
+            [sandbox_id, runner_pid, session_id],
         )
+
+    def clear_sandbox_ref(self, session_id: str) -> None:
+        """Wipe all three sandbox columns — called on real kill/error teardown."""
+        if self._sessions_pg is not None:
+            self._sessions_pg.clear_sandbox_ref(session_id)
+            return
+        self._conn.execute(
+            "UPDATE chat_sessions SET sandbox_id = NULL, runner_pid = NULL, sandbox_paused_at = NULL WHERE id = ?",
+            [session_id],
+        )
+
+    def set_sandbox_paused_at(self, session_id: str, paused_at: Optional[datetime]) -> None:
+        """Set or clear the paused timestamp. Pass None to clear (resume path)."""
+        if self._sessions_pg is not None:
+            self._sessions_pg.set_sandbox_paused_at(session_id, paused_at)
+            return
+        self._conn.execute(
+            "UPDATE chat_sessions SET sandbox_paused_at = ? WHERE id = ?",
+            [paused_at, session_id],
+        )
+
+    def list_paused_sessions(self, *, paused_before: datetime) -> list[ChatSession]:
+        """Return sessions whose sandbox_paused_at is set and older than paused_before."""
+        if self._sessions_pg is not None:
+            return self._sessions_pg.list_paused_sessions(paused_before=paused_before)
+        rows = self._conn.execute(
+            _SESSION_SELECT + " WHERE s.sandbox_paused_at IS NOT NULL AND s.sandbox_paused_at < ?" + _SESSION_GROUP,
+            [paused_before],
+        ).fetchall()
+        return [_row_to_session(r) for r in rows]
 
     def get_first_user_message(self, chat_id: str) -> Optional[str]:
         """First user-role message content in a session (oldest by
@@ -233,9 +282,7 @@ class ChatRepository:
         if self._messages_pg is not None:
             return self._messages_pg.get_first_user_message(chat_id)
         row = self._conn.execute(
-            "SELECT content FROM chat_messages "
-            "WHERE session_id = ? AND role = 'user' "
-            "ORDER BY created_at ASC LIMIT 1",
+            "SELECT content FROM chat_messages WHERE session_id = ? AND role = 'user' ORDER BY created_at ASC LIMIT 1",
             [chat_id],
         ).fetchone()
         return row[0] if row else None
@@ -269,9 +316,7 @@ class ChatRepository:
         count accurate (don't re-archive what's already archived).
         """
         if self._sessions_pg is not None:
-            return self._sessions_pg.archive_empty_user_sessions(
-                user_email, surface=surface, exclude_id=exclude_id
-            )
+            return self._sessions_pg.archive_empty_user_sessions(user_email, surface=surface, exclude_id=exclude_id)
         params: list = [user_email]
         surface_clause = ""
         if surface is not None:
@@ -308,9 +353,7 @@ class ChatRepository:
     def hard_delete_user_sessions(self, user_email: str) -> int:
         if self._sessions_pg is not None:
             return self._sessions_pg.hard_delete_user_sessions(user_email)
-        n = self._conn.execute(
-            "SELECT COUNT(*) FROM chat_sessions WHERE user_email = ?", [user_email]
-        ).fetchone()[0]
+        n = self._conn.execute("SELECT COUNT(*) FROM chat_sessions WHERE user_email = ?", [user_email]).fetchone()[0]
         # DuckDB has no ON DELETE CASCADE. Delete participant rows first so
         # the chat_session_participants FK can't block the parent delete.
         self._conn.execute(
@@ -322,8 +365,7 @@ class ChatRepository:
         # children exist (DuckDB has no ON DELETE CASCADE — Task 1.1
         # documented this). Delete messages first.
         self._conn.execute(
-            "DELETE FROM chat_messages WHERE session_id IN ("
-            " SELECT id FROM chat_sessions WHERE user_email = ?)",
+            "DELETE FROM chat_messages WHERE session_id IN ( SELECT id FROM chat_sessions WHERE user_email = ?)",
             [user_email],
         )
         self._conn.execute("DELETE FROM chat_sessions WHERE user_email = ?", [user_email])
@@ -370,27 +412,43 @@ class ChatRepository:
             "INSERT INTO chat_messages "
             "(id, session_id, role, content, tool_calls, tokens_in, tokens_out, model, sender_email, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [msg_id, session_id, role, content,
-             json.dumps(tool_calls) if tool_calls else None,
-             tokens_in, tokens_out, model, sender_email, now],
+            [
+                msg_id,
+                session_id,
+                role,
+                content,
+                json.dumps(tool_calls) if tool_calls else None,
+                tokens_in,
+                tokens_out,
+                model,
+                sender_email,
+                now,
+            ],
         )
         return ChatMessage(
-            id=msg_id, session_id=session_id, role=role, content=content,
-            tool_calls=tool_calls, tokens_in=tokens_in, tokens_out=tokens_out,
-            model=model, created_at=now, sender_email=sender_email,
+            id=msg_id,
+            session_id=session_id,
+            role=role,
+            content=content,
+            tool_calls=tool_calls,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            model=model,
+            created_at=now,
+            sender_email=sender_email,
         )
 
     def list_messages(
-        self, session_id: str, *, after_id: Optional[str] = None, limit: int = 500,
+        self,
+        session_id: str,
+        *,
+        after_id: Optional[str] = None,
+        limit: int = 500,
     ) -> list[ChatMessage]:
         if self._messages_pg is not None:
-            return self._messages_pg.list_messages(
-                session_id, after_id=after_id, limit=limit
-            )
+            return self._messages_pg.list_messages(session_id, after_id=after_id, limit=limit)
         if after_id:
-            row = self._conn.execute(
-                "SELECT created_at FROM chat_messages WHERE id = ?", [after_id]
-            ).fetchone()
+            row = self._conn.execute("SELECT created_at FROM chat_messages WHERE id = ?", [after_id]).fetchone()
             cutoff = row[0] if row else None
         else:
             cutoff = None
@@ -409,10 +467,16 @@ class ChatRepository:
         rows = self._conn.execute(q, params).fetchall()
         return [
             ChatMessage(
-                id=r[0], session_id=r[1], role=r[2], content=r[3],
+                id=r[0],
+                session_id=r[1],
+                role=r[2],
+                content=r[3],
                 tool_calls=json.loads(r[4]) if r[4] else None,
-                tokens_in=r[5], tokens_out=r[6], model=r[7],
-                sender_email=r[8], created_at=r[9],
+                tokens_in=r[5],
+                tokens_out=r[6],
+                model=r[7],
+                sender_email=r[8],
+                created_at=r[9],
             )
             for r in rows
         ]
@@ -420,12 +484,19 @@ class ChatRepository:
     # --- participants ------------------------------------------------------
 
     def add_session_participant(
-        self, *, session_id: str, user_email: str, user_id: str, role: str,
+        self,
+        *,
+        session_id: str,
+        user_email: str,
+        user_id: str,
+        role: str,
     ) -> SessionParticipant:
         if self._participants_pg is not None:
             return self._participants_pg.add_session_participant(
-                session_id=session_id, user_email=user_email,
-                user_id=user_id, role=role,
+                session_id=session_id,
+                user_email=user_email,
+                user_id=user_id,
+                role=role,
             )
         pid = _gen_id("part")
         now = datetime.now(timezone.utc)
@@ -436,8 +507,13 @@ class ChatRepository:
             [pid, session_id, user_email, user_id, role, now],
         )
         return SessionParticipant(
-            id=pid, session_id=session_id, user_email=user_email,
-            user_id=user_id, role=role, joined_at=now, left_at=None,
+            id=pid,
+            session_id=session_id,
+            user_email=user_email,
+            user_id=user_id,
+            role=role,
+            joined_at=now,
+            left_at=None,
         )
 
     def get_session_participants(self, session_id: str) -> list[SessionParticipant]:
@@ -454,8 +530,13 @@ class ChatRepository:
         ).fetchall()
         return [
             SessionParticipant(
-                id=r[0], session_id=r[1], user_email=r[2], user_id=r[3],
-                role=r[4], joined_at=r[5], left_at=r[6],
+                id=r[0],
+                session_id=r[1],
+                user_email=r[2],
+                user_id=r[3],
+                role=r[4],
+                joined_at=r[5],
+                left_at=r[6],
             )
             for r in rows
         ]
@@ -476,8 +557,7 @@ class ChatRepository:
             self._participants_pg.update_participant_role(session_id, user_email, role)
             return
         self._conn.execute(
-            "UPDATE chat_session_participants SET role = ? "
-            "WHERE session_id = ? AND user_email = ? AND left_at IS NULL",
+            "UPDATE chat_session_participants SET role = ? WHERE session_id = ? AND user_email = ? AND left_at IS NULL",
             [role, session_id, user_email],
         )
 
@@ -488,8 +568,7 @@ class ChatRepository:
         ids = [
             r[0]
             for r in self._conn.execute(
-                "SELECT DISTINCT session_id FROM chat_session_participants "
-                "WHERE user_email = ? AND left_at IS NULL",
+                "SELECT DISTINCT session_id FROM chat_session_participants WHERE user_email = ? AND left_at IS NULL",
                 [user_email],
             ).fetchall()
         ]
@@ -521,8 +600,11 @@ class ChatRepository:
         """
         if self._participants_pg is not None:
             return self._participants_pg.fork_session_as_co_session(
-                source_id, owner_email=owner_email, owner_user_id=owner_user_id,
-                invitee_email=invitee_email, invitee_user_id=invitee_user_id,
+                source_id,
+                owner_email=owner_email,
+                owner_user_id=owner_user_id,
+                invitee_email=invitee_email,
+                invitee_user_id=invitee_user_id,
                 seed_summary=seed_summary,
             )
         chat_id = _gen_id("chat")
@@ -535,14 +617,22 @@ class ChatRepository:
             [chat_id, owner_email, now],
         )
         self.add_session_participant(
-            session_id=chat_id, user_email=owner_email, user_id=owner_user_id, role="owner",
+            session_id=chat_id,
+            user_email=owner_email,
+            user_id=owner_user_id,
+            role="owner",
         )
         self.add_session_participant(
-            session_id=chat_id, user_email=invitee_email, user_id=invitee_user_id, role="collaborator",
+            session_id=chat_id,
+            user_email=invitee_email,
+            user_id=invitee_user_id,
+            role="collaborator",
         )
         if seed_summary:
             self.append_message(
-                session_id=chat_id, role="system", content=seed_summary,
+                session_id=chat_id,
+                role="system",
+                content=seed_summary,
             )
         fetched = self.get_session(chat_id)
         assert fetched is not None
@@ -565,7 +655,8 @@ class ChatRepository:
         """
         if self._participants_pg is not None:
             return self._participants_pg.fork_co_session_to_private(
-                source_session_id=source_session_id, owner_email=owner_email,
+                source_session_id=source_session_id,
+                owner_email=owner_email,
             )
         chat_id = _gen_id("chat")
         now = datetime.now(timezone.utc)
@@ -602,8 +693,11 @@ class ChatRepository:
         if not row:
             return None
         return UserWorkdir(
-            user_email=row[0], last_init_at=row[1], marketplace_sha=row[2],
-            initial_workspace_sha=row[3], agnes_version_at_init=row[4],
+            user_email=row[0],
+            last_init_at=row[1],
+            marketplace_sha=row[2],
+            initial_workspace_sha=row[3],
+            agnes_version_at_init=row[4],
         )
 
     def upsert_workdir(

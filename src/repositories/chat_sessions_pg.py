@@ -10,6 +10,7 @@ the chat-message repo on append) and read straight off the row rather than
 re-derived via LEFT JOIN. Per-surface Slack uniqueness is enforced by the
 partial unique indexes created in migration 0015 (not by application code).
 """
+
 from __future__ import annotations
 
 import secrets
@@ -40,6 +41,9 @@ def _row_to_session(row) -> ChatSession:
         archived=bool(row["archived"]),
         is_co_session=bool(row["is_co_session"]),
         ephemeral=bool(row["ephemeral"]),
+        sandbox_id=row["sandbox_id"],
+        runner_pid=int(row["runner_pid"]) if row["runner_pid"] is not None else None,
+        sandbox_paused_at=row["sandbox_paused_at"],
     )
 
 
@@ -83,15 +87,17 @@ class ChatSessionPgRepository:
 
     def get_session(self, chat_id: str) -> Optional[ChatSession]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT * FROM chat_sessions WHERE id = :id"),
-                {"id": chat_id},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text("SELECT * FROM chat_sessions WHERE id = :id"),
+                    {"id": chat_id},
+                )
+                .mappings()
+                .first()
+            )
         return _row_to_session(row) if row else None
 
-    def list_sessions(
-        self, user_email: str, *, include_archived: bool = False
-    ) -> list[ChatSession]:
+    def list_sessions(self, user_email: str, *, include_archived: bool = False) -> list[ChatSession]:
         sql = "SELECT * FROM chat_sessions WHERE user_email = :user_email"
         if not include_archived:
             sql += " AND archived = FALSE"
@@ -102,28 +108,34 @@ class ChatSessionPgRepository:
 
     def get_slack_dm_session(self, slack_channel_id: str) -> Optional[ChatSession]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text(
-                    "SELECT * FROM chat_sessions "
-                    "WHERE surface = 'slack_dm' AND slack_channel_id = :cid "
-                    "AND archived = FALSE"
-                ),
-                {"cid": slack_channel_id},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text(
+                        "SELECT * FROM chat_sessions "
+                        "WHERE surface = 'slack_dm' AND slack_channel_id = :cid "
+                        "AND archived = FALSE"
+                    ),
+                    {"cid": slack_channel_id},
+                )
+                .mappings()
+                .first()
+            )
         return _row_to_session(row) if row else None
 
-    def get_slack_thread_session(
-        self, slack_channel_id: str, slack_thread_ts: str
-    ) -> Optional[ChatSession]:
+    def get_slack_thread_session(self, slack_channel_id: str, slack_thread_ts: str) -> Optional[ChatSession]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text(
-                    "SELECT * FROM chat_sessions "
-                    "WHERE surface = 'slack_thread' AND slack_channel_id = :cid "
-                    "AND slack_thread_ts = :ts AND archived = FALSE"
-                ),
-                {"cid": slack_channel_id, "ts": slack_thread_ts},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text(
+                        "SELECT * FROM chat_sessions "
+                        "WHERE surface = 'slack_thread' AND slack_channel_id = :cid "
+                        "AND slack_thread_ts = :ts AND archived = FALSE"
+                    ),
+                    {"cid": slack_channel_id, "ts": slack_thread_ts},
+                )
+                .mappings()
+                .first()
+            )
         return _row_to_session(row) if row else None
 
     def archive_session(self, chat_id: str) -> None:
@@ -174,13 +186,66 @@ class ChatSessionPgRepository:
 
     def hard_delete_user_sessions(self, user_email: str) -> int:
         with self._engine.begin() as conn:
-            n = conn.execute(
-                sa.text("SELECT COUNT(*) FROM chat_sessions WHERE user_email = :ue"),
-                {"ue": user_email},
-            ).scalar() or 0
+            n = (
+                conn.execute(
+                    sa.text("SELECT COUNT(*) FROM chat_sessions WHERE user_email = :ue"),
+                    {"ue": user_email},
+                ).scalar()
+                or 0
+            )
             # ON DELETE CASCADE removes child chat_messages automatically.
             conn.execute(
                 sa.text("DELETE FROM chat_sessions WHERE user_email = :ue"),
                 {"ue": user_email},
             )
         return int(n)
+
+    # --- sandbox pause/resume refs -----------------------------------------
+
+    def set_sandbox_ref(self, session_id: str, *, sandbox_id: str, runner_pid: int) -> None:
+        """Record the E2B sandbox id and runner pid; clear paused_at (live)."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "UPDATE chat_sessions "
+                    "SET sandbox_id = :sandbox_id, runner_pid = :runner_pid, sandbox_paused_at = NULL "
+                    "WHERE id = :id"
+                ),
+                {"sandbox_id": sandbox_id, "runner_pid": runner_pid, "id": session_id},
+            )
+
+    def clear_sandbox_ref(self, session_id: str) -> None:
+        """Wipe all three sandbox columns — called on real kill/error teardown."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "UPDATE chat_sessions "
+                    "SET sandbox_id = NULL, runner_pid = NULL, sandbox_paused_at = NULL "
+                    "WHERE id = :id"
+                ),
+                {"id": session_id},
+            )
+
+    def set_sandbox_paused_at(self, session_id: str, paused_at: Optional[datetime]) -> None:
+        """Set or clear the paused timestamp. Pass None to clear (resume path)."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("UPDATE chat_sessions SET sandbox_paused_at = :paused_at WHERE id = :id"),
+                {"paused_at": paused_at, "id": session_id},
+            )
+
+    def list_paused_sessions(self, *, paused_before: datetime) -> list[ChatSession]:
+        """Return sessions whose sandbox_paused_at is set and older than paused_before."""
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    sa.text(
+                        "SELECT * FROM chat_sessions "
+                        "WHERE sandbox_paused_at IS NOT NULL AND sandbox_paused_at < :cutoff"
+                    ),
+                    {"cutoff": paused_before},
+                )
+                .mappings()
+                .all()
+            )
+        return [_row_to_session(r) for r in rows]

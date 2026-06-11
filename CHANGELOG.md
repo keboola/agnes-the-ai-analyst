@@ -21,6 +21,55 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.1] — 2026-06-11
+
+### Added
+
+### Changed
+
+### Fixed
+- Chat: the idle reaper now garbage-collects DEAD session entries (3x-crash
+  leftovers) from the live registry — previously they leaked one per crashed
+  session for the server's lifetime. (#605 follow-up)
+
+### Removed
+
+### Internal
+
+## [0.71.0] — 2026-06-11
+
+### Fixed
+- **Chat `_linger_then_pause` no longer spins forever on a 3× runner crash.** If a turn was in flight (`turn_in_flight=True`), all sinks disconnected, and the runner then crashed 3 consecutive times (terminal `SessionState.DEAD` set by `_wait_for_exit_and_respawn` without emitting a `done` frame to clear the flag), the linger task spun at 50 ms intervals indefinitely — the `live.state != SessionState.ACTIVE` guard at the bottom of the function was only evaluated *after* the spin exited, which it never did. The `_live` entry also leaked (the reaper skips `DEAD` sessions), making this a slow memory grow on long-running servers. The spin now checks `live.state` each tick and bails cleanly when the session is no longer `ACTIVE`. Devin Review BUG_0001 follow-up from #605.
+
+## [0.70.21] — 2026-06-11
+
+### Added
+- Chat sessions survive browser disconnects: in-flight turns always complete and
+  persist; orphaned sessions pause their sandbox (memory snapshot) and resume with
+  full agent context on reconnect or on the next Slack message. New knobs:
+  `chat.on_detach` (`pause`|`kill`, default `pause`), `chat.detach_linger_seconds`
+  (default 60), `chat.paused_ttl_seconds` (default 7 days). Mid-turn reconnects
+  replay the in-progress turn to the new WebSocket; force-killed mid-turn output is
+  persisted as an interrupted assistant message. Paused sandboxes are
+  garbage-collected after `chat.paused_ttl_seconds`. Active-time accounting for
+  `chat.max_session_seconds` excludes paused intervals. Keepalive heartbeat extends
+  the sandbox's external timeout while sinks are attached; `lifecycle on_timeout=pause`
+  acts as a crash net. Session listing exposes a `paused` boolean field. The web UI
+  shows "Resuming session…" status between WS open and the ready frame, and a "paused"
+  chip in the sidebar for paused sessions. (#605)
+
+### Deprecated
+- `chat.e2b_kill_on_ws_disconnect` — use `chat.on_detach: kill` instead. The old key
+  still maps to `on_detach: kill` with a deprecation warning in the server log, but
+  will be removed in a future minor version. (#605)
+
+### Internal
+- Schema v73: `chat_sessions` gains nullable `sandbox_id`, `runner_pid`,
+  `sandbox_paused_at` (DuckDB `_v72_to_v73` + Alembic `0020_chat_sandbox_refs_v73`;
+  deliberately un-indexed — DuckDB 1.5.3 FK+index constraint).
+- Test suite: per-xdist-worker `DATA_DIR` isolation removes sporadic cross-worker
+  `system.duckdb` file-lock failures. (#605)
+
 ## [0.70.20] — 2026-06-10
 
 ### Fixed

@@ -1,4 +1,5 @@
 """FastAPI chat REST + WebSocket endpoints."""
+
 from __future__ import annotations
 
 import asyncio
@@ -108,6 +109,7 @@ async def list_sessions(
             "started_at": s.started_at.isoformat(),
             "last_message_at": s.last_message_at.isoformat() if s.last_message_at else None,
             "message_count": s.message_count,
+            "paused": s.sandbox_paused_at is not None,
         }
         for s in rows
     ]
@@ -213,29 +215,30 @@ async def ws_stream(ws: WebSocket, chat_id: str, ticket: str):
                         try:
                             # Thread sender_email so per-sender budgets (SR-10)
                             # and departed-participant replay-skip (SR-11) work.
-                            await mgr.send_user_message(
-                                chat_id_v, text, sender_email=user_email
-                            )
+                            await mgr.send_user_message(chat_id_v, text, sender_email=user_email)
                             break
                         except SessionNotFound:
                             await asyncio.sleep(0.5)
                     else:
-                        await ws.send_json({
-                            "type": "error",
-                            "kind": "runner_not_ready",
-                            "message": "Runner did not become ready within 30 s.",
-                        })
+                        await ws.send_json(
+                            {
+                                "type": "error",
+                                "kind": "runner_not_ready",
+                                "message": "Runner did not become ready within 30 s.",
+                            }
+                        )
                 elif kind == "cancel":
                     await mgr.cancel(chat_id_v)
         except WebSocketDisconnect:
             return
 
     try:
-        attach_task = asyncio.create_task(mgr.attach(chat_id_v, ws))
+        await mgr.attach(chat_id_v, ws)
         await reader_loop()
-        attach_task.cancel()
     except SessionNotFound:
         await ws.close(code=4404, reason="session_not_found")
+    finally:
+        await mgr.detach_sink(chat_id_v, ws)
 
 
 @router.websocket("/sessions/{session_id}/join")
@@ -287,18 +290,18 @@ async def ws_join(ws: WebSocket, session_id: str, ticket: str):
                         try:
                             # Thread sender_email so per-sender budgets (SR-10)
                             # and departed-participant replay-skip (SR-11) work.
-                            await mgr.send_user_message(
-                                session_id, text, sender_email=participant_email
-                            )
+                            await mgr.send_user_message(session_id, text, sender_email=participant_email)
                             break
                         except SessionNotFound:
                             await asyncio.sleep(0.5)
                     else:
-                        await ws.send_json({
-                            "type": "error",
-                            "kind": "runner_not_ready",
-                            "message": "Runner did not become ready within 30 s.",
-                        })
+                        await ws.send_json(
+                            {
+                                "type": "error",
+                                "kind": "runner_not_ready",
+                                "message": "Runner did not become ready within 30 s.",
+                            }
+                        )
                 elif kind == "cancel":
                     await mgr.cancel(session_id)
         except WebSocketDisconnect:
@@ -314,3 +317,8 @@ async def ws_join(ws: WebSocket, session_id: str, ticket: str):
         await ws.close(code=4403, reason="not_a_live_participant")
     except SessionNotFound:
         await ws.close(code=4404, reason="session_not_found")
+    finally:
+        # Mirror ws_stream: a departed joiner must not leave a dead sink in
+        # live.sinks — it would block the last-sink detach (linger→pause)
+        # policy until the idle reaper. No-op if add_sink never seated it.
+        await mgr.detach_sink(session_id, ws)
