@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.70.22] — 2026-06-11
+
+### Fixed
+- **Chat `_linger_then_pause` no longer spins forever on a 3× runner crash.** If a turn was in flight (`turn_in_flight=True`), all sinks disconnected, and the runner then crashed 3 consecutive times (terminal `SessionState.DEAD` set by `_wait_for_exit_and_respawn` without emitting a `done` frame to clear the flag), the linger task spun at 50 ms intervals indefinitely — the `live.state != SessionState.ACTIVE` guard at the bottom of the function was only evaluated *after* the spin exited, which it never did. The `_live` entry also leaked (the reaper skips `DEAD` sessions), making this a slow memory grow on long-running servers. The spin now checks `live.state` each tick and bails cleanly when the session is no longer `ACTIVE`. Devin Review BUG_0001 follow-up from #605.
+
 ## [0.70.21] — 2026-06-11
 
 ### Added
