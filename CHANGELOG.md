@@ -13,13 +13,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
-- **`/admin/users` is now server-paged.** The page previously pulled every user account to the browser and filtered in JavaScript. It now shows a total-users metric at the top and a table of only the 10 most recently registered users; the search box and a new group-filter dropdown push their work to the backend (`GET /api/users?search=&group_id=&limit=`), which returns at most the requested window ordered by registration date. New repository method `search_recent(limit, search, group_id)` (DuckDB + Postgres parity). The `GET /api/users` list is now recency-ordered (was email-sorted); `limit` still defaults to 1000 so list-everything callers (`agnes admin list-users`, the setup health check) keep their prior reach.
 
 ### Fixed
 
 ### Removed
 
 ### Internal
+
+## [0.71.4] — 2026-06-11
+
+### Changed
+- **`/admin/users` is now server-paged.** The page previously pulled every user account to the browser and filtered in JavaScript. It now shows a total-users metric at the top and a table of only the 10 most recently registered users; the search box and a new group-filter dropdown push their work to the backend (`GET /api/users?search=&group_id=&limit=`), which returns at most the requested window ordered by registration date. New repository method `search_recent(limit, search, group_id)` (DuckDB + Postgres parity). The `GET /api/users` list is now recency-ordered (was email-sorted); `limit` still defaults to 1000 so list-everything callers (`agnes admin list-users`, the setup health check) keep their prior reach. (#624)
 
 ## [0.71.3] — 2026-06-11
 
