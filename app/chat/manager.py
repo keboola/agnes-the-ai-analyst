@@ -444,7 +444,7 @@ class ChatManager:
     async def _resume_live(self, live: "LiveSession") -> None:
         """Resume a PAUSED in-memory session by reconnecting the sandbox."""
         session = self._repo.get_session(live.chat_id)
-        if session is None or session.sandbox_id is None:
+        if session is None or session.sandbox_id is None or session.runner_pid is None:
             await self._respawn_fresh(live)
             return
         import time as _t
@@ -830,6 +830,9 @@ class ChatManager:
             new_handle = await self._spawn_runner(session, session_dir)
             live.handle = new_handle
             live.state = SessionState.ACTIVE
+            # Refresh the persisted refs or a later pause/resume cycle would
+            # try to reconnect the DEAD sandbox and lose the agent context.
+            self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
             await self._broadcast(live, {"type": "ready"})
             # Replay last 3 user turns into the new subprocess.
             # SR-11: for co-sessions, skip turns authored by a departed
@@ -1024,6 +1027,9 @@ class ChatManager:
         new_handle = await self._spawn_runner(session, session_dir)
         live.handle = new_handle
         live.state = SessionState.ACTIVE
+        # Same stale-ref hazard as the crash-respawn path: persist the new
+        # sandbox identity for later pause/resume.
+        self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
         await self._broadcast(live, {"type": "ready"})
         # Replay last 3 user turns skipping departed participants (SR-11).
         history = self._repo.list_messages(live.chat_id)[-3:]

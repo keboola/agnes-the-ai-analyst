@@ -1515,3 +1515,33 @@ def test_resume_from_row_co_session_uses_ephemeral_dir(manager: ChatManager, mon
         await manager.kill(s.id, reason="test_done")
 
     asyncio.run(_run())
+
+
+def test_crash_respawn_refreshes_sandbox_refs(manager: ChatManager):
+    """A crash-respawn must persist the NEW sandbox's refs — otherwise a later
+    pause/resume reconnects the dead sandbox and silently loses the agent's
+    in-memory context (PR #605 review finding)."""
+
+    async def _run():
+        h1, h2 = FakeHandle(), FakeHandle()
+        h1.sandbox_id, h2.sandbox_id = "sbx-old", "sbx-new"
+        manager._provider.spawn = AsyncMock(side_effect=[h1, h2])
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        await manager.attach(s.id, ws)
+        assert manager._repo.get_session(s.id).sandbox_id == "sbx-old"
+
+        # Crash: first handle exits non-zero → _wait_for_exit_and_respawn
+        # spawns h2 and must refresh the persisted refs.
+        h1.exit_code = 1
+        h1.killed = True  # FakeHandle.wait() returns once killed flips
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if manager._live[s.id].handle is h2:
+                break
+        row = manager._repo.get_session(s.id)
+        assert row.sandbox_id == "sbx-new"
+        assert row.runner_pid == h2.pid
+        await manager.kill(s.id, reason="test_done")
+
+    asyncio.run(_run())
