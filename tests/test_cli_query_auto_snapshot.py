@@ -91,6 +91,29 @@ class TestFlagOff:
         assert result.exit_code == 1
         assert "remote_scan_too_large" in result.output
 
+    def test_multi_view_over_cap_reraises_without_materializing(self):
+        """A remote_scan_too_large 400 with MULTIPLE view targets must NOT
+        auto-snapshot: substituting several distinct views with one
+        deterministic snapshot would silently self-join the materialized
+        result and return WRONG data. Falls back to re-raise + a skip note; no
+        snapshot is created (#616 review)."""
+        body = _over_cap_400(["view_a", "view_b"])
+        with patch("cli.client.api_post", return_value=_resp(400, body)), \
+             patch("cli.commands.query._create_auto_snapshot") as mock_create:
+            result = runner.invoke(
+                app,
+                [
+                    "query",
+                    "SELECT * FROM view_a JOIN view_b USING (id)",
+                    "--remote",
+                    "--auto-snapshot",
+                ],
+            )
+        assert result.exit_code == 1
+        assert "remote_scan_too_large" in result.output
+        assert "multiple over-cap views" in result.output
+        mock_create.assert_not_called()
+
     def test_other_400_reraises_with_flag(self):
         """A 400 whose reason is NOT remote_scan_too_large re-raises even with
         the flag on."""

@@ -1612,8 +1612,10 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
         with quota.acquire(user=user_id):
             # Dry-run the rewritten SQL purely to bill the user's daily byte
             # quota — NO cap enforcement here (that's the whole point of the
-            # opt-in). Best-effort: a dry-run failure must not block the
-            # materialize, since the cap is intentionally disabled.
+            # opt-in). Fail closed: without an estimate we cannot bill the
+            # daily byte budget, and proceeding at 0 cost would let an analyst
+            # bypass the budget via --auto-snapshot during a BQ dry-run outage.
+            # Mirror /api/query's `remote_estimate_failed` behavior.
             total_bq_bytes = 0
             if dry_run_set:
                 try:
@@ -1622,8 +1624,20 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
                         sql, name_lookups, project,
                     )
                     total_bq_bytes = _bq_dry_run_bytes(bq, rewritten)
-                except Exception:
-                    total_bq_bytes = 0
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "reason": "remote_estimate_failed",
+                            "message": (
+                                "BigQuery dry-run estimate failed; the scan "
+                                "cannot be billed against your daily budget, "
+                                "so the materialize is refused. Retry shortly."
+                            ),
+                        },
+                    ) from exc
 
             execution_sql, did_rewrite = _rewrite_user_sql_for_bigquery_query(
                 sql, conn,

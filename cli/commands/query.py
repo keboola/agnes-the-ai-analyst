@@ -207,6 +207,20 @@ def _try_auto_snapshot_fallback(sql: str, fmt: str, limit: int, detail: dict) ->
     view_targets = detail.get("view_targets") or []
     if not view_targets:
         return False
+    if len(view_targets) > 1:
+        # A single deterministic snapshot can't stand in for multiple distinct
+        # over-cap views: substituting them all with the same snapshot would
+        # silently self-join the materialized result and return WRONG data with
+        # no error. Multi-view auto-snapshot is out of scope (#616) — fall back
+        # to the normal error so the analyst gets the manual per-view workaround.
+        typer.echo(
+            "[auto-snapshot] skipped: query targets multiple over-cap views "
+            f"({', '.join(view_targets)}); auto-snapshot handles a single view. "
+            "Run `agnes snapshot create` per view, then query the snapshots "
+            "locally.",
+            err=True,
+        )
+        return False
 
     from cli.commands.snapshot import _format_size
 
