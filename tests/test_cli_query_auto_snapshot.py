@@ -91,28 +91,59 @@ class TestFlagOff:
         assert result.exit_code == 1
         assert "remote_scan_too_large" in result.output
 
-    def test_multi_view_over_cap_reraises_without_materializing(self):
-        """A remote_scan_too_large 400 with MULTIPLE view targets must NOT
-        auto-snapshot: substituting several distinct views with one
-        deterministic snapshot would silently self-join the materialized
-        result and return WRONG data. Falls back to re-raise + a skip note; no
-        snapshot is created (#616 review)."""
+    def test_multi_view_over_cap_materializes_per_view_snapshot(self, tmp_config, monkeypatch):
+        """Regression — Devin Review ANALYSIS_0001 on #619.
+
+        A remote_scan_too_large 400 with MULTIPLE view targets now creates
+        ONE snapshot per view (each keyed on the view name, each
+        materialized as `SELECT * FROM <view>`). The rewritten SQL
+        substitutes both views with their respective snapshot IDs and runs
+        locally. The previous behaviour skipped multi-view entirely; the
+        bug that risked silent-self-join (one snapshot reused across all
+        views) was BUG_0001 — both fixes ship together so the multi-view
+        path is now correct, not skipped."""
+        import duckdb
+
+        snap_a = _auto_snapshot_id("view_a")
+        snap_b = _auto_snapshot_id("view_b")
+        assert snap_a != snap_b, "per-view IDs must differ"
+
+        db_dir = tmp_config / "local" / "user" / "duckdb"
+        db_dir.mkdir(parents=True)
+        conn = duckdb.connect(str(db_dir / "analytics.duckdb"))
+        conn.execute(f'CREATE TABLE "{snap_a}" (id INTEGER, country VARCHAR)')
+        conn.execute(f"INSERT INTO \"{snap_a}\" VALUES (1, 'CZ'), (2, 'US')")
+        conn.execute(f'CREATE TABLE "{snap_b}" (id INTEGER, amount INTEGER)')
+        conn.execute(f"INSERT INTO \"{snap_b}\" VALUES (1, 100), (2, 200)")
+        conn.close()
+
+        created = []
+
+        def fake_create(*, view_target, snapshot_id, ttl):
+            created.append({"view_target": view_target, "snapshot_id": snapshot_id})
+            return None
+
         body = _over_cap_400(["view_a", "view_b"])
         with patch("cli.client.api_post", return_value=_resp(400, body)), \
-             patch("cli.commands.query._create_auto_snapshot") as mock_create:
+             patch("cli.commands.query._create_auto_snapshot", side_effect=fake_create):
             result = runner.invoke(
                 app,
                 [
                     "query",
-                    "SELECT * FROM view_a JOIN view_b USING (id)",
+                    "SELECT country, amount FROM view_a JOIN view_b USING (id)",
                     "--remote",
                     "--auto-snapshot",
+                    "--format", "json",
                 ],
             )
-        assert result.exit_code == 1
-        assert "remote_scan_too_large" in result.output
-        assert "multiple over-cap views" in result.output
-        mock_create.assert_not_called()
+        assert result.exit_code == 0, result.output
+        # Per-view snapshot creation: each view gets its own (id, materialize).
+        assert len(created) == 2
+        assert {c["view_target"] for c in created} == {"view_a", "view_b"}
+        assert {c["snapshot_id"] for c in created} == {snap_a, snap_b}
+        # Verify the JOIN ran on the substituted snapshots (correct rows).
+        data = json.loads(result.stdout if hasattr(result, "stdout") else result.output)
+        assert {(r["country"], r["amount"]) for r in data} == {("CZ", 100), ("US", 200)}
 
     def test_other_400_reraises_with_flag(self):
         """A 400 whose reason is NOT remote_scan_too_large re-raises even with
@@ -127,11 +158,13 @@ class TestFlagOff:
 
 
 class TestIdDerivation:
-    def test_id_is_deterministic_and_normalized(self):
-        """Same query (modulo whitespace/case) → same auto_<sha8> id."""
-        a = _auto_snapshot_id("SELECT country FROM web_view")
-        b = _auto_snapshot_id("  select   country\nFROM   web_view  ")
-        assert a == b
+    def test_id_is_per_view_and_deterministic(self):
+        """Same view → same auto_<sha8> id; different views → different ids."""
+        a = _auto_snapshot_id("web_view")
+        a2 = _auto_snapshot_id("WEB_VIEW")  # canonical-case normalization
+        b = _auto_snapshot_id("orders_view")
+        assert a == a2
+        assert a != b
         assert a.startswith("auto_")
         # auto_ + 8 hex chars
         assert len(a) == len("auto_") + 8
@@ -149,7 +182,7 @@ class TestAutoSnapshotFallback:
         import duckdb
 
         sql = "SELECT country FROM web_view"
-        snap_id = _auto_snapshot_id(sql)
+        snap_id = _auto_snapshot_id("web_view")
 
         # Local DuckDB the rewritten query runs against. The auto snapshot view
         # is registered there (simulating what `snapshot create` does).
@@ -162,7 +195,7 @@ class TestAutoSnapshotFallback:
 
         created = {}
 
-        def fake_create(*, original_sql, view_target, snapshot_id, ttl):
+        def fake_create(*, view_target, snapshot_id, ttl):
             created["called"] = True
             created["snapshot_id"] = snapshot_id
             created["view_target"] = view_target
@@ -196,7 +229,7 @@ class TestAutoSnapshotFallback:
         from cli.snapshot_meta import SnapshotMeta, write_meta
 
         sql = "SELECT country FROM web_view"
-        snap_id = _auto_snapshot_id(sql)
+        snap_id = _auto_snapshot_id("web_view")
 
         db_dir = tmp_config / "local" / "user" / "duckdb"
         db_dir.mkdir(parents=True)
@@ -237,7 +270,7 @@ class TestAutoSnapshotFallback:
         import pyarrow as pa
 
         sql = "SELECT country FROM web_view"
-        snap_id = _auto_snapshot_id(sql)
+        snap_id = _auto_snapshot_id("web_view")
 
         # Local DuckDB must exist for the snapshot-create fetch-path guard.
         db_dir = tmp_config / "local" / "user" / "duckdb"
@@ -271,7 +304,7 @@ class TestAutoSnapshotFallback:
         from cli.snapshot_meta import SnapshotMeta, write_meta
 
         sql = "SELECT country FROM web_view"
-        snap_id = _auto_snapshot_id(sql)
+        snap_id = _auto_snapshot_id("web_view")
 
         db_dir = tmp_config / "local" / "user" / "duckdb"
         db_dir.mkdir(parents=True)
@@ -300,3 +333,73 @@ class TestAutoSnapshotFallback:
             )
         assert result.exit_code == 0, result.output
         mock_create.assert_called_once()
+
+
+class TestDevinFindings:
+    """Regression tests pinning the Devin Review fixes on #620.
+
+    BUG_0001 — auto-snapshot must materialize the RAW VIEW (`SELECT *
+    FROM <view>`), not the user's full query, or every transformation in
+    the original SQL (WHERE, GROUP BY, DISTINCT, COUNT, …) would
+    double-apply when the rewritten query runs against the snapshot.
+
+    BUG_0002 — `_substitute_view` must be case-insensitive: the registry
+    canonical ID stored in `view_targets` may differ from the casing the
+    user typed in their SQL, and a case-sensitive substitution would
+    leave the original view name in the rewritten SQL and explode locally
+    with "table not found".
+    """
+
+    def test_snapshot_materializes_raw_view_not_full_query(self, tmp_config, monkeypatch):
+        """The `from_query` sent to `_create_snapshot` must be `SELECT *
+        FROM <view_target>`, NOT the user's full SQL. Otherwise the
+        snapshot contains the already-transformed result and the rewritten
+        local query double-applies every transformation."""
+        sql = "SELECT country, COUNT(*) AS n FROM web_view GROUP BY 1"
+        captured = {}
+
+        def fake_create_snapshot(*, table_id, from_query, as_name, ttl, force, quiet):
+            captured["from_query"] = from_query
+
+        # Need a local DuckDB present + the snapshot table so the rewritten
+        # query can run without erroring (the fake just intercepts the call).
+        import duckdb
+        snap_id = _auto_snapshot_id("web_view")
+        db_dir = tmp_config / "local" / "user" / "duckdb"
+        db_dir.mkdir(parents=True)
+        conn = duckdb.connect(str(db_dir / "analytics.duckdb"))
+        conn.execute(f'CREATE TABLE "{snap_id}" (country VARCHAR)')
+        conn.execute(f"INSERT INTO \"{snap_id}\" VALUES ('CZ'), ('CZ'), ('US')")
+        conn.close()
+
+        body = _over_cap_400(["web_view"])
+        with patch("cli.client.api_post", return_value=_resp(400, body)), \
+             patch("cli.commands.snapshot._create_snapshot", side_effect=fake_create_snapshot):
+            result = runner.invoke(
+                app,
+                ["query", sql, "--remote", "--auto-snapshot", "--format", "json"],
+            )
+
+        # CRITICAL: the snapshot must materialize the RAW view, not the
+        # user's full query with its GROUP BY / aggregations.
+        assert captured.get("from_query") == "SELECT * FROM web_view"
+        assert "GROUP BY" not in (captured.get("from_query") or "")
+        assert "COUNT" not in (captured.get("from_query") or "")
+        # And the rewritten local query produced the correct aggregation
+        # (counts grouped by country — CZ=2, US=1 — not double-applied).
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.stdout if hasattr(result, "stdout") else result.output)
+        rows = {(r["country"], r["n"]) for r in data}
+        assert rows == {("CZ", 2), ("US", 1)}
+
+    def test_substitute_view_is_case_insensitive(self):
+        """The user typed `Web_View` but the registry canonical ID is
+        `web_view` — substitution must still rewrite the SQL or the local
+        re-run dies with "table not found"."""
+        from cli.commands.query import _substitute_view
+
+        sql = "SELECT * FROM Web_View WHERE id > 10"
+        rewritten = _substitute_view(sql, "web_view", "auto_abc12345")
+        # Original casing replaced regardless of how the user typed it.
+        assert "auto_abc12345" in rewritten
+        assert "Web_View" not in rewritten

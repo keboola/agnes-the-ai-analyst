@@ -138,9 +138,16 @@ def _normalize_sql(sql: str) -> str:
     return re.sub(r"\s+", " ", (sql or "").strip()).lower()
 
 
-def _auto_snapshot_id(sql: str) -> str:
-    """Deterministic `auto_<sha8>` snapshot id for a query (#616)."""
-    digest = hashlib.sha256(_normalize_sql(sql).encode("utf-8")).hexdigest()[:8]
+def _auto_snapshot_id(view_target: str) -> str:
+    """Deterministic `auto_<sha8>` snapshot id for a VIEW target (#616).
+
+    Keyed on the view name (not the full SQL) so a JOIN across N views
+    gets N distinct snapshots, and so the same view shared by multiple
+    queries hits one cached snapshot. The hash anchors the id against
+    accidental view-id collisions (e.g. a 32-char identifier vs. its
+    truncation) and gives us an opaque prefix that's safe as a DuckDB
+    table name. Devin Review ANALYSIS_0001 on #619 (multi-view)."""
+    digest = hashlib.sha256(_normalize_sql(view_target).encode("utf-8")).hexdigest()[:8]
     return f"auto_{digest}"
 
 
@@ -171,9 +178,17 @@ def _snapshot_is_fresh(snapshot_id: str) -> bool:
     return exp > datetime.now(timezone.utc)
 
 
-def _create_auto_snapshot(*, original_sql, view_target, snapshot_id, ttl):
-    """Materialize the over-cap view as a local snapshot via the
-    `snapshot create --from-query` path (#616).
+def _create_auto_snapshot(*, view_target, snapshot_id, ttl):
+    """Materialize the over-cap VIEW's raw data as a local snapshot via
+    the `snapshot create --from-query` path (#616).
+
+    Materializes ``SELECT * FROM <view>`` — the **raw view content** — NOT
+    the user's full query. The substitution pass below then rewrites the
+    original SQL to read from the snapshot, so all transformations (WHERE,
+    GROUP BY, DISTINCT, LIMIT, ORDER BY, window functions, …) apply once
+    locally. Materializing the full SQL would double-apply every
+    transformation when the rewritten query runs (e.g. a COUNT becomes
+    COUNT(COUNT(*))). Devin Review BUG_0001 on #619.
 
     Delegates to the snapshot command's create so the materialize, view
     registration, meta write, and TTL stamping all stay in one place.
@@ -182,7 +197,13 @@ def _create_auto_snapshot(*, original_sql, view_target, snapshot_id, ttl):
 
     _create_snapshot(
         table_id=snapshot_id,
-        from_query=original_sql,
+        # `SELECT * FROM <view>` is intentionally bare-identifier (no
+        # quoting): server-side `from_query` execution runs against the
+        # same catalog/connection that resolved the view in the original
+        # query, so canonical-case identifiers Just Work. Quoting the
+        # bare identifier here would break case-sensitive lookups for
+        # users whose registry IDs are not already lowercase.
+        from_query=f"SELECT * FROM {view_target}",
         as_name=snapshot_id,
         ttl=ttl,
         force=True,
@@ -193,8 +214,14 @@ def _create_auto_snapshot(*, original_sql, view_target, snapshot_id, ttl):
 def _substitute_view(sql: str, view: str, replacement: str) -> str:
     """Replace word-boundary occurrences of the bare view identifier ``view``
     with ``replacement`` in ``sql`` (#616). Leaves substrings inside larger
-    identifiers untouched (`\\b` anchors)."""
-    return re.sub(rf"\b{re.escape(view)}\b", replacement, sql)
+    identifiers untouched (`\\b` anchors). Case-insensitive because
+    ``view_targets`` carries the registry's canonical-case identifier
+    while the user's SQL may use any case (DuckDB identifiers are
+    case-insensitive). A case-sensitive match would silently leave the
+    original view name in the rewritten SQL and `_query_local` would die
+    with a cryptic "table not found" instead of returning the local
+    result. Devin Review BUG_0002 on #619."""
+    return re.sub(rf"\b{re.escape(view)}\b", replacement, sql, flags=re.IGNORECASE)
 
 
 def _try_auto_snapshot_fallback(sql: str, fmt: str, limit: int, detail: dict) -> bool:
@@ -207,32 +234,26 @@ def _try_auto_snapshot_fallback(sql: str, fmt: str, limit: int, detail: dict) ->
     view_targets = detail.get("view_targets") or []
     if not view_targets:
         return False
-    if len(view_targets) > 1:
-        # A single deterministic snapshot can't stand in for multiple distinct
-        # over-cap views: substituting them all with the same snapshot would
-        # silently self-join the materialized result and return WRONG data with
-        # no error. Multi-view auto-snapshot is out of scope (#616) — fall back
-        # to the normal error so the analyst gets the manual per-view workaround.
-        typer.echo(
-            "[auto-snapshot] skipped: query targets multiple over-cap views "
-            f"({', '.join(view_targets)}); auto-snapshot handles a single view. "
-            "Run `agnes snapshot create` per view, then query the snapshots "
-            "locally.",
-            err=True,
-        )
-        return False
 
     from cli.commands.snapshot import _format_size
 
-    snapshot_id = _auto_snapshot_id(sql)
     scan = _format_size(int(detail.get("scan_bytes") or 0))
     cap = _format_size(int(detail.get("limit_bytes") or 0))
 
+    # Multi-view JOINs are now supported (Devin Review ANALYSIS_0001 on
+    # #619): each view gets its OWN snapshot keyed on the view name, its
+    # own raw-content materialize (`SELECT * FROM <view>`), and its own
+    # substitution pass. The previous behaviour deterministic-hashed the
+    # full SQL into one snapshot ID and reused it for every view — which
+    # would have silently self-joined the first materialized view with
+    # itself once BUG_0001 was fixed. Hashing per view also means the
+    # same view shared across two over-cap queries hits one cached
+    # snapshot instead of two.
     rewritten = sql
     for view in view_targets:
+        snapshot_id = _auto_snapshot_id(view)
         if not _snapshot_is_fresh(snapshot_id):
             _create_auto_snapshot(
-                original_sql=sql,
                 view_target=view,
                 snapshot_id=snapshot_id,
                 ttl=_AUTO_SNAPSHOT_TTL,
@@ -243,7 +264,7 @@ def _try_auto_snapshot_fallback(sql: str, fmt: str, limit: int, detail: dict) ->
         )
         rewritten = _substitute_view(rewritten, view, snapshot_id)
 
-    # Re-run the rewritten SQL against the LOCAL snapshot (normal local path).
+    # Re-run the rewritten SQL against the LOCAL snapshots (normal local path).
     _query_local(rewritten, fmt, limit)
     return True
 

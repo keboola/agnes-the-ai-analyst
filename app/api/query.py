@@ -1643,12 +1643,30 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
                 sql, conn,
             )
             try:
-                table = analytics.execute(execution_sql).arrow()
+                try:
+                    table = analytics.execute(execution_sql).arrow()
+                except Exception as exc:
+                    if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
+                        table = analytics.execute(sql).arrow()
+                    else:
+                        raise
+            except HTTPException:
+                # Don't re-wrap structured rejections raised below (RBAC,
+                # SELECT-only, registry) — let them propagate.
+                raise
             except Exception as exc:
-                if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
-                    table = analytics.execute(sql).arrow()
-                else:
-                    raise
+                # Map DuckDB execution errors (syntax error, missing table,
+                # type mismatch) to a structured 400 mirroring the normal
+                # /api/query path (`app/api/query.py` ~line 714) so the
+                # scan_endpoint caller surfaces a user-friendly error
+                # instead of a raw 500. Devin Review ANALYSIS_0003 on #620.
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "reason": "duckdb_execution_error",
+                        "message": str(exc),
+                    },
+                ) from exc
 
             if dry_run_set and total_bq_bytes:
                 try:
