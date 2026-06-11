@@ -71,6 +71,18 @@ def test_backup_script_verifies_restore():
     assert "-mtime +7" in sh
 
 
+def test_webhook_payloads_are_json_escaped():
+    """Both scripts embed $MSG (which includes the operator-configurable
+    ENV_LABEL) into a JSON payload — an unescaped quote/backslash would
+    malform the JSON and the alert would silently fail (Devin review on
+    PR #623 caught the backup script missing this)."""
+    escape = "sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g'"
+    for name in ["agnes-watchdog.sh", "agnes-db-backup.sh"]:
+        sh = (FILES / name).read_text()
+        assert escape in sh, f"{name} must JSON-escape the webhook payload"
+        assert '\\"text\\": \\"$esc\\"' in sh, f"{name} must POST the escaped variable, not raw $MSG"
+
+
 def test_verify_script_compiles_and_exercises_incident_statements():
     src = (FILES / "agnes-db-verify.py").read_text()
     compile(src, "agnes-db-verify.py", "exec")  # SyntaxError -> test failure

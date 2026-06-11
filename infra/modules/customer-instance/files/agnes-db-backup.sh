@@ -52,7 +52,12 @@ MSG="[agnes-db-backup] $LABEL | $TS verify=$STATUS size=$(du -sh "$DEST" | cut -
 logger -t agnes-db-backup "$MSG"
 echo "$MSG" >> /var/log/agnes-watchdog.log
 if [ "$STATUS" = "FAILED" ] && [ -n "$WEBHOOK_URL" ]; then
+    # Same JSON escaping as agnes-watchdog.sh — $MSG embeds the
+    # operator-configurable ENV_LABEL, and this is the one alert that must
+    # not silently break on a quote or backslash.
+    esc=$(printf '%s' "$MSG — see $DEST/verify.log" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n", $0}')
     curl -sf -m 10 -X POST -H 'Content-Type: application/json' \
-        -d "{\"text\": \"$MSG — see $DEST/verify.log\"}" "$WEBHOOK_URL" >/dev/null 2>&1
+        -d "{\"text\": \"$esc\"}" "$WEBHOOK_URL" >/dev/null 2>&1 \
+        || logger -t agnes-db-backup "webhook send failed"
 fi
 [ "$STATUS" = "OK" ]
