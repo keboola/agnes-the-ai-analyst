@@ -1545,3 +1545,40 @@ def test_crash_respawn_refreshes_sandbox_refs(manager: ChatManager):
         await manager.kill(s.id, reason="test_done")
 
     asyncio.run(_run())
+
+
+def test_linger_exits_when_session_dies_midturn(manager: ChatManager):
+    """A sinkless in-flight turn whose runner dies (3x crash -> DEAD) must not
+    leave the linger task spinning forever (PR #605 review finding)."""
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        await manager.attach(s.id, ws)
+        live = manager._live[s.id]
+        live.turn_in_flight = True  # simulate in-flight turn, no pump to clear it
+        await manager.detach_sink(s.id, ws)
+        assert live.linger_task is not None
+        live.state = SessionState.DEAD  # 3x-crash outcome
+        await asyncio.wait_for(live.linger_task, timeout=2.0)  # must exit, not spin
+        await manager.kill(s.id, reason="test_done")
+
+    asyncio.run(_run())
+
+
+def test_reaper_gcs_dead_sessions(manager: ChatManager):
+    """DEAD entries (3x-crash) must be GC'd by the reaper, not leak in _live."""
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        await manager.attach(s.id, ws)
+        manager._live[s.id].state = SessionState.DEAD
+        await manager._reap_once()
+        assert s.id not in manager._live
+
+    asyncio.run(_run())

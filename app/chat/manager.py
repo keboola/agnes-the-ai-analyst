@@ -399,6 +399,11 @@ class ChatManager:
     async def _linger_then_pause(self, live: "LiveSession") -> None:
         # Wait for any in-flight turn to complete first.
         while live.turn_in_flight:
+            if live.state != SessionState.ACTIVE:
+                # Runner died (3x crash → DEAD) or session was killed while
+                # we waited; no pump is alive to ever clear turn_in_flight,
+                # so without this guard the loop would spin forever.
+                return
             await asyncio.sleep(0.05)
         await asyncio.sleep(self._config.detach_linger_seconds)
         if live.sinks or live.state != SessionState.ACTIVE:
@@ -1220,6 +1225,13 @@ class ChatManager:
         to_kill: list[tuple[str, str]] = []
 
         for chat_id, live in list(self._live.items()):
+            if live.state == SessionState.DEAD:
+                # 3x-crash respawn marks a session DEAD without popping it
+                # from _live (only kill() pops). GC it here or dead entries
+                # accumulate forever on long-running servers; kill() also
+                # fires the partial-save and clears sandbox refs.
+                to_kill.append((chat_id, "dead_gc"))
+                continue
             if live.state not in (SessionState.ACTIVE, SessionState.IDLE):
                 continue
             # Active-time cap: accumulator + current active segment.
