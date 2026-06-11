@@ -352,6 +352,52 @@ def _first_table_from_sql(sql: str) -> Optional[str]:
     return None
 
 
+# SQL keywords / functions rejected on every user-submitted query path. Shared
+# by `execute_query` (the /api/query handler) and `run_remote_select_to_arrow`
+# (the snapshot `from_query` materialize path) so the two surfaces can never
+# drift on what counts as a safe single-SELECT.
+_BLOCKED_SQL_TOKENS = [
+    "drop ", "delete ", "insert ", "update ", "alter ", "create ",
+    "copy ", "attach ", "detach ", "load ", "install ",
+    "export ", "import ", "pragma ", "call ",
+    # File access functions
+    "read_csv", "read_json", "read_parquet", "read_text",
+    "write_csv", "write_parquet", "read_blob", "read_ndjson",
+    "parquet_scan", "parquet_metadata", "parquet_schema",
+    "json_scan", "csv_scan",
+    "query_table", "iceberg_scan", "delta_scan",
+    # #160: bigquery_query() bypasses the registry / RBAC entirely
+    # (it runs an arbitrary BQ jobs API call against any reachable
+    # dataset). Wrap views created by the BQ extractor use it inside
+    # CREATE VIEW bodies, but those run via DuckDB's view resolution at
+    # query time — user-submitted SQL never contains the function name.
+    "bigquery_query",
+    "glob(", "list_files",
+    "'/", '"/', 'http://', 'https://', 's3://', 'gcs://',
+    # DuckDB metadata (leaks schema info regardless of RBAC)
+    "information_schema", "duckdb_tables", "duckdb_columns",
+    "duckdb_databases", "duckdb_settings", "duckdb_functions",
+    "duckdb_views", "duckdb_indexes", "duckdb_schemas",
+    "pragma_table_info", "pragma_storage_info",
+    # Relative path traversal
+    "'../", '"../',
+    # Multiple statements
+    ";",
+]
+
+
+def _assert_select_only(sql_lower: str) -> None:
+    """Raise HTTPException(400) unless ``sql_lower`` is a single SELECT/WITH
+    query free of the blocked keywords/functions. ``sql_lower`` MUST already
+    be ``.strip().lower()``-ed by the caller."""
+    if any(keyword in sql_lower for keyword in _BLOCKED_SQL_TOKENS):
+        raise HTTPException(status_code=400, detail="Only single SELECT queries are allowed")
+    # Accept any whitespace (newline, tab, space) after the keyword so
+    # multi-line SQL doesn't 400 on `SELECT\n  col, ...`.
+    if not re.match(r"^(select|with)\s", sql_lower):
+        raise HTTPException(status_code=400, detail="Query must start with SELECT or WITH")
+
+
 @router.post("", response_model=QueryResponse)
 def execute_query(
     request: QueryRequest,
@@ -374,43 +420,7 @@ def execute_query(
     _t0 = time.monotonic()
     sql_lower = request.sql.strip().lower()
 
-    # Block everything except SELECT
-    blocked = [
-        "drop ", "delete ", "insert ", "update ", "alter ", "create ",
-        "copy ", "attach ", "detach ", "load ", "install ",
-        "export ", "import ", "pragma ", "call ",
-        # File access functions
-        "read_csv", "read_json", "read_parquet", "read_text",
-        "write_csv", "write_parquet", "read_blob", "read_ndjson",
-        "parquet_scan", "parquet_metadata", "parquet_schema",
-        "json_scan", "csv_scan",
-        "query_table", "iceberg_scan", "delta_scan",
-        # #160: bigquery_query() bypasses the registry / RBAC entirely
-        # (it runs an arbitrary BQ jobs API call against any reachable
-        # dataset). Wrap views created by the BQ extractor use it inside
-        # CREATE VIEW bodies, but those run via DuckDB's view resolution at
-        # query time — user-submitted SQL never contains the function name.
-        "bigquery_query",
-        "glob(", "list_files",
-        "'/", '"/','http://', 'https://', 's3://', 'gcs://',
-        # DuckDB metadata (leaks schema info regardless of RBAC)
-        "information_schema", "duckdb_tables", "duckdb_columns",
-        "duckdb_databases", "duckdb_settings", "duckdb_functions",
-        "duckdb_views", "duckdb_indexes", "duckdb_schemas",
-        "pragma_table_info", "pragma_storage_info",
-        # Relative path traversal
-        "'../", '"../',
-        # Multiple statements
-        ";",
-    ]
-    if any(keyword in sql_lower for keyword in blocked):
-        raise HTTPException(status_code=400, detail="Only single SELECT queries are allowed")
-
-    # Accept any whitespace (newline, tab, space) after the keyword so
-    # multi-line SQL doesn't 400 on `SELECT\n  col, ...`.
-    import re as _re
-    if not _re.match(r"^(select|with)\s", sql_lower):
-        raise HTTPException(status_code=400, detail="Query must start with SELECT or WITH")
+    _assert_select_only(sql_lower)
 
     # ----- Internal-source short-circuit ----------------------------------
     # SQL referencing one of the seeded internal tables (agnes_sessions,
@@ -1539,3 +1549,98 @@ def _bq_quota_and_cap_guard(
             "limit": exc.limit,
             "retry_after_seconds": exc.retry_after_seconds,
         })
+
+
+def run_remote_select_to_arrow(conn, user, sql, bq, quota):
+    """Materialize a raw SELECT against BigQuery into an Arrow table (#616).
+
+    Backs the snapshot ``from_query`` mode used by ``agnes query --remote
+    --auto-snapshot``: the analyst has explicitly opted into materializing a
+    snapshot, so this path reuses the SAME validation as ``/api/query`` —
+    SELECT-only guard, per-user view RBAC, BQ registry-gating, and the
+    ``bigquery_query()`` rewrite for predicate pushdown — but deliberately
+    does NOT apply the ``remote_scan_too_large`` cap (the cap is exactly what
+    the analyst is bypassing). Daily-byte budget and concurrent-slot quotas
+    still apply via ``quota``.
+
+    Returns a ``pyarrow.Table`` of the FULL result. Raises:
+        HTTPException — on RBAC / registry / SELECT-only rejection (same
+            shapes as /api/query), surfaced by the v2_scan endpoint.
+        QuotaExceededError — daily-budget / concurrent-slot exhaustion.
+    """
+    sql_lower = (sql or "").strip().lower()
+    _assert_select_only(sql_lower)
+
+    # Internal-source SQL (agnes_sessions/usage/audit) isn't a BQ snapshot
+    # source — refuse rather than silently mis-route.
+    if find_internal_refs(sql):
+        raise HTTPException(
+            status_code=400,
+            detail="Internal tables cannot be snapshotted via --from-query.",
+        )
+
+    allowed = get_accessible_tables(user, conn)
+    analytics = get_analytics_db_readonly()
+    try:
+        if allowed is not None:  # None = admin, sees all
+            all_views = {row[0] for row in analytics.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
+            ).fetchall()}
+            allowed_ids = set(allowed)
+            registry_rows = table_registry_repo().list_all()
+            allowed_view_names = {
+                r["name"] for r in registry_rows
+                if r.get("name") and r.get("id") in allowed_ids
+            }
+            sql_lower_masked = _mask_backticks(sql_lower)
+            for table in all_views - allowed_view_names:
+                pattern = r'\b' + re.escape(table.lower()) + r'\b'
+                if re.search(pattern, sql_lower_masked):
+                    from src.rbac import table_not_in_stack_message
+                    raise HTTPException(
+                        status_code=403, detail=table_not_in_stack_message(table),
+                    )
+
+        dry_run_set, name_lookups, blocked_bq_path = _bq_guardrail_inputs(
+            sql, sql_lower, conn, user, allowed,
+        )
+        if blocked_bq_path is not None:
+            raise HTTPException(status_code=403, detail=blocked_bq_path)
+
+        user_id = user.get("email") or user.get("id") or "anon"
+        quota.check_daily_budget(user=user_id)
+        with quota.acquire(user=user_id):
+            # Dry-run the rewritten SQL purely to bill the user's daily byte
+            # quota — NO cap enforcement here (that's the whole point of the
+            # opt-in). Best-effort: a dry-run failure must not block the
+            # materialize, since the cap is intentionally disabled.
+            total_bq_bytes = 0
+            if dry_run_set:
+                try:
+                    project = bq.projects.data
+                    rewritten = _rewrite_user_sql_for_bq_dry_run(
+                        sql, name_lookups, project,
+                    )
+                    total_bq_bytes = _bq_dry_run_bytes(bq, rewritten)
+                except Exception:
+                    total_bq_bytes = 0
+
+            execution_sql, did_rewrite = _rewrite_user_sql_for_bigquery_query(
+                sql, conn,
+            )
+            try:
+                table = analytics.execute(execution_sql).arrow()
+            except Exception as exc:
+                if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
+                    table = analytics.execute(sql).arrow()
+                else:
+                    raise
+
+            if dry_run_set and total_bq_bytes:
+                try:
+                    quota.record_bytes(user=user_id, n=total_bq_bytes)
+                except Exception:
+                    logger.warning("quota record_bytes failed for user=%s", user_id)
+        return table
+    finally:
+        analytics.close()

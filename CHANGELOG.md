@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **`agnes query --remote --auto-snapshot` auto-recovers from the BigQuery scan cap on VIEW targets.** When a `--remote` query against a BigQuery VIEW / MATERIALIZED VIEW trips the 5 GB `remote_scan_too_large` cap (BigQuery can't push `LIMIT` into a view body), the opt-in `--auto-snapshot` flag now completes the query in one command: it materializes the view's data as a deterministic local snapshot (`auto_<sha8>` of the normalized SQL), substitutes the view name for the snapshot in the original SQL, and re-runs it locally — instead of failing with a "go run `agnes snapshot create` yourself" hint. A fresh snapshot (24h TTL, reusing the per-snapshot TTL infra) is reused on repeat invocations; an elapsed one is rebuilt. The flag parses the server's structured `remote_scan_too_large` 400 (no text regex); with the flag OFF, or on a non-view over-cap (empty `view_targets`), or any other error, behavior is byte-for-byte unchanged. Physical-table `--remote` queries are unaffected. Backed by a new `agnes snapshot create --from-query "<sql>"` mode that materializes a snapshot from a raw SELECT executed remotely (mutually exclusive with `--select`/`--where`), and a small server hook on `/api/v2/scan` (`from_query`) that runs the raw SELECT through the same RBAC + registry-gating as `/api/query` but without the scan cap (the analyst explicitly opted in). (#616)
 
 ### Changed
 
