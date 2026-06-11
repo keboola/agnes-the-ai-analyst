@@ -305,6 +305,8 @@ class ChatManager:
                 return
             # resume failed → refs cleared by _resume_from_row, fall through
             session = self._repo.get_session(chat_id)
+            if session is None:
+                raise SessionNotFound(chat_id)
         live = await self._spawn_live(session)
         await self._seat_sink(live, ws, is_primary=is_primary)
 
