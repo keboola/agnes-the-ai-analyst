@@ -412,7 +412,11 @@ def test_idle_reaper_kills_sessions_older_than_max_session_seconds(tmp_path):
         # Pin a tiny wallclock cap so the test is fast and deterministic.
         max_session_seconds=1,
         idle_ttl_seconds=10**9,  # disable idle path
-        on_detach="kill",  # test the kill path specifically
+        # Deliberately the DEFAULT pause policy: max_session_seconds is a hard
+        # ceiling and must KILL even when on_detach="pause" — pausing would
+        # re-trip on every post-resume sweep (infinite pause/resume loop,
+        # PR #605 review finding).
+        on_detach="pause",
     )
     mgr = ChatManager(
         provider=provider,
@@ -443,6 +447,9 @@ def test_idle_reaper_kills_sessions_older_than_max_session_seconds(tmp_path):
 
         await mgr._reap_once()  # single sweep; no sleep loop
         assert s.id not in mgr._live, "expected stale session to be killed"
+        # Killed for real — not paused: no sandbox refs left to resume from.
+        row = repo.get_session(s.id)
+        assert row.sandbox_paused_at is None and row.sandbox_id is None
 
     asyncio.run(_run())
 

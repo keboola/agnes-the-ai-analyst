@@ -1221,10 +1221,12 @@ class ChatManager:
             if live.state == SessionState.ACTIVE:
                 active_total += now_mono - live.active_since
             if active_total > max_active:
-                if self._config.on_detach == "pause":
-                    to_pause.append(chat_id)
-                else:
-                    to_kill.append((chat_id, "max_session_seconds"))
+                # Hard ceiling — ALWAYS kill, never pause, regardless of
+                # on_detach. active_seconds_accum survives pause/resume by
+                # design, so pausing here would re-trip on the next sweep
+                # after every resume: an infinite pause/resume loop that
+                # leaves the session permanently unusable but never freed.
+                to_kill.append((chat_id, "max_session_seconds"))
                 continue
             # Idle TTL: last_activity recency check.
             if (now - live.last_activity).total_seconds() > idle_cutoff:
