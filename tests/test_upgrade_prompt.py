@@ -290,3 +290,95 @@ def test_self_update_alias_is_hidden_but_invokable():
     # canonical verb stays visible — `hidden` is an unset DefaultPlaceholder
     # there, which Typer resolves to falsy (the command shows in --help).
     assert not bool(groups["self-upgrade"].hidden)
+
+
+# ---------------------------------------------------------------------------
+# Devin Review fixes on #619
+# ---------------------------------------------------------------------------
+
+def test_eof_on_prompt_returns_no_not_yes(monkeypatch):
+    """Regression — Devin Review ANALYSIS_0003 on #619.
+
+    `readline()` returns `""` on EOF (Ctrl+D / closed stdin) and `"\\n"`
+    on bare Enter. The two must be distinguishable — Ctrl+D used to fall
+    through the "answer == 'n'" check and return True, silently auto-
+    triggering an upgrade. EOF now returns False so the prompt defers
+    to a later run."""
+    from cli import upgrade_prompt
+
+    class _FakeStdin:
+        def fileno(self):
+            return 0
+
+        def isatty(self):
+            return True
+
+        def readline(self):
+            return ""  # EOF
+
+    monkeypatch.setattr("sys.stdin", _FakeStdin())
+    # select.select returns ready immediately so we exercise the EOF path
+    # rather than the timeout path.
+    monkeypatch.setattr("select.select", lambda r, w, x, t: (r, [], []))
+    assert upgrade_prompt._read_yn_with_timeout(5) is False
+
+
+def test_run_self_upgrade_returns_false_on_install_failure(monkeypatch):
+    """Regression — Devin Review BUG_0001 on #619.
+
+    `_do_install_with_smoke_and_rollback` returns 1 on install error or
+    smoke-test rollback. The wrapper used to discard that rc, so the
+    caller would proceed to print `[upgraded → …]` and re-exec the
+    still-stale binary. The fix returns False so the caller skips both."""
+    from cli import upgrade_prompt
+    from cli.update_check import UpdateInfo
+
+    info = UpdateInfo(installed="0.0.1", latest="9.9.9", download_url="x")
+    monkeypatch.setattr("cli.commands.self_upgrade._resolve_info", lambda force: info)
+    install_mock = MagicMock(return_value=1)  # install failure
+    monkeypatch.setattr(
+        "cli.commands.self_upgrade._do_install_with_smoke_and_rollback",
+        install_mock,
+    )
+    record = MagicMock()
+    monkeypatch.setattr("cli.upgrade_status.record_outcome", record)
+    refresh = MagicMock()
+    monkeypatch.setattr(
+        "cli.commands.self_upgrade._try_refresh_hooks", refresh
+    )
+
+    assert upgrade_prompt._run_self_upgrade() is False
+    install_mock.assert_called_once()
+    # Failure counter must still be incremented (matches the canonical
+    # self_upgrade callback's wiring, ANALYSIS_0001).
+    record.assert_called_once_with(success=False)
+    # Hook refresh skipped on failure — only a successful install warrants it.
+    refresh.assert_not_called()
+
+
+def test_run_self_upgrade_records_success_and_refreshes_hooks_on_clean_install(monkeypatch):
+    """Regression — Devin Review ANALYSIS_0001 on #619.
+
+    The wrapper must mirror the `self_upgrade` CLI callback's post-install
+    wiring: `record_outcome(success=True)` (resets the #478 consecutive-
+    failure counter) and `_try_refresh_hooks(quiet=False)` (wire-format
+    changes in the new release land on the next session-start)."""
+    from cli import upgrade_prompt
+    from cli.update_check import UpdateInfo
+
+    info = UpdateInfo(installed="0.0.1", latest="9.9.9", download_url="x")
+    monkeypatch.setattr("cli.commands.self_upgrade._resolve_info", lambda force: info)
+    monkeypatch.setattr(
+        "cli.commands.self_upgrade._do_install_with_smoke_and_rollback",
+        MagicMock(return_value=0),  # clean install
+    )
+    record = MagicMock()
+    monkeypatch.setattr("cli.upgrade_status.record_outcome", record)
+    refresh = MagicMock()
+    monkeypatch.setattr(
+        "cli.commands.self_upgrade._try_refresh_hooks", refresh
+    )
+
+    assert upgrade_prompt._run_self_upgrade() is True
+    record.assert_called_once_with(success=True)
+    refresh.assert_called_once_with(quiet=False)

@@ -181,10 +181,21 @@ def _read_yn_with_timeout(timeout: float) -> bool:
             sys.stderr.write("\n[no input in 5s — defaulting to Yes]\n")
             return True
         line = sys.stdin.readline()
+        if line == "":
+            # EOF (Ctrl+D / closed stdin) — distinguishable from an empty
+            # input line: `readline()` returns `""` for EOF and `"\n"` for
+            # bare Enter. Don't silently auto-upgrade on EOF (could be a
+            # SIGTERM'd shell, a piped non-interactive `echo` finishing,
+            # or a deliberate Ctrl+D dismissal). Defer to a later run
+            # by treating it as a No. Devin Review ANALYSIS_0003 on #619.
+            return False
     except (OSError, ValueError, ImportError):
         # No selectable fd — fall back to a blocking read.
         try:
             line = sys.stdin.readline()
+            if line == "":
+                # EOF on the fallback path too — same rationale as above.
+                return False
         except (OSError, ValueError):
             return True  # can't read → default Y, matching timeout semantics
     answer = (line or "").strip().lower()
@@ -244,7 +255,13 @@ def maybe_prompt_and_upgrade(info: Optional[UpdateInfo]) -> bool:
             return False
 
         # Accept (or 5s timeout): run the self-upgrade flow, then re-exec.
-        _run_self_upgrade()
+        # Honor the install outcome — if it failed (pip error, smoke-test
+        # rollback), don't print the "[upgraded → …]" line and don't try
+        # to re-exec the (still-old) binary. The user already saw the
+        # install error on stderr; falling through lets their original
+        # command proceed unchanged. Devin Review BUG_0001 on #619.
+        if not _run_self_upgrade():
+            return False
         typer.echo(
             f"[upgraded → {server_version}] running your original command...",
             err=True,
@@ -268,11 +285,33 @@ def _stdin_isatty() -> bool:
         return False
 
 
-def _run_self_upgrade() -> None:
+def _run_self_upgrade() -> bool:
     """Invoke the existing self-upgrade flow in-process (quiet=False so the
-    user sees install progress). Isolated so tests can mock it."""
+    user sees install progress). Returns True on a clean install (caller
+    proceeds to re-exec), False otherwise (caller surfaces the failure to
+    the user and does NOT pretend the upgrade succeeded).
+
+    Mirrors the post-install wiring of the ``self_upgrade`` CLI callback:
+    persists the install outcome via ``record_outcome`` so the #478
+    consecutive-failure warning still fires from this entry point, and
+    runs ``_try_refresh_hooks`` on success so any wire-format change in
+    the new release lands on the next session-start. Isolated so tests
+    can mock it. Devin Review BUG_0001 + ANALYSIS_0001 on #619.
+    """
     from cli.commands import self_upgrade as su
+    from cli.upgrade_status import record_outcome
 
     info = su._resolve_info(force=False)
-    if isinstance(info, UpdateInfo):
-        su._do_install_with_smoke_and_rollback(info, quiet=False)
+    if not isinstance(info, UpdateInfo):
+        # No install needed (CLI current, offline, or unreachable without
+        # --force) — `_resolve_info` already handled those branches. The
+        # interactive prompt only reached here because we have a real
+        # UpdateInfo, so anything else is a regression.
+        return False
+
+    rc = su._do_install_with_smoke_and_rollback(info, quiet=False)
+    record_outcome(success=(rc == 0))
+    if rc == 0:
+        su._try_refresh_hooks(quiet=False)
+        return True
+    return False
