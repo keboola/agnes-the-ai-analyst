@@ -397,8 +397,15 @@ class ChatManager:
         live.linger_task = asyncio.create_task(self._linger_then_pause(live))
 
     async def _linger_then_pause(self, live: "LiveSession") -> None:
-        # Wait for any in-flight turn to complete first.
+        # Wait for any in-flight turn to complete first. The spin must
+        # also bail if the runner died (3× crash → SessionState.DEAD)
+        # without ever emitting a `done` frame to clear `turn_in_flight`:
+        # without this guard the loop would spin forever and the entry
+        # in `_live` would leak (the reaper skips DEAD sessions).
+        # Devin Review BUG_0001 follow-up from #605.
         while live.turn_in_flight:
+            if live.state != SessionState.ACTIVE:
+                return
             await asyncio.sleep(0.05)
         await asyncio.sleep(self._config.detach_linger_seconds)
         if live.sinks or live.state != SessionState.ACTIVE:
