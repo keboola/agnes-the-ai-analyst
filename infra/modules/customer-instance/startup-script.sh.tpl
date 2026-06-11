@@ -385,5 +385,48 @@ if [ "$UPGRADE_MODE" = "auto" ]; then
     (crontab -l 2>/dev/null | grep -v agnes-auto-upgrade || true; echo "$CRON_LINE") | crontab -
 fi
 
+# --- 7. Host-side watchdog + daily DB backup with restore-verification ---
+# Independent of the app on purpose: the watchdog's job is to report states
+# in which the app can no longer report on itself (process crash loops, the
+# invalidated-database "zombie" state where /api/health stays 200 while
+# every write 500s). Files ship as module artifacts via base64 (fileset()
+# in main.tf), so they arrive with the infra tag regardless of which app
+# image_tag the operator pinned.
+%{ if enable_watchdog ~}
+WD_STAGE=/opt/agnes-watchdog
+mkdir -p "$WD_STAGE"
+%{ for fname, content_b64 in watchdog_files_b64 ~}
+echo "${content_b64}" | base64 -d > "$WD_STAGE/${fname}"
+%{ endfor ~}
+install -m 0755 "$WD_STAGE/agnes-watchdog.sh" /usr/local/bin/agnes-watchdog.sh
+install -m 0755 "$WD_STAGE/agnes-db-backup.sh" /usr/local/bin/agnes-db-backup.sh
+install -m 0644 "$WD_STAGE/agnes-watchdog.service" /etc/systemd/system/agnes-watchdog.service
+install -m 0644 "$WD_STAGE/agnes-watchdog.timer" /etc/systemd/system/agnes-watchdog.timer
+install -m 0644 "$WD_STAGE/agnes-db-backup.service" /etc/systemd/system/agnes-db-backup.service
+install -m 0644 "$WD_STAGE/agnes-db-backup.timer" /etc/systemd/system/agnes-db-backup.timer
+mkdir -p "$DATA_MNT/backups"
+install -m 0644 "$WD_STAGE/agnes-db-verify.py" "$DATA_MNT/backups/agnes-db-verify.py"
+chown 999:999 "$DATA_MNT/backups" "$DATA_MNT/backups/agnes-db-verify.py"
+
+# Alert config. A non-empty Terraform alert_webhook_url wins; when it is
+# empty, preserve an operator-hand-edited webhook across reboots (same
+# precedence pattern as AGNES_TAG above).
+TF_WEBHOOK_URL="${alert_webhook_url}"
+EXISTING_WEBHOOK=""
+if [ -f /etc/agnes-watchdog.env ]; then
+    EXISTING_WEBHOOK=$(grep -E '^WEBHOOK_URL=' /etc/agnes-watchdog.env | head -1 | cut -d= -f2- | tr -d '"' || true)
+fi
+EFFECTIVE_WEBHOOK="$${TF_WEBHOOK_URL:-$EXISTING_WEBHOOK}"
+cat > /etc/agnes-watchdog.env <<WDEOF
+# agnes-watchdog + agnes-db-backup alert config (see agnes-watchdog.sh).
+WEBHOOK_URL="$EFFECTIVE_WEBHOOK"
+ENV_STAGE="$ROLE"
+WDEOF
+chmod 600 /etc/agnes-watchdog.env
+
+systemctl daemon-reload
+systemctl enable --now agnes-watchdog.timer agnes-db-backup.timer
+%{ endif ~}
+
 echo "=== [Agnes $CUSTOMER_NAME $ROLE] Startup complete at $(date) ==="
 docker compose ps
