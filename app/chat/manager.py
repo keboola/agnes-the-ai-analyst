@@ -877,7 +877,7 @@ class ChatManager:
         elif live is None:
             # Post-restart: no LiveSession in memory, but repo row may have sandbox refs.
             session = self._repo.get_session(chat_id)
-            if session is not None and session.sandbox_id is not None:
+            if session is not None and session.sandbox_id is not None and session.runner_pid is not None:
                 live = await self._resume_from_row(session)
                 if live is None:
                     # _resume_from_row cleared refs; try a fresh spawn
