@@ -41,6 +41,8 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from src.identifier_validation import is_safe_identifier
+
 from app.secrets_vault import (
     VaultKeyNotConfiguredError,
 )
@@ -352,6 +354,27 @@ def _merge_tool_patch(
 # ---------------------------------------------------------------------------
 
 
+def _require_safe_source_name(name: str) -> None:
+    """Reject names the orchestrator's extract scan would refuse to ATTACH.
+
+    The extractor writes ``/data/extracts/<name>/`` and the orchestrator
+    validates that directory with the STRICT identifier rule before
+    attaching — a name that fails it (hyphen, leading digit, >64 chars)
+    materializes "successfully" but silently never reaches the catalog,
+    with only a server-log WARNING. Same validator, no second regex.
+    """
+    if not is_safe_identifier(name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "source name must be a safe SQL identifier — letters, "
+                "digits and underscores, not starting with a digit, max "
+                f"64 chars (the sync engine refuses to attach anything "
+                f"else); got {name!r}"
+            ),
+        )
+
+
 @router.post("/mcp-sources", status_code=201)
 async def create_mcp_source(
     payload: CreateMCPSourceRequest,
@@ -366,6 +389,7 @@ async def create_mcp_source(
     name = (payload.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
+    _require_safe_source_name(name)
     repo = mcp_sources_repo()
     if repo.get_by_name(name) is not None:
         raise HTTPException(status_code=409, detail="name_exists")
@@ -449,6 +473,7 @@ async def update_mcp_source(
     # If renaming, ensure no collision against a different source.
     new_name = (payload.name or "").strip() if payload.name is not None else None
     if new_name and new_name != existing.get("name"):
+        _require_safe_source_name(new_name)
         collision = repo.get_by_name(new_name)
         if collision and collision["id"] != source_id:
             raise HTTPException(status_code=409, detail="name_exists")

@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- **MCP source names are now validated as safe SQL identifiers at create/rename.** An admin could register an MCP source whose name the sync engine refuses to attach (e.g. `keboola-crm` with a hyphen): materialize reported success and wrote `/data/extracts/<name>/`, but the orchestrator's scan rejected the directory (`Rejected unsafe source_name identifier` — a server-log WARNING only), so the tables silently never reached analytics/catalog with zero admin-visible feedback. `POST /api/admin/mcp-sources` and the rename path of `PUT /api/admin/mcp-sources/{id}` now reject such names up front with an actionable 400, using the same strict validator (`src/identifier_validation.is_safe_identifier`) the orchestrator enforces — no second regex to drift.
 
 ### Removed
 
