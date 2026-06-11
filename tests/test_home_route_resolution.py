@@ -8,6 +8,7 @@ default rather than producing an external-host redirect.
 
 from __future__ import annotations
 
+import re
 import tempfile
 import uuid
 
@@ -325,8 +326,10 @@ def test_navbar_home_link_uses_home_route(fresh_db, monkeypatch):
     resp = c.get("/home", cookies={"access_token": sess})
     assert resp.status_code == 200
     # Navbar link href reflects the resolved home_route, not hard-coded /dashboard.
-    # Label is "Home" (was "Dashboard" before the nav reorg).
-    assert 'href="/home">Home' in resp.text
+    # Label is "Home" (was "Dashboard" before the nav reorg). The link may
+    # carry extra attributes between href and the label (e.g. data-tour) —
+    # match href + label without assuming attribute adjacency.
+    assert re.search(r'href="/home"[^>]*>Home', resp.text)
 
 
 # ---------------------------------------------------------------------------

@@ -32,6 +32,9 @@
     {# Shared stack card styles — drives /catalog + /memory Browse/My Stack
        cards (matches marketplace.html .mp-card visual language). #}
     <link rel="stylesheet" href="{{ static_url('css/stack_card.css') }}">
+    {# Walking-guide / product-tour overlay styles (inert until tour.js
+       un-hides the overlay). Markup + engine in _tour.html. #}
+    <link rel="stylesheet" href="{{ static_url('css/tour.css') }}">
     {# app.js loaded by _app_header.html itself so pages that include
        the header directly without extending base.html (e.g. admin_tables)
        still get the nav-dropdown wiring. #}
@@ -82,6 +85,8 @@
        other admin/user page (#L85). #}
     {% block extra_scripts %}{% endblock %}
     {% include "_app_scripts.html" %}
+    {# Walking-guide / product-tour overlay (authed-only; self-guarded). #}
+    {% include "_tour.html" %}
     {% block scripts %}{% endblock %}
     {# Operator-injected scripts (placement=body_end) — for vendors that
        explicitly want bottom placement. Admin-only, see

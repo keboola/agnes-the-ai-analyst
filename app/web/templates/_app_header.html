@@ -21,7 +21,7 @@
            Setup local agent + My Stack used to live in the nav too;
            Setup is reached from /home's install flow and My Stack
            lives inside /marketplace as a tab. #}
-        <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}">Home</a>
+        <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}" data-tour="nav-home">Home</a>
         {# Cloud chat entry — shown only when chat is enabled AND one of the
            viewer's groups holds an explicit chat grant (``can_chat`` from
            _build_context, via has_explicit_grant). Default-deny: with no grant
@@ -29,17 +29,17 @@
            (god-mode on the route guard). Gated server-side, so this is just
            UX — no trap. #}
         {% if can_chat %}
-        <a class="app-nav-link {% if _path == '/chat' or _path.startswith('/chat/') %}is-active{% endif %}" href="/chat">Chat</a>
+        <a class="app-nav-link {% if _path == '/chat' or _path.startswith('/chat/') %}is-active{% endif %}" href="/chat" data-tour="nav-chat">Chat</a>
         {% endif %}
-        <a class="app-nav-link {% if _path == '/marketplace' or _path.startswith('/marketplace/') %}is-active{% endif %}" href="/marketplace">Marketplace</a>
-        <a class="app-nav-link {% if _path.startswith('/catalog') %}is-active{% endif %}" href="/catalog">Data Packages</a>
+        <a class="app-nav-link {% if _path == '/marketplace' or _path.startswith('/marketplace/') %}is-active{% endif %}" href="/marketplace" data-tour="nav-marketplace">Marketplace</a>
+        <a class="app-nav-link {% if _path.startswith('/catalog') %}is-active{% endif %}" href="/catalog" data-tour="nav-catalog">Data Packages</a>
         {# Curated Memory is the analyst-facing read surface for shared
            organizational knowledge — not admin-gated (the route runs on
            get_current_user, same as the /api/memory/* endpoints), so it
            sits in the primary nav next to Data Packages, visible to all
            authenticated users. The admin review queue is separate:
            /admin/corporate-memory, in the Admin dropdown below. #}
-        <a class="app-nav-link {% if _path == '/corporate-memory' %}is-active{% endif %}" href="/corporate-memory">Memory</a>
+        <a class="app-nav-link {% if _path == '/corporate-memory' %}is-active{% endif %}" href="/corporate-memory" data-tour="nav-memory">Memory</a>
 
         {# Admin menu: admin-only. Backend gates the routes via
            require_admin (see app/web/router.py for /admin/*, including
@@ -52,6 +52,7 @@
             <button type="button"
                     class="app-nav-link app-nav-menu-trigger {% if _admin_active %}is-active{% endif %}"
                     id="adminNavTrigger"
+                    data-tour="nav-admin"
                     aria-haspopup="menu" aria-expanded="false" aria-controls="adminNavPanel">
                 Admin
                 <svg class="app-nav-menu-chevron" width="10" height="10" viewBox="0 0 12 12" aria-hidden="true">
@@ -123,8 +124,20 @@
         </div>
         {% endif %}
 
+        {# Re-open the onboarding tour from anywhere. tour.js binds
+           [data-tour-start]; the same hook is on the /me/profile button. #}
+        <button type="button" class="app-onboarding-launch" data-tour-start
+                title="Take a tour" aria-label="Take a tour">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7"/>
+                <path d="M9.5 9.2a2.6 2.6 0 1 1 3.4 2.5c-.6.2-.9.6-.9 1.2v.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+                <circle cx="12" cy="16.4" r="1" fill="currentColor"/>
+            </svg>
+        </button>
+
         <div class="app-user-menu" id="userMenu">
             <button type="button" class="app-user-menu-trigger" id="userMenuTrigger"
+                    data-tour="user-menu"
                     aria-haspopup="menu" aria-expanded="false" aria-controls="userMenuPanel">
                 {% if session.user.picture %}
                 <img src="{{ session.user.picture }}" alt="" class="app-avatar-img">

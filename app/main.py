@@ -806,10 +806,21 @@ def _is_truthy_env(name: str) -> bool:
     return os.environ.get(name, "").lower() in ("1", "true", "yes")
 
 
-# DEBUG turns the toolbar on; LOCAL_DEV_MODE implies it (auth-bypassed dev
-# environment is by definition a debugging context — no point in making
-# operators set both).
-DEBUG = _is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")
+def _debug_enabled() -> bool:
+    """Whether the FastAPI debug toolbar is mounted.
+
+    LOCAL_DEV_MODE (auth-bypassed dev) implies DEBUG so operators needn't set
+    both. But an *explicit* DEBUG env wins either way — set ``DEBUG=0`` to run
+    local-dev WITHOUT the toolbar, whose per-request instrumentation
+    (incl. the compose healthcheck) can peg CPU on heavy HTML pages.
+    """
+    raw = os.environ.get("DEBUG")
+    if raw is not None and raw.strip() != "":
+        return _is_truthy_env("DEBUG")
+    return _is_truthy_env("LOCAL_DEV_MODE")
+
+
+DEBUG = _debug_enabled()
 
 
 # Background poll / low-signal endpoints the debug toolbar must NOT attach to.
@@ -852,7 +863,7 @@ def _toolbar_show_callback(request, settings) -> bool:
     EVERY query (incl. async/threadpool), see the DEBUG-gated logger in
     ``app/debug/postgres_panel.py`` (logger ``agnes.db.postgres``).
     """
-    if not (_is_truthy_env("DEBUG") or _is_truthy_env("LOCAL_DEV_MODE")):
+    if not _debug_enabled():
         return False
     path = request.url.path
     if path.startswith("/_debug_toolbar"):

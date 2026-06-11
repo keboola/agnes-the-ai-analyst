@@ -3484,6 +3484,16 @@ a.app-header-logo:focus-visible {
 }
 .app-user-menu-item:hover { background: var(--border-light, #f3f4f6); }
 .app-user-menu-item.is-active { background: var(--primary-light); color: var(--primary); font-weight: 500; }
+/* Onboarding launcher — the "?" help icon in the header that re-opens the
+   guided tour. Borderless icon button that sits next to the user menu. */
+.app-onboarding-launch {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 34px; height: 34px; padding: 0;
+    border: 0; border-radius: 8px; background: transparent;
+    color: var(--text-secondary, #6b7280); cursor: pointer;
+}
+.app-onboarding-launch:hover { background: var(--border-light, #f3f4f6); color: var(--text-primary, #111827); }
+.app-onboarding-launch:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
 
 /* ── Theme toggle — Light / Dark / System segmented control in the user menu.
    Built only from tokens that flip under [data-theme="dark"] (--surface,

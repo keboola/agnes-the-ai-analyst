@@ -20,6 +20,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.3] — 2026-06-11
+
+### Added
+- **Onboarding / guided tour.** A client-side spotlight tour that walks a signed-in user through the app. On the first authed visit an intro consent modal pops once ("Take a tour?"); accepting runs the spotlight, and either choice (or completing/exiting) sets a `localStorage` flag so it never auto-pops again. Each step can be skipped or ended (Skip / ✕ / Esc), and arrow keys / Enter drive it. Re-openable anytime from the `(?)` help icon in the nav header. The tour **renders in place on whatever page the user is on** — all spotlighted elements are nav anchors present in the header on every authenticated page, so no cross-page navigation occurs. Each step carries a wayfinding icon, a richer description, and a list of concrete "what you can do here" bullets, plus a progress bar; the spotlight breathes and the card animates in (all `prefers-reduced-motion`-aware). The steps are **role-split** (admin vs non-admin) and filtered server-side, so non-admins never receive admin-only steps. Steps are the single source of truth in `app/web/onboarding.py` — injected as JSON, never hardcoded in JS — and a contract test (`tests/test_onboarding_not_outdated.py`) fails if any step points at a nav anchor that no longer exists, drops its icon, or thins its tips below two, so the tour can't silently go stale or hollow out as the UI changes. Generic + vendor-agnostic; styles read `--ds-*` tokens (flips with blue/dark themes). New `app/web/onboarding.py`, `app/web/static/css/tour.css`, `app/web/static/js/tour.js`, and `_tour.html` partial included by both base layouts. (#573)
+
+### Internal
+- **`DEBUG=0` can now override the `LOCAL_DEV_MODE` debug-toolbar default.** `LOCAL_DEV_MODE` still implies `DEBUG` (so dev gets the toolbar without setting both), but an explicit `DEBUG` env now wins either way — set `DEBUG=0` to run an auth-bypassed local-dev instance *without* the debug toolbar, whose per-request instrumentation (it also profiles the compose healthcheck) can saturate the event loop and peg CPU on heavy HTML pages. `docker-compose.local-dev.yml` sets `DEBUG=0` by default for a snappy UI preview; set it to `1` to get the toolbar back.
+
 ## [0.71.2] — 2026-06-11
 
 ### Fixed
