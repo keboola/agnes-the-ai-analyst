@@ -15,6 +15,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- Chat: the post-detach linger task no longer spins forever when the runner dies
+  mid-turn with no clients attached, and the reaper now garbage-collects DEAD
+  session entries (3x-crash leftovers) from the live registry. (#605 follow-up)
 
 ### Removed
 
