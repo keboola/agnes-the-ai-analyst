@@ -15,6 +15,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- Chat: the idle reaper now garbage-collects DEAD session entries (3x-crash
+  leftovers) from the live registry — previously they leaked one per crashed
+  session for the server's lifetime. (#605 follow-up)
 
 ### Removed
 

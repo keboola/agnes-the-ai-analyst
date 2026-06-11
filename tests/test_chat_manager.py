@@ -1590,3 +1590,21 @@ def test_crash_respawn_refreshes_sandbox_refs(manager: ChatManager):
         await manager.kill(s.id, reason="test_done")
 
     asyncio.run(_run())
+
+
+def test_reaper_gcs_dead_sessions(manager: ChatManager):
+    """DEAD entries (3x-crash leftovers) must be GC'd by the reaper — the
+    crash path marks state=DEAD without popping _live, and the reaper used
+    to skip non-ACTIVE/IDLE states, leaking one entry per crashed session."""
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        await manager.attach(s.id, ws)
+        manager._live[s.id].state = SessionState.DEAD
+        await manager._reap_once()
+        assert s.id not in manager._live
+
+    asyncio.run(_run())
