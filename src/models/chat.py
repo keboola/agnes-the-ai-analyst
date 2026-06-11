@@ -31,6 +31,7 @@ Postgres schema carries here, because PG has no such limitations:
     PG repositories keep these columns current instead of deriving them at
     read time.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -54,6 +55,7 @@ from src.db_pg import Base
 
 class ChatSession(Base):
     """Per-session chat transcript header (v68)."""
+
     __tablename__ = "chat_sessions"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -67,21 +69,17 @@ class ChatSession(Base):
         server_default=text("CURRENT_TIMESTAMP"),
         nullable=False,
     )
-    last_message_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    message_count: Mapped[int] = mapped_column(
-        Integer, server_default=text("0"), nullable=False
-    )
-    archived: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("FALSE"), nullable=False
-    )
-    is_co_session: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("FALSE"), nullable=False
-    )
-    ephemeral: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("FALSE"), nullable=False
-    )
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    message_count: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+    archived: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), nullable=False)
+    is_co_session: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), nullable=False)
+    ephemeral: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), nullable=False)
+    # Sandbox pause/resume refs (v73). Deliberately un-indexed — the DuckDB
+    # sibling cannot index them (1.5.3 FK+index bug) and the paused-TTL
+    # reaper scan is cheap at chat-session cardinality.
+    sandbox_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    runner_pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sandbox_paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("idx_chat_sessions_user", "user_email", "last_message_at"),
@@ -105,6 +103,7 @@ class ChatSession(Base):
 
 class ChatMessage(Base):
     """Single chat message within a session (v68)."""
+
     __tablename__ = "chat_messages"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -126,13 +125,12 @@ class ChatMessage(Base):
         nullable=False,
     )
 
-    __table_args__ = (
-        Index("idx_chat_messages_session", "session_id", "created_at"),
-    )
+    __table_args__ = (Index("idx_chat_messages_session", "session_id", "created_at"),)
 
 
 class ChatSessionParticipant(Base):
     """Live membership for co-drive sessions (v70)."""
+
     __tablename__ = "chat_session_participants"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -149,9 +147,7 @@ class ChatSessionParticipant(Base):
         server_default=text("CURRENT_TIMESTAMP"),
         nullable=False,
     )
-    left_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("idx_chat_session_participants_user", "user_email", "session_id"),
@@ -161,12 +157,11 @@ class ChatSessionParticipant(Base):
 
 class UserWorkdir(Base):
     """Per-user workspace init markers (v68)."""
+
     __tablename__ = "user_workdirs"
 
     user_email: Mapped[str] = mapped_column(String, primary_key=True)
-    last_init_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_init_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     marketplace_sha: Mapped[str | None] = mapped_column(String, nullable=True)
     initial_workspace_sha: Mapped[str | None] = mapped_column(String, nullable=True)
     agnes_version_at_init: Mapped[str | None] = mapped_column(String, nullable=True)

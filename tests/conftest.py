@@ -1,5 +1,6 @@
 """Shared test fixtures for E2E tests."""
 
+import contextlib as _contextlib
 import os
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -19,8 +20,19 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!
 # but the directory still has to exist for the JSON state files.
 import tempfile as _tf
 
+# Per-xdist-worker isolation: the on-disk system.duckdb takes an exclusive
+# file lock, so two workers sharing one DATA_DIR race on every
+# get_system_db() open (sporadic "Could not set lock" failures whose
+# incidence depends on test scheduling). The xdist controller imports this
+# conftest first and its DATA_DIR is INHERITED by worker processes, so the
+# worker suffix must be applied even when DATA_DIR is already set — but only
+# when it points at our shared default, never at an operator-provided path.
+_default_data_dir = os.path.join(_tf.gettempdir(), ".agnes-test-data")
+_xdist_worker = os.environ.get("PYTEST_XDIST_WORKER", "")
 if "DATA_DIR" not in os.environ:
-    os.environ["DATA_DIR"] = os.path.join(_tf.gettempdir(), ".agnes-test-data")
+    os.environ["DATA_DIR"] = _default_data_dir
+if _xdist_worker and os.path.normpath(os.environ["DATA_DIR"]) == _default_data_dir:
+    os.environ["DATA_DIR"] = os.path.join(_default_data_dir, _xdist_worker)
 os.makedirs(os.path.join(os.environ["DATA_DIR"], "notifications"), exist_ok=True)
 os.makedirs(os.path.join(os.environ["DATA_DIR"], "state"), exist_ok=True)
 
@@ -47,7 +59,8 @@ def _flea_guardrails_disabled_by_default(monkeypatch):
         # `app.api.store` does a top-level import — patch the bound
         # symbol there. Existing per-test overrides target the same path.
         monkeypatch.setattr(
-            "app.api.store.get_guardrails_enabled", lambda: False,
+            "app.api.store.get_guardrails_enabled",
+            lambda: False,
         )
     except (AttributeError, ImportError):
         # app.api.store may not be importable in some test contexts
@@ -57,7 +70,8 @@ def _flea_guardrails_disabled_by_default(monkeypatch):
         # `app.api.admin` does a function-local import — patch the
         # source so per-call lookups see the override.
         monkeypatch.setattr(
-            "app.instance_config.get_guardrails_enabled", lambda: False,
+            "app.instance_config.get_guardrails_enabled",
+            lambda: False,
         )
     except (AttributeError, ImportError):
         pass
@@ -74,6 +88,7 @@ def _disable_auth_rate_limit_in_tests():
     flips ``limiter.enabled = True`` and resets state inside its own scope.
     """
     from app.auth.rate_limit import limiter
+
     was_enabled = limiter.enabled
     limiter.enabled = False
     try:
@@ -106,9 +121,11 @@ def _reset_module_caches():
     """
     try:
         import app.instance_config as _ic
+
         _ic._instance_config = None
         try:
             from connectors.bigquery.access import get_bq_access
+
             get_bq_access.cache_clear()
         except (ImportError, AttributeError):
             pass
@@ -116,27 +133,32 @@ def _reset_module_caches():
         pass
     try:
         import app.api.v2_quota as _q
+
         _q._quota_singleton = None
     except ImportError:
         pass
     try:
         from app.api import v2_catalog as _vc
+
         _vc._table_rows_cache.clear()
     except (ImportError, AttributeError):
         pass
     try:
         import app.api.cache_warmup as _cw
+
         _cw.WARMUP_STATE = None
     except (ImportError, AttributeError):
         pass
     yield
     try:
         from app.api import v2_catalog as _vc
+
         _vc._table_rows_cache.clear()
     except (ImportError, AttributeError):
         pass
     try:
         import app.api.cache_warmup as _cw
+
         _cw.WARMUP_STATE = None
     except (ImportError, AttributeError):
         pass
@@ -322,9 +344,6 @@ def admin_user(seeded_app):
     return {"Authorization": f"Bearer {token}"}
 
 
-import contextlib as _contextlib
-
-
 @pytest.fixture
 def bq_access():
     """Build a BqAccess with pluggable factories and override the FastAPI Depends.
@@ -345,20 +364,20 @@ def bq_access():
     from connectors.bigquery.access import BqAccess, BqProjects, get_bq_access
     from app.main import app
 
-    def _build(*, client=None, duckdb_conn=None,
-               billing="test-billing", data="test-data"):
+    def _build(*, client=None, duckdb_conn=None, billing="test-billing", data="test-data"):
         bq = BqAccess(
             BqProjects(billing=billing, data=data),
             client_factory=(lambda projects: client) if client is not None else None,
-            duckdb_session_factory=(
-                lambda projects: _contextlib.nullcontext(duckdb_conn)
-            ) if duckdb_conn is not None else None,
+            duckdb_session_factory=(lambda projects: _contextlib.nullcontext(duckdb_conn))
+            if duckdb_conn is not None
+            else None,
         )
         app.dependency_overrides[get_bq_access] = lambda: bq
         return bq
 
     yield _build
     from app.main import app as _app
+
     _app.dependency_overrides.pop(get_bq_access, None)
 
 
@@ -408,6 +427,7 @@ def bq_instance(monkeypatch):
         raising=False,
     )
     from app.instance_config import reset_cache
+
     reset_cache()
     yield fake_cfg
     reset_cache()
@@ -430,10 +450,14 @@ def stub_bq_extractor(monkeypatch):
     Returns the ``rebuild_from_registry`` MagicMock directly so callers
     that only need the side-effect patcher can ignore the return value,
     and callers that want to assert call args can inspect it."""
-    rebuild_mock = MagicMock(return_value={
-        "project_id": "my-test-project",
-        "tables_registered": 1, "errors": [], "skipped": False,
-    })
+    rebuild_mock = MagicMock(
+        return_value={
+            "project_id": "my-test-project",
+            "tables_registered": 1,
+            "errors": [],
+            "skipped": False,
+        }
+    )
     monkeypatch.setattr(
         "connectors.bigquery.extractor.rebuild_from_registry",
         rebuild_mock,
@@ -467,7 +491,6 @@ def grant_table_via_package(
     just asserted "table visible after grant" stays correct without
     needing an explicit subscribe step.
     """
-    import uuid
     from src.repositories.user_groups import UserGroupsRepository
     from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.resource_grants import ResourceGrantsRepository
@@ -477,12 +500,17 @@ def grant_table_via_package(
     grp = groups.get_by_name(group_name)
     if not grp:
         grp = groups.create(
-            name=group_name, description="test", created_by="test",
+            name=group_name,
+            description="test",
+            created_by="test",
         )
     members = UserGroupMembersRepository(conn)
     if not members.has_membership(user_id, grp["id"]):
         members.add_member(
-            user_id, grp["id"], source="admin", added_by="test",
+            user_id,
+            grp["id"],
+            source="admin",
+            added_by="test",
         )
 
     pkgs = DataPackagesRepository(conn)
@@ -492,8 +520,11 @@ def grant_table_via_package(
         pkg_id = existing["id"]
     else:
         pkg_id = pkgs.create(
-            name=f"Test wrap {table_id}", slug=pkg_slug,
-            description=None, icon=None, color=None,
+            name=f"Test wrap {table_id}",
+            slug=pkg_slug,
+            description=None,
+            icon=None,
+            color=None,
             created_by="test",
         )
     pkgs.add_table(pkg_id, table_id, added_by="test")
@@ -523,11 +554,11 @@ def revoke_table_via_package(conn, table_id: str) -> None:
         # Hard-delete via raw SQL so the test fixture doesn't leak rows
         # across tests sharing the seeded_app DB.
         conn.execute(
-            "DELETE FROM resource_grants "
-            "WHERE resource_type = 'data_package' AND resource_id = ?",
+            "DELETE FROM resource_grants WHERE resource_type = 'data_package' AND resource_id = ?",
             [r[0]],
         )
         conn.execute(
-            "DELETE FROM data_package_tables WHERE package_id = ?", [r[0]],
+            "DELETE FROM data_package_tables WHERE package_id = ?",
+            [r[0]],
         )
         conn.execute("DELETE FROM data_packages WHERE id = ?", [r[0]])

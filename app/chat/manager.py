@@ -1,14 +1,14 @@
 """ChatManager: session state machine, lifecycle, WS attachment."""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import os
-import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -46,6 +46,7 @@ class SinkEntry:
     a web WebSocket or a SlackSinkBridge — both expose ``send_json`` and
     ``close``. ``participant_email`` attributes the sink to a principal so
     leave/teardown can drop exactly one sink (used by co-drive in 5b)."""
+
     participant_email: str
     sink: object
 
@@ -80,6 +81,21 @@ class LiveSession:
     # attached principal (web WS or SlackSinkBridge). The primary sink is
     # seated by attach(); add_sink() appends late joiners (co-drive, 5b).
     sinks: list["SinkEntry"] = field(default_factory=list)
+    # Frames of the in-progress turn (token/tool_call/...), replayed to
+    # late-seated sinks and persisted as an interrupted message on forced
+    # death. Cleared when the turn's assistant_message lands.
+    turn_buffer: list[dict] = field(default_factory=list)
+    turn_in_flight: bool = False
+    # Linger task: fires _linger_then_pause after the last sink detaches.
+    linger_task: Optional[asyncio.Task] = None
+    # Session workdir; set at spawn/resume so helpers can access it.
+    session_dir: Optional[Path] = None
+    # Active-time accounting for max_session_seconds (Task 9).
+    # active_since: monotonic timestamp when this spawn/resume made the session
+    # ACTIVE. Pause folds (now - active_since) into active_seconds_accum and
+    # resets active_since. Resume/spawn resets active_since to now.
+    active_seconds_accum: float = 0.0
+    active_since: float = field(default_factory=time.monotonic)
     # Serializes the stdin write+drain pair so two participants' concurrent
     # turns can never interleave partial JSON lines on the shared stdin
     # (spec §6.2).
@@ -109,6 +125,7 @@ class ChatManager:
         # Each entry is a deque of monotonic timestamps in the last hour.
         # Trimmed on each send; entries older than 3600 s evicted.
         from collections import deque
+
         self._user_msg_window: dict[str, "deque[float]"] = {}
         self._deque_cls = deque
         # TTL cache: user_email → (monotonic_timestamp, (tokens_in, tokens_out))
@@ -143,8 +160,7 @@ class ChatManager:
         active = self._active_count_for_user(user_email)
         if active >= self._config.concurrency_per_user:
             raise ConcurrencyCapHit(
-                f"user {user_email} has {active} active sessions; cap = "
-                f"{self._config.concurrency_per_user}"
+                f"user {user_email} has {active} active sessions; cap = {self._config.concurrency_per_user}"
             )
         # De-dupe Slack DM / thread to existing live session.
         # intentional: no await between SELECT and INSERT — Slack uniqueness without DB partial unique index
@@ -173,7 +189,9 @@ class ChatManager:
         if surface == Surface.WEB:
             try:
                 self._repo.archive_empty_user_sessions(
-                    user_email, surface=Surface.WEB, exclude_id=created.id,
+                    user_email,
+                    surface=Surface.WEB,
+                    exclude_id=created.id,
                 )
             except Exception:
                 logger.exception(
@@ -230,40 +248,109 @@ class ChatManager:
             await asyncio.sleep(0.1)
 
     async def shutdown(self) -> None:
+        """Gracefully shut down all live sessions.
+
+        When on_detach='pause', ACTIVE sessions are paused so they survive the
+        restart (sandboxes preserve memory + running processes). When
+        on_detach='kill' (or pause fails), the session is killed as before.
+        """
         chat_ids = list(self._live.keys())
         for chat_id in chat_ids:
+            live = self._live.get(chat_id)
+            if live is None:
+                continue
+            if live.state == SessionState.ACTIVE and self._config.on_detach == "pause":
+                try:
+                    await self._pause_live(live)
+                    continue
+                except Exception:
+                    logger.exception("shutdown pause failed for %s — killing instead", chat_id)
             try:
                 await self.kill(chat_id, reason="server_shutdown")
             except Exception:
                 logger.exception("error killing session %s on shutdown", chat_id)
 
-    # --- attach + runtime methods (Task 5.2) --------------------------------
+    # --- attach + runtime methods (Task 5.2 / Task 8) -----------------------
 
     async def attach(self, chat_id: str, ws, *, is_primary: bool = True) -> None:
+        """Ensure the session is running and seat ws as a sink.
+
+        Decision tree (Task 8):
+        1. Live ACTIVE  → cancel any linger task, seat sink.
+        2. Live PAUSED  → resume provider, restart tasks, seat sink.
+        3. No live entry but repo row has sandbox refs → _resume_from_row (post-restart).
+        4. Otherwise    → _spawn_live (today's spawn body).
+
+        attach() is now fast: it returns after seating the sink. The pump/wait
+        tasks run independently — attach no longer awaits them. The caller is
+        responsible for keeping ws reading until it wants to disconnect, then
+        calling detach_sink().
+        """
+        live = self._live.get(chat_id)
+        if live is not None and live.state == SessionState.ACTIVE:
+            self._cancel_linger(live)
+            await self._seat_sink(live, ws, is_primary=is_primary)
+            return
+        if live is not None and live.state == SessionState.PAUSED:
+            await self._resume_live(live)
+            await self._seat_sink(live, ws, is_primary=is_primary)
+            return
         session = self._repo.get_session(chat_id)
         if session is None:
             raise SessionNotFound(chat_id)
+        if session.sandbox_id is not None and session.runner_pid is not None:
+            live = await self._resume_from_row(session)
+            if live is not None:
+                await self._seat_sink(live, ws, is_primary=is_primary)
+                return
+            # resume failed → refs cleared by _resume_from_row, fall through
+            session = self._repo.get_session(chat_id)
+            if session is None:
+                raise SessionNotFound(chat_id)
+        live = await self._spawn_live(session)
+        await self._seat_sink(live, ws, is_primary=is_primary)
 
+    async def _seat_sink(self, live: "LiveSession", ws, *, is_primary: bool) -> None:
+        """Replay the in-progress turn buffer to ws, append to sinks, send ready.
+
+        Deliberately does NOT replay persisted history: the web client loads
+        it via GET /sessions/{id}/messages before opening the WS (replaying
+        here would render every message twice), and the Slack bridge must not
+        re-post old messages into the channel. Full history replay lives only
+        in add_sink() for late joiners that have no REST history-load step.
+        The turn buffer IS replayed — a mid-turn reconnect picks up exactly
+        the frames the runner already emitted (snapshot to avoid racing the
+        pump task)."""
+        for frame in list(live.turn_buffer):
+            await ws.send_json(frame)
+        if is_primary:
+            live.sinks.insert(0, SinkEntry(participant_email=live.user_email, sink=ws))
+        else:
+            live.sinks.append(SinkEntry(participant_email=live.user_email, sink=ws))
+        await ws.send_json({"type": "ready"})
+
+    async def _spawn_live(self, session: "ChatSession") -> "LiveSession":
+        """Spawn a fresh sandbox, register refs, start pump/wait tasks.
+
+        Returns the new LiveSession registered in self._live. Does NOT await
+        the pump/wait tasks — they run independently (Task 8 contract).
+        """
+        chat_id = session.id
         if session.is_co_session:
-            # SR-6: co-sessions get a fresh ephemeral workspace — never a
-            # personal directory, never CLAUDE.local.md.
             parts = self._repo.get_session_participants(chat_id)
             emails = [p.user_email for p in parts if p.left_at is None]
             from src.grant_intersection import compute_grant_intersection
+
             inter = compute_grant_intersection(emails, self._repo._conn)
-            session_dir = self._workdir_mgr.prepare_ephemeral_session_dir(
-                chat_id, emails, inter,
-            )
+            session_dir = self._workdir_mgr.prepare_ephemeral_session_dir(chat_id, emails, inter)
         else:
-            emails = [session.user_email]
+            emails = []  # participant_emails is empty for single-user sessions
             self._workdir_mgr.ensure_user_workdir(session.user_email)
             session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, chat_id)
 
         handle = await self._spawn_runner(session, session_dir)
-        # 5a seats the primary sink unconditionally. is_primary is part of
-        # the spec §6.3 attach contract so 5b co-drive can attach a runner
-        # without a primary seat (it seats collaborators via add_sink); 5a
-        # never passes is_primary=False, so the primary is always present.
+        import time as _t
+
         live = LiveSession(
             chat_id=chat_id,
             user_email=session.user_email,
@@ -271,29 +358,219 @@ class ChatManager:
             handle=handle,
             started_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
-            sinks=(
-                [SinkEntry(participant_email=session.user_email, sink=ws)]
-                if is_primary else []
-            ),
+            sinks=[],
             participant_emails=emails,
+            session_dir=session_dir,
+            active_since=_t.monotonic(),
         )
         self._live[chat_id] = live
-        if is_primary:
-            # A non-primary ws is seated via add_sink (which sends its own
-            # "ready" after replaying history); sending "ready" here to a ws
-            # that was never added to live.sinks would leave it half-initialized.
-            await ws.send_json({"type": "ready"})
-
+        self._repo.set_sandbox_ref(chat_id, sandbox_id=handle.sandbox_id, runner_pid=handle.pid)
         pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
         wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
         live.tasks = [pump_task, wait_task]
         live.current_pump = pump_task
         live.current_wait = wait_task
+        return live
+
+    # --- detach / linger / pause --------------------------------------------
+
+    async def detach_sink(self, chat_id: str, ws) -> None:
+        """Remove ws from the session's sink list. When the last sink leaves,
+        trigger the on_detach policy (linger→pause or kill)."""
+        live = self._live.get(chat_id)
+        if live is None:
+            return
+        live.sinks = [e for e in live.sinks if e.sink is not ws]
+        if not live.sinks:
+            self._on_all_sinks_gone(live)
+
+    def _cancel_linger(self, live: "LiveSession") -> None:
+        if live.linger_task is not None and not live.linger_task.done():
+            live.linger_task.cancel()
+        live.linger_task = None
+
+    def _on_all_sinks_gone(self, live: "LiveSession") -> None:
+        if self._config.on_detach == "kill":
+            asyncio.create_task(self.kill(live.chat_id, reason="ws_disconnect"))
+            return
+        self._cancel_linger(live)
+        live.linger_task = asyncio.create_task(self._linger_then_pause(live))
+
+    async def _linger_then_pause(self, live: "LiveSession") -> None:
+        # Wait for any in-flight turn to complete first.
+        while live.turn_in_flight:
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(self._config.detach_linger_seconds)
+        if live.sinks or live.state != SessionState.ACTIVE:
+            return  # a sink came back, or state already changed
+        await self._pause_live(live)
+
+    async def _pause_live(self, live: "LiveSession") -> None:
+        """Snapshot the sandbox and mark the session PAUSED.
+
+        Sets state=PAUSED FIRST so _wait_for_exit_and_respawn (which holds
+        the crash-respawn loop) sees the state change and treats the
+        subsequent EOF as intentional rather than a crash.
+        Folds the current active segment into active_seconds_accum so the
+        max_session_seconds cap counts only real active time.
+        """
+        # Fold active-time segment before changing state.
+        if live.state == SessionState.ACTIVE:
+            live.active_seconds_accum += time.monotonic() - live.active_since
+        live.state = SessionState.PAUSED
+        cancelled = list(live.tasks)
+        for t in cancelled:
+            t.cancel()
+        # Drain the cancelled tasks before touching the provider: if pause()
+        # fails and we fall back to kill(), an un-awaited pump task would be
+        # orphaned and could write a frame into a handle kill() has already
+        # torn down.
+        if cancelled:
+            await asyncio.gather(*cancelled, return_exceptions=True)
+        live.tasks = []
+        live.current_pump = None
+        live.current_wait = None
+        try:
+            if live.handle is not None:
+                await self._provider.pause(live.handle)
+        except Exception:
+            logger.exception("pause failed for %s — falling back to kill", live.chat_id)
+            live.state = SessionState.ACTIVE  # let kill() handle teardown + partial-save
+            await self.kill(live.chat_id, reason="pause_failed")
+            return
+        live.handle = None
+        self._repo.set_sandbox_paused_at(live.chat_id, datetime.now(timezone.utc))
+
+    async def _resume_live(self, live: "LiveSession") -> None:
+        """Resume a PAUSED in-memory session by reconnecting the sandbox."""
+        session = self._repo.get_session(live.chat_id)
+        if session is None or session.sandbox_id is None or session.runner_pid is None:
+            await self._respawn_fresh(live)
+            return
+        import time as _t
 
         try:
-            await asyncio.gather(*live.tasks, return_exceptions=True)
-        finally:
-            await self.kill(chat_id, reason="ws_disconnect")
+            handle = await self._provider.resume(
+                sandbox_id=session.sandbox_id,
+                runner_pid=session.runner_pid,
+                env={},
+            )
+        except Exception:
+            logger.warning("resume failed for %s — fresh spawn fallback", live.chat_id)
+            self._repo.clear_sandbox_ref(live.chat_id)
+            await self._respawn_fresh(live)
+            return
+        live.handle = handle
+        live.state = SessionState.ACTIVE
+        live.active_since = _t.monotonic()
+        pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
+        wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, live.session_dir or Path("/tmp")))
+        live.tasks = [pump_task, wait_task]
+        live.current_pump = pump_task
+        live.current_wait = wait_task
+        self._repo.set_sandbox_paused_at(live.chat_id, None)
+
+    async def _resume_from_row(self, session: "ChatSession") -> Optional["LiveSession"]:
+        """Post-restart resume: no LiveSession in memory, but repo row has refs.
+
+        Returns a new LiveSession on success, None on failure (refs cleared).
+        """
+        import time as _t
+
+        try:
+            handle = await self._provider.resume(
+                sandbox_id=session.sandbox_id,
+                runner_pid=session.runner_pid,
+                env={},
+            )
+        except Exception:
+            logger.warning(
+                "_resume_from_row failed for %s — clearing refs for fresh spawn",
+                session.id,
+            )
+            self._repo.clear_sandbox_ref(session.id)
+            return None
+        # Mirror _spawn_live's workspace selection: co-sessions get the
+        # ephemeral grant-intersection dir (SR-6), never a personal one —
+        # the crash-respawn path re-uploads the workspace from session_dir.
+        if session.is_co_session:
+            parts = self._repo.get_session_participants(session.id)
+            emails = [p.user_email for p in parts if p.left_at is None]
+            from src.grant_intersection import compute_grant_intersection
+
+            inter = compute_grant_intersection(emails, self._repo._conn)
+            session_dir = self._workdir_mgr.prepare_ephemeral_session_dir(session.id, emails, inter)
+        else:
+            emails = []
+            self._workdir_mgr.ensure_user_workdir(session.user_email)
+            session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, session.id)
+        live = LiveSession(
+            chat_id=session.id,
+            user_email=session.user_email,
+            state=SessionState.ACTIVE,
+            handle=handle,
+            started_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
+            sinks=[],
+            session_dir=session_dir,
+            active_since=_t.monotonic(),
+            participant_emails=emails,
+        )
+        self._live[session.id] = live
+        self._repo.set_sandbox_paused_at(session.id, None)
+        pump_task = asyncio.create_task(self._pump_subprocess_to_ws(live))
+        wait_task = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
+        live.tasks = [pump_task, wait_task]
+        live.current_pump = pump_task
+        live.current_wait = wait_task
+        return live
+
+    async def _respawn_fresh(self, live: "LiveSession") -> None:
+        """Spawn a new sandbox for an existing LiveSession and replay history.
+
+        Factored from _wait_for_exit_and_respawn's crash-respawn block so
+        resume-failure and reaper-kill fallbacks can reuse it.
+        """
+        session = self._repo.get_session(live.chat_id)
+        if session is None:
+            return
+        import time as _t
+
+        session_dir = live.session_dir or self._workdir_mgr.prepare_session_dir(session.user_email, live.chat_id)
+        new_handle = await self._spawn_runner(session, session_dir)
+        live.handle = new_handle
+        live.state = SessionState.ACTIVE
+        live.active_since = _t.monotonic()
+        self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
+        await self._broadcast(live, {"type": "ready"})
+        # Replay last 3 user turns.
+        history = self._repo.list_messages(live.chat_id)[-3:]
+        live_emails = set(live.participant_emails) or {live.user_email}
+        for msg in history:
+            if msg.role != "user":
+                continue
+            author = getattr(msg, "sender_email", None) or live.user_email
+            if live.participant_emails and author not in live_emails:
+                continue
+            payload = json.dumps({"type": "user_msg", "text": msg.content}) + "\n"
+            async with live._stdin_lock:
+                new_handle.stdin.write(payload.encode("utf-8"))
+                await new_handle.stdin.drain()
+        old_pump = live.current_pump
+        if old_pump is not None and not old_pump.done():
+            old_pump.cancel()
+            try:
+                await old_pump
+            except (asyncio.CancelledError, Exception):
+                pass
+        if old_pump is not None and old_pump in live.tasks:
+            live.tasks.remove(old_pump)
+        new_pump = asyncio.create_task(self._pump_subprocess_to_ws(live))
+        live.current_pump = new_pump
+        live.tasks.append(new_pump)
+        new_wait = asyncio.create_task(self._wait_for_exit_and_respawn(live, session_dir))
+        live.current_wait = new_wait
+        live.tasks.append(new_wait)
 
     async def add_sink(self, chat_id: str, sink, participant_email: str) -> None:
         """Attach an additional output sink to an already-live session.
@@ -317,20 +594,26 @@ class ChatManager:
         if live.participant_emails:  # truthy only for co-sessions
             parts = self._repo.get_session_participants(chat_id)
             if not any(p.user_email == participant_email and p.left_at is None for p in parts):
-                raise PermissionError(
-                    f"{participant_email} is not a live participant of {chat_id}"
-                )
+                raise PermissionError(f"{participant_email} is not a live participant of {chat_id}")
         for msg in self._repo.list_messages(chat_id):
-            await sink.send_json({
-                "type": "assistant_message" if msg.role == "assistant" else "user_msg",
-                "content": msg.content,
-                "sender_email": msg.sender_email,
-            })
+            await sink.send_json(
+                {
+                    "type": "assistant_message" if msg.role == "assistant" else "user_msg",
+                    "content": msg.content,
+                    "sender_email": msg.sender_email,
+                }
+            )
+        # Replay the in-progress turn buffer so a mid-turn reconnect/join
+        # picks up exactly the frames the runner has already emitted.
+        # Snapshot first to avoid racing the pump task.
+        for frame in list(live.turn_buffer):
+            await sink.send_json(frame)
         live.sinks.append(SinkEntry(participant_email=participant_email, sink=sink))
         await sink.send_json({"type": "ready"})
 
     async def _spawn_runner(self, session: ChatSession, session_dir: Path):
         from app.auth.access import mint_session_jwt, mint_co_session_jwt
+
         if session.is_co_session:
             # SR-5: NO seed fallback for co-sessions. A mint failure re-raises
             # and aborts the spawn — never inject a seed token (which carries no
@@ -360,9 +643,7 @@ class ChatManager:
             # back to AGNES_INTERNAL_URL then loopback. Operators running
             # cloud chat must set SERVER_URL for the data rails to work.
             "AGNES_SERVER": (
-                os.environ.get("SERVER_URL")
-                or os.environ.get("AGNES_INTERNAL_URL")
-                or "http://127.0.0.1:8000"
+                os.environ.get("SERVER_URL") or os.environ.get("AGNES_INTERNAL_URL") or "http://127.0.0.1:8000"
             ),
             "AGNES_SESSION_ID": session.id,
             "AGNES_USER_EMAIL": session.user_email,
@@ -413,6 +694,7 @@ class ChatManager:
                 upload_agnes_wheel,
                 upload_workspace,
             )
+
             max_bytes = getattr(self._config, "e2b_workspace_max_bytes", 100 * 1024 * 1024)
             sandbox = getattr(handle, "_sandbox", None)
             if sandbox is not None:
@@ -437,8 +719,8 @@ class ChatManager:
                     await upload_agnes_wheel(sandbox)
                 except Exception:
                     logger.exception(
-                        "agnes wheel upload failed; `agnes` CLI will be absent "
-                        "in sandbox for session %s", session.id,
+                        "agnes wheel upload failed; `agnes` CLI will be absent in sandbox for session %s",
+                        session.id,
                     )
         return handle
 
@@ -454,7 +736,11 @@ class ChatManager:
                 continue
             live.last_activity = datetime.now(timezone.utc)
             await self._broadcast(live, frame)
-            if frame.get("type") == "assistant_message":
+            ftype = frame.get("type")
+            # Accumulate in-flight turn frames for mid-turn replay and partial save.
+            if ftype in ("token", "tool_call"):
+                live.turn_buffer.append(frame)
+            if ftype == "assistant_message":
                 self._repo.append_message(
                     session_id=live.chat_id,
                     role="assistant",
@@ -464,6 +750,8 @@ class ChatManager:
                     tokens_out=frame.get("tokens_out"),
                     model=frame.get("model"),
                 )
+                live.turn_buffer.clear()
+                live.turn_in_flight = False
                 # Auto-title: the first assistant_message in a session
                 # is the trigger to ask Haiku for a short title. We
                 # check the per-session flag (not just the persisted
@@ -471,7 +759,10 @@ class ChatManager:
                 # crash-respawn replay don't both fire the call.
                 if not live.auto_title_started:
                     self._maybe_start_auto_title(live)
-            elif frame.get("type") == "tool_call":
+            elif ftype == "done":
+                live.turn_buffer.clear()
+                live.turn_in_flight = False
+            if ftype == "tool_call":
                 write_audit(
                     self._repo._conn,
                     user_email=live.user_email,
@@ -499,6 +790,12 @@ class ChatManager:
             if entry in live.sinks:
                 live.sinks.remove(entry)
             asyncio.create_task(self._safe_close(entry.sink))
+        # A dead-sink sweep can be the moment the LAST sink disappears (e.g.
+        # a co-drive joiner's socket died without a clean detach_sink). Fire
+        # the same on-detach policy detach_sink would have, or the session
+        # outlives its audience until the idle reaper notices.
+        if dead and not live.sinks and live.state == SessionState.ACTIVE:
+            self._on_all_sinks_gone(live)
 
     @staticmethod
     async def _safe_close(sink) -> None:
@@ -511,15 +808,19 @@ class ChatManager:
         while True:
             assert live.handle is not None
             rc = await live.handle.wait()
-            if rc == 0 or live.state == SessionState.DEAD:
+            # Return for intentional terminations: clean exit, kill(), or pause.
+            if rc == 0 or live.state in (SessionState.DEAD, SessionState.PAUSED):
                 return
             # Crash path
             live.crash_count += 1
-            await self._broadcast(live, {
-                "type": "error",
-                "kind": "subprocess_crashed",
-                "auto_respawn": live.crash_count < 3,
-            })
+            await self._broadcast(
+                live,
+                {
+                    "type": "error",
+                    "kind": "subprocess_crashed",
+                    "auto_respawn": live.crash_count < 3,
+                },
+            )
             if live.crash_count >= 3:
                 live.state = SessionState.DEAD
                 return
@@ -529,6 +830,9 @@ class ChatManager:
             new_handle = await self._spawn_runner(session, session_dir)
             live.handle = new_handle
             live.state = SessionState.ACTIVE
+            # Refresh the persisted refs or a later pause/resume cycle would
+            # try to reconnect the DEAD sandbox and lose the agent context.
+            self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
             await self._broadcast(live, {"type": "ready"})
             # Replay last 3 user turns into the new subprocess.
             # SR-11: for co-sessions, skip turns authored by a departed
@@ -567,6 +871,21 @@ class ChatManager:
 
     async def send_user_message(self, chat_id: str, text: str, *, sender_email: Optional[str] = None) -> None:
         live = self._live.get(chat_id)
+        # Resume on-demand: PAUSED live session (Slack DM after hours, web race).
+        if live is not None and live.state == SessionState.PAUSED:
+            await self._resume_live(live)
+        elif live is None:
+            # Post-restart: no LiveSession in memory, but repo row may have sandbox refs.
+            session = self._repo.get_session(chat_id)
+            if session is not None and session.sandbox_id is not None and session.runner_pid is not None:
+                live = await self._resume_from_row(session)
+                if live is None:
+                    # _resume_from_row cleared refs; try a fresh spawn
+                    session = self._repo.get_session(chat_id)
+                    if session is not None:
+                        live = await self._spawn_live(session)
+            # After recovery attempt, re-fetch from _live
+            live = self._live.get(chat_id)
         if live is None or live.handle is None or live.state == SessionState.DEAD:
             raise SessionNotFound(chat_id)
         # SR-10: key all per-user budget/rate checks on the actual SENDER,
@@ -574,19 +893,18 @@ class ChatManager:
         sender = sender_email or live.user_email
         # Enforce daily Anthropic spend cap (result is TTL-cached — see _cached_daily_tokens)
         tokens_in, tokens_out = self._cached_daily_tokens(sender)
-        spent_usd = (
-            tokens_in * _PRICE_IN_PER_MTOK / 1_000_000
-            + tokens_out * _PRICE_OUT_PER_MTOK / 1_000_000
-        )
+        spent_usd = tokens_in * _PRICE_IN_PER_MTOK / 1_000_000 + tokens_out * _PRICE_OUT_PER_MTOK / 1_000_000
         if spent_usd >= self._config.daily_anthropic_spend_usd:
-            await self._broadcast(live, {
-                "type": "error",
-                "kind": "daily_budget",
-                "message": (
-                    f"Daily spend cap of ${self._config.daily_anthropic_spend_usd:.2f} reached. "
-                    "Try again tomorrow."
-                ),
-            })
+            await self._broadcast(
+                live,
+                {
+                    "type": "error",
+                    "kind": "daily_budget",
+                    "message": (
+                        f"Daily spend cap of ${self._config.daily_anthropic_spend_usd:.2f} reached. Try again tomorrow."
+                    ),
+                },
+            )
             raise RuntimeError("daily_budget_exhausted")
         # Per-session token cap — operators set max_session_tokens in
         # instance.yaml; previously the knob was dead config. Tokens already
@@ -595,41 +913,52 @@ class ChatManager:
         # documented in persistence.py).
         session_tokens = self._repo.session_total_tokens(chat_id)
         if session_tokens >= self._config.max_session_tokens:
-            await self._broadcast(live, {
-                "type": "error",
-                "kind": "max_session_tokens",
-                "message": (
-                    f"Per-session token cap of {self._config.max_session_tokens} reached "
-                    f"(used {session_tokens}). Start a new chat session."
-                ),
-            })
+            await self._broadcast(
+                live,
+                {
+                    "type": "error",
+                    "kind": "max_session_tokens",
+                    "message": (
+                        f"Per-session token cap of {self._config.max_session_tokens} reached "
+                        f"(used {session_tokens}). Start a new chat session."
+                    ),
+                },
+            )
             raise RuntimeError("max_session_tokens_exhausted")
         # Per-user sliding-window message-rate cap keyed on the SENDER (SR-10).
         # Trim entries older than one hour, then check the count.
         import time as _time
+
         now_mono = _time.monotonic()
         window = self._user_msg_window.setdefault(sender, self._deque_cls())
         while window and (now_mono - window[0]) > 3600:
             window.popleft()
         if len(window) >= self._config.rate_messages_per_hour:
-            await self._broadcast(live, {
-                "type": "error",
-                "kind": "rate_limit",
-                "message": (
-                    f"Rate limit hit: {self._config.rate_messages_per_hour} messages/hour. "
-                    "Slow down or wait an hour."
-                ),
-            })
+            await self._broadcast(
+                live,
+                {
+                    "type": "error",
+                    "kind": "rate_limit",
+                    "message": (
+                        f"Rate limit hit: {self._config.rate_messages_per_hour} messages/hour. "
+                        "Slow down or wait an hour."
+                    ),
+                },
+            )
             raise RuntimeError("rate_limit_exceeded")
         window.append(now_mono)
         self._repo.append_message(
-            session_id=chat_id, role="user", content=text,
+            session_id=chat_id,
+            role="user",
+            content=text,
             sender_email=sender_email or live.user_email,
         )
         payload = json.dumps({"type": "user_msg", "text": text}) + "\n"
         async with live._stdin_lock:
             live.handle.stdin.write(payload.encode("utf-8"))
             await live.handle.stdin.drain()
+        live.turn_buffer.clear()
+        live.turn_in_flight = True
         live.last_activity = datetime.now(timezone.utc)
         live.state = SessionState.ACTIVE
 
@@ -668,9 +997,12 @@ class ChatManager:
         if session is None:
             return
         from src.grant_intersection import compute_grant_intersection
+
         inter = compute_grant_intersection(live.participant_emails, self._repo._conn)
         session_dir = self._workdir_mgr.prepare_ephemeral_session_dir(
-            live.chat_id, live.participant_emails, inter,
+            live.chat_id,
+            live.participant_emails,
+            inter,
         )
         # Cancel the crash-respawn wait task BEFORE killing the handle: this
         # respawn is intentional, and a running _wait_for_exit_and_respawn
@@ -695,6 +1027,9 @@ class ChatManager:
         new_handle = await self._spawn_runner(session, session_dir)
         live.handle = new_handle
         live.state = SessionState.ACTIVE
+        # Same stale-ref hazard as the crash-respawn path: persist the new
+        # sandbox identity for later pause/resume.
+        self._repo.set_sandbox_ref(live.chat_id, sandbox_id=new_handle.sandbox_id, runner_pid=new_handle.pid)
         await self._broadcast(live, {"type": "ready"})
         # Replay last 3 user turns skipping departed participants (SR-11).
         history = self._repo.list_messages(live.chat_id)[-3:]
@@ -748,7 +1083,8 @@ class ChatManager:
         }
         await self._broadcast(live, synthetic)
         self._repo.append_message(
-            session_id=chat_id, role="assistant",
+            session_id=chat_id,
+            role="assistant",
             content="",
             tool_calls=[{"cancelled": True}],
         )
@@ -759,10 +1095,25 @@ class ChatManager:
         if live is None:
             return
         live.state = SessionState.DEAD
+        # Partial-save: if a turn was in flight, persist the accumulated token
+        # text as an interrupted assistant message so it's not lost.
+        if live.turn_buffer:
+            partial = "".join(f.get("text", "") for f in live.turn_buffer if f.get("type") == "token").strip()
+            if partial:
+                self._repo.append_message(
+                    session_id=chat_id,
+                    role="assistant",
+                    content=partial,
+                    tool_calls=[{"interrupted": True, "reason": reason}],
+                    tokens_in=None,
+                    tokens_out=None,
+                    model=None,
+                )
         if live.handle is not None:
             await live.handle.kill()
         for t in live.tasks:
             t.cancel()
+        self._repo.clear_sandbox_ref(chat_id)
         write_audit(
             self._repo._conn,
             user_email=live.user_email,
@@ -802,6 +1153,7 @@ class ChatManager:
         cosmetic enhancement, not a load-bearing piece of the chat
         pipeline."""
         from app.chat.auto_title import generate_title
+
         try:
             first_user = self._repo.get_first_user_message(live.chat_id)
             if not first_user:
@@ -818,11 +1170,14 @@ class ChatManager:
             # raise if the socket has dropped — swallow it; the
             # persisted title will surface on the next sidebar load.
             try:
-                await self._broadcast(live, {
-                    "type": "session_renamed",
-                    "chat_id": live.chat_id,
-                    "title": title,
-                })
+                await self._broadcast(
+                    live,
+                    {
+                        "type": "session_renamed",
+                        "chat_id": live.chat_id,
+                        "title": title,
+                    },
+                )
             except Exception:
                 logger.debug(
                     "auto-title: ws.send_json failed for %s; title still persisted",
@@ -845,22 +1200,77 @@ class ChatManager:
     async def _reap_once(self) -> None:
         """One sweep of the reaper.
 
-        Kills sessions that have either:
-        - been idle longer than ``idle_ttl_seconds`` (reason ``idle_ttl``), or
-        - been running longer than ``max_session_seconds`` (reason
-          ``max_session_seconds``), regardless of recent activity.
+        For live sessions (ACTIVE/IDLE):
+        - Idle longer than ``idle_ttl_seconds``: pause (on_detach='pause') or kill.
+        - Active time (accumulated + current segment) exceeds ``max_session_seconds``:
+          pause or kill. Active time only counts while ACTIVE — pause stops the clock.
+        - Keepalive heartbeat: for ACTIVE sessions with sinks, extend the sandbox
+          external timeout so it outlives the in-process reaper horizon.
 
-        The wallclock cap was previously dead config (knob in instance.yaml
-        nobody read). Operators setting it now actually get the behavior.
+        Paused-TTL sweep (repo rows, no live session required):
+        - Sessions whose sandbox_paused_at is older than ``paused_ttl_seconds``
+          have their sandbox destroyed and refs cleared.
         """
         idle_cutoff = self._config.idle_ttl_seconds
-        max_wallclock = self._config.max_session_seconds
+        max_active = self._config.max_session_seconds
         now = datetime.now(timezone.utc)
+        now_mono = time.monotonic()
+
+        to_pause: list[str] = []
         to_kill: list[tuple[str, str]] = []
+
         for chat_id, live in list(self._live.items()):
-            if (now - live.last_activity).total_seconds() > idle_cutoff:
-                to_kill.append((chat_id, "idle_ttl"))
-            elif (now - live.started_at).total_seconds() > max_wallclock:
+            if live.state not in (SessionState.ACTIVE, SessionState.IDLE):
+                continue
+            # Active-time cap: accumulator + current active segment.
+            active_total = live.active_seconds_accum
+            if live.state == SessionState.ACTIVE:
+                active_total += now_mono - live.active_since
+            if active_total > max_active:
+                # Hard ceiling — ALWAYS kill, never pause, regardless of
+                # on_detach. active_seconds_accum survives pause/resume by
+                # design, so pausing here would re-trip on the next sweep
+                # after every resume: an infinite pause/resume loop that
+                # leaves the session permanently unusable but never freed.
                 to_kill.append((chat_id, "max_session_seconds"))
+                continue
+            # Idle TTL: last_activity recency check.
+            if (now - live.last_activity).total_seconds() > idle_cutoff:
+                if self._config.on_detach == "pause":
+                    to_pause.append(chat_id)
+                else:
+                    to_kill.append((chat_id, "idle_ttl"))
+                continue
+            # Keepalive heartbeat for ACTIVE sessions with at least one sink.
+            if live.state == SessionState.ACTIVE and live.sinks and live.handle is not None:
+                try:
+                    await self._provider.keepalive(
+                        live.handle,
+                        timeout_seconds=idle_cutoff + 300,
+                    )
+                except Exception:
+                    logger.debug("keepalive failed for %s", chat_id)
+
+        for chat_id in to_pause:
+            live = self._live.get(chat_id)
+            if live is not None:
+                try:
+                    await self._pause_live(live)
+                except Exception:
+                    logger.exception("reaper pause failed for %s — killing", chat_id)
+                    await self.kill(chat_id, reason="reaper_pause_failed")
+
         for chat_id, reason in to_kill:
             await self.kill(chat_id, reason=reason)
+
+        # Paused-TTL sweep: destroy sandboxes that have been paused too long.
+        # Works purely from repo rows — catches pre-restart leftovers too.
+        paused_cutoff = now - timedelta(seconds=self._config.paused_ttl_seconds)
+        for session in self._repo.list_paused_sessions(paused_before=paused_cutoff):
+            try:
+                await self._provider.destroy(sandbox_id=session.sandbox_id)
+            except Exception:
+                logger.debug("destroy sandbox %s failed (already gone?)", session.sandbox_id)
+            self._repo.clear_sandbox_ref(session.id)
+            # Drop any in-memory entry
+            self._live.pop(session.id, None)
