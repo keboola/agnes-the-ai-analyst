@@ -21,6 +21,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.6] — 2026-06-11
+
+### Fixed
+- The Windows PowerShell "one-word shortcut" snippet on `/home` (auto + YOLO modes) and `/setup-advanced` now prefixes the `function` definition it appends to `$PROFILE` with an empty array element (`Add-Content $PROFILE '', 'function …'`). `Add-Content` only adds a *trailing* line terminator, so when the user's existing profile didn't end in a newline (e.g. a trailing `$PSStyle.FileInfo.Directory = "…"` line) the function got glued onto the previous line, producing `ParserError: Unexpected token 'function'` on every new shell. The single-quoted body is preserved so `$env:USERPROFILE` is still written verbatim rather than expanded at append time. (#618, FAI-51)
+
+## [0.71.5] — 2026-06-11
+
+### Fixed
+- Onboarding Step 2 "Pick a folder" — the Windows/PowerShell command is now a single line (`New-Item … | Out-Null; Set-Location …`) so one paste both creates the folder *and* enters it. Previously it was two newline-separated statements; pasting into PowerShell submitted only the first line and left `Set-Location` unsent in the input buffer, so the shell never `cd`'d into the new folder. Mirrors the macOS/Linux tab's single-line `mkdir … && cd …` (`;` is used over `&&` so it also parses in Windows PowerShell 5.1). (#615, FAI-50)
+
 ## [0.71.4] — 2026-06-11
 
 ### Fixed

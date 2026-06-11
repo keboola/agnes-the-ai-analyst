@@ -158,8 +158,7 @@
                 <button class="copy-btn" data-copy-target="install-cmd-mkdir-unix">Copy</button>
             </div>
             <div class="install-cmd" role="tabpanel" data-os-panel="windows" hidden>
-                <span class="multiline" id="install-cmd-mkdir-windows">New-Item -ItemType Directory -Force -Path "$HOME\Desktop\{{ workspace_dir }}" | Out-Null
-Set-Location "$HOME\Desktop\{{ workspace_dir }}"</span>
+                <span class="multiline" id="install-cmd-mkdir-windows">New-Item -ItemType Directory -Force -Path "$HOME\Desktop\{{ workspace_dir }}" | Out-Null; Set-Location "$HOME\Desktop\{{ workspace_dir }}"</span>
                 <button class="copy-btn" data-copy-target="install-cmd-mkdir-windows">Copy</button>
             </div>
             <div class="callout-hint">
@@ -325,7 +324,7 @@ What can I help you with?
                     <button class="copy-btn" data-copy-target="install-cmd-shortcut-auto-unix">Copy</button>
                 </div>
                 <div class="install-cmd" role="tabpanel" data-os-panel="windows" hidden>
-                    <span class="multiline" id="install-cmd-shortcut-auto-windows">if (!(Test-Path $PROFILE)) { New-Item $PROFILE -Force }; Add-Content $PROFILE 'function {{ workspace_dir | lower }} { Push-Location "$env:USERPROFILE\Desktop\{{ workspace_dir }}"; claude --permission-mode auto @args }'</span>
+                    <span class="multiline" id="install-cmd-shortcut-auto-windows">if (!(Test-Path $PROFILE)) { New-Item $PROFILE -Force }; Add-Content $PROFILE '', 'function {{ workspace_dir | lower }} { Push-Location "$env:USERPROFILE\Desktop\{{ workspace_dir }}"; claude --permission-mode auto @args }'</span>
                     <button class="copy-btn" data-copy-target="install-cmd-shortcut-auto-windows">Copy</button>
                 </div>
                 <p class="step-lede" style="margin-top: 8px;">
@@ -349,7 +348,7 @@ What can I help you with?
                     <button class="copy-btn" data-copy-target="install-cmd-shortcut-yolo-unix">Copy</button>
                 </div>
                 <div class="install-cmd" role="tabpanel" data-os-panel="windows" hidden>
-                    <span class="multiline" id="install-cmd-shortcut-yolo-windows">if (!(Test-Path $PROFILE)) { New-Item $PROFILE -Force }; Add-Content $PROFILE 'function yolo { Push-Location "$env:USERPROFILE\Desktop\{{ workspace_dir }}"; claude --dangerously-skip-permissions @args }'</span>
+                    <span class="multiline" id="install-cmd-shortcut-yolo-windows">if (!(Test-Path $PROFILE)) { New-Item $PROFILE -Force }; Add-Content $PROFILE '', 'function yolo { Push-Location "$env:USERPROFILE\Desktop\{{ workspace_dir }}"; claude --dangerously-skip-permissions @args }'</span>
                     <button class="copy-btn" data-copy-target="install-cmd-shortcut-yolo-windows">Copy</button>
                 </div>
                 <p class="step-lede" style="margin-top: 8px;">
