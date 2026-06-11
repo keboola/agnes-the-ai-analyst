@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- **`/admin/chat` is now reachable from the Admin menu.** The cloud-chat session dashboard had no nav entry anywhere — admins could only find it by typing the URL, and the adjacent Activity Center item "Sessions" (analyst-uploaded Claude Code session files) was easy to mistake for it. The Admin → Activity Center menu now lists both with distinct labels: "Analyst sessions" (`/admin/sessions`, renamed incl. its page title) and "Chat sessions" (`/admin/chat`).
 
 ### Removed
 
