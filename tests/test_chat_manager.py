@@ -1410,3 +1410,101 @@ def test_keepalive_heartbeat_extends_timeout_while_sinks_attached(tmp_path):
             pass
 
     asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# PR #605 review regressions (Devin findings)
+# ---------------------------------------------------------------------------
+
+
+def test_seat_sink_does_not_replay_persisted_history(manager: ChatManager):
+    """The primary WS must NOT receive persisted messages on attach — the web
+    client already loaded them via REST; replaying duplicates every bubble.
+    Only the in-progress turn buffer (+ ready) goes over the wire."""
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        manager._repo.append_message(session_id=s.id, role="user", content="q?")
+        manager._repo.append_message(session_id=s.id, role="assistant", content="a!")
+        ws = FakeWS()
+        await manager.attach(s.id, ws)
+        types = [f.get("type") for f in ws.sent]
+        assert "assistant_message" not in types
+        assert "user_msg" not in types
+        assert types[-1] == "ready"
+        await manager.kill(s.id, reason="test_done")
+
+    asyncio.run(_run())
+
+
+def test_broadcast_dead_sink_sweep_triggers_detach_policy(manager: ChatManager):
+    """When _broadcast's dead-sink removal empties live.sinks, the on-detach
+    policy must fire (linger task scheduled) — a joiner whose socket died
+    without a clean detach must not leave the session ownerless until the
+    idle reaper."""
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        await manager.attach(s.id, ws)
+        live = manager._live[s.id]
+        assert live.linger_task is None
+
+        class DeadSink:
+            async def send_json(self, data):
+                raise RuntimeError("socket gone")
+
+            async def close(self):
+                pass
+
+        live.sinks = [SinkEntry(participant_email="u@x", sink=DeadSink())]
+        await manager._broadcast(live, {"type": "token", "text": "x"})
+        assert not live.sinks
+        assert live.linger_task is not None
+        await manager.kill(s.id, reason="test_done")
+
+    asyncio.run(_run())
+
+
+def test_resume_from_row_co_session_uses_ephemeral_dir(manager: ChatManager, monkeypatch):
+    """Cold-start resume of a co-session must rebuild the ephemeral
+    grant-intersection workspace (SR-6), not a personal one — the
+    crash-respawn path re-uploads the workspace from session_dir."""
+
+    async def _run():
+        s = await manager.create_session(user_email="owner@x", surface=Surface.WEB)
+        manager._repo._conn.execute(
+            "UPDATE chat_sessions SET is_co_session = TRUE WHERE id = ?", [s.id]
+        )
+        manager._repo.add_session_participant(
+            session_id=s.id, user_email="owner@x", user_id="u1", role="owner"
+        )
+        manager._repo.add_session_participant(
+            session_id=s.id, user_email="peer@x", user_id="u2", role="collaborator"
+        )
+        manager._repo.set_sandbox_ref(s.id, sandbox_id="sbx-co", runner_pid=42)
+
+        handle = FakeHandle()
+        manager._provider.resume = AsyncMock(return_value=handle)
+        monkeypatch.setattr(
+            "src.grant_intersection.compute_grant_intersection",
+            lambda emails, conn: {},
+        )
+        eph = MagicMock(return_value=Path("/tmp/eph-dir"))
+        personal = MagicMock()
+        monkeypatch.setattr(manager._workdir_mgr, "prepare_ephemeral_session_dir", eph)
+        monkeypatch.setattr(manager._workdir_mgr, "prepare_session_dir", personal)
+
+        session = manager._repo.get_session(s.id)
+        live = await manager._resume_from_row(session)
+        assert live is not None
+        eph.assert_called_once()
+        personal.assert_not_called()
+        assert sorted(live.participant_emails) == ["owner@x", "peer@x"]
+        await manager.kill(s.id, reason="test_done")
+
+    asyncio.run(_run())

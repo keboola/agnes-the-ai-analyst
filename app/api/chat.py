@@ -317,3 +317,8 @@ async def ws_join(ws: WebSocket, session_id: str, ticket: str):
         await ws.close(code=4403, reason="not_a_live_participant")
     except SessionNotFound:
         await ws.close(code=4404, reason="session_not_found")
+    finally:
+        # Mirror ws_stream: a departed joiner must not leave a dead sink in
+        # live.sinks — it would block the last-sink detach (linger→pause)
+        # policy until the idle reaper. No-op if add_sink never seated it.
+        await mgr.detach_sink(session_id, ws)

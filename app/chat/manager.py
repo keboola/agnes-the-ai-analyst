@@ -309,15 +309,16 @@ class ChatManager:
         await self._seat_sink(live, ws, is_primary=is_primary)
 
     async def _seat_sink(self, live: "LiveSession", ws, *, is_primary: bool) -> None:
-        """Replay history + turn buffer to ws, append to sinks, send ready."""
-        for msg in self._repo.list_messages(live.chat_id):
-            await ws.send_json(
-                {
-                    "type": "assistant_message" if msg.role == "assistant" else "user_msg",
-                    "content": msg.content,
-                    "sender_email": msg.sender_email,
-                }
-            )
+        """Replay the in-progress turn buffer to ws, append to sinks, send ready.
+
+        Deliberately does NOT replay persisted history: the web client loads
+        it via GET /sessions/{id}/messages before opening the WS (replaying
+        here would render every message twice), and the Slack bridge must not
+        re-post old messages into the channel. Full history replay lives only
+        in add_sink() for late joiners that have no REST history-load step.
+        The turn buffer IS replayed — a mid-turn reconnect picks up exactly
+        the frames the runner already emitted (snapshot to avoid racing the
+        pump task)."""
         for frame in list(live.turn_buffer):
             await ws.send_json(frame)
         if is_primary:
@@ -487,7 +488,20 @@ class ChatManager:
             )
             self._repo.clear_sandbox_ref(session.id)
             return None
-        session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, session.id)
+        # Mirror _spawn_live's workspace selection: co-sessions get the
+        # ephemeral grant-intersection dir (SR-6), never a personal one —
+        # the crash-respawn path re-uploads the workspace from session_dir.
+        if session.is_co_session:
+            parts = self._repo.get_session_participants(session.id)
+            emails = [p.user_email for p in parts if p.left_at is None]
+            from src.grant_intersection import compute_grant_intersection
+
+            inter = compute_grant_intersection(emails, self._repo._conn)
+            session_dir = self._workdir_mgr.prepare_ephemeral_session_dir(session.id, emails, inter)
+        else:
+            emails = []
+            self._workdir_mgr.ensure_user_workdir(session.user_email)
+            session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, session.id)
         live = LiveSession(
             chat_id=session.id,
             user_email=session.user_email,
@@ -498,6 +512,7 @@ class ChatManager:
             sinks=[],
             session_dir=session_dir,
             active_since=_t.monotonic(),
+            participant_emails=emails,
         )
         self._live[session.id] = live
         self._repo.set_sandbox_paused_at(session.id, None)
@@ -773,6 +788,12 @@ class ChatManager:
             if entry in live.sinks:
                 live.sinks.remove(entry)
             asyncio.create_task(self._safe_close(entry.sink))
+        # A dead-sink sweep can be the moment the LAST sink disappears (e.g.
+        # a co-drive joiner's socket died without a clean detach_sink). Fire
+        # the same on-detach policy detach_sink would have, or the session
+        # outlives its audience until the idle reaper notices.
+        if dead and not live.sinks and live.state == SessionState.ACTIVE:
+            self._on_all_sinks_gone(live)
 
     @staticmethod
     async def _safe_close(sink) -> None:
