@@ -259,7 +259,7 @@ def list_template_files() -> List[str]:
     return out
 
 
-def build_zip(conn=None) -> bytes:
+def build_zip(conn=None, *, user=None, server_url=None) -> bytes:
     """Build an in-memory zip of ``<initial-workspace>/workspace/``,
     excluding ``.git/`` and anything outside the ``workspace/`` subdir.
     Re-runs ``validate_template_tree`` first as defense in depth —
@@ -276,11 +276,18 @@ def build_zip(conn=None) -> bytes:
     edited ``CLAUDE.md`` REPLACES the IWT clone's ``workspace/CLAUDE.md`` in
     the zip. This is THE chokepoint that fixes the issue: override-mode
     ``agnes init`` serves this zip verbatim (it bypasses ``/api/welcome``), so
-    without the overlay the admin editor would ship nothing. The override is
-    shipped as a literal ``CLAUDE.md`` (verbatim, NOT server-rendered) —
-    matching override-mode's "admin's content wins verbatim" semantics and the
-    raw way the repo file itself is shipped. ``conn=None`` (defensive callers,
-    tests, ``delete_template_dir`` path) skips the overlay → pure clone.
+    without the overlay the admin editor would ship nothing.
+
+    Rendering (#638 review): the override is a Jinja2 template (validated
+    StrictUndefined at save time), and the zip path skips the ``/api/welcome``
+    render — so when ``user`` + ``server_url`` are supplied (the analyst zip
+    endpoint), the overlay is rendered for the requesting user before
+    zipping, matching what the non-IWT init path ships. A render failure is
+    logged and drops the overlay (pure clone) — never raw template syntax.
+    Without ``user`` (the cloud-chat workdir fetch, which re-renders
+    ``CLAUDE.md`` itself via ``render_claude_md``) the override ships
+    verbatim. ``conn=None`` (defensive callers, tests,
+    ``delete_template_dir`` path) skips the overlay → pure clone.
 
     Returns the zip bytes. Caller computes ``ETag`` from the bytes (or
     from ``last_commit_sha`` for a cheaper stable identifier).
@@ -294,10 +301,23 @@ def build_zip(conn=None) -> bytes:
             content, mode = resolve_prompt("workspace", conn)
             if mode == "editor" and content is not None:
                 workspace_overlay = content
+                if user is not None and server_url is not None:
+                    from jinja2 import Environment, StrictUndefined
+
+                    from src.claude_md import build_claude_md_context
+
+                    env = Environment(undefined=StrictUndefined, autoescape=False)
+                    workspace_overlay = env.from_string(content).render(
+                        **build_claude_md_context(
+                            conn, user=user, server_url=server_url
+                        )
+                    )
         except Exception:
-            # An overlay-resolution failure must NEVER block serving the
-            # clone — the zip is on the analyst's init critical path.
-            logger.exception("build_zip: workspace-prompt overlay resolution failed")
+            # An overlay failure must NEVER block serving the clone — the
+            # zip is on the analyst's init critical path. Drop the overlay
+            # entirely rather than ship raw Jinja syntax.
+            workspace_overlay = None
+            logger.exception("build_zip: workspace-prompt overlay failed")
 
     workspace_dir = target / _WORKSPACE_SUBDIR
     buf = io.BytesIO()

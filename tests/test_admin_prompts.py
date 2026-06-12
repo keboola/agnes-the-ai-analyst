@@ -508,3 +508,32 @@ def test_prompt_repo_ignores_duckdb_conn_on_postgres(monkeypatch):
         )
     finally:
         conn.close()
+
+
+def test_build_zip_renders_overlay_for_user(tmp_path, monkeypatch):
+    """#638 review: the analyst-zip path renders the editor override for the
+    requesting user — raw Jinja2 (`{{ user.email }}`) must never reach the
+    analyst's CLAUDE.md, matching what the non-IWT /api/welcome init ships."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    _make_iwt_clone(tmp_path, claude_md="FROM CLONE")
+
+    import src.initial_workspace as iw
+    from src.repositories import claude_md_template_repo
+
+    monkeypatch.setattr(iw, "validate_template_tree", lambda *a, **k: None)
+    repo = claude_md_template_repo()
+    repo.set("Workspace for {{ user.email }}", updated_by="a@x.com")
+
+    from src.db import get_system_db
+
+    conn = get_system_db()
+    try:
+        data = iw.build_zip(
+            conn,
+            user={"id": "u1", "email": "alice@example.com", "groups": []},
+            server_url="http://test",
+        )
+    finally:
+        conn.close()
+    files = _zip_names_and_content(data)
+    assert files["CLAUDE.md"] == "Workspace for alice@example.com"

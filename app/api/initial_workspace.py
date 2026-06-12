@@ -639,8 +639,12 @@ async def analyst_zip(
 
     try:
         # Pass conn so the workspace-prompt admin overlay (source_mode='editor')
-        # replaces the clone's workspace/CLAUDE.md for override-mode init (#622).
-        data = build_zip(conn)
+        # replaces the clone's workspace/CLAUDE.md for override-mode init
+        # (#622) — rendered for the requesting analyst, since this zip
+        # bypasses the /api/welcome render step (#638 review).
+        data = build_zip(
+            conn, user=user, server_url=str(request.base_url).rstrip("/")
+        )
     except TemplateValidationError as e:
         # Defense in depth — sync_template already validates, but a
         # manual edit on disk between sync and zip-fetch should fail
