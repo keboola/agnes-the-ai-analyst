@@ -463,6 +463,21 @@ async def lifespan(app):
     except Exception:
         logger.exception("BQ startup config validation crashed (non-fatal)")
 
+    # Fail closed when the Postgres schema is behind the app's expected
+    # Alembic head. The DuckDB ladder self-migrates on every connect
+    # (src/db.py); Postgres does NOT — `alembic upgrade head` runs only
+    # from the compose `migrate` one-shot and the /api/admin/db/migrate
+    # flow, both one-time. A re-pulled image expecting a newer revision
+    # against a PG stamped at an older one boots "healthy" but 500s every
+    # write touching a post-stamp column (issue #636). This refusal makes
+    # that drift operator-visible at boot instead. PG-only by design (the
+    # check mirrors DuckDB's self-migration); honors
+    # AGNES_SKIP_PG_REVISION_CHECK=1 for emergency boots.
+    from src.repositories import use_pg
+    if use_pg():
+        from src.db_pg import assert_pg_at_head
+        assert_pg_at_head()
+
     # Seed the Admin/Everyone system groups into the ACTIVE state backend.
     # On DuckDB this duplicates src.db._seed_system_groups (idempotent), but
     # that runs ONLY on a DuckDB connect — nothing seeds these groups on a

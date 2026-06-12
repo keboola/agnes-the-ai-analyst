@@ -114,6 +114,113 @@ def get_engine() -> sa.Engine:
         return _engine
 
 
+#: Env escape hatch — set to ``1`` to skip the startup Alembic revision
+#: check and boot anyway. For emergency boots only (e.g. an operator
+#: needs the app up to reach the admin UI / API and apply migrations by
+#: hand). Mirrors the manual workaround in issue #636.
+_SKIP_REVISION_CHECK_ENV = "AGNES_SKIP_PG_REVISION_CHECK"
+
+
+def _alembic_config():
+    """Build the Alembic ``Config`` bound to this repo's ``alembic.ini``.
+
+    ``script_location`` is set explicitly to the repo's ``migrations/``
+    dir (matching ``migrations/env.py`` + the test fixtures) so the
+    resolution is robust regardless of the process cwd at boot.
+    """
+    from pathlib import Path
+
+    from alembic.config import Config
+
+    repo_root = Path(__file__).resolve().parent.parent
+    cfg = Config(str(repo_root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(repo_root / "migrations"))
+    return cfg
+
+
+def assert_pg_at_head() -> None:
+    """Fail closed unless the Postgres DB is at the head Alembic revision.
+
+    The DuckDB backend self-migrates on every connect (``src/db.py``
+    ladder via ``get_system_db``); the Postgres backend does NOT —
+    ``alembic upgrade head`` runs only from the compose ``migrate``
+    one-shot and the ``/api/admin/db/migrate`` flow, both one-time. A
+    fresh image that expects a newer revision against a PG stamped at an
+    older one boots "healthy" but 500s every write touching a post-stamp
+    column (issue #636). This converts that silent drift into an
+    operator-visible boot refusal.
+
+    Reads the DB's current revision via
+    ``MigrationContext.configure(conn).get_current_revision()`` and the
+    script head via ``ScriptDirectory.get_current_head()``. Raises
+    ``RuntimeError`` when they disagree (including the never-stamped
+    ``current is None`` case) naming both revisions and the manual
+    remediation. A no-op when they match.
+
+    Honors the ``AGNES_SKIP_PG_REVISION_CHECK=1`` escape hatch for
+    emergency boots. This check is PG-only by design — DuckDB needs no
+    equivalent because it self-migrates.
+    """
+    import logging
+
+    from alembic.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+
+    logger = logging.getLogger(__name__)
+
+    if os.environ.get(_SKIP_REVISION_CHECK_ENV) == "1":
+        logger.warning(
+            "%s=1 — skipping the Postgres Alembic revision check. "
+            "The DB may be behind the app's expected schema; writes to "
+            "newer columns/tables may 500. Apply `alembic upgrade head` "
+            "(or the compose `migrate` one-shot) and unset this flag.",
+            _SKIP_REVISION_CHECK_ENV,
+        )
+        return
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        current = MigrationContext.configure(conn).get_current_revision()
+
+    script = ScriptDirectory.from_config(_alembic_config())
+    head = script.get_current_head()
+
+    if current == head:
+        return
+
+    # A revision this image's migration scripts don't know means the DB is
+    # AHEAD, not behind — the operator rolled the app back after a newer
+    # image already migrated. The remedies differ, so say so.
+    db_ahead = False
+    if current is not None:
+        try:
+            script.get_revision(current)
+        except Exception:
+            db_ahead = True
+    if db_ahead:
+        raise RuntimeError(
+            "Postgres schema is AHEAD of the application: the DB is at "
+            f"Alembic revision {current!r}, which this image's migration "
+            f"scripts do not contain (its head is {head!r}) — typically an "
+            "app rollback after a newer image already migrated (issue "
+            "#636). Roll the app image forward to one that knows this "
+            "revision (preferred), or restore the DB backup matching this "
+            "image. Set AGNES_SKIP_PG_REVISION_CHECK=1 to boot anyway "
+            "(emergency only)."
+        )
+
+    current_label = current if current is not None else "<none — never stamped>"
+    raise RuntimeError(
+        "Postgres schema is behind the application: the DB is at Alembic "
+        f"revision {current_label!r} but this image expects head {head!r}. "
+        "Writes touching columns/tables added after the DB's revision will "
+        "fail (issue #636). Apply the pending migrations before serving:\n"
+        "  - one-shot:  alembic upgrade head\n"
+        "  - compose:   docker compose -f docker-compose.postgres.yml run --rm migrate\n"
+        "Set AGNES_SKIP_PG_REVISION_CHECK=1 to boot anyway (emergency only)."
+    )
+
+
 def dispose_engine() -> None:
     """Dispose the singleton engine + clear the cache.
 
