@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.14] — 2026-06-12
+
+### Fixed
+- **Chat sandbox: the freshly-minted session token now always wins over a persisted token file.** `ChatManager._spawn_runner` mints a fresh short-lived session JWT into `AGNES_TOKEN` on every spawn/respawn, but the `agnes` CLI's `get_token()` preferred `token.json` over the env var — so any token file present in the sandbox (e.g. written by an in-session `agnes init`, or replayed workspace state) silently shadowed the fresh credential and produced `HTTP 401: Invalid or expired token` on `agnes catalog`/`query` after a respawn. Inside the sandbox (`AGNES_SESSION_ID` set — only the chat runner sets it) a non-empty `AGNES_TOKEN` env now takes precedence; an empty env still falls through to the file rather than returning a blank credential. Analyst laptops keep the historical file-first order — `token.json` written by `agnes init` stays canonical there. (#628)
+
 ## [0.71.13] — 2026-06-12
 
 ### Added
