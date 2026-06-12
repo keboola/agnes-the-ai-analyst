@@ -168,6 +168,7 @@ curl -X POST "http://$PROD_IP:8000/api/sync/trigger" \
 The `customer-instance` module already provisions:
 - **Per-VM uptime check + alert policy** — wire a `notification_channel_ids` tfvar to get paged (see § Monitoring alerts below).
 - **Daily snapshot of `/data` PD** — 30-day retention. See § Restoring from backup.
+- **Host-side watchdog + daily DB backup with restore-verification** (module ≥ the tag introducing `enable_watchdog`; on by default). The watchdog checks container logs every 5 minutes for incident signatures the uptime check cannot see — crash loops, the "zombie" state where `/api/health` stays 200 while every write 500s, WAL-salvage data-loss events — and the daily backup copies `system.duckdb` to `/data/backups/system-duckdb/` and proves the copy restorable. Set `alert_webhook_url` (Slack / Google Chat compatible incoming webhook) to receive alerts; left empty, alerts go to journald + `/var/log/agnes-watchdog.log` on the VM only.
 
 Optional add-on: Slack webhook from Cloud Monitoring for alerts.
 

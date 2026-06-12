@@ -23,3 +23,15 @@ Each table's `query_mode` (shown by `agnes catalog`) tells you whether it is
 local (synced) or remote. Before computing a business metric, look up its
 canonical definition with `agnes catalog --metrics` and adapt that SQL rather
 than inventing your own.
+
+## Discovering more data
+
+If `agnes catalog` doesn't have what you need, there may be more data packages
+you can add to your stack:
+
+1. `agnes stack browse` — list every data package and memory domain you could
+   add (the `IN STACK` column shows what is already subscribed).
+2. `agnes stack add <type> <id>` — subscribe to an available one, e.g.
+   `agnes stack add data_package sales`.
+3. `agnes pull` — download the newly-subscribed tables so they appear in
+   `agnes catalog`.

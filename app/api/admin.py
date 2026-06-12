@@ -1624,7 +1624,8 @@ class RegisterTableRequest(BaseModel):
         if not is_valid_schedule(v):
             raise ValueError(
                 f"sync_schedule must be 'every Nm' / 'every Nh' / "
-                f"'daily HH:MM[,HH:MM,...]', got {v!r}"
+                f"'daily HH:MM[,HH:MM,...]' / 'cron <min hour dom month dow>' "
+                f"(e.g. 'cron 0 5 7 * *'), got {v!r}"
             )
         return v
 
@@ -2210,7 +2211,8 @@ class UpdateTableRequest(BaseModel):
         if not is_valid_schedule(v):
             raise ValueError(
                 f"sync_schedule must be 'every Nm' / 'every Nh' / "
-                f"'daily HH:MM[,HH:MM,...]', got {v!r}"
+                f"'daily HH:MM[,HH:MM,...]' / 'cron <min hour dom month dow>' "
+                f"(e.g. 'cron 0 5 7 * *'), got {v!r}"
             )
         return v
 
