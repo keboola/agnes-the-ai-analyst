@@ -42,6 +42,7 @@ from tests.e2e._helpers import (
     E2E_USER_PASSWORD,
     bootstrap_admin,
     pump_until,
+    skip_unless_chat_sessions_possible,
 )
 
 
@@ -110,6 +111,7 @@ def test_f6_remote_bq_count_increments_per_session_budget(
         pytest.skip("websockets.sync.client unavailable — old python?")
 
     table_id = _bq_table_id()
+    skip_unless_chat_sessions_possible()
     session = admin_client.create_chat_session(surface="web")
 
     before = _read_session_bq_bytes(admin_client, session["id"])

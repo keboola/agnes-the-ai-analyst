@@ -38,7 +38,7 @@ E2E gotchas learned the hard way:
 
 - `AGNES_E2E=1` — unlocks the session-scoped `e2e_agnes` fixture: builds
   `tests/e2e/Dockerfile.e2e`, boots `tests/e2e/docker-compose.e2e.yml`,
-  waits for `/healthz` (120 s), tears down with `down -v`.
+  waits for `/api/health` (120 s), tears down with `down -v`.
 - `ANTHROPIC_API_KEY` — must be non-empty for compose interpolation even in
   fake-agent mode (`dummy` works when `AGNES_E2E_FAKE_AGENT=1`).
 - `AGNES_E2E_FAKE_AGENT=1` — flips the in-sandbox runner to deterministic

@@ -43,6 +43,7 @@ from tests.e2e._helpers import (
     bootstrap_admin,
     docker_exec,
     pump_until,
+    skip_unless_chat_sessions_possible,
 )
 
 
@@ -140,6 +141,7 @@ def test_f7_snapshot_estimate_then_create_writes_artifact(
     if not _WS_AVAILABLE:
         pytest.skip("websockets.sync.client unavailable — old python?")
 
+    skip_unless_chat_sessions_possible()
     session = admin_client.create_chat_session(surface="web")
     ws_url = admin_client.ws_url_for(session)
 
@@ -212,6 +214,7 @@ def test_f8_snapshot_persists_across_chat_sessions(
     for sess in admin_client.get("/api/chat/sessions")[1]:
         admin_client.delete(f"/api/chat/sessions/{sess['id']}")
 
+    skip_unless_chat_sessions_possible()
     session = admin_client.create_chat_session(surface="web")
     ws_url = admin_client.ws_url_for(session)
 
