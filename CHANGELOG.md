@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **`/admin/prompts` bind-git file picker.** The Git-mode pane of each managed prompt (install / workspace) now offers a dropdown of the bindable files in the synced Initial Workspace Template repo instead of a raw free-text path field that silently 400'd on a typo. Options are repo-root-relative paths (e.g. `workspace/CLAUDE.md`, `install-prompt/template.md.tmpl`) — exactly the strings `bind-git` accepts — with this card's canonical seed path pre-selected. A "Type a path manually" escape hatch keeps the old text input for power users / re-bind. Backed by a new read-only `GET /api/admin/prompts/iwt-files` (returns `{iwt_configured, files, suggested}`; empty `files` when IWT is unconfigured) and `src.initial_workspace.list_iwt_repo_files()` (repo-root-relative, `.git/` + symlinks excluded). Admin-web-only (EXEMPT in the triple-surface gate). (#622 Slice 3)
 
 ### Changed
 
