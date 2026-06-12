@@ -270,6 +270,101 @@ def test_download_one_retries_on_hash_mismatch_then_succeeds(
     assert not (tmp_path / "server" / "parquet" / "tbl1.parquet.verify.tmp").exists()
 
 
+def test_textual_progress_reset_zeroes_failed_attempt_bytes():
+    """#626 review: a hash-mismatch retry re-reports the whole file through
+    the same callback. `reset()` must zero the per-file state between
+    attempts or the display inflates past the file's total
+    (e.g. "200.0 MB / 100.0 MB")."""
+    import io
+
+    from cli.lib.pull import _TextualProgress
+
+    tp = _TextualProgress(
+        stream=io.StringIO(), total_files=1, file_sizes={"tbl1": 100},
+    )
+    tp.advance("tbl1", 100)  # attempt 0: full download, fails verification
+    tp.reset("tbl1")         # retry starts clean
+    tp.advance("tbl1", 60)
+    assert tp._bytes["tbl1"] == 60, (
+        "retry bytes must not stack on top of the failed attempt's"
+    )
+
+
+def test_download_retry_resets_progress_between_attempts(tmp_path, monkeypatch):
+    """#626 review: the retry loop must invoke the progress reset before
+    re-downloading, so each attempt reports at most the file's size."""
+    canned_manifest = {
+        "tables": {"tbl1": {"hash": "good", "rows": 0, "size_bytes": 1008}}
+    }
+    canned_memory = {"mandatory": [], "approved": []}
+    parquet_bytes = b"PAR1" + b"\x00" * 1000 + b"PAR1"
+
+    def _api_get(path, *args, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        if path == "/api/sync/manifest":
+            resp.json.return_value = canned_manifest
+        elif path == "/api/memory/bundle":
+            resp.json.return_value = canned_memory
+        resp.raise_for_status = lambda: None
+        return resp
+
+    def _stream_download(path, target_path, progress_callback=None):
+        from pathlib import Path as _P
+        if progress_callback is not None:
+            progress_callback(len(parquet_bytes))
+        _P(target_path).write_bytes(parquet_bytes)
+        return len(parquet_bytes)
+
+    md5_calls = {"count": 0}
+
+    def _file_md5(path):
+        md5_calls["count"] += 1
+        return "bad" if md5_calls["count"] == 1 else "good"
+
+    resets = {"count": 0}
+
+    class _SpyTextual:
+        def __init__(self, *, stream, total_files, file_sizes):
+            pass
+
+        def advance(self, tid, n):
+            pass
+
+        def reset(self, tid):
+            resets["count"] += 1
+
+        def finish(self):
+            pass
+
+    monkeypatch.setattr("cli.lib.pull.api_get", _api_get, raising=False)
+    monkeypatch.setattr(
+        "cli.lib.pull.stream_download", _stream_download, raising=False,
+    )
+    monkeypatch.setattr(
+        "cli.lib.pull._is_valid_parquet", lambda p: True, raising=False,
+    )
+    monkeypatch.setattr("cli.lib.pull._file_md5", _file_md5, raising=False)
+    monkeypatch.setattr("cli.lib.pull.time.sleep", lambda s: None, raising=False)
+    # Force the non-TTY textual path with the spy standing in for
+    # _TextualProgress (pytest's captured stderr is already non-TTY, but
+    # being explicit keeps the test honest under -s).
+    import sys as _sys
+    monkeypatch.setattr(_sys.stderr, "isatty", lambda: False)
+    monkeypatch.setattr("cli.lib.pull._TextualProgress", _SpyTextual)
+
+    result = run_pull(
+        server_url="http://x", token="t", workspace=tmp_path,
+        show_progress=True,
+    )
+
+    assert result.tables_updated == 1
+    assert resets["count"] == 1, (
+        "exactly one retry happened, so the progress must be reset exactly "
+        f"once — got {resets['count']}"
+    )
+
+
 def test_download_one_preserves_old_file_on_persistent_hash_mismatch(
     tmp_path, monkeypatch,
 ):

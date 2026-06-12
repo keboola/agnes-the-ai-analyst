@@ -205,6 +205,17 @@ class _TextualProgress:
                 self._last_emit_bytes[tid] = current
                 self._emit_line(tid, current, total, now)
 
+    def reset(self, tid: str) -> None:
+        """Zero a file's progress before a retry attempt. Without this the
+        retry's bytes stack on top of the failed attempt's and the display
+        inflates past the file's total (e.g. "200.0 MB / 100.0 MB")."""
+        with self._lock:
+            self._bytes[tid] = 0
+            self._started_at.pop(tid, None)
+            self._last_emit_at.pop(tid, None)
+            self._last_emit_pct.pop(tid, None)
+            self._last_emit_bytes.pop(tid, None)
+
     def finish(self) -> None:
         """Emit a final `done` line for any file we never closed out."""
         with self._lock:
@@ -566,17 +577,26 @@ def run_pull(
             sidecar = parquet_dir / f"{tid}.parquet.verify.tmp"
             expected_hash = server_tables[tid].get("hash", "")
             cb = None
+            reset_progress = None
             if progress is not None and tid in progress_tasks:
                 task_id = progress_tasks[tid]
                 def cb(n: int, _tid=tid, _task=task_id):
                     progress.update(_task, advance=n)
+                def reset_progress(_task=task_id):
+                    progress.update(_task, completed=0)
             elif textual is not None:
                 def cb(n: int, _tid=tid):
                     textual.advance(_tid, n)
+                def reset_progress(_tid=tid):
+                    textual.reset(_tid)
 
             last_err: str | None = None
             try:
                 for attempt in range(_DOWNLOAD_RETRIES + 1):
+                    # A failed attempt already reported its bytes; zero the
+                    # bar so the retry doesn't display 2x/3x the file size.
+                    if attempt and reset_progress is not None:
+                        reset_progress()
                     try:
                         # Download into a sidecar — the real target keeps
                         # the prior good bytes until verification passes.
