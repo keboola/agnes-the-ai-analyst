@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- Post-sync data profiling persists again. The profiler block in the sync runner referenced the repository factory without importing it — the NameError was swallowed and logged only as `[SYNC] Profiler skipped`, so table profiles were never saved after any sync; a second bug in the same block called `.save` on the factory function instead of the repository instance. Also drops a stray always-DuckDB `get_system_db()` connection from the block (backend-split hygiene).
 
 ### Removed
 
