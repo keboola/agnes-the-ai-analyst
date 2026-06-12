@@ -475,6 +475,28 @@ async def admin_sync(
     # admin UI red-banners this block when `ok=false`.
     render_dry_run = _compute_render_dry_run()
 
+    # Slice 2 (#622): surface (never silently) which bound prompts the new
+    # commit moved. Git-mode prompts re-read the repo file live, so what they
+    # SERVE is never stale — but their stored base_sha baseline drifts, and the
+    # operator wants to know the bound file moved under them. Best-effort; a
+    # probe failure must never block the sync.
+    diverged_prompts: list[str] = []
+    try:
+        from src.initial_workspace import blob_sha
+        from src.repositories import claude_md_template_repo, welcome_template_repo
+
+        for kind, repo in (
+            ("install", welcome_template_repo()),
+            ("workspace", claude_md_template_repo()),
+        ):
+            m = repo.get_meta()
+            gp = m.get("git_path")
+            if m.get("source_mode") == "git" and gp:
+                if blob_sha(gp) != m.get("base_sha"):
+                    diverged_prompts.append(kind)
+    except Exception:
+        logger.exception("initial-workspace: divergence probe after sync failed")
+
     _audit(
         conn,
         actor_id=user.get("id"),
@@ -483,6 +505,7 @@ async def admin_sync(
             "commit_sha": result["commit_sha"],
             "file_count": result["file_count"],
             "render_ok": render_dry_run.get("ok"),
+            "diverged_prompts": diverged_prompts,
         },
     )
 
