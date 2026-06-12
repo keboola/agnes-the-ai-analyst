@@ -22,13 +22,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [0.71.26] — 2026-06-12
 
-### Fixed
-- BigQuery "not found" errors (a registered table pointing at a non-existent BQ
-  dataset/table, or a location mismatch) now surface as a structured 502 on
-  `/api/v2/sample` instead of a bare HTTP 500. The BQ extension reports these as
-  DuckDB-native `BinderException`s carrying BQ's `notFound` reason, which the
-  error translator's last-resort heuristic previously didn't recognize.
-  (#643, FAI-22)
+### Changed
+- **The Postgres backend now self-migrates at startup** (issue #636, part 2). When the DB's Alembic revision is behind the image's head, the app applies the pending migrations in-process under a Postgres advisory lock (replica-safe: concurrent starters serialize and the late one no-ops) instead of refusing to boot — mirroring the DuckDB ladder's self-migration on connect, and ending the crash-loop that the #641 fail-closed guard caused on deployments with no migrate step. `AGNES_PG_AUTO_MIGRATE=0` restores the fail-closed check for pipeline-controlled deployments; a DB *ahead* of the image (app rollback) and a failed upgrade still refuse to boot; `AGNES_SKIP_PG_REVISION_CHECK=1` keeps skipping everything for emergency boots.
 
 ## [0.71.25] — 2026-06-12
 
