@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- Pasting a fully-qualified BigQuery path (`project.dataset.table` or `dataset.table`) into `source_table` no longer breaks the table's sync. BigQuery table names cannot contain dots, so the registration layer (`POST /api/admin/register-table`, `PUT /api/admin/registry/{id}`, precheck, and the `/admin/tables` UI which surfaces the same errors) now collapses an unambiguous pasted path to the bare table name (when its dataset component matches `bucket`), and rejects contradictions with an actionable 400 — dataset mismatch points the admin at `bucket`, a foreign project points at `bq_fqn`. Previously the FQN was stored verbatim and the extractor composed a doubled path that failed to register on every sync.
 
 ### Removed
 
