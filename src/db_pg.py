@@ -182,10 +182,32 @@ def assert_pg_at_head() -> None:
     with engine.connect() as conn:
         current = MigrationContext.configure(conn).get_current_revision()
 
-    head = ScriptDirectory.from_config(_alembic_config()).get_current_head()
+    script = ScriptDirectory.from_config(_alembic_config())
+    head = script.get_current_head()
 
     if current == head:
         return
+
+    # A revision this image's migration scripts don't know means the DB is
+    # AHEAD, not behind — the operator rolled the app back after a newer
+    # image already migrated. The remedies differ, so say so.
+    db_ahead = False
+    if current is not None:
+        try:
+            script.get_revision(current)
+        except Exception:
+            db_ahead = True
+    if db_ahead:
+        raise RuntimeError(
+            "Postgres schema is AHEAD of the application: the DB is at "
+            f"Alembic revision {current!r}, which this image's migration "
+            f"scripts do not contain (its head is {head!r}) — typically an "
+            "app rollback after a newer image already migrated (issue "
+            "#636). Roll the app image forward to one that knows this "
+            "revision (preferred), or restore the DB backup matching this "
+            "image. Set AGNES_SKIP_PG_REVISION_CHECK=1 to boot anyway "
+            "(emergency only)."
+        )
 
     current_label = current if current is not None else "<none — never stamped>"
     raise RuntimeError(

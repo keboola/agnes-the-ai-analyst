@@ -127,3 +127,33 @@ def test_escape_hatch_skips_check(pg_under_app, monkeypatch):
 
     monkeypatch.setenv("AGNES_SKIP_PG_REVISION_CHECK", "1")
     assert_pg_at_head()  # must not raise despite being behind
+
+
+def test_raises_db_ahead_when_revision_unknown(pg_under_app):
+    """#641 review: a DB stamped with a revision this image's scripts don't
+    contain (app rolled back after a newer image migrated) must say AHEAD —
+    the remedy (roll the image forward / restore backup) is the opposite of
+    the behind-head one (upgrade head)."""
+    import sqlalchemy as sa
+
+    from src.db_pg import assert_pg_at_head, get_engine
+
+    head, _prev = _head_and_prev()
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(sa.text(
+            "CREATE TABLE IF NOT EXISTS alembic_version "
+            "(version_num VARCHAR(32) NOT NULL)"
+        ))
+        conn.execute(sa.text("DELETE FROM alembic_version"))
+        conn.execute(sa.text(
+            "INSERT INTO alembic_version (version_num) VALUES ('ffffffffffff')"
+        ))
+
+    with pytest.raises(RuntimeError) as exc:
+        assert_pg_at_head()
+
+    msg = str(exc.value)
+    assert "AHEAD" in msg, f"unknown revision must report DB-ahead: {msg}"
+    assert "ffffffffffff" in msg
+    assert head in msg
