@@ -41,6 +41,7 @@ import pytest
 from tests.e2e._helpers import (
     E2E_USER_PASSWORD,
     bootstrap_admin,
+    skip_unless_chat_sessions_possible,
 )
 
 
@@ -242,6 +243,7 @@ def test_load_30_concurrent_sessions(docker_e2e_agnes: str) -> None:
 
     # ---- Step 2: create sessions ------------------------------------------
     sessions: list[tuple[int, int, str]] = []  # (user_idx, session_idx, ws_url)
+    skip_unless_chat_sessions_possible()
     for u in range(_NUM_USERS):
         for s in range(_SESSIONS_PER_USER):
             create = admin.create_chat_session(surface="web")

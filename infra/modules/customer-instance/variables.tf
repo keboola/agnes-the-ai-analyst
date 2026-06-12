@@ -233,3 +233,16 @@ variable "home_route" {
     error_message = "home_route must be empty or one of: /home, /dashboard, /setup, /catalog"
   }
 }
+
+variable "enable_watchdog" {
+  description = "Install the host-side watchdog + daily DB backup on every VM. The watchdog (5-min systemd timer) greps container logs for known incident signatures — DuckDB fatal crash loops, the invalidated-database \"zombie\" state (app answers /api/health 200 while every write 500s), WAL salvage data-loss events, index-desync errors — plus container restart bursts, cgroup OOM kills, scheduler failure streaks and /data disk pressure. The backup (daily systemd timer) copies system.duckdb+WAL to /data/backups/system-duckdb/ with 7-day retention and proves each copy restorable via a canary open+replay. Complements enable_monitoring: uptime checks see the VM from outside; the watchdog sees failure states the health endpoint cannot express, and PD snapshots preserve a corrupted file faithfully while the canary verify catches the corruption."
+  type        = bool
+  default     = true
+}
+
+variable "alert_webhook_url" {
+  description = "Webhook for watchdog + backup-verify alerts (Slack / Google Chat compatible: POST {\"text\": ...}). Empty (default) = alerts go to journald + /var/log/agnes-watchdog.log only. Lands on the VM in /etc/agnes-watchdog.env (root, 0600). An operator may hand-edit that file; the startup script preserves a hand-edited value when this variable is empty and overwrites it when set — same precedence pattern as AGNES_TAG."
+  type        = string
+  default     = ""
+  sensitive   = true
+}

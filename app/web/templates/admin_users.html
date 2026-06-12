@@ -12,6 +12,46 @@
     gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
   }
 
+  /* Total-users metric — server-rendered snapshot at first paint. */
+  .users-metric {
+    display: inline-flex; flex-direction: column; gap: 4px;
+    background: var(--surface, #fff); border: 1px solid var(--border, #e5e7eb);
+    border-radius: 10px; padding: 14px 20px; margin-bottom: 20px; min-width: 140px;
+  }
+  .users-metric-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .users-metric-value {
+    font-size: 24px; font-weight: 700; color: var(--text-primary, #111827);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Footnote under the table: tells the user the list is a capped window
+     and the search reaches accounts beyond it. */
+  .users-hint {
+    margin: 12px 2px 0; font-size: 12px; color: var(--text-secondary, #6b7280);
+  }
+
+  /* Search + group filter share the toolbar's left side; the Add-user
+     button stays pinned right via the toolbar's space-between. The select
+     mirrors the canonical `.search-input` control box (height 36px + the
+     same design tokens) so it sits flush beside the search field instead
+     of at a mismatched height. */
+  .users-filters { display: flex; align-items: center; gap: var(--space-2, 8px); flex-wrap: wrap; }
+  .group-filter {
+    height: 36px; padding: 0 var(--space-3, 12px);
+    font-family: var(--font-primary); font-size: var(--text-sm, 13px);
+    color: var(--text-primary, #111827); background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb); border-radius: var(--radius-md, 8px);
+    cursor: pointer; max-width: 220px;
+    transition: border-color var(--transition-fast, 0.15s), box-shadow var(--transition-fast, 0.15s);
+  }
+  .group-filter:focus {
+    outline: none; border-color: var(--ds-primary, #6366f1);
+    box-shadow: var(--focus-ring, 0 0 0 3px rgba(99, 102, 241, 0.25));
+  }
+
 
   /* Whole user-info cell is the click target for the detail page —
      anchor wraps avatar + name + email so the entire block lights up
@@ -172,8 +212,21 @@
    JS-generated per-row table actions stay page-local. #}
 <div class="users-page">
 
+  <div class="users-metric">
+    <span class="users-metric-label">Total users</span>
+    <span class="users-metric-value">{{ total_users }}</span>
+  </div>
+
   <div class="users-toolbar">
-    <input id="user-search" type="search" class="search-input" placeholder="Filter by email or name…" autocomplete="off">
+    <div class="users-filters">
+      <input id="user-search" type="search" class="search-input" placeholder="Search by email or name…" autocomplete="off">
+      <select id="group-filter" class="group-filter" aria-label="Filter by group">
+        <option value="">All groups</option>
+        {% for g in groups %}
+        <option value="{{ g.id }}">{{ g.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
     {{ ds.button('+ Add user', variant='primary', id='open-create-btn') }}
   </div>
 
@@ -197,6 +250,8 @@
       <div>Click <strong>Add user</strong> to invite the first one.</div>
     </div>
   </div>
+
+  <p class="users-hint" id="users-hint" role="status" aria-live="polite"></p>
 </div>
 
 <!-- Create user modal -->
@@ -296,6 +351,9 @@ const API = "/api/users";
 // → "Legal") so the membership cell stays readable. Same shape used on
 // /admin/groups; keeping the surface identical.
 const GOOGLE_GROUP_PREFIX = {{ config.AGNES_GOOGLE_GROUP_PREFIX | tojson }};
+// Server-rendered snapshot of the total user count — drives the "showing 10
+// of N" footnote. A snapshot (not live), same as the metric card.
+const TOTAL_USERS = {{ total_users | tojson }};
 
 function esc(s) {
   const d = document.createElement("div");
@@ -376,34 +434,52 @@ function confirmModal(text) {
 }
 
 // ── State ──
-let allUsers = [];
-let filterText = "";
+// Backend-filtered window: the table never holds the whole user
+// table. Every search / group change refetches a ≤10-row recency slice from
+// GET /api/users, so these just track the active filter for the request +
+// the empty-state copy.
+let currentSearch = "";
+let currentGroup = "";
 
-function renderUsers() {
+function renderUsers(users) {
   const tbody = document.getElementById("users-tbody");
   const loading = document.getElementById("users-loading");
   const empty = document.getElementById("users-empty");
   loading.style.display = "none";
 
-  const ft = filterText.trim().toLowerCase();
-  const filtered = ft
-    ? allUsers.filter(u => (u.email || "").toLowerCase().includes(ft) || (u.name || "").toLowerCase().includes(ft))
-    : allUsers;
+  const hasFilter = !!(currentSearch.trim() || currentGroup);
 
-  if (allUsers.length === 0) {
-    empty.style.display = "block";
+  // Footnote: explain the capped window + point at the search. Hidden when
+  // it adds nothing (everyone already fits, or a filter returned nothing).
+  const hint = document.getElementById("users-hint");
+  if (hasFilter) {
+    hint.textContent = users.length >= 10
+      ? "Showing the first 10 matches — refine your search to narrow it down."
+      : "";
+  } else if (TOTAL_USERS > 10) {
+    hint.textContent = `Showing the 10 most recently registered of ${TOTAL_USERS} users. `
+      + "Use the search above to find anyone who isn't listed here.";
+  } else {
+    hint.textContent = "";
+  }
+  hint.style.display = hint.textContent ? "block" : "none";
+
+  if (users.length === 0) {
     tbody.innerHTML = "";
+    if (hasFilter) {
+      // Filter active but no rows → "no matches", not "no users yet".
+      empty.style.display = "none";
+      const q = currentSearch.trim();
+      tbody.innerHTML = `<tr><td colspan="6" class="users-loading">No matches${q ? ` for "${esc(q)}"` : ""}</td></tr>`;
+    } else {
+      empty.style.display = "block";
+    }
     return;
   }
   empty.style.display = "none";
 
-  if (filtered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="6" class="users-loading">No matches for "${esc(filterText)}"</td></tr>`;
-    return;
-  }
-
   tbody.innerHTML = "";
-  for (const u of filtered) {
+  for (const u of users) {
     const tr = document.createElement("tr");
     if (!u.active) tr.classList.add("is-deactivated");
     const hasName = !!(u.name && u.name !== u.email);
@@ -472,20 +548,34 @@ function renderUsers() {
 }
 
 async function loadUsers() {
+  const loading = document.getElementById("users-loading");
+  loading.textContent = "Loading users…";
+  loading.style.display = "block";
   try {
-    const r = await fetch(API, { credentials: "include" });
+    const params = new URLSearchParams({ limit: "10" });
+    if (currentSearch.trim()) params.set("search", currentSearch.trim());
+    if (currentGroup) params.set("group_id", currentGroup);
+    const r = await fetch(`${API}?${params.toString()}`, { credentials: "include" });
     if (!r.ok) throw new Error("HTTP " + r.status);
-    allUsers = await r.json();
-    renderUsers();
+    renderUsers(await r.json());
   } catch (e) {
-    document.getElementById("users-loading").textContent = "Failed to load users: " + e.message;
+    loading.textContent = "Failed to load users: " + e.message;
+    loading.style.display = "block";
     toast("Failed to load users", "error");
   }
 }
 
+// Debounce keystrokes so we hit the backend once the analyst pauses, not on
+// every character.
+let searchDebounce;
 document.getElementById("user-search").addEventListener("input", e => {
-  filterText = e.target.value;
-  renderUsers();
+  currentSearch = e.target.value;
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(loadUsers, 250);
+});
+document.getElementById("group-filter").addEventListener("change", e => {
+  currentGroup = e.target.value;
+  loadUsers();
 });
 
 async function toggleActive(id, active) {

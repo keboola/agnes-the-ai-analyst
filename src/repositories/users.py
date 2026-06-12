@@ -28,9 +28,7 @@ class UserRepository:
         """Resolve the account bound to a Slack ``user_id`` (NULL until the
         analyst redeems a /agnes verification code). Used by the Slack bot to
         map an incoming Slack identity to an Agnes user."""
-        result = self.conn.execute(
-            "SELECT * FROM users WHERE slack_user_id = ?", [slack_user_id]
-        ).fetchone()
+        result = self.conn.execute("SELECT * FROM users WHERE slack_user_id = ?", [slack_user_id]).fetchone()
         return self._row_to_dict(result)
 
     def list_all(self) -> List[Dict[str, Any]]:
@@ -44,9 +42,7 @@ class UserRepository:
         on instances with >LIMIT users. API-surface pagination uses
         ``list_paginated()`` below.
         """
-        results = self.conn.execute(
-            "SELECT * FROM users ORDER BY email"
-        ).fetchall()
+        results = self.conn.execute("SELECT * FROM users ORDER BY email").fetchall()
         if not results:
             return []
         columns = [desc[0] for desc in self.conn.description]
@@ -60,8 +56,41 @@ class UserRepository:
         startup paths that need exhaustive enumeration; use
         ``list_all()`` for those.
         """
+        results = self.conn.execute("SELECT * FROM users ORDER BY email LIMIT ? OFFSET ?", [limit, offset]).fetchall()
+        if not results:
+            return []
+        columns = [desc[0] for desc in self.conn.description]
+        return [dict(zip(columns, row)) for row in results]
+
+    def search_recent(
+        self,
+        limit: int = 10,
+        search: Optional[str] = None,
+        group_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """The N most recently registered users (``created_at`` DESC),
+        optionally narrowed by a free-text ``search`` (email OR name, case
+        -insensitive) and/or membership in ``group_id``.
+
+        Backs the /admin/users page: the table shows only this
+        bounded, server-filtered window instead of pulling every account to
+        the client. ``EXISTS`` (not a JOIN) keeps the row set free of
+        duplicates when a user holds the same group via multiple sources.
+        """
+        clauses: List[str] = []
+        params: List[Any] = []
+        if search:
+            clauses.append("(u.email ILIKE ? OR u.name ILIKE ?)")
+            like = f"%{search}%"
+            params += [like, like]
+        if group_id:
+            clauses.append("EXISTS (SELECT 1 FROM user_group_members m WHERE m.user_id = u.id AND m.group_id = ?)")
+            params.append(group_id)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
         results = self.conn.execute(
-            "SELECT * FROM users ORDER BY email LIMIT ? OFFSET ?", [limit, offset]
+            f"SELECT u.* FROM users u{where} ORDER BY u.created_at DESC NULLS LAST, u.email LIMIT ?",
+            params,
         ).fetchall()
         if not results:
             return []
@@ -103,9 +132,16 @@ class UserRepository:
         # there go through `UserGroupMembersRepository` instead of `update`.
         # The legacy `role` column was dropped in v19.
         allowed = {
-            "email", "name", "password_hash", "setup_token",
-            "setup_token_created", "reset_token", "reset_token_created",
-            "active", "deactivated_at", "deactivated_by",
+            "email",
+            "name",
+            "password_hash",
+            "setup_token",
+            "setup_token_created",
+            "reset_token",
+            "reset_token_created",
+            "active",
+            "deactivated_at",
+            "deactivated_by",
             # v26: explicit "I've finished init" signal flipped by
             # /api/me/onboarded — kept out of the legacy allow-list
             # historically because the endpoint used raw conn.execute.
@@ -141,6 +177,7 @@ class UserRepository:
     def delete(self, user_id: str) -> None:
         """Delete user + cascade their group memberships."""
         self.conn.execute(
-            "DELETE FROM user_group_members WHERE user_id = ?", [user_id],
+            "DELETE FROM user_group_members WHERE user_id = ?",
+            [user_id],
         )
         self.conn.execute("DELETE FROM users WHERE id = ?", [user_id])

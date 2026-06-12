@@ -34,6 +34,7 @@ from tests.e2e._helpers import (
     bootstrap_admin,
     docker_exec,
     pump_until,
+    skip_unless_chat_sessions_possible,
 )
 
 
@@ -76,6 +77,7 @@ def chat_session(admin_client) -> dict:
     test wants its own connect/disconnect so that a hang in one
     scenario doesn't poison the next.
     """
+    skip_unless_chat_sessions_possible()
     return admin_client.create_chat_session(surface="web")
 
 

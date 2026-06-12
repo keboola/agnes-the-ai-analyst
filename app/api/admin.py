@@ -1495,6 +1495,37 @@ class RegisterTableRequest(BaseModel):
             "Agnes ``bucket`` label (issue #343)."
         ),
     )
+    # v74 (#607) — distribution flag decoupled from query_mode. When true the
+    # table is kept server-side & queryable via `agnes query --remote`, but
+    # `agnes pull` does NOT download its parquet (the manifest still lists it
+    # for catalog discovery + RBAC). Only meaningful for query_mode IN
+    # ('local', 'materialized'); the model_validator below rejects it paired
+    # with query_mode='remote' (no server-stored parquet to suppress).
+    server_only: bool = Field(
+        default=False,
+        description=(
+            "Keep the table server-side & queryable via `agnes query "
+            "--remote`, but exclude its parquet from `agnes pull` download. "
+            "Only valid for query_mode='local'/'materialized'; rejected with "
+            "query_mode='remote'. Default false leaves distribution unchanged."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_server_only_query_mode(self):
+        """``server_only`` is a *distribution* suppressor — it only makes
+        sense when there IS a server-stored parquet to suppress. A
+        ``query_mode='remote'`` row has none (every query goes live to the
+        upstream source), so ``server_only=true`` there is incoherent.
+        Reject it explicitly rather than silently ignore so the admin sees
+        the conflict at register/update time (issue #607)."""
+        if self.server_only and self.query_mode == "remote":
+            raise ValueError(
+                "server_only=true is only valid for query_mode='local' or "
+                "'materialized' (a 'remote' table has no server-stored parquet "
+                "to suppress from agnes pull)"
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_mode_query_coherence(self):
@@ -1593,7 +1624,8 @@ class RegisterTableRequest(BaseModel):
         if not is_valid_schedule(v):
             raise ValueError(
                 f"sync_schedule must be 'every Nm' / 'every Nh' / "
-                f"'daily HH:MM[,HH:MM,...]', got {v!r}"
+                f"'daily HH:MM[,HH:MM,...]' / 'cron <min hour dom month dow>' "
+                f"(e.g. 'cron 0 5 7 * *'), got {v!r}"
             )
         return v
 
@@ -1907,6 +1939,21 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     # Phase C: profile_after_sync is now inert (deprecated, not read by the
     # runtime); no longer force-set here.
     req.query_mode = "remote"
+    # v74 (#607) — re-assert the server_only ↔ query_mode invariant AFTER the
+    # coercion above. The Pydantic validator ran against the caller's
+    # pre-coercion query_mode (often the 'local' default), so a BQ live
+    # registration with server_only=true would otherwise slip past it and
+    # persist the exact incoherent state it exists to reject.
+    if req.server_only:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "server_only=true is only valid for query_mode='local' or "
+                "'materialized' — a live BigQuery registration is coerced to "
+                "query_mode='remote', which has no server-stored parquet to "
+                "suppress from agnes pull"
+            ),
+        )
 
 
 # Source types that don't depend on a `data_source.<name>.*` block — they
@@ -2030,6 +2077,11 @@ class UpdateTableRequest(BaseModel):
     # clear bq_fqn on an existing row (cleared via explicit `null`,
     # per the PUT shape contract documented on the handler below).
     bq_fqn: Optional[str] = None
+    # v74 (#607) — distribution flag. PUT lets an admin toggle it on/off.
+    # The query_mode='remote' conflict is enforced against the *merged*
+    # record in the update_table handler (the PUT body alone may omit
+    # query_mode, so it can't be validated here in isolation).
+    server_only: Optional[bool] = None
 
     @field_validator("sync_strategy", mode="before")
     @classmethod
@@ -2159,7 +2211,8 @@ class UpdateTableRequest(BaseModel):
         if not is_valid_schedule(v):
             raise ValueError(
                 f"sync_schedule must be 'every Nm' / 'every Nh' / "
-                f"'daily HH:MM[,HH:MM,...]', got {v!r}"
+                f"'daily HH:MM[,HH:MM,...]' / 'cron <min hour dom month dow>' "
+                f"(e.g. 'cron 0 5 7 * *'), got {v!r}"
             )
         return v
 
@@ -2634,6 +2687,7 @@ def register_table(
         partition_granularity=request.partition_granularity,
         initial_load_chunk_days=request.initial_load_chunk_days,
         bq_fqn=request.bq_fqn,
+        server_only=request.server_only,
     )
 
     # Audit entry — masked params; description kept raw (it's documentation).
@@ -2935,6 +2989,21 @@ async def update_table(
         ):
             merged.pop(_docs_key, None)
 
+        # v74 (#607) — validate the server_only ↔ query_mode invariant
+        # against the *merged* record (the PUT body may toggle either field
+        # independently). server_only=true is only coherent for a row with a
+        # server-stored parquet (local / materialized); a 'remote' row has
+        # none. Mirror the RegisterTableRequest validator at PUT time.
+        if merged.get("server_only") and merged.get("query_mode") == "remote":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "server_only=true is only valid for query_mode='local' or "
+                    "'materialized' (a 'remote' table has no server-stored "
+                    "parquet to suppress from agnes pull)"
+                ),
+            )
+
         # When switching the merged record away from materialized mode, drop
         # the stale source_query — the request validator can't clear it via
         # the `if v is not None` filter above. Without this, a remote/local
@@ -3011,6 +3080,11 @@ async def update_table(
                 folder=merged.get("folder"),
                 sync_strategy=merged.get("sync_strategy") or "full_refresh",
                 sync_schedule=merged.get("sync_schedule"),
+                # v74 (#607) — carry server_only into the synthetic so the
+                # validator's post-coercion check fires when this PUT lands
+                # the row in 'remote' mode; the merged-record check above
+                # only saw the pre-coercion query_mode.
+                server_only=bool(merged.get("server_only") or False),
             )
             _validate_bigquery_register_payload(synthetic)
             merged["query_mode"] = synthetic.query_mode

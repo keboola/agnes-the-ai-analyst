@@ -50,6 +50,8 @@ class TableRegistryPgRepository:
         partition_granularity: Optional[str] = None,
         initial_load_chunk_days: Optional[int] = None,
         bq_fqn: Optional[str] = None,
+        # v74 (#607) — distribution flag decoupled from query_mode.
+        server_only: bool = False,
     ) -> None:
         ts = registered_at or datetime.now(timezone.utc)
         encoded_pk = _encode_primary_key(primary_key)
@@ -64,12 +66,12 @@ class TableRegistryPgRepository:
                           sync_schedule, profile_after_sync,
                           incremental_window_days, max_history_days, incremental_column,
                           where_filters, partition_by, partition_granularity,
-                          initial_load_chunk_days, bq_fqn)
+                          initial_load_chunk_days, bq_fqn, server_only)
                        VALUES (:id, :name, :folder, :strategy, :pk, :description,
                                :registered_by, :registered_at,
                                :source_type, :bucket, :source_table, :source_query, :query_mode,
                                :sync_schedule, :profile_after_sync,
-                               :iwd, :mhd, :icol, :wf, :pby, :pgr, :ilcd, :bq_fqn)
+                               :iwd, :mhd, :icol, :wf, :pby, :pgr, :ilcd, :bq_fqn, :server_only)
                        ON CONFLICT (id) DO UPDATE SET
                          name = EXCLUDED.name,
                          folder = EXCLUDED.folder,
@@ -91,7 +93,8 @@ class TableRegistryPgRepository:
                          partition_by = EXCLUDED.partition_by,
                          partition_granularity = EXCLUDED.partition_granularity,
                          initial_load_chunk_days = EXCLUDED.initial_load_chunk_days,
-                         bq_fqn = EXCLUDED.bq_fqn"""
+                         bq_fqn = EXCLUDED.bq_fqn,
+                         server_only = EXCLUDED.server_only"""
                 ),
                 {
                     "id": id,
@@ -117,6 +120,7 @@ class TableRegistryPgRepository:
                     "pgr": partition_granularity,
                     "ilcd": initial_load_chunk_days,
                     "bq_fqn": bq_fqn,
+                    "server_only": bool(server_only),
                 },
             )
 
