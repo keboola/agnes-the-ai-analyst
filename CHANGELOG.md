@@ -20,10 +20,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
-## [0.71.10] — 2026-06-12
+## [0.71.11] — 2026-06-12
 
 ### Added
 - **Host-side watchdog + daily DB backup with restore-verification in the `customer-instance` module.** Every provisioned VM now runs two systemd timers (artifacts ship as module files through the startup script — independent of the pinned app `image_tag`): `agnes-watchdog` (every 5 min) greps container logs for known incident signatures — DuckDB `FatalException` crash loops, the invalidated-database "zombie" state where the app keeps answering `/api/health` 200 while every write returns 500, WAL-salvage data-loss events, index-desync errors — plus container restart bursts, cgroup OOM kills, scheduler HTTP-500 streaks, `/data` disk pressure and a dead health endpoint; `agnes-db-backup` (daily) copies `system.duckdb`+WAL to `/data/backups/system-duckdb/` (7-day retention) and *proves each copy restorable* by opening a scratch copy, replaying the WAL and exercising the statement classes from the 2026-06 index-corruption incident — so silent on-disk corruption surfaces within a day instead of at the next outage. Alerts go to journald + `/var/log/agnes-watchdog.log` and optionally to a Slack/Google-Chat-compatible webhook (new `alert_webhook_url` variable, sensitive; messages carry a per-environment label derived from the VM role). Opt out with `enable_watchdog = false`. Complements `enable_monitoring`'s uptime checks + PD snapshots: those observe the VM from outside; the watchdog reads failure states the health endpoint cannot express, and the canary verify catches corruption a disk snapshot would preserve faithfully. (#623)
+
+## [0.71.10] — 2026-06-12
+
+### Added
+- **An analyst's Claude can now browse and subscribe to stack resources without leaving the chat.** New `GET /api/stack/browse?type=<data_package|memory_domain>` exposes the existing `StackResolver.browse()` candidate set — every RBAC-granted resource for the caller, each annotated with an `in_stack` flag — so the model can discover what it *could* add, not just what is already subscribed. Surfaced on all three contracts: `agnes stack browse [--type] [--json]` (renders an `IN STACK` ✓ column), and three MCP tools (`stack_browse`, `stack_subscribe`, `stack_unsubscribe`). `stack_subscribe` returns a post-subscribe `next_step` hint (`Run \`agnes pull\` to download the new tables.`) so the freshly-subscribed resource becomes usable in the same conversation. Subscriptions are persistent (identical to the web UI "Add to stack" button). User approval rides the MCP client's own tool-permission prompt — no custom mechanism. The workspace `CLAUDE.md` rails now point at the browse → add → pull flow. (#621, #625)
+
+### Fixed
+- `POST /api/stack/subscribe` and `DELETE /api/stack/subscription/{type}/{id}` now reject co-session principals with 403 (`co_session cannot manage stack`), matching `GET /api/stack` and the new `/browse`. Previously a co-session token reaching these endpoints crashed on the principal dataclass instead of being cleanly refused. (#625)
 
 ## [0.71.9] — 2026-06-12
 
