@@ -436,8 +436,11 @@ async function iwSave() {
   }
   const body = { url };
   if (branch) body.branch = branch;
-  // sync_schedule: empty string clears it (disable auto-sync); a value sets it.
-  body.sync_schedule = schedule || null;
+  // sync_schedule: always sent (the field is pre-filled with the current value
+  // on edit) — empty string clears it (disable auto-sync), a value sets it.
+  // Must NOT coalesce to null: null = "leave existing alone", which would make
+  // the blank-to-disable path unreachable.
+  body.sync_schedule = schedule;
   // Only include token when admin typed one — empty string means "leave existing alone"
   if (token) body.token = token;
   try {

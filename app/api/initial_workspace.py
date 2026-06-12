@@ -465,10 +465,14 @@ async def admin_sync_if_configured(
 ):
     """Scheduler-facing nightly auto-sync wrapper (#622 Slice 3 PR-B).
 
-    Always returns 200 — short-circuits to ``{"skipped": true, "reason":
-    "not_configured"}`` when no template repo is registered, so the nightly
-    job never logs a warning on instances without an IWT. When configured,
-    delegates to the same ``_do_sync`` logic the manual route uses.
+    Short-circuits to ``200 {"skipped": true, "reason": "not_configured"}``
+    when no template repo is registered, so the nightly job never logs a
+    warning on instances without an IWT. When configured, delegates to the
+    same ``_do_sync`` logic the manual route uses — which still propagates a
+    genuine clone/fast-forward failure as ``400 {"kind": "git_failed"}``.
+    That is intentional: a git failure on a *configured* IWT should be loud,
+    and the scheduler logs the non-2xx as a warning without hard-failing the
+    job.
 
     Mirrors the Jira jobs' "endpoint self-gates, scheduler stays dumb"
     idiom — the scheduler tuple is a one-liner with no conditional logic.
