@@ -485,3 +485,26 @@ def test_legacy_prompt_pages_redirect(admin_client):
         r = client.get(old, headers=_hdr(token), follow_redirects=False)
         assert r.status_code == 308, f"{old} → {r.status_code}"
         assert r.headers["location"] == "/admin/prompts"
+
+
+def test_prompt_repo_ignores_duckdb_conn_on_postgres(monkeypatch):
+    """#638 review: on the Postgres backend the factory must win even when a
+    DuckDB conn is passed — FastAPI handlers hand over get_system_db() conns
+    regardless of backend, and binding the DuckDB repo to one reads
+    instance_templates from the wrong engine (the /setup regression)."""
+    import duckdb as _duckdb
+
+    import src.initial_workspace as iw
+    import src.repositories as repos
+
+    sentinel = object()
+    monkeypatch.setattr(repos, "use_pg", lambda: True)
+    monkeypatch.setattr(repos, "claude_md_template_repo", lambda: sentinel)
+
+    conn = _duckdb.connect(":memory:")
+    try:
+        assert iw._prompt_repo("workspace", conn) is sentinel, (
+            "PG backend + DuckDB conn must route through the factory"
+        )
+    finally:
+        conn.close()

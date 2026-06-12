@@ -302,7 +302,11 @@ def build_zip(conn=None) -> bytes:
     workspace_dir = target / _WORKSPACE_SUBDIR
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for rel in list_template_files():
+        # Single enumeration — the guard below must see the same snapshot
+        # the loop wrote, or a file appearing between two walks could leave
+        # the zip without ANY CLAUDE.md (loop skipped it, guard saw it).
+        files = list_template_files()
+        for rel in files:
             if rel == "CLAUDE.md" and workspace_overlay is not None:
                 zf.writestr("CLAUDE.md", workspace_overlay)
             else:
@@ -310,7 +314,7 @@ def build_zip(conn=None) -> bytes:
         # If the clone has no CLAUDE.md at all but the admin set an editor
         # override, still ship it — otherwise override-mode init would get
         # no prompt despite an admin having authored one.
-        if workspace_overlay is not None and "CLAUDE.md" not in list_template_files():
+        if workspace_overlay is not None and "CLAUDE.md" not in files:
             zf.writestr("CLAUDE.md", workspace_overlay)
     return buf.getvalue()
 
@@ -475,15 +479,23 @@ PROMPT_SEED_PATHS = {
 def _prompt_repo(kind: str, conn=None):
     """Return the repo for a managed prompt ``kind``.
 
-    When a DuckDB ``conn`` is supplied, bind the DuckDB repo to it directly so
-    the read sees the SAME connection the caller is using (matters for
+    On the Postgres backend the backend-aware factory ALWAYS wins — FastAPI
+    handlers pass ``conn`` from the request-scoped ``_get_db()`` dependency,
+    which is a DuckDB connection even when Postgres holds the app state, and
+    binding the DuckDB repo to it would read ``instance_templates`` from the
+    wrong engine (#638 review: the admin's override silently vanished from
+    ``/setup`` on PG deployments). On DuckDB, a supplied ``conn`` binds the repo directly
+    so the read sees the SAME connection the caller is using (matters for
     in-flight transactions + the renderer unit tests, which pass an isolated
-    conn). Otherwise — and always on the Postgres backend — go through the
-    backend-aware factory.
+    conn); without one, the factory resolves the default connection.
     """
-    from src.repositories import claude_md_template_repo, welcome_template_repo
+    from src.repositories import (
+        claude_md_template_repo,
+        use_pg,
+        welcome_template_repo,
+    )
 
-    if conn is not None and isinstance(conn, duckdb.DuckDBPyConnection):
+    if not use_pg() and conn is not None and isinstance(conn, duckdb.DuckDBPyConnection):
         if kind == "workspace":
             from src.repositories.claude_md_template import ClaudeMdTemplateRepository
 

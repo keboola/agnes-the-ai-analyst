@@ -144,7 +144,7 @@ def test_prompt_meta_roundtrip_parity(seeded_app_both):
         repo = factory()
 
         meta = repo.get_meta()
-        assert meta.get("source_mode") or "editor" == "editor", (
+        assert (meta.get("source_mode") or "editor") == "editor", (
             f"{factory.__name__}: fresh row must default to editor mode"
         )
 
