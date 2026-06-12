@@ -699,10 +699,21 @@ def run_pull(
         # never pruned. Done before
         # save_sync_state so the dropped rows persist, and before
         # _rebuild_duckdb_views so the orphaned views disappear.
-        if authorized_names is not None and parquet_dir.exists():
+        # #607 (#630 review) — also prune parquets the manifest now marks
+        # server_only: the table stays authorized (listed, RBAC intact) but
+        # its parquet must leave the laptop, otherwise a copy downloaded
+        # before the admin flipped the flag keeps a local view alive and the
+        # table stays locally queryable despite server-only distribution.
+        server_only_names = {
+            tid for tid, info in server_tables.items() if info.get("server_only")
+        }
+        if parquet_dir.exists() and (
+            authorized_names is not None or server_only_names
+        ):
             for pq_file in sorted(parquet_dir.glob("*.parquet")):
                 stem = pq_file.stem
-                if stem in authorized_names:
+                authorized = authorized_names is None or stem in authorized_names
+                if authorized and stem not in server_only_names:
                     continue
                 pq_file.unlink(missing_ok=True)
                 local_tables.pop(stem, None)

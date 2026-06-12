@@ -87,3 +87,63 @@ def test_pull_skips_server_only_but_counts_it(tmp_path, monkeypatch):
         f"normal local table GET must fire; downloads={downloaded_tids}"
     )
     assert result.tables_updated == 1
+
+
+def test_pull_prunes_stale_parquet_when_table_flips_to_server_only(
+    tmp_path, monkeypatch,
+):
+    """#630 review: a table downloaded while server_only=false must lose its
+    local parquet (and sync-state row) on the first pull after the admin
+    flips server_only=true — otherwise the stale copy keeps a local view
+    alive and the table stays locally queryable."""
+    canned_manifest = {
+        "tables": {
+            "so_tbl": {
+                "hash": "h_so", "rows": 0, "size_bytes": 0,
+                "query_mode": "local", "server_only": True,
+            },
+        }
+    }
+    canned_memory = {"mandatory": [], "approved": []}
+
+    def _api_get(path, *args, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        if path == "/api/sync/manifest":
+            resp.json.return_value = canned_manifest
+        elif path == "/api/memory/bundle":
+            resp.json.return_value = canned_memory
+        resp.raise_for_status = lambda: None
+        return resp
+
+    monkeypatch.setattr("cli.lib.pull.api_get", _api_get, raising=False)
+    monkeypatch.setattr(
+        "cli.lib.pull.stream_download",
+        lambda *a, **k: pytest.fail("server_only table must not download"),
+        raising=False,
+    )
+    monkeypatch.setattr("cli.lib.pull._is_valid_parquet", lambda p: True, raising=False)
+
+    # Pre-flip residue: the parquet landed on a previous pull while the
+    # table was still distributed, with a matching sync-state row.
+    from cli.config import save_sync_state
+    save_sync_state({
+        "tables": {"so_tbl": {"hash": "h_so", "rows": 0, "size_bytes": 0}},
+        "last_sync": "2026-01-01T00:00:00+00:00",
+    })
+    parquet_dir = tmp_path / "server" / "parquet"
+    parquet_dir.mkdir(parents=True)
+    (parquet_dir / "so_tbl.parquet").write_bytes(b"PAR1" + b"\x00" * 100 + b"PAR1")
+
+    result = run_pull(server_url="http://x", token="t", workspace=tmp_path)
+
+    assert not (parquet_dir / "so_tbl.parquet").exists(), (
+        "stale parquet must be pruned once the manifest marks the table "
+        "server_only"
+    )
+    assert result.tables_removed == 1
+
+    from cli.config import get_sync_state
+    assert "so_tbl" not in get_sync_state().get("tables", {}), (
+        "the pruned table's sync-state row must be dropped with the parquet"
+    )
