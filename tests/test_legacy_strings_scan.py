@@ -124,48 +124,27 @@ def test_admin_get_template_returns_empty_when_clean(web_session):
 
 
 # ---------------------------------------------------------------------------
-# HTML banner tests — admin /admin/workspace-prompt page renders a yellow
-# warning banner above the editor when the saved override contains stale
-# CLI verbs / paths.
+# The standalone /admin/workspace-prompt page was superseded by the unified
+# /admin/prompts page (#622), which is client-side-driven (no server-rendered
+# legacy banner). The legacy-string DETECTION still flows through the
+# grandfathered /api/admin/workspace-prompt-template GET (covered above); the
+# page now 308-redirects. These guard that contract.
 # ---------------------------------------------------------------------------
 
 
-def test_admin_workspace_prompt_page_renders_banner_when_legacy_present(web_session):
-    """When the saved override contains legacy strings, the admin UI renders
-    a yellow warning banner above the editor listing the hits."""
+def test_admin_workspace_prompt_page_redirects(web_session):
+    resp = web_session.get("/admin/workspace-prompt", follow_redirects=False)
+    assert resp.status_code == 308
+    assert resp.headers["location"] == "/admin/prompts"
+
+
+def test_legacy_strings_still_detected_via_api_after_redirect(web_session):
+    """The legacy-string scan survives the page consolidation: the API still
+    surfaces hits for a dirty override."""
     web_session.put(
         "/api/admin/workspace-prompt-template",
         json={"content": "Run `da sync` and check data/parquet/."},
     )
-    resp = web_session.get("/admin/workspace-prompt")
-    assert resp.status_code == 200
-    text = resp.text
-    # Banner is rendered (id, class, or distinctive styling)
-    assert "legacy-banner" in text or "renamed" in text.lower() or "warning" in text.lower()
-    # Specific hits appear in the banner content
-    assert "da sync" in text
-    assert "data/parquet" in text
-
-
-def test_admin_workspace_prompt_page_no_banner_when_clean(web_session):
-    """When the override has no legacy strings, the banner block is absent
-    (or rendered as empty/hidden)."""
-    web_session.put(
-        "/api/admin/workspace-prompt-template",
-        json={"content": "Use `agnes pull` and `server/parquet/`."},
-    )
-    resp = web_session.get("/admin/workspace-prompt")
-    assert resp.status_code == 200
-    text = resp.text
-    # The banner div should not appear (or its content should not list hits)
-    # Pin to the legacy-banner id; the {% if %} guard means absent when clean
-    assert "legacy-banner" not in text
-
-
-def test_admin_workspace_prompt_page_no_banner_when_no_override(web_session):
-    """No saved override at all → banner absent."""
-    # Reset to default by deleting any existing override
-    web_session.delete("/api/admin/workspace-prompt-template")
-    resp = web_session.get("/admin/workspace-prompt")
-    assert resp.status_code == 200
-    assert "legacy-banner" not in resp.text
+    body = web_session.get("/api/admin/workspace-prompt-template").json()
+    assert "da sync" in body["legacy_strings_detected"]
+    assert "data/parquet" in body["legacy_strings_detected"]

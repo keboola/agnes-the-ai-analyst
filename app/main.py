@@ -263,6 +263,7 @@ from app.api.marketplace import router as marketplace_router
 from app.api.welcome import router as welcome_router
 from app.api.connectors import router as connectors_router
 from app.api.claude_md import router as claude_md_router
+from app.api.prompts import router as prompts_router
 from app.api.news import router as news_router
 from app.api.cowork_bundle import (
     user_router as cowork_user_router,
@@ -659,10 +660,21 @@ async def lifespan(app):
                 return None
 
         def _fetch_local_template_zip() -> bytes:
-            """Read the cached template zip from disk."""
+            """Read the cached template zip from disk.
+
+            Passes a system-DB conn so the workspace-prompt admin overlay
+            (source_mode='editor') replaces the clone's CLAUDE.md, keeping
+            cloud-chat workdirs byte-compatible with laptop override-mode
+            `agnes init` (#622)."""
             try:
+                from src.db import get_system_db
                 from src.initial_workspace import build_zip
-                return build_zip()
+
+                conn = get_system_db()
+                try:
+                    return build_zip(conn)
+                finally:
+                    conn.close()
             except Exception:
                 logger.exception("_fetch_local_template_zip failed (non-fatal)")
                 return b""
@@ -1278,6 +1290,7 @@ def create_app() -> FastAPI:
     app.include_router(welcome_router)
     app.include_router(connectors_router)
     app.include_router(claude_md_router)
+    app.include_router(prompts_router)
     app.include_router(news_router)
     app.include_router(cowork_user_router)
     app.include_router(cowork_auth_router)

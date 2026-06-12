@@ -63,14 +63,15 @@ class TemplateGetResponse(BaseModel):
     default: str  # live default from setup_instructions.resolve_lines()
     updated_at: Optional[str] = None
     updated_by: Optional[str] = None
-    # `"seed"` when the IWT clone owns this template (per-file detection
-    # via src.initial_workspace.seed_owns) — the admin UI flips into
-    # read-only mode and displays the seed's file content instead of the
-    # local DB override. `"local"` otherwise (default editor experience).
+    # #622: the prompt's source toggle. `"editor"` = DB override editable;
+    # `"git"` = bound to the IWT clone file (editor read-only). `source` is
+    # retained for backward-compat with the old grandfathered UI.
     source: str = "local"
-    # Path inside the seed repo that owns this template (only set when
-    # source == "seed") so the admin UI can name the file in the banner.
+    # Path inside the seed repo that owns this template (only set in git mode)
+    # so the admin UI can name the file in the banner.
     seed_path: Optional[str] = None
+    source_mode: str = "editor"
+    git_path: Optional[str] = None
 
 
 # Path inside the seed repo for the install-prompt template. Lives here
@@ -93,35 +94,35 @@ async def admin_get_template(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    # Per-file seed ownership: when the operator-configured IWT clone has
-    # install-prompt/template.md.tmpl, the local DB override is dead-code
-    # — the install-prompt renderer reads the seed file directly. Surface
-    # the seed file content (read-only) so the admin sees what's actually
-    # serving and isn't tricked by a working editor.
-    from src.initial_workspace import resolve_seed_file, seed_owns
-
+    # #622: the source toggle replaced the implicit seed_owns() read-only lock.
+    # git mode surfaces the bound IWT file (read-only); editor mode keeps the
+    # DB override editable even when an IWT repo is registered.
     server_url = str(request.base_url).rstrip("/")
-    if seed_owns(_SEED_PATH):
-        resolved = resolve_seed_file(_SEED_PATH)
-        seed_content = resolved[0] if resolved is not None else ""
-        live_default = compute_default_agent_prompt(conn, user=user, server_url=server_url)
+    meta = welcome_template_repo().get_meta()
+    live_default = compute_default_agent_prompt(conn, user=user, server_url=server_url)
+
+    if meta["source_mode"] == "git":
+        from src.initial_workspace import resolve_prompt
+
+        git_content, _mode = resolve_prompt("install", conn)
         return TemplateGetResponse(
-            content=seed_content,
+            content=git_content or "",
             default=live_default,
-            updated_at=None,
-            updated_by=None,
+            updated_at=meta["updated_at"].isoformat() if meta["updated_at"] else None,
+            updated_by=meta["updated_by"],
             source="seed",
-            seed_path=_SEED_PATH,
+            seed_path=meta["git_path"] or _SEED_PATH,
+            source_mode="git",
+            git_path=meta["git_path"] or _SEED_PATH,
         )
 
-    row = welcome_template_repo().get()
-    live_default = compute_default_agent_prompt(conn, user=user, server_url=server_url)
     return TemplateGetResponse(
-        content=row["content"],
+        content=meta["content"],
         default=live_default,
-        updated_at=row["updated_at"].isoformat() if row["updated_at"] else None,
-        updated_by=row["updated_by"],
+        updated_at=meta["updated_at"].isoformat() if meta["updated_at"] else None,
+        updated_by=meta["updated_by"],
         source="local",
+        source_mode="editor",
     )
 
 
@@ -131,22 +132,19 @@ async def admin_put_template(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    # Refuse the save when the seed owns this template. Without this gate
-    # the admin would silently write to a DB row the install-prompt
-    # renderer no longer consults — a confusing "where did my edit go"
-    # bug worse than a 409 with remediation text.
-    from src.initial_workspace import seed_owns
-
-    if seed_owns(_SEED_PATH):
+    # #622: the editor is always writable in editor mode. Saving is only
+    # refused in git mode, where the DB content is dead-code the install-prompt
+    # renderer would not consult (silent "where did my edit go" loss).
+    if welcome_template_repo().get_meta()["source_mode"] == "git":
         raise HTTPException(
             status_code=409,
             detail={
-                "kind": "iwt_seed_owns_template",
-                "seed_path": _SEED_PATH,
+                "kind": "prompt_in_git_mode",
                 "hint": (
-                    "Initial Workspace Template owns this template. Edit "
-                    f"`{_SEED_PATH}` in the seed repo + click 'Sync now' "
-                    "in /admin/server-config."
+                    "This prompt is in Git source mode (bound to the Initial "
+                    "Workspace Template repo). Switch to Editor override in "
+                    "/admin/prompts before saving, or edit the bound file in "
+                    "the repo + 'Sync now'."
                 ),
             },
         )
@@ -190,18 +188,17 @@ async def admin_reset_template(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    from src.initial_workspace import seed_owns
-
-    if seed_owns(_SEED_PATH):
+    # #622: reset allowed in editor mode; refused in git mode (no DB override
+    # to clear — the renderer reads the bound repo file).
+    if welcome_template_repo().get_meta()["source_mode"] == "git":
         raise HTTPException(
             status_code=409,
             detail={
-                "kind": "iwt_seed_owns_template",
-                "seed_path": _SEED_PATH,
+                "kind": "prompt_in_git_mode",
                 "hint": (
-                    "Initial Workspace Template owns this template — "
-                    "there is no local DB override to reset. Edit the "
-                    f"seed repo's `{_SEED_PATH}` instead."
+                    "This prompt is in Git source mode — there is no Editor "
+                    "override to reset. Switch to Editor override in "
+                    "/admin/prompts, or edit the bound repo file."
                 ),
             },
         )

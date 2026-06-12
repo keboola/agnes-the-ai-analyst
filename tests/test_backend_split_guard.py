@@ -167,7 +167,18 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     "services/slack_bot/commands.py": {"UserRepository"},
     "services/slack_bot/events.py": {"UserRepository"},
     "src/catalog_export.py": {"TableRegistryRepository"},
-    "src/claude_md.py": {"ClaudeMdTemplateRepository"},
+    # src/claude_md.py — render_claude_md moved off direct instantiation onto
+    # resolve_prompt() (#622); entry removed.
+    # src/initial_workspace.py — resolve_prompt() binds the DuckDB repo to the
+    # CALLER's conn (not get_system_db()) so the renderer sees the connection
+    # the request is already using, matching the old render_claude_md contract
+    # and the renderer unit tests that pass an isolated conn. _prompt_repo
+    # gates that direct binding on `not use_pg()` — on Postgres the factory
+    # ALWAYS wins, even when a (DuckDB) conn is passed, because FastAPI
+    # handlers hand over get_system_db() conns regardless of backend (#638
+    # review). The direct DuckDB-conn instantiation is intentional and
+    # conn-scoped. (#622)
+    "src/initial_workspace.py": {"ClaudeMdTemplateRepository", "WelcomeTemplateRepository"},
     # src/orchestrator.py — rebuild/sync_state/view_ownership migrated to the
     # factory; entry removed.
     # src/profiler.py — get_table_map migrated to metric_repo(); entry removed.
@@ -178,7 +189,8 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     # direct-conn path was the Postgres no-op bug: the reaper reaped 0 and
     # run_llm_review logged "submission vanished" because the rows lived in
     # PG while the conn pointed at an empty DuckDB. Entries removed.
-    "src/welcome_template.py": {"WelcomeTemplateRepository"},
+    # src/welcome_template.py — render_agent_prompt_banner moved off direct
+    # instantiation onto resolve_prompt() (#622); entry removed.
 }
 
 _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
