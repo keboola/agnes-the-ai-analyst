@@ -155,3 +155,76 @@ def test_seconds_to_schedule_rounds_up_not_down(seconds, expected):
         f"_seconds_to_schedule({seconds}) must round UP — flooring would "
         f"make jobs fire more often than the operator configured."
     )
+
+
+# ── Initial Workspace Template nightly auto-sync (#622 Slice 3 PR-B) ──
+
+
+def _iw_env_clean(monkeypatch):
+    monkeypatch.delenv("SCHEDULER_INITIAL_WORKSPACE_SCHEDULE", raising=False)
+    # No instance.yaml on the test box → get_value returns default "".
+
+
+def test_build_jobs_includes_initial_workspace_default(monkeypatch):
+    """Default IW job: daily 03:30, sync-if-configured endpoint, POST, 900s."""
+    _iw_env_clean(monkeypatch)
+    from services.scheduler.__main__ import build_jobs
+    target = next(j for j in build_jobs() if j[0] == "initial-workspace")
+    name, schedule, endpoint, method, timeout = target
+    assert schedule == "daily 03:30"
+    assert endpoint == "/api/admin/initial-workspace/sync-if-configured"
+    assert method == "POST"
+    assert timeout == 900
+
+
+def test_initial_workspace_schedule_offsets_from_marketplaces(monkeypatch):
+    """The IW default must NOT collide with the marketplaces job (daily 03:00)
+    so the two nightly git-clone bursts don't stack."""
+    _iw_env_clean(monkeypatch)
+    from services.scheduler.__main__ import build_jobs
+    jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+    assert jobs["initial-workspace"] != jobs["marketplaces"]
+    assert jobs["initial-workspace"] != "daily 03:00"
+
+
+def test_initial_workspace_schedule_env_override(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_INITIAL_WORKSPACE_SCHEDULE", "daily 05:15")
+    from services.scheduler.__main__ import build_jobs, _iw_sync_schedule
+    assert _iw_sync_schedule() == "daily 05:15"
+    jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+    assert jobs["initial-workspace"] == "daily 05:15"
+
+
+def test_initial_workspace_schedule_garbage_falls_back(monkeypatch):
+    """A typo in the env override must NOT crash build_jobs nor silently
+    produce an unparseable schedule — fall back to the documented default."""
+    monkeypatch.setenv("SCHEDULER_INITIAL_WORKSPACE_SCHEDULE", "not-a-schedule")
+    from services.scheduler.__main__ import build_jobs, _iw_sync_schedule
+    assert _iw_sync_schedule() == "daily 03:30"
+    # And build_jobs() must not raise on the (daily) fallback form.
+    jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+    assert jobs["initial-workspace"] == "daily 03:30"
+
+
+def test_build_jobs_tick_guard_ignores_daily_iw_schedule(monkeypatch):
+    """`daily …` jobs aren't part of the tick<=smallest-interval guard (which
+    only inspects `every Nm/Nh` env-driven intervals). Adding the IW daily job
+    must not make build_jobs() raise even with a large tick relative to it."""
+    _iw_env_clean(monkeypatch)
+    # Keep the interval jobs comfortably above a default tick so the guard
+    # itself doesn't trip for unrelated reasons.
+    from services.scheduler.__main__ import build_jobs
+    jobs = build_jobs()  # must not raise
+    assert any(j[0] == "initial-workspace" for j in jobs)
+
+
+@pytest.mark.parametrize("good", ["daily 03:30", "every 30m", "every 6h", "daily 03:00,15:00"])
+def test_is_valid_schedule_accepts_known_grammar(good):
+    from src.scheduler import is_valid_schedule
+    assert is_valid_schedule(good) is True
+
+
+@pytest.mark.parametrize("bad", ["", "garbage", "daily 25:00", "daily 3:30", "weekly"])
+def test_is_valid_schedule_rejects_bad(bad):
+    from src.scheduler import is_valid_schedule
+    assert is_valid_schedule(bad) is False

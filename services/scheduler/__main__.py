@@ -175,6 +175,50 @@ def _seconds_to_schedule(seconds: int) -> str:
     return f"every {minutes}m"
 
 
+_IW_SYNC_SCHEDULE_DEFAULT = "daily 03:30"
+
+
+def _iw_sync_schedule() -> str:
+    """Resolve the Initial Workspace Template nightly auto-sync cadence
+    (#622 Slice 3 PR-B).
+
+    Read order:
+      1. ``SCHEDULER_INITIAL_WORKSPACE_SCHEDULE`` env override
+      2. instance.yaml ``initial_workspace.sync_schedule``
+      3. default ``daily 03:30`` (offset from the marketplaces job at 03:00
+         so the two nightly git-clone bursts don't stack)
+
+    Any value that fails ``is_valid_schedule`` falls back to the default —
+    defensive, matching ``_seconds_to_schedule``'s posture — so a typo in
+    the env / YAML never produces a schedule string ``is_table_due`` would
+    silently ignore. ``build_jobs`` runs once at container start, so a UI
+    edit to ``sync_schedule`` takes effect only on the next scheduler
+    restart.
+    """
+    from src.scheduler import is_valid_schedule
+
+    raw = os.environ.get("SCHEDULER_INITIAL_WORKSPACE_SCHEDULE", "").strip()
+    if not raw:
+        try:
+            from app.instance_config import get_value
+
+            yaml_val = get_value("initial_workspace", "sync_schedule", default="")
+            raw = (yaml_val or "").strip() if isinstance(yaml_val, str) else ""
+        except Exception:
+            logger.exception("scheduler: failed to read initial_workspace.sync_schedule")
+            raw = ""
+
+    if raw and is_valid_schedule(raw):
+        return raw
+    if raw:
+        logger.warning(
+            "scheduler: invalid initial_workspace sync_schedule %r — "
+            "falling back to %r",
+            raw, _IW_SYNC_SCHEDULE_DEFAULT,
+        )
+    return _IW_SYNC_SCHEDULE_DEFAULT
+
+
 def resolved_tick_seconds() -> int:
     """Read + validate SCHEDULER_TICK_SECONDS in isolation (test helper)."""
     return _read_positive_int("SCHEDULER_TICK_SECONDS")
@@ -250,6 +294,14 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         ("health-check",          _seconds_to_schedule(health),  "/api/health",                          "GET",   30),
         ("script-runner",         _seconds_to_schedule(scripts), "/api/scripts/run-due",                 "POST", 600),
         ("marketplaces",          "daily 03:00",                 "/api/marketplaces/sync-all",           "POST", 900),
+        # Initial Workspace Template nightly auto-sync (#622 Slice 3 PR-B).
+        # Endpoint self-gates: returns 200 {skipped:true} when no IWT repo
+        # is registered, so this job is a no-op on instances without one.
+        # Default 03:30 offsets from the marketplaces job (03:00) so the two
+        # nightly git-clone bursts don't stack. Configurable via
+        # SCHEDULER_INITIAL_WORKSPACE_SCHEDULE or instance.yaml
+        # initial_workspace.sync_schedule.
+        ("initial-workspace",     _iw_sync_schedule(),           "/api/admin/initial-workspace/sync-if-configured", "POST", 900),
         # LLM pipeline (#176, #179 review). Cadences are deliberately offset
         # (10m / 15m / 17m by default — all coprime modulo the 30s tick) so
         # the three LLM-driven jobs don't fire on the same tick and stack

@@ -734,3 +734,160 @@ def test_analyst_applied_rejects_invalid_mode(web_client):
         json={"mode": "garbage"},
     )
     assert r.status_code == 422
+
+
+# ===========================================================================
+# Layer 4: #622 Slice 3 PR-B — sync_schedule + sync-if-configured + page
+# ===========================================================================
+
+
+def test_admin_post_sync_schedule_persisted_and_echoed(web_client):
+    """A valid sync_schedule lands in the YAML overlay and is echoed in GET."""
+    import yaml
+    from app.secrets import _state_dir
+
+    headers = _make_admin(web_client)
+    r = web_client.post(
+        "/api/admin/initial-workspace",
+        headers=headers,
+        json={"url": "https://github.com/a/b.git", "sync_schedule": "daily 03:30"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["sync_schedule"] == "daily 03:30"
+
+    section = yaml.safe_load((_state_dir() / "instance.yaml").read_text())["initial_workspace"]
+    assert section["sync_schedule"] == "daily 03:30"
+
+    # GET echoes it too.
+    g = web_client.get("/api/admin/initial-workspace", headers=headers)
+    assert g.json()["sync_schedule"] == "daily 03:30"
+
+
+def test_admin_post_sync_schedule_garbage_rejected(web_client):
+    """A malformed sync_schedule is rejected with 422 — a typo must NOT
+    silently disable the nightly job."""
+    headers = _make_admin(web_client)
+    r = web_client.post(
+        "/api/admin/initial-workspace",
+        headers=headers,
+        json={"url": "https://github.com/a/b.git", "sync_schedule": "garbage"},
+    )
+    assert r.status_code == 422
+    assert "sync_schedule" in r.json()["detail"]
+
+
+def test_admin_post_sync_schedule_empty_clears(web_client):
+    """An empty-string sync_schedule clears it (disable auto-sync)."""
+    import yaml
+    from app.secrets import _state_dir
+
+    headers = _make_admin(web_client)
+    web_client.post(
+        "/api/admin/initial-workspace",
+        headers=headers,
+        json={"url": "https://github.com/a/b.git", "sync_schedule": "daily 03:30"},
+    )
+    r = web_client.post(
+        "/api/admin/initial-workspace",
+        headers=headers,
+        json={"url": "https://github.com/a/b.git", "sync_schedule": ""},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["sync_schedule"] is None
+    section = yaml.safe_load((_state_dir() / "instance.yaml").read_text())["initial_workspace"]
+    assert section.get("sync_schedule") is None
+
+
+def test_sync_if_configured_skips_when_unconfigured(web_client):
+    """The load-bearing scheduler-gate invariant: the nightly wrapper returns
+    200 {skipped:true} (NOT 400) on an instance without an IWT, so the job
+    never errors."""
+    headers = _make_admin(web_client)
+    r = web_client.post(
+        "/api/admin/initial-workspace/sync-if-configured", headers=headers
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["skipped"] is True
+    assert body["reason"] == "not_configured"
+
+
+def test_manual_sync_still_errors_when_unconfigured(web_client):
+    """Regression: the MANUAL /sync route keeps its loud 400 not_configured
+    error — only the scheduler wrapper is silent."""
+    headers = _make_admin(web_client)
+    r = web_client.post("/api/admin/initial-workspace/sync", headers=headers)
+    assert r.status_code == 400
+    assert r.json()["detail"]["kind"] == "not_configured"
+
+
+def test_sync_if_configured_runs_when_configured(web_client, fake_remote):
+    """When an IWT is registered, the wrapper delegates to the same sync logic
+    the manual route uses and returns a sync result."""
+    from app.api.initial_workspace import _write_section
+
+    _write_section({"url": fake_remote["url"], "branch": "main", "token_env": None})
+    headers = _make_admin(web_client)
+    r = web_client.post(
+        "/api/admin/initial-workspace/sync-if-configured", headers=headers
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body.get("action") == "sync_ok"
+    assert body["commit_sha"] == fake_remote["sha"]
+
+
+def test_sync_if_configured_requires_admin(web_client):
+    """The scheduler wrapper is admin-gated (scheduler token → Admin user).
+    A plain analyst PAT must get 403."""
+    headers = _make_user(web_client)
+    r = web_client.post(
+        "/api/admin/initial-workspace/sync-if-configured", headers=headers
+    )
+    assert r.status_code == 403
+
+
+# ── Admin page render + nav wiring (#622 Slice 3 PR-B) ──
+
+
+def test_admin_initial_workspace_page_renders(web_client):
+    """GET /admin/initial-workspace returns 200 for admin and carries the
+    page's distinctive markers."""
+    headers = _make_admin(web_client)
+    r = web_client.get("/admin/initial-workspace", headers=headers)
+    assert r.status_code == 200, r.text
+    assert "iw-prov-tbody" in r.text       # prompt-bindings provenance table
+    assert "Link to Template Repository" in r.text
+
+
+def test_admin_initial_workspace_page_denies_non_admin(web_client):
+    """A non-admin is blocked from the page (403 or login redirect)."""
+    headers = _make_user(web_client)
+    r = web_client.get(
+        "/admin/initial-workspace", headers=headers, follow_redirects=False
+    )
+    assert r.status_code in (302, 303, 307, 403), r.status_code
+
+
+def test_server_config_still_renders_after_iw_relocation(web_client):
+    """Regression guard: deleting the IW markup/JS/harness hooks from
+    /admin/server-config must not break its render, and it must leave a
+    working cross-link to the new page."""
+    headers = _make_admin(web_client)
+    r = web_client.get("/admin/server-config", headers=headers)
+    assert r.status_code == 200, r.text
+    # The heavy IW lifecycle JS is gone …
+    assert "const IW_API" not in r.text
+    assert "function iwLoad" not in r.text
+    # … but the stub anchor + cross-link to the new page remain.
+    assert "/admin/initial-workspace" in r.text
+
+
+def test_nav_header_has_initial_workspace_link():
+    """The Agent Experience nav group must link the new page (content
+    assertion on the partial — it renders inside every authed page)."""
+    from pathlib import Path
+
+    text = Path("app/web/templates/_app_header.html").read_text(encoding="utf-8")
+    assert 'href="/admin/initial-workspace"' in text
+    assert "/admin/initial-workspace" in text  # also in the _admin_active set

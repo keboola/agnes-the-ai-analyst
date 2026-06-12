@@ -73,11 +73,18 @@ class RegisterRequest(BaseModel):
     ``token = None`` means "leave existing PAT alone".
     ``token = ""``   means "clear PAT".
     ``token = "ghp_..."`` means "set/rotate PAT".
+
+    ``sync_schedule``: optional nightly auto-sync cadence (#622 Slice 3 PR-B).
+    ``None`` (field absent) leaves the existing schedule untouched; ``""``
+    clears it (disable auto-sync); a non-empty value sets it. Validated against
+    the scheduler grammar (``daily HH:MM`` / ``every Nm`` / ``cron …``) so a
+    typo can't silently disable the nightly job.
     """
 
     url: str
     branch: Optional[str] = None
     token: Optional[str] = None
+    sync_schedule: Optional[str] = None
 
 
 class AdminInitialWorkspaceResponse(BaseModel):
@@ -87,6 +94,7 @@ class AdminInitialWorkspaceResponse(BaseModel):
     url: Optional[str] = None
     branch: Optional[str] = None
     has_token: bool = False
+    sync_schedule: Optional[str] = None
     last_synced_at: Optional[str] = None
     last_commit_sha: Optional[str] = None
     last_error: Optional[str] = None
@@ -279,6 +287,7 @@ def _section_to_admin_response(
         url=section.get("url"),
         branch=section.get("branch"),
         has_token=has_token,
+        sync_schedule=section.get("sync_schedule"),
         last_synced_at=section.get("last_synced_at"),
         last_commit_sha=section.get("last_commit_sha"),
         last_error=section.get("last_error"),
@@ -336,6 +345,29 @@ async def admin_post(
         "url": url,
         "branch": (body.branch or "").strip() or None,
     }
+
+    # sync_schedule routing — three-state like token (#622 Slice 3 PR-B):
+    #   None  → field absent, leave existing schedule untouched
+    #   ""    → clear (disable auto-sync)
+    #   "…"   → set, but only after validating against the scheduler grammar
+    #           so a typo can't silently disable the nightly job.
+    if body.sync_schedule is not None:
+        sched = body.sync_schedule.strip()
+        if sched == "":
+            patch["sync_schedule"] = None
+        else:
+            from src.scheduler import is_valid_schedule
+
+            if not is_valid_schedule(sched):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "sync_schedule must be a valid scheduler cadence: "
+                        "'daily HH:MM' (UTC), 'every Nm'/'every Nh', or "
+                        "'cron <5-field expr>'"
+                    ),
+                )
+            patch["sync_schedule"] = sched
 
     # Token routing — same three-state semantics as the marketplace POST:
     # None = leave alone, "" = clear, non-empty = rotate.
@@ -411,6 +443,11 @@ async def admin_sync(
     surfaces a ``400`` with the validation / git error so the admin sees
     it in the Sync-now modal. The error payload uses the typed-``kind``
     shape the CLI's error renderer already understands.
+
+    Manual sync errors loudly (``400 not_configured``) when no repo is
+    registered — that's intentional UX for a button click. The nightly
+    scheduler uses ``/sync-if-configured`` instead, which short-circuits
+    silently.
     """
     section = _read_section()
     if not section.get("url"):
@@ -418,7 +455,45 @@ async def admin_sync(
             status_code=400,
             detail={"kind": "not_configured", "hint": "Register a repo first"},
         )
+    return _do_sync(conn, user.get("id"))
 
+
+@router.post("/api/admin/initial-workspace/sync-if-configured")
+async def admin_sync_if_configured(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Scheduler-facing nightly auto-sync wrapper (#622 Slice 3 PR-B).
+
+    Always returns 200 — short-circuits to ``{"skipped": true, "reason":
+    "not_configured"}`` when no template repo is registered, so the nightly
+    job never logs a warning on instances without an IWT. When configured,
+    delegates to the same ``_do_sync`` logic the manual route uses.
+
+    Mirrors the Jira jobs' "endpoint self-gates, scheduler stays dumb"
+    idiom — the scheduler tuple is a one-liner with no conditional logic.
+
+    Admin-web/scheduler-only (no analyst CLI/MCP analogue) → EXEMPT in the
+    triple-surface gate, alongside the other ``/api/admin/initial-workspace/*``
+    routes.
+    """
+    section = _read_section()
+    if not section.get("url"):
+        return {"skipped": True, "reason": "not_configured"}
+    return _do_sync(conn, user.get("id"))
+
+
+def _do_sync(conn: duckdb.DuckDBPyConnection, user_id: Optional[str]) -> dict:
+    """Clone / fast-forward the registered template repo and persist sync
+    state. Shared by the manual ``/sync`` route and the nightly
+    ``/sync-if-configured`` wrapper.
+
+    Callers MUST ensure a repo is registered (``_read_section()['url']``
+    truthy) before calling — this helper assumes it and reads the section
+    fresh. Raises ``HTTPException`` (400 with a typed ``kind``) on
+    validation / git failure, persisting ``last_error`` first.
+    """
+    section = _read_section()
     try:
         result = sync_template(
             url=section["url"],
@@ -432,7 +507,7 @@ async def admin_sync(
         _write_section({"last_error": str(e)})
         _audit(
             conn,
-            actor_id=user.get("id"),
+            actor_id=user_id,
             action="initial_workspace.sync_failed",
             params={"error": str(e), "kind": "validation"},
         )
@@ -444,7 +519,7 @@ async def admin_sync(
         _write_section({"last_error": str(e)})
         _audit(
             conn,
-            actor_id=user.get("id"),
+            actor_id=user_id,
             action="initial_workspace.sync_failed",
             params={"error": str(e), "kind": "git"},
         )
@@ -499,7 +574,7 @@ async def admin_sync(
 
     _audit(
         conn,
-        actor_id=user.get("id"),
+        actor_id=user_id,
         action="initial_workspace.sync",
         params={
             "commit_sha": result["commit_sha"],

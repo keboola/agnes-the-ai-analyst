@@ -59,6 +59,35 @@ def parse_interval_minutes(schedule: str) -> Optional[int]:
     return value
 
 
+def is_valid_schedule(schedule: str) -> bool:
+    """True iff ``schedule`` is a well-formed schedule string ``is_table_due``
+    would actually honor — one of:
+
+      - ``every Nm`` / ``every Nh``     (interval)
+      - ``daily HH:MM`` / ``daily HH:MM,HH:MM,...``  (with valid 0-23 / 0-59 times)
+      - ``cron <5-field expr>``         (valid field ranges)
+
+    Used to validate operator-supplied cadences at config-write time so a typo
+    can't silently disable a scheduled job (``is_table_due`` returns ``False``
+    on an unparseable string and just logs a warning).
+    """
+    if not isinstance(schedule, str) or not schedule.strip():
+        return False
+
+    if INTERVAL_PATTERN.match(schedule):
+        return True
+
+    daily = DAILY_PATTERN.match(schedule)
+    if daily:
+        return bool(_parse_daily_times(daily.group(1)))
+
+    cron = CRON_PATTERN.match(schedule)
+    if cron:
+        return _parse_cron_fields(cron.group(1)) is not None
+
+    return False
+
+
 def is_table_due(
     schedule: str,
     last_sync_iso: Optional[str],
