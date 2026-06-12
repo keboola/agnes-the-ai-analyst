@@ -227,6 +227,54 @@ def test_resolve_prompt_editor_and_git(tmp_path, monkeypatch):
     assert content is None and mode == "git"
 
 
+def test_bind_then_resolve_round_trip(admin_client, tmp_path, monkeypatch):
+    """#638 review: bind through the API and resolve through resolve_prompt
+    against the SAME clone — the two path namespaces must agree. The earlier
+    tests validated bind and resolve in isolation, which masked the
+    workspace-relative vs repo-relative mismatch."""
+    client, token = admin_client
+    iwt = _make_iwt_clone(tmp_path, claude_md="CLONE CLAUDE")
+
+    import src.initial_workspace as iw
+
+    monkeypatch.setattr(iw, "is_configured", lambda: True)
+    monkeypatch.setattr(iw, "_iwt_snapshot", lambda: iwt)
+
+    r = client.post(
+        "/api/admin/prompts/workspace/bind-git",
+        headers=_hdr(token),
+        json={"git_path": "workspace/CLAUDE.md"},
+    )
+    assert r.status_code == 200, r.text
+
+    content, mode = iw.resolve_prompt("workspace", None)
+    assert (content, mode) == ("CLONE CLAUDE", "git"), (
+        "the path accepted by bind-git must be the path resolve_prompt reads"
+    )
+
+
+def test_resolve_prompt_rejects_path_traversal(tmp_path, monkeypatch):
+    """#638 review: resolve_prompt reads git_path from the DB — a value that
+    escapes the IWT root via ``..`` must NOT be readable (defense in depth;
+    mirrors the resolve_seed_file hardening)."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    iwt = _make_iwt_clone(tmp_path, claude_md="CLONE CLAUDE")
+    secret = iwt.parent / "outside_secret.env"
+    secret.write_text("TOKEN=supersecret", encoding="utf-8")
+
+    import src.initial_workspace as iw
+    from src.repositories import claude_md_template_repo
+
+    monkeypatch.setattr(iw, "_iwt_snapshot", lambda: iwt)
+    repo = claude_md_template_repo()
+    repo.bind_git("../outside_secret.env", base_sha="x", updated_by="a@x.com")
+
+    content, mode = iw.resolve_prompt("workspace", None)
+    assert content is None and mode == "git", (
+        "a git_path escaping the IWT root must fall back, not read the file"
+    )
+
+
 def test_resolve_seed_file_rejects_path_traversal(monkeypatch, tmp_path: Path):
     """#622 security: a git_path that escapes the IWT root via ``..`` must not
     be readable through resolve_seed_file — no arbitrary server-file read into
@@ -324,13 +372,23 @@ def test_bind_git_requires_iwt(admin_client):
 
 
 def test_bind_git_validates_path(admin_client, monkeypatch):
+    """#638 review: paths are REPO-relative for both kinds — resolve_prompt
+    resolves against the repo root, so the workspace prompt binds
+    ``workspace/CLAUDE.md``, and the old workspace-RELATIVE namespace
+    (bare ``CLAUDE.md``) must be rejected, not silently accepted."""
     client, token = admin_client
     import src.initial_workspace as iw
 
     monkeypatch.setattr(iw, "is_configured", lambda: True)
-    monkeypatch.setattr(iw, "list_template_files", lambda: ["CLAUDE.md", "settings.json"])
-    # also patch where prompts.py imports it (function-level import resolves
-    # from the module, so patching the source module is enough)
+
+    def _fake_resolve_seed_file(rel):
+        if rel == "workspace/CLAUDE.md":
+            return (Path("/fake/iwt/workspace/CLAUDE.md"), "iwt")
+        return None
+
+    monkeypatch.setattr(iw, "resolve_seed_file", _fake_resolve_seed_file)
+    # patching the source module is enough — prompts.py imports it
+    # function-level, resolving from the module at call time
 
     # absent path → 400
     r = client.post(
@@ -341,16 +399,25 @@ def test_bind_git_validates_path(admin_client, monkeypatch):
     assert r.status_code == 400, r.text
     assert r.json()["detail"]["kind"] == "git_path_not_found"
 
-    # present path → 200, mode flips to git
+    # workspace-RELATIVE path (the pre-fix namespace) → 400 too: it would
+    # resolve nowhere at read time
     r = client.post(
         "/api/admin/prompts/workspace/bind-git",
         headers=_hdr(token),
         json={"git_path": "CLAUDE.md"},
     )
+    assert r.status_code == 400, r.text
+
+    # repo-relative path → 200, mode flips to git
+    r = client.post(
+        "/api/admin/prompts/workspace/bind-git",
+        headers=_hdr(token),
+        json={"git_path": "workspace/CLAUDE.md"},
+    )
     assert r.status_code == 200, r.text
     g = client.get("/api/admin/prompts/workspace", headers=_hdr(token))
     assert g.json()["source_mode"] == "git"
-    assert g.json()["git_path"] == "CLAUDE.md"
+    assert g.json()["git_path"] == "workspace/CLAUDE.md"
 
 
 def test_put_in_git_mode_409(admin_client, monkeypatch):

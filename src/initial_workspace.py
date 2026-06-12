@@ -530,8 +530,11 @@ def resolve_prompt(kind: str, conn=None) -> tuple[Optional[str], str]:
         iwt_root = _iwt_snapshot()
         if iwt_root is None:
             return (None, "git")
+        # Same containment guard as resolve_seed_file — git_path comes from
+        # the DB, and bind-time validation is not a substitute for a
+        # read-time check (defense in depth against `..`/symlink escapes).
         target = iwt_root / rel_path
-        if target.is_file():
+        if _is_within(iwt_root, target) and target.is_file():
             return (target.read_text(encoding="utf-8"), "git")
         logger.warning(
             "resolve_prompt(%s): git mode bound to %r but file is absent in the "

@@ -128,3 +128,33 @@ def test_workspace_prompt_template_reflects_override(seeded_app_both):
         f"[{seeded_app_both['backend']}] /api/admin/workspace-prompt-template did "
         f"not return the override seeded through the factory: {body}"
     )
+
+
+# ---------------------------------------------------------------------------
+# v75 managed-prompt metadata (#638) — get_meta / set_source_mode / bind_git
+# round-trip through the backend-aware factory on BOTH engines. Repo-level
+# (no HTTP): the cluster's HTTP routes are covered above; this locks the new
+# methods' SQL semantics (UPSERT, NULL-coercion to 'editor') into parity.
+# ---------------------------------------------------------------------------
+
+def test_prompt_meta_roundtrip_parity(seeded_app_both):
+    from src.repositories import claude_md_template_repo, welcome_template_repo
+
+    for factory in (claude_md_template_repo, welcome_template_repo):
+        repo = factory()
+
+        meta = repo.get_meta()
+        assert meta.get("source_mode") or "editor" == "editor", (
+            f"{factory.__name__}: fresh row must default to editor mode"
+        )
+
+        repo.bind_git("workspace/CLAUDE.md", base_sha="abc123", updated_by="a@x.com")
+        meta = repo.get_meta()
+        assert meta["source_mode"] == "git", factory.__name__
+        assert meta["git_path"] == "workspace/CLAUDE.md", factory.__name__
+
+        repo.set_source_mode("editor", updated_by="a@x.com")
+        meta = repo.get_meta()
+        assert meta["source_mode"] == "editor", factory.__name__
+        # the binding survives the mode flip (re-enabling git mode reuses it)
+        assert meta["git_path"] == "workspace/CLAUDE.md", factory.__name__

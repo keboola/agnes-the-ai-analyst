@@ -149,16 +149,18 @@ class PreviewRequest(BaseModel):
 def _git_path_exists(kind: str, git_path: str) -> bool:
     """True iff ``git_path`` resolves to a file in the IWT clone.
 
-    Workspace files live under ``workspace/`` and surface in
-    ``list_template_files()`` (paths relative to ``workspace/``). The install
-    prompt lives at repo root, so it's validated via ``resolve_seed_file``
-    constrained to the ``iwt`` tier (the bundled fallback is not "operator
-    content" you can bind to).
+    Paths are REPO-relative for both kinds — workspace files live under
+    ``workspace/`` (bind e.g. ``workspace/CLAUDE.md``), the install prompt
+    at repo root — because ``resolve_prompt`` resolves the stored path
+    against the repo root. Validated via ``resolve_seed_file`` constrained
+    to the ``iwt`` tier (the bundled fallback is not "operator content"
+    you can bind to). An earlier revision validated workspace paths against
+    ``list_template_files()`` (workspace-RELATIVE names), which let admins
+    bind paths ``resolve_prompt`` could never find — and rejected the ones
+    it could (#638 review).
     """
-    from src.initial_workspace import list_template_files, resolve_seed_file
+    from src.initial_workspace import resolve_seed_file
 
-    if kind == "workspace":
-        return git_path in set(list_template_files())
     resolved = resolve_seed_file(git_path)
     return resolved is not None and resolved[1] == "iwt"
 
@@ -295,7 +297,9 @@ async def bind_git(
                 "git_path": payload.git_path,
                 "hint": (
                     "Path is not present in the synced Initial Workspace "
-                    "Template clone. Check the path + 'Sync now'."
+                    "Template clone. Paths are repo-relative — workspace "
+                    "files live under workspace/ (e.g. workspace/CLAUDE.md). "
+                    "Check the path + 'Sync now'."
                 ),
             },
         )
