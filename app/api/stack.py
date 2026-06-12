@@ -67,6 +67,16 @@ def _validate_type(value: str) -> ResourceType:
     return rt
 
 
+def _reject_co_session(user: object) -> None:
+    """Stack management is per-user — a co-session principal has no single
+    identity to subscribe with, and ``user["id"]`` would blow up on the
+    dataclass anyway. Every /api/stack endpoint must call this first."""
+    from app.auth.session_principal import SessionPrincipal
+
+    if isinstance(user, SessionPrincipal):
+        raise HTTPException(403, "co_session cannot manage stack")
+
+
 def _emit_event(
     *,
     event_type: str,
@@ -102,9 +112,7 @@ async def list_stack(
     always count as in_stack; available entries only if the user has a
     subscription row.
     """
-    from app.auth.session_principal import SessionPrincipal
-    if isinstance(user, SessionPrincipal):
-        raise HTTPException(403, "co_session cannot manage stack")
+    _reject_co_session(user)
     rt = _validate_type(type)
     resolver = StackResolver()
     items = [
@@ -122,6 +130,40 @@ async def list_stack(
     return {"items": items}
 
 
+@router.get("/browse")
+async def browse_stack(
+    type: str,
+    user: dict = Depends(get_current_user),
+):
+    """List every resource of ``type`` the caller could add to their stack.
+
+    Unlike ``GET /api/stack`` (effective stack only), this returns the full
+    RBAC-granted candidate set — required + available — each annotated with
+    an ``in_stack`` flag so an analyst's Claude can tell what is already
+    subscribed and what is still available to add. This is the
+    "what could I add" discovery surface (issue #621).
+
+    Scoped per-user by ``StackResolver.browse`` (group grants only), so the
+    only authorization gate is authentication — no extra RBAC dependency.
+    """
+    _reject_co_session(user)
+    rt = _validate_type(type)
+    resolver = StackResolver()
+    items = [
+        {
+            "id": e.id,
+            "name": e.name,
+            "description": e.description,
+            "icon": e.icon,
+            "color": e.color,
+            "requirement": e.requirement,
+            "in_stack": e.in_stack,
+        }
+        for e in resolver.browse(user["id"], rt)
+    ]
+    return {"items": items}
+
+
 @router.post("/subscribe")
 async def subscribe(
     payload: SubscribeRequest,
@@ -129,6 +171,7 @@ async def subscribe(
 ):
     """Opt in to an ``available`` grant. Refuses to subscribe if the resource
     is required (it's already in the stack — clients shouldn't bother)."""
+    _reject_co_session(user)
     rt = _validate_type(payload.resource_type)
     # The user must have *some* grant on the resource — otherwise this is a
     # 403 (you can't subscribe to something you can't access). can_access
@@ -165,6 +208,7 @@ async def unsubscribe(
     "removed", 400 + ``cannot_remove_required`` as "still subscribed
     because Required tier blocks opt-out".
     """
+    _reject_co_session(user)
     rt = _validate_type(resource_type)
     resolver = StackResolver()
     try:
