@@ -1,0 +1,31 @@
+# BuildKit per-Dockerfile ignore for tests/e2e/Dockerfile.e2e.
+#
+# The root .dockerignore excludes `tests/` (correct for the production
+# image), but this image's entrypoint, fixtures, and sample data live
+# under tests/e2e/ — so the E2E build needs its own ignore file. When a
+# `<Dockerfile-name>.dockerignore` exists, BuildKit uses it INSTEAD of
+# the root .dockerignore, so this is a full copy of the root list minus
+# the `tests/` line. Keep the two files in sync when editing either.
+.git
+.github
+.venv
+venv
+__pycache__
+*.pyc
+.env
+.env.*
+data/
+dev_data/
+*.egg-info
+dist/
+build/
+.pytest_cache
+.mypy_cache
+.claude/
+.idea
+node_modules/
+docs/
+dev_docs/
+infra/
+server/
+.dockerignore

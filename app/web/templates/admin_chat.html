@@ -1,55 +1,78 @@
 {# app/web/templates/admin_chat.html #}
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>Agnes — Admin / Chat</title>
-  <link rel="stylesheet" href="/static/css/admin.css" />
-  <link rel="stylesheet" href="/static/vendor/highlight.min.css" />
-</head>
-<body class="admin-body">
-  <h1>Active chat sessions</h1>
-  <table id="sessions">
+{% extends "base_page.html" %}
+{% block title %}Chat runners — Admin{% endblock %}
+
+{% set page_hero_eyebrow = "Activity Center" %}
+{% set page_hero_title = "Chat runners" %}
+{% set page_hero_subtitle = "Live chat sessions and their sandbox runners — tail a run.log or kill a stuck session. For collected transcripts see Analyst sessions." %}
+
+{% block head_extra %}
+<style>
+.chatops-table-wrap { border: 1px solid var(--border); border-radius: 8px;
+  overflow: hidden; background: var(--surface); }
+.chatops-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.chatops-table thead th { text-align: left; padding: 10px 12px;
+  background: var(--border-light); border-bottom: 1px solid var(--border);
+  font-weight: 600; color: var(--text-secondary); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap; }
+.chatops-table tbody td { padding: 8px 12px;
+  border-bottom: 1px solid var(--border-light);
+  font-variant-numeric: tabular-nums; vertical-align: top; }
+.chatops-table tbody td.chatops-actions { white-space: nowrap; }
+.chatops-empty { padding: 16px 12px; color: var(--text-secondary); }
+</style>
+{% endblock %}
+
+{% block page %}
+<div class="chatops-table-wrap">
+  <table class="chatops-table" id="sessions">
     <thead><tr>
       <th>ID</th><th>User</th><th>State</th><th>Started</th><th>Last activity</th><th>Crashes</th><th></th>
     </tr></thead>
     <tbody></tbody>
   </table>
-  <script>
-  async function refresh() {
-    const r = await fetch("/admin/chat", { credentials: "same-origin" });
-    const { sessions } = await r.json();
-    const tbody = document.querySelector("#sessions tbody");
-    tbody.innerHTML = sessions.map(s => `
-      <tr>
-        <td>${s.id}</td><td>${s.user_email}</td><td>${s.state}</td>
-        <td>${s.started_at}</td><td>${s.last_activity}</td><td>${s.crash_count}</td>
-        <td>
-          <button onclick="tailSession('${s.id}')">Tail</button>
-          <button onclick="killSession('${s.id}')">Kill</button>
-        </td>
-      </tr>`).join("");
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function refresh() {
+  const r = await fetch("/admin/chat", { credentials: "same-origin" });
+  const { sessions } = await r.json();
+  const tbody = document.querySelector("#sessions tbody");
+  if (!sessions.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="chatops-empty">No active chat sessions.</td></tr>';
+    return;
   }
-  async function killSession(id) {
-    if (!confirm("Kill session " + id + "?")) return;
-    await fetch("/admin/chat/" + id, { method: "DELETE", credentials: "same-origin" });
-    refresh();
-  }
-  // Open a WebSocket to the per-session run.log tail.
-  // The WS itself can't reliably carry the admin's session cookie across
-  // browsers on upgrade, so we mint a short-TTL one-shot ticket over the
-  // normal admin auth flow first and pass it as a query parameter.
-  async function tailSession(id) {
-    const tr = await fetch(`/admin/chat/${id}/tail-ticket`, { credentials: "same-origin" });
-    if (!tr.ok) { alert("tail-ticket failed: " + tr.status); return; }
-    const { ws_url } = await tr.json();
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${location.host}${ws_url}`);
-    ws.onmessage = (ev) => console.log("[tail]", ev.data);
-    ws.onclose = (ev) => console.log("[tail closed]", ev.code, ev.reason);
-  }
+  tbody.innerHTML = sessions.map(s => `
+    <tr>
+      <td>${s.id}</td><td>${s.user_email}</td><td>${s.state}</td>
+      <td>${s.started_at}</td><td>${s.last_activity}</td><td>${s.crash_count}</td>
+      <td class="chatops-actions">
+        <button class="btn btn-secondary btn-sm" onclick="tailSession('${s.id}')">Tail</button>
+        <button class="btn btn-secondary btn-sm" onclick="killSession('${s.id}')">Kill</button>
+      </td>
+    </tr>`).join("");
+}
+async function killSession(id) {
+  if (!confirm("Kill session " + id + "?")) return;
+  await fetch("/admin/chat/" + id, { method: "DELETE", credentials: "same-origin" });
   refresh();
-  setInterval(refresh, 5000);
-  </script>
-</body>
-</html>
+}
+// Open a WebSocket to the per-session run.log tail.
+// The WS itself can't reliably carry the admin's session cookie across
+// browsers on upgrade, so we mint a short-TTL one-shot ticket over the
+// normal admin auth flow first and pass it as a query parameter.
+async function tailSession(id) {
+  const tr = await fetch(`/admin/chat/${id}/tail-ticket`, { credentials: "same-origin" });
+  if (!tr.ok) { alert("tail-ticket failed: " + tr.status); return; }
+  const { ws_url } = await tr.json();
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${proto}//${location.host}${ws_url}`);
+  ws.onmessage = (ev) => console.log("[tail]", ev.data);
+  ws.onclose = (ev) => console.log("[tail closed]", ev.code, ev.reason);
+}
+refresh();
+setInterval(refresh, 5000);
+</script>
+{% endblock %}

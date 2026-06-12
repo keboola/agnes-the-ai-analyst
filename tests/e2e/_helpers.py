@@ -23,12 +23,31 @@ inside the E2E suite.
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import subprocess
 import time
 from pathlib import Path
 from typing import Any, Iterable, Optional
 from urllib.parse import urlparse
+
+import pytest
+
+
+def skip_unless_chat_sessions_possible() -> None:
+    """Skip tests that create chat sessions when E2B_API_KEY is unset.
+
+    Fake-agent mode (AGNES_E2E_FAKE_AGENT=1) only removes the Anthropic
+    dependency — every chat session still spawns a real E2B microVM, and
+    without E2B_API_KEY the startup gate in app/main.py leaves
+    ``chat_manager`` unset so POST /api/chat/sessions 503s with
+    ``chat_disabled``. Sandbox minutes are billed when the key IS set.
+    """
+    if not os.environ.get("E2B_API_KEY"):
+        pytest.skip(
+            "chat sessions spawn real E2B sandboxes even in fake-agent "
+            "mode — set E2B_API_KEY to run this test"
+        )
 
 import urllib.error
 import urllib.request

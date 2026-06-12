@@ -47,7 +47,7 @@
            visibility tidy-up — non-admins who deep-link still get a 403
            from the route handler. #}
         {% if session.user.is_admin %}
-        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/mcp-sources') or _path.startswith('/admin/mcp-tools') or _path.startswith('/admin/store') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/admin/adoption') or _path.startswith('/admin/activity') or _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') or _path.startswith('/admin/sessions') or _path.startswith('/admin/corporate-memory') or _path.startswith('/admin/sync') or _path.startswith('/documentation') %}
+        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/mcp-sources') or _path.startswith('/admin/mcp-tools') or _path.startswith('/admin/store') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/admin/adoption') or _path.startswith('/admin/activity') or _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') or _path.startswith('/admin/sessions') or _path.startswith('/admin/chat') or _path.startswith('/admin/corporate-memory') or _path.startswith('/admin/sync') or _path.startswith('/documentation') %}
         <div class="app-nav-menu" id="adminNavMenu">
             <button type="button"
                     class="app-nav-link app-nav-menu-trigger {% if _admin_active %}is-active{% endif %}"
@@ -77,7 +77,15 @@
                     <a class="app-nav-menu-item {% if _path.startswith('/admin/adoption') %}is-active{% endif %}" role="menuitem" href="/admin/adoption">Adoption</a>
                     <a class="app-nav-menu-item {% if _path.startswith('/admin/activity') %}is-active{% endif %}" role="menuitem" href="/admin/activity">Audit log</a>
                     <a class="app-nav-menu-item {% if _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') %}is-active{% endif %}" role="menuitem" href="/admin/telemetry">Telemetry</a>
-                    <a class="app-nav-menu-item {% if _path.startswith('/admin/sessions') %}is-active{% endif %}" role="menuitem" href="/admin/sessions">Sessions</a>
+                    {# Two session-shaped surfaces live side by side and were
+                       previously easy to conflate: /admin/sessions shows the
+                       Claude Code session files analysts upload via `agnes
+                       push`, while /admin/chat is the live cloud-chat session
+                       dashboard (previously reachable only by typing the URL —
+                       it had no nav entry at all). Distinct labels keep an
+                       admin hunting for chat activity off the wrong page. #}
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/sessions') %}is-active{% endif %}" role="menuitem" href="/admin/sessions">Analyst sessions</a>
+                    <a class="app-nav-menu-item {% if _path.startswith('/admin/chat') %}is-active{% endif %}" role="menuitem" href="/admin/chat">Chat sessions</a>
                 </details>
 
                 <details class="app-nav-menu-group" data-section="users-access" open>

@@ -51,6 +51,7 @@ from tests.e2e._helpers import (
     E2E_USER_PASSWORD,
     bootstrap_admin,
     pump_until,
+    skip_unless_chat_sessions_possible,
 )
 
 
@@ -178,10 +179,11 @@ def test_ws_framing_fuzz_does_not_crash_server(docker_e2e_agnes: str) -> None:
     Random bytes will fail JSON parse — we assert the server closes the
     connection cleanly (websockets library raises ConnectionClosed)
     rather than 500-ing the whole process. Also asserts the next HTTP
-    request (/healthz) still returns 200 — proves the server is alive.
+    request (/api/health) still returns 200 — proves the server is alive.
     """
     if not _WS_AVAILABLE:
         pytest.skip("websockets.sync.client unavailable")
+    skip_unless_chat_sessions_possible()
 
     admin = bootstrap_admin(
         docker_e2e_agnes, email=E2E_USER_EMAIL, password=E2E_USER_PASSWORD,
@@ -217,15 +219,15 @@ def test_ws_framing_fuzz_does_not_crash_server(docker_e2e_agnes: str) -> None:
                 closed_cleanly = True
     except Exception as exc:  # noqa: BLE001
         # We tolerate ANY close path here; what we don't tolerate is a
-        # subsequent server crash. The healthz probe below is the real test.
+        # subsequent server crash. The health probe below is the real test.
         sys.stderr.write(f"[G.3 fuzz] ws raised {type(exc).__name__}: {exc}\n")
         closed_cleanly = True
 
     assert closed_cleanly, "expected at least a graceful WS close"
 
-    # Server liveness — /healthz must still return 200 after the fuzz.
+    # Server liveness — /api/health must still return 200 after the fuzz.
     parsed = urlparse(docker_e2e_agnes)
-    health_url = f"{parsed.scheme}://{parsed.netloc}/healthz"
+    health_url = f"{parsed.scheme}://{parsed.netloc}/api/health"
     with urllib.request.urlopen(health_url, timeout=5) as resp:
         assert resp.status == 200, (
             f"server should still be healthy after fuzz; got {resp.status}"
@@ -301,6 +303,7 @@ def test_jwt_for_session_a_cannot_open_session_b_ws(docker_e2e_agnes: str) -> No
     """
     if not _WS_AVAILABLE:
         pytest.skip("websockets.sync.client unavailable")
+    skip_unless_chat_sessions_possible()
 
     admin = bootstrap_admin(
         docker_e2e_agnes, email=E2E_USER_EMAIL, password=E2E_USER_PASSWORD,
