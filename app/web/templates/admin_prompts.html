@@ -1,0 +1,231 @@
+{% extends "base_page.html" %}
+{% block title %}Prompts — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% set page_hero_eyebrow = "Agent Experience" %}
+{% set page_hero_title = "Prompts" %}
+{% set page_hero_subtitle = "Install prompt + workspace CLAUDE.md. Edit inline (Editor override) or bind to a file in the Initial Workspace Template repo (Git)." %}
+
+{% block head_extra %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css"
+      integrity="sha512-uf06llspW44/LZpHzHT6qBOIVODjWtv4MxCricRxkzvopAlSWnTf6hpZTFxuuZcuNE9CBQhqE0Seu1CoRk84nQ=="
+      crossorigin="anonymous">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css"
+      integrity="sha512-2OhXH4Il3n2tHKwLLSDPhrkgnLBC+6lHGGQzSFi3chgVB6DJ/v6+nbx+XYO9CugQyHVF/8D/0k3Hx1eaUK2K9g=="
+      crossorigin="anonymous">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"
+        integrity="sha512-OeZ4Yrb/W7d2W4rAMOO0HQ9Ro/aWLtpW9BUSR2UOWnSV2hprXLkkYnnCGc9NeLUxxE4ZG7zN16UuT1Elqq8Opg=="
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/jinja2/jinja2.min.js"
+        integrity="sha512-Z4le1RxwhD8lDCrspbBxjTLLP2HGC1+mKb9KHR2N/sEx8uOe2vre5XQo8YMPAz8FQTo43HjefjlDtjY4LtfaaQ=="
+        crossorigin="anonymous"></script>
+<style>
+  .prompt-cards { display: grid; gap: 24px; }
+  .prompt-card {
+    border: 1px solid var(--ds-border);
+    border-radius: 10px;
+    background: var(--ds-surface);
+    padding: 20px;
+  }
+  .prompt-card__head {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    gap: 16px; flex-wrap: wrap; margin-bottom: 16px;
+  }
+  .prompt-card__title { font-size: 18px; font-weight: 600; margin: 0; }
+  .prompt-card__path { font-family: var(--ds-font-mono, monospace);
+    font-size: 12px; color: var(--ds-text-muted); margin-top: 4px; }
+  .prompt-toggle { display: inline-flex; gap: 4px; border: 1px solid var(--ds-border);
+    border-radius: 8px; padding: 3px; background: var(--ds-surface-dim); }
+  .prompt-toggle button {
+    border: 0; background: transparent; padding: 6px 14px; border-radius: 6px;
+    font-size: 13px; cursor: pointer; color: var(--ds-text-secondary);
+  }
+  .prompt-toggle button.is-active { background: var(--ds-surface);
+    color: var(--ds-text-primary); font-weight: 600;
+    box-shadow: var(--ds-shadow-sm); }
+  .prompt-toggle button:disabled { opacity: .5; cursor: not-allowed; }
+  .prompt-meta { font-size: 12px; color: var(--ds-text-muted); margin: 8px 0 0; }
+  .prompt-editor .CodeMirror { height: 320px; border: 1px solid var(--ds-border);
+    border-radius: 6px; font-size: 13px; }
+  .prompt-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+  .prompt-git-field { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+  .prompt-git-field input { flex: 1 1 320px; }
+  .prompt-status { font-size: 13px; margin-left: auto; }
+  .prompt-status.is-ok { color: var(--ds-primary-dark); }
+  .prompt-status.is-err { color: var(--error); }
+  .prompt-hint { font-size: 12px; color: var(--ds-text-muted); margin-top: 10px; }
+  .prompt-hint a { color: var(--ds-text-link); }
+  .hidden { display: none; }
+</style>
+{% endblock %}
+
+{% block page %}
+<div class="prompt-cards"
+     data-iwt-configured="{{ '1' if iwt_configured else '0' }}">
+
+  {% for card in [
+      {'kind': 'install', 'title': 'Install prompt', 'sub': 'The /setup bootstrap prompt analysts paste into Claude Code.'},
+      {'kind': 'workspace', 'title': 'Workspace prompt', 'sub': 'The CLAUDE.md seeded into each analyst workspace.'}
+  ] %}
+  <section class="prompt-card" data-kind="{{ card.kind }}">
+    <div class="prompt-card__head">
+      <div>
+        <h2 class="prompt-card__title">{{ card.title }}</h2>
+        <div class="prompt-card__sub" style="font-size:13px;color:var(--ds-text-secondary);">{{ card.sub }}</div>
+        <div class="prompt-card__path" data-role="provenance"></div>
+      </div>
+      <div class="prompt-toggle" role="group" aria-label="Source mode">
+        <button type="button" data-mode="editor">Editor override</button>
+        <button type="button" data-mode="git">Git (from IWT repo)</button>
+      </div>
+    </div>
+
+    <!-- Editor mode -->
+    <div data-pane="editor">
+      <div class="prompt-editor"><textarea data-role="editor"></textarea></div>
+      <div class="prompt-actions">
+        <button type="button" class="btn btn-primary" data-action="save">Save</button>
+        <button type="button" class="btn btn-secondary" data-action="reset">Reset to default</button>
+        <button type="button" class="btn btn-secondary" data-action="preview">Preview</button>
+        <span class="prompt-status" data-role="status"></span>
+      </div>
+      <div class="prompt-meta" data-role="meta"></div>
+    </div>
+
+    <!-- Git mode -->
+    <div data-pane="git" class="hidden">
+      <div class="prompt-git-field">
+        <input type="text" class="search-input" data-role="git-path"
+               placeholder="repo-relative path (e.g. workspace/CLAUDE.md or install-prompt/template.md.tmpl)">
+        <button type="button" class="btn btn-primary" data-action="bind">Bind</button>
+        <span class="prompt-status" data-role="git-status"></span>
+      </div>
+      <div class="prompt-hint">
+        Bound content is read-only here — edit it in the repo + click
+        “Sync now” in <a href="/admin/server-config">server config</a>.
+      </div>
+    </div>
+
+    <div class="prompt-hint hidden" data-role="no-iwt">
+      Git mode needs an Initial Workspace Template repo. Register one in
+      <a href="/admin/server-config">server config</a> first.
+    </div>
+  </section>
+  {% endfor %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const root = document.querySelector('.prompt-cards');
+  const iwtConfigured = root.getAttribute('data-iwt-configured') === '1';
+
+  async function api(method, url, body) {
+    const opts = { method, headers: {} };
+    if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    const r = await fetch(url, opts);
+    let data = null;
+    try { data = await r.json(); } catch (e) { /* 204 */ }
+    return { ok: r.ok, status: r.status, data };
+  }
+
+  function detailHint(data) {
+    if (data && data.detail) {
+      if (typeof data.detail === 'string') return data.detail;
+      return data.detail.hint || data.detail.kind || JSON.stringify(data.detail);
+    }
+    return 'Request failed';
+  }
+
+  document.querySelectorAll('.prompt-card').forEach(function (card) {
+    const kind = card.getAttribute('data-kind');
+    const base = '/api/admin/prompts/' + kind;
+    const editorPane = card.querySelector('[data-pane="editor"]');
+    const gitPane = card.querySelector('[data-pane="git"]');
+    const noIwt = card.querySelector('[data-role="no-iwt"]');
+    const provenance = card.querySelector('[data-role="provenance"]');
+    const metaEl = card.querySelector('[data-role="meta"]');
+    const statusEl = card.querySelector('[data-role="status"]');
+    const gitStatusEl = card.querySelector('[data-role="git-status"]');
+    const gitPathInput = card.querySelector('[data-role="git-path"]');
+    const toggleBtns = card.querySelectorAll('.prompt-toggle button');
+
+    let cm = CodeMirror.fromTextArea(card.querySelector('[data-role="editor"]'), {
+      mode: 'jinja2', theme: 'material-darker', lineNumbers: true, lineWrapping: true,
+    });
+    let state = { source_mode: 'editor', git_path: null, default: '' };
+
+    function setStatus(el, msg, ok) {
+      el.textContent = msg || '';
+      el.classList.toggle('is-ok', ok === true);
+      el.classList.toggle('is-err', ok === false);
+    }
+
+    function applyMode(mode) {
+      toggleBtns.forEach(function (b) { b.classList.toggle('is-active', b.getAttribute('data-mode') === mode); });
+      editorPane.classList.toggle('hidden', mode !== 'editor');
+      gitPane.classList.toggle('hidden', mode !== 'git');
+      noIwt.classList.toggle('hidden', !(mode === 'git' && !iwtConfigured));
+      // git toggle disabled when no IWT repo
+      toggleBtns.forEach(function (b) {
+        if (b.getAttribute('data-mode') === 'git') b.disabled = !iwtConfigured;
+      });
+      cm.setOption('readOnly', mode === 'git' ? 'nocursor' : false);
+    }
+
+    async function load() {
+      const r = await api('GET', base);
+      if (!r.ok) { setStatus(statusEl, detailHint(r.data), false); return; }
+      state = r.data;
+      cm.setValue(state.content || state.default || '');
+      applyMode(state.source_mode);
+      if (state.source_mode === 'git') {
+        provenance.textContent = 'Git · bound to ' + (state.git_path || '(default)');
+        gitPathInput.value = state.git_path || '';
+      } else {
+        provenance.textContent = state.content ? 'Editor override (active)' : 'Editor · using shipped default';
+      }
+      metaEl.textContent = state.updated_at ? ('Updated ' + state.updated_at + (state.updated_by ? (' by ' + state.updated_by) : '')) : '';
+    }
+
+    toggleBtns.forEach(function (b) {
+      b.addEventListener('click', async function () {
+        const mode = b.getAttribute('data-mode');
+        if (mode === state.source_mode) return;
+        const r = await api('POST', base + '/source', { mode });
+        if (!r.ok) { setStatus(statusEl, detailHint(r.data), false); return; }
+        await load();
+      });
+    });
+
+    card.querySelector('[data-action="save"]').addEventListener('click', async function () {
+      const r = await api('PUT', base, { content: cm.getValue() });
+      if (!r.ok) { setStatus(statusEl, detailHint(r.data), false); return; }
+      setStatus(statusEl, 'Saved', true);
+      await load();
+    });
+    card.querySelector('[data-action="reset"]').addEventListener('click', async function () {
+      const r = await api('DELETE', base);
+      if (!r.ok) { setStatus(statusEl, detailHint(r.data), false); return; }
+      setStatus(statusEl, 'Reset to default', true);
+      await load();
+    });
+    card.querySelector('[data-action="preview"]').addEventListener('click', async function () {
+      const r = await api('POST', base + '/preview', { content: cm.getValue() });
+      if (!r.ok) { setStatus(statusEl, detailHint(r.data), false); return; }
+      const w = window.open('', '_blank');
+      if (w) { w.document.body.innerText = r.data.content; }
+      setStatus(statusEl, 'Preview opened', true);
+    });
+    card.querySelector('[data-action="bind"]').addEventListener('click', async function () {
+      const r = await api('POST', base + '/bind-git', { git_path: gitPathInput.value.trim() });
+      if (!r.ok) { setStatus(gitStatusEl, detailHint(r.data), false); return; }
+      setStatus(gitStatusEl, 'Bound', true);
+      await load();
+    });
+
+    load();
+  });
+})();
+</script>
+{% endblock %}

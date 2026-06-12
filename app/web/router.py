@@ -37,7 +37,6 @@ from app.instance_config import (
 )
 from src.repositories import (
     audit_repo,
-    claude_md_template_repo,
     data_packages_repo,
     knowledge_repo,
     memory_domains_repo,
@@ -53,7 +52,6 @@ from src.repositories import (
     user_group_members_repo,
     user_groups_repo,
     users_repo,
-    welcome_template_repo,
 )
 from src.connectors_manifest import load_manifest
 from app.api.me_debug import (
@@ -1922,9 +1920,12 @@ async def setup_page(
 
     # Determine the script text: override (Jinja2-rendered) or live default.
     # The override is per-instance, applies to every caller — admins who set
-    # an override are opting into the exact text they wrote.
-    row = welcome_template_repo().get()
-    override_content = row.get("content")
+    # an override are opting into the exact text they wrote. #622: resolution
+    # honors the install prompt's source_mode toggle (editor DB override vs a
+    # git-bound IWT file).
+    from src.initial_workspace import resolve_prompt
+
+    override_content, _mode = resolve_prompt("install", conn)
     if override_content:
         # Admin override — render Jinja2 placeholders server-side.
         # {server_url} and {token} survive because Jinja2 only processes
@@ -3130,52 +3131,34 @@ async def admin_scheduler_runs_redirect(_user: dict = Depends(require_admin)):
     return RedirectResponse(url="/admin/activity?source=scheduler", status_code=308)
 
 
-@router.get("/admin/agent-prompt", response_class=HTMLResponse)
-async def admin_agent_prompt_page(
+@router.get("/admin/prompts", response_class=HTMLResponse)
+async def admin_prompts_page(
     request: Request,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    from src.welcome_template import compute_default_agent_prompt
+    """Unified admin page for managed prompts (#622): two cards (install +
+    workspace), each with a Git⇄Editor source toggle, a CodeMirror editor for
+    editor mode, and a repo-path bind field for git mode. All dynamic state is
+    fetched client-side from /api/admin/prompts/{kind}; the route only needs to
+    know whether an IWT repo is registered so the git toggle can be disabled
+    when there's nothing to bind to."""
+    from src.initial_workspace import is_configured
 
-    row = welcome_template_repo().get()
-    base_url = str(request.base_url).rstrip("/")
-    default_template = compute_default_agent_prompt(conn, user=user, server_url=base_url)
-    ctx = _build_context(
-        request,
-        user=user,
-        current=row["content"] or "",
-        default_template=default_template,
-        updated_at=row["updated_at"],
-        updated_by=row["updated_by"],
-        is_override=row["content"] is not None,
-    )
-    return templates.TemplateResponse(request, "admin_welcome.html", ctx)
+    ctx = _build_context(request, user=user, iwt_configured=is_configured())
+    return templates.TemplateResponse(request, "admin_prompts.html", ctx)
+
+
+@router.get("/admin/agent-prompt", response_class=HTMLResponse)
+async def admin_agent_prompt_page(request: Request):
+    """Superseded by /admin/prompts (#622). 308 keeps bookmarks alive."""
+    return RedirectResponse(url="/admin/prompts", status_code=308)
 
 
 @router.get("/admin/workspace-prompt", response_class=HTMLResponse)
-async def admin_workspace_prompt_page(
-    request: Request,
-    user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    from src.claude_md import compute_default_claude_md
-    from app.api.claude_md import _scan_legacy_strings
-
-    row = claude_md_template_repo().get()
-    server_url = str(request.base_url).rstrip("/")
-    default_template = compute_default_claude_md(conn, user=user, server_url=server_url)
-    ctx = _build_context(
-        request,
-        user=user,
-        current=row["content"] or "",
-        default_template=default_template,
-        updated_at=row["updated_at"],
-        updated_by=row["updated_by"],
-        is_override=row["content"] is not None,
-        legacy_strings_detected=_scan_legacy_strings(row["content"] or ""),
-    )
-    return templates.TemplateResponse(request, "admin_workspace_prompt.html", ctx)
+async def admin_workspace_prompt_page(request: Request):
+    """Superseded by /admin/prompts (#622). 308 keeps bookmarks alive."""
+    return RedirectResponse(url="/admin/prompts", status_code=308)
 
 
 @router.get("/admin/tokens", response_class=HTMLResponse)

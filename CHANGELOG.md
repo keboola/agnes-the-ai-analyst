@@ -21,6 +21,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.23] — 2026-06-12
+
+### Fixed
+- **Session uploads: three silent data-loss vectors closed.** (1) Queue entries pointing at a transcript that doesn't exist *yet* (Claude Code writes the `.jsonl` lazily on the first prompt) were permanently dropped by any concurrent `agnes push`; they are now requeued with a first-failure stamp and only age out to the forensic failed-log after 30 days (`RETRY_TTL`). (2) The SessionEnd hook now runs `agnes capture-session` before the detached push, so an ending session always re-queues its final transcript — previously a push fired mid-session from another window (or by `/clear`) consumed the entry and the server kept a partial transcript, or an empty post-`/clear` stub, forever. Existing workspaces pick the new layout up via the `agnes self-upgrade` hook refresh. (3) 401 (expired / not-yet-imported PAT) dropped the whole queue permanently; it is now transient — retried until re-auth, bounded by the same TTL, which also caps persistent 5xx requeue loops. `agnes push` reports a new `requeued` counter. (#640)
+- **Admin session list & downloads now see API-uploaded sessions.** The endpoints scanned only the legacy collector layout (`user_sessions/<email local-part>/`), so sessions stored by `/api/upload/sessions` under `user_sessions/<user_id>/` were invisible in the list until the usage processor indexed them and their single-file download 404'd forever. List, single-file download, and bulk ZIP now scan both layouts, and the self-service `/api/me/stats/sessions` list gained the same dual-layout scan (plus basename matching for its download links). (#640)
+
+## [0.71.22] — 2026-06-12
+
+### Added
+- **`/admin/prompts` — edit the install + workspace prompts from the admin UI even when an Initial Workspace Template (IWT) repo is registered.** Previously, as soon as the IWT clone contained `workspace/CLAUDE.md`, the admin editor flipped read-only (the implicit `seed_owns()` lock) — exactly when operators adopt the override repo, the common production setup. Each managed prompt now carries an explicit **Git ⇄ Editor** source toggle (`instance_templates.source_mode`): in **Editor** mode the admin's DB override wins at render time and the editor is always writable; in **Git** mode the prompt binds to a repo-relative file in the IWT clone (e.g. `workspace/CLAUDE.md`; editor read-only, edit in the repo + "Sync now") — bind-time validation and render-time resolution share the same repo-root namespace, and the render-time read is containment-guarded against `..`/symlink escapes like `resolve_seed_file`. A new unified page (`/admin/prompts`, two cards) replaces the two standalone editors (`/admin/agent-prompt` + `/admin/workspace-prompt`, now `308` → `/admin/prompts`). New REST surface (admin-only): `GET/PUT/DELETE /api/admin/prompts/{kind}`, `POST .../source`, `POST .../bind-git`, `POST .../preview` (`kind ∈ install|workspace`). The core fix lands at `build_zip()` — override-mode `agnes init` (which serves the IWT zip verbatim, bypassing `/api/welcome`) now ships the admin-edited `CLAUDE.md` when the workspace prompt is in Editor mode. (#622 Slice 1, #638)
+
+### Removed
+- **`seed_owns()` editor read-only lock.** The implicit per-file IWT-ownership lock on the prompt editors is replaced by the explicit `source_mode` toggle (#622). Saving in Editor mode is always allowed; saving while a prompt is in Git mode returns `409 prompt_in_git_mode` (previously `409 iwt_seed_owns_template`). The standalone `admin_workspace_prompt.html` / `admin_welcome.html` pages were removed in favor of `/admin/prompts`. (#638)
+
+### Internal
+- **DuckDB schema v75 + Alembic `0022_prompt_source_mode_v75`.** Adds `source_mode` (NOT NULL, default `'editor'`), `git_path`, and `base_sha` to `instance_templates`; existing `welcome`/`claude_md` rows backfill to `'editor'`. `base_sha` is reserved for Slice-2 divergence detection (written, not read in Slice 1). Both backends kept in parity (SQLAlchemy model + dual repos with `get_meta`/`set_source_mode`/`bind_git`, cross-engine contract test included). (#622, #638)
+
 ## [0.71.21] — 2026-06-12
 
 ### Fixed

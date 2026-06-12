@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from cli.lib.session_queue import (
+    RETRY_TTL,
     append_to_queue,
     discard_snapshot,
     failed_log_path,
@@ -16,6 +17,7 @@ from cli.lib.session_queue import (
     read_entries_from_snapshot,
     read_paths_from_snapshot,
     requeue_failed,
+    retry_expired,
     snapshot_queue,
     uploaded_log_path,
 )
@@ -91,7 +93,10 @@ def test_read_entries_dedups_and_preserves_order(tmp_path):
     snap = snapshot_queue(tmp_path)
     assert snap is not None
     entries = read_entries_from_snapshot(snap)
-    assert entries == [("sid-1", Path("/abc.jsonl")), ("sid-2", Path("/def.jsonl"))]
+    assert entries == [
+        ("sid-1", Path("/abc.jsonl"), ""),
+        ("sid-2", Path("/def.jsonl"), ""),
+    ]
 
 
 def test_read_entries_different_session_id_same_path_kept(tmp_path):
@@ -112,14 +117,20 @@ def test_read_entries_accepts_legacy_one_column_lines(tmp_path):
     queue = queue_path(tmp_path)
     queue.write_text("/legacy.jsonl\nsid-1\t/new.jsonl\n", encoding="utf-8")
     entries = read_entries_from_snapshot(queue)
-    assert entries == [("", Path("/legacy.jsonl")), ("sid-1", Path("/new.jsonl"))]
+    assert entries == [
+        ("", Path("/legacy.jsonl"), ""),
+        ("sid-1", Path("/new.jsonl"), ""),
+    ]
 
 
 def test_read_entries_skips_blank_lines(tmp_path):
     queue = queue_path(tmp_path)
     queue.write_text("sid-1\t/abc.jsonl\n\n  \nsid-2\t/def.jsonl\n", encoding="utf-8")
     entries = read_entries_from_snapshot(queue)
-    assert entries == [("sid-1", Path("/abc.jsonl")), ("sid-2", Path("/def.jsonl"))]
+    assert entries == [
+        ("sid-1", Path("/abc.jsonl"), ""),
+        ("sid-2", Path("/def.jsonl"), ""),
+    ]
 
 
 def test_read_entries_returns_empty_for_missing_file(tmp_path):
@@ -189,7 +200,7 @@ def test_requeue_failed_appends_to_live_queue(tmp_path):
     fresh = tmp_path / "fresh.jsonl"
     failed = tmp_path / "failed.jsonl"
     append_to_queue(tmp_path, "sid-fresh", str(fresh))
-    requeue_failed(tmp_path, [("sid-failed", failed)])
+    requeue_failed(tmp_path, [("sid-failed", failed, "")])
     assert queue_path(tmp_path).read_text(encoding="utf-8") == (
         f"sid-fresh\t{fresh}\n"
         f"sid-failed\t{failed}\n"
@@ -256,3 +267,62 @@ def test_append_concurrent_threads_no_corruption(tmp_path):
         assert path.startswith("/p/")
         seen.add(line)
     assert len(seen) == n_workers * per_worker  # no dropped writes
+
+
+# ---------- retry-stamp (third column) ---------------------------------------
+
+
+def test_read_entries_parses_three_column_stamp(tmp_path):
+    """Stamped lines carry the first-failure ISO in the third column."""
+    queue = queue_path(tmp_path)
+    queue.write_text(
+        "sid-1\t/abc.jsonl\t2026-06-01T10:00:00Z\nsid-2\t/def.jsonl\n",
+        encoding="utf-8",
+    )
+    entries = read_entries_from_snapshot(queue)
+    assert entries == [
+        ("sid-1", Path("/abc.jsonl"), "2026-06-01T10:00:00Z"),
+        ("sid-2", Path("/def.jsonl"), ""),
+    ]
+
+
+def test_read_entries_dedup_keeps_first_seen_stamp(tmp_path):
+    """Dedup key is (sid, path) — the stamp does NOT split entries, and the
+    first-seen line wins so the TTL stays anchored at the original failure."""
+    queue = queue_path(tmp_path)
+    queue.write_text(
+        "sid-1\t/abc.jsonl\t2026-06-01T10:00:00Z\n"
+        "sid-1\t/abc.jsonl\n",  # later re-capture of the same session
+        encoding="utf-8",
+    )
+    entries = read_entries_from_snapshot(queue)
+    assert entries == [("sid-1", Path("/abc.jsonl"), "2026-06-01T10:00:00Z")]
+
+
+def test_requeue_failed_writes_stamp_column(tmp_path):
+    failed = tmp_path / "failed.jsonl"
+    requeue_failed(tmp_path, [("sid-failed", failed, "2026-06-01T10:00:00Z")])
+    assert queue_path(tmp_path).read_text(encoding="utf-8") == (
+        f"sid-failed\t{failed}\t2026-06-01T10:00:00Z\n"
+    )
+
+
+def test_retry_expired_fresh_stamp_false():
+    now = datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc)
+    assert retry_expired("2026-06-10T12:00:00Z", now) is False
+
+
+def test_retry_expired_old_stamp_true():
+    now = datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc)
+    old = now - RETRY_TTL
+    stamp = (old.replace(tzinfo=timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Exactly at the TTL boundary is NOT expired; one second past it is.
+    assert retry_expired(stamp, now) is False
+    past = "2026-04-01T00:00:00Z"
+    assert retry_expired(past, now) is True
+
+
+def test_retry_expired_empty_or_garbage_stamp_false():
+    """Fail-safe: a missing or unparsable stamp never expires an entry."""
+    assert retry_expired("") is False
+    assert retry_expired("not-a-timestamp") is False
