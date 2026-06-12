@@ -277,6 +277,30 @@ if [ "$IMAGE_DRIFT" = "1" ] || [ "$CONFIG_DRIFT" = "1" ]; then
             fi
         fi
     fi
+    # Apply pending Postgres migrations BEFORE recreating app. ``docker
+    # compose up -d`` does NOT re-run an already-``exited(0)`` one-shot
+    # whose only change is the image — Compose treats the stale exited
+    # ``migrate`` container as still satisfying ``service_completed_-
+    # successfully``. So a new image carrying a new Alembic revision boots
+    # ``app`` against a PG left at the old revision, tripping the fail-
+    # closed revision guard (#636) and taking the app down (FAI-60).
+    # Running the one-shot explicitly forces a fresh run on the new image;
+    # ``alembic upgrade head`` is idempotent (no-op when already at head).
+    #
+    # Gated on IMAGE_DRIFT — only a new image can carry a new migration, so
+    # a config-only recreate skips the container spin-up — and on the
+    # ``migrate`` service existing in the resolved compose set, so DuckDB-
+    # only stacks (no postgres overlay) skip it cleanly. On failure we
+    # abort BEFORE ``up -d`` (and before the CONFIG_MARKER write below), so
+    # the previous app keeps running and the next tick retries — we never
+    # recreate ``app`` against a half-migrated PG.
+    if [ "$IMAGE_DRIFT" = "1" ] && docker compose config --services 2>/dev/null | grep -qx migrate; then
+        echo "$(date): applying Postgres migrations (alembic upgrade head) before recreate"
+        if ! docker compose run --rm migrate; then
+            logger -t agnes-auto-upgrade "ERROR: migrate one-shot failed — aborting recreate (app stays on current image, retry next tick)"
+            exit 1
+        fi
+    fi
     # ${arr[@]+"${arr[@]}"} pattern: expands to nothing when array is
     # empty (vs. plain "${arr[@]}" which trips `set -u` on bash <4.4).
     # COMPOSE_FILE (incl. any conditionally-appended overlays) is exported

@@ -148,6 +148,15 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 Or set up a cron job — see `infra/modules/customer-instance/startup-script.sh.tpl` for the reference implementation.
 
+On VMs running the self-hosted Postgres side-car, the cron auto-upgrade
+(`scripts/ops/agnes-auto-upgrade.sh`) applies pending Alembic migrations
+(`docker compose run --rm migrate`) on an image bump *before* it recreates the
+app — so a build carrying a new schema revision migrates Postgres automatically
+and no manual `alembic upgrade head` step is needed on the VM. (The step is
+skipped on stacks without the `migrate` service, i.e. DuckDB-only or managed-PG
+deployments — for the latter, keep the `alembic upgrade head` step in your
+deploy pipeline as in [migrations.md](migrations.md).)
+
 ### Health checks & external monitoring
 
 Two health endpoints serve different audiences:

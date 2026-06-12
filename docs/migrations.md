@@ -134,6 +134,13 @@ docker run --rm \
 > emergency recovery only, set `AGNES_SKIP_PG_REVISION_CHECK=1` to boot past
 > the guard (you will hit schema errors until you migrate). DuckDB backends
 > self-migrate on connect and are unaffected.
+>
+> On VMs running the self-hosted Postgres side-car this pre-deploy step is
+> automated: the cron auto-upgrade (`scripts/ops/agnes-auto-upgrade.sh`) runs the
+> `migrate` one-shot before recreating the app on an image bump (FAI-60), so the
+> guard never fires there for a routine upgrade. The manual pre-deploy step above
+> is still required for managed Postgres (Cloud SQL/RDS), where there is no
+> compose `migrate` service.
 
 For rollback discipline: every Alembic revision in this repo has a
 real `downgrade()` body, validated by `test_full_chain_roundtrip` and

@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- **PG deploy: migrations applied before recreate.** `agnes-auto-upgrade.sh` now runs the one-shot `migrate` service (`alembic upgrade head`) before recreating containers on an image bump, so a build carrying a new Alembic revision migrates Postgres *before* the app boots — instead of tripping the fail-closed revision guard (#636) and taking the app down. `docker compose up -d` alone does not re-run an already-`exited(0)` one-shot whose only change is the image, which left the side-car PG behind the new code. Gated on the `migrate` service existing in the resolved compose set, so DuckDB-only deployments are unaffected; on a migrate failure the recreate is aborted (previous app keeps serving, next tick retries). (FAI-60)
 
 ### Removed
 
