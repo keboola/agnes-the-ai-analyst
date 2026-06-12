@@ -15,6 +15,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- BigQuery "not found" errors (a registered table pointing at a non-existent BQ
+  dataset/table, or a location mismatch) now surface as a structured 502 on
+  `/api/v2/sample` instead of a bare HTTP 500. The BQ extension reports these as
+  DuckDB-native `BinderException`s carrying BQ's `notFound` reason, which the
+  error translator's last-resort heuristic previously didn't recognize.
 
 ### Removed
 

@@ -121,7 +121,13 @@ def translate_bq_error(
       6. BadRequest, bad_request_status='upstream_error'
                                           -> bq_upstream_error (HTTP 502)
       7. GoogleAPICallError (other)       -> bq_upstream_error
-      8. Anything else                    -> RE-RAISED unchanged (don't swallow programmer errors)
+      8. 'not found' / 'notfound' in str(e).lower()
+                                          -> bq_upstream_error (HTTP 502); BQ
+                                             reason=notFound — referenced dataset/
+                                             table/job missing or location mismatch.
+                                             NB: 'does not exist' is NOT matched
+                                             (DuckDB-native catalog wording → re-raise).
+      9. Anything else                    -> RE-RAISED unchanged (don't swallow programmer errors)
 
     The `responseTooLarge` mapping (4) sits ahead of the generic BadRequest
     cases on purpose: BQ surfaces this failure mode as a 400 with a
@@ -209,6 +215,17 @@ def translate_bq_error(
     if "bad request" in msg_lower or " 400 " in msg_lower or "400:" in msg_lower:
         if bad_request_status == "client_error":
             return BqAccessError("bq_bad_request", msg)
+        return BqAccessError("bq_upstream_error", msg)
+
+    # BQ reason=notFound (HTTP 404): a referenced dataset / table / job doesn't
+    # exist, or the request location doesn't match the resource's. Documented
+    # wording always carries the 'Not found:' prefix; the bare reason token
+    # surfaces as '[notFound]' (camelCase, no space) on some transports — match
+    # both. Pre-fix these fell through to the re-raise below and surfaced as a
+    # bare HTTP 500 on /api/v2/sample (FAI-22). NB: deliberately NOT matching
+    # 'does not exist' (that's DuckDB-native catalog wording — let those
+    # re-raise as genuine bugs).
+    if "not found" in msg_lower or "notfound" in msg_lower:
         return BqAccessError("bq_upstream_error", msg)
 
     # Don't swallow programmer errors / unknown exceptions
