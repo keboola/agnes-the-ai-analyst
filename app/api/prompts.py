@@ -128,6 +128,11 @@ class PromptGetResponse(BaseModel):
     updated_at: Optional[str] = None
     updated_by: Optional[str] = None
     iwt_configured: bool = False
+    # --- Slice 2 (#622): per-file blob-sha divergence ---
+    diverged: bool = False
+    # True iff the bound file's current blob sha != the stored base_sha.
+    current_blob_sha: Optional[str] = None
+    # Live blob sha of git_path in the IWT clone (None when absent/unbound).
 
 
 class PromptPutRequest(BaseModel):
@@ -173,7 +178,7 @@ async def get_prompt(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     _validate_kind(kind)
-    from src.initial_workspace import is_configured, resolve_prompt
+    from src.initial_workspace import blob_sha, is_configured, resolve_prompt
 
     meta = _repo(kind).get_meta()
     server_url = str(request.base_url).rstrip("/")
@@ -185,6 +190,26 @@ async def get_prompt(
     else:
         content = meta["content"]
 
+    # Slice 2 (#622): per-file blob-sha divergence. Meaningful whenever a
+    # binding exists (git mode OR a Slice-3 imported-then-edited editor file
+    # that keeps its git_path back-reference) — the guard fires on git_path,
+    # not source_mode, so editor-mode import-backref divergence flows through
+    # here automatically once Slice 3 adds the import action.
+    diverged = False
+    current_blob = None
+    git_path = meta["git_path"]
+    if git_path and is_configured():
+        current_blob = blob_sha(git_path)
+        base = meta["base_sha"]
+        # Loud default: a stored base that doesn't match the live blob ->
+        # diverged. current_blob None (file removed from the repo) -> diverged.
+        if base is not None and current_blob != base:
+            diverged = True
+        elif base is None and current_blob is not None:
+            # Bound but never stamped (legacy / edge) -> diverged so the
+            # operator re-reconciles rather than trust a stale bind.
+            diverged = True
+
     return PromptGetResponse(
         kind=kind,
         source_mode=meta["source_mode"],
@@ -195,6 +220,8 @@ async def get_prompt(
         updated_at=meta["updated_at"].isoformat() if meta["updated_at"] else None,
         updated_by=meta["updated_by"],
         iwt_configured=is_configured(),
+        diverged=diverged,
+        current_blob_sha=current_blob,
     )
 
 
@@ -303,12 +330,15 @@ async def bind_git(
                 ),
             },
         )
-    # Stamp the IWT's last commit sha as the binding's base (Slice-2
-    # divergence detection metadata; written, not read in Slice 1).
-    from app.api.initial_workspace import _read_section
+    # Stamp the per-file git BLOB sha as the binding's base (Slice 2):
+    # precise divergence — flips only when THIS file's content changes, not
+    # when any unrelated commit lands. (Slice 1 stamped the HEAD commit sha;
+    # the divergence comparator treats a stored commit sha that doesn't match
+    # the live blob as diverged, the safe loud default for legacy bindings.)
+    from src.initial_workspace import blob_sha
 
-    base_sha = _read_section().get("last_commit_sha")
-    _repo(kind).bind_git(payload.git_path, base_sha=base_sha, updated_by=user["email"])
+    base = blob_sha(payload.git_path)
+    _repo(kind).bind_git(payload.git_path, base_sha=base, updated_by=user["email"])
     return {"status": "ok", "source_mode": "git", "git_path": payload.git_path}
 
 

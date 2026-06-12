@@ -426,6 +426,36 @@ def _is_within(root: Path, candidate: Path) -> bool:
         return False
 
 
+def blob_sha(rel_path: str) -> Optional[str]:
+    """Return the git blob sha of ``rel_path`` in the IWT clone HEAD, or None.
+
+    Per-file precision for divergence detection (#622 Slice 2): the blob sha
+    changes iff the file's *content* changes, independent of unrelated commits
+    landing in the IWT repo. ``rel_path`` is repo-relative (e.g.
+    ``workspace/CLAUDE.md``, ``install-prompt/template.md.tmpl``).
+
+    Returns None when no IWT clone exists, the path is absent from HEAD, the
+    path escapes the clone root, or git errors — best-effort, because
+    divergence is a UI hint and must never be a hard failure.
+
+    Uses ``git rev-parse HEAD:<path>`` (the canonical committed-tree blob sha,
+    works on the shallow ``--depth 1`` clone ``sync_template`` produces) rather
+    than ``git hash-object`` on the working-tree file — avoiding working-tree-
+    dirty edge cases.
+    """
+    iwt_root = _iwt_snapshot()
+    if iwt_root is None:
+        return None
+    target = iwt_root / rel_path
+    if not _is_within(iwt_root, target):
+        return None
+    try:
+        out = _run_git(["rev-parse", f"HEAD:{rel_path}"], cwd=iwt_root)
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
 def resolve_seed_file(rel_path: str) -> Optional[tuple[str, str]]:
     """Look up a seed file by repo-relative path.
 

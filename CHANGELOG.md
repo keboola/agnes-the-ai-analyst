@@ -20,6 +20,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.25] — 2026-06-12
+
+### Added
+- **`/admin/prompts` divergence badge.** When a managed prompt (install / workspace) is bound to a file in the Initial Workspace Template (IWT) repo (Git mode), each card now shows whether the bound file's content has drifted from the version captured at bind time: an `in sync @ <short-sha>` badge, or a red `diverged from repo` badge with a hint to re-click **Bind** to accept the repo's current version as the new baseline (no new endpoint — Bind already re-stamps). Divergence is computed lazily on `GET /api/admin/prompts/{kind}` (new response fields `diverged` + `current_blob_sha`) by comparing the live git blob sha of the bound path to the stored `base_sha`; it's a UI hint only and never blocks rendering. A bound file deleted from the repo, or a binding stamped before this change (legacy commit-sha baseline), reads as diverged — the safe loud default. The `initial_workspace.sync` audit event also gains a `diverged_prompts` param listing which bound prompts the new commit moved. (#622 Slice 2, #642)
+
+### Changed
+- **`instance_templates.base_sha` is now a per-file git *blob* sha, not the IWT HEAD commit sha.** Binding a prompt to a Git path (`POST /api/admin/prompts/{kind}/bind-git`) stamps `git rev-parse HEAD:<path>` so divergence detection only flips when *that file's content* changes, not when any unrelated commit lands. No DB migration (the column already exists); only its semantics change. Bindings stamped under the previous release hold a commit sha and read as diverged until the operator re-clicks Bind. (#622 Slice 2, #642)
+
+### Internal
+- `src/initial_workspace.py` gains `blob_sha(rel_path)` — best-effort per-file blob sha from the IWT clone HEAD (containment-guarded, returns `None` on absent path / unconfigured / git error). (#622 Slice 2, #642)
+
 ## [0.71.24] — 2026-06-12
 
 ### Fixed

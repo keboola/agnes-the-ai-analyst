@@ -52,6 +52,10 @@
   .prompt-status { font-size: 13px; margin-left: auto; }
   .prompt-status.is-ok { color: var(--ds-primary-dark); }
   .prompt-status.is-err { color: var(--error); }
+  .prompt-badge { display: inline-block; margin-left: 8px; padding: 2px 8px;
+    border-radius: 6px; font-size: 11px; font-weight: 600; }
+  .prompt-badge.is-diverged { background: var(--error-bg, #fdecea); color: var(--error, #b3261e); }
+  .prompt-badge.is-synced { background: var(--ds-surface-dim); color: var(--ds-text-muted); }
   .prompt-hint { font-size: 12px; color: var(--ds-text-muted); margin-top: 10px; }
   .prompt-hint a { color: var(--ds-text-link); }
   .hidden { display: none; }
@@ -72,6 +76,7 @@
         <h2 class="prompt-card__title">{{ card.title }}</h2>
         <div class="prompt-card__sub" style="font-size:13px;color:var(--ds-text-secondary);">{{ card.sub }}</div>
         <div class="prompt-card__path" data-role="provenance"></div>
+        <span class="prompt-badge hidden" data-role="divergence"></span>
       </div>
       <div class="prompt-toggle" role="group" aria-label="Source mode">
         <button type="button" data-mode="editor">Editor override</button>
@@ -102,6 +107,8 @@
       <div class="prompt-hint">
         Bound content is read-only here — edit it in the repo + click
         “Sync now” in <a href="/admin/server-config">server config</a>.
+        If the badge shows <strong>diverged</strong>, re-click <strong>Bind</strong>
+        to accept the repo's current version as the new baseline.
       </div>
     </div>
 
@@ -144,6 +151,7 @@
     const gitPane = card.querySelector('[data-pane="git"]');
     const noIwt = card.querySelector('[data-role="no-iwt"]');
     const provenance = card.querySelector('[data-role="provenance"]');
+    const divEl = card.querySelector('[data-role="divergence"]');
     const metaEl = card.querySelector('[data-role="meta"]');
     const statusEl = card.querySelector('[data-role="status"]');
     const gitStatusEl = card.querySelector('[data-role="git-status"]');
@@ -179,9 +187,24 @@
       state = r.data;
       cm.setValue(state.content || state.default || '');
       applyMode(state.source_mode);
+      divEl.classList.add('hidden');
       if (state.source_mode === 'git') {
         provenance.textContent = 'Git · bound to ' + (state.git_path || '(default)');
         gitPathInput.value = state.git_path || '';
+        // Divergence badge — only meaningful for a bound prompt.
+        if (state.git_path) {
+          divEl.classList.remove('hidden');
+          if (state.diverged) {
+            divEl.textContent = 'diverged from repo';
+            divEl.className = 'prompt-badge is-diverged';
+            setStatus(gitStatusEl,
+              "Repo file changed since bind — click Bind to re-stamp, or Sync now then reload.",
+              false);
+          } else {
+            divEl.textContent = 'in sync @ ' + (state.current_blob_sha || '').slice(0, 7);
+            divEl.className = 'prompt-badge is-synced';
+          }
+        }
       } else {
         provenance.textContent = state.content ? 'Editor override (active)' : 'Editor · using shipped default';
       }
