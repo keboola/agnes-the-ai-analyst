@@ -125,6 +125,16 @@ docker run --rm \
 # migrations dir — no extra build step needed.
 ```
 
+> **Startup guard (#636).** On a Postgres backend the app **fails closed at
+> boot** if the DB's Alembic revision is behind — or has never been stamped by
+> — the image's expected head: it refuses to start with an error naming the
+> current and head revisions, rather than booting and silently 500-ing on
+> every write to a column added by an un-applied migration. Run the pre-deploy
+> `alembic upgrade head` above *before* the new image serves traffic. For
+> emergency recovery only, set `AGNES_SKIP_PG_REVISION_CHECK=1` to boot past
+> the guard (you will hit schema errors until you migrate). DuckDB backends
+> self-migrate on connect and are unaffected.
+
 For rollback discipline: every Alembic revision in this repo has a
 real `downgrade()` body, validated by `test_full_chain_roundtrip` and
 `test_pairwise_roundtrip` on every PR. To roll back one revision in
