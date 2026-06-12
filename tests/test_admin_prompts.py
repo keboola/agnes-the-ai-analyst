@@ -227,6 +227,26 @@ def test_resolve_prompt_editor_and_git(tmp_path, monkeypatch):
     assert content is None and mode == "git"
 
 
+def test_resolve_seed_file_rejects_path_traversal(monkeypatch, tmp_path: Path):
+    """#622 security: a git_path that escapes the IWT root via ``..`` must not
+    be readable through resolve_seed_file — no arbitrary server-file read into
+    the workspace zip (review finding on #638). A legit in-root path still
+    resolves."""
+    iwt = _make_iwt_clone(tmp_path, claude_md="CLONE CLAUDE")
+    secret = iwt.parent / "outside_secret.env"
+    secret.write_text("TOKEN=supersecret", encoding="utf-8")
+
+    import src.initial_workspace as iw
+
+    monkeypatch.setattr(iw, "_iwt_snapshot", lambda: iwt)
+
+    # `..` escape out of the IWT root → blocked, even though the file exists
+    assert iw.resolve_seed_file(f"../{secret.name}") is None
+    # a legit in-root file still resolves
+    got = iw.resolve_seed_file("workspace/CLAUDE.md")
+    assert got is not None and got[0] == "CLONE CLAUDE"
+
+
 # ---------------------------------------------------------------------------
 # API surface
 # ---------------------------------------------------------------------------

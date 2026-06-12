@@ -386,6 +386,22 @@ def _iwt_snapshot() -> Optional[Path]:
     return iwt_root
 
 
+def _is_within(root: Path, candidate: Path) -> bool:
+    """True iff ``candidate`` resolves to a path inside ``root``.
+
+    Guards against ``..``/symlink traversal in a caller-supplied ``rel_path``
+    (#622): an admin binding a prompt to a git path like ``../../secrets/.env``
+    must not let ``resolve_seed_file`` read a file outside the seed root and
+    serve it into the workspace zip. ``.resolve()`` collapses ``..`` and
+    follows symlinks before the containment check.
+    """
+    try:
+        candidate.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def resolve_seed_file(rel_path: str) -> Optional[tuple[str, str]]:
     """Look up a seed file by repo-relative path.
 
@@ -404,11 +420,11 @@ def resolve_seed_file(rel_path: str) -> Optional[tuple[str, str]]:
     iwt_root = _iwt_snapshot()
     if iwt_root is not None:
         iwt_path = iwt_root / rel_path
-        if iwt_path.is_file():
+        if _is_within(iwt_root, iwt_path) and iwt_path.is_file():
             return (iwt_path.read_text(encoding="utf-8"), "iwt")
 
     bundled_path = _BUNDLED_SEED_DIR / rel_path
-    if bundled_path.is_file():
+    if _is_within(_BUNDLED_SEED_DIR, bundled_path) and bundled_path.is_file():
         return (bundled_path.read_text(encoding="utf-8"), "bundled")
 
     return None
