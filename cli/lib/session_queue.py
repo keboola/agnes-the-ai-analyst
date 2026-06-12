@@ -286,13 +286,17 @@ def mark_failed_permanent(
     """Append `<iso_timestamp>\\t<session_id>\\t<status>\\t<path>` to the
     permanent-failure audit log.
 
-    Called by push when the server returns a 4xx (other than 408 / 429)
-    — deterministic failures where retrying never succeeds (401 token
-    expired, 403 RBAC denial, 413 payload too large, 400 server
-    validation, etc.). The transcript path is logged here instead of
-    silently dropped so operators have a forensic trail; the entry is
-    NOT re-queued, breaking the prior infinite-loop bug where every
-    push run would re-bombard the server with the same failing upload.
+    Called by push when the server returns a 4xx other than 401 / 408 /
+    429 — deterministic failures where retrying never succeeds (403 RBAC
+    denial, 413 payload too large, 400 server validation, etc.) — and
+    when a retried entry's first failure is older than :data:`RETRY_TTL`
+    (``status_code`` then carries a reason string such as
+    ``not_found_expired`` instead of an HTTP status). 401 is transient:
+    re-auth makes the same upload succeed, so it requeues until the TTL.
+    The transcript path is logged here instead of silently dropped so
+    operators have a forensic trail; the entry is NOT re-queued,
+    breaking the prior infinite-loop bug where every push run would
+    re-bombard the server with the same failing upload.
 
     No separate lock: piggybacks on `agnes-push.lock` (the
     single-instance push lock), same as `mark_uploaded` and
