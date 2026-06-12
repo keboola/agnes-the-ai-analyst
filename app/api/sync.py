@@ -838,6 +838,9 @@ def _table_manifest_entry(state: dict, reg: dict) -> dict:
         "size_bytes": state.get("file_size_bytes", 0),
         "rows": state.get("rows", 0),
         "query_mode": reg.get("query_mode") or "local",
+        # #607 — distribution flag. Listed in the manifest (catalog + RBAC)
+        # but `agnes pull` skips its parquet download when true.
+        "server_only": bool(reg.get("server_only")),
         "source_type": reg.get("source_type") or "",
         "updated": (
             state.get("last_sync").isoformat() if state.get("last_sync") else None
@@ -1046,6 +1049,9 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
             "size_bytes": state.get("file_size_bytes", 0),
             "rows": state.get("rows", 0),
             "query_mode": reg.get("query_mode") or "local",
+            # #607 — distribution flag consumed by the cli/lib/pull.py
+            # download-set loop: listed here but its parquet is not fetched.
+            "server_only": bool(reg.get("server_only")),
             "source_type": reg.get("source_type") or "",
         }
 

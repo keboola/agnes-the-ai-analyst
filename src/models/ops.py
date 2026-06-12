@@ -63,6 +63,13 @@ class TableRegistry(Base):
     things_to_know: Mapped[str | None] = mapped_column(Text, nullable=True)
     sample_questions: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     pairs_well_with: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # v74 (#607): distribution flag decoupled from query_mode. When True the
+    # table is kept server-side & queryable via `agnes query --remote`, but
+    # `agnes pull` does not download its parquet. Only meaningful for
+    # query_mode IN ('local', 'materialized'); ignored for 'remote'.
+    server_only: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("FALSE"), nullable=False
+    )
 
     __table_args__ = (
         Index("ix_table_registry_source_type", "source_type"),

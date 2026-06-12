@@ -1442,6 +1442,18 @@
                                     delta merge). Auto-filled from the Keboola source when
                                     available.</div>
                             </div>
+                            <div class="form-group" style="margin-top:8px;">
+                                <label class="form-label">
+                                    <input type="checkbox" id="kbServerOnly">
+                                    Server-only (don't distribute to laptops)
+                                </label>
+                                <div class="form-hint">Keep the parquet server-side and
+                                    queryable via <code>agnes query --remote</code>, but skip
+                                    it in <code>agnes pull</code>. Use for large tables that
+                                    shouldn't be downloaded to every laptop. Only applies to
+                                    synced (local / materialized) tables — ignored for live
+                                    (remote) ones.</div>
+                            </div>
                         </details>
 
                         <!-- v26 Direct-extract sync-strategy panel — visible only when
@@ -1653,6 +1665,16 @@
                                        placeholder="e.g. id">
                                 <div class="form-hint">Comma-separated list. Required for
                                     Direct extract → Incremental.</div>
+                            </div>
+                            <div class="form-group editkb-server-only-row" style="margin-top:8px;">
+                                <label class="form-label">
+                                    <input type="checkbox" id="editKbServerOnly">
+                                    Server-only (don't distribute to laptops)
+                                </label>
+                                <div class="form-hint">Keep the parquet server-side and
+                                    queryable via <code>agnes query --remote</code>, but skip
+                                    it in <code>agnes pull</code>. Only applies to synced
+                                    (local / materialized) tables.</div>
                             </div>
                         </details>
 
@@ -3579,6 +3601,9 @@
         if (kbStrategyEl) kbStrategyEl.value = 'full_refresh';
         var kbGranEl = document.getElementById('kbPartitionGranularity');
         if (kbGranEl) kbGranEl.value = 'month';
+        // #607 — checkbox isn't covered by the .value='' loop above.
+        var kbServerOnlyEl = document.getElementById('kbServerOnly');
+        if (kbServerOnlyEl) kbServerOnlyEl.checked = false;
         onKbSyncModeChange();  // apply default visibility
         var btn = document.getElementById('registerKeboolaSubmitBtn');
         btn.disabled = false;
@@ -3674,6 +3699,11 @@
         var primaryKey = pk
             ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean)
             : [];
+        // #607 — server_only is only meaningful for synced (local/materialized)
+        // tables, never live (remote). The checkbox lives under Advanced and
+        // defaults false; the backend validator rejects true + remote.
+        var serverOnlyEl = document.getElementById('kbServerOnly');
+        var serverOnly = !!(serverOnlyEl && serverOnlyEl.checked);
 
         if (mode === 'direct') {
             var strategy = _getKbStrategy();
@@ -3685,6 +3715,7 @@
                 source_table: sourceTable,
                 primary_key: primaryKey,
                 sync_strategy: strategy,
+                server_only: serverOnly,
                 sync_schedule: (document.getElementById('kbSyncSchedule').value || '').trim() || null,
                 description: (document.getElementById('kbDescription').value || '').trim() || null,
                 folder: (document.getElementById('kbFolder').value || '').trim() || null,
@@ -3710,6 +3741,7 @@
             source_type: 'keboola',
             query_mode: 'materialized',
             primary_key: primaryKey,
+            server_only: serverOnly,
             sync_schedule: (document.getElementById('kbSyncSchedule').value || '').trim() || null,
             description: (document.getElementById('kbDescription').value || '').trim() || null,
             folder: (document.getElementById('kbFolder').value || '').trim() || null,
@@ -4002,6 +4034,13 @@
         document.getElementById('editKbDescription').value = table.description || '';
         document.getElementById('editKbFolder').value = table.folder || '';
         document.getElementById('editKbPrimaryKey').value = (table.primary_key || []).join(', ');
+        // #607 — server_only checkbox. Disabled for live (remote) rows since
+        // the flag is meaningless there (backend rejects true + remote).
+        var editServerOnlyEl = document.getElementById('editKbServerOnly');
+        if (editServerOnlyEl) {
+            editServerOnlyEl.checked = !!table.server_only;
+            editServerOnlyEl.disabled = (queryMode === 'remote');
+        }
 
         // v26 fields
         document.getElementById('editKbStrategy').value = table.sync_strategy || 'full_refresh';
@@ -4066,6 +4105,10 @@
         var primaryKey = pk
             ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean)
             : [];
+        // #607 — both edit branches map to synced (local/materialized) modes,
+        // so server_only is always valid here.
+        var editServerOnlyEl = document.getElementById('editKbServerOnly');
+        var serverOnly = !!(editServerOnlyEl && editServerOnlyEl.checked);
 
         if (mode === 'direct') {
             var strategy = _getEditKbStrategy();
@@ -4075,6 +4118,7 @@
                 source_table: sourceTable,
                 primary_key: primaryKey,
                 sync_strategy: strategy,
+                server_only: serverOnly,
                 sync_schedule: (document.getElementById('editKbSyncSchedule').value || '').trim() || null,
                 description: (document.getElementById('editKbDescription').value || '').trim() || null,
                 folder: (document.getElementById('editKbFolder').value || '').trim() || null,
@@ -4106,6 +4150,7 @@
         var common = {
             query_mode: 'materialized',
             primary_key: primaryKey,
+            server_only: serverOnly,
             sync_schedule: (document.getElementById('editKbSyncSchedule').value || '').trim() || null,
             description: (document.getElementById('editKbDescription').value || '').trim() || null,
             folder: (document.getElementById('editKbFolder').value || '').trim() || null,

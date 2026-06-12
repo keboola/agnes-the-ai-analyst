@@ -1495,6 +1495,37 @@ class RegisterTableRequest(BaseModel):
             "Agnes ``bucket`` label (issue #343)."
         ),
     )
+    # v74 (#607) — distribution flag decoupled from query_mode. When true the
+    # table is kept server-side & queryable via `agnes query --remote`, but
+    # `agnes pull` does NOT download its parquet (the manifest still lists it
+    # for catalog discovery + RBAC). Only meaningful for query_mode IN
+    # ('local', 'materialized'); the model_validator below rejects it paired
+    # with query_mode='remote' (no server-stored parquet to suppress).
+    server_only: bool = Field(
+        default=False,
+        description=(
+            "Keep the table server-side & queryable via `agnes query "
+            "--remote`, but exclude its parquet from `agnes pull` download. "
+            "Only valid for query_mode='local'/'materialized'; rejected with "
+            "query_mode='remote'. Default false leaves distribution unchanged."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_server_only_query_mode(self):
+        """``server_only`` is a *distribution* suppressor — it only makes
+        sense when there IS a server-stored parquet to suppress. A
+        ``query_mode='remote'`` row has none (every query goes live to the
+        upstream source), so ``server_only=true`` there is incoherent.
+        Reject it explicitly rather than silently ignore so the admin sees
+        the conflict at register/update time (issue #607)."""
+        if self.server_only and self.query_mode == "remote":
+            raise ValueError(
+                "server_only=true is only valid for query_mode='local' or "
+                "'materialized' (a 'remote' table has no server-stored parquet "
+                "to suppress from agnes pull)"
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_mode_query_coherence(self):
@@ -2030,6 +2061,11 @@ class UpdateTableRequest(BaseModel):
     # clear bq_fqn on an existing row (cleared via explicit `null`,
     # per the PUT shape contract documented on the handler below).
     bq_fqn: Optional[str] = None
+    # v74 (#607) — distribution flag. PUT lets an admin toggle it on/off.
+    # The query_mode='remote' conflict is enforced against the *merged*
+    # record in the update_table handler (the PUT body alone may omit
+    # query_mode, so it can't be validated here in isolation).
+    server_only: Optional[bool] = None
 
     @field_validator("sync_strategy", mode="before")
     @classmethod
@@ -2634,6 +2670,7 @@ def register_table(
         partition_granularity=request.partition_granularity,
         initial_load_chunk_days=request.initial_load_chunk_days,
         bq_fqn=request.bq_fqn,
+        server_only=request.server_only,
     )
 
     # Audit entry — masked params; description kept raw (it's documentation).
@@ -2934,6 +2971,21 @@ async def update_table(
             "grain", "platforms", "partition_col", "history", "gotchas",
         ):
             merged.pop(_docs_key, None)
+
+        # v74 (#607) — validate the server_only ↔ query_mode invariant
+        # against the *merged* record (the PUT body may toggle either field
+        # independently). server_only=true is only coherent for a row with a
+        # server-stored parquet (local / materialized); a 'remote' row has
+        # none. Mirror the RegisterTableRequest validator at PUT time.
+        if merged.get("server_only") and merged.get("query_mode") == "remote":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "server_only=true is only valid for query_mode='local' or "
+                    "'materialized' (a 'remote' table has no server-stored "
+                    "parquet to suppress from agnes pull)"
+                ),
+            )
 
         # When switching the merged record away from materialized mode, drop
         # the stale source_query — the request validator can't clear it via

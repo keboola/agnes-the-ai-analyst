@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **`server_only` distribution mode for registered tables.** A new `server_only` boolean flag on `table_registry` (default `false`), decoupled from `query_mode`: a `server_only=true` table is kept server-side and refreshed by the normal extract/sync pipeline (including incremental) **and** stays queryable via `agnes query --remote`, but `agnes pull` does NOT download its parquet to analyst laptops. The manifest still lists it (so `agnes catalog` discovery + RBAC are unaffected); the `cli/lib/pull.py` download-set loop counts it in `parquets_total` but skips the fetch, mirroring the remote-skip's listed-but-not-downloaded behavior. Use it for large tables where re-downloading the whole parquet to every laptop on each change is wasteful but live upstream querying is undesirable. Only meaningful for `query_mode IN ('local', 'materialized')` — the admin API validator (`POST`/`PUT` register/update) rejects `server_only=true` paired with `query_mode='remote'` (a remote table has no server-stored parquet to suppress). Exposed as a checkbox in the admin register/edit modals (disabled for live/remote rows). The `agnes query` "no local view → use `--remote`" hint now also covers `server_only` tables. DuckDB schema v74 + Alembic migration `0021_server_only_v74` keep both backends in parity. (#607)
 
 ### Changed
 

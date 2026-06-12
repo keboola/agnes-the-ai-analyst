@@ -432,6 +432,16 @@ def run_pull(
             if authorized_names is not None and tid not in authorized_names:
                 continue
             non_remote_total += 1
+            # #607 — server_only tables are kept fresh server-side and stay
+            # queryable via `agnes query --remote`, but their parquet is NOT
+            # distributed to laptops. Count them as listed (they're part of
+            # parquets_total above, like a hash-unchanged row) but never add
+            # them to the download set. Mirrors the remote-skip's
+            # listed-but-not-downloaded behavior, except remote rows aren't
+            # even counted (no server parquet exists at all); a server_only
+            # row HAS a server parquet, we just don't ship it.
+            if info.get("server_only"):
+                continue
             local_hash = local_tables.get(tid, {}).get("hash", "")
             server_hash = info.get("hash", "")
             target = parquet_dir / f"{tid}.parquet"

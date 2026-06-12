@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 73
+SCHEMA_VERSION = 74
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -361,7 +361,14 @@ CREATE TABLE IF NOT EXISTS table_registry (
     platforms     VARCHAR,
     partition_col VARCHAR,
     history       VARCHAR,
-    gotchas       VARCHAR
+    gotchas       VARCHAR,
+    -- v74: distribution flag, decoupled from query_mode. When true the
+    -- table is kept server-side & queryable via `agnes query --remote`,
+    -- but `agnes pull` does NOT download its parquet (the manifest still
+    -- lists it for catalog discovery + RBAC). Only meaningful for
+    -- query_mode IN ('local', 'materialized'); ignored for 'remote'
+    -- (which has no server-stored parquet to suppress). Issue #607.
+    server_only   BOOLEAN DEFAULT false
 );
 
 CREATE TABLE IF NOT EXISTS table_profiles (
@@ -4892,6 +4899,25 @@ def _v72_to_v73(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 73")
 
 
+def _v73_to_v74(conn: duckdb.DuckDBPyConnection) -> None:
+    """v74: ``server_only`` distribution flag on ``table_registry``.
+
+    Decoupled from ``query_mode``: a ``server_only=true`` row is kept
+    server-side and stays queryable via ``agnes query --remote``, but
+    ``agnes pull`` does NOT download its parquet (the manifest still lists
+    it for catalog discovery + RBAC). Only meaningful for
+    ``query_mode IN ('local', 'materialized')``; ignored for ``'remote'``
+    rows (no server-stored parquet to suppress). Issue #607.
+
+    Idempotent ADD COLUMN IF NOT EXISTS — safe on fresh and upgrade paths.
+    Default ``false`` leaves every existing row unchanged.
+    """
+    conn.execute(
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS server_only BOOLEAN DEFAULT false"
+    )
+    conn.execute("UPDATE schema_version SET version = 74")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -5193,6 +5219,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v71_to_v72(conn)
             # v72→v73: sandbox pause/resume refs on chat_sessions (un-indexed).
             _v72_to_v73(conn)
+            # v73→v74: server_only distribution flag on table_registry.
+            # _SYSTEM_SCHEMA already declares the column on fresh installs
+            # (no-op ALTER here). Issue #607.
+            _v73_to_v74(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5392,6 +5422,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v71_to_v72(conn)
             if current < 73:
                 _v72_to_v73(conn)
+            if current < 74:
+                _v73_to_v74(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
