@@ -619,3 +619,20 @@ class TestMeSessionsBothLayouts:
             if row["session_file"] == "me-dup.jsonl"
         ]
         assert len(matches) == 1
+
+    def test_me_sessions_sees_legacy_collector_dir(
+        self, seeded_app, admin_user, session_data_dir,
+    ):
+        """#640 review round-2: a file ONLY under the legacy email-local-part
+        dir must appear — the first fix passed both args as user_id, so the
+        legacy dir was silently never scanned (and the dedup test above was
+        green for the wrong reason)."""
+        username = _get_admin_email(seeded_app, admin_user).split("@")[0]
+        _seed_jsonl(session_data_dir, username, "legacy-only.jsonl")
+
+        r = seeded_app["client"].get("/api/me/stats/sessions", headers=admin_user)
+        assert r.status_code == 200, r.text
+        files = [row["session_file"] for row in r.json()["rows"]]
+        assert "legacy-only.jsonl" in files, (
+            f"legacy collector dir must be scanned by /me sessions; got {files}"
+        )

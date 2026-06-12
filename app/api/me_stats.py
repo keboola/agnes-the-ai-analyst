@@ -104,12 +104,18 @@ def list_self_sessions(
     username = _username_for_stats(user)
     user_id: str = user["id"]
     # Both ingestion layouts, same as the admin endpoints (#640): the legacy
-    # collector writes under the email local-part, the upload API under
+    # collector writes under the email LOCAL-PART, the upload API under
     # users.id — scanning one of them hid the other's sessions from the
-    # self-service list until the usage processor indexed them.
-    from app.api.admin_user_sessions import _user_session_dirs
-
-    user_dirs = _user_session_dirs(user_id, username)
+    # self-service list until the usage processor indexed them. NOTE:
+    # ``_username_for_stats`` returns the user_id (the summary-table key),
+    # so the legacy dir name must be derived from the email — and the base
+    # comes from THIS module's ``_session_data_dir`` (it honors
+    # ``AGNES_SESSION_DATA_DIR`` + this endpoint's historical default).
+    email_local = (user.get("email") or "").split("@")[0]
+    base = _session_data_dir()
+    user_dirs = [
+        base / name for name in dict.fromkeys([email_local, user_id]) if name
+    ]
 
     try:
         rows_db = conn.execute(
