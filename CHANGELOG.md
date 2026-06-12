@@ -11,7 +11,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
-- **An analyst's Claude can now browse and subscribe to stack resources without leaving the chat.** New `GET /api/stack/browse?type=<data_package|memory_domain>` exposes the existing `StackResolver.browse()` candidate set — every RBAC-granted resource for the caller, each annotated with an `in_stack` flag — so the model can discover what it *could* add, not just what is already subscribed. Surfaced on all three contracts: `agnes stack browse [--type] [--json]` (renders an `IN STACK` ✓ column), and three MCP tools (`stack_browse`, `stack_subscribe`, `stack_unsubscribe`). `stack_subscribe` returns a post-subscribe `next_step` hint (`Run \`agnes pull\` to download the new tables.`) so the freshly-subscribed resource becomes usable in the same conversation. Subscriptions are persistent (identical to the web UI "Add to stack" button). User approval rides the MCP client's own tool-permission prompt — no custom mechanism. The workspace `CLAUDE.md` rails now point at the browse → add → pull flow. (#621)
 
 ### Changed
 
@@ -20,6 +19,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+## [0.71.10] — 2026-06-12
+
+### Added
+- **An analyst's Claude can now browse and subscribe to stack resources without leaving the chat.** New `GET /api/stack/browse?type=<data_package|memory_domain>` exposes the existing `StackResolver.browse()` candidate set — every RBAC-granted resource for the caller, each annotated with an `in_stack` flag — so the model can discover what it *could* add, not just what is already subscribed. Surfaced on all three contracts: `agnes stack browse [--type] [--json]` (renders an `IN STACK` ✓ column), and three MCP tools (`stack_browse`, `stack_subscribe`, `stack_unsubscribe`). `stack_subscribe` returns a post-subscribe `next_step` hint (`Run \`agnes pull\` to download the new tables.`) so the freshly-subscribed resource becomes usable in the same conversation. Subscriptions are persistent (identical to the web UI "Add to stack" button). User approval rides the MCP client's own tool-permission prompt — no custom mechanism. The workspace `CLAUDE.md` rails now point at the browse → add → pull flow. (#621, #625)
+
+### Fixed
+- `POST /api/stack/subscribe` and `DELETE /api/stack/subscription/{type}/{id}` now reject co-session principals with 403 (`co_session cannot manage stack`), matching `GET /api/stack` and the new `/browse`. Previously a co-session token reaching these endpoints crashed on the principal dataclass instead of being cleanly refused. (#625)
 
 ## [0.71.9] — 2026-06-12
 
