@@ -94,6 +94,70 @@ class TestStackList:
         assert result.exit_code == 2
 
 
+class TestStackBrowse:
+    def test_browse_with_explicit_type(self):
+        body = {
+            "items": [
+                {
+                    "id": "pkg_sales",
+                    "name": "Sales",
+                    "description": "Orders + line items",
+                    "requirement": "available",
+                    "in_stack": False,
+                },
+                {
+                    "id": "pkg_core",
+                    "name": "Core",
+                    "description": "Always on",
+                    "requirement": "required",
+                    "in_stack": True,
+                },
+            ]
+        }
+        with patch("cli.commands.stack.api_get", return_value=_resp(200, body)) as m:
+            result = runner.invoke(app, ["stack", "browse", "--type", "data_package"])
+        assert result.exit_code == 0
+        # URL contract — hits /api/stack/browse?type=data_package
+        args, kwargs = m.call_args
+        assert args[0] == "/api/stack/browse"
+        assert kwargs["params"] == {"type": "data_package"}
+        # Table renders the IN STACK column + the ✓ for the required row.
+        assert "IN STACK" in result.output
+        assert "Sales" in result.output
+        assert "✓" in result.output
+
+    def test_browse_without_type_fetches_both(self):
+        with patch(
+            "cli.commands.stack.api_get",
+            return_value=_resp(200, {"items": []}),
+        ) as m:
+            result = runner.invoke(app, ["stack", "browse"])
+        assert result.exit_code == 0
+        types_called = sorted([c.kwargs["params"]["type"] for c in m.call_args_list])
+        assert types_called == ["data_package", "memory_domain"]
+
+    def test_browse_json_output(self):
+        body = {
+            "items": [
+                {"id": "pkg_a", "name": "A", "requirement": "available", "in_stack": False}
+            ]
+        }
+        with patch("cli.commands.stack.api_get", return_value=_resp(200, body)):
+            result = runner.invoke(
+                app, ["stack", "browse", "--type", "data_package", "--json"]
+            )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data[0]["id"] == "pkg_a"
+        assert data[0]["type"] == "data_package"
+        assert data[0]["in_stack"] is False
+
+    def test_browse_plugin_type_rejected(self):
+        result = runner.invoke(app, ["stack", "browse", "--type", "plugin"])
+        assert result.exit_code == 2
+        assert "marketplace" in result.output.lower()
+
+
 class TestStackAdd:
     def test_add_calls_subscribe_endpoint(self):
         with patch(
