@@ -993,6 +993,7 @@ checks against.
 ### `/api/stack` — Stack subscriptions
 
 - /api/stack
+- /api/stack/browse
 - /api/stack/subscribe
 - /api/stack/subscription/{resource_type}/{resource_id}
 

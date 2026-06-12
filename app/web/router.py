@@ -2613,6 +2613,11 @@ async def admin_users_page(
 ):
     """Admin page for user management."""
     ctx = _build_context(request, user=user)
+    # Server-rendered first paint: the total-users metric and the
+    # group-filter dropdown options. The table rows themselves are fetched
+    # client-side from GET /api/users (recency window + search/group filter).
+    ctx["total_users"] = users_repo().count_all()
+    ctx["groups"] = user_groups_repo().list_all()
     return templates.TemplateResponse(request, "admin_users.html", ctx)
 
 

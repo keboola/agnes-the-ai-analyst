@@ -21,6 +21,39 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.14] — 2026-06-12
+
+### Fixed
+- **Chat sandbox: the freshly-minted session token now always wins over a persisted token file.** `ChatManager._spawn_runner` mints a fresh short-lived session JWT into `AGNES_TOKEN` on every spawn/respawn, but the `agnes` CLI's `get_token()` preferred `token.json` over the env var — so any token file present in the sandbox (e.g. written by an in-session `agnes init`, or replayed workspace state) silently shadowed the fresh credential and produced `HTTP 401: Invalid or expired token` on `agnes catalog`/`query` after a respawn. Inside the sandbox (`AGNES_SESSION_ID` set — only the chat runner sets it) a non-empty `AGNES_TOKEN` env now takes precedence; an empty env still falls through to the file rather than returning a blank credential. Analyst laptops keep the historical file-first order — `token.json` written by `agnes init` stays canonical there. (#628)
+
+## [0.71.13] — 2026-06-12
+
+### Added
+- **Scheduler now supports cron expressions** alongside the existing `every Nm` / `every Nh` / `daily HH:MM` formats (fully backward compatible). A `cron <minute hour day-of-month month day-of-week>` schedule (UTC) covers day-of-month, weekly, monthly, and arbitrary cadences with one well-known format — e.g. `cron 0 5 7 * *` (05:00 UTC on the 7th of every month), `cron 0 5 * * 1` (05:00 UTC every Monday), `cron 30 6 1,15 * *` (06:30 on the 1st and 15th). Each field supports `*`, comma lists (`1,15`), ranges (`9-17`), and steps (`*/15`); day-of-week is 0-6 (0 = Sunday). When both day-of-month and day-of-week are restricted, both must match (AND) — a documented, deterministic departure from vixie cron's OR quirk. Implemented with a hand-rolled 5-field matcher (no new dependency). `is_table_due` mirrors the existing `daily` catch-up contract — a missed occurrence fires on the next tick after it passed, across arbitrarily long offline gaps (the due-check walks days, not minutes, bounded at 8 years — past the 4-year gap of a Feb-29 schedule) — and month-end is handled natively (`cron 0 0 31 * *` never fires in a 30-day month). `is_valid_schedule` validates each field against its range so the admin API rejects malformed cron with 422, consistent with the `daily 25:00` rejection. The admin table forms' Sync Schedule hints now mention the `cron …` form. (#608, #627)
+
+## [0.71.12] — 2026-06-12
+
+### Fixed
+- **`agnes pull` no longer destroys a good parquet on a hash mismatch, and a partial pull exits non-zero.** A table whose download failed the manifest-hash check used to be `unlink`ed *before* the result was verified — so a corrupt or raced download left the table completely missing from disk (not just stale), and `agnes pull` still reported success with exit 0. Now `_download_one` (`cli/lib/pull.py`) downloads into a sidecar `<tid>.parquet.verify.tmp`, verifies the hash there, and only `os.replace`s it onto the live `<tid>.parquet` **after** verification passes — so a bad download never touches the prior good file. A hash mismatch is treated as transient and re-downloaded (2 retries, small backoff) before giving up; on persistent mismatch the old parquet stays in place and the table is recorded under `result.errors`. Retries reset the per-file progress display, so a re-download doesn't inflate the byte counter past the file's size. The `agnes pull` command (`cli/commands/pull.py`) now `raise typer.Exit(1)` whenever `result.errors` is non-empty on all three output paths (normal, `--quiet`, `--json` — the JSON path emits the summary dict first, then exits 1), so manual runs and CI both see a partial pull as a failure instead of a success-looking exit 0. The pre-v49 / no-hash `_is_valid_parquet` fallback path is unchanged. (#596, #626)
+
+## [0.71.11] — 2026-06-12
+
+### Added
+- **Host-side watchdog + daily DB backup with restore-verification in the `customer-instance` module.** Every provisioned VM now runs two systemd timers (artifacts ship as module files through the startup script — independent of the pinned app `image_tag`): `agnes-watchdog` (every 5 min) greps container logs for known incident signatures — DuckDB `FatalException` crash loops, the invalidated-database "zombie" state where the app keeps answering `/api/health` 200 while every write returns 500, WAL-salvage data-loss events, index-desync errors — plus container restart bursts, cgroup OOM kills, scheduler HTTP-500 streaks, `/data` disk pressure and a dead health endpoint; `agnes-db-backup` (daily) copies `system.duckdb`+WAL to `/data/backups/system-duckdb/` (7-day retention) and *proves each copy restorable* by opening a scratch copy, replaying the WAL and exercising the statement classes from the 2026-06 index-corruption incident — so silent on-disk corruption surfaces within a day instead of at the next outage. Alerts go to journald + `/var/log/agnes-watchdog.log` and optionally to a Slack/Google-Chat-compatible webhook (new `alert_webhook_url` variable, sensitive; messages carry a per-environment label derived from the VM role). Opt out with `enable_watchdog = false`. Complements `enable_monitoring`'s uptime checks + PD snapshots: those observe the VM from outside; the watchdog reads failure states the health endpoint cannot express, and the canary verify catches corruption a disk snapshot would preserve faithfully. (#623)
+
+## [0.71.10] — 2026-06-12
+
+### Added
+- **An analyst's Claude can now browse and subscribe to stack resources without leaving the chat.** New `GET /api/stack/browse?type=<data_package|memory_domain>` exposes the existing `StackResolver.browse()` candidate set — every RBAC-granted resource for the caller, each annotated with an `in_stack` flag — so the model can discover what it *could* add, not just what is already subscribed. Surfaced on all three contracts: `agnes stack browse [--type] [--json]` (renders an `IN STACK` ✓ column), and three MCP tools (`stack_browse`, `stack_subscribe`, `stack_unsubscribe`). `stack_subscribe` returns a post-subscribe `next_step` hint (`Run \`agnes pull\` to download the new tables.`) so the freshly-subscribed resource becomes usable in the same conversation. Subscriptions are persistent (identical to the web UI "Add to stack" button). User approval rides the MCP client's own tool-permission prompt — no custom mechanism. The workspace `CLAUDE.md` rails now point at the browse → add → pull flow. (#621, #625)
+
+### Fixed
+- `POST /api/stack/subscribe` and `DELETE /api/stack/subscription/{type}/{id}` now reject co-session principals with 403 (`co_session cannot manage stack`), matching `GET /api/stack` and the new `/browse`. Previously a co-session token reaching these endpoints crashed on the principal dataclass instead of being cleanly refused. (#625)
+
+## [0.71.9] — 2026-06-12
+
+### Changed
+- **`/admin/users` is now server-paged.** The page previously pulled every user account to the browser and filtered in JavaScript. It now shows a total-users metric at the top and a table of only the 10 most recently registered users; the search box and a new group-filter dropdown push their work to the backend (`GET /api/users?search=&group_id=&limit=`), which returns at most the requested window ordered by registration date. New repository method `search_recent(limit, search, group_id)` (DuckDB + Postgres parity). The `GET /api/users` list is now recency-ordered (was email-sorted); `limit` still defaults to 1000 so list-everything callers (`agnes admin list-users`, the setup health check) keep their prior reach. (#624, FAI-23)
+
 ## [0.71.8] — 2026-06-11
 
 ### Added
