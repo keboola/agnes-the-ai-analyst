@@ -64,11 +64,15 @@ def _username_for_stats(user: dict) -> str:
 
 
 def _session_data_dir() -> Path:
-    """Match ``app.api.admin_user_sessions._session_data_dir``."""
+    """Like ``app.api.admin_user_sessions._session_data_dir`` but also
+    honoring the legacy ``AGNES_SESSION_DATA_DIR`` env var. The fallback
+    default matches the admin resolver (and the upload API's actual write
+    location, ``${DATA_DIR}/user_sessions``) — the old ``/data/sessions``
+    default pointed at a directory nothing writes to (#640 review)."""
     return Path(
         os.environ.get("SESSION_DATA_DIR")
         or os.environ.get("AGNES_SESSION_DATA_DIR")
-        or "/data/sessions"
+        or "/data/user_sessions"
     )
 
 
@@ -236,11 +240,19 @@ def _enrich_pipeline_status(
 ) -> None:
     """Add ``pipeline_status`` and ``items_extracted`` from
     ``session_processor_state`` (verification processor) to each row
-    in-place.  Matches are looked up by ``<user_id>/<session_file>``.
+    in-place.  The state table keys rows by ``<dir>/<filename>`` (the
+    pipeline runner's session_key); processed rows already carry that
+    prefixed value in ``session_file``, filesystem rows carry a bare
+    name uploaded under the user_id dir — prefixing unconditionally
+    double-prefixed the former and matched nothing (#640 review).
     """
     if not rows:
         return
-    keys = [f"{user_id}/{r['session_file']}" for r in rows]
+
+    def _state_key(session_file: str) -> str:
+        return session_file if "/" in session_file else f"{user_id}/{session_file}"
+
+    keys = [_state_key(r["session_file"]) for r in rows]
     state_map: dict[str, dict] = {}
     try:
         placeholders = ",".join("?" for _ in keys)
@@ -258,8 +270,7 @@ def _enrich_pipeline_status(
     except Exception:
         pass
     for row in rows:
-        key = f"{user_id}/{row['session_file']}"
-        state = state_map.get(key)
+        state = state_map.get(_state_key(row["session_file"]))
         if state is None:
             row["pipeline_status"] = "pending"
             row["items_extracted"] = None
