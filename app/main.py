@@ -364,6 +364,23 @@ async def lifespan(app):
     from app.instance_config import get_public_url
     app.state.public_url = get_public_url()
 
+    # Install operator-provided stdio-MCP wheels from the persistent data
+    # volume (${DATA_DIR}/mcp/wheels) and put ~/.local/bin on PATH so their
+    # console scripts resolve when the stdio client spawns them. Without
+    # this, a wheel installed by hand into the container is wiped on every
+    # recreate and the source's scheduled materialize silently breaks with
+    # command-not-found. Fail-soft: a bad wheel logs and is retried next
+    # boot; never blocks startup.
+    try:
+        from connectors.mcp.wheel_bootstrap import (
+            ensure_user_bin_on_path,
+            install_operator_wheels,
+        )
+        ensure_user_bin_on_path()
+        install_operator_wheels()
+    except Exception:
+        logger.exception("mcp wheel bootstrap failed (non-fatal)")
+
     # Issue #81 Group A — log the effective remote_attach allowlist at
     # startup so an operator's typo in AGNES_REMOTE_ATTACH_EXTENSIONS
     # (which REPLACES, not extends, the default) is visible.

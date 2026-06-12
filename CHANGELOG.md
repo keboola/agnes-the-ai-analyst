@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.15] — 2026-06-12
+
+### Added
+- **Operator wheels for stdio MCP sources survive container recreates.** stdio-transport MCP sources need their server's binary inside the app container, but anything installed by hand (`docker exec pip install …`) was wiped on every recreate — and recreates are routine now that auto-upgrade tracks releases — silently breaking the source's scheduled materialize with command-not-found until someone reinstalled. New contract: drop the wheel(s) into `${DATA_DIR}/mcp/wheels/` on the persistent data volume; at startup the app installs each with `pip install --user --no-deps` (`--no-deps` so a third-party wheel can never clobber the app's pinned dependencies — ship dependency wheels alongside if the server needs extras) and puts `~/.local/bin` on PATH so the stdio client can spawn the console script. Idempotent via a content-hash marker (unchanged wheels cost one hash per boot), fail-soft per wheel (a bad wheel logs an ERROR and is retried next boot; startup is never blocked). (#629)
+
 ## [0.71.14] — 2026-06-12
 
 ### Fixed
