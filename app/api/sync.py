@@ -414,6 +414,11 @@ def _run_sync(
         )
         return
 
+    # Accumulates per-table failures across the sync (materialized pass +
+    # extractor) so both the per-table operator alert below and the fatal-path
+    # alert in the outer `except` can report the same context.
+    collected_errors: List[dict] = []
+
     try:
         from app.instance_config import get_data_source_type
         from src.db import get_system_db
@@ -690,8 +695,20 @@ sys.exit(compute_exit_code(result, len(configs)))
                         file=_sys.stderr,
                         flush=True,
                     )
+                    collected_errors.append(
+                        {
+                            "table": "(keboola extractor)",
+                            "error": "partial failure (exit 2) — see server logs for per-table errors",
+                        }
+                    )
                 else:
                     print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
+                    collected_errors.append(
+                        {
+                            "table": "(keboola extractor)",
+                            "error": f"extractor failed (exit {result.returncode}) — see server logs",
+                        }
+                    )
 
             # Run custom connectors (Tier A: local mount) — only when there
             # were local-mode tables to drive the extractor. Custom connectors
@@ -766,6 +783,10 @@ sys.exit(compute_exit_code(result, len(configs)))
                     file=_sys.stderr,
                     flush=True,
                 )
+            # Carry the per-table failures forward for the operator alert
+            # (fired after this block, and also surfaced if a later fatal
+            # error hits the outer except).
+            collected_errors.extend(mat_summary["errors"])
         except Exception as e:
             print(
                 f"[SYNC] Materialized SQL pass FAILED: {e}",
@@ -773,6 +794,22 @@ sys.exit(compute_exit_code(result, len(configs)))
                 flush=True,
             )
             traceback.print_exc()
+            # The whole materialized pass blowing up is itself a per-table-ish
+            # failure operators should hear about; record it so the alert below
+            # (and the fatal-path alert) include it.
+            collected_errors.append({"table": "(materialized pass)", "error": str(e)})
+
+        # Operator alert on per-table sync errors (non-fatal). Best-effort:
+        # notify_sync_failure no-ops when no webhook is configured and never
+        # raises. Fired here — not in the outer except — so a sync that
+        # completes-with-errors still alerts even though it never throws.
+        if collected_errors:
+            try:
+                from app.services.sync_notifier import notify_sync_failure
+
+                notify_sync_failure(failed_tables=collected_errors, fatal=None)
+            except Exception:
+                logger.exception("sync-failure notifier raised on per-table path")
 
         # Rebuild master views (reads extract.duckdb files, no write conflict)
         from src.orchestrator import SyncOrchestrator
@@ -848,6 +885,15 @@ sys.exit(compute_exit_code(result, len(configs)))
     except Exception as e:
         print(f"[SYNC] FAILED: {e}", file=_sys.stderr, flush=True)
         traceback.print_exc()
+        # Operator alert on the fatal path. Best-effort: notify_sync_failure
+        # never raises, but wrap anyway so an import-time issue can't mask the
+        # original failure or leave _sync_lock held.
+        try:
+            from app.services.sync_notifier import notify_sync_failure
+
+            notify_sync_failure(failed_tables=collected_errors, fatal=e)
+        except Exception:
+            logger.exception("sync-failure notifier raised on fatal path")
     finally:
         _sync_lock.release()
 

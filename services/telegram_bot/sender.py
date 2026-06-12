@@ -18,6 +18,30 @@ def _api_url(method: str) -> str:
     return f"{BASE_URL.format(token=config.TELEGRAM_BOT_TOKEN)}/{method}"
 
 
+def post_webhook(url: str, payload: dict, *, timeout: float = 10.0) -> bool:
+    """POST a JSON ``payload`` to an arbitrary incoming-webhook ``url``.
+
+    Synchronous sibling of the async Telegram senders above — shared here so
+    the httpx-POST pattern lives in one place. Slack / Google Chat / Mattermost
+    incoming webhooks all accept a ``{"text": "..."}`` body, so the same call
+    fans out to whichever channel the operator wired up.
+
+    Best-effort by contract: NEVER raises. Returns ``True`` on a 2xx response,
+    ``False`` on any non-2xx or transport error (logged). Callers on a critical
+    path (e.g. the sync error handler) rely on this swallowing failures so an
+    unreachable webhook can't break the work that triggered the alert.
+    """
+    try:
+        resp = httpx.post(url, json=payload, timeout=timeout)
+        if 200 <= resp.status_code < 300:
+            return True
+        logger.error("webhook POST to %s failed: %s", url, resp.status_code)
+        return False
+    except Exception:
+        logger.exception("webhook POST to %s raised", url)
+        return False
+
+
 async def send_message(
     chat_id: int,
     text: str,
