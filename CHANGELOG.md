@@ -15,11 +15,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
-- **`agnes pull` no longer destroys a good parquet on a hash mismatch, and a partial pull exits non-zero.** A table whose download failed the manifest-hash check used to be `unlink`ed *before* the result was verified — so a corrupt or raced download left the table completely missing from disk (not just stale), and `agnes pull` still reported success with exit 0. Now `_download_one` (`cli/lib/pull.py`) downloads into a sidecar `<tid>.parquet.verify.tmp`, verifies the hash there, and only `os.replace`s it onto the live `<tid>.parquet` **after** verification passes — so a bad download never touches the prior good file. A hash mismatch is treated as transient and re-downloaded (2 retries, small backoff) before giving up; on persistent mismatch the old parquet stays in place and the table is recorded under `result.errors`. The `agnes pull` command (`cli/commands/pull.py`) now `raise typer.Exit(1)` whenever `result.errors` is non-empty on all three output paths (normal, `--quiet`, `--json` — the JSON path emits the summary dict first, then exits 1), so manual runs and CI both see a partial pull as a failure instead of a success-looking exit 0. The pre-v49 / no-hash `_is_valid_parquet` fallback path is unchanged. (#596)
 
 ### Removed
 
 ### Internal
+
+## [0.71.12] — 2026-06-12
+
+### Fixed
+- **`agnes pull` no longer destroys a good parquet on a hash mismatch, and a partial pull exits non-zero.** A table whose download failed the manifest-hash check used to be `unlink`ed *before* the result was verified — so a corrupt or raced download left the table completely missing from disk (not just stale), and `agnes pull` still reported success with exit 0. Now `_download_one` (`cli/lib/pull.py`) downloads into a sidecar `<tid>.parquet.verify.tmp`, verifies the hash there, and only `os.replace`s it onto the live `<tid>.parquet` **after** verification passes — so a bad download never touches the prior good file. A hash mismatch is treated as transient and re-downloaded (2 retries, small backoff) before giving up; on persistent mismatch the old parquet stays in place and the table is recorded under `result.errors`. Retries reset the per-file progress display, so a re-download doesn't inflate the byte counter past the file's size. The `agnes pull` command (`cli/commands/pull.py`) now `raise typer.Exit(1)` whenever `result.errors` is non-empty on all three output paths (normal, `--quiet`, `--json` — the JSON path emits the summary dict first, then exits 1), so manual runs and CI both see a partial pull as a failure instead of a success-looking exit 0. The pre-v49 / no-hash `_is_valid_parquet` fallback path is unchanged. (#596, #626)
 
 ## [0.71.11] — 2026-06-12
 
