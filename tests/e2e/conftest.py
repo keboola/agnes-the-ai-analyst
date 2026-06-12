@@ -72,7 +72,7 @@ def pytest_collection_modifyitems(
 
 _COMPOSE_FILE = Path(__file__).parent / "docker-compose.e2e.yml"
 _BASE_URL = "http://localhost:8000"
-_HEALTH_PATH = "/healthz"
+_HEALTH_PATH = "/api/health"
 _HEALTH_TIMEOUT_SECONDS = 120
 
 

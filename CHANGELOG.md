@@ -20,6 +20,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.17] — 2026-06-12
+
+### Internal
+- **E2E docker harness works again from a clean checkout.** Four stacked bit-rots made `tests/e2e/` unrunnable: (1) `Dockerfile.e2e` copied only `pyproject.toml` into the dep layer — metadata generation fails since `readme = "README.md"` was declared — and installed with plain pip, which cannot apply the `[tool.uv] override-dependencies` urllib3 pin and dies with `ResolutionImpossible` on the kbcstorage cap; the image now mirrors the production Dockerfile (python:3.13-slim + uv). (2) The root `.dockerignore` excludes `tests/`, so the image never contained its own `start.sh` entrypoint — a per-Dockerfile `Dockerfile.e2e.dockerignore` (BuildKit) now carries the list minus that line. (3) The harness probed `/healthz`, which no longer exists — conftest, the compose healthcheck, and the adversarial liveness probe now hit `/api/health`. (4) Tests that create chat sessions hard-failed with 503 `chat_disabled` when `E2B_API_KEY` is unset (fake-agent mode still spawns real E2B microVMs) — every chat-session-creating test file now skips cleanly via a shared `skip_unless_chat_sessions_possible()` helper. Note: the suite needs `--timeout=900` to outlive pytest.ini's global `--timeout=60` during image build + health wait. (#631)
+- **New `agnes-e2e-tester` agent** (`.claude/agents/`): runs/triages the layered test suites (unit → docker E2E → real-LLM/E2B) with the env-var gates and cost guardrails spelled out, and carries per-surface manual verification checklists (web chat incl. pause/resume, Slack, MCP/CRM passthrough, onboarding tour) for live-instance smoke tests. (#631)
+
 ## [0.71.16] — 2026-06-12
 
 ### Added
