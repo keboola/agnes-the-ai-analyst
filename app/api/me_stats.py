@@ -103,7 +103,13 @@ def list_self_sessions(
     """
     username = _username_for_stats(user)
     user_id: str = user["id"]
-    user_dir = _session_data_dir() / username
+    # Both ingestion layouts, same as the admin endpoints (#640): the legacy
+    # collector writes under the email local-part, the upload API under
+    # users.id — scanning one of them hid the other's sessions from the
+    # self-service list until the usage processor indexed them.
+    from app.api.admin_user_sessions import _user_session_dirs
+
+    user_dirs = _user_session_dirs(user_id, username)
 
     try:
         rows_db = conn.execute(
@@ -154,14 +160,18 @@ def list_self_sessions(
         processed[Path(d["session_file"]).name] = d
 
     all_rows: list[dict] = list(processed.values())
-    if user_dir.is_dir():
+    seen_fs: set[str] = set()
+    for user_dir in user_dirs:
+        if not user_dir.is_dir():
+            continue
         for p in sorted(
             user_dir.glob("*.jsonl"),
             key=lambda x: x.stat().st_mtime,
             reverse=True,
         ):
-            if p.name in processed:
+            if p.name in processed or p.name in seen_fs:
                 continue
+            seen_fs.add(p.name)
             mtime = datetime.fromtimestamp(p.stat().st_mtime).isoformat()
             all_rows.append({
                 "session_file": p.name,
@@ -191,7 +201,9 @@ def list_self_sessions(
     if uploaded_dir.is_dir():
         uploaded_names = {p.name for p in uploaded_dir.glob("*.jsonl")}
     for row in all_rows:
-        fname = row.get("session_file", "")
+        # Basename — processed rows carry the pipeline's dir-prefixed
+        # session_file, which would never match the uploaded-file names.
+        fname = Path(row.get("session_file", "")).name
         if fname in uploaded_names:
             row["download_url"] = f"/profile/sessions/{fname}"
         else:

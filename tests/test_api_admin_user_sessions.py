@@ -586,3 +586,36 @@ class TestListUserActivity:
         conn.close()
 
         assert after == before + 1
+
+
+class TestMeSessionsBothLayouts:
+    """#640 review follow-up: /api/me/stats/sessions shares the dual-layout
+    scan with the admin endpoints — an API-uploaded session (user_id dir)
+    must show in the SELF-service list too, not only in the admin one."""
+
+    def test_me_sessions_sees_upload_api_dir(
+        self, seeded_app, admin_user, session_data_dir,
+    ):
+        uid = _get_admin_user_id(seeded_app, admin_user)
+        _seed_jsonl(session_data_dir, uid, "self-uploaded.jsonl")
+
+        r = seeded_app["client"].get("/api/me/stats/sessions", headers=admin_user)
+        assert r.status_code == 200, r.text
+        files = [row["session_file"] for row in r.json()["rows"]]
+        assert "self-uploaded.jsonl" in files
+
+    def test_me_sessions_dedups_across_layouts(
+        self, seeded_app, admin_user, session_data_dir,
+    ):
+        uid = _get_admin_user_id(seeded_app, admin_user)
+        username = _get_admin_email(seeded_app, admin_user).split("@")[0]
+        _seed_jsonl(session_data_dir, username, "me-dup.jsonl")
+        _seed_jsonl(session_data_dir, uid, "me-dup.jsonl")
+
+        r = seeded_app["client"].get("/api/me/stats/sessions", headers=admin_user)
+        assert r.status_code == 200, r.text
+        matches = [
+            row for row in r.json()["rows"]
+            if row["session_file"] == "me-dup.jsonl"
+        ]
+        assert len(matches) == 1
