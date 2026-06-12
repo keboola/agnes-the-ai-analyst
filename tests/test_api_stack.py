@@ -245,6 +245,27 @@ class TestStackSubscribe:
         assert resp.status_code == 400
         assert resp.json()["detail"] == "already_required"
 
+    def test_subscribe_denies_session_principal(self, seeded_app):
+        """A co-session token (SessionPrincipal) cannot manage the stack —
+        regression for the guard gap flagged in #625 review (subscribe used
+        to fall through to ``user[\"id\"]`` on the dataclass)."""
+        import asyncio
+
+        from app.api.stack import SubscribeRequest, subscribe
+        from app.auth.session_principal import SessionPrincipal
+        from fastapi import HTTPException
+
+        principal = SessionPrincipal(
+            session_id="s1",
+            participant_user_ids=["analyst1"],
+            participant_emails=["analyst@test.com"],
+            intersection={},
+        )
+        payload = SubscribeRequest(resource_type="data_package", resource_id="p1")
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(subscribe(payload=payload, user=principal))
+        assert exc.value.status_code == 403
+
 
 # -------- unsubscribe -----------------------------------------------------
 
@@ -280,3 +301,26 @@ class TestStackUnsubscribe:
         )
         assert resp.status_code == 400
         assert resp.json()["detail"] == "cannot_remove_required"
+
+    def test_unsubscribe_denies_session_principal(self, seeded_app):
+        """Same guard as subscribe — unsubscribe must 403 a SessionPrincipal
+        before touching ``user[\"id\"]``."""
+        import asyncio
+
+        from app.api.stack import unsubscribe
+        from app.auth.session_principal import SessionPrincipal
+        from fastapi import HTTPException
+
+        principal = SessionPrincipal(
+            session_id="s1",
+            participant_user_ids=["analyst1"],
+            participant_emails=["analyst@test.com"],
+            intersection={},
+        )
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                unsubscribe(
+                    resource_type="data_package", resource_id="p1", user=principal
+                )
+            )
+        assert exc.value.status_code == 403
