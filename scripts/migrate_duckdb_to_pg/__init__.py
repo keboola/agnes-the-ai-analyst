@@ -90,6 +90,7 @@ _PK_COLUMNS: Dict[str, List[str]] = {
     "usage_marketplace_item_window": ["period_label", "source", "type", "parent_plugin", "name"],
     "marketplace_plugins": ["marketplace_id", "name"],
     "user_store_installs": ["user_id", "entity_id"],
+    "store_entity_votes": ["entity_id", "user_id"],
     "user_plugin_optouts": ["user_id", "marketplace_id", "plugin_name"],
     "knowledge_item_relations": ["item_a_id", "item_b_id", "relation_type"],
     "knowledge_votes": ["item_id", "user_id"],

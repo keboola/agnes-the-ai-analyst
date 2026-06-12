@@ -14,7 +14,7 @@ Cowork bundle settings.json points to:
 with header  Authorization: Bearer <PAT>  set by Claude Code.
 
 Tools available: server_info, catalog, schema, describe, query, skills,
-stack_browse, stack_subscribe, stack_unsubscribe, documentation_api.
+stack_browse, stack_subscribe, stack_unsubscribe, store_rate, documentation_api.
 (query_local and pull require a local analyst filesystem — not available
  in the server context.)
 """
@@ -296,6 +296,33 @@ async def stack_unsubscribe(resource_type: str, resource_id: str) -> dict:
         )
         r.raise_for_status()
     return {"unsubscribed": True}
+
+
+@mcp.tool()
+async def store_rate(entity_id: str, vote: int) -> dict:
+    """Rate a store / marketplace entity thumbs up/down (#398).
+
+    Casts, changes, or clears your single vote on an entity — the same effect
+    as the thumbs buttons in the marketplace detail view; one vote per entity
+    per user, re-voting replaces the prior value.
+
+    Args:
+        entity_id: The store entity id (from ``catalog`` / marketplace browse).
+        vote:      ``1`` = thumbs up, ``-1`` = thumbs down, ``0`` = clear your vote.
+
+    Returns ``{"up", "down", "my_vote"}`` — the updated tally for the entity.
+    """
+    if vote not in (1, -1, 0):
+        raise ValueError("vote must be 1, -1, or 0")
+    async with httpx.AsyncClient() as c:
+        r = await c.post(
+            f"{_BASE}/api/store/entities/{entity_id}/rate",
+            json={"vote": vote},
+            headers=_headers(),
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
 
 
 @mcp.tool()

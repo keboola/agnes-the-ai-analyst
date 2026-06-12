@@ -1020,6 +1020,7 @@ in the Initial Workspace Template clone. Backs the `/admin/prompts` page.
 - /api/store/entities/{entity_id}/files
 - /api/store/entities/{entity_id}/install
 - /api/store/entities/{entity_id}/photo
+- /api/store/entities/{entity_id}/rate
 - /api/store/entities/{entity_id}/versions/{version_no}/restore
 - /api/store/import-bundle
 - /api/store/owners
