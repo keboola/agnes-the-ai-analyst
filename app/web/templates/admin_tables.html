@@ -1085,8 +1085,20 @@
                             <div class="form-hint">
                                 How often Agnes refreshes the local copy. Examples:
                                 <code>every 15m</code>, <code>every 6h</code>,
-                                <code>daily 03:00</code>, <code>daily 07:00,13:00,18:00</code> (UTC).
+                                <code>daily 03:00</code>, <code>daily 07:00,13:00,18:00</code>,
+                                <code>cron 0 5 7 * *</code> (UTC).
                             </div>
+                        </div>
+                        <div class="form-group bq-access-synced" style="display:none;">
+                            <label class="form-label">
+                                <input type="checkbox" id="bqServerOnly">
+                                Server-only (don't distribute to laptops)
+                            </label>
+                            <div class="form-hint">Keep the parquet server-side and
+                                queryable via <code>agnes query --remote</code>, but skip
+                                it in <code>agnes pull</code>. Use for large tables that
+                                shouldn't be downloaded to every laptop. Only applies to
+                                synced tables — live (remote) ones have no server parquet.</div>
                         </div>
                         <div class="form-group" id="bqPrecheckSummary" style="display:none;">
                             <div class="form-label">Source check</div>
@@ -1242,7 +1254,17 @@
                             <input type="text" class="form-input" id="editBqSyncSchedule" placeholder="every 6h">
                             <div class="form-hint">How often Agnes refreshes the local copy.
                                 <code>every 15m</code>, <code>every 6h</code>,
-                                <code>daily 03:00</code> (UTC).</div>
+                                <code>daily 03:00</code>, <code>cron 0 5 7 * *</code> (UTC).</div>
+                        </div>
+                        <div class="form-group bq-edit-access-synced" style="display:none;">
+                            <label class="form-label">
+                                <input type="checkbox" id="editBqServerOnly">
+                                Server-only (don't distribute to laptops)
+                            </label>
+                            <div class="form-hint">Keep the parquet server-side and
+                                queryable via <code>agnes query --remote</code>, but skip
+                                it in <code>agnes pull</code>. Only applies to synced
+                                tables; cleared automatically when switching to Live.</div>
                         </div>
 
                         <div class="form-group">
@@ -1414,7 +1436,8 @@
                             <div class="form-hint">
                                 How often Agnes refreshes the local copy. Examples:
                                 <code>every 15m</code>, <code>every 6h</code>,
-                                <code>daily 03:00</code>, <code>daily 07:00,13:00,18:00</code> (UTC).
+                                <code>daily 03:00</code>, <code>daily 07:00,13:00,18:00</code>,
+                                <code>cron 0 5 7 * *</code> (UTC).
                             </div>
                         </div>
 
@@ -1441,6 +1464,18 @@
                                     Direct extract → Incremental (used as the dedup key on
                                     delta merge). Auto-filled from the Keboola source when
                                     available.</div>
+                            </div>
+                            <div class="form-group" style="margin-top:8px;">
+                                <label class="form-label">
+                                    <input type="checkbox" id="kbServerOnly">
+                                    Server-only (don't distribute to laptops)
+                                </label>
+                                <div class="form-hint">Keep the parquet server-side and
+                                    queryable via <code>agnes query --remote</code>, but skip
+                                    it in <code>agnes pull</code>. Use for large tables that
+                                    shouldn't be downloaded to every laptop. Only applies to
+                                    synced (local / materialized) tables — ignored for live
+                                    (remote) ones.</div>
                             </div>
                         </details>
 
@@ -1653,6 +1688,16 @@
                                        placeholder="e.g. id">
                                 <div class="form-hint">Comma-separated list. Required for
                                     Direct extract → Incremental.</div>
+                            </div>
+                            <div class="form-group editkb-server-only-row" style="margin-top:8px;">
+                                <label class="form-label">
+                                    <input type="checkbox" id="editKbServerOnly">
+                                    Server-only (don't distribute to laptops)
+                                </label>
+                                <div class="form-hint">Keep the parquet server-side and
+                                    queryable via <code>agnes query --remote</code>, but skip
+                                    it in <code>agnes pull</code>. Only applies to synced
+                                    (local / materialized) tables.</div>
                             </div>
                         </details>
 
@@ -3579,6 +3624,9 @@
         if (kbStrategyEl) kbStrategyEl.value = 'full_refresh';
         var kbGranEl = document.getElementById('kbPartitionGranularity');
         if (kbGranEl) kbGranEl.value = 'month';
+        // #607 — checkbox isn't covered by the .value='' loop above.
+        var kbServerOnlyEl = document.getElementById('kbServerOnly');
+        if (kbServerOnlyEl) kbServerOnlyEl.checked = false;
         onKbSyncModeChange();  // apply default visibility
         var btn = document.getElementById('registerKeboolaSubmitBtn');
         btn.disabled = false;
@@ -3674,6 +3722,11 @@
         var primaryKey = pk
             ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean)
             : [];
+        // #607 — server_only is only meaningful for synced (local/materialized)
+        // tables, never live (remote). The checkbox lives under Advanced and
+        // defaults false; the backend validator rejects true + remote.
+        var serverOnlyEl = document.getElementById('kbServerOnly');
+        var serverOnly = !!(serverOnlyEl && serverOnlyEl.checked);
 
         if (mode === 'direct') {
             var strategy = _getKbStrategy();
@@ -3685,6 +3738,7 @@
                 source_table: sourceTable,
                 primary_key: primaryKey,
                 sync_strategy: strategy,
+                server_only: serverOnly,
                 sync_schedule: (document.getElementById('kbSyncSchedule').value || '').trim() || null,
                 description: (document.getElementById('kbDescription').value || '').trim() || null,
                 folder: (document.getElementById('kbFolder').value || '').trim() || null,
@@ -3710,6 +3764,7 @@
             source_type: 'keboola',
             query_mode: 'materialized',
             primary_key: primaryKey,
+            server_only: serverOnly,
             sync_schedule: (document.getElementById('kbSyncSchedule').value || '').trim() || null,
             description: (document.getElementById('kbDescription').value || '').trim() || null,
             folder: (document.getElementById('kbFolder').value || '').trim() || null,
@@ -4002,6 +4057,13 @@
         document.getElementById('editKbDescription').value = table.description || '';
         document.getElementById('editKbFolder').value = table.folder || '';
         document.getElementById('editKbPrimaryKey').value = (table.primary_key || []).join(', ');
+        // #607 — server_only checkbox. Disabled for live (remote) rows since
+        // the flag is meaningless there (backend rejects true + remote).
+        var editServerOnlyEl = document.getElementById('editKbServerOnly');
+        if (editServerOnlyEl) {
+            editServerOnlyEl.checked = !!table.server_only;
+            editServerOnlyEl.disabled = (queryMode === 'remote');
+        }
 
         // v26 fields
         document.getElementById('editKbStrategy').value = table.sync_strategy || 'full_refresh';
@@ -4066,6 +4128,10 @@
         var primaryKey = pk
             ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean)
             : [];
+        // #607 — both edit branches map to synced (local/materialized) modes,
+        // so server_only is always valid here.
+        var editServerOnlyEl = document.getElementById('editKbServerOnly');
+        var serverOnly = !!(editServerOnlyEl && editServerOnlyEl.checked);
 
         if (mode === 'direct') {
             var strategy = _getEditKbStrategy();
@@ -4075,6 +4141,7 @@
                 source_table: sourceTable,
                 primary_key: primaryKey,
                 sync_strategy: strategy,
+                server_only: serverOnly,
                 sync_schedule: (document.getElementById('editKbSyncSchedule').value || '').trim() || null,
                 description: (document.getElementById('editKbDescription').value || '').trim() || null,
                 folder: (document.getElementById('editKbFolder').value || '').trim() || null,
@@ -4106,6 +4173,7 @@
         var common = {
             query_mode: 'materialized',
             primary_key: primaryKey,
+            server_only: serverOnly,
             sync_schedule: (document.getElementById('editKbSyncSchedule').value || '').trim() || null,
             description: (document.getElementById('editKbDescription').value || '').trim() || null,
             folder: (document.getElementById('editKbFolder').value || '').trim() || null,
@@ -4226,6 +4294,11 @@
         var description = document.getElementById('bqDescription').value.trim() || null;
         var folder = document.getElementById('bqFolder').value.trim() || null;
         var syncSchedule = document.getElementById('bqSyncSchedule').value.trim() || null;
+        // #607 — server_only is only coherent for synced (materialized) BQ
+        // rows; the live branch below omits it (the API would 422 on
+        // server_only=true + the coerced query_mode='remote').
+        var bqServerOnlyEl = document.getElementById('bqServerOnly');
+        var serverOnly = !!(bqServerOnlyEl && bqServerOnlyEl.checked);
 
         if (accessMode === 'synced' && syncMode === 'custom') {
             return {
@@ -4234,6 +4307,7 @@
                 query_mode: 'materialized',
                 source_query: document.getElementById('bqSourceQuery').value.trim(),
                 profile_after_sync: false,
+                server_only: serverOnly,
                 description: description,
                 folder: folder,
                 sync_schedule: syncSchedule,
@@ -4266,6 +4340,7 @@
                 source_table: sourceTable,
                 source_query: 'SELECT * FROM bq."' + dataset + '"."' + sourceTable + '"',
                 profile_after_sync: false,
+                server_only: serverOnly,
                 description: description,
                 folder: folder,
                 sync_schedule: syncSchedule,
@@ -4658,6 +4733,7 @@
         document.getElementById('editBqSourceTable').value = preSourceTable;
         document.getElementById('editBqSourceQuery').value = sq;
         document.getElementById('editBqSyncSchedule').value = table.sync_schedule || '';
+        document.getElementById('editBqServerOnly').checked = !!table.server_only;
         document.getElementById('editBqDescription').value = table.description || '';
         document.getElementById('editBqFolder').value = table.folder || '';
         document.getElementById('editBqModeWarning').style.display = 'none';
@@ -4939,8 +5015,15 @@
                 document.getElementById('editBqSyncSchedule').value.trim() || null,
         };
 
+        // #607 — server_only rides the synced branches only; the live branch
+        // forces it false so a materialized→live flip can't strand
+        // server_only=true on a remote row (the PUT validator would 422).
+        var editBqServerOnly =
+            !!document.getElementById('editBqServerOnly').checked;
+
         if (accessMode === 'synced' && syncMode === 'custom') {
             payload.query_mode = 'materialized';
+            payload.server_only = editBqServerOnly;
             payload.source_query =
                 document.getElementById('editBqSourceQuery').value.trim();
             // Issue #266: only clear bucket/source_table on a genuine mode
@@ -4959,6 +5042,7 @@
             }
         } else if (accessMode === 'synced' && syncMode === 'whole') {
             payload.query_mode = 'materialized';
+            payload.server_only = editBqServerOnly;
             payload.source_query =
                 'SELECT * FROM bq."' + dataset + '"."' + sourceTable + '"';
             payload.bucket = dataset || null;
@@ -4966,6 +5050,7 @@
         } else {
             // Live.
             payload.query_mode = 'remote';
+            payload.server_only = false;
             payload.bucket = dataset || null;
             payload.source_table = sourceTable || null;
             payload.source_query = null;

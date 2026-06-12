@@ -30,6 +30,10 @@ def repo(tmp_path):
         conn.execute(sql)
     for sql in _V50_TO_V51_MIGRATIONS:
         conn.execute(sql)
+    # v74 (#607): server_only distribution flag — register() now writes it.
+    conn.execute(
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS server_only BOOLEAN DEFAULT false"
+    )
     return TableRegistryRepository(conn)
 
 

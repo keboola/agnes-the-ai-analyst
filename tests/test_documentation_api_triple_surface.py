@@ -25,6 +25,9 @@ from __future__ import annotations
 # (the policy is a ratchet, not a sweep). Tuple of (cli_cmd, mcp_tool).
 _COHORT: dict[str, tuple[str, str]] = {
     "/documentation/api": ("docs api", "documentation_api"),
+    # Stack discovery (issue #621). subscribe/unsubscribe paths are already
+    # grandfathered; browse is the new triple-surface endpoint.
+    "/api/stack/browse": ("stack browse", "stack_browse"),
 }
 
 

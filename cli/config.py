@@ -62,6 +62,21 @@ def get_token() -> Optional[str]:
     # `~/.config/agnes/token.json` exists.
     if (override := _token_override.get()) is not None:
         return override
+    # Chat-sandbox context: AGNES_SESSION_ID is set only by the chat
+    # runner's spawn env, alongside a FRESHLY-minted short-lived session
+    # JWT in AGNES_TOKEN (ChatManager._spawn_runner re-mints on every
+    # spawn/respawn). Any token.json found here — e.g. written by an
+    # in-session `agnes init`, or replayed workspace state — is by
+    # definition staler than the env credential and must not shadow it,
+    # or a respawned runner 401s with the previous spawn's expired token.
+    # Empty/unset env (e.g. the AGNES_SESSION_JWT_SEED fallback minted
+    # "") still falls through to the file rather than returning a blank
+    # credential. Analyst laptops (no AGNES_SESSION_ID) keep the
+    # historical file-over-env order — token.json written by `agnes
+    # init` stays canonical there.
+    if os.environ.get("AGNES_SESSION_ID"):
+        if env_token := os.environ.get("AGNES_TOKEN"):
+            return env_token
     token_file = _config_dir() / "token.json"
     if token_file.exists():
         data = json.loads(token_file.read_text(encoding="utf-8"))

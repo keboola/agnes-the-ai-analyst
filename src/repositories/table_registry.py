@@ -129,6 +129,11 @@ class TableRegistryRepository:
         # ``source_table`` at rebuild. Decouples the UX/RBAC ``bucket``
         # label from the physical BQ dataset name (issue #343).
         bq_fqn: Optional[str] = None,
+        # v74 (#607) — distribution flag decoupled from query_mode. When True
+        # the row is kept server-side & queryable via `agnes query --remote`,
+        # but `agnes pull` skips its parquet. API-layer validator rejects
+        # True paired with query_mode='remote'.
+        server_only: bool = False,
     ) -> None:
         # `registered_at` defaults to "now" for fresh inserts. Updaters that
         # want to preserve the original registration time across edits pass
@@ -148,8 +153,8 @@ class TableRegistryRepository:
                 sync_schedule, profile_after_sync,
                 incremental_window_days, max_history_days, incremental_column,
                 where_filters, partition_by, partition_granularity,
-                initial_load_chunk_days, bq_fqn)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                initial_load_chunk_days, bq_fqn, server_only)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name, folder = excluded.folder,
                 sync_strategy = excluded.sync_strategy, primary_key = excluded.primary_key,
@@ -166,13 +171,14 @@ class TableRegistryRepository:
                 partition_by = excluded.partition_by,
                 partition_granularity = excluded.partition_granularity,
                 initial_load_chunk_days = excluded.initial_load_chunk_days,
-                bq_fqn = excluded.bq_fqn""",
+                bq_fqn = excluded.bq_fqn,
+                server_only = excluded.server_only""",
             [id, name, folder, effective_strategy, encoded_pk, description, registered_by, ts,
              source_type, bucket, source_table, source_query, query_mode,
              sync_schedule, profile_after_sync,
              incremental_window_days, max_history_days, incremental_column,
              encoded_filters, partition_by, partition_granularity,
-             initial_load_chunk_days, bq_fqn],
+             initial_load_chunk_days, bq_fqn, bool(server_only)],
         )
 
     @staticmethod
