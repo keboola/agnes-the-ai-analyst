@@ -17,6 +17,7 @@ URL resolution priority:
 No defaulting to ``sqlite:///./tmp.db`` or similar — a missing URL is a
 configuration error, not something to paper over.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -52,11 +53,13 @@ def _resolve_url() -> str:
     Raises RuntimeError when no URL is configured.
     """
     import logging
+
     logger = logging.getLogger(__name__)
 
     # 1. instance.yaml
     try:
         from src.db_state_machine import read_backend_state
+
         _state, yaml_url = read_backend_state()
         if yaml_url:
             return yaml_url
@@ -73,14 +76,11 @@ def _resolve_url() -> str:
     # 3. AGNES_DB_URL (legacy)
     legacy = os.environ.get("AGNES_DB_URL")
     if legacy:
-        logger.warning(
-            "AGNES_DB_URL is deprecated — rename to DATABASE_URL (12-factor convention)"
-        )
+        logger.warning("AGNES_DB_URL is deprecated — rename to DATABASE_URL (12-factor convention)")
         return legacy
 
     raise RuntimeError(
-        "Postgres URL is unset: set instance.yaml::database.url via "
-        "/api/admin/db/migrate, or set DATABASE_URL env var"
+        "Postgres URL is unset: set instance.yaml::database.url via /api/admin/db/migrate, or set DATABASE_URL env var"
     )
 
 
@@ -120,6 +120,19 @@ def get_engine() -> sa.Engine:
 #: hand). Mirrors the manual workaround in issue #636.
 _SKIP_REVISION_CHECK_ENV = "AGNES_SKIP_PG_REVISION_CHECK"
 
+#: Set to ``0`` to disable startup auto-migration and keep the fail-closed
+#: behavior of ``assert_pg_at_head`` — for deployments whose pipeline owns
+#: migrations (compose ``migrate`` one-shot, CI). Default is on: the PG
+#: backend self-migrates at startup exactly like the DuckDB ladder does on
+#: connect (issue #636).
+_AUTO_MIGRATE_ENV = "AGNES_PG_AUTO_MIGRATE"
+
+#: Fixed application-wide advisory-lock key serializing the startup
+#: auto-migration across replicas (app + any sibling container sharing the
+#: DB). Arbitrary constant — must simply never be reused for another lock
+#: in this codebase.
+_PG_MIGRATE_LOCK_KEY = 636_636_636_636
+
 
 def _alembic_config():
     """Build the Alembic ``Config`` bound to this repo's ``alembic.ini``.
@@ -136,6 +149,37 @@ def _alembic_config():
     cfg = Config(str(repo_root / "alembic.ini"))
     cfg.set_main_option("script_location", str(repo_root / "migrations"))
     return cfg
+
+
+def _pg_revisions() -> tuple[Optional[str], Optional[str], bool]:
+    """Return ``(db_current, script_head, db_ahead)``.
+
+    ``db_current`` is the revision stamped in ``alembic_version`` (None
+    when never stamped); ``script_head`` is the head of the migration
+    scripts shipped in this image. ``db_ahead`` is True when the DB's
+    revision is unknown to this image's scripts — the app-rollback case,
+    whose remedy differs from plain drift.
+    """
+    from alembic.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        current = MigrationContext.configure(conn).get_current_revision()
+
+    script = ScriptDirectory.from_config(_alembic_config())
+    head = script.get_current_head()
+
+    # A revision this image's migration scripts don't know means the DB is
+    # AHEAD, not behind — the operator rolled the app back after a newer
+    # image already migrated. The remedies differ, so say so.
+    db_ahead = False
+    if current is not None and current != head:
+        try:
+            script.get_revision(current)
+        except Exception:
+            db_ahead = True
+    return current, head, db_ahead
 
 
 def assert_pg_at_head() -> None:
@@ -163,9 +207,6 @@ def assert_pg_at_head() -> None:
     """
     import logging
 
-    from alembic.migration import MigrationContext
-    from alembic.script import ScriptDirectory
-
     logger = logging.getLogger(__name__)
 
     if os.environ.get(_SKIP_REVISION_CHECK_ENV) == "1":
@@ -178,25 +219,11 @@ def assert_pg_at_head() -> None:
         )
         return
 
-    engine = get_engine()
-    with engine.connect() as conn:
-        current = MigrationContext.configure(conn).get_current_revision()
-
-    script = ScriptDirectory.from_config(_alembic_config())
-    head = script.get_current_head()
+    current, head, db_ahead = _pg_revisions()
 
     if current == head:
         return
 
-    # A revision this image's migration scripts don't know means the DB is
-    # AHEAD, not behind — the operator rolled the app back after a newer
-    # image already migrated. The remedies differ, so say so.
-    db_ahead = False
-    if current is not None:
-        try:
-            script.get_revision(current)
-        except Exception:
-            db_ahead = True
     if db_ahead:
         raise RuntimeError(
             "Postgres schema is AHEAD of the application: the DB is at "
@@ -219,6 +246,103 @@ def assert_pg_at_head() -> None:
         "  - compose:   docker compose -f docker-compose.postgres.yml run --rm migrate\n"
         "Set AGNES_SKIP_PG_REVISION_CHECK=1 to boot anyway (emergency only)."
     )
+
+
+def ensure_pg_at_head() -> None:
+    """Bring the Postgres schema to the head Alembic revision at startup.
+
+    Part 2 of issue #636. ``assert_pg_at_head`` turned silent
+    write-breakage into a boot refusal; on deployments with no migrate
+    step that refusal is a crash-loop on every release carrying a
+    migration. This closes the loop — when the DB is BEHIND, apply the
+    pending migrations in-process, mirroring the DuckDB ladder's
+    self-migration on connect (``src/db.py``).
+
+    Safety properties:
+
+    - **AHEAD stays fail-closed.** A revision unknown to this image means
+      an app rollback after a newer image migrated; auto-rollback is never
+      safe, so this delegates to ``assert_pg_at_head`` and refuses to boot.
+    - **Replica-safe.** The upgrade runs under a session-scoped Postgres
+      advisory lock (``_PG_MIGRATE_LOCK_KEY``) and re-checks the revision
+      after acquiring it, so concurrent replicas serialize and the late
+      acquirer no-ops instead of double-applying.
+    - **Opt-out.** ``AGNES_PG_AUTO_MIGRATE=0`` restores the fail-closed
+      check for pipeline-controlled deployments;
+      ``AGNES_SKIP_PG_REVISION_CHECK=1`` still skips everything
+      (emergency boots).
+    - **Fail-closed on error.** If the upgrade itself fails (broken
+      migration, missing DDL privileges), the boot aborts with the
+      original remediation guidance — never serve on a half-migrated
+      schema.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    if os.environ.get(_SKIP_REVISION_CHECK_ENV) == "1":
+        assert_pg_at_head()  # logs the skip warning and returns
+        return
+    if os.environ.get(_AUTO_MIGRATE_ENV, "1") == "0":
+        assert_pg_at_head()
+        return
+
+    current, head, db_ahead = _pg_revisions()
+    if current == head or db_ahead:
+        assert_pg_at_head()  # no-op, or the AHEAD refusal
+        return
+
+    engine = get_engine()
+    with engine.connect() as lock_conn:
+        lock_conn.execute(
+            sa.text("SELECT pg_advisory_lock(:key)"),
+            {"key": _PG_MIGRATE_LOCK_KEY},
+        )
+        try:
+            # Re-check under the lock — a sibling replica may have finished
+            # the upgrade while this one waited.
+            current, head, db_ahead = _pg_revisions()
+            if current != head and not db_ahead:
+                logger.warning(
+                    "Postgres schema is behind the application (%s -> %s) — "
+                    "auto-applying pending Alembic migrations (set %s=0 to "
+                    "disable and fail closed instead; issue #636).",
+                    current if current is not None else "<never stamped>",
+                    head,
+                    _AUTO_MIGRATE_ENV,
+                )
+                from alembic import command
+
+                cfg = _alembic_config()
+                # migrations/env.py resolves the URL from cfg.attributes
+                # first — pass the app-resolved URL explicitly so overlay
+                # (instance.yaml) deployments work without DATABASE_URL in
+                # the environment, and keep env.py's hands off the app's
+                # already-configured logging.
+                cfg.attributes["sqlalchemy.url"] = _resolve_url()
+                cfg.attributes["configure_logger"] = False
+                try:
+                    command.upgrade(cfg, "head")
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Automatic Alembic upgrade to head failed "
+                        f"({exc}); refusing to serve on a half-migrated "
+                        "schema (issue #636). Apply the migrations "
+                        "manually:\n"
+                        "  - one-shot:  alembic upgrade head\n"
+                        "  - compose:   docker compose -f "
+                        "docker-compose.postgres.yml run --rm migrate\n"
+                        "Set AGNES_SKIP_PG_REVISION_CHECK=1 to boot anyway "
+                        "(emergency only)."
+                    ) from exc
+                logger.warning("Postgres schema auto-migrated to head %s.", head)
+        finally:
+            lock_conn.execute(
+                sa.text("SELECT pg_advisory_unlock(:key)"),
+                {"key": _PG_MIGRATE_LOCK_KEY},
+            )
+
+    assert_pg_at_head()
 
 
 def dispose_engine() -> None:

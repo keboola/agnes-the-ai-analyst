@@ -15,8 +15,10 @@ from src.repositories import (
     user_groups_repo,
     users_repo,
 )
+
 try:
     from authlib.deprecate import AuthlibDeprecationWarning as _AuthlibDepr
+
     _warnings.filterwarnings("ignore", category=_AuthlibDepr)
 except ImportError:
     # authlib too old / class moved — fall back to message-based match
@@ -89,8 +91,7 @@ def _chat_jwt_secret_ok(chat_config) -> bool:
     if len(secret) < 32:
         logger = logging.getLogger("app.main")
         logger.error(
-            "chat.enabled=true but JWT_SECRET_KEY is only %d bytes — "
-            "refusing to enable chat (minimum 32 bytes).",
+            "chat.enabled=true but JWT_SECRET_KEY is only %d bytes — refusing to enable chat (minimum 32 bytes).",
             len(secret),
         )
         return False
@@ -117,8 +118,7 @@ def _chat_anthropic_key_ok(chat_config) -> bool:
     if os.environ.get("ANTHROPIC_API_KEY", ""):
         return True
     logging.getLogger("app.main").error(
-        "chat.enabled=true requires ANTHROPIC_API_KEY env to be set; "
-        "refusing to spawn ChatManager",
+        "chat.enabled=true requires ANTHROPIC_API_KEY env to be set; refusing to spawn ChatManager",
     )
     return False
 
@@ -143,8 +143,7 @@ def _chat_e2b_api_key_ok(chat_config) -> bool:
     if os.environ.get("E2B_API_KEY", ""):
         return True
     logging.getLogger("app.main").error(
-        "chat.enabled=true with provider=e2b requires E2B_API_KEY env; "
-        "refusing to spawn ChatManager",
+        "chat.enabled=true with provider=e2b requires E2B_API_KEY env; refusing to spawn ChatManager",
     )
     return False
 
@@ -200,6 +199,7 @@ class _SelectiveGZipMiddleware:
                 await self._raw(scope, receive, send)
                 return
         await self._gzip(scope, receive, send)
+
 
 from app.auth.rate_limit import (
     SlowAPIMiddleware as _AuthRateLimitMiddleware,
@@ -309,6 +309,7 @@ def _maybe_rebuild_on_boot() -> bool:
         return False
     try:
         from src.orchestrator import SyncOrchestrator
+
         SyncOrchestrator().rebuild()
         logger.info("AGNES_REBUILD_ON_BOOT: master views rebuilt from baked extracts")
         return True
@@ -325,6 +326,7 @@ async def _start_slack_socket_transport(app) -> None:
     if get_slack_transport() != "socket":
         return
     from services.slack_bot.secrets import slack_secret
+
     app_token = slack_secret("SLACK_APP_TOKEN") or ""
     bot_token = slack_secret("SLACK_BOT_TOKEN") or ""
     try:
@@ -332,14 +334,18 @@ async def _start_slack_socket_transport(app) -> None:
     except ValueError:
         workers = 1
     ok, reason = socket_mode_preflight(
-        workers=workers, app_token=app_token, bot_token=bot_token,
+        workers=workers,
+        app_token=app_token,
+        bot_token=bot_token,
     )
     if not ok:
         logger.error("Slack Socket Mode disabled: %s", reason)
         return
     try:
         dispatcher = SocketModeDispatcher(
-            app=app, app_token=app_token, bot_token=bot_token,
+            app=app,
+            app_token=app_token,
+            bot_token=bot_token,
         )
         await dispatcher.start()
         app.state.slack_socket_dispatcher = dispatcher
@@ -353,6 +359,7 @@ async def lifespan(app):
     # Fail-closed: refuse to serve with a weak/absent JWT signing key in
     # production. Cheap, runs before any request is accepted.
     from app.auth.jwt import validate_jwt_secret_or_raise
+
     validate_jwt_secret_or_raise()
 
     # Resolve the instance's absolute base URL once and stash it on app.state
@@ -363,6 +370,7 @@ async def lifespan(app):
     # the dispatcher's handlers see it. Empty when PUBLIC_URL / server.public_url
     # is unset — callers degrade to a relative path.
     from app.instance_config import get_public_url
+
     app.state.public_url = get_public_url()
 
     # Install operator-provided stdio-MCP wheels from the persistent data
@@ -377,6 +385,7 @@ async def lifespan(app):
             ensure_user_bin_on_path,
             install_operator_wheels,
         )
+
         ensure_user_bin_on_path()
         install_operator_wheels()
     except Exception:
@@ -387,6 +396,7 @@ async def lifespan(app):
     # (which REPLACES, not extends, the default) is visible.
     try:
         from src.orchestrator_security import log_effective_policy
+
         log_effective_policy()
     except Exception:
         pass  # never block startup on a logging convenience
@@ -401,6 +411,7 @@ async def lifespan(app):
     # while leaving headroom for concurrent UI / health probes.
     try:
         import anyio.to_thread
+
         size = int(os.environ.get("AGNES_THREADPOOL_SIZE", "200"))
         anyio.to_thread.current_default_thread_limiter().total_tokens = size
         logger.info("anyio thread pool capacity set to %d", size)
@@ -408,6 +419,7 @@ async def lifespan(app):
         logger.warning("failed to bump anyio thread pool capacity: %s", e)
 
     from app.api.cache_warmup import maybe_schedule_startup_warmup
+
     maybe_schedule_startup_warmup()
 
     # Sweep stale materialize parquet locks left behind by previous runs
@@ -418,6 +430,7 @@ async def lifespan(app):
     try:
         from connectors.bigquery.extractor import sweep_stale_parquet_locks
         from src.db import _get_data_dir as _ddir
+
         sweep_stale_parquet_locks(_ddir() / "extracts")
     except Exception:
         logger.exception("startup parquet-lock sweep failed (non-fatal)")
@@ -430,6 +443,7 @@ async def lifespan(app):
     try:
         from src.db import get_system_db
         from connectors.internal.registry import ensure_internal_tables_registered
+
         ensure_internal_tables_registered(get_system_db())
     except Exception:
         logger.exception("internal data-source seed failed; continuing")
@@ -446,6 +460,7 @@ async def lifespan(app):
     try:
         from src.db import get_system_db
         from src.fts import ensure_knowledge_fts_index
+
         ensure_knowledge_fts_index(get_system_db())
     except Exception:
         logger.exception("startup FTS index rebuild failed; falling back to ILIKE on /api/memory?search=")
@@ -458,25 +473,27 @@ async def lifespan(app):
     # traced. Non-fatal: warnings only, no startup abort.
     try:
         from connectors.bigquery.access import validate_bigquery_startup_config
+
         for warning in validate_bigquery_startup_config():
             logger.warning("BQ config check: %s", warning)
     except Exception:
         logger.exception("BQ startup config validation crashed (non-fatal)")
 
-    # Fail closed when the Postgres schema is behind the app's expected
-    # Alembic head. The DuckDB ladder self-migrates on every connect
-    # (src/db.py); Postgres does NOT — `alembic upgrade head` runs only
-    # from the compose `migrate` one-shot and the /api/admin/db/migrate
-    # flow, both one-time. A re-pulled image expecting a newer revision
-    # against a PG stamped at an older one boots "healthy" but 500s every
-    # write touching a post-stamp column (issue #636). This refusal makes
-    # that drift operator-visible at boot instead. PG-only by design (the
-    # check mirrors DuckDB's self-migration); honors
-    # AGNES_SKIP_PG_REVISION_CHECK=1 for emergency boots.
+    # Bring the Postgres schema to the app's expected Alembic head. The
+    # DuckDB ladder self-migrates on every connect (src/db.py); Postgres
+    # now mirrors that at startup — when the DB is behind, the pending
+    # migrations are applied in-process under a Postgres advisory lock
+    # (replica-safe). A DB AHEAD of the image (app rollback) still refuses
+    # to boot, as does a failed upgrade — never serve on a half-migrated
+    # schema (issue #636). AGNES_PG_AUTO_MIGRATE=0 restores the
+    # fail-closed check for pipeline-controlled deployments;
+    # AGNES_SKIP_PG_REVISION_CHECK=1 skips everything (emergency boots).
     from src.repositories import use_pg
+
     if use_pg():
-        from src.db_pg import assert_pg_at_head
-        assert_pg_at_head()
+        from src.db_pg import ensure_pg_at_head
+
+        ensure_pg_at_head()
 
     # Seed the Admin/Everyone system groups into the ACTIVE state backend.
     # On DuckDB this duplicates src.db._seed_system_groups (idempotent), but
@@ -488,6 +505,7 @@ async def lifespan(app):
     # backend.
     try:
         from src.db import _SYSTEM_GROUPS_SEED
+
         _ug_repo = user_groups_repo()
         for _grp_name, _grp_desc in _SYSTEM_GROUPS_SEED:
             _ug_repo.ensure_system(_grp_name, _grp_desc)
@@ -507,10 +525,12 @@ async def lifespan(app):
     # exclusive per-process file lock on system.duckdb that would then
     # block the worker.
     from app.auth.dependencies import is_local_dev_mode, get_local_dev_email
+
     seed_email = os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None)
     if seed_email:
         try:
             from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
+
             repo = users_repo()
             groups_repo = user_groups_repo()
             members_repo = user_group_members_repo()
@@ -518,10 +538,12 @@ async def lifespan(app):
             password_hash = None
             if seed_password:
                 from argon2 import PasswordHasher
+
                 password_hash = PasswordHasher().hash(seed_password)
             existing = repo.get_by_email(seed_email)
             if not existing:
                 import uuid
+
                 user_id = str(uuid.uuid4())
                 repo.create(
                     id=user_id,
@@ -569,6 +591,7 @@ async def lifespan(app):
     # `app.auth.scheduler_token.get_scheduler_user` covers the case where the
     # secret is rotated mid-life, but doing it here keeps startup observable.
     from app.auth.scheduler_token import get_scheduler_secret
+
     if get_scheduler_secret():
         try:
             from app.auth.scheduler_token import (
@@ -576,12 +599,14 @@ async def lifespan(app):
                 ensure_scheduler_user,
             )
             from src.db import get_system_db
+
             secret = get_scheduler_secret()
             if len(secret) < SCHEDULER_TOKEN_MIN_LENGTH:
                 logger.warning(
                     "SCHEDULER_API_TOKEN is set but only %d chars — auth path"
                     " disabled (minimum %d). Generate a longer secret in .env.",
-                    len(secret), SCHEDULER_TOKEN_MIN_LENGTH,
+                    len(secret),
+                    SCHEDULER_TOKEN_MIN_LENGTH,
                 )
             else:
                 conn = get_system_db()
@@ -598,6 +623,7 @@ async def lifespan(app):
     if not is_local_dev_mode():
         try:
             from src.db import get_system_db
+
             conn = get_system_db()
             repo = users_repo()
             all_users = repo.list_all()
@@ -616,10 +642,15 @@ async def lifespan(app):
     # loud at boot rather than on first capture. No-op when disabled.
     try:
         from src.observability import get_posthog
+
         pc = get_posthog()
         if pc.enabled:
-            logger.info("PostHog observability enabled (host=%s, identify=%s, replay=%s)",
-                        pc.host, pc.identify_mode, pc.replay_enabled)
+            logger.info(
+                "PostHog observability enabled (host=%s, identify=%s, replay=%s)",
+                pc.host,
+                pc.identify_mode,
+                pc.replay_enabled,
+            )
     except Exception:
         logger.exception("PostHog init at startup failed")
 
@@ -659,6 +690,7 @@ async def lifespan(app):
             try:
                 from src.initial_workspace import TemplateStatus
                 from app.api.initial_workspace import _read_section
+
                 section = _read_section()
                 if not section.get("url"):
                     return None
@@ -812,6 +844,7 @@ async def lifespan(app):
     app.state.slack_bot_user_id = None
     try:
         from services.slack_bot.identity import resolve_bot_user_id
+
         app.state.slack_bot_user_id = await resolve_bot_user_id()
         if app.state.slack_bot_user_id:
             logger.info("slack bot user id resolved: %s", app.state.slack_bot_user_id)
@@ -838,10 +871,12 @@ async def lifespan(app):
             logger.exception("Slack Socket Mode shutdown failed")
     try:
         from src.observability import get_posthog
+
         get_posthog().shutdown()
     except Exception:
         logger.exception("PostHog shutdown failed")
     from src.db import close_analytics_db, close_system_db
+
     close_system_db()
     close_analytics_db()
 
@@ -885,9 +920,7 @@ _TOOLBAR_SKIP_EXACT = (
     "/api/health",
     "/api/memory/stats",
 )
-_TOOLBAR_SKIP_PREFIXES = (
-    "/api/notifications",
-)
+_TOOLBAR_SKIP_PREFIXES = ("/api/notifications",)
 
 
 def _toolbar_show_callback(request, settings) -> bool:
@@ -921,6 +954,7 @@ def _toolbar_show_callback(request, settings) -> bool:
 
 def create_app() -> FastAPI:
     from app.serialization import AgnesJSONResponse
+
     app = FastAPI(
         title="AI Data Analyst",
         description="Data distribution platform for AI analytical systems",
@@ -984,6 +1018,7 @@ def create_app() -> FastAPI:
         try:
             from debug_toolbar.middleware import DebugToolbarMiddleware
             from jinja2 import FileSystemLoader
+
             # debug_toolbar.middleware splats **kwargs into DebugToolbarSettings
             # (a pydantic-settings model with case-insensitive UPPERCASE fields).
             # Pass field names as kwargs to add_middleware — `panels` becomes
@@ -1069,6 +1104,7 @@ def create_app() -> FastAPI:
     # a per-template include would miss them; the middleware covers
     # everything in one place. No-op when POSTHOG_API_KEY is unset.
     from app.middleware.posthog_inject import PosthogInjectionMiddleware
+
     app.add_middleware(PosthogInjectionMiddleware)
 
     # Compress JSON / HTML responses on the wire. Parquet downloads are
@@ -1080,7 +1116,7 @@ def create_app() -> FastAPI:
         minimum_size=1024,
         skip_prefixes=(
             "/api/data/",
-            "/api/mcp",          # SSE stream — do not gzip
+            "/api/mcp",  # SSE stream — do not gzip
             "/cli/wheel/",
             "/cli/download",
             "/marketplace.git",  # git smart-HTTP is self-chunked; double-gzip bloats
@@ -1098,6 +1134,7 @@ def create_app() -> FastAPI:
 
     # Session middleware (required for OAuth state)
     from app.secrets import get_session_secret
+
     session_secret = get_session_secret()
     if len(session_secret) < 32:
         # Same gate JWT applies (app/auth/jwt.py:_get_secret_key) — keeps the
@@ -1105,9 +1142,11 @@ def create_app() -> FastAPI:
         # are trusted off the cookie signature; a weak SESSION_SECRET means
         # those gates are weak too.
         import warnings as _warnings
+
         _warnings.warn(
             f"SESSION_SECRET is {len(session_secret)} chars — minimum 32 recommended",
-            UserWarning, stacklevel=2,
+            UserWarning,
+            stacklevel=2,
         )
     app.add_middleware(SessionMiddleware, secret_key=session_secret)
 
@@ -1130,6 +1169,7 @@ def create_app() -> FastAPI:
 
     # Load .env_overlay (persisted by /api/admin/configure)
     from app.secrets import _state_dir
+
     _overlay = _state_dir() / ".env_overlay"
     if _overlay.exists():
         for line in _overlay.read_text().splitlines():
@@ -1140,6 +1180,7 @@ def create_app() -> FastAPI:
     # Load instance config on startup
     try:
         from app.instance_config import load_instance_config
+
         load_instance_config()
         logger.info("Instance config loaded")
     except Exception as e:
@@ -1149,6 +1190,7 @@ def create_app() -> FastAPI:
     try:
         from app.instance_config import get_corporate_memory_config
         from services.corporate_memory.confidence import configure as configure_confidence
+
         cm_config = get_corporate_memory_config()
         if cm_config and "confidence" in cm_config:
             configure_confidence(cm_config["confidence"])
@@ -1158,6 +1200,7 @@ def create_app() -> FastAPI:
 
     # Startup banner
     from src.db import SCHEMA_VERSION
+
     logger.info(
         "Agnes %s | channel: %s | schema v%s",
         os.environ.get("AGNES_VERSION", "dev"),
@@ -1168,8 +1211,11 @@ def create_app() -> FastAPI:
     # LOCAL_DEV_MODE: bypass authentication for local development. DO NOT enable in prod.
     # When on, every protected route auto-logs in as a seeded admin user (default dev@localhost).
     from app.auth.dependencies import (
-        is_local_dev_mode, get_local_dev_email, get_local_dev_groups,
+        is_local_dev_mode,
+        get_local_dev_email,
+        get_local_dev_groups,
     )
+
     if is_local_dev_mode():
         logger.warning("=" * 60)
         logger.warning("LOCAL_DEV_MODE is ON — authentication is bypassed.")
@@ -1181,8 +1227,7 @@ def create_app() -> FastAPI:
         mocked_groups = get_local_dev_groups()
         if raw_groups_env and not mocked_groups:
             logger.warning(
-                "LOCAL_DEV_GROUPS is set but produced no valid groups — "
-                "check the WARNING above for the parse error.",
+                "LOCAL_DEV_GROUPS is set but produced no valid groups — check the WARNING above for the parse error.",
             )
         elif mocked_groups:
             logger.warning(
@@ -1204,14 +1249,14 @@ def create_app() -> FastAPI:
             get_guardrails_enabled,
             get_guardrails_llm_provider_ready,
         )
+
         if get_guardrails_enabled() and not get_guardrails_llm_provider_ready():
             logger.warning("=" * 60)
             logger.warning(
                 "GUARDRAILS ENABLED BUT NO LLM PROVIDER CREDENTIALS FOUND.",
             )
             logger.warning(
-                "Set ANTHROPIC_API_KEY (or LLM_API_KEY) in the environment, "
-                "or disable guardrails in instance.yaml.",
+                "Set ANTHROPIC_API_KEY (or LLM_API_KEY) in the environment, or disable guardrails in instance.yaml.",
             )
             logger.warning(
                 "Until then, every flea-market upload will sit at "
@@ -1234,6 +1279,7 @@ def create_app() -> FastAPI:
     # StaticFiles mount has a real directory on boot even before the first
     # upload (avoids the "directory does not exist" 500 on cold systems).
     from src.db import _get_data_dir as _ddir_uploads
+
     uploads_dir = _ddir_uploads() / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
     app.mount(
@@ -1243,9 +1289,9 @@ def create_app() -> FastAPI:
     )
 
     # Auth providers (conditional registration)
-    from app.auth.providers.google import router as google_auth_router, is_available as google_available
+    from app.auth.providers.google import router as google_auth_router
     from app.auth.providers.password import router as password_auth_router
-    from app.auth.providers.email import router as email_auth_router, is_available as email_available
+    from app.auth.providers.email import router as email_auth_router
 
     # API routers
     app.include_router(auth_router)
@@ -1333,6 +1379,7 @@ def create_app() -> FastAPI:
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*
     # WSGI → ASGI bridge (dulwich is WSGI-native; FastAPI is ASGI).
     from a2wsgi import WSGIMiddleware
+
     app.mount("/marketplace.git", WSGIMiddleware(make_git_wsgi_app()))
 
     # Authenticated Swagger / ReDoc / OpenAPI JSON — requires a valid session
@@ -1421,9 +1468,7 @@ def create_app() -> FastAPI:
             conn = get_system_db()
             try:
                 authorization = request.headers.get("authorization")
-                return await get_current_user(
-                    request=request, authorization=authorization, conn=conn
-                )
+                return await get_current_user(request=request, authorization=authorization, conn=conn)
             finally:
                 try:
                     conn.close()
@@ -1470,11 +1515,7 @@ def create_app() -> FastAPI:
         """
         path_is_api = request.url.path.startswith(_API_PATH_PREFIXES)
 
-        if (
-            exc.status_code == 401
-            and request.method == "GET"
-            and not path_is_api
-        ):
+        if exc.status_code == 401 and request.method == "GET" and not path_is_api:
             next_param = quote(request.url.path, safe="")
             return RedirectResponse(url=f"/login?next={next_param}", status_code=302)
 
@@ -1482,6 +1523,7 @@ def create_app() -> FastAPI:
             return await _render_error(request, exc.status_code, exc.detail or "")
 
         from fastapi.exception_handlers import http_exception_handler
+
         return await http_exception_handler(request, exc)
 
     @app.exception_handler(Exception)
@@ -1489,6 +1531,7 @@ def create_app() -> FastAPI:
         """Catch-all 500 handler — HTML for browsers, JSON for API clients."""
         import os as _os
         import traceback as _tb
+
         logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
 
         # Best-effort: forward the exception to PostHog before rendering the
@@ -1498,6 +1541,7 @@ def create_app() -> FastAPI:
         try:
             from src.observability import get_posthog
             from app.logging_config import request_id_var as _rid_var
+
             get_posthog().capture_exception(
                 exc,
                 request=request,
@@ -1525,6 +1569,7 @@ def create_app() -> FastAPI:
 
         from app.logging_config import request_id_var
         from fastapi.responses import JSONResponse
+
         body: dict[str, str | None] = {
             "detail": "Internal server error",
             "request_id": request_id_var.get(),
@@ -1546,11 +1591,13 @@ def create_app() -> FastAPI:
 #: gets 401 and 403 injected into its declared responses so the spec truthfully
 #: reflects that auth errors are possible. FastAPI cannot derive these from
 #: Depends() chains automatically.
-_PUBLIC_API_PATHS = frozenset({
-    "/api/health",
-    "/api/health/detailed",
-    "/api/version",
-})
+_PUBLIC_API_PATHS = frozenset(
+    {
+        "/api/health",
+        "/api/health/detailed",
+        "/api/version",
+    }
+)
 
 _HTTP_METHODS = frozenset({"get", "post", "put", "delete", "patch"})
 
