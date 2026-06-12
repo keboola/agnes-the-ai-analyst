@@ -123,6 +123,15 @@ class TestListUserSessions:
         rows = r.json()["rows"]
         assert [row["session_file"] for row in rows] == ["dup.jsonl"]
 
+    def test_empty_username_does_not_scan_data_root(self, seeded_app, admin_user, session_data_dir):
+        """A user whose email is empty yields an empty username — the dir
+        helper must not degrade to scanning the whole SESSION_DATA_DIR
+        root (base / "" == base)."""
+        from app.api.admin_user_sessions import _user_session_dirs
+
+        dirs = _user_session_dirs("some-uuid", "")
+        assert dirs == [session_data_dir / "some-uuid"]
+
     def test_processed_true_for_indexed_session(self, seeded_app, admin_user, session_data_dir):
         """When usage_session_summary has a row for the file, processed=True."""
         uid = _get_admin_user_id(seeded_app, admin_user)

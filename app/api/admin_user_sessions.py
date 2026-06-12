@@ -83,11 +83,13 @@ def _user_session_dirs(user_id: str, username: str) -> list[Path]:
     processor indexed it — and the single-file download 404'd on them
     forever. Both dirs are scanned; the username dir wins filename
     collisions (it existed first).
+
+    Empty components are dropped: a user without an email yields an
+    empty username, and ``base / ""`` is ``base`` itself — scanning the
+    whole SESSION_DATA_DIR root for that user.
     """
     base = _session_data_dir()
-    dirs = [base / username]
-    if user_id != username:
-        dirs.append(base / user_id)
+    dirs = [base / name for name in dict.fromkeys([username, user_id]) if name]
     return dirs
 
 

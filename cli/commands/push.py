@@ -279,7 +279,6 @@ def push(
             "sessions": 0,
             "local_md": False,
             "errors": [],
-            "skipped": 0,
             "private_skipped": 0,
             "dropped_permanent": 0,
             "requeued": 0,
@@ -418,8 +417,6 @@ def push(
         typer.echo(
             f"Skipped {results['private_skipped']} private session(s) (see .claude/agnes-sessions-private-skipped.txt)"
         )
-    if results["skipped"]:
-        typer.echo(f"Skipped {results['skipped']} stale queue entries (file missing)")
     if results["requeued"]:
         typer.echo(
             f"Requeued {results['requeued']} session(s) for the next push "
