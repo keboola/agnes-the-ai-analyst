@@ -877,3 +877,30 @@ class TestIsTableDueCron:
         # 2026-06-07 is a Sunday (dow 0). cron `* * * * 0` fires.
         last_sync = datetime(2026, 6, 7, 4, 59, 0, tzinfo=timezone.utc).isoformat()
         assert is_table_due("cron 0 5 * * 0", last_sync_iso=last_sync, now=CRON_NOW) is True
+
+    # -- catch-up across gaps longer than a month (#627 review BUG_0001) --
+
+    def test_catchup_across_59_day_gap_is_due(self) -> None:
+        # `cron 0 0 31 * *` has a 59-day gap Jan 31 → Mar 31 (no Feb 31).
+        # Instance offline since Jan 31; at May 15 the missed Mar 31
+        # occurrence must still fire. The old 32-day lookback cap returned
+        # False here.
+        now = datetime(2026, 5, 15, 12, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 1, 31, 0, 0, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron 0 0 31 * *", last_sync_iso=last_sync, now=now) is True
+
+    def test_feb29_cron_fires_across_multi_year_gap(self) -> None:
+        # `cron 0 0 29 2 *` fires once every 4 years. last_sync just before
+        # the 2028-02-29 occurrence, now well past it → due.
+        now = datetime(2028, 6, 1, 0, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2028, 2, 28, 0, 0, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron 0 0 29 2 *", last_sync_iso=last_sync, now=now) is True
+
+    def test_feb29_cron_synced_at_fire_not_due_years_later(self) -> None:
+        # Synced exactly at the 2028-02-29 fire; the next occurrence is
+        # 2032 — at 2030 nothing new fired. Must also terminate fast (the
+        # day-walk stops at last_sync's date, not after scanning years of
+        # minutes).
+        now = datetime(2030, 6, 1, 0, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2028, 2, 29, 0, 0, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron 0 0 29 2 *", last_sync_iso=last_sync, now=now) is False

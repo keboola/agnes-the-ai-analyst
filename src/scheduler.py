@@ -19,7 +19,7 @@ Schedule formats:
 
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -236,23 +236,18 @@ def _parse_cron_fields(expr: str) -> Optional[list[set[int]]]:
     return fields
 
 
-def _cron_matches(dt: datetime, fields: list[set[int]]) -> bool:
-    """Return True iff ``dt`` (minute resolution) matches the cron fields.
+def _cron_date_matches(d: date, fields: list[set[int]]) -> bool:
+    """Return True iff date ``d`` matches the cron day-of-month / month /
+    day-of-week fields.
 
     Standard cron day-of-month / day-of-week semantics are NOT OR-combined
     here: both restrictions must hold (the common case has one of them as
     ``*``, which always matches). ``weekday()`` returns 0=Monday..6=Sunday;
     cron uses 0=Sunday..6=Saturday, so we remap with ``(weekday()+1) % 7``.
     """
-    minute_set, hour_set, dom_set, month_set, dow_set = fields
-    cron_dow = (dt.weekday() + 1) % 7
-    return (
-        dt.minute in minute_set
-        and dt.hour in hour_set
-        and dt.day in dom_set
-        and dt.month in month_set
-        and cron_dow in dow_set
-    )
+    _, _, dom_set, month_set, dow_set = fields
+    cron_dow = (d.weekday() + 1) % 7
+    return d.day in dom_set and d.month in month_set and cron_dow in dow_set
 
 
 def _is_cron_due(
@@ -264,32 +259,58 @@ def _is_cron_due(
     ``(last_sync, now]``.
 
     Mirrors the ``_is_daily_due`` catch-up contract: a missed occurrence
-    fires on the next tick after it passed. We walk minute-by-minute back
-    from ``now`` to (but not including) ``last_sync`` and return True on the
-    first matching minute. Iteration is bounded so a stale ``last_sync``
-    (e.g. months ago) can't spin forever — a 32-day lookback is more than
-    enough to catch any monthly cron's most recent fire.
+    fires on the next tick after it passed. The search walks DAYS backward
+    from ``now``: on the first day matching the date fields it takes the
+    latest in-day (hour, minute) candidate that is ``<= now`` and compares
+    it against ``last_sync``. Earlier days only hold earlier occurrences,
+    so that single comparison decides — no minute-by-minute scan.
+
+    The walk is bounded to 8 years of days. The longest gap between two
+    consecutive fires of a valid 5-field cron is a Feb-29 schedule (4
+    years; 8 absorbs the skipped-century corner), so the bound cannot skip
+    a real occurrence — unlike the previous 32-day minute-walk cap, which
+    silently missed e.g. ``cron 0 0 31 * *`` across the Jan 31 → Mar 31
+    59-day gap.
     """
     if now <= last_sync:
         return False
 
+    minute_set, hour_set = fields[0], fields[1]
     # Minute resolution: cron never fires on sub-minute boundaries.
-    cursor = now.replace(second=0, microsecond=0)
-    # Bound the walk: 32 days of minutes covers the longest gap between two
-    # consecutive fires of any 5-field cron (monthly day-of-month).
-    max_steps = 32 * 24 * 60
-    steps = 0
-    while cursor > last_sync and steps <= max_steps:
-        if _cron_matches(cursor, fields):
-            logger.debug(
-                "Cron schedule: occurrence at %s in window (%s, %s] -> due",
-                cursor.isoformat(),
-                last_sync.isoformat(),
-                now.isoformat(),
-            )
-            return True
-        cursor -= timedelta(minutes=1)
-        steps += 1
+    cap = now.replace(second=0, microsecond=0)
+    day = cap.date()
+    for _ in range(8 * 366):
+        if _cron_date_matches(day, fields):
+            # Latest candidate on this day that is <= cap. For any day
+            # before today the first (max hour, max minute) combo wins
+            # immediately; on today the loop skips still-future slots.
+            occurrence = None
+            for hour in sorted(hour_set, reverse=True):
+                for minute in sorted(minute_set, reverse=True):
+                    cand = datetime.combine(
+                        day, time(hour, minute), tzinfo=now.tzinfo
+                    )
+                    if cand <= cap:
+                        occurrence = cand
+                        break
+                if occurrence is not None:
+                    break
+            if occurrence is not None:
+                if occurrence > last_sync:
+                    logger.debug(
+                        "Cron schedule: occurrence at %s in window "
+                        "(%s, %s] -> due",
+                        occurrence.isoformat(),
+                        last_sync.isoformat(),
+                        now.isoformat(),
+                    )
+                    return True
+                # The most recent occurrence predates the window; earlier
+                # days are earlier still — nothing new fired.
+                return False
+        if day <= last_sync.date():
+            return False
+        day -= timedelta(days=1)
     return False
 
 
