@@ -19,7 +19,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
-- CI: `release.yml` no longer builds a `:dev-<slug>` image for `*-autopilot` branches. These short-lived per-issue PR branches deploy to no VM, so the dev image was waste; worse, each force-push cancelled the prior run (`cancel-in-progress`), leaving a cosmetic red `build-and-push` check (not a required check — only `test` + `docker-build` gate merges) that made every such PR look broken. `main` and real dev branches are unaffected.
+
+## [0.71.19] — 2026-06-12
+
+### Internal
+- CI: `release.yml` no longer builds a `:dev-<slug>` image for `*-autopilot` branches. These short-lived per-issue PR branches deploy to no VM, so the dev image was waste; worse, each force-push cancelled the prior run (`cancel-in-progress`), leaving a cosmetic red `build-and-push` check (not a required check — only `test` + `docker-build` gate merges) that made every such PR look broken. `main` and real dev branches are unaffected. (#634)
 
 ## [0.71.18] — 2026-06-12
 
