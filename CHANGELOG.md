@@ -20,6 +20,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.13] — 2026-06-12
+
+### Added
+- **Scheduler now supports cron expressions** alongside the existing `every Nm` / `every Nh` / `daily HH:MM` formats (fully backward compatible). A `cron <minute hour day-of-month month day-of-week>` schedule (UTC) covers day-of-month, weekly, monthly, and arbitrary cadences with one well-known format — e.g. `cron 0 5 7 * *` (05:00 UTC on the 7th of every month), `cron 0 5 * * 1` (05:00 UTC every Monday), `cron 30 6 1,15 * *` (06:30 on the 1st and 15th). Each field supports `*`, comma lists (`1,15`), ranges (`9-17`), and steps (`*/15`); day-of-week is 0-6 (0 = Sunday). When both day-of-month and day-of-week are restricted, both must match (AND) — a documented, deterministic departure from vixie cron's OR quirk. Implemented with a hand-rolled 5-field matcher (no new dependency). `is_table_due` mirrors the existing `daily` catch-up contract — a missed occurrence fires on the next tick after it passed, across arbitrarily long offline gaps (the due-check walks days, not minutes, bounded at 8 years — past the 4-year gap of a Feb-29 schedule) — and month-end is handled natively (`cron 0 0 31 * *` never fires in a 30-day month). `is_valid_schedule` validates each field against its range so the admin API rejects malformed cron with 422, consistent with the `daily 25:00` rejection. The admin table forms' Sync Schedule hints now mention the `cron …` form. (#608, #627)
+
 ## [0.71.12] — 2026-06-12
 
 ### Fixed
