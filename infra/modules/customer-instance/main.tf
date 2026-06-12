@@ -28,6 +28,16 @@ locals {
     [merge(var.prod_instance, { role = "prod" })],
     [for d in var.dev_instances : merge(local.dev_defaults, d)]
   )
+
+  # Watchdog + DB-backup artifacts shipped to every VM via the startup
+  # script (base64 — metadata is a single string, so files can't ride
+  # along any other way). fileset() means a new file under files/ is
+  # delivered automatically; the install/enable lines in the template
+  # stay explicit per artifact.
+  watchdog_files_b64 = {
+    for f in fileset("${path.module}/files", "agnes-*") :
+    f => filebase64("${path.module}/files/${f}")
+  }
   # Per-VM OAuth (Sign-in with Google) secret names, derived from
   # var.oauth_secret_name_template. Empty template -> empty map ->
   # startup-script falls back to legacy `google-oauth-client-{id,secret}`.
@@ -323,6 +333,9 @@ resource "google_compute_instance" "vm" {
     oauth_client_secret_secret_name = try(local.per_vm_oauth[each.value.name].secret, "")
     runtime_secret_env              = var.runtime_secret_env
     home_route                      = var.home_route
+    enable_watchdog                 = var.enable_watchdog
+    alert_webhook_url               = var.alert_webhook_url
+    watchdog_files_b64              = local.watchdog_files_b64
   })
 
   service_account {

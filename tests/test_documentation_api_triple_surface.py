@@ -25,6 +25,9 @@ from __future__ import annotations
 # (the policy is a ratchet, not a sweep). Tuple of (cli_cmd, mcp_tool).
 _COHORT: dict[str, tuple[str, str]] = {
     "/documentation/api": ("docs api", "documentation_api"),
+    # Stack discovery (issue #621). subscribe/unsubscribe paths are already
+    # grandfathered; browse is the new triple-surface endpoint.
+    "/api/stack/browse": ("stack browse", "stack_browse"),
 }
 
 
@@ -92,7 +95,16 @@ _ADOPTION_REASON = (
     "admin-only Adoption dashboard — web UI only, no CLI/MCP analogue "
     "(read-only aggregates rendered as cards/charts in the browser)"
 )
+_PROMPTS_REASON = (
+    "admin-only managed-prompt editor (#622) — web UI only at /admin/prompts, "
+    "no analyst CLI/MCP analogue (mirrors the grandfathered "
+    "/api/admin/{welcome,workspace-prompt}-template editors)"
+)
 _EXEMPT: dict[str, str] = {
+    "/api/admin/prompts/{kind}": _PROMPTS_REASON,
+    "/api/admin/prompts/{kind}/source": _PROMPTS_REASON,
+    "/api/admin/prompts/{kind}/bind-git": _PROMPTS_REASON,
+    "/api/admin/prompts/{kind}/preview": _PROMPTS_REASON,
     "/api/admin/adoption/kpis": _ADOPTION_REASON,
     "/api/admin/adoption/series": _ADOPTION_REASON,
     "/api/admin/adoption/top-skills": _ADOPTION_REASON,

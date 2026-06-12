@@ -40,7 +40,7 @@ services:
     volumes:
       - agnes_data:/data
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
       interval: 3s
       timeout: 2s
       retries: 30

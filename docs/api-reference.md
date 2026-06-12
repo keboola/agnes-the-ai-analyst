@@ -780,6 +780,18 @@ checks against.
 - /api/admin/workspace-prompt-template
 - /api/admin/workspace-prompt-template/preview
 
+### `/api/admin/prompts` — Managed prompts (admin, #622)
+
+Unified admin surface for the install + workspace prompts (`kind ∈
+install|workspace`), each with an explicit Git ⇄ Editor `source_mode` toggle.
+Editor mode keeps the DB override editable; Git mode binds the prompt to a file
+in the Initial Workspace Template clone. Backs the `/admin/prompts` page.
+
+- /api/admin/prompts/{kind}
+- /api/admin/prompts/{kind}/source
+- /api/admin/prompts/{kind}/bind-git
+- /api/admin/prompts/{kind}/preview
+
 ### `/api/admin/bigquery` — BigQuery diagnostics
 
 - /api/admin/bigquery/test-connection
@@ -993,6 +1005,7 @@ checks against.
 ### `/api/stack` — Stack subscriptions
 
 - /api/stack
+- /api/stack/browse
 - /api/stack/subscribe
 - /api/stack/subscription/{resource_type}/{resource_id}
 

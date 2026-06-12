@@ -3,6 +3,7 @@
 Mirrors ``src/repositories/users.py``. Public surface matches; storage
 is SQLAlchemy Core over the singleton engine from ``src.db_pg``.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -18,26 +19,26 @@ class UsersPgRepository:
 
     def get_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT * FROM users WHERE id = :id"), {"id": user_id}
-            ).mappings().first()
+            row = conn.execute(sa.text("SELECT * FROM users WHERE id = :id"), {"id": user_id}).mappings().first()
         return dict(row) if row else None
 
     def get_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT * FROM users WHERE email = :email"), {"email": email}
-            ).mappings().first()
+            row = conn.execute(sa.text("SELECT * FROM users WHERE email = :email"), {"email": email}).mappings().first()
         return dict(row) if row else None
 
     def get_by_slack_user_id(self, slack_user_id: str) -> Optional[Dict[str, Any]]:
         """Resolve the account bound to a Slack ``user_id`` (NULL until the
         analyst redeems a /agnes verification code)."""
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT * FROM users WHERE slack_user_id = :sid"),
-                {"sid": slack_user_id},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text("SELECT * FROM users WHERE slack_user_id = :sid"),
+                    {"sid": slack_user_id},
+                )
+                .mappings()
+                .first()
+            )
         return dict(row) if row else None
 
     def list_all(self) -> List[Dict[str, Any]]:
@@ -53,12 +54,48 @@ class UsersPgRepository:
 
     def list_paginated(self, limit: int = 1000, offset: int = 0) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    "SELECT * FROM users ORDER BY email LIMIT :limit OFFSET :offset"
-                ),
-                {"limit": limit, "offset": offset},
-            ).mappings().all()
+            rows = (
+                conn.execute(
+                    sa.text("SELECT * FROM users ORDER BY email LIMIT :limit OFFSET :offset"),
+                    {"limit": limit, "offset": offset},
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
+
+    def search_recent(
+        self,
+        limit: int = 10,
+        search: Optional[str] = None,
+        group_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """The N most recently registered users (``created_at`` DESC),
+        optionally narrowed by ``search`` (email OR name, case-insensitive)
+        and/or ``group_id`` membership. Mirrors DuckDB
+        ``UserRepository.search_recent``."""
+        clauses: List[str] = []
+        params: Dict[str, Any] = {"limit": limit}
+        if search:
+            clauses.append("(u.email ILIKE :search OR u.name ILIKE :search)")
+            params["search"] = f"%{search}%"
+        if group_id:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM user_group_members m WHERE m.user_id = u.id AND m.group_id = :group_id)"
+            )
+            params["group_id"] = group_id
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    sa.text(
+                        f"SELECT u.* FROM users u{where} ORDER BY u.created_at DESC NULLS LAST, u.email LIMIT :limit"
+                    ),
+                    params,
+                )
+                .mappings()
+                .all()
+            )
         return [dict(r) for r in rows]
 
     def count_all(self) -> int:
@@ -91,10 +128,18 @@ class UsersPgRepository:
 
     def update(self, id: str, **kwargs) -> None:
         allowed = {
-            "email", "name", "password_hash", "setup_token",
-            "setup_token_created", "reset_token", "reset_token_created",
-            "active", "deactivated_at", "deactivated_by",
-            "onboarded", "last_pull_at",
+            "email",
+            "name",
+            "password_hash",
+            "setup_token",
+            "setup_token_created",
+            "reset_token",
+            "reset_token_created",
+            "active",
+            "deactivated_at",
+            "deactivated_by",
+            "onboarded",
+            "last_pull_at",
             "slack_user_id",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed}

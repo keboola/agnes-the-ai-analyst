@@ -32,6 +32,7 @@ from tests.e2e._helpers import (
     bootstrap_admin,
     docker_exec,
     pump_until,
+    skip_unless_chat_sessions_possible,
 )
 
 
@@ -73,6 +74,7 @@ def _force_fake_agent_or_skip() -> None:
             "F.1 requires the fake-agent runner — re-run with "
             "AGNES_E2E_FAKE_AGENT=1 alongside AGNES_E2E=1"
         )
+    skip_unless_chat_sessions_possible()
 
 
 @pytest.fixture(scope="module")

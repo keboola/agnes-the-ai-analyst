@@ -150,6 +150,12 @@ def pull(
             "duration_s": round(result.duration_s, 3),
             "errors": result.errors,
         }))
+        # #596 — a per-table / per-stage failure must surface as a non-zero
+        # exit even on the machine-readable path. Emit the JSON dict first
+        # (the consumer parses `errors`), THEN exit 1 so a wrapping script's
+        # `set -e` / `||` reacts to the failure.
+        if result.errors:
+            raise typer.Exit(1)
         return
 
     if quiet:
@@ -161,6 +167,11 @@ def pull(
         if result.errors:
             for e in result.errors:
                 typer.echo(f"warn: {e}", err=True)
+            # #596 — even in the silent SessionStart-hook path, a table that
+            # failed to land must exit non-zero so the canonical hook's
+            # trailing `|| true` is what swallows it (a deliberate operator
+            # choice), not a hidden exit 0 that hides data loss.
+            raise typer.Exit(1)
         return
 
     # Surface tables_removed alongside tables_updated so an operator who
@@ -193,6 +204,10 @@ def pull(
     if result.errors:
         for e in result.errors:
             typer.echo(f"warn: {e}", err=True)
+        # #596 — a partial pull (any table failed to land) must exit non-zero
+        # so manual invocation and CI both see the failure instead of a
+        # success-looking exit 0 that silently hides missing tables.
+        raise typer.Exit(1)
 
 
 def _emit_stack_sync_block(stack) -> None:

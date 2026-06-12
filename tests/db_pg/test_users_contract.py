@@ -6,6 +6,7 @@ whichever side is wrong.
 
 This follows the pattern established in test_audit_contract.py.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # repo construction helpers — one per backend
 # ---------------------------------------------------------------------------
+
 
 def _make_duckdb_repo(tmp_path):
     from src.db import _ensure_schema
@@ -41,10 +43,12 @@ def _make_pg_repo(pg_engine, monkeypatch):
 
     monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
     import src.db_pg as db_pg
+
     db_pg.dispose()
     db_pg.get_engine()
 
     from src.repositories.users_pg import UsersPgRepository
+
     return UsersPgRepository(db_pg.get_engine()), None
 
 
@@ -66,15 +70,65 @@ def users_repo(request, tmp_path, pg_engine, monkeypatch):
 # helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_user(repo, **kwargs):
     defaults = {"id": "user-1", "email": "u@example.com", "name": "U"}
     defaults.update(kwargs)
     repo.create(**defaults)
 
 
+def _set_created_at(repo, backend, user_id, ts):
+    """Backfill ``created_at`` for a user. ``create()`` stamps now(); the
+    recency-ordering test needs deterministic spread, so we bump it directly
+    on whichever backend store the repo holds."""
+    if backend == "duckdb":
+        repo.conn.execute("UPDATE users SET created_at = ? WHERE id = ?", [ts, user_id])
+    else:
+        import sqlalchemy as sa
+
+        with repo._engine.begin() as conn:
+            conn.execute(
+                sa.text("UPDATE users SET created_at = :ts WHERE id = :id"),
+                {"ts": ts, "id": user_id},
+            )
+
+
+def _add_group_and_member(repo, backend, group_id, group_name, user_id):
+    """Create a group (FK target) + a membership row on the repo's backend.
+
+    Raw SQL (rather than the group repos) keeps the contract test free of
+    those repos' construction quirks — search_recent only reads
+    ``user_group_members`` via EXISTS, so a plain membership row is enough."""
+    if backend == "duckdb":
+        repo.conn.execute(
+            "INSERT INTO user_groups (id, name, is_system, created_at) VALUES (?, ?, FALSE, current_timestamp)",
+            [group_id, group_name],
+        )
+        repo.conn.execute(
+            "INSERT INTO user_group_members (user_id, group_id, source) VALUES (?, ?, 'admin')",
+            [user_id, group_id],
+        )
+    else:
+        import sqlalchemy as sa
+
+        with repo._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "INSERT INTO user_groups (id, name, is_system, created_at) "
+                    "VALUES (:id, :name, FALSE, current_timestamp)"
+                ),
+                {"id": group_id, "name": group_name},
+            )
+            conn.execute(
+                sa.text("INSERT INTO user_group_members (user_id, group_id, source) VALUES (:uid, :gid, 'admin')"),
+                {"uid": user_id, "gid": group_id},
+            )
+
+
 # ---------------------------------------------------------------------------
 # contract tests — same calls, same answers from both engines
 # ---------------------------------------------------------------------------
+
 
 def test_create_then_get_by_id_returns_same_row(users_repo):
     repo, _, _ = users_repo
@@ -165,3 +219,59 @@ def test_set_and_get_by_slack_user_id(users_repo):
     bound = repo.get_by_slack_user_id("U999")
     assert bound is not None
     assert bound["id"] == "user-1"
+
+
+# ---------------------------------------------------------------------------
+# search_recent — recency window + backend search/group filter (FAI-23)
+# ---------------------------------------------------------------------------
+
+
+def test_search_recent_orders_by_created_at_desc_and_respects_limit(users_repo):
+    repo, _, backend = users_repo
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    # Insert oldest→newest; created_at backfilled so order is deterministic.
+    for i in range(3):
+        _make_user(repo, id=f"user-{i}", email=f"u{i}@x.com", name=f"U{i}")
+        _set_created_at(repo, backend, f"user-{i}", base.replace(day=i + 1))
+
+    rows = repo.search_recent(limit=2)
+    assert [r["id"] for r in rows] == ["user-2", "user-1"]  # newest first, capped
+
+    rows_all = repo.search_recent(limit=10)
+    assert [r["id"] for r in rows_all] == ["user-2", "user-1", "user-0"]
+
+
+def test_search_recent_filters_by_email_or_name_case_insensitive(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-a", email="alice@x.com", name="Alice")
+    _make_user(repo, id="user-b", email="bob@x.com", name="Bob")
+
+    by_email = repo.search_recent(search="ALICE@")
+    assert [r["id"] for r in by_email] == ["user-a"]
+
+    by_name = repo.search_recent(search="bo")
+    assert [r["id"] for r in by_name] == ["user-b"]
+
+    none = repo.search_recent(search="zzz")
+    assert none == []
+
+
+def test_search_recent_filters_by_group_membership(users_repo):
+    repo, _, backend = users_repo
+    _make_user(repo, id="user-in", email="in@x.com", name="In")
+    _make_user(repo, id="user-out", email="out@x.com", name="Out")
+    _add_group_and_member(repo, backend, "grp-1", "data-team", "user-in")
+
+    rows = repo.search_recent(group_id="grp-1")
+    assert [r["id"] for r in rows] == ["user-in"]
+
+
+def test_search_recent_combines_search_and_group_filter(users_repo):
+    repo, _, backend = users_repo
+    _make_user(repo, id="user-1", email="alice@x.com", name="Alice")
+    _make_user(repo, id="user-2", email="alex@x.com", name="Alex")
+    _add_group_and_member(repo, backend, "grp-1", "data-team", "user-1")
+
+    # Both match "al", but only user-1 is in the group.
+    rows = repo.search_recent(search="al", group_id="grp-1")
+    assert [r["id"] for r in rows] == ["user-1"]

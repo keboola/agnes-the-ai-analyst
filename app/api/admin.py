@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import threading
-import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -33,6 +32,7 @@ from src.repositories import (
 )
 from src.sql_safe import is_safe_project_id as _is_safe_project_id
 from src.scheduler import is_valid_schedule
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -69,9 +69,9 @@ def _get_processor_run_lock(name: str) -> threading.Lock:
 
 
 # SSRF protection: reject private/internal URLs for keboola_url
-import ipaddress as _ipaddress
-import socket as _socket
-from urllib.parse import urlparse as _urlparse
+import ipaddress as _ipaddress  # noqa: E402
+import socket as _socket  # noqa: E402
+from urllib.parse import urlparse as _urlparse  # noqa: E402
 
 
 def _validate_url_not_private(url: str, field_name: str = "url") -> None:
@@ -134,12 +134,12 @@ def _unescape_shell_quoting(s: str | None) -> str | None:
     SENTINEL = "\x00"
     return (
         s.replace("\\\\", SENTINEL)
-         .replace("\\n", "\n")
-         .replace("\\r", "\r")
-         .replace("\\t", "\t")
-         .replace("\\'", "'")
-         .replace('\\"', '"')
-         .replace(SENTINEL, "\\")
+        .replace("\\n", "\n")
+        .replace("\\r", "\r")
+        .replace("\\t", "\t")
+        .replace("\\'", "'")
+        .replace('\\"', '"')
+        .replace(SENTINEL, "\\")
     )
 
 
@@ -226,11 +226,7 @@ def _validate_materialize_section(sections: Dict[str, Dict[str, Any]]) -> None:
     if ttl < _LOCK_TTL_MIN or ttl > _LOCK_TTL_MAX:
         raise HTTPException(
             status_code=422,
-            detail=(
-                f"materialize.lock_ttl_seconds must be between "
-                f"{_LOCK_TTL_MIN} and {_LOCK_TTL_MAX} "
-                f"(got {ttl})"
-            ),
+            detail=(f"materialize.lock_ttl_seconds must be between {_LOCK_TTL_MIN} and {_LOCK_TTL_MAX} (got {ttl})"),
         )
 
 
@@ -346,7 +342,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "footnotes). Typically a one-line invitation linking to "
                 "a chat space, mailing list, or runbook — e.g. "
                 "'<p><strong>Need help?</strong> Drop into our "
-                "<a href=\"https://chat.example.com/room/xxx\">Support</a> "
+                '<a href="https://chat.example.com/room/xxx">Support</a> '
                 "chat space.</p>'. Rendered with | safe — admin trust "
                 "boundary (link target is operator-controlled). Empty "
                 "value hides the block."
@@ -497,10 +493,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
         },
         "token": {
             "kind": "secret",
-            "hint": (
-                "JWT bearer token. Use ${OPENMETADATA_TOKEN} env-var reference "
-                "(don't paste secret directly)."
-            ),
+            "hint": ("JWT bearer token. Use ${OPENMETADATA_TOKEN} env-var reference (don't paste secret directly)."),
         },
         "cache_ttl_seconds": {
             "kind": "int",
@@ -569,10 +562,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
         },
         "sources": {
             "kind": "object",
-            "hint": (
-                "Knowledge-source ingestion. Each source has its own enabled "
-                "flag + base confidence."
-            ),
+            "hint": ("Knowledge-source ingestion. Each source has its own enabled flag + base confidence."),
             "fields": {
                 "claude_local_md": {
                     "kind": "object",
@@ -603,10 +593,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                                 "confirmation",
                                 "unprompted_definition",
                             ],
-                            "hint": (
-                                "Which extraction patterns to detect. Each entry "
-                                "is a detection-type tag."
-                            ),
+                            "hint": ("Which extraction patterns to detect. Each entry is a detection-type tag."),
                         },
                     },
                 },
@@ -690,10 +677,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                                 "user_verification": 0.40,
                                 "default": 0.0,
                             },
-                            "hint": (
-                                "Per-source minimum confidence — items never decay "
-                                "below this floor."
-                            ),
+                            "hint": ("Per-source minimum confidence — items never decay below this floor."),
                         },
                     },
                 },
@@ -723,10 +707,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                         "metrics": ["churn", "MRR", "ARR", "NPS", "CAC", "LTV"],
                         "products": ["Platform", "API", "Dashboard"],
                     },
-                    "hint": (
-                        "Domain-entity vocabulary. Key = domain category; value = "
-                        "canonical names list."
-                    ),
+                    "hint": ("Domain-entity vocabulary. Key = domain category; value = canonical names list."),
                 },
             },
         },
@@ -735,9 +716,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             "key_kind": "string",
             "value_kind": "array",
             "value_item_kind": "string",
-            "hint": (
-                "Per-domain admin emails. Key = domain name; value = email list."
-            ),
+            "hint": ("Per-domain admin emails. Key = domain name; value = email list."),
         },
         "domains": {
             "kind": "array",
@@ -750,10 +729,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "operations",
                 "infrastructure",
             ],
-            "hint": (
-                "Knowledge domains analysts can target. Each must match a key "
-                "in domain_owners."
-            ),
+            "hint": ("Knowledge domains analysts can target. Each must match a key in domain_owners."),
         },
     },
     # materialize — file-lock TTL for the concurrent-materialize safety net.
@@ -792,7 +768,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             "hint": (
                 "Minimum character floor for slash-command descriptions. "
                 "Tighter than skills because commands are one-verb "
-                "actions (\"run tests\", \"format code\"). Default 25. Min 1."
+                'actions ("run tests", "format code"). Default 25. Min 1.'
             ),
         },
         "min_distinct_words": {
@@ -801,7 +777,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             "hint": (
                 "Minimum number of DISTINCT words in any description "
                 "string. Defends against padding-only descriptions like "
-                "\"description description description\" that hit the "
+                '"description description description" that hit the '
                 "character count but say nothing. Default 5. Min 1."
             ),
         },
@@ -812,7 +788,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "Minimum body-content floor for skill / agent files "
                 "(the markdown after the YAML frontmatter). Real skill "
                 "bodies run 500–2000 chars; the default 200 is a "
-                "\"one paragraph\" floor that catches stubs. Min 1."
+                '"one paragraph" floor that catches stubs. Min 1.'
             ),
         },
         "enabled": {
@@ -1006,24 +982,30 @@ def _diff_dicts(before: dict, after: dict, path: str = "") -> List[Dict[str, Any
         # values when a section is replaced wholesale.
         elif b_is_dict != a_is_dict:
             if _is_secret_key(key):
-                changes.append({
-                    "path": new_path,
-                    "before": _mask(b_val),
-                    "after": _mask(a_val),
-                })
+                changes.append(
+                    {
+                        "path": new_path,
+                        "before": _mask(b_val),
+                        "after": _mask(a_val),
+                    }
+                )
             else:
-                changes.append({
-                    "path": new_path,
-                    "before": _redact(b_val, key) if b_is_dict else b_val,
-                    "after": _redact(a_val, key) if a_is_dict else a_val,
-                })
+                changes.append(
+                    {
+                        "path": new_path,
+                        "before": _redact(b_val, key) if b_is_dict else b_val,
+                        "after": _redact(a_val, key) if a_is_dict else a_val,
+                    }
+                )
         elif b_val != a_val:
             if _is_secret_key(key):
-                changes.append({
-                    "path": new_path,
-                    "before": _mask(b_val),
-                    "after": _mask(a_val),
-                })
+                changes.append(
+                    {
+                        "path": new_path,
+                        "before": _mask(b_val),
+                        "after": _mask(a_val),
+                    }
+                )
             else:
                 changes.append({"path": new_path, "before": b_val, "after": a_val})
     return changes
@@ -1056,6 +1038,7 @@ def _load_current_instance_yaml() -> dict:
     never sees a different view than the rest of the running app.
     """
     from app.instance_config import load_instance_config
+
     return load_instance_config()
 
 
@@ -1067,6 +1050,7 @@ def _public_view(config: dict) -> dict:
     rendered HTML / browser DevTools.
     """
     import copy
+
     return _redact(copy.deepcopy(config))
 
 
@@ -1077,6 +1061,7 @@ class ServerConfigUpdateRequest(BaseModel):
     else is rejected with 400. `confirm_danger` must be true if the patch
     touches any danger-zone section (auth.*, server.*).
     """
+
     sections: Dict[str, Dict[str, Any]] = Field(
         default_factory=dict,
         description="Per-section patch dict (e.g. {'instance': {'name': 'X'}})",
@@ -1190,8 +1175,7 @@ async def update_server_config(
     if unknown:
         raise HTTPException(
             status_code=400,
-            detail=f"unknown section(s): {', '.join(unknown)}. "
-                   f"Editable: {', '.join(_EDITABLE_SECTIONS)}",
+            detail=f"unknown section(s): {', '.join(unknown)}. Editable: {', '.join(_EDITABLE_SECTIONS)}",
         )
 
     # Danger-zone gate. The UI shows a confirmation dialog before posting
@@ -1218,8 +1202,7 @@ async def update_server_config(
     # the GET payload could otherwise overwrite real overlay secrets with
     # the placeholder shown in the form.
     scrubbed_sections: Dict[str, Dict[str, Any]] = {
-        section: _strip_redacted_sentinels(patch, section)
-        for section, patch in request.sections.items()
+        section: _strip_redacted_sentinels(patch, section) for section, patch in request.sections.items()
     }
 
     # Serialize read-modify-write across concurrent admin saves. Without the
@@ -1230,6 +1213,7 @@ async def update_server_config(
     # local snapshots.
     from app.instance_config import reset_cache
     from app.secrets import _state_dir
+
     config_path = _state_dir() / "instance.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1283,7 +1267,7 @@ async def update_server_config(
                 raise HTTPException(
                     status_code=500,
                     detail=f"refusing to overwrite corrupt overlay at {config_path} ({e}); "
-                           "back up and remove the file, or fix it by hand",
+                    "back up and remove the file, or fix it by hand",
                 ) from e
         for section, patch in scrubbed_sections.items():
             if section not in _EDITABLE_SECTIONS:
@@ -1304,8 +1288,7 @@ async def update_server_config(
         tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
         tmp_path.write_text(yaml.dump(overlay_payload, default_flow_style=False, sort_keys=False))
         os.replace(tmp_path, config_path)
-        logger.info("server-config: wrote %d section(s) to %s",
-                    len(request.sections), config_path)
+        logger.info("server-config: wrote %d section(s) to %s", len(request.sections), config_path)
 
         # Invalidate cached instance config so subsequent reads pick up the
         # change. Hot-reload of running modules (auth providers, SMTP client)
@@ -1366,25 +1349,27 @@ _VALID_SOURCE_TYPES: tuple[str, ...] = ("keboola", "bigquery", "jira", "local")
 # ServerConfigUpdateRequest) when extending — the registry payloads don't
 # currently carry credentials, but ConfigureRequest does (`keboola_token`)
 # and could be routed through this sanitizer in the future.
-_SECRET_FIELDS: frozenset = frozenset({
-    # ConfigureRequest — POST /api/admin/configure carries Keboola creds.
-    "keboola_token",
-    # Generic names that have appeared in earlier iterations of admin
-    # request bodies and could resurface — keep them masked defensively.
-    "api_token",
-    "auth_token",
-    "bot_token",
-    "client_secret",
-    "google_client_secret",
-    "google_oauth_client_secret",
-    "password",
-    "smtp_password",
-    "webapp_secret_key",
-    "bot_secret",
-    # Marketplace PATs (private repos) — see src/marketplace.py.
-    "marketplace_token",
-    "marketplace_pat",
-})
+_SECRET_FIELDS: frozenset = frozenset(
+    {
+        # ConfigureRequest — POST /api/admin/configure carries Keboola creds.
+        "keboola_token",
+        # Generic names that have appeared in earlier iterations of admin
+        # request bodies and could resurface — keep them masked defensively.
+        "api_token",
+        "auth_token",
+        "bot_token",
+        "client_secret",
+        "google_client_secret",
+        "google_oauth_client_secret",
+        "password",
+        "smtp_password",
+        "webapp_secret_key",
+        "bot_secret",
+        # Marketplace PATs (private repos) — see src/marketplace.py.
+        "marketplace_token",
+        "marketplace_pat",
+    }
+)
 
 
 def _sanitize_for_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1418,7 +1403,7 @@ _BACKTICK_REJECTION_MESSAGE = (
     "source_query uses BigQuery-native backtick identifiers (e.g. "
     "`project.dataset.table`), but the materialize path runs the SQL "
     "through DuckDB's BigQuery extension which uses DuckDB-flavor "
-    "identifiers. Rewrite to DuckDB syntax: bq.\"dataset\".\"table\" "
+    'identifiers. Rewrite to DuckDB syntax: bq."dataset"."table" '
     "(with the attached catalog alias `bq` plus double-quoted dataset/"
     "table). The instance is configured with the data project, so you "
     "don't need to repeat it in the FROM clause."
@@ -1495,6 +1480,37 @@ class RegisterTableRequest(BaseModel):
             "Agnes ``bucket`` label (issue #343)."
         ),
     )
+    # v74 (#607) — distribution flag decoupled from query_mode. When true the
+    # table is kept server-side & queryable via `agnes query --remote`, but
+    # `agnes pull` does NOT download its parquet (the manifest still lists it
+    # for catalog discovery + RBAC). Only meaningful for query_mode IN
+    # ('local', 'materialized'); the model_validator below rejects it paired
+    # with query_mode='remote' (no server-stored parquet to suppress).
+    server_only: bool = Field(
+        default=False,
+        description=(
+            "Keep the table server-side & queryable via `agnes query "
+            "--remote`, but exclude its parquet from `agnes pull` download. "
+            "Only valid for query_mode='local'/'materialized'; rejected with "
+            "query_mode='remote'. Default false leaves distribution unchanged."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_server_only_query_mode(self):
+        """``server_only`` is a *distribution* suppressor — it only makes
+        sense when there IS a server-stored parquet to suppress. A
+        ``query_mode='remote'`` row has none (every query goes live to the
+        upstream source), so ``server_only=true`` there is incoherent.
+        Reject it explicitly rather than silently ignore so the admin sees
+        the conflict at register/update time (issue #607)."""
+        if self.server_only and self.query_mode == "remote":
+            raise ValueError(
+                "server_only=true is only valid for query_mode='local' or "
+                "'materialized' (a 'remote' table has no server-stored parquet "
+                "to suppress from agnes pull)"
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_mode_query_coherence(self):
@@ -1508,9 +1524,7 @@ class RegisterTableRequest(BaseModel):
         """
         sq = (self.source_query or "").strip() or None
         if self.query_mode != "materialized" and sq:
-            raise ValueError(
-                "source_query is only valid when query_mode='materialized'"
-            )
+            raise ValueError("source_query is only valid when query_mode='materialized'")
         # BigQuery materialized auto-generates a full-table-dump SQL from
         # `bucket`+`source_table` when source_query is omitted (see
         # `register_table` BQ branch). Keboola materialized: a NULL
@@ -1519,14 +1533,9 @@ class RegisterTableRequest(BaseModel):
         # filter, see `connectors/keboola/storage_api.py:ExportFilter`).
         # Other source_types (e.g. jira) don't support materialized mode
         # and require an explicit source_query if the operator opts in.
-        if (
-            self.query_mode == "materialized"
-            and not sq
-            and self.source_type not in ("bigquery", "keboola")
-        ):
+        if self.query_mode == "materialized" and not sq and self.source_type not in ("bigquery", "keboola"):
             raise ValueError(
-                f"query_mode='materialized' for source_type='{self.source_type}' "
-                "requires a non-empty source_query"
+                f"query_mode='materialized' for source_type='{self.source_type}' requires a non-empty source_query"
             )
         # Backtick guard stays for non-materialized rows (DuckDB-flavor SQL
         # contract); materialized SQL is BigQuery-native and MUST allow
@@ -1547,9 +1556,7 @@ class RegisterTableRequest(BaseModel):
             try:
                 json.loads(sq)
             except json.JSONDecodeError as e:
-                raise ValueError(
-                    f"Keboola materialized source_query must be valid JSON: {e}"
-                ) from e
+                raise ValueError(f"Keboola materialized source_query must be valid JSON: {e}") from e
         # Normalise: stash the trimmed-or-None form so the persisted column
         # never carries surrounding whitespace or empty-string sentinels.
         self.source_query = sq
@@ -1576,9 +1583,7 @@ class RegisterTableRequest(BaseModel):
         if v in (None, ""):
             return v
         if v not in _VALID_SOURCE_TYPES:
-            raise ValueError(
-                f"source_type must be one of {sorted(_VALID_SOURCE_TYPES)}, got {v!r}"
-            )
+            raise ValueError(f"source_type must be one of {sorted(_VALID_SOURCE_TYPES)}, got {v!r}")
         return v
 
     @field_validator("sync_schedule", mode="before")
@@ -1593,7 +1598,8 @@ class RegisterTableRequest(BaseModel):
         if not is_valid_schedule(v):
             raise ValueError(
                 f"sync_schedule must be 'every Nm' / 'every Nh' / "
-                f"'daily HH:MM[,HH:MM,...]', got {v!r}"
+                f"'daily HH:MM[,HH:MM,...]' / 'cron <min hour dom month dow>' "
+                f"(e.g. 'cron 0 5 7 * *'), got {v!r}"
             )
         return v
 
@@ -1611,9 +1617,7 @@ class RegisterTableRequest(BaseModel):
             return "full_refresh"
         allowed = {"full_refresh", "incremental", "partitioned"}
         if v not in allowed:
-            raise ValueError(
-                f"sync_strategy must be one of {sorted(allowed)}, got {v!r}"
-            )
+            raise ValueError(f"sync_strategy must be one of {sorted(allowed)}, got {v!r}")
         return v
 
     @field_validator("partition_granularity", mode="before")
@@ -1623,9 +1627,7 @@ class RegisterTableRequest(BaseModel):
             return v
         allowed = {"day", "month", "year"}
         if v not in allowed:
-            raise ValueError(
-                f"partition_granularity must be one of {sorted(allowed)}, got {v!r}"
-            )
+            raise ValueError(f"partition_granularity must be one of {sorted(allowed)}, got {v!r}")
         return v
 
     @field_validator("where_filters", mode="before")
@@ -1644,6 +1646,7 @@ class RegisterTableRequest(BaseModel):
         if v in (None, "", []):
             return None
         from connectors.keboola.where_filters import parse_filters, InvalidFilterError
+
         try:
             return parse_filters(v)
         except InvalidFilterError as e:
@@ -1674,9 +1677,7 @@ class RegisterTableRequest(BaseModel):
         """
         if self.sync_strategy == "partitioned":
             if not self.partition_by:
-                raise ValueError(
-                    "sync_strategy='partitioned' requires partition_by to be set"
-                )
+                raise ValueError("sync_strategy='partitioned' requires partition_by to be set")
             if self.query_mode == "remote":
                 raise ValueError(
                     "sync_strategy='partitioned' is incompatible with query_mode='remote' "
@@ -1717,7 +1718,9 @@ class RegisterTableRequest(BaseModel):
 
 
 def _generate_materialized_source_query(
-    bucket: str, source_table: str, project_id: str,
+    bucket: str,
+    source_table: str,
+    project_id: str,
 ) -> str:
     """Build the canonical full-table-dump source_query for a materialized
     BQ row when admin only supplies dataset + table. The result is
@@ -1741,6 +1744,53 @@ def _generate_materialized_source_query(
     return f"SELECT * FROM `{project_id}.{bucket}.{source_table}`"
 
 
+def _normalize_bq_source_table(req: "RegisterTableRequest") -> None:
+    """Collapse a pasted FQN in ``source_table`` to the bare table name.
+
+    BigQuery table names cannot contain dots, so a dotted ``source_table``
+    is always a pasted path (``dataset.table`` or ``project.dataset.table``),
+    never a real table name. Stored verbatim, the extractor composes
+    ``project.bucket.source_table`` and produces a doubled path that fails to
+    register on every sync. Mutates the request in place when the dotted
+    value is unambiguous (its dataset component equals ``bucket``); raises
+    HTTPException(400) when it contradicts ``bucket`` or points at a foreign
+    project (that's what ``bq_fqn`` is for).
+    """
+    st = req.source_table or ""
+    if "." not in st:
+        return
+    parts = st.split(".")
+    bucket = req.bucket or ""
+    if len(parts) == 2 and parts[0] == bucket and parts[1]:
+        bare = parts[1]
+    elif len(parts) == 3 and parts[1] == bucket and parts[2]:
+        from app.instance_config import get_value
+
+        project_id = get_value("data_source", "bigquery", "project", default="") or ""
+        if project_id and parts[0] != project_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"bigquery: source_table {st!r} points at project "
+                    f"{parts[0]!r} but this instance is configured for "
+                    f"{project_id!r} — for cross-project tables use the "
+                    "bq_fqn field"
+                ),
+            )
+        bare = parts[2]
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"bigquery: source_table {st!r} looks like a fully-qualified "
+                f"path but does not match bucket {req.bucket!r} — put the BQ "
+                "dataset in 'bucket' and the bare table name in 'source_table'"
+            ),
+        )
+    logger.info("normalized dotted BQ source_table %r -> %r", st, bare)
+    req.source_table = bare
+
+
 def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     """Enforce BQ-specific shape on a register/precheck request.
 
@@ -1760,6 +1810,7 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     Raises HTTPException(422) for missing required fields and
     HTTPException(400) for unsafe identifiers / bogus project_id.
     """
+    _normalize_bq_source_table(req)
     if req.query_mode == "materialized":
         # Materialized BQ rows: the SQL body replaces dataset+table refs.
         # source_query may be empty if admin supplied bucket+source_table —
@@ -1775,6 +1826,7 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
                 ),
             )
         from app.instance_config import get_value
+
         project_id = get_value("data_source", "bigquery", "project", default="") or ""
         if not project_id:
             raise HTTPException(
@@ -1809,7 +1861,9 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
                     ),
                 )
             req.source_query = _generate_materialized_source_query(
-                req.bucket, req.source_table, project_id,
+                req.bucket,
+                req.source_table,
+                project_id,
             )
 
         # Phase C: profile_after_sync is now inert (Pydantic field marked
@@ -1884,6 +1938,7 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     # we surface a config issue at registration rather than at first
     # rebuild, where the operator no longer has a request to look at.
     from app.instance_config import get_value
+
     project_id = get_value("data_source", "bigquery", "project", default="")
     if not project_id:
         raise HTTPException(
@@ -1907,16 +1962,33 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     # Phase C: profile_after_sync is now inert (deprecated, not read by the
     # runtime); no longer force-set here.
     req.query_mode = "remote"
+    # v74 (#607) — re-assert the server_only ↔ query_mode invariant AFTER the
+    # coercion above. The Pydantic validator ran against the caller's
+    # pre-coercion query_mode (often the 'local' default), so a BQ live
+    # registration with server_only=true would otherwise slip past it and
+    # persist the exact incoherent state it exists to reject.
+    if req.server_only:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "server_only=true is only valid for query_mode='local' or "
+                "'materialized' — a live BigQuery registration is coerced to "
+                "query_mode='remote', which has no server-stored parquet to "
+                "suppress from agnes pull"
+            ),
+        )
 
 
 # Source types that don't depend on a `data_source.<name>.*` block — they
 # get their data through a different ingestion path (e.g. Jira via
 # webhooks). Registrations against these types are allowed regardless of
 # the configured primary `data_source.type`.
-_SOURCE_TYPES_INDEPENDENT_OF_DATA_SOURCE: frozenset[str] = frozenset({
-    "jira",
-    "local",
-})
+_SOURCE_TYPES_INDEPENDENT_OF_DATA_SOURCE: frozenset[str] = frozenset(
+    {
+        "jira",
+        "local",
+    }
+)
 
 
 def _validate_source_type_configured(source_type: Optional[str]) -> None:
@@ -2010,10 +2082,7 @@ class UpdateTableRequest(BaseModel):
     profile_after_sync: Optional[bool] = Field(
         default=None,
         deprecated=True,
-        description=(
-            "DEPRECATED: not consumed by the runtime. See "
-            "RegisterTableRequest.profile_after_sync."
-        ),
+        description=("DEPRECATED: not consumed by the runtime. See RegisterTableRequest.profile_after_sync."),
     )
     # v26 — same fields as RegisterTableRequest, all optional. The PUT
     # handler overlays the body on the existing row and re-runs the
@@ -2030,6 +2099,11 @@ class UpdateTableRequest(BaseModel):
     # clear bq_fqn on an existing row (cleared via explicit `null`,
     # per the PUT shape contract documented on the handler below).
     bq_fqn: Optional[str] = None
+    # v74 (#607) — distribution flag. PUT lets an admin toggle it on/off.
+    # The query_mode='remote' conflict is enforced against the *merged*
+    # record in the update_table handler (the PUT body alone may omit
+    # query_mode, so it can't be validated here in isolation).
+    server_only: Optional[bool] = None
 
     @field_validator("sync_strategy", mode="before")
     @classmethod
@@ -2038,9 +2112,7 @@ class UpdateTableRequest(BaseModel):
             return v
         allowed = {"full_refresh", "incremental", "partitioned"}
         if v not in allowed:
-            raise ValueError(
-                f"sync_strategy must be one of {sorted(allowed)}, got {v!r}"
-            )
+            raise ValueError(f"sync_strategy must be one of {sorted(allowed)}, got {v!r}")
         return v
 
     @field_validator("partition_granularity", mode="before")
@@ -2050,9 +2122,7 @@ class UpdateTableRequest(BaseModel):
             return v
         allowed = {"day", "month", "year"}
         if v not in allowed:
-            raise ValueError(
-                f"partition_granularity must be one of {sorted(allowed)}, got {v!r}"
-            )
+            raise ValueError(f"partition_granularity must be one of {sorted(allowed)}, got {v!r}")
         return v
 
     @field_validator("where_filters", mode="before")
@@ -2061,6 +2131,7 @@ class UpdateTableRequest(BaseModel):
         if v in (None, "", []):
             return None
         from connectors.keboola.where_filters import parse_filters, InvalidFilterError
+
         try:
             return parse_filters(v)
         except InvalidFilterError as e:
@@ -2099,31 +2170,16 @@ class UpdateTableRequest(BaseModel):
 
         # Operator explicitly sent source_query as empty/whitespace while
         # claiming materialized — typo / bad form data, reject.
-        if (
-            self.query_mode == "materialized"
-            and sq_raw is not None
-            and not sq
-        ):
-            raise ValueError(
-                "query_mode='materialized' requires a non-empty source_query"
-            )
+        if self.query_mode == "materialized" and sq_raw is not None and not sq:
+            raise ValueError("query_mode='materialized' requires a non-empty source_query")
 
         # source_query only makes sense with materialized mode. Allow None
         # (omitted) to flow through; only reject when explicitly set with
         # the wrong mode.
-        if (
-            self.query_mode is not None
-            and self.query_mode != "materialized"
-            and sq
-        ):
-            raise ValueError(
-                "source_query is only valid when query_mode='materialized'"
-            )
+        if self.query_mode is not None and self.query_mode != "materialized" and sq:
+            raise ValueError("source_query is only valid when query_mode='materialized'")
         if self.query_mode is None and sq:
-            raise ValueError(
-                "source_query requires query_mode='materialized' to be set "
-                "in the same request"
-            )
+            raise ValueError("source_query requires query_mode='materialized' to be set in the same request")
 
         # Normalise: drop whitespace-only strings to None so the persisted
         # column is clean. Don't touch when source_query was None to begin
@@ -2159,7 +2215,8 @@ class UpdateTableRequest(BaseModel):
         if not is_valid_schedule(v):
             raise ValueError(
                 f"sync_schedule must be 'every Nm' / 'every Nh' / "
-                f"'daily HH:MM[,HH:MM,...]', got {v!r}"
+                f"'daily HH:MM[,HH:MM,...]' / 'cron <min hour dom month dow>' "
+                f"(e.g. 'cron 0 5 7 * *'), got {v!r}"
             )
         return v
 
@@ -2193,11 +2250,13 @@ async def discover_tables(
     """
     try:
         from app.instance_config import get_data_source_type
+
         source_type = get_data_source_type()
 
         if source_type == "keboola":
             from connectors.keboola.client import KeboolaClient
             from app.instance_config import get_value
+
             url = get_value("data_source", "keboola", "stack_url", default="")
             token_env = get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN")
             token = os.environ.get(token_env, "") if token_env else ""
@@ -2248,10 +2307,12 @@ def _discover_bigquery(dataset: Optional[str]) -> Dict[str, Any]:
         if dataset is None:
             datasets = []
             for ds in client.list_datasets():
-                datasets.append({
-                    "dataset_id": ds.dataset_id,
-                    "full_id": f"{ds.project}.{ds.dataset_id}",
-                })
+                datasets.append(
+                    {
+                        "dataset_id": ds.dataset_id,
+                        "full_id": f"{ds.project}.{ds.dataset_id}",
+                    }
+                )
             return {
                 "datasets": sorted(datasets, key=lambda d: d["dataset_id"]),
                 "count": len(datasets),
@@ -2265,11 +2326,13 @@ def _discover_bigquery(dataset: Optional[str]) -> Dict[str, Any]:
         # passed through with their raw type so the operator can decide.
         tables = []
         for t in client.list_tables(dataset):
-            tables.append({
-                "table_id": t.table_id,
-                "table_type": t.table_type,
-                "full_id": f"{t.project}.{t.dataset_id}.{t.table_id}",
-            })
+            tables.append(
+                {
+                    "table_id": t.table_id,
+                    "table_type": t.table_type,
+                    "full_id": f"{t.project}.{t.dataset_id}.{t.table_id}",
+                }
+            )
         return {
             "tables": sorted(tables, key=lambda t: t["table_id"]),
             "count": len(tables),
@@ -2402,7 +2465,8 @@ def _materialize_bigquery_extract_bg() -> None:
     if errors:
         logger.error(
             "BQ post-register background materialize completed with %d error(s): %s",
-            len(errors), errors,
+            len(errors),
+            errors,
         )
 
 
@@ -2478,7 +2542,8 @@ def _run_bigquery_materialize_with_timeout(
         if errors:
             logger.error(
                 "BQ post-register rebuild reported %d error(s): %s",
-                len(errors), errors,
+                len(errors),
+                errors,
             )
             return {"status": "errors", "errors": errors}
         return {"status": "ok"}
@@ -2541,9 +2606,11 @@ def register_table(
     log entry on success.
     """
     from fastapi.responses import JSONResponse
+
     if not request.name or not request.name.strip():
         raise HTTPException(status_code=422, detail="Table name cannot be empty")
     import re as _re
+
     repo = table_registry_repo()
     table_id = request.name.strip().lower().replace(" ", "_")
 
@@ -2605,6 +2672,7 @@ def register_table(
         )
     if request.bq_fqn is not None:
         from connectors.bigquery.extractor import parse_bq_fqn
+
         try:
             parse_bq_fqn(request.bq_fqn)
         except ValueError as e:
@@ -2634,6 +2702,7 @@ def register_table(
         partition_granularity=request.partition_granularity,
         initial_load_chunk_days=request.initial_load_chunk_days,
         bq_fqn=request.bq_fqn,
+        server_only=request.server_only,
     )
 
     # Audit entry — masked params; description kept raw (it's documentation).
@@ -2645,6 +2714,7 @@ def register_table(
     )
 
     from app.api.v2_catalog import invalidate_for_table
+
     invalidate_for_table(table_id)
 
     if not is_bigquery:
@@ -2734,6 +2804,7 @@ class PrecheckResponse(BaseModel):
     returns a plain dict for backwards compatibility with the rest of the
     admin API which doesn't use response_model.
     """
+
     ok: bool
     table: Dict[str, Any]
 
@@ -2817,13 +2888,11 @@ def register_table_precheck(
     except ImportError as e:
         raise HTTPException(
             status_code=500,
-            detail=(
-                "google-cloud-bigquery not installed; install the bigquery "
-                f"extras to use BQ precheck ({e})"
-            ),
+            detail=(f"google-cloud-bigquery not installed; install the bigquery extras to use BQ precheck ({e})"),
         ) from e
 
     from app.instance_config import get_value
+
     project_id = get_value("data_source", "bigquery", "project", default="")
     dataset = (request.bucket or "").strip()
     source_table = (request.source_table or "").strip()
@@ -2838,8 +2907,7 @@ def register_table_precheck(
         raise HTTPException(
             status_code=403,
             detail=(
-                f"BigQuery access denied for {fq}: {e}. "
-                "Service account needs bigquery.metadata.get on the dataset."
+                f"BigQuery access denied for {fq}: {e}. Service account needs bigquery.metadata.get on the dataset."
             ),
         ) from e
     except Exception as e:
@@ -2848,10 +2916,7 @@ def register_table_precheck(
         # config without us guessing the right HTTP code.
         raise HTTPException(status_code=400, detail=f"BigQuery precheck failed for {fq}: {e}") from e
 
-    columns = [
-        {"name": f.name, "type": f.field_type}
-        for f in (bq_table.schema or [])
-    ]
+    columns = [{"name": f.name, "type": f.field_type} for f in (bq_table.schema or [])]
     return {
         "ok": True,
         "table": {
@@ -2930,10 +2995,31 @@ async def update_table(
         # (existing → merged → register) from blowing up with
         # TypeError when the docs columns are populated.
         for _docs_key in (
-            "sample_questions", "things_to_know", "pairs_well_with",
-            "grain", "platforms", "partition_col", "history", "gotchas",
+            "sample_questions",
+            "things_to_know",
+            "pairs_well_with",
+            "grain",
+            "platforms",
+            "partition_col",
+            "history",
+            "gotchas",
         ):
             merged.pop(_docs_key, None)
+
+        # v74 (#607) — validate the server_only ↔ query_mode invariant
+        # against the *merged* record (the PUT body may toggle either field
+        # independently). server_only=true is only coherent for a row with a
+        # server-stored parquet (local / materialized); a 'remote' row has
+        # none. Mirror the RegisterTableRequest validator at PUT time.
+        if merged.get("server_only") and merged.get("query_mode") == "remote":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "server_only=true is only valid for query_mode='local' or "
+                    "'materialized' (a 'remote' table has no server-stored "
+                    "parquet to suppress from agnes pull)"
+                ),
+            )
 
         # When switching the merged record away from materialized mode, drop
         # the stale source_query — the request validator can't clear it via
@@ -3011,11 +3097,20 @@ async def update_table(
                 folder=merged.get("folder"),
                 sync_strategy=merged.get("sync_strategy") or "full_refresh",
                 sync_schedule=merged.get("sync_schedule"),
+                # v74 (#607) — carry server_only into the synthetic so the
+                # validator's post-coercion check fires when this PUT lands
+                # the row in 'remote' mode; the merged-record check above
+                # only saw the pre-coercion query_mode.
+                server_only=bool(merged.get("server_only") or False),
             )
             _validate_bigquery_register_payload(synthetic)
             merged["query_mode"] = synthetic.query_mode
             merged["profile_after_sync"] = synthetic.profile_after_sync
             merged["source_query"] = synthetic.source_query
+            # FQN normalization mutates source_table the same way the
+            # validator coerces query_mode — copy it back so the persisted
+            # row carries the bare table name, not the pasted path.
+            merged["source_table"] = synthetic.source_table
 
             # v51 — same bq_fqn validation as register-table. PUT can both
             # add a fresh bq_fqn or update an existing one; in either case
@@ -3023,6 +3118,7 @@ async def update_table(
             # land in the DB and break the next rebuild.
             if merged.get("bq_fqn"):
                 from connectors.bigquery.extractor import parse_bq_fqn
+
                 try:
                     parse_bq_fqn(merged["bq_fqn"])
                 except ValueError as e:
@@ -3055,6 +3151,7 @@ async def update_table(
         background.add_task(_materialize_bigquery_extract_bg)
 
     from app.api.v2_catalog import invalidate_for_table
+
     invalidate_for_table(table_id)
 
     return {"id": table_id, "updated": list(updates.keys())}
@@ -3063,6 +3160,7 @@ async def update_table(
 class _GotchaItem(BaseModel):
     """v56: a single gotcha entry. ``key=True`` marks the first one as
     the "Key gotcha" rendered distinctly by the package detail page."""
+
     key: bool = False
     body: str
 
@@ -3077,6 +3175,7 @@ class TableDocsRequest(BaseModel):
     `""` for a scalar clears it; omitting leaves it untouched
     (Optional-is-no-op contract).
     """
+
     # v52 fields.
     sample_questions: Optional[List[str]] = None
     things_to_know: Optional[str] = None
@@ -3129,20 +3228,12 @@ async def update_table_docs(
     # v56 ``gotchas`` Pydantic models → list of dicts for the repo (JSON
     # serializer handles plain dicts; we'd lose the validator if we
     # passed _GotchaItem instances through).
-    gotchas_payload = (
-        [g.model_dump() for g in payload.gotchas]
-        if payload.gotchas is not None
-        else None
-    )
+    gotchas_payload = [g.model_dump() for g in payload.gotchas] if payload.gotchas is not None else None
     repo.update_docs(
         table_id,
-        sample_questions=(
-            None if clear_questions else payload.sample_questions
-        ),
+        sample_questions=(None if clear_questions else payload.sample_questions),
         things_to_know=(None if clear_things else payload.things_to_know),
-        pairs_well_with=(
-            None if clear_pairs else payload.pairs_well_with
-        ),
+        pairs_well_with=(None if clear_pairs else payload.pairs_well_with),
         clear_sample_questions=clear_questions,
         clear_things_to_know=clear_things,
         clear_pairs_well_with=clear_pairs,
@@ -3226,13 +3317,15 @@ async def unregister_table(
                     candidate.unlink()
                     logger.info(
                         "Removed materialized parquet for unregistered table %s: %s",
-                        table_id, candidate,
+                        table_id,
+                        candidate,
                     )
         except Exception as e:
             logger.warning(
                 "Failed to remove materialized parquet for %s: %s — registry row is "
                 "still dropped; clean up the file manually if it lingers",
-                table_id, e,
+                table_id,
+                e,
             )
 
     # Clear sync_state for any source/mode (a row that was synced at any
@@ -3247,22 +3340,26 @@ async def unregister_table(
         logger.warning(
             "Failed to clear sync_state for unregistered table %s: %s — "
             "manifest may still advertise the dropped row to agnes pull",
-            table_id, e,
+            table_id,
+            e,
         )
 
     audit_repo().log(
         user_id=user.get("id"),
         action="unregister_table",
         resource=table_id,
-        params=_sanitize_for_audit({
-            "name": existing.get("name"),
-            "source_type": existing.get("source_type"),
-            "bucket": existing.get("bucket"),
-            "source_table": existing.get("source_table"),
-        }),
+        params=_sanitize_for_audit(
+            {
+                "name": existing.get("name"),
+                "source_type": existing.get("source_type"),
+                "bucket": existing.get("bucket"),
+                "source_table": existing.get("source_table"),
+            }
+        ),
     )
 
     from app.api.v2_catalog import invalidate_for_table
+
     invalidate_for_table(table_id)
 
     if was_bigquery:
@@ -3287,10 +3384,13 @@ async def configure_instance(
     # Validate credentials if provided
     if request.data_source == "keboola":
         if not request.keboola_token or not request.keboola_url:
-            raise HTTPException(status_code=400, detail="keboola_token and keboola_url are required for Keboola data source")
+            raise HTTPException(
+                status_code=400, detail="keboola_token and keboola_url are required for Keboola data source"
+            )
         _validate_url_not_private(request.keboola_url, field_name="keboola_url")
         try:
             from connectors.keboola.client import KeboolaClient
+
             client = KeboolaClient(token=request.keboola_token, url=request.keboola_url)
             client.test_connection()
         except Exception as e:
@@ -3315,6 +3415,7 @@ async def configure_instance(
     # 2. Patch only the sections this endpoint touches.
     # 3. Write the narrow overlay back atomically (tmp + os.replace).
     from app.secrets import _state_dir
+
     config_path = _state_dir() / "instance.yaml"
 
     # Same serialization + corrupt-overlay handling as POST /server-config.
@@ -3328,7 +3429,7 @@ async def configure_instance(
                 raise HTTPException(
                     status_code=500,
                     detail=f"refusing to overwrite corrupt overlay at {config_path} ({e}); "
-                           "back up and remove the file, or fix it by hand",
+                    "back up and remove the file, or fix it by hand",
                 ) from e
 
         # Merge instance settings into the overlay only — never seed from the
@@ -3397,6 +3498,7 @@ async def configure_instance(
         # secrets to /data/state/.env_overlay here while the app reads
         # from /data-state/.env_overlay — silent loss on next restart.
         from app.secrets import _state_dir
+
         overlay_path = _state_dir() / ".env_overlay"
         overlay_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -3409,9 +3511,7 @@ async def configure_instance(
                     existing_overlay[k.strip()] = v.strip()
         existing_overlay.update(secrets_to_persist)
 
-        overlay_path.write_text(
-            "\n".join(f"{k}={v}" for k, v in existing_overlay.items()) + "\n"
-        )
+        overlay_path.write_text("\n".join(f"{k}={v}" for k, v in existing_overlay.items()) + "\n")
         try:
             overlay_path.chmod(0o600)
         except OSError:
@@ -3426,6 +3526,7 @@ async def configure_instance(
     # Use the public helper (matches `/api/admin/server-config`); reaching
     # into the private global silently breaks if the cache layout changes.
     from app.instance_config import reset_cache
+
     reset_cache()
 
     return {
@@ -3457,7 +3558,8 @@ def _split_keboola_table_id(full_id: str, fallback_name: str = "") -> tuple[str,
 
 
 def _build_keboola_discovery_plan(
-    conn: duckdb.DuckDBPyConnection, discovered: list[dict],
+    conn: duckdb.DuckDBPyConnection,
+    discovered: list[dict],
 ) -> dict:
     """Inspect ``discovered`` (output of ``KeboolaClient.discover_all_tables``)
     against the live registry and bucket every entry into one of:
@@ -3498,9 +3600,7 @@ def _build_keboola_discovery_plan(
         all_rows = [r for r in repo.list_all() if r.get("source_type") == "keboola"]
     except AttributeError:
         all_rows = []
-    by_name: dict[str, dict] = {
-        (r.get("name") or "").strip().lower(): r for r in all_rows
-    }
+    by_name: dict[str, dict] = {(r.get("name") or "").strip().lower(): r for r in all_rows}
 
     plan = {"new": [], "existing_match": [], "existing_drift": [], "invalid": []}
     for table in discovered:
@@ -3509,11 +3609,13 @@ def _build_keboola_discovery_plan(
         # → underscores. Stable across discovery runs.
         table_id = full_id.lower().replace(".", "_").replace(" ", "_")
         if not table_id:
-            plan["invalid"].append({
-                "table_id": "",
-                "full_id": full_id,
-                "reason": "empty id from discovery payload",
-            })
+            plan["invalid"].append(
+                {
+                    "table_id": "",
+                    "full_id": full_id,
+                    "reason": "empty id from discovery payload",
+                }
+            )
             continue
 
         # Prefer Keboola's authoritative `bucket_id` (separate field in
@@ -3542,26 +3644,30 @@ def _build_keboola_discovery_plan(
             if ex_bucket == bucket and ex_source_table == source_table:
                 plan["existing_match"].append(entry)
             else:
-                plan["existing_drift"].append({
-                    **entry,
-                    "registry_bucket": ex_bucket,
-                    "registry_source_table": ex_source_table,
-                    "registry_id": existing.get("id"),
-                    "drift_kind": "same_id_diff_coords",
-                })
+                plan["existing_drift"].append(
+                    {
+                        **entry,
+                        "registry_bucket": ex_bucket,
+                        "registry_source_table": ex_source_table,
+                        "registry_id": existing.get("id"),
+                        "drift_kind": "same_id_diff_coords",
+                    }
+                )
             continue
 
         # No row at this id. Look for a name collision (admin
         # registered the same logical table under a different id).
         name_match = by_name.get(name.lower()) if name else None
         if name_match is not None:
-            plan["existing_drift"].append({
-                **entry,
-                "registry_bucket": name_match.get("bucket") or "",
-                "registry_source_table": name_match.get("source_table") or "",
-                "registry_id": name_match.get("id"),
-                "drift_kind": "name_collision",
-            })
+            plan["existing_drift"].append(
+                {
+                    **entry,
+                    "registry_bucket": name_match.get("bucket") or "",
+                    "registry_source_table": name_match.get("source_table") or "",
+                    "registry_id": name_match.get("id"),
+                    "drift_kind": "name_collision",
+                }
+            )
             continue
 
         plan["new"].append(entry)
@@ -3603,6 +3709,7 @@ def _discover_and_register_tables(
         }
 
     from connectors.keboola.client import KeboolaClient
+
     # Read from data_source.keboola (matches what /api/admin/configure writes)
     url = get_value("data_source", "keboola", "stack_url", default="")
     token_env = get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN")
@@ -3618,8 +3725,7 @@ def _discover_and_register_tables(
         {
             "table_id": e["table_id"],
             "discovery": {"bucket": e["bucket"], "source_table": e["source_table"]},
-            "registry":  {"bucket": e["registry_bucket"],
-                           "source_table": e["registry_source_table"]},
+            "registry": {"bucket": e["registry_bucket"], "source_table": e["registry_source_table"]},
         }
         for e in plan["existing_drift"]
     ]
@@ -3711,7 +3817,9 @@ async def discover_and_register(
     """
     try:
         result = _discover_and_register_tables(
-            conn, user.get("email", "admin"), dry_run=dry_run,
+            conn,
+            user.get("email", "admin"),
+            dry_run=dry_run,
         )
         return result
     except Exception as e:
@@ -3805,10 +3913,7 @@ def run_session_processor(
     if proc is None:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Unknown processor '{processor}'. "
-                f"Known: {', '.join(list_processor_names())}"
-            ),
+            detail=(f"Unknown processor '{processor}'. Known: {', '.join(list_processor_names())}"),
         )
 
     # Reject overlapping invocations of the same processor (PR #232 review).
@@ -3833,6 +3938,7 @@ def run_session_processor(
         # processor-agnostic at the framework level.
         if processor == "usage" and stats.get("errors", 0) == 0:
             from services.session_processors.usage_lib import rebuild_rollups
+
             try:
                 rebuild_rollups(job_conn)
             except Exception as rollup_exc:
@@ -4090,7 +4196,7 @@ def run_jira_consistency_check(
 # runs surfaces.
 # ---------------------------------------------------------------------------
 
-import shutil as _shutil
+import shutil as _shutil  # noqa: E402
 
 
 @router.get("/store/submissions")
@@ -4147,7 +4253,8 @@ async def admin_list_store_submissions(
             sort_by=sort or None,
             sort_order=order or None,
             lifecycle=lifecycle,
-            limit=limit, skip=skip,
+            limit=limit,
+            skip=skip,
         )
     except ValueError as e:
         # Sort key whitelist rejection (#23) — surface as 400 so the UI
@@ -4234,8 +4341,10 @@ async def admin_override_store_submission(
     # skips the promote, leaving the entity stuck at v1. Surfaced
     # live on a development deployment.
     from app.api.store import _version_no_for_submission
+
     target_version_no: Optional[int] = _version_no_for_submission(
-        entity_row, submission_id,
+        entity_row,
+        submission_id,
     )
     # Forward-only: refuse to promote backwards. An admin overriding a
     # stale v2 submission when v3 is already approved + live must NOT
@@ -4243,8 +4352,7 @@ async def admin_override_store_submission(
     # row's status + visibility regardless; only the version-promote
     # is gated. Forward (target > current) is the only motion the
     # publish-gate model is designed to express.
-    if (target_version_no is not None
-            and target_version_no > int(entity_row.get("version_no") or 0)):
+    if target_version_no is not None and target_version_no > int(entity_row.get("version_no") or 0):
         # Atomic helper: swap live bundle first, then update the DB.
         # Eliminates the "DB promoted but live still on prior bytes"
         # window. If the helper returns None (source missing / swap
@@ -4252,8 +4360,11 @@ async def admin_override_store_submission(
         # above — admin can re-trigger via /rescan once the bundle
         # is recovered.
         from app.api.store import promote_to_version
+
         promoted_to = promote_to_version(
-            entity_id, target_version_no, ents_repo,
+            entity_id,
+            target_version_no,
+            ents_repo,
         )
         if promoted_to is not None:
             # Re-read after promotion so attribution picks up the
@@ -4351,7 +4462,9 @@ async def admin_rescan_store_submission(
     description = (entity or {}).get("description")
 
     inline = run_inline_checks(
-        plugin_dir, type_=sub["type"], description=description,
+        plugin_dir,
+        type_=sub["type"],
+        description=description,
     )
 
     if not inline.passed:
@@ -4399,6 +4512,7 @@ async def admin_rescan_store_submission(
         # non-current v2+ left the entity stuck at the prior version.
         # Surfaced by adversarial review of PR #330.
         from app.api.store import promote_to_version
+
         entity_row = ents.get(entity_id) or {}
         if target_n is not None and target_n > int(entity_row.get("version_no") or 0):
             promote_to_version(entity_id, target_n, ents)
@@ -4407,9 +4521,12 @@ async def admin_rescan_store_submission(
         user_id=user["id"],
         action="store.submission.rescan",
         resource=f"store_submission:{submission_id}",
-        params={"entity_id": entity_id, "outcome": new_status,
-                "guardrails_enabled": guardrails_on,
-                "provider_ready": provider_ready},
+        params={
+            "entity_id": entity_id,
+            "outcome": new_status,
+            "guardrails_enabled": guardrails_on,
+            "provider_ready": provider_ready,
+        },
     )
     if schedule_async_llm:
         background.add_task(
@@ -4462,12 +4579,14 @@ async def admin_retry_store_submission(
         raise HTTPException(status_code=404, detail="submission_not_found")
     if sub["status"] not in {"review_error", "blocked_llm", "pending_llm"}:
         raise HTTPException(
-            status_code=409, detail=f"cannot_retry_status:{sub['status']}",
+            status_code=409,
+            detail=f"cannot_retry_status:{sub['status']}",
         )
     entity_id = sub.get("entity_id")
     if not entity_id:
         raise HTTPException(
-            status_code=409, detail="cannot_retry_without_entity",
+            status_code=409,
+            detail="cannot_retry_without_entity",
         )
 
     # Review the STAGED version's bytes — not live. For a v2+ edit
@@ -4550,7 +4669,7 @@ async def admin_delete_store_submission(
 # v30: download blocked bundle for forensic inspection
 # ---------------------------------------------------------------------------
 
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse  # noqa: E402
 
 
 @router.get("/store/submissions/{submission_id}/bundle.zip")
@@ -4574,7 +4693,6 @@ async def admin_download_store_submission_bundle(
         _submission_plugin_dir,
         _version_no_for_submission,
     )
-
 
     sub = store_submissions_repo().get(submission_id)
     if sub is None:
@@ -4652,8 +4770,7 @@ async def run_blocked_purge(
         user_id=user.get("id"),
         action="run_blocked_purge",
         resource="job:store-blocked-purge",
-        params={"ttl_days": ttl, "purged": result.get("purged", 0),
-                "skipped": result.get("skipped", False)},
+        params={"ttl_days": ttl, "purged": result.get("purged", 0), "skipped": result.get("skipped", False)},
     )
     return {"ok": True, "details": result}
 
@@ -4686,8 +4803,6 @@ async def run_reap_stuck_reviews(
         user_id=user.get("id"),
         action="run_reap_stuck_reviews",
         resource="job:store-reap-stuck-reviews",
-        params={"grace_seconds": grace,
-                "reaped": result.get("reaped", 0),
-                "skipped": result.get("skipped", False)},
+        params={"grace_seconds": grace, "reaped": result.get("reaped", 0), "skipped": result.get("skipped", False)},
     )
     return {"ok": True, "details": result}

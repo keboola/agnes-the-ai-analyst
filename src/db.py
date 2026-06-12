@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 73
+SCHEMA_VERSION = 75
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -361,7 +361,14 @@ CREATE TABLE IF NOT EXISTS table_registry (
     platforms     VARCHAR,
     partition_col VARCHAR,
     history       VARCHAR,
-    gotchas       VARCHAR
+    gotchas       VARCHAR,
+    -- v74: distribution flag, decoupled from query_mode. When true the
+    -- table is kept server-side & queryable via `agnes query --remote`,
+    -- but `agnes pull` does NOT download its parquet (the manifest still
+    -- lists it for catalog discovery + RBAC). Only meaningful for
+    -- query_mode IN ('local', 'materialized'); ignored for 'remote'
+    -- (which has no server-stored parquet to suppress). Issue #607.
+    server_only   BOOLEAN DEFAULT false
 );
 
 CREATE TABLE IF NOT EXISTS table_profiles (
@@ -755,7 +762,15 @@ CREATE TABLE IF NOT EXISTS instance_templates (
     content TEXT,
     previous_content TEXT,
     updated_at TIMESTAMP,
-    updated_by VARCHAR
+    updated_by VARCHAR,
+    -- v75 (#622): explicit Git⇄Editor source toggle for managed prompts,
+    -- superseding the implicit seed_owns() read-only lock. 'editor' = the DB
+    -- override (content) wins at render time; 'git' = bind to git_path in the
+    -- Initial Workspace Template clone. base_sha is reserved for Slice 2
+    -- divergence detection (written, not read in Slice 1).
+    source_mode VARCHAR NOT NULL DEFAULT 'editor',
+    git_path    VARCHAR,
+    base_sha    VARCHAR
 );
 
 -- v29: news_template — single table holding every saved version of the
@@ -4892,6 +4907,50 @@ def _v72_to_v73(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 73")
 
 
+def _v73_to_v74(conn: duckdb.DuckDBPyConnection) -> None:
+    """v74: ``server_only`` distribution flag on ``table_registry``.
+
+    Decoupled from ``query_mode``: a ``server_only=true`` row is kept
+    server-side and stays queryable via ``agnes query --remote``, but
+    ``agnes pull`` does NOT download its parquet (the manifest still lists
+    it for catalog discovery + RBAC). Only meaningful for
+    ``query_mode IN ('local', 'materialized')``; ignored for ``'remote'``
+    rows (no server-stored parquet to suppress). Issue #607.
+
+    Idempotent ADD COLUMN IF NOT EXISTS — safe on fresh and upgrade paths.
+    Default ``false`` leaves every existing row unchanged.
+    """
+    conn.execute(
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS server_only BOOLEAN DEFAULT false"
+    )
+    conn.execute("UPDATE schema_version SET version = 74")
+
+
+def _v74_to_v75(conn: duckdb.DuckDBPyConnection) -> None:
+    """v75: source_mode/git_path/base_sha on instance_templates (#622 Slice 1).
+
+    Generalizes the per-key prompt store with an explicit Git⇄Editor source
+    toggle, superseding the implicit seed_owns() read-only lock. Existing
+    keys default to 'editor' (today's behavior: the DB override wins when set;
+    no override → bundled default). base_sha is reserved for Slice 2
+    divergence detection (written, never read in Slice 1).
+
+    Idempotent ADD COLUMN IF NOT EXISTS — safe on fresh and upgrade paths.
+    Note: DuckDB ``ADD COLUMN ... DEFAULT`` does NOT backfill existing rows,
+    so the explicit ``UPDATE ... WHERE source_mode IS NULL`` is required to
+    stamp pre-existing 'welcome'/'claude_md' rows as 'editor'.
+    """
+    conn.execute(
+        "ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS source_mode VARCHAR DEFAULT 'editor'"
+    )
+    conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS git_path VARCHAR")
+    conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS base_sha VARCHAR")
+    conn.execute(
+        "UPDATE instance_templates SET source_mode = 'editor' WHERE source_mode IS NULL"
+    )
+    conn.execute("UPDATE schema_version SET version = 75")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -5193,6 +5252,14 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v71_to_v72(conn)
             # v72→v73: sandbox pause/resume refs on chat_sessions (un-indexed).
             _v72_to_v73(conn)
+            # v73→v74: server_only distribution flag on table_registry.
+            # _SYSTEM_SCHEMA already declares the column on fresh installs
+            # (no-op ALTER here). Issue #607.
+            _v73_to_v74(conn)
+            # v74→v75: source_mode/git_path/base_sha on instance_templates.
+            # _SYSTEM_SCHEMA already declares the columns on fresh installs
+            # (no-op ALTER here). Issue #622 Slice 1.
+            _v74_to_v75(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5392,6 +5459,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v71_to_v72(conn)
             if current < 73:
                 _v72_to_v73(conn)
+            if current < 74:
+                _v73_to_v74(conn)
+            if current < 75:
+                _v74_to_v75(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

@@ -75,10 +75,21 @@ jobs:
     #     can deploy main's exact state without manually changing code);
     #   - manual workflow_dispatch.
     # Tag creates are excluded — `keboola-deploy.yml` owns tag pushes.
+    # `*-autopilot` branches are excluded: they are short-lived per-issue PR
+    # branches that no VM pins to, so a `:dev-<slug>` image is pure waste —
+    # and worse, each force-push (rebase / review fix) cancels the prior run
+    # (`cancel-in-progress`), leaving a cancelled check-run that shows as a red
+    # `build-and-push` on the PR. That check is NOT a required status check
+    # (only `test` + `docker-build` are), so the red is cosmetic — but it
+    # makes every autopilot PR look broken. Skipping the dev-image build for
+    # these branches keeps them visually clean without touching main, real
+    # dev branches, or the merge gate.
     if: |
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'create' && github.event.ref_type == 'branch')
+      !endsWith(github.ref, '-autopilot') && (
+        github.event_name == 'push' ||
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'create' && github.event.ref_type == 'branch')
+      )
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.meta.outputs.versioned_tag }}

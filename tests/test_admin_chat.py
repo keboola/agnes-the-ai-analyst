@@ -250,7 +250,7 @@ def test_admin_chat_html_route_renders_for_admin(
     r = api_client.get("/admin/chat", headers={"Accept": "text/html"})
     assert r.status_code == 200, r.text
     assert "text/html" in r.headers["content-type"]
-    assert "Active chat sessions" in r.text
+    assert "Chat runners" in r.text
 
 
 def test_admin_chat_json_still_works_for_programmatic_caller(

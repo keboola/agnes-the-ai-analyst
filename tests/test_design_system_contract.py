@@ -461,7 +461,7 @@ _PAGE_SCAFFOLD_BASES = {
 # design-system base. Entries are tolerated ONLY so the guard locks in today's
 # state — drop an entry when its page is migrated, and never add a new one (a
 # fresh standalone is exactly the regression this guard exists to block).
-_STANDALONE_ALLOWLIST = {"admin_chat.html"}
+_STANDALONE_ALLOWLIST: set[str] = set()
 
 _EXTENDS_RE = re.compile(r"\{%-?\s*extends")
 _SCAFFOLD_RE = re.compile(r"<!DOCTYPE|<html[\s>]", re.IGNORECASE)
