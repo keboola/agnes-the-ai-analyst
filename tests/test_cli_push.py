@@ -229,8 +229,12 @@ def test_push_processes_recovery_snapshot_first(tmp_path, monkeypatch):
     assert not queue_path(tmp_path).exists()
 
 
-def test_push_skips_stale_queue_entry(tmp_path, monkeypatch):
-    """Queue entry pointing to a deleted file: skipped, not retried forever."""
+def test_push_requeues_missing_file_with_stamp(tmp_path, monkeypatch):
+    """Queue entry pointing to a not-yet-written transcript: REQUEUED with a
+    first-failure stamp, never silently dropped. Claude Code creates the
+    jsonl lazily on the first prompt, so 'file not found' at push time
+    usually means the session just started — dropping the entry here lost
+    the whole session whenever another window's push raced a fresh start."""
     monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
     _stub_config(monkeypatch)
 
@@ -239,12 +243,64 @@ def test_push_skips_stale_queue_entry(tmp_path, monkeypatch):
 
     monkeypatch.setattr("cli.commands.push.api_post", _raise)
 
-    append_to_queue(tmp_path, "sid-1", str(tmp_path / "ghost.jsonl"))
+    ghost = tmp_path / "ghost.jsonl"
+    append_to_queue(tmp_path, "sid-1", str(ghost))
 
-    result = runner.invoke(push_app, [])
+    result = runner.invoke(push_app, ["--json"])
     assert result.exit_code == 0
-    assert not queue_path(tmp_path).exists()
+    payload = json.loads(result.output)
+    assert payload["requeued"] == 1
+    live = queue_path(tmp_path).read_text(encoding="utf-8")
+    sid, path, stamp = live.strip().split("\t")
+    assert (sid, path) == ("sid-1", str(ghost))
+    assert stamp  # first-failure stamp added
     assert not uploaded_log_path(tmp_path).exists()
+    assert not failed_log_path(tmp_path).exists()
+
+
+def test_push_requeued_missing_file_uploads_once_it_appears(tmp_path, monkeypatch):
+    """End-to-end of the requeue: first push requeues the ghost entry,
+    the transcript appears (user typed their first prompt), second push
+    uploads it."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    _stub_config(monkeypatch)
+    calls = _record_uploads(monkeypatch)
+
+    ghost = tmp_path / "ghost.jsonl"
+    append_to_queue(tmp_path, "sid-1", str(ghost))
+    runner.invoke(push_app, ["--quiet"])
+    assert calls == []
+
+    ghost.write_text('{"event":"now it exists"}\n')
+    result = runner.invoke(push_app, ["--quiet"])
+    assert result.exit_code == 0
+    assert [c[0] for c in calls] == ["/api/upload/sessions"]
+    assert str(ghost) in uploaded_log_path(tmp_path).read_text(encoding="utf-8")
+
+
+def test_push_drops_missing_file_after_ttl(tmp_path, monkeypatch):
+    """A ghost entry whose first failure is older than RETRY_TTL moves to
+    the forensic failed-log instead of looping forever."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    _stub_config(monkeypatch)
+    _record_uploads(monkeypatch)
+
+    ghost = tmp_path / "ghost.jsonl"
+    # Pre-stamped queue line, 31 days old.
+    queue_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    queue_path(tmp_path).write_text(
+        f"sid-1\t{ghost}\t2026-05-01T00:00:00Z\n", encoding="utf-8"
+    )
+
+    result = runner.invoke(push_app, ["--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["dropped_permanent"] == 1
+    assert payload["requeued"] == 0
+    assert not queue_path(tmp_path).exists()
+    log = failed_log_path(tmp_path).read_text(encoding="utf-8")
+    assert "\tnot_found_expired\t" in log
+    assert "sid-1" in log
 
 
 def test_push_requeues_failed_uploads(tmp_path, monkeypatch):
@@ -263,7 +319,10 @@ def test_push_requeues_failed_uploads(tmp_path, monkeypatch):
 
     result = runner.invoke(push_app, [])
     assert result.exit_code == 0
-    assert queue_path(tmp_path).read_text(encoding="utf-8") == f"sid-1\t{transcript}\n"
+    live = queue_path(tmp_path).read_text(encoding="utf-8")
+    sid, path, stamp = live.strip().split("\t")
+    assert (sid, path) == ("sid-1", str(transcript))
+    assert stamp  # first-failure stamp added
     assert not uploaded_log_path(tmp_path).exists()
 
 
@@ -389,12 +448,13 @@ def _stub_api_post_status(monkeypatch, status: int) -> None:
 
 
 def test_push_drops_4xx_to_audit_log_not_requeue(tmp_path, monkeypatch):
-    """4xx (here: 401 token expired) → drop + audit, no requeue.
+    """4xx (here: 403 RBAC denial) → drop + audit, no requeue.
     Closes the prior infinite-loop bug where every non-200 except
-    `file not found on disk` was requeued forever."""
+    `file not found on disk` was requeued forever. (401 moved to the
+    transient bucket — see test_push_requeues_401_token_expired.)"""
     monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
     _stub_config(monkeypatch)
-    _stub_api_post_status(monkeypatch, 401)
+    _stub_api_post_status(monkeypatch, 403)
 
     transcript = tmp_path / "x.jsonl"
     transcript.write_text("{}\n")
@@ -407,13 +467,13 @@ def test_push_drops_4xx_to_audit_log_not_requeue(tmp_path, monkeypatch):
         queue_path(tmp_path).read_text(encoding="utf-8") == ""
     # Audit log must record the drop with status + session_id + path.
     log = failed_log_path(tmp_path).read_text(encoding="utf-8")
-    assert "\t401\t" in log
+    assert "\t403\t" in log
     assert "sid-1" in log
     assert str(transcript) in log
 
 
 def test_push_drops_each_4xx_status(tmp_path, monkeypatch):
-    """403, 413, 400 → all drop (not just 401)."""
+    """400, 403, 413 → all drop."""
     for status in (400, 403, 413):
         ws = tmp_path / f"ws-{status}"
         ws.mkdir()
@@ -446,9 +506,9 @@ def test_push_requeues_408_and_429(tmp_path, monkeypatch):
 
         result = runner.invoke(push_app, [])
         assert result.exit_code == 0
-        # Requeued → entry back in live queue.
+        # Requeued → entry back in live queue (with first-failure stamp).
         live = queue_path(ws).read_text(encoding="utf-8")
-        assert f"sid-{status}\t{transcript}\n" == live
+        assert live.startswith(f"sid-{status}\t{transcript}\t")
         # NOT in the failed audit log.
         assert not failed_log_path(ws).exists()
 
@@ -469,7 +529,7 @@ def test_push_requeues_5xx(tmp_path, monkeypatch):
         result = runner.invoke(push_app, [])
         assert result.exit_code == 0
         live = queue_path(ws).read_text(encoding="utf-8")
-        assert f"sid-{status}\t{transcript}\n" == live
+        assert live.startswith(f"sid-{status}\t{transcript}\t")
         assert not failed_log_path(ws).exists()
 
 
@@ -490,7 +550,7 @@ def test_push_requeues_network_exception(tmp_path, monkeypatch):
     result = runner.invoke(push_app, [])
     assert result.exit_code == 0
     live = queue_path(tmp_path).read_text(encoding="utf-8")
-    assert f"sid-net\t{transcript}\n" == live
+    assert live.startswith(f"sid-net\t{transcript}\t")
     assert not failed_log_path(tmp_path).exists()
 
 
@@ -499,7 +559,7 @@ def test_push_4xx_drop_count_in_json_output(tmp_path, monkeypatch):
     can pipe it into monitoring / scripts."""
     monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
     _stub_config(monkeypatch)
-    _stub_api_post_status(monkeypatch, 401)
+    _stub_api_post_status(monkeypatch, 400)
 
     transcript = tmp_path / "x.jsonl"
     transcript.write_text("{}\n")
@@ -597,3 +657,69 @@ def test_push_legacy_scan_dry_run_segregates_private(tmp_path, monkeypatch):
     assert str(private_jsonl) not in payload["would_upload"]["sessions"]
     skipped_paths = [e["path"] for e in payload["would_skip_private"]]
     assert str(private_jsonl) in skipped_paths
+
+
+def test_push_requeues_401_token_expired(tmp_path, monkeypatch):
+    """401 is recoverable (PAT expired / not yet imported) — the user
+    re-authenticates and the SAME upload succeeds. Dropping the queue on
+    401 silently lost every session pushed between token expiry and the
+    next `agnes auth` run. Requeue with a stamp instead."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    _stub_config(monkeypatch)
+    _stub_api_post_status(monkeypatch, 401)
+
+    transcript = tmp_path / "x.jsonl"
+    transcript.write_text("{}\n")
+    append_to_queue(tmp_path, "sid-1", str(transcript))
+
+    result = runner.invoke(push_app, ["--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["requeued"] == 1
+    assert payload["dropped_permanent"] == 0
+    live = queue_path(tmp_path).read_text(encoding="utf-8")
+    assert live.startswith(f"sid-1\t{transcript}\t")
+    assert not failed_log_path(tmp_path).exists()
+
+
+def test_push_401_recovers_after_reauth(tmp_path, monkeypatch):
+    """End-to-end: 401 push requeues; once the server accepts again
+    (token re-imported), the next push uploads the queued session."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    _stub_config(monkeypatch)
+    _stub_api_post_status(monkeypatch, 401)
+
+    transcript = tmp_path / "x.jsonl"
+    transcript.write_text("{}\n")
+    append_to_queue(tmp_path, "sid-1", str(transcript))
+    runner.invoke(push_app, ["--quiet"])
+
+    calls = _record_uploads(monkeypatch)  # now returns 200
+    result = runner.invoke(push_app, ["--quiet"])
+    assert result.exit_code == 0
+    assert [c[0] for c in calls if c[0] == "/api/upload/sessions"] == [
+        "/api/upload/sessions"
+    ]
+    assert str(transcript) in uploaded_log_path(tmp_path).read_text(encoding="utf-8")
+
+
+def test_push_drops_transient_failure_after_ttl(tmp_path, monkeypatch):
+    """An entry that has been failing transiently (here: 503) for longer
+    than RETRY_TTL moves to the forensic failed-log — bounding the queue."""
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    _stub_config(monkeypatch)
+    _stub_api_post_status(monkeypatch, 503)
+
+    transcript = tmp_path / "x.jsonl"
+    transcript.write_text("{}\n")
+    queue_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    queue_path(tmp_path).write_text(
+        f"sid-1\t{transcript}\t2026-05-01T00:00:00Z\n", encoding="utf-8"
+    )
+
+    result = runner.invoke(push_app, ["--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["dropped_permanent"] == 1
+    log = failed_log_path(tmp_path).read_text(encoding="utf-8")
+    assert "\t503\t" in log

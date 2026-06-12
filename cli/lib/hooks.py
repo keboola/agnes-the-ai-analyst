@@ -40,18 +40,30 @@ Design notes:
   the old entry are migrated cleanly — `_replace_or_add` strips any
   matching `agnes push` from SessionStart on the next `agnes init`.
 
-- SessionEnd gets one entry: `agnes push --quiet`, wrapped to detach into
-  the background. Claude Code in `-p` (headless) mode terminates SessionEnd
-  hook subprocesses after ~1 second regardless of work in progress, so a
-  synchronous `agnes push` (which uploads N session JSONLs serially and
-  typically takes 5-30s) gets killed mid-stream and most files never reach
-  the server. The `( nohup ... & )` subshell orphans the upload child so
-  it survives the Claude shutdown. Errors are routed to /dev/null — no
-  worse than the previous `2>/dev/null` form. Operators who want visibility
-  into push failures can manually run `agnes push --json`. The SessionStart
-  entry (3) above remains the safety net for orphans from any prior session
-  whose SessionEnd push didn't run at all (genuine crash, kill, terminal
-  close).
+- SessionEnd gets one entry: `agnes capture-session` (synchronous) followed
+  by `agnes push --quiet` wrapped to detach into the background.
+
+  The leading capture-session re-queues the ENDING session with its final
+  transcript state. The SessionEnd payload carries the same `session_id` +
+  `transcript_path` fields as SessionStart, and the re-capture closes two
+  data-loss windows: (a) a long-lived session whose SessionStart queue
+  entry was consumed mid-flight by a push fired from another window's
+  SessionEnd — the server kept only the partial transcript that push saw;
+  (b) `/clear`, which fires SessionEnd(clear) + SessionStart(clear)
+  back-to-back — the push triggered by the SessionEnd consumed the
+  freshly-queued post-clear session as an empty stub.
+
+  The push must detach because Claude Code in `-p` (headless) mode
+  terminates SessionEnd hook subprocesses after ~1 second regardless of
+  work in progress, so a synchronous `agnes push` (which uploads N session
+  JSONLs serially and typically takes 5-30s) gets killed mid-stream and
+  most files never reach the server. The `( nohup ... & )` subshell
+  orphans the upload child so it survives the Claude shutdown. Errors are
+  routed to /dev/null — no worse than the previous `2>/dev/null` form.
+  Operators who want visibility into push failures can manually run
+  `agnes push --json`. The SessionStart entry (3) above remains the safety
+  net for orphans from any prior session whose SessionEnd push didn't run
+  at all (genuine crash, kill, terminal close).
 """
 
 from __future__ import annotations
@@ -119,9 +131,7 @@ def install_claude_hooks(workspace: Path) -> None:
         # through unchanged.
         for entry in list(existing):
             entry_cmds = [h.get("command", "") for h in entry.get("hooks", [])]
-            if entry_cmds and all(
-                any(marker in c for marker in _OUR_COMMAND_MARKERS) for c in entry_cmds
-            ):
+            if entry_cmds and all(any(marker in c for marker in _OUR_COMMAND_MARKERS) for c in entry_cmds):
                 existing.remove(entry)
         # Append fresh entries — one per command. Independent entries mean
         # a failure in one (e.g. refresh-marketplace on a workspace that
@@ -157,13 +167,25 @@ def install_claude_hooks(workspace: Path) -> None:
     # SessionEnd push. The marker substring "agnes push" stays in
     # _OUR_COMMAND_MARKERS so the old entry is cleanly removed from any
     # pre-existing settings.json on the next init.
-    _replace_or_add("SessionStart", [
-        'bash -c "agnes capture-session 2>/dev/null || true"',
-        'bash -c "agnes self-upgrade --quiet 2>/dev/null || true; '
-        'agnes pull --quiet 2>/dev/null || true"',
-        'bash -c "agnes refresh-marketplace --check 2>/dev/null || true"',
-    ])
-    # SessionEnd push must run detached. Claude Code in `-p` (headless) mode
+    _replace_or_add(
+        "SessionStart",
+        [
+            'bash -c "agnes capture-session 2>/dev/null || true"',
+            'bash -c "agnes self-upgrade --quiet 2>/dev/null || true; agnes pull --quiet 2>/dev/null || true"',
+            'bash -c "agnes refresh-marketplace --check 2>/dev/null || true"',
+        ],
+    )
+    # SessionEnd runs capture-session FIRST (synchronous — a single queue
+    # append, fast enough for the ~1s hook budget), THEN the detached push.
+    # The SessionEnd hook payload carries the same `session_id` +
+    # `transcript_path` fields as SessionStart, so re-capturing here
+    # re-queues the ending session with its FINAL transcript state. Without
+    # this, a session whose queue entry was already consumed by an earlier
+    # push (fired by another window closing, or by /clear's SessionEnd)
+    # never uploads its final content: the server keeps whatever partial
+    # state that earlier push saw — or nothing at all.
+    #
+    # The push itself must run detached. Claude Code in `-p` (headless) mode
     # SIGTERMs hook subprocesses after ~1 second regardless of work in
     # progress; a synchronous `agnes push` (5-30s for a typical workspace)
     # gets killed mid-first-upload and most session JSONLs never reach the
@@ -173,9 +195,13 @@ def install_claude_hooks(workspace: Path) -> None:
     # for Windows compatibility (Claude Code on Windows runs hook commands
     # directly, no shell). `; true` keeps the line exit-0 like the old
     # `|| true` form.
-    _replace_or_add("SessionEnd", [
-        'bash -c "( nohup agnes push --quiet </dev/null >/dev/null 2>&1 & ) ; true"',
-    ])
+    _replace_or_add(
+        "SessionEnd",
+        [
+            'bash -c "agnes capture-session 2>/dev/null || true ; '
+            '( nohup agnes push --quiet </dev/null >/dev/null 2>&1 & ) ; true"',
+        ],
+    )
 
     _install_statusline(cfg)
 

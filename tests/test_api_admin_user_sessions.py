@@ -91,6 +91,38 @@ class TestListUserSessions:
         assert row["processed"] is False
         assert row["tool_calls"] == 0
 
+    def test_upload_api_dir_file_appears_as_unprocessed(self, seeded_app, admin_user, session_data_dir):
+        """Sessions uploaded via /api/upload/sessions land under
+        SESSION_DATA_DIR/<user_id>/ (a UUID-style id), NOT the email
+        local-part dir the collector uses. The list must scan BOTH —
+        previously these uploads were invisible until the usage
+        processor indexed them."""
+        uid = _get_admin_user_id(seeded_app, admin_user)
+        _seed_jsonl(session_data_dir, uid, "uploaded-via-api.jsonl")
+
+        r = seeded_app["client"].get(
+            f"/api/admin/users/{uid}/sessions", headers=admin_user
+        )
+        assert r.status_code == 200
+        rows = r.json()["rows"]
+        assert [row["session_file"] for row in rows] == ["uploaded-via-api.jsonl"]
+        assert rows[0]["processed"] is False
+
+    def test_same_filename_in_both_dirs_listed_once(self, seeded_app, admin_user, session_data_dir):
+        """A file present under both ingestion layouts is the same session —
+        the list must not show it twice."""
+        uid = _get_admin_user_id(seeded_app, admin_user)
+        username = _get_admin_email(seeded_app, admin_user).split("@")[0]
+        _seed_jsonl(session_data_dir, username, "dup.jsonl")
+        _seed_jsonl(session_data_dir, uid, "dup.jsonl")
+
+        r = seeded_app["client"].get(
+            f"/api/admin/users/{uid}/sessions", headers=admin_user
+        )
+        assert r.status_code == 200
+        rows = r.json()["rows"]
+        assert [row["session_file"] for row in rows] == ["dup.jsonl"]
+
     def test_processed_true_for_indexed_session(self, seeded_app, admin_user, session_data_dir):
         """When usage_session_summary has a row for the file, processed=True."""
         uid = _get_admin_user_id(seeded_app, admin_user)
@@ -204,6 +236,21 @@ class TestDownloadSession:
         params = json.loads(row[0])
         assert params["session_file"] == "audit-check.jsonl"
         assert "bytes" in params
+
+    def test_streams_file_from_upload_api_dir(self, seeded_app, admin_user, session_data_dir):
+        """Single-file download must also resolve files under the
+        upload-API layout (SESSION_DATA_DIR/<user_id>/) — previously a
+        permanent 404 for every API-uploaded session."""
+        uid = _get_admin_user_id(seeded_app, admin_user)
+        content = '{"role":"user","content":"uploaded"}\n'
+        _seed_jsonl(session_data_dir, uid, "api-up.jsonl", content)
+
+        r = seeded_app["client"].get(
+            f"/api/admin/users/{uid}/sessions/api-up.jsonl/download",
+            headers=admin_user,
+        )
+        assert r.status_code == 200
+        assert r.content.decode() == content
 
     def test_rejects_path_traversal_dotdot(self, seeded_app, admin_user, session_data_dir):
         uid = _get_admin_user_id(seeded_app, admin_user)
