@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- Postgres backend now fails closed at startup when the DB's Alembic revision is behind the application's expected head, instead of booting "healthy" and 500ing every write that touches a post-stamp column (e.g. `table_registry.server_only`). The DuckDB ladder self-migrates on connect; Postgres did not apply or even check revisions on boot, so a re-pulled image against a PG stamped at an older revision drifted silently. A new `assert_pg_at_head()` runs in the FastAPI lifespan (PG-only, gated on `use_pg()`) and refuses to serve with a clear message naming the current and head revisions plus the remediation. Set `AGNES_SKIP_PG_REVISION_CHECK=1` to boot anyway for emergency recovery. Auto-apply of pending migrations is intentionally deferred. (#636)
 
 ### Removed
 
