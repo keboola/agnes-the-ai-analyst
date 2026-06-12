@@ -27,6 +27,8 @@ import shutil
 import subprocess
 import threading
 import zipfile
+
+import duckdb
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -257,7 +259,7 @@ def list_template_files() -> List[str]:
     return out
 
 
-def build_zip() -> bytes:
+def build_zip(conn=None) -> bytes:
     """Build an in-memory zip of ``<initial-workspace>/workspace/``,
     excluding ``.git/`` and anything outside the ``workspace/`` subdir.
     Re-runs ``validate_template_tree`` first as defense in depth —
@@ -269,17 +271,47 @@ def build_zip() -> bytes:
     ``workspace/CLAUDE.md`` in the repo → ``CLAUDE.md`` at workspace
     root after extraction).
 
+    Admin overlay (#622): when ``conn`` is provided and the workspace prompt
+    is in ``source_mode='editor'`` with override content set, the admin's
+    edited ``CLAUDE.md`` REPLACES the IWT clone's ``workspace/CLAUDE.md`` in
+    the zip. This is THE chokepoint that fixes the issue: override-mode
+    ``agnes init`` serves this zip verbatim (it bypasses ``/api/welcome``), so
+    without the overlay the admin editor would ship nothing. The override is
+    shipped as a literal ``CLAUDE.md`` (verbatim, NOT server-rendered) —
+    matching override-mode's "admin's content wins verbatim" semantics and the
+    raw way the repo file itself is shipped. ``conn=None`` (defensive callers,
+    tests, ``delete_template_dir`` path) skips the overlay → pure clone.
+
     Returns the zip bytes. Caller computes ``ETag`` from the bytes (or
     from ``last_commit_sha`` for a cheaper stable identifier).
     """
     target = get_initial_workspace_dir()
     validate_template_tree(target)
 
+    workspace_overlay: Optional[str] = None
+    if conn is not None:
+        try:
+            content, mode = resolve_prompt("workspace", conn)
+            if mode == "editor" and content is not None:
+                workspace_overlay = content
+        except Exception:
+            # An overlay-resolution failure must NEVER block serving the
+            # clone — the zip is on the analyst's init critical path.
+            logger.exception("build_zip: workspace-prompt overlay resolution failed")
+
     workspace_dir = target / _WORKSPACE_SUBDIR
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for rel in list_template_files():
-            zf.write(workspace_dir / rel, arcname=rel)
+            if rel == "CLAUDE.md" and workspace_overlay is not None:
+                zf.writestr("CLAUDE.md", workspace_overlay)
+            else:
+                zf.write(workspace_dir / rel, arcname=rel)
+        # If the clone has no CLAUDE.md at all but the admin set an editor
+        # override, still ship it — otherwise override-mode init would get
+        # no prompt despite an admin having authored one.
+        if workspace_overlay is not None and "CLAUDE.md" not in list_template_files():
+            zf.writestr("CLAUDE.md", workspace_overlay)
     return buf.getvalue()
 
 
@@ -385,18 +417,116 @@ def resolve_seed_file(rel_path: str) -> Optional[tuple[str, str]]:
 def seed_owns(rel_path: str) -> bool:
     """True iff the operator-configured IWT clone has ``rel_path``.
 
-    Used by ``/admin/workspace-prompt`` and ``/admin/agent-prompt`` to gate
-    their editors: when seed owns the corresponding file, the local DB
-    override is dead-code and the editor switches to read-only mode.
+    NOTE (#622): no longer gates the admin editors read-only — the explicit
+    ``instance_templates.source_mode`` toggle (Git⇄Editor) replaced that
+    implicit lock. Still used by tests and as a low-level probe; the editor
+    endpoints consult :func:`resolve_prompt` instead.
 
     Does NOT consider the bundled snapshot — the bundle is Agnes's own
-    fallback, not "operator-owned content". Admin can override the bundle
-    via local DB write; only IWT-clone-provided files lock the editor.
+    fallback, not "operator-owned content".
     """
     iwt_root = _iwt_snapshot()
     if iwt_root is None:
         return False
     return (iwt_root / rel_path).is_file()
+
+
+# ---------------------------------------------------------------------------
+# Managed-prompt resolution (#622) — the single source-mode-aware entry point.
+#
+# The admin's `source_mode` toggle on `instance_templates` decides which tier
+# wins per managed prompt:
+#   - 'editor': the DB override (content) wins; None → caller falls back to the
+#     bundled/shipped default exactly as before.
+#   - 'git':    bind to the IWT clone file at `git_path` (or the prompt's
+#     canonical seed path); missing file → (None, 'git'), caller falls back +
+#     logs, matching the today's resolve_seed_file None contract.
+#
+# `kind` vocabulary is the public install/workspace; the DB keys are
+# welcome/claude_md. The translation lives in the endpoint layer + the repo
+# pickers below so callers only ever pass `kind`.
+# ---------------------------------------------------------------------------
+
+# Canonical repo-relative seed path per managed prompt (used when an operator
+# binds git mode without naming an explicit path, and by the admin git-path
+# validation as the default suggestion).
+PROMPT_SEED_PATHS = {
+    "install": "install-prompt/template.md.tmpl",
+    "workspace": "workspace/CLAUDE.md",
+}
+
+
+def _prompt_repo(kind: str, conn=None):
+    """Return the repo for a managed prompt ``kind``.
+
+    When a DuckDB ``conn`` is supplied, bind the DuckDB repo to it directly so
+    the read sees the SAME connection the caller is using (matters for
+    in-flight transactions + the renderer unit tests, which pass an isolated
+    conn). Otherwise — and always on the Postgres backend — go through the
+    backend-aware factory.
+    """
+    from src.repositories import claude_md_template_repo, welcome_template_repo
+
+    if conn is not None and isinstance(conn, duckdb.DuckDBPyConnection):
+        if kind == "workspace":
+            from src.repositories.claude_md_template import ClaudeMdTemplateRepository
+
+            return ClaudeMdTemplateRepository(conn)
+        if kind == "install":
+            from src.repositories.welcome_template import WelcomeTemplateRepository
+
+            return WelcomeTemplateRepository(conn)
+        raise ValueError(f"unknown managed-prompt kind: {kind!r}")
+
+    if kind == "workspace":
+        return claude_md_template_repo()
+    if kind == "install":
+        return welcome_template_repo()
+    raise ValueError(f"unknown managed-prompt kind: {kind!r}")
+
+
+def resolve_prompt(kind: str, conn=None) -> tuple[Optional[str], str]:
+    """Resolve the EFFECTIVE content for a managed prompt, honoring its
+    ``source_mode`` toggle.
+
+    ``kind`` is one of ``{'install', 'workspace'}``. Returns
+    ``(content, source_mode)``:
+
+      - ``source_mode == 'editor'``: ``(db_override_content, 'editor')``.
+        ``content`` is ``None`` when no override is set — the caller then
+        falls back to its bundled/shipped default, exactly as before.
+      - ``source_mode == 'git'``: read ``git_path`` (or the prompt's canonical
+        seed path) from the IWT clone and return ``(file_content, 'git')``.
+        A missing file yields ``(None, 'git')`` so the caller logs + falls
+        back, matching the ``resolve_seed_file`` None contract.
+
+    ``conn``: when a DuckDB connection is passed it's used directly for the
+    read (so the resolver sees the caller's connection); otherwise — and on
+    Postgres — the backend-aware factory resolves the active backend.
+    """
+    meta = _prompt_repo(kind, conn).get_meta()
+    mode = meta.get("source_mode") or "editor"
+
+    if mode == "git":
+        rel_path = meta.get("git_path") or PROMPT_SEED_PATHS.get(kind)
+        if not rel_path:
+            return (None, "git")
+        iwt_root = _iwt_snapshot()
+        if iwt_root is None:
+            return (None, "git")
+        target = iwt_root / rel_path
+        if target.is_file():
+            return (target.read_text(encoding="utf-8"), "git")
+        logger.warning(
+            "resolve_prompt(%s): git mode bound to %r but file is absent in the "
+            "IWT clone — falling back to default",
+            kind,
+            rel_path,
+        )
+        return (None, "git")
+
+    # editor mode (default)
+    return (meta.get("content"), "editor")
 
 
 def list_seed_files(rel_dir: str) -> List[Path]:
