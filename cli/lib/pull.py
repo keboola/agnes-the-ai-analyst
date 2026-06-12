@@ -453,6 +453,16 @@ def run_pull(
             if authorized_names is not None and tid not in authorized_names:
                 continue
             non_remote_total += 1
+            # #607 — server_only tables are kept fresh server-side and stay
+            # queryable via `agnes query --remote`, but their parquet is NOT
+            # distributed to laptops. Count them as listed (they're part of
+            # parquets_total above, like a hash-unchanged row) but never add
+            # them to the download set. Mirrors the remote-skip's
+            # listed-but-not-downloaded behavior, except remote rows aren't
+            # even counted (no server parquet exists at all); a server_only
+            # row HAS a server parquet, we just don't ship it.
+            if info.get("server_only"):
+                continue
             local_hash = local_tables.get(tid, {}).get("hash", "")
             server_hash = info.get("hash", "")
             target = parquet_dir / f"{tid}.parquet"
@@ -689,10 +699,21 @@ def run_pull(
         # never pruned. Done before
         # save_sync_state so the dropped rows persist, and before
         # _rebuild_duckdb_views so the orphaned views disappear.
-        if authorized_names is not None and parquet_dir.exists():
+        # #607 (#630 review) — also prune parquets the manifest now marks
+        # server_only: the table stays authorized (listed, RBAC intact) but
+        # its parquet must leave the laptop, otherwise a copy downloaded
+        # before the admin flipped the flag keeps a local view alive and the
+        # table stays locally queryable despite server-only distribution.
+        server_only_names = {
+            tid for tid, info in server_tables.items() if info.get("server_only")
+        }
+        if parquet_dir.exists() and (
+            authorized_names is not None or server_only_names
+        ):
             for pq_file in sorted(parquet_dir.glob("*.parquet")):
                 stem = pq_file.stem
-                if stem in authorized_names:
+                authorized = authorized_names is None or stem in authorized_names
+                if authorized and stem not in server_only_names:
                     continue
                 pq_file.unlink(missing_ok=True)
                 local_tables.pop(stem, None)
