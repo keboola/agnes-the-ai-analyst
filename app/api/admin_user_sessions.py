@@ -163,7 +163,12 @@ def list_user_sessions(
                 if v is not None and hasattr(v, "isoformat"):
                     d[k] = v.isoformat()
             d["processed"] = True
-            processed_files[d["session_file"]] = d
+            # Key by BASENAME: the session pipeline writes session_file as
+            # "<dir>/<filename>" (runner's session_key), while the
+            # filesystem merge below compares bare filenames — keying the
+            # raw value would make every prefixed row miss the dedup check
+            # and list the same session twice (processed + "unprocessed").
+            processed_files[d["session_file"].rsplit("/", 1)[-1]] = d
 
     # ------------------------------------------------------------------
     # Merge with filesystem scan — unindexed files become processed=false

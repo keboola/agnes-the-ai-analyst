@@ -161,6 +161,46 @@ class TestListUserSessions:
         assert match[0]["processed"] is True
         assert match[0]["tool_calls"] == 5
 
+    def test_processed_row_with_dir_prefixed_session_file_not_duplicated(
+        self, seeded_app, admin_user, session_data_dir,
+    ):
+        """#640 review: the session pipeline writes ``session_file`` as
+        "<dir>/<filename>" (runner's session_key). The merge must match it
+        against the on-disk basename — otherwise the same session lists
+        twice (processed under the prefixed key + "unprocessed" from the
+        filesystem scan)."""
+        uid = _get_admin_user_id(seeded_app, admin_user)
+        username = _get_admin_email(seeded_app, admin_user).split("@")[0]
+        _seed_jsonl(session_data_dir, username, "prefixed.jsonl")
+
+        conn = get_system_db()
+        conn.execute(
+            """
+            INSERT INTO usage_session_summary
+              (session_file, session_id, username, started_at, tool_calls,
+               tool_errors, processor_version)
+            VALUES (?, ?, ?, current_timestamp, 7, 0, 1)
+            """,
+            [f"{username}/prefixed.jsonl", "sess-prefixed", username],
+        )
+        conn.close()
+
+        r = seeded_app["client"].get(
+            f"/api/admin/users/{uid}/sessions", headers=admin_user
+        )
+        assert r.status_code == 200
+        rows = r.json()["rows"]
+        match = [
+            row for row in rows
+            if row["session_file"].endswith("prefixed.jsonl")
+        ]
+        assert len(match) == 1, (
+            f"prefixed session_file must dedup against the on-disk file, "
+            f"got {match}"
+        )
+        assert match[0]["processed"] is True
+        assert match[0]["tool_calls"] == 7
+
     def test_pagination_limit_enforced_at_200(self, seeded_app, admin_user):
         """FastAPI should return 422 for limit > 200."""
         uid = _get_admin_user_id(seeded_app, admin_user)
