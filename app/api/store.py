@@ -231,6 +231,20 @@ class OkResponse(BaseModel):
     ok: bool = True
 
 
+class DryRunResponse(BaseModel):
+    """Pre-submit dry-run verdict — guardrail findings without any DB write.
+
+    Lets a submitter run the full pipeline (inline checks + LLM review)
+    against a candidate bundle and see what would block it, BEFORE the
+    real ``POST /entities``. ``would_publish`` is the AND of the inline
+    verdict and the LLM ``is_safe`` decision.
+    """
+
+    inline_checks: dict
+    llm_findings: Optional[dict] = None
+    would_publish: bool
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1362,6 +1376,103 @@ async def preview_entity(
             for row in component_rows
         ],
     )
+
+
+# ---------------------------------------------------------------------------
+# Pre-submit dry-run — POST /api/store/entities/dryrun
+# ---------------------------------------------------------------------------
+
+
+@router.post("/entities/dryrun", response_model=DryRunResponse)
+async def dryrun_entity(
+    file: UploadFile = File(...),
+    type: str = Form(...),
+    description: Optional[str] = Form(None),
+    user: dict = Depends(get_current_user),
+):
+    """Run the full guardrail pipeline against a candidate bundle WITHOUT
+    persisting anything.
+
+    Same multipart payload as ``POST /entities`` (``file``, ``type``,
+    ``description``). The submitter sees exactly what would block the
+    real upload — inline checks plus the LLM verdict — and can iterate
+    before spending an LLM token budget / admin-queue slot on a real
+    submission (#317).
+
+    NO DB writes: no ``store_entities``, no ``store_submissions``, no
+    ``audit_log``. The bundle bytes are extracted to a scratch dir,
+    baked into a throwaway plugin tree, checked, and wiped in ``finally``
+    exactly like :func:`preview_entity`.
+
+    Per-submitter dry-run quota + identical-bundle verdict caching are
+    deferred (tracked on #317) — the auth gate plus HTTP-level rate
+    limiting bound abuse until they land.
+    """
+    if type not in _VALID_TYPES:
+        raise HTTPException(status_code=400, detail="invalid_type")
+
+    tmp, _ = await _stream_to_temp(file, MAX_ZIP_SIZE, suffix=".zip")
+    try:
+        tmp.close()
+        scratch = Path(tempfile.mkdtemp(prefix="agnes_store_dryrun_"))
+        plugin_root = Path(tempfile.mkdtemp(prefix="agnes_store_dryrun_baked_"))
+        plugin_dir = plugin_root / "plugin"
+        try:
+            try:
+                with zipfile.ZipFile(tmp.name, "r") as zf:
+                    _safe_zip_extract(zf, scratch)
+            except zipfile.BadZipFile:
+                raise HTTPException(status_code=422, detail="zip_invalid")
+
+            meta = _validate_and_extract_metadata(type, scratch)
+            meta_name = meta.get("name") or ""
+
+            # Bake into a throwaway tree so the checks see the same canonical
+            # layout the real create path would persist. final_name == the
+            # raw bundle name (no -by-<user> suffix needed for a dry-run; the
+            # checks don't care about the namespaced name).
+            _bake_plugin_tree(
+                type_=type,
+                extracted_root=scratch,
+                plugin_dir=plugin_dir,
+                final_name=meta_name,
+                suffixed=meta_name or "dryrun",
+                description=description,
+            )
+
+            inline = run_inline_checks(
+                plugin_dir, type_=type, description=description,
+            )
+
+            verdict: Optional[dict] = None
+            safe = False
+            if get_guardrails_enabled() and get_guardrails_llm_provider_ready():
+                from src.store_guardrails import llm_review
+                verdict = llm_review.review_bundle(
+                    plugin_dir,
+                    type_=type,
+                    name=meta_name,
+                    version="",
+                    description=description,
+                    api_key=default_api_key_loader(),
+                    model=default_model_loader(),
+                )
+                safe = llm_review.is_safe(verdict)
+            else:
+                # Guardrails off / provider not configured: the LLM tier
+                # is a no-op, so publication hinges on inline alone.
+                safe = True
+
+            return DryRunResponse(
+                inline_checks=inline.to_response_dict(),
+                llm_findings=verdict,
+                would_publish=inline.passed and safe,
+            )
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+            shutil.rmtree(plugin_root, ignore_errors=True)
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

@@ -1014,6 +1014,7 @@ in the Initial Workspace Template clone. Backs the `/admin/prompts` page.
 - /api/store/bundle.zip
 - /api/store/categories
 - /api/store/entities
+- /api/store/entities/dryrun
 - /api/store/entities/preview
 - /api/store/entities/{entity_id}
 - /api/store/entities/{entity_id}/docs/{filename}
