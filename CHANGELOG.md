@@ -23,6 +23,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 - `src/initial_workspace.py` gains `blob_sha(rel_path)` — best-effort per-file blob sha from the IWT clone HEAD (containment-guarded, returns `None` on absent path / unconfigured / git error). (#622 Slice 2)
 
+## [0.71.24] — 2026-06-12
+
+### Fixed
+- Postgres backend now fails closed at startup when the DB's Alembic revision doesn't match the application's expected head, instead of booting "healthy" and 500ing every write that touches a post-stamp column (e.g. `table_registry.server_only`). The DuckDB ladder self-migrates on connect; Postgres did not apply or even check revisions on boot, so a re-pulled image against a PG stamped at an older revision drifted silently. A new `assert_pg_at_head()` runs in the FastAPI lifespan (PG-only, gated on `use_pg()`) and refuses to serve with a clear message naming the current and head revisions plus the remediation — distinguishing a DB *behind* the image (apply `alembic upgrade head`) from a DB *ahead* of it (unknown revision after an app rollback: roll the image forward or restore the matching backup). Set `AGNES_SKIP_PG_REVISION_CHECK=1` to boot anyway for emergency recovery. Auto-apply of pending migrations is intentionally deferred. (#636, #641)
+
+## [0.71.23] — 2026-06-12
+
+### Fixed
+- **Session uploads: three silent data-loss vectors closed.** (1) Queue entries pointing at a transcript that doesn't exist *yet* (Claude Code writes the `.jsonl` lazily on the first prompt) were permanently dropped by any concurrent `agnes push`; they are now requeued with a first-failure stamp and only age out to the forensic failed-log after 30 days (`RETRY_TTL`). (2) The SessionEnd hook now runs `agnes capture-session` before the detached push, so an ending session always re-queues its final transcript — previously a push fired mid-session from another window (or by `/clear`) consumed the entry and the server kept a partial transcript, or an empty post-`/clear` stub, forever. Existing workspaces pick the new layout up via the `agnes self-upgrade` hook refresh. (3) 401 (expired / not-yet-imported PAT) dropped the whole queue permanently; it is now transient — retried until re-auth, bounded by the same TTL, which also caps persistent 5xx requeue loops. `agnes push` reports a new `requeued` counter. (#640)
+- **Admin session list & downloads now see API-uploaded sessions.** The endpoints scanned only the legacy collector layout (`user_sessions/<email local-part>/`), so sessions stored by `/api/upload/sessions` under `user_sessions/<user_id>/` were invisible in the list until the usage processor indexed them and their single-file download 404'd forever. List, single-file download, and bulk ZIP now scan both layouts, and the self-service `/api/me/stats/sessions` list gained the same dual-layout scan (plus basename matching for its download links). (#640)
+
 ## [0.71.22] — 2026-06-12
 
 ### Added

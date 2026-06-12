@@ -31,6 +31,7 @@ from src.repositories import (
     audit_repo,
     users_repo,
 )
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -68,6 +69,30 @@ def _username_from_user(user: dict[str, Any]) -> str:
     return email.split("@")[0] if "@" in email else email
 
 
+def _user_session_dirs(user_id: str, username: str) -> list[Path]:
+    """Return the session directories to scan for a user, in priority order.
+
+    Two ingestion paths write under ``SESSION_DATA_DIR`` with DIFFERENT
+    directory names:
+
+    * the legacy session collector uses the OS username (email local-part),
+    * the upload API (``/api/upload/sessions``) uses ``users.id``.
+
+    Scanning only the username dir made every API-uploaded session
+    invisible to the admin list/download endpoints until the usage
+    processor indexed it — and the single-file download 404'd on them
+    forever. Both dirs are scanned; the username dir wins filename
+    collisions (it existed first).
+
+    Empty components are dropped: a user without an email yields an
+    empty username, and ``base / ""`` is ``base`` itself — scanning the
+    whole SESSION_DATA_DIR root for that user.
+    """
+    base = _session_data_dir()
+    dirs = [base / name for name in dict.fromkeys([username, user_id]) if name]
+    return dirs
+
+
 # ---------------------------------------------------------------------------
 # GET /api/admin/users/{user_id}/sessions
 # ---------------------------------------------------------------------------
@@ -94,7 +119,7 @@ def list_user_sessions(
     """
     target = _resolve_user(user_id, conn)
     username = _username_from_user(target)
-    user_dir = _session_data_dir() / username
+    user_dirs = _user_session_dirs(user_id, username)
 
     # ------------------------------------------------------------------
     # Pull processed rows from usage_session_summary
@@ -138,20 +163,31 @@ def list_user_sessions(
                 if v is not None and hasattr(v, "isoformat"):
                     d[k] = v.isoformat()
             d["processed"] = True
-            processed_files[d["session_file"]] = d
+            # Key by BASENAME: the session pipeline writes session_file as
+            # "<dir>/<filename>" (runner's session_key), while the
+            # filesystem merge below compares bare filenames — keying the
+            # raw value would make every prefixed row miss the dedup check
+            # and list the same session twice (processed + "unprocessed").
+            processed_files[d["session_file"].rsplit("/", 1)[-1]] = d
 
     # ------------------------------------------------------------------
     # Merge with filesystem scan — unindexed files become processed=false
     # ------------------------------------------------------------------
     all_rows: list[dict] = list(processed_files.values())
 
-    if user_dir.is_dir():
+    seen_fs: set[str] = set()
+    for user_dir in user_dirs:
+        if not user_dir.is_dir():
+            continue
         for p in sorted(user_dir.glob("*.jsonl"), key=lambda x: x.stat().st_mtime, reverse=True):
             fname = p.name
             # Relative key used as session_file value (matches what the
             # processor writes: "<username>/<filename>" or just "<filename>").
             # We normalise to basename-only to avoid path-separator surprises.
-            if fname not in processed_files:
+            # Filename collisions across the two ingestion dirs collapse to
+            # the first-listed dir (username) — same file, two layouts.
+            if fname not in processed_files and fname not in seen_fs:
+                seen_fs.add(fname)
                 mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
                 # Try to extract a session_id from the filename: the collector
                 # names files like "<session_id>.jsonl" or "sess-<id>.jsonl".
@@ -200,19 +236,19 @@ def download_all_sessions(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Stream a ZIP of every *.jsonl under the user's session directory.
+    """Stream a ZIP of every *.jsonl under the user's session directories
+    (both ingestion layouts — collector username dir + upload-API user_id
+    dir).
 
-    Returns 404 when the directory doesn't exist.
-    Returns 200 + empty ZIP when the directory exists but has no JSONL files.
+    Returns 404 when neither directory exists.
+    Returns 200 + empty ZIP when a directory exists but has no JSONL files.
     """
     target = _resolve_user(user_id, conn)
     username = _username_from_user(target)
-    user_dir = _session_data_dir() / username
+    user_dirs = [d for d in _user_session_dirs(user_id, username) if d.is_dir()]
 
-    if not user_dir.is_dir():
+    if not user_dirs:
         raise HTTPException(status_code=404, detail="No session directory for this user")
-
-    jsonl_files = sorted(user_dir.glob("*.jsonl"))
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     zip_filename = f"{username}-sessions-{today}.zip"
@@ -224,24 +260,30 @@ def download_all_sessions(
     # to stream.  For session files (typically < a few MB each) we build the
     # ZIP in memory first so we can measure the totals, then yield it.
     # If the corpus grows into GB territory, revisit with SpooledTemporaryFile.
-    user_dir_resolved = user_dir.resolve()
+    seen_names: set[str] = set()
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for p in jsonl_files:
-            # Guard against symlinks pointing outside the user's session directory.
-            try:
-                p.resolve().relative_to(user_dir_resolved)
-            except ValueError:
-                logger.warning(
-                    "download_all_sessions: skipping symlink escape: %s -> %s",
-                    p,
-                    p.resolve(),
-                )
-                continue
-            data = p.read_bytes()
-            zf.writestr(p.name, data)
-            total_bytes += len(data)
-            file_count += 1
+        for user_dir in user_dirs:
+            user_dir_resolved = user_dir.resolve()
+            for p in sorted(user_dir.glob("*.jsonl")):
+                # Same filename in both layouts = same session; first dir wins.
+                if p.name in seen_names:
+                    continue
+                # Guard against symlinks pointing outside the user's session directory.
+                try:
+                    p.resolve().relative_to(user_dir_resolved)
+                except ValueError:
+                    logger.warning(
+                        "download_all_sessions: skipping symlink escape: %s -> %s",
+                        p,
+                        p.resolve(),
+                    )
+                    continue
+                data = p.read_bytes()
+                zf.writestr(p.name, data)
+                seen_names.add(p.name)
+                total_bytes += len(data)
+                file_count += 1
     zip_bytes = buf.getvalue()
 
     audit_repo().log(
@@ -297,10 +339,18 @@ def download_session(
 
     target = _resolve_user(user_id, conn)
     username = _username_from_user(target)
-    user_dir = _session_data_dir() / username
-    path = user_dir / safe_name
+    # Both ingestion layouts (collector username dir + upload-API user_id
+    # dir); first match wins.
+    path = None
+    user_dir = None
+    for candidate_dir in _user_session_dirs(user_id, username):
+        candidate = candidate_dir / safe_name
+        if candidate.exists():
+            path = candidate
+            user_dir = candidate_dir
+            break
 
-    if not path.exists():
+    if path is None:
         raise HTTPException(status_code=404, detail="Session file not found")
 
     # --- guard 3: resolved path still within session dir
