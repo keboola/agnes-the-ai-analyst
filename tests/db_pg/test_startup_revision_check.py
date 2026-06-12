@@ -157,3 +157,141 @@ def test_raises_db_ahead_when_revision_unknown(pg_under_app):
     assert "AHEAD" in msg, f"unknown revision must report DB-ahead: {msg}"
     assert "ffffffffffff" in msg
     assert head in msg
+
+
+# ---------------------------------------------------------------------------
+# ensure_pg_at_head — DuckDB-parity self-migration (issue #636, part 2).
+#
+# assert_pg_at_head turned silent write-breakage into a boot refusal; on
+# deployments with no migrate step that refusal is a crash-loop on every
+# release that carries a migration. ensure_pg_at_head closes the loop: when
+# the DB is BEHIND it applies the pending migrations itself (serialized via
+# a Postgres advisory lock), mirroring the DuckDB ladder's self-migration.
+# AHEAD stays fail-closed (auto-rollback is never safe), and
+# AGNES_PG_AUTO_MIGRATE=0 opts out for pipeline-controlled deployments.
+# ---------------------------------------------------------------------------
+
+
+def _current_revision(engine) -> str | None:
+    import sqlalchemy as sa
+
+    with engine.connect() as conn:
+        try:
+            return conn.execute(
+                sa.text("SELECT version_num FROM alembic_version")
+            ).scalar()
+        except Exception:
+            return None
+
+
+def test_ensure_auto_migrates_when_behind(pg_under_app):
+    """DB at the revision below head → ensure runs the pending migration."""
+    from alembic import command
+
+    from src.db_pg import ensure_pg_at_head
+
+    head, prev = _head_and_prev()
+    cfg = _alembic_config(str(pg_under_app.url))
+    command.upgrade(cfg, prev)  # real schema at prev, not just a stamp
+
+    ensure_pg_at_head()  # must not raise
+
+    assert _current_revision(pg_under_app) == head
+
+
+def test_ensure_noop_at_head(pg_under_app):
+    from alembic import command
+
+    from src.db_pg import ensure_pg_at_head
+
+    cfg = _alembic_config(str(pg_under_app.url))
+    command.upgrade(cfg, "head")
+
+    ensure_pg_at_head()  # must not raise
+
+    head, _ = _head_and_prev()
+    assert _current_revision(pg_under_app) == head
+
+
+def test_ensure_opt_out_keeps_fail_closed(pg_under_app, monkeypatch):
+    """AGNES_PG_AUTO_MIGRATE=0 → behind-head still refuses to boot."""
+    from alembic import command
+
+    from src.db_pg import ensure_pg_at_head
+
+    head, prev = _head_and_prev()
+    cfg = _alembic_config(str(pg_under_app.url))
+    command.upgrade(cfg, prev)
+    monkeypatch.setenv("AGNES_PG_AUTO_MIGRATE", "0")
+
+    with pytest.raises(RuntimeError) as exc:
+        ensure_pg_at_head()
+    assert prev in str(exc.value)
+    assert _current_revision(pg_under_app) == prev  # untouched
+
+
+def test_ensure_ahead_still_fails_closed(pg_under_app):
+    """A revision unknown to this image (app rollback) is never auto-fixed."""
+    import sqlalchemy as sa
+    from alembic import command
+
+    from src.db_pg import ensure_pg_at_head
+
+    cfg = _alembic_config(str(pg_under_app.url))
+    command.upgrade(cfg, "head")
+    with pg_under_app.connect() as conn:
+        conn.execute(
+            sa.text("UPDATE alembic_version SET version_num = 'ffffffffffff'")
+        )
+        conn.commit()
+
+    with pytest.raises(RuntimeError) as exc:
+        ensure_pg_at_head()
+    assert "AHEAD" in str(exc.value)
+
+
+def test_ensure_skip_env_short_circuits(pg_under_app, monkeypatch):
+    """AGNES_SKIP_PG_REVISION_CHECK=1 → no migration, no raise."""
+    from alembic import command
+
+    from src.db_pg import ensure_pg_at_head
+
+    _head, prev = _head_and_prev()
+    cfg = _alembic_config(str(pg_under_app.url))
+    command.upgrade(cfg, prev)
+    monkeypatch.setenv("AGNES_SKIP_PG_REVISION_CHECK", "1")
+
+    ensure_pg_at_head()  # must not raise
+
+    assert _current_revision(pg_under_app) == prev  # untouched
+
+
+def test_ensure_concurrent_callers_serialize(pg_under_app):
+    """Two concurrent callers (app + a second replica) both succeed; the
+    advisory lock serializes the upgrade and the late acquirer no-ops."""
+    import threading
+
+    from alembic import command
+
+    from src.db_pg import ensure_pg_at_head
+
+    head, prev = _head_and_prev()
+    cfg = _alembic_config(str(pg_under_app.url))
+    command.upgrade(cfg, prev)
+
+    errors = []
+
+    def run():
+        try:
+            ensure_pg_at_head()
+        except Exception as exc:  # pragma: no cover - failure path
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=120)
+
+    assert not errors
+    assert _current_revision(pg_under_app) == head

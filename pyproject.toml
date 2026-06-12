@@ -243,6 +243,11 @@ packages = ["app", "src", "connectors", "cli", "services", "config"]
 line-length = 120
 target-version = "py313"
 
+[tool.ruff.lint.per-file-ignores]
+# main.py deliberately runs env/config setup before its imports — the
+# 80+ E402s are the file's design, not drift.
+"app/main.py" = ["E402"]
+
 [tool.uv]
 dev-dependencies = [
     "pytest>=9.0.0",

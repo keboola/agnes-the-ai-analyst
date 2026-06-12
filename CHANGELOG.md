@@ -13,6 +13,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
+- **The Postgres backend now self-migrates at startup** (issue #636, part 2). When the DB's Alembic revision is behind the image's head, the app applies the pending migrations in-process under a Postgres advisory lock (replica-safe: concurrent starters serialize and the late one no-ops) instead of refusing to boot — mirroring the DuckDB ladder's self-migration on connect, and ending the crash-loop that the #641 fail-closed guard caused on deployments with no migrate step. `AGNES_PG_AUTO_MIGRATE=0` restores the fail-closed check for pipeline-controlled deployments; a DB *ahead* of the image (app rollback) and a failed upgrade still refuse to boot; `AGNES_SKIP_PG_REVISION_CHECK=1` keeps skipping everything for emergency boots.
 
 ### Fixed
 

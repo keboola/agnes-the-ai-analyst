@@ -125,15 +125,21 @@ docker run --rm \
 # migrations dir — no extra build step needed.
 ```
 
-> **Startup guard (#636).** On a Postgres backend the app **fails closed at
-> boot** if the DB's Alembic revision is behind — or has never been stamped by
-> — the image's expected head: it refuses to start with an error naming the
-> current and head revisions, rather than booting and silently 500-ing on
-> every write to a column added by an un-applied migration. Run the pre-deploy
-> `alembic upgrade head` above *before* the new image serves traffic. For
-> emergency recovery only, set `AGNES_SKIP_PG_REVISION_CHECK=1` to boot past
-> the guard (you will hit schema errors until you migrate). DuckDB backends
-> self-migrate on connect and are unaffected.
+> **Startup self-migration (#636).** On a Postgres backend the app brings the
+> schema to the image's Alembic head **itself at boot**, mirroring the DuckDB
+> ladder's self-migration on connect: when the DB is behind (or never
+> stamped), the pending migrations are applied in-process under a Postgres
+> advisory lock, so concurrent replicas serialize and the late starter
+> no-ops. Set `AGNES_PG_AUTO_MIGRATE=0` to disable this and **fail closed at
+> boot** instead — for deployments whose pipeline owns migrations via the
+> pre-deploy `alembic upgrade head` above (the error names the current and
+> head revisions). Two cases always fail closed regardless of the flag: a DB
+> *ahead* of the image (app rollback after a newer image migrated — roll the
+> image forward, never auto-downgrade), and a failed upgrade (never serve on
+> a half-migrated schema). For emergency recovery only, set
+> `AGNES_SKIP_PG_REVISION_CHECK=1` to boot past all of it (you will hit
+> schema errors until you migrate). DuckDB backends self-migrate on connect
+> and are unaffected.
 
 For rollback discipline: every Alembic revision in this repo has a
 real `downgrade()` body, validated by `test_full_chain_roundtrip` and
