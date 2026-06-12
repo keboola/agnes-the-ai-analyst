@@ -390,17 +390,26 @@ class TestAdminRoleGuards:
         resp = web_client.get("/admin/corporate-memory", cookies=analyst_cookie)
         assert resp.status_code == 403
 
-    def test_admin_agent_prompt_page_admin_only(self, web_client, admin_cookie, analyst_cookie):
-        """The renamed Agent Setup Prompt page is gated by require_admin."""
+    def test_admin_prompts_page_admin_only(self, web_client, admin_cookie, analyst_cookie):
+        """The unified /admin/prompts page (#622) is gated by require_admin."""
         # Unauthenticated → 302 redirect to login
-        r = web_client.get("/admin/agent-prompt", follow_redirects=False)
+        r = web_client.get("/admin/prompts", follow_redirects=False)
         assert r.status_code in (302, 401, 403)
         # Non-admin → 403
-        r = web_client.get("/admin/agent-prompt", cookies=analyst_cookie, follow_redirects=False)
+        r = web_client.get("/admin/prompts", cookies=analyst_cookie, follow_redirects=False)
         assert r.status_code == 403
         # Admin → 200
-        r = web_client.get("/admin/agent-prompt", cookies=admin_cookie, follow_redirects=False)
+        r = web_client.get("/admin/prompts", cookies=admin_cookie, follow_redirects=False)
         assert r.status_code == 200
+
+    def test_legacy_prompt_pages_redirect(self, web_client, admin_cookie):
+        """/admin/agent-prompt + /admin/workspace-prompt 308 → /admin/prompts
+        (#622). Unconditional redirect, like the /admin/grants precedent — the
+        target page enforces require_admin."""
+        for old in ("/admin/agent-prompt", "/admin/workspace-prompt"):
+            r = web_client.get(old, cookies=admin_cookie, follow_redirects=False)
+            assert r.status_code == 308, f"{old} → {r.status_code}"
+            assert r.headers["location"] == "/admin/prompts"
 
     def test_admin_scheduler_runs_page_admin_only(self, web_client, admin_cookie, analyst_cookie):
         """`/admin/scheduler-runs` collapsed into the unified Activity

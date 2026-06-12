@@ -33,7 +33,6 @@ from app.instance_config import (
     get_instance_name,
     get_instance_subtitle,
 )
-from src.repositories.welcome_template import WelcomeTemplateRepository
 
 logger = logging.getLogger(__name__)
 
@@ -249,9 +248,15 @@ def render_agent_prompt_banner(
 
     Render failures on the override path are swallowed (logged) and fall back
     to the live default so a broken template never blocks /setup.
+
+    #622: resolution honors the install prompt's ``source_mode`` toggle —
+    ``'editor'`` returns the DB override (today's behavior); ``'git'`` binds to
+    the IWT clone file at the bound ``git_path``. A None result falls through
+    to the live default exactly as an unset override does.
     """
-    row = WelcomeTemplateRepository(conn).get()
-    content = row.get("content")
+    from src.initial_workspace import resolve_prompt
+
+    content, _mode = resolve_prompt("install", conn)
 
     if content:
         # Admin-authored override — render as Jinja2, sanitize.

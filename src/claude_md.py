@@ -32,7 +32,6 @@ from app.instance_config import (
     get_instance_subtitle,
     get_sync_interval,
 )
-from src.repositories.claude_md_template import ClaudeMdTemplateRepository
 
 logger = logging.getLogger(__name__)
 
@@ -225,9 +224,17 @@ def render_claude_md(
     When no override is set, renders the shipped default template.
 
     On TemplateError, raises — the API layer catches this and returns 400/500.
+
+    #622: resolution honors the workspace prompt's ``source_mode`` toggle —
+    ``'editor'`` returns the DB override (or default when unset, today's
+    behavior); ``'git'`` binds to the IWT clone file. A None result (no
+    override, or a git-bound file that's missing) falls back to the shipped
+    default, then renders through Jinja as before.
     """
-    row = ClaudeMdTemplateRepository(conn).get()
-    source = row["content"] if row.get("content") else _load_default_template()
+    from src.initial_workspace import resolve_prompt
+
+    content, _mode = resolve_prompt("workspace", conn)
+    source = content if content else _load_default_template()
     env = Environment(undefined=StrictUndefined, autoescape=False)
     template = env.from_string(source)
     return template.render(**build_claude_md_context(conn, user=user, server_url=server_url))

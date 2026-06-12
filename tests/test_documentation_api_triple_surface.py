@@ -95,7 +95,16 @@ _ADOPTION_REASON = (
     "admin-only Adoption dashboard — web UI only, no CLI/MCP analogue "
     "(read-only aggregates rendered as cards/charts in the browser)"
 )
+_PROMPTS_REASON = (
+    "admin-only managed-prompt editor (#622) — web UI only at /admin/prompts, "
+    "no analyst CLI/MCP analogue (mirrors the grandfathered "
+    "/api/admin/{welcome,workspace-prompt}-template editors)"
+)
 _EXEMPT: dict[str, str] = {
+    "/api/admin/prompts/{kind}": _PROMPTS_REASON,
+    "/api/admin/prompts/{kind}/source": _PROMPTS_REASON,
+    "/api/admin/prompts/{kind}/bind-git": _PROMPTS_REASON,
+    "/api/admin/prompts/{kind}/preview": _PROMPTS_REASON,
     "/api/admin/adoption/kpis": _ADOPTION_REASON,
     "/api/admin/adoption/series": _ADOPTION_REASON,
     "/api/admin/adoption/top-skills": _ADOPTION_REASON,
