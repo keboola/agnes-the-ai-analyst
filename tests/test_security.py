@@ -438,6 +438,7 @@ def hardening_client(tmp_path, monkeypatch):
         "client": c,
         "admin_token": create_access_token("hadmin", "hadmin@test.com"),
         "analyst_token": create_access_token("hanalyst", "hanalyst@test.com"),
+        "admin_group_id": gid,
     }
 
 
@@ -514,14 +515,26 @@ class TestApiHardening336:
         assert resp.status_code == 401
         assert resp.headers.get("content-type", "").startswith("application/json")
 
-    # ADV-009: list endpoints accept limit/offset
-    def test_users_list_pagination_params(self, hardening_client):
-        token = hardening_client["admin_token"]
-        resp = hardening_client["client"].get(
-            "/api/users?limit=5&offset=0",
-            headers={"Authorization": f"Bearer {token}"},
-        )
+    # ADV-009 (reworked in #624): offset-based pagination is gone — the list
+    # endpoint is server-paged via ``limit`` and narrowed by ``search`` /
+    # ``group_id``. Exercise all three so a param regression fails loudly
+    # instead of being silently ignored by FastAPI.
+    def test_users_list_limit_search_group_filters(self, hardening_client):
+        c = hardening_client["client"]
+        headers = {"Authorization": f"Bearer {hardening_client['admin_token']}"}
+
+        resp = c.get("/api/users?limit=1", headers=headers)
         assert resp.status_code == 200
+        assert len(resp.json()) == 1
+
+        resp = c.get("/api/users?search=hanalyst", headers=headers)
+        assert resp.status_code == 200
+        assert [u["email"] for u in resp.json()] == ["hanalyst@test.com"]
+
+        group_id = hardening_client["admin_group_id"]
+        resp = c.get(f"/api/users?group_id={group_id}", headers=headers)
+        assert resp.status_code == 200
+        assert [u["email"] for u in resp.json()] == ["hadmin@test.com"]
 
     def test_tokens_list_pagination_params(self, hardening_client):
         token = hardening_client["admin_token"]
