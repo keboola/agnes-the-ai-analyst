@@ -11,17 +11,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
-- **`/admin/prompts` — edit the install + workspace prompts from the admin UI even when an Initial Workspace Template (IWT) repo is registered.** Previously, as soon as the IWT clone contained `workspace/CLAUDE.md`, the admin editor flipped read-only (the implicit `seed_owns()` lock) — exactly when operators adopt the override repo, the common production setup. Each managed prompt now carries an explicit **Git ⇄ Editor** source toggle (`instance_templates.source_mode`): in **Editor** mode the admin's DB override wins at render time and the editor is always writable; in **Git** mode the prompt binds to a file in the IWT clone (editor read-only, edit in the repo + "Sync now"). A new unified page (`/admin/prompts`, two cards) replaces the two standalone editors (`/admin/agent-prompt` + `/admin/workspace-prompt`, now `308` → `/admin/prompts`). New REST surface (admin-only): `GET/PUT/DELETE /api/admin/prompts/{kind}`, `POST .../source`, `POST .../bind-git`, `POST .../preview` (`kind ∈ install|workspace`). The core fix lands at `build_zip()` — override-mode `agnes init` (which serves the IWT zip verbatim, bypassing `/api/welcome`) now ships the admin-edited `CLAUDE.md` when the workspace prompt is in Editor mode. (#622, Slice 1 of N)
 
 ### Changed
 
 ### Fixed
 
 ### Removed
-- **`seed_owns()` editor read-only lock.** The implicit per-file IWT-ownership lock on the prompt editors is replaced by the explicit `source_mode` toggle (#622). Saving in Editor mode is always allowed; saving while a prompt is in Git mode returns `409 prompt_in_git_mode` (previously `409 iwt_seed_owns_template`). The standalone `admin_workspace_prompt.html` / `admin_welcome.html` pages were removed in favor of `/admin/prompts`.
 
 ### Internal
-- **DuckDB schema v75 + Alembic `0022_prompt_source_mode_v75`.** Adds `source_mode` (NOT NULL, default `'editor'`), `git_path`, and `base_sha` to `instance_templates`; existing `welcome`/`claude_md` rows backfill to `'editor'`. `base_sha` is reserved for Slice-2 divergence detection (written, not read in Slice 1). Both backends kept in parity (SQLAlchemy model + dual repos with `get_meta`/`set_source_mode`/`bind_git`). (#622)
+
+## [0.71.21] — 2026-06-12
+
+### Added
+- **`/admin/prompts` — edit the install + workspace prompts from the admin UI even when an Initial Workspace Template (IWT) repo is registered.** Previously, as soon as the IWT clone contained `workspace/CLAUDE.md`, the admin editor flipped read-only (the implicit `seed_owns()` lock) — exactly when operators adopt the override repo, the common production setup. Each managed prompt now carries an explicit **Git ⇄ Editor** source toggle (`instance_templates.source_mode`): in **Editor** mode the admin's DB override wins at render time and the editor is always writable; in **Git** mode the prompt binds to a repo-relative file in the IWT clone (e.g. `workspace/CLAUDE.md`; editor read-only, edit in the repo + "Sync now") — bind-time validation and render-time resolution share the same repo-root namespace, and the render-time read is containment-guarded against `..`/symlink escapes like `resolve_seed_file`. A new unified page (`/admin/prompts`, two cards) replaces the two standalone editors (`/admin/agent-prompt` + `/admin/workspace-prompt`, now `308` → `/admin/prompts`). New REST surface (admin-only): `GET/PUT/DELETE /api/admin/prompts/{kind}`, `POST .../source`, `POST .../bind-git`, `POST .../preview` (`kind ∈ install|workspace`). The core fix lands at `build_zip()` — override-mode `agnes init` (which serves the IWT zip verbatim, bypassing `/api/welcome`) now ships the admin-edited `CLAUDE.md` when the workspace prompt is in Editor mode. (#622 Slice 1, #638)
+
+### Removed
+- **`seed_owns()` editor read-only lock.** The implicit per-file IWT-ownership lock on the prompt editors is replaced by the explicit `source_mode` toggle (#622). Saving in Editor mode is always allowed; saving while a prompt is in Git mode returns `409 prompt_in_git_mode` (previously `409 iwt_seed_owns_template`). The standalone `admin_workspace_prompt.html` / `admin_welcome.html` pages were removed in favor of `/admin/prompts`. (#638)
+
+### Internal
+- **DuckDB schema v75 + Alembic `0022_prompt_source_mode_v75`.** Adds `source_mode` (NOT NULL, default `'editor'`), `git_path`, and `base_sha` to `instance_templates`; existing `welcome`/`claude_md` rows backfill to `'editor'`. `base_sha` is reserved for Slice-2 divergence detection (written, not read in Slice 1). Both backends kept in parity (SQLAlchemy model + dual repos with `get_meta`/`set_source_mode`/`bind_git`, cross-engine contract test included). (#622, #638)
 
 ## [0.71.21] — 2026-06-12
 
