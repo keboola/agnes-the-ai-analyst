@@ -23,10 +23,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [0.71.19] — 2026-06-12
 
 ### Fixed
-- `/api/v2/scan` results exceeding `api.scan.max_result_bytes` no longer crash with `AttributeError: 'RecordBatchReader' object has no attribute 'num_rows'` — the truncation guard assumed a `pyarrow.Table`, but duckdb ≥ 1.5 `.arrow()` returns a streaming `RecordBatchReader` (hit in production on the `from_query` auto-snapshot path). The guard now streams batch-by-batch with the cap applied (`arrow_to_ipc_bytes_capped`), which also bounds server memory: an over-cap result is consumed only up to the cap instead of being fully materialized in RAM — previously a single large `from_query` materialization could OOM the container. (#635)
-
-### Internal
-- CI: `release.yml` no longer builds a `:dev-<slug>` image for `*-autopilot` branches. These short-lived per-issue PR branches deploy to no VM, so the dev image was waste; worse, each force-push cancelled the prior run (`cancel-in-progress`), leaving a cosmetic red `build-and-push` check (not a required check — only `test` + `docker-build` gate merges) that made every such PR look broken. `main` and real dev branches are unaffected. (#634)
+- `/api/v2/scan` results exceeding `api.scan.max_result_bytes` no longer crash with `AttributeError: 'RecordBatchReader' object has no attribute 'num_rows'` — the truncation guard assumed a `pyarrow.Table`, but duckdb ≥ 1.5 `.arrow()` returns a streaming `RecordBatchReader` (hit in production on the `from_query` auto-snapshot path). The guard now streams batch-by-batch with the cap applied (`arrow_to_ipc_bytes_capped`), which also bounds server memory: an over-cap result is consumed only up to the cap instead of being fully materialized in RAM — previously a single large `from_query` materialization could OOM the container.
+- Post-sync data profiling persists again. The profiler block in the sync runner referenced the repository factory without importing it — the NameError was swallowed and logged only as `[SYNC] Profiler skipped`, so table profiles were never saved after any sync; a second bug in the same block called `.save` on the factory function instead of the repository instance. Also drops a stray always-DuckDB `get_system_db()` connection from the block (backend-split hygiene).
 
 ## [0.71.18] — 2026-06-12
 
