@@ -1088,6 +1088,17 @@
                                 <code>daily 03:00</code>, <code>daily 07:00,13:00,18:00</code> (UTC).
                             </div>
                         </div>
+                        <div class="form-group bq-access-synced" style="display:none;">
+                            <label class="form-label">
+                                <input type="checkbox" id="bqServerOnly">
+                                Server-only (don't distribute to laptops)
+                            </label>
+                            <div class="form-hint">Keep the parquet server-side and
+                                queryable via <code>agnes query --remote</code>, but skip
+                                it in <code>agnes pull</code>. Use for large tables that
+                                shouldn't be downloaded to every laptop. Only applies to
+                                synced tables — live (remote) ones have no server parquet.</div>
+                        </div>
                         <div class="form-group" id="bqPrecheckSummary" style="display:none;">
                             <div class="form-label">Source check</div>
                             <div class="form-hint" id="bqPrecheckSummaryText"></div>
@@ -1243,6 +1254,16 @@
                             <div class="form-hint">How often Agnes refreshes the local copy.
                                 <code>every 15m</code>, <code>every 6h</code>,
                                 <code>daily 03:00</code> (UTC).</div>
+                        </div>
+                        <div class="form-group bq-edit-access-synced" style="display:none;">
+                            <label class="form-label">
+                                <input type="checkbox" id="editBqServerOnly">
+                                Server-only (don't distribute to laptops)
+                            </label>
+                            <div class="form-hint">Keep the parquet server-side and
+                                queryable via <code>agnes query --remote</code>, but skip
+                                it in <code>agnes pull</code>. Only applies to synced
+                                tables; cleared automatically when switching to Live.</div>
                         </div>
 
                         <div class="form-group">
@@ -4271,6 +4292,11 @@
         var description = document.getElementById('bqDescription').value.trim() || null;
         var folder = document.getElementById('bqFolder').value.trim() || null;
         var syncSchedule = document.getElementById('bqSyncSchedule').value.trim() || null;
+        // #607 — server_only is only coherent for synced (materialized) BQ
+        // rows; the live branch below omits it (the API would 422 on
+        // server_only=true + the coerced query_mode='remote').
+        var bqServerOnlyEl = document.getElementById('bqServerOnly');
+        var serverOnly = !!(bqServerOnlyEl && bqServerOnlyEl.checked);
 
         if (accessMode === 'synced' && syncMode === 'custom') {
             return {
@@ -4279,6 +4305,7 @@
                 query_mode: 'materialized',
                 source_query: document.getElementById('bqSourceQuery').value.trim(),
                 profile_after_sync: false,
+                server_only: serverOnly,
                 description: description,
                 folder: folder,
                 sync_schedule: syncSchedule,
@@ -4311,6 +4338,7 @@
                 source_table: sourceTable,
                 source_query: 'SELECT * FROM bq."' + dataset + '"."' + sourceTable + '"',
                 profile_after_sync: false,
+                server_only: serverOnly,
                 description: description,
                 folder: folder,
                 sync_schedule: syncSchedule,
@@ -4703,6 +4731,7 @@
         document.getElementById('editBqSourceTable').value = preSourceTable;
         document.getElementById('editBqSourceQuery').value = sq;
         document.getElementById('editBqSyncSchedule').value = table.sync_schedule || '';
+        document.getElementById('editBqServerOnly').checked = !!table.server_only;
         document.getElementById('editBqDescription').value = table.description || '';
         document.getElementById('editBqFolder').value = table.folder || '';
         document.getElementById('editBqModeWarning').style.display = 'none';
@@ -4984,8 +5013,15 @@
                 document.getElementById('editBqSyncSchedule').value.trim() || null,
         };
 
+        // #607 — server_only rides the synced branches only; the live branch
+        // forces it false so a materialized→live flip can't strand
+        // server_only=true on a remote row (the PUT validator would 422).
+        var editBqServerOnly =
+            !!document.getElementById('editBqServerOnly').checked;
+
         if (accessMode === 'synced' && syncMode === 'custom') {
             payload.query_mode = 'materialized';
+            payload.server_only = editBqServerOnly;
             payload.source_query =
                 document.getElementById('editBqSourceQuery').value.trim();
             // Issue #266: only clear bucket/source_table on a genuine mode
@@ -5004,6 +5040,7 @@
             }
         } else if (accessMode === 'synced' && syncMode === 'whole') {
             payload.query_mode = 'materialized';
+            payload.server_only = editBqServerOnly;
             payload.source_query =
                 'SELECT * FROM bq."' + dataset + '"."' + sourceTable + '"';
             payload.bucket = dataset || null;
@@ -5011,6 +5048,7 @@
         } else {
             // Live.
             payload.query_mode = 'remote';
+            payload.server_only = false;
             payload.bucket = dataset || null;
             payload.source_table = sourceTable || null;
             payload.source_query = null;

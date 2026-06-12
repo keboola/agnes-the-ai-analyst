@@ -1938,6 +1938,21 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     # Phase C: profile_after_sync is now inert (deprecated, not read by the
     # runtime); no longer force-set here.
     req.query_mode = "remote"
+    # v74 (#607) — re-assert the server_only ↔ query_mode invariant AFTER the
+    # coercion above. The Pydantic validator ran against the caller's
+    # pre-coercion query_mode (often the 'local' default), so a BQ live
+    # registration with server_only=true would otherwise slip past it and
+    # persist the exact incoherent state it exists to reject.
+    if req.server_only:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "server_only=true is only valid for query_mode='local' or "
+                "'materialized' — a live BigQuery registration is coerced to "
+                "query_mode='remote', which has no server-stored parquet to "
+                "suppress from agnes pull"
+            ),
+        )
 
 
 # Source types that don't depend on a `data_source.<name>.*` block — they
@@ -3063,6 +3078,11 @@ async def update_table(
                 folder=merged.get("folder"),
                 sync_strategy=merged.get("sync_strategy") or "full_refresh",
                 sync_schedule=merged.get("sync_schedule"),
+                # v74 (#607) — carry server_only into the synthetic so the
+                # validator's post-coercion check fires when this PUT lands
+                # the row in 'remote' mode; the merged-record check above
+                # only saw the pre-coercion query_mode.
+                server_only=bool(merged.get("server_only") or False),
             )
             _validate_bigquery_register_payload(synthetic)
             merged["query_mode"] = synthetic.query_mode

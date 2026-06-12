@@ -65,3 +65,55 @@ def test_register_server_only_remote_rejected(seeded_app):
     )
     assert resp.status_code == 422, resp.text
     assert "server_only" in resp.text
+
+
+@pytest.mark.journey
+def test_register_bq_live_server_only_rejected_post_coercion(seeded_app, bq_instance):
+    """#630 review: a live BQ registration defaults query_mode to 'local',
+    sails past the Pydantic validator, and is coerced to 'remote' inside
+    _validate_bigquery_register_payload — the post-coercion check must still
+    reject server_only=true instead of persisting the incoherent row."""
+    c = seeded_app["client"]
+    resp = c.post(
+        "/api/admin/register-table",
+        json={
+            "name": "bq_live_so",
+            "source_type": "bigquery",
+            "bucket": "analytics",
+            "source_table": "orders",
+            "server_only": True,
+        },
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "server_only" in resp.text
+
+
+@pytest.mark.journey
+def test_put_bq_coercion_cannot_bypass_server_only(seeded_app, bq_instance):
+    """#630 review, PUT path: updating a materialized BQ row with
+    query_mode='local' + server_only=true passes the pre-coercion merged
+    check, but the synthetic re-validation coerces to 'remote' — the row
+    must reject with 422, not persist server_only on a remote row."""
+    c = seeded_app["client"]
+    resp = c.post(
+        "/api/admin/register-table",
+        json={
+            "name": "bq_mat_so",
+            "source_type": "bigquery",
+            "bucket": "analytics",
+            "source_table": "orders",
+            "query_mode": "materialized",
+        },
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert resp.status_code == 201, resp.text
+    table_id = resp.json()["id"]
+
+    resp = c.put(
+        f"/api/admin/registry/{table_id}",
+        json={"query_mode": "local", "server_only": True},
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "server_only" in resp.text

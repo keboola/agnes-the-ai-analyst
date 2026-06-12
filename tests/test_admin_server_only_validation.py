@@ -90,3 +90,53 @@ def test_table_manifest_entry_defaults_server_only_false():
         {"id": "t1", "query_mode": "local"},
     )
     assert entry["server_only"] is False
+
+
+# ──────────────── BQ query_mode coercion bypass (#630 review) ────────────────
+
+
+def test_bq_live_coercion_cannot_bypass_server_only_validator(monkeypatch):
+    """A live BQ registration arrives with the default query_mode='local',
+    passes the Pydantic validator, and is then coerced to 'remote' by
+    ``_validate_bigquery_register_payload`` — the post-coercion check must
+    reject server_only=true there instead of persisting the incoherent row."""
+    from fastapi import HTTPException
+
+    from app.api.admin import _validate_bigquery_register_payload
+
+    monkeypatch.setattr(
+        "app.instance_config.get_value",
+        lambda *a, **k: "my-test-project",
+    )
+    req = RegisterTableRequest(**_base(
+        source_type="bigquery",
+        bucket="analytics",
+        source_table="orders",
+        query_mode="local",  # pre-coercion default — Pydantic passes
+        server_only=True,
+    ))
+    with pytest.raises(HTTPException) as exc:
+        _validate_bigquery_register_payload(req)
+    assert exc.value.status_code == 422
+    assert "server_only" in str(exc.value.detail)
+
+
+def test_bq_materialized_keeps_server_only(monkeypatch):
+    """Materialized BQ rows early-return before the remote coercion — the
+    flag stays valid there (that's the one coherent BQ pairing)."""
+    from app.api.admin import _validate_bigquery_register_payload
+
+    monkeypatch.setattr(
+        "app.instance_config.get_value",
+        lambda *a, **k: "my-test-project",
+    )
+    req = RegisterTableRequest(**_base(
+        source_type="bigquery",
+        bucket="analytics",
+        source_table="orders",
+        query_mode="materialized",
+        server_only=True,
+    ))
+    _validate_bigquery_register_payload(req)
+    assert req.query_mode == "materialized"
+    assert req.server_only is True
