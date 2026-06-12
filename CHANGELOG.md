@@ -15,13 +15,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
-- `/api/v2/scan` results exceeding `api.scan.max_result_bytes` no longer crash with `AttributeError: 'RecordBatchReader' object has no attribute 'num_rows'` — the truncation guard assumed a `pyarrow.Table`, but duckdb ≥ 1.5 `.arrow()` returns a streaming `RecordBatchReader` (hit in production on the `from_query` auto-snapshot path). The guard now streams batch-by-batch with the cap applied (`arrow_to_ipc_bytes_capped`), which also bounds server memory: an over-cap result is consumed only up to the cap instead of being fully materialized in RAM — previously a single large `from_query` materialization could OOM the container.
 
 ### Removed
 
 ### Internal
 
 ## [0.71.19] — 2026-06-12
+
+### Fixed
+- `/api/v2/scan` results exceeding `api.scan.max_result_bytes` no longer crash with `AttributeError: 'RecordBatchReader' object has no attribute 'num_rows'` — the truncation guard assumed a `pyarrow.Table`, but duckdb ≥ 1.5 `.arrow()` returns a streaming `RecordBatchReader` (hit in production on the `from_query` auto-snapshot path). The guard now streams batch-by-batch with the cap applied (`arrow_to_ipc_bytes_capped`), which also bounds server memory: an over-cap result is consumed only up to the cap instead of being fully materialized in RAM — previously a single large `from_query` materialization could OOM the container. (#635)
 
 ### Internal
 - CI: `release.yml` no longer builds a `:dev-<slug>` image for `*-autopilot` branches. These short-lived per-issue PR branches deploy to no VM, so the dev image was waste; worse, each force-push cancelled the prior run (`cancel-in-progress`), leaving a cosmetic red `build-and-push` check (not a required check — only `test` + `docker-build` gate merges) that made every such PR look broken. `main` and real dev branches are unaffected. (#634)
