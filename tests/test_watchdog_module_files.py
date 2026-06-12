@@ -61,6 +61,13 @@ def test_watchdog_label_precedence_and_webhook_optional():
     assert "POSTHOG_ENVIRONMENT" in sh
     # Empty webhook must mean log-only, not a crash.
     assert 'WEBHOOK_URL="${WEBHOOK_URL:-}"' in sh
+    # Anti-spam hash must cover only the alert-type prefixes, one per line:
+    # bodies embed per-run counts/timestamps (hash never repeats -> no
+    # suppression), and a single-line join truncates to the first prefix
+    # (over-suppression). Devin review on PR #623 caught the former.
+    assert "printf '%s\\n' \"${ALERTS[@]}\" | sed 's/:.*//'" in sh, (
+        "anti-spam hash must be computed from per-line alert-type prefixes"
+    )
 
 
 def test_backup_script_verifies_restore():

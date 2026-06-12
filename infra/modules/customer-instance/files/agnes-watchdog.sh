@@ -107,9 +107,14 @@ $(printf ' - %s\n' "${ALERTS[@]}")"
 logger -t agnes-watchdog "$MSG"
 echo "$MSG" >> /var/log/agnes-watchdog.log
 
-# Anti-spam: an identical alert set repeats on the webhook at most hourly
-# (the journal + log file still record every occurrence).
-H=$(printf '%s' "${ALERTS[*]}" | md5sum | cut -d' ' -f1)
+# Anti-spam: the same set of alert TYPES repeats on the webhook at most
+# hourly (the journal + log file still record every occurrence). Hash only
+# the type prefix of each alert (text before the first colon), one per
+# line — the message bodies embed per-run counts and the $SINCE timestamp,
+# which would make every hash unique and the suppression a no-op; and
+# joining the set into one line would truncate it to the first prefix and
+# over-suppress distinct alert sets.
+H=$(printf '%s\n' "${ALERTS[@]}" | sed 's/:.*//' | md5sum | cut -d' ' -f1)
 LAST_H=$(cat "$STATE/alert_hash" 2>/dev/null || echo "")
 LAST_T=$(cat "$STATE/alert_time" 2>/dev/null || echo 0)
 NOW_E=$(date +%s)
