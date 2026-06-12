@@ -13,7 +13,8 @@ Cowork bundle settings.json points to:
 
 with header  Authorization: Bearer <PAT>  set by Claude Code.
 
-Tools available: server_info, catalog, schema, describe, query, skills.
+Tools available: server_info, catalog, schema, describe, query, skills,
+stack_browse, stack_subscribe, stack_unsubscribe, documentation_api.
 (query_local and pull require a local analyst filesystem — not available
  in the server context.)
 """
@@ -211,6 +212,90 @@ async def skills() -> dict:
         )
         r.raise_for_status()
         return r.json()
+
+
+@mcp.tool()
+async def stack_browse(resource_type: str) -> dict:
+    """List resources you could add to your stack (RBAC-granted candidates).
+
+    Unlike ``catalog`` (which lists tables already in your stack), this is the
+    discovery surface: every data package or memory domain your groups are
+    granted, each annotated with an ``in_stack`` flag so you can tell what is
+    already subscribed and what is still available to add.
+
+    Args:
+        resource_type: ``data_package`` or ``memory_domain``.
+
+    Returns ``{"items": [{"id", "name", "description", "requirement",
+    "in_stack", ...}]}``. Subscribe to an available item with
+    ``stack_subscribe``.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.get(
+            f"{_BASE}/api/stack/browse",
+            headers=_headers(),
+            params={"type": resource_type},
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
+async def stack_subscribe(resource_type: str, resource_id: str) -> dict:
+    """Subscribe to an available data package or memory domain.
+
+    Adds the resource to your persistent stack — the same effect as clicking
+    "Add to stack" in the web UI; it applies to all future sessions. Use
+    ``stack_browse`` first to find the ``resource_id`` of an available
+    (``in_stack: false``) item.
+
+    Args:
+        resource_type: ``data_package`` or ``memory_domain``.
+        resource_id:   The resource id from ``stack_browse``.
+
+    Returns ``{"subscribed": true, "next_step": "..."}`` — ``next_step`` tells
+    you what to run so the new resource becomes usable in this conversation.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.post(
+            f"{_BASE}/api/stack/subscribe",
+            json={"resource_type": resource_type, "resource_id": resource_id},
+            headers=_headers(),
+            timeout=30,
+        )
+        r.raise_for_status()
+        body = r.json()
+    # Post-subscribe hint — both supported types land as local tables pulled
+    # by ``agnes pull`` (data packages → parquet, memory domains → synced
+    # knowledge). Tell the model what to run so the resource is usable now.
+    if isinstance(body, dict):
+        body["next_step"] = "Run `agnes pull` to download the new tables."
+    return body
+
+
+@mcp.tool()
+async def stack_unsubscribe(resource_type: str, resource_id: str) -> dict:
+    """Unsubscribe from a data package or memory domain in your stack.
+
+    Removes a previously-subscribed resource. Required resources cannot be
+    removed (the server returns an error) — only ``available`` ones you opted
+    into. The local copy persists until the next ``agnes pull`` prunes it.
+
+    Args:
+        resource_type: ``data_package`` or ``memory_domain``.
+        resource_id:   The resource id to unsubscribe from.
+
+    Returns ``{"unsubscribed": true}`` on success.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.delete(
+            f"{_BASE}/api/stack/subscription/{resource_type}/{resource_id}",
+            headers=_headers(),
+            timeout=30,
+        )
+        r.raise_for_status()
+    return {"unsubscribed": True}
 
 
 @mcp.tool()

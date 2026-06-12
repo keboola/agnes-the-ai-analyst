@@ -91,6 +91,67 @@ def test_pull_help():
     assert "--dry-run" in _clean(result.output)
 
 
+class _FailingPullResult:
+    """Duck-typed PullResult with one per-table failure recorded — mirrors a
+    real `run_pull` outcome where a table failed hash verification on every
+    attempt (#596). Drives the exit-code assertions below."""
+    tables_updated = 0
+    tables_removed = 0
+    parquets_total = 1
+    rules_count = 0
+    duration_s = 0.1
+    errors = [{"table": "kbc_project", "error": "hash mismatch: expected aaa, got bbb"}]
+    stack_sync = None
+
+
+def _run_failing_pull_in(workspace, monkeypatch, args):
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(workspace))
+    monkeypatch.setenv("AGNES_SERVER", "http://server.test:8000")
+    monkeypatch.setenv("AGNES_TOKEN", "tok")
+    with patch("cli.commands.pull.run_pull", return_value=_FailingPullResult()):
+        return runner.invoke(pull_app, args)
+
+
+def test_pull_exits_nonzero_on_table_failure_normal_path(tmp_path, monkeypatch):
+    """#596: a forced per-table failure must exit 1 (was 0) on the normal
+    human-readable path, with the warning still rendered to stderr."""
+    from cli.lib.hooks import install_claude_hooks
+    install_claude_hooks(tmp_path)  # modern workspace, no legacy nudge
+    result = _run_failing_pull_in(tmp_path, monkeypatch, [])
+    assert result.exit_code == 1, "partial pull must exit non-zero"
+    assert "hash mismatch" in _clean(result.stderr or "")
+
+
+def test_pull_exits_nonzero_on_table_failure_quiet_path(tmp_path, monkeypatch):
+    """#596: the silent SessionStart-hook path (`--quiet`) must also exit 1 on
+    a table failure — the canonical hook's `|| true` is what swallows it, not
+    a hidden exit 0."""
+    result = _run_failing_pull_in(tmp_path, monkeypatch, ["--quiet"])
+    assert result.exit_code == 1
+    assert "warn" in _clean(result.stderr or "")
+
+
+def test_pull_exits_nonzero_on_table_failure_json_path(tmp_path, monkeypatch):
+    """#596: the `--json` path must emit the summary dict (so consumers can
+    read `errors`) AND exit 1."""
+    result = _run_failing_pull_in(tmp_path, monkeypatch, ["--json"])
+    assert result.exit_code == 1, "json path must exit non-zero on errors"
+    # The JSON object is still emitted before the non-zero exit.
+    payload = json.loads(_clean(result.stdout).strip())
+    assert payload["errors"], "json output must carry the error list"
+    assert payload["errors"][0]["table"] == "kbc_project"
+
+
+def test_pull_exits_zero_when_no_errors(tmp_path, monkeypatch):
+    """Counterpart: a clean pull (no errors) still exits 0 on every path —
+    the non-zero exit must be gated strictly on `result.errors`."""
+    from cli.lib.hooks import install_claude_hooks
+    install_claude_hooks(tmp_path)
+    assert _run_pull_in(tmp_path, monkeypatch, []).exit_code == 0
+    assert _run_pull_in(tmp_path, monkeypatch, ["--quiet"]).exit_code == 0
+    assert _run_pull_in(tmp_path, monkeypatch, ["--json"]).exit_code == 0
+
+
 def test_pull_no_server_friendly_exit(tmp_path, monkeypatch):
     """No configured server -> exit 1 with friendly hint (no traceback)."""
     monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))

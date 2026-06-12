@@ -104,7 +104,7 @@ class TestAuthMiddleware:
 # ── tool registration ────────────────────────────────────────────────────────────
 
 class TestToolRegistration:
-    def test_exactly_seven_server_side_tools(self):
+    def test_exact_server_side_tool_set(self):
         mod = _import_mod()
         tools = {t.name for t in mod.mcp._tool_manager.list_tools()}
         assert tools == {
@@ -118,6 +118,12 @@ class TestToolRegistration:
             # the curated REST guide without leaving the chat. See
             # tests/test_documentation_api_triple_surface.py for the policy.
             "documentation_api",
+            # Stack discovery + subscription (issue #621) — an analyst's
+            # Claude can browse available resources and subscribe without
+            # leaving the chat.
+            "stack_browse",
+            "stack_subscribe",
+            "stack_unsubscribe",
         }
 
     def test_no_client_only_tools(self):
@@ -246,6 +252,58 @@ class TestQueryTool:
             _run(mod.query("SELECT 1"))
 
         assert mock_post.call_args[1]["json"]["limit"] == 1000
+
+
+# ── stack tools (issue #621) ──────────────────────────────────────────────────────
+
+class TestStackTools:
+    def test_browse_passes_type_param(self):
+        mod = _import_mod()
+        data = {"items": [{"id": "pkg_a", "name": "A", "in_stack": False}]}
+
+        with patch("app.api.mcp_http._current_token") as tv, \
+             patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_get = AsyncMock(return_value=_mock_resp(data))
+            MC.return_value.__aenter__.return_value.get = mock_get
+            result = _run(mod.stack_browse("data_package"))
+
+        assert result["items"][0]["id"] == "pkg_a"
+        called_url = mock_get.call_args[0][0]
+        assert "/api/stack/browse" in called_url
+        assert mock_get.call_args[1]["params"] == {"type": "data_package"}
+
+    def test_subscribe_posts_payload_and_adds_hint(self):
+        mod = _import_mod()
+
+        with patch("app.api.mcp_http._current_token") as tv, \
+             patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_post = AsyncMock(return_value=_mock_resp({"subscribed": True}))
+            MC.return_value.__aenter__.return_value.post = mock_post
+            result = _run(mod.stack_subscribe("data_package", "pkg_a"))
+
+        assert result["subscribed"] is True
+        # Post-subscribe hint tells the model what to run next.
+        assert "agnes pull" in result["next_step"]
+        called_url = mock_post.call_args[0][0]
+        assert "/api/stack/subscribe" in called_url
+        posted = mock_post.call_args[1]["json"]
+        assert posted == {"resource_type": "data_package", "resource_id": "pkg_a"}
+
+    def test_unsubscribe_calls_subscription_endpoint(self):
+        mod = _import_mod()
+
+        with patch("app.api.mcp_http._current_token") as tv, \
+             patch("httpx.AsyncClient") as MC:
+            tv.get.return_value = "tok"
+            mock_delete = AsyncMock(return_value=_mock_resp({}, status=204))
+            MC.return_value.__aenter__.return_value.delete = mock_delete
+            result = _run(mod.stack_unsubscribe("data_package", "pkg_a"))
+
+        assert result["unsubscribed"] is True
+        called_url = mock_delete.call_args[0][0]
+        assert "/api/stack/subscription/data_package/pkg_a" in called_url
 
 
 # ── server_info tool ────────────────────────────────────────────────────────────

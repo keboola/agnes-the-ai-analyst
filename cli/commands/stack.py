@@ -1,8 +1,9 @@
 """`agnes stack` — user-facing stack management (v49 unified stack).
 
-Three subcommands mirror the user-side `/api/stack/*` endpoints:
+Four subcommands mirror the user-side `/api/stack/*` endpoints:
 
   - `agnes stack list [--type plugin|data_package|memory_domain]`
+  - `agnes stack browse [--type data_package|memory_domain]`
   - `agnes stack add <type> <id>`
   - `agnes stack remove <type> <id>`
 
@@ -118,6 +119,67 @@ def stack_list(
             f"{it.get('name','')[:name_w]:<{name_w}}  "
             f"{it.get('type',''):<{type_w}}  "
             f"{it.get('requirement',''):<{req_w}}  "
+            f"{desc}"
+        )
+
+
+@stack_app.command("browse")
+def stack_browse(
+    type_filter: Optional[str] = typer.Option(
+        None, "--type", help="data_package | memory_domain (omit for both)"
+    ),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Browse every resource you could add to your stack.
+
+    Unlike ``stack list`` (your effective stack only), this shows the full
+    RBAC-granted candidate set with an ``IN STACK`` column (✓ = already
+    subscribed/required, blank = available to add). Subscribe with
+    ``agnes stack add <type> <id>`` then run ``agnes pull`` to download.
+    Without ``--type`` both data_packages and memory_domains are fetched.
+    """
+    if type_filter:
+        types = [_validate_type(type_filter)]
+    else:
+        types = list(_SUPPORTED_TYPES)
+    aggregated: list[dict] = []
+    for t in types:
+        resp = api_get("/api/stack/browse", params={"type": t})
+        if resp.status_code != 200:
+            _fail(resp)
+        body = resp.json() or {}
+        for it in body.get("items", []):
+            it["type"] = t
+            aggregated.append(it)
+
+    if as_json:
+        typer.echo(json.dumps(aggregated, indent=2))
+        return
+
+    if not aggregated:
+        typer.echo("No resources available to browse.")
+        return
+
+    name_w = max(len("NAME"), max((len(i.get("name", "")) for i in aggregated), default=4))
+    type_w = max(len("TYPE"), max((len(i.get("type", "")) for i in aggregated), default=4))
+    req_w = max(len("REQUIREMENT"), 11)
+    in_w = len("IN STACK")
+    header = (
+        f"{'NAME':<{name_w}}  {'TYPE':<{type_w}}  "
+        f"{'REQUIREMENT':<{req_w}}  {'IN STACK':<{in_w}}  DESCRIPTION"
+    )
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for it in aggregated:
+        desc = (it.get("description") or "").replace("\n", " ").strip()
+        if len(desc) > 60:
+            desc = desc[:57] + "..."
+        mark = "✓" if it.get("in_stack") else ""
+        typer.echo(
+            f"{it.get('name','')[:name_w]:<{name_w}}  "
+            f"{it.get('type',''):<{type_w}}  "
+            f"{it.get('requirement',''):<{req_w}}  "
+            f"{mark:<{in_w}}  "
             f"{desc}"
         )
 
