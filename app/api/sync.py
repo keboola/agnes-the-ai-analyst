@@ -17,7 +17,6 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
-from app.auth.scheduler_token import SCHEDULER_USER_EMAIL
 from app.utils import get_data_dir as _get_data_dir
 from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
@@ -27,11 +26,13 @@ from src.repositories import (
     audit_repo,
     data_packages_repo,
     memory_domains_repo,
+    profile_repo,
     sync_settings_repo,
     sync_state_repo,
     table_registry_repo,
     usage_repo,
 )
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
@@ -89,9 +90,13 @@ def _materialize_table(
     so the trigger pass can be unit-tested by patching this seam without
     touching the real BqAccess factory or the duckdb import."""
     from connectors.bigquery.extractor import materialize_query
+
     return materialize_query(
-        table_id=table_id, sql=sql, bq=bq,
-        output_dir=output_dir, max_bytes=max_bytes,
+        table_id=table_id,
+        sql=sql,
+        bq=bq,
+        output_dir=output_dir,
+        max_bytes=max_bytes,
     )
 
 
@@ -144,7 +149,9 @@ def _run_materialized_pass(
     # write `1e10` for readability; coerce to int and tolerate non-numeric
     # entries by falling through to the disable path with a warning.
     raw_max = get_value(
-        "data_source", "bigquery", "max_bytes_per_materialize",
+        "data_source",
+        "bigquery",
+        "max_bytes_per_materialize",
         default=10 * 2**30,
     )
     try:
@@ -168,9 +175,7 @@ def _run_materialized_pass(
     # who passes either form (the registry id slug, or the human-friendly
     # name) gets the same result. `None` means "no filter — process all
     # due materialized rows".
-    target_set: Optional[set] = (
-        set(tables) if tables is not None else None
-    )
+    target_set: Optional[set] = set(tables) if tables is not None else None
 
     for row in registry.list_all():
         if row.get("query_mode") != "materialized":
@@ -191,17 +196,11 @@ def _run_materialized_pass(
         # agree on how a NULL-source_type row is classified.
         row_source_type = row.get("source_type") or "bigquery"  # legacy default
         if source_type is not None and row_source_type != source_type:
-            summary["skipped"].append(
-                {"table": ref_name, "reason": "source_filter"}
-            )
+            summary["skipped"].append({"table": ref_name, "reason": "source_filter"})
             continue
 
-        if target_set is not None and not (
-            ref_name in target_set or row.get("id") in target_set
-        ):
-            summary["skipped"].append(
-                {"table": ref_name, "reason": "not_in_target"}
-            )
+        if target_set is not None and not (ref_name in target_set or row.get("id") in target_set):
+            summary["skipped"].append({"table": ref_name, "reason": "not_in_target"})
             continue
 
         last = state.get_last_sync(ref_name)
@@ -212,11 +211,7 @@ def _run_materialized_pass(
         # cadence without having to PUT every registry row — useful when
         # data freshness budget is "once per day" and the hourly default
         # over-fetches.
-        schedule = (
-            row.get("sync_schedule")
-            or os.environ.get("AGNES_DEFAULT_SYNC_SCHEDULE", "").strip()
-            or "every 1h"
-        )
+        schedule = row.get("sync_schedule") or os.environ.get("AGNES_DEFAULT_SYNC_SCHEDULE", "").strip() or "every 1h"
         if not is_table_due(schedule, last_iso):
             summary["skipped"].append({"table": ref_name, "reason": "due_check"})
             continue
@@ -244,43 +239,54 @@ def _run_materialized_pass(
                     # diff churn against the surrounding error-handling
                     # block; the type is now `KeboolaStorageClient`.
                     from connectors.keboola.storage_api import KeboolaStorageClient
-                    keboola_url = get_value(
-                        "data_source", "keboola", "stack_url", default=""
-                    ) or os.environ.get("KEBOOLA_STACK_URL", "")
-                    token_env = get_value(
-                        "data_source", "keboola", "token_env",
-                        default="KEBOOLA_STORAGE_TOKEN",
-                    ) or "KEBOOLA_STORAGE_TOKEN"
+
+                    keboola_url = get_value("data_source", "keboola", "stack_url", default="") or os.environ.get(
+                        "KEBOOLA_STACK_URL", ""
+                    )
+                    token_env = (
+                        get_value(
+                            "data_source",
+                            "keboola",
+                            "token_env",
+                            default="KEBOOLA_STORAGE_TOKEN",
+                        )
+                        or "KEBOOLA_STORAGE_TOKEN"
+                    )
                     keboola_token = os.environ.get(token_env, "")
                     if not (keboola_url and keboola_token):
-                        summary["errors"].append({
-                            "table": ref_name,
-                            "error": (
-                                "Keboola URL/token not configured for "
-                                "materialized path (data_source.keboola.stack_url "
-                                f"+ env {token_env})"
-                            ),
-                        })
+                        summary["errors"].append(
+                            {
+                                "table": ref_name,
+                                "error": (
+                                    "Keboola URL/token not configured for "
+                                    "materialized path (data_source.keboola.stack_url "
+                                    f"+ env {token_env})"
+                                ),
+                            }
+                        )
                         continue
                     keboola_access = KeboolaStorageClient(
-                        url=keboola_url, token=keboola_token,
+                        url=keboola_url,
+                        token=keboola_token,
                     )
                 kb_output_dir.mkdir(parents=True, exist_ok=True)
                 from connectors.keboola.extractor import (
                     materialize_query as kb_materialize_query,
                 )
+
                 # Storage API needs the bucket+table split — registry rows
                 # carry both fields per the standard register-table schema.
                 bucket = row.get("bucket", "")
                 source_table = row.get("source_table") or ref_name
                 if not bucket:
-                    summary["errors"].append({
-                        "table": ref_name,
-                        "error": (
-                            "materialized keboola row is missing 'bucket'; "
-                            "re-register with --bucket <in.c-...>"
-                        ),
-                    })
+                    summary["errors"].append(
+                        {
+                            "table": ref_name,
+                            "error": (
+                                "materialized keboola row is missing 'bucket'; re-register with --bucket <in.c-...>"
+                            ),
+                        }
+                    )
                     continue
                 kb_stats = kb_materialize_query(
                     table_id=ref_name,
@@ -301,13 +307,12 @@ def _run_materialized_pass(
                     "query_mode": "materialized",
                 }
             else:
-                summary["errors"].append({
-                    "table": ref_name,
-                    "error": (
-                        f"materialized path not supported for "
-                        f"source_type={row_source_type!r}"
-                    ),
-                })
+                summary["errors"].append(
+                    {
+                        "table": ref_name,
+                        "error": (f"materialized path not supported for source_type={row_source_type!r}"),
+                    }
+                )
                 continue
         except MaterializeInFlightError:
             # In-flight on a sibling worker / scheduler tick — treat as
@@ -319,14 +324,18 @@ def _run_materialized_pass(
         except MaterializeBudgetError as e:
             logger.warning(
                 "Materialize cap exceeded for %s: %s bytes > %s bytes",
-                e.table_id, f"{e.current:,}", f"{e.limit:,}",
+                e.table_id,
+                f"{e.current:,}",
+                f"{e.limit:,}",
             )
-            summary["errors"].append({
-                "table": ref_name,
-                "error": str(e),
-                "current": e.current,
-                "limit": e.limit,
-            })
+            summary["errors"].append(
+                {
+                    "table": ref_name,
+                    "error": str(e),
+                    "current": e.current,
+                    "limit": e.limit,
+                }
+            )
             # Persist the failure so `GET /api/admin/registry` can surface
             # `last_sync_error` to the admin UI / `agnes admin status`.
             # Without this, scheduler stderr was the only place the cap
@@ -345,9 +354,7 @@ def _run_materialized_pass(
         # reason the stats dict didn't carry it (defensive).
         parquet_hash = stats.get("hash")
         if not parquet_hash:
-            output_dir_for_hash = (
-                bq_output_dir if row_source_type == "bigquery" else str(kb_output_dir.parent)
-            )
+            output_dir_for_hash = bq_output_dir if row_source_type == "bigquery" else str(kb_output_dir.parent)
             parquet_path = Path(output_dir_for_hash) / "data" / f"{ref_name}.parquet"
             parquet_hash = _file_hash(parquet_path)
         # `update_sync` resets `status='ok'` / `error=NULL` on the upsert
@@ -402,12 +409,13 @@ def _run_sync(
     if not _sync_lock.acquire(blocking=False):
         print(
             "[SYNC] another sync is already in flight — skipping",
-            file=_sys.stderr, flush=True,
+            file=_sys.stderr,
+            flush=True,
         )
         return
 
     try:
-        from app.instance_config import get_data_source_type, get_value
+        from app.instance_config import get_data_source_type
         from src.db import get_system_db
 
         source_type = get_data_source_type()
@@ -428,11 +436,13 @@ def _run_sync(
         # a sweep failure must never block the sync itself.
         try:
             from connectors.keboola.storage_api import sweep_orphaned_scratch
+
             sweep_orphaned_scratch()
         except Exception as _sweep_exc:  # pragma: no cover - defensive
             print(
                 f"[SYNC] orphaned-scratch sweep skipped: {_sweep_exc}",
-                file=_sys.stderr, flush=True,
+                file=_sys.stderr,
+                flush=True,
             )
 
         # Read table configs in main process (has shared DuckDB connection)
@@ -483,6 +493,7 @@ def _run_sync(
                 logger.info("No tables registered — running auto-discovery from Keboola")
                 try:
                     from app.api.admin import _discover_and_register_tables
+
                     auto_conn = get_system_db()
                     try:
                         result = _discover_and_register_tables(auto_conn, "auto-discovery")
@@ -520,7 +531,8 @@ def _run_sync(
                 "No local-mode tables to sync for source_type=%s "
                 "(filter=%s) — skipping extractor subprocess; materialized "
                 "pass + orchestrator rebuild still run.",
-                effective_source_type, source_type_filter,
+                effective_source_type,
+                source_type_filter,
             )
 
         env = {**os.environ}
@@ -549,12 +561,16 @@ def _run_sync(
             # Serialize configs — strip non-serializable fields
             serializable = []
             for tc in table_configs:
-                serializable.append({k: (v.isoformat() if hasattr(v, 'isoformat') else v)
-                                     for k, v in tc.items() if v is not None})
+                serializable.append(
+                    {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in tc.items() if v is not None}
+                )
 
             # Run extractor subprocess with table configs via stdin
             # Subprocess does NOT open system.duckdb — no lock conflict
-            cmd = [_sys.executable, "-c", """
+            cmd = [
+                _sys.executable,
+                "-c",
+                """
 import json, sys, os, logging, signal
 from pathlib import Path
 
@@ -593,7 +609,8 @@ print(json.dumps(result))
 # Issue #81 Group B: surface partial-failure as exit 2 so the API
 # caller can distinguish "every table failed" from "9/10 succeeded".
 sys.exit(compute_exit_code(result, len(configs)))
-"""]
+""",
+            ]
 
             print(f"[SYNC] Starting extractor subprocess for {len(table_configs)} tables", file=_sys.stderr, flush=True)
 
@@ -608,8 +625,11 @@ sys.exit(compute_exit_code(result, len(configs)))
             extractor_timeout = int(os.environ.get("AGNES_EXTRACTOR_TIMEOUT_SEC", "3600"))
             proc = subprocess.Popen(
                 cmd,
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
                 cwd=str(Path(__file__).parent.parent.parent),
                 start_new_session=True,
             )
@@ -622,6 +642,7 @@ sys.exit(compute_exit_code(result, len(configs)))
                 # close DuckDB conns), then SIGKILL the stragglers after a
                 # short grace window.
                 import signal
+
                 try:
                     os.killpg(proc.pid, signal.SIGTERM)
                 except ProcessLookupError:
@@ -644,7 +665,8 @@ sys.exit(compute_exit_code(result, len(configs)))
                 print(
                     f"[SYNC] Extractor timed out after {extractor_timeout}s — process "
                     "group killed; continuing to materialized pass + orchestrator rebuild",
-                    file=_sys.stderr, flush=True,
+                    file=_sys.stderr,
+                    flush=True,
                 )
                 result = None
 
@@ -659,13 +681,14 @@ sys.exit(compute_exit_code(result, len(configs)))
                 # machinery already captured which tables succeeded; we just
                 # need to log loudly so operator alerting can pick it up.
                 if result.returncode == 0:
-                    print(f"[SYNC] Extractor OK", file=_sys.stderr, flush=True)
+                    print("[SYNC] Extractor OK", file=_sys.stderr, flush=True)
                 elif result.returncode == 2:
                     print(
-                        f"[SYNC] Extractor PARTIAL FAILURE (exit 2) — some tables "
-                        f"succeeded, some failed; see stderr for per-table errors. "
-                        f"Successful tables will still be published by the orchestrator.",
-                        file=_sys.stderr, flush=True,
+                        "[SYNC] Extractor PARTIAL FAILURE (exit 2) — some tables "
+                        "succeeded, some failed; see stderr for per-table errors. "
+                        "Successful tables will still be published by the orchestrator.",
+                        file=_sys.stderr,
+                        flush=True,
                     )
                 else:
                     print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
@@ -673,7 +696,9 @@ sys.exit(compute_exit_code(result, len(configs)))
             # Run custom connectors (Tier A: local mount) — only when there
             # were local-mode tables to drive the extractor. Custom connectors
             # currently piggyback on the same env as the Keboola extractor.
-            connectors_dir = Path(os.environ.get("CONNECTORS_DIR", str(Path(__file__).parent.parent.parent / "connectors" / "custom")))
+            connectors_dir = Path(
+                os.environ.get("CONNECTORS_DIR", str(Path(__file__).parent.parent.parent / "connectors" / "custom"))
+            )
             if connectors_dir.exists():
                 for connector_dir in sorted(connectors_dir.iterdir()):
                     if not connector_dir.is_dir():
@@ -685,11 +710,16 @@ sys.exit(compute_exit_code(result, len(configs)))
                     try:
                         custom_result = subprocess.run(
                             [_sys.executable, str(extractor)],
-                            env=env, capture_output=True, text=True, timeout=600,
+                            env=env,
+                            capture_output=True,
+                            text=True,
+                            timeout=600,
                             cwd=str(Path(__file__).parent.parent.parent),
                         )
                         if custom_result.returncode != 0:
-                            logger.error("Custom connector %s failed: %s", connector_dir.name, custom_result.stderr[-500:])
+                            logger.error(
+                                "Custom connector %s failed: %s", connector_dir.name, custom_result.stderr[-500:]
+                            )
                         else:
                             logger.info("Custom connector %s completed", connector_dir.name)
                     except subprocess.TimeoutExpired:
@@ -709,42 +739,51 @@ sys.exit(compute_exit_code(result, len(configs)))
         try:
             from connectors.bigquery.access import get_bq_access
             from src.db import get_system_db as _get_system_db
+
             bq_access = get_bq_access()  # sentinel if no BQ project; OK
             mat_conn = _get_system_db()
             try:
                 mat_summary = _run_materialized_pass(
-                    mat_conn, bq_access, tables=tables,
+                    mat_conn,
+                    bq_access,
+                    tables=tables,
                     source_type=source_type_filter,
                 )
             finally:
                 mat_conn.close()
             skipped_count = len(mat_summary["skipped"])
-            in_flight_count = sum(
-                1 for s in mat_summary["skipped"] if s.get("reason") == "in_flight"
-            )
+            in_flight_count = sum(1 for s in mat_summary["skipped"] if s.get("reason") == "in_flight")
             print(
                 f"[SYNC] Materialized SQL: {len(mat_summary['materialized'])} ok, "
                 f"{skipped_count} skipped (in_flight={in_flight_count}), "
                 f"{len(mat_summary['errors'])} errors",
-                file=_sys.stderr, flush=True,
+                file=_sys.stderr,
+                flush=True,
             )
             for err in mat_summary["errors"]:
                 print(
                     f"[SYNC]   {err['table']}: {err['error']}",
-                    file=_sys.stderr, flush=True,
+                    file=_sys.stderr,
+                    flush=True,
                 )
         except Exception as e:
             print(
                 f"[SYNC] Materialized SQL pass FAILED: {e}",
-                file=_sys.stderr, flush=True,
+                file=_sys.stderr,
+                flush=True,
             )
             traceback.print_exc()
 
         # Rebuild master views (reads extract.duckdb files, no write conflict)
         from src.orchestrator import SyncOrchestrator
+
         orch = SyncOrchestrator()
         views = orch.rebuild()
-        print(f"[SYNC] Orchestrator rebuild: {{{', '.join(f'{k}: {len(v)}' for k, v in views.items())}}}", file=_sys.stderr, flush=True)
+        print(
+            f"[SYNC] Orchestrator rebuild: {{{', '.join(f'{k}: {len(v)}' for k, v in views.items())}}}",
+            file=_sys.stderr,
+            flush=True,
+        )
 
         # Auto-profile synced tables (best-effort, don't fail sync on profile error).
         #
@@ -758,50 +797,45 @@ sys.exit(compute_exit_code(result, len(configs)))
         # each individual ``profile_table`` cleaned up its DuckDB session
         # correctly. See PR notes for the empirical traces.
         #
-        # The parent still owns the ``ProfileRepository.save(...)`` write so
-        # the system.duckdb lock semantics stay single-writer: the worker
+        # The parent still owns the repository ``save(...)`` write so the
+        # system.duckdb lock semantics stay single-writer: the worker
         # returns the profile dict, the parent persists it.
         try:
-            from src.repositories.profiles import ProfileRepository
             from src._subprocess_runner import run_subprocess_job, SubprocessJobError
 
             data_dir = Path(os.environ.get("DATA_DIR", "./data"))
             extracts_dir = data_dir / "extracts"
 
-            sys_conn = get_system_db()
-            try:
-                profiles = profile_repo()
-                profiled = 0
-                for source_name, table_names in views.items():
-                    for table_name in table_names[:10]:  # Limit per sync
-                        pq_path = extracts_dir / source_name / "data" / f"{table_name}.parquet"
-                        if not pq_path.exists():
-                            continue
-                        try:
-                            profile = run_subprocess_job(
-                                "src._profiler_worker",
-                                {
-                                    "table_name": table_name,
-                                    "table_id": table_name,
-                                    "parquet_path": str(pq_path),
-                                },
-                                timeout_sec=600,
-                            )
-                            profile_repo.save(table_name, profile)
-                            profiled += 1
-                        except SubprocessJobError as pe:
-                            # Worker-side failure — log subprocess stderr tail
-                            # to surface the actual traceback to operators.
-                            print(
-                                f"[SYNC] Profile {table_name}: {pe}\n"
-                                f"  stderr tail: {pe.stderr[-500:]}",
-                                file=_sys.stderr, flush=True,
-                            )
-                        except Exception as pe:
-                            print(f"[SYNC] Profile {table_name}: {pe}", file=_sys.stderr, flush=True)
-                print(f"[SYNC] Profiled {profiled} tables", file=_sys.stderr, flush=True)
-            finally:
-                sys_conn.close()
+            profiles = profile_repo()
+            profiled = 0
+            for source_name, table_names in views.items():
+                for table_name in table_names[:10]:  # Limit per sync
+                    pq_path = extracts_dir / source_name / "data" / f"{table_name}.parquet"
+                    if not pq_path.exists():
+                        continue
+                    try:
+                        profile = run_subprocess_job(
+                            "src._profiler_worker",
+                            {
+                                "table_name": table_name,
+                                "table_id": table_name,
+                                "parquet_path": str(pq_path),
+                            },
+                            timeout_sec=600,
+                        )
+                        profiles.save(table_name, profile)
+                        profiled += 1
+                    except SubprocessJobError as pe:
+                        # Worker-side failure — log subprocess stderr tail
+                        # to surface the actual traceback to operators.
+                        print(
+                            f"[SYNC] Profile {table_name}: {pe}\n  stderr tail: {pe.stderr[-500:]}",
+                            file=_sys.stderr,
+                            flush=True,
+                        )
+                    except Exception as pe:
+                        print(f"[SYNC] Profile {table_name}: {pe}", file=_sys.stderr, flush=True)
+            print(f"[SYNC] Profiled {profiled} tables", file=_sys.stderr, flush=True)
         except Exception as e:
             print(f"[SYNC] Profiler skipped: {e}", file=_sys.stderr, flush=True)
 
@@ -819,6 +853,7 @@ sys.exit(compute_exit_code(result, len(configs)))
 
 
 # ---- Manifest ----
+
 
 def _table_manifest_entry(state: dict, reg: dict) -> dict:
     """Shape one ``sync_state`` row + registry metadata into the per-table
@@ -842,15 +877,11 @@ def _table_manifest_entry(state: dict, reg: dict) -> dict:
         # but `agnes pull` skips its parquet download when true.
         "server_only": bool(reg.get("server_only")),
         "source_type": reg.get("source_type") or "",
-        "updated": (
-            state.get("last_sync").isoformat() if state.get("last_sync") else None
-        ),
+        "updated": (state.get("last_sync").isoformat() if state.get("last_sync") else None),
     }
 
 
-def _build_data_packages_section(
-    conn, user, registry_by_name: dict, states_by_table_id: dict
-) -> tuple[list, set]:
+def _build_data_packages_section(conn, user, registry_by_name: dict, states_by_table_id: dict) -> tuple[list, set]:
     """Build the ``data_packages`` array per Section 5.1 of the design.
 
     Returns the list plus a set of ``table_registry.id`` values that were
@@ -881,25 +912,23 @@ def _build_data_packages_section(
             # registry_by_name keys on name; sync_state.table_id mirrors
             # registry.name today. Cover the id↔name asymmetry.
             reg = registry_by_name.get(t["name"]) or {}
-            state = (
-                states_by_table_id.get(t["name"])
-                or states_by_table_id.get(t["id"])
-                or {}
-            )
+            state = states_by_table_id.get(t["name"]) or states_by_table_id.get(t["id"]) or {}
             entry_obj = _table_manifest_entry(state, reg or {"id": t["id"]})
             tables_payload.append(entry_obj)
             total_size_bytes += int(entry_obj.get("size_bytes") or 0)
-        out.append({
-            "id": pkg["id"],
-            "slug": pkg["slug"],
-            "name": pkg["name"],
-            "icon": pkg.get("icon"),
-            "color": pkg.get("color"),
-            "description": pkg.get("description"),
-            "requirement": entry.requirement,
-            "tables": tables_payload,
-            "total_size_bytes": total_size_bytes,
-        })
+        out.append(
+            {
+                "id": pkg["id"],
+                "slug": pkg["slug"],
+                "name": pkg["name"],
+                "icon": pkg.get("icon"),
+                "color": pkg.get("color"),
+                "description": pkg.get("description"),
+                "requirement": entry.requirement,
+                "tables": tables_payload,
+                "total_size_bytes": total_size_bytes,
+            }
+        )
     return out, packaged_table_ids
 
 
@@ -949,37 +978,36 @@ def _build_memory_domains_section(conn, user) -> list:
         # this commit closes the matching 🚩 ANALYSIS that the SET of
         # items hashed must also match what the renderer emits).
         h = hashlib.md5()
-        renderable = [
-            it for it in items
-            if it.get("is_required") or it.get("status") == "approved"
-        ]
+        renderable = [it for it in items if it.get("is_required") or it.get("status") == "approved"]
         for it in sorted(renderable, key=lambda r: r["id"]):
             h.update(
-                f"{it['id']}|{it.get('title','')}|{it.get('status','')}|"
-                f"{it.get('is_required', False)}|{it.get('content','')}|".encode()
+                f"{it['id']}|{it.get('title', '')}|{it.get('status', '')}|"
+                f"{it.get('is_required', False)}|{it.get('content', '')}|".encode()
             )
-        required_count = sum(
-            1 for it in items
-            if (it.get("status") == "approved" and it.get("is_required"))
+        required_count = sum(1 for it in items if (it.get("status") == "approved" and it.get("is_required")))
+        out.append(
+            {
+                "id": dom["id"],
+                "slug": dom["slug"],
+                "name": dom["name"],
+                "icon": dom.get("icon"),
+                "color": dom.get("color"),
+                "description": dom.get("description"),
+                "requirement": entry.requirement,
+                "bundle_url": f"/api/memory/bundle?domain={dom['slug']}",
+                "md5": h.hexdigest(),
+                "items_count": len(items),
+                "required_count": required_count,
+            }
         )
-        out.append({
-            "id": dom["id"],
-            "slug": dom["slug"],
-            "name": dom["name"],
-            "icon": dom.get("icon"),
-            "color": dom.get("color"),
-            "description": dom.get("description"),
-            "requirement": entry.requirement,
-            "bundle_url": f"/api/memory/bundle?domain={dom['slug']}",
-            "md5": h.hexdigest(),
-            "items_count": len(items),
-            "required_count": required_count,
-        })
     return out
 
 
 def _build_direct_tables_section(
-    conn, user: dict, registry_by_name: dict, states_by_table_id: dict,
+    conn,
+    user: dict,
+    registry_by_name: dict,
+    states_by_table_id: dict,
     packaged_table_ids: set,
 ) -> list:
     """Always returns ``[]`` — per-table grants no longer manifest for
@@ -1036,6 +1064,7 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     def _id_for(state):
         reg = registry_by_name.get(state["table_id"])
         return reg["id"] if reg else state["table_id"]
+
     all_states = [s for s in all_states if can_access_table(user, _id_for(s), conn)]
 
     data_dir = _get_data_dir()
@@ -1079,7 +1108,10 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     states_by_table_id = {s["table_id"]: s for s in all_states}
     try:
         data_packages, packaged_ids = _build_data_packages_section(
-            conn, user, registry_by_name, states_by_table_id,
+            conn,
+            user,
+            registry_by_name,
+            states_by_table_id,
         )
     except Exception:
         logger.exception("manifest data_packages section build failed")
@@ -1091,7 +1123,11 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
         memory_domains = []
     try:
         direct_tables = _build_direct_tables_section(
-            conn, user, registry_by_name, states_by_table_id, packaged_ids,
+            conn,
+            user,
+            registry_by_name,
+            states_by_table_id,
+            packaged_ids,
         )
     except Exception:
         logger.exception("manifest direct_tables section build failed")
@@ -1122,6 +1158,7 @@ async def sync_manifest(
     homepage card.
     """
     from app.auth.session_principal import SessionPrincipal
+
     if not isinstance(user, SessionPrincipal):
         try:
             conn.execute(
@@ -1223,6 +1260,7 @@ async def pull_confirm(
 
 # ---- Status ----
 
+
 @router.get("/status")
 async def sync_status():
     """Whether a sync is currently in flight on this app process.
@@ -1251,6 +1289,7 @@ async def sync_status():
 
 # ---- Trigger ----
 
+
 @router.post("/trigger")
 async def trigger_sync(
     background_tasks: BackgroundTasks,
@@ -1258,8 +1297,7 @@ async def trigger_sync(
     source: Optional[str] = Query(
         None,
         description=(
-            "Restrict the rebuild to one registered source_type "
-            "(e.g. `keboola`, `bigquery`). Omit for a full sweep."
+            "Restrict the rebuild to one registered source_type (e.g. `keboola`, `bigquery`). Omit for a full sweep."
         ),
     ),
     user: dict = Depends(require_admin),
@@ -1307,10 +1345,7 @@ async def trigger_sync(
     else:
         raise HTTPException(
             status_code=422,
-            detail=(
-                "body must be a list of table ids, an object with a "
-                "`tables` list, or null"
-            ),
+            detail=("body must be a list of table ids, an object with a `tables` list, or null"),
         )
     if tables is not None and not all(isinstance(t, str) for t in tables):
         raise HTTPException(
@@ -1327,26 +1362,24 @@ async def trigger_sync(
             source = None
     if source is not None:
         from app.api.admin import _VALID_SOURCE_TYPES
+
         if source not in _VALID_SOURCE_TYPES:
             raise HTTPException(
                 status_code=422,
-                detail=(
-                    f"source must be one of {sorted(_VALID_SOURCE_TYPES)}, "
-                    f"got {source!r}"
-                ),
+                detail=(f"source must be one of {sorted(_VALID_SOURCE_TYPES)}, got {source!r}"),
             )
 
     if _sync_lock.locked():
         try:
             from src.db import get_system_db
+
             _audit_conn = get_system_db()
             audit_repo().log(
                 user_id=user.get("id"),
                 action="sync.trigger",
-                resource=(
-                    (tables[0] if len(tables) == 1 else f"{len(tables)} tables")
-                    if tables else "all_tables"
-                )[:256],
+                resource=((tables[0] if len(tables) == 1 else f"{len(tables)} tables") if tables else "all_tables")[
+                    :256
+                ],
                 params={"requested_at": datetime.now(timezone.utc).isoformat(), "tables": tables, "source": source},
                 result="error.in_progress",
                 client_kind=client_kind_from_user(user),
@@ -1368,14 +1401,12 @@ async def trigger_sync(
     background_tasks.add_task(_run_sync, tables, source)
     try:
         from src.db import get_system_db
+
         _audit_conn = get_system_db()
         audit_repo().log(
             user_id=user.get("id"),
             action="sync.trigger",
-            resource=(
-                (tables[0] if len(tables) == 1 else f"{len(tables)} tables")
-                if tables else "all_tables"
-            )[:256],
+            resource=((tables[0] if len(tables) == 1 else f"{len(tables)} tables") if tables else "all_tables")[:256],
             params={"requested_at": datetime.now(timezone.utc).isoformat(), "tables": tables, "source": source},
             result="success",
             duration_ms=int((time.monotonic() - _t0) * 1000),
@@ -1393,6 +1424,7 @@ async def trigger_sync(
 
 
 # ---- Sync Settings (dataset subscriptions) ----
+
 
 class SyncSettingsUpdate(BaseModel):
     datasets: dict  # {dataset_name: bool}
@@ -1428,6 +1460,7 @@ async def update_sync_settings(
     the gate stops users from enabling sync on tables they cannot read.
     """
     from app.auth.session_principal import SessionPrincipal
+
     if isinstance(user, SessionPrincipal):
         raise HTTPException(403, "co_session cannot mutate user settings")
     from app.auth.access import can_access
@@ -1446,6 +1479,7 @@ async def update_sync_settings(
 
 
 # ---- Table Subscriptions ----
+
 
 class TableSubscriptionUpdate(BaseModel):
     table_mode: str = "all"  # "all" or "explicit"
@@ -1476,6 +1510,7 @@ async def update_table_subscriptions(
     prevents an authenticated user from subscribing to tables they cannot read.
     """
     from app.auth.session_principal import SessionPrincipal
+
     if isinstance(user, SessionPrincipal):
         raise HTTPException(403, "co_session cannot mutate user settings")
     from app.auth.access import can_access
