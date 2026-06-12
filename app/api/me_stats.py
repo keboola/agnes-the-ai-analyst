@@ -64,11 +64,15 @@ def _username_for_stats(user: dict) -> str:
 
 
 def _session_data_dir() -> Path:
-    """Match ``app.api.admin_user_sessions._session_data_dir``."""
+    """Like ``app.api.admin_user_sessions._session_data_dir`` but also
+    honoring the legacy ``AGNES_SESSION_DATA_DIR`` env var. The fallback
+    default matches the admin resolver (and the upload API's actual write
+    location, ``${DATA_DIR}/user_sessions``) — the old ``/data/sessions``
+    default pointed at a directory nothing writes to (#640 review)."""
     return Path(
         os.environ.get("SESSION_DATA_DIR")
         or os.environ.get("AGNES_SESSION_DATA_DIR")
-        or "/data/sessions"
+        or "/data/user_sessions"
     )
 
 
@@ -103,7 +107,19 @@ def list_self_sessions(
     """
     username = _username_for_stats(user)
     user_id: str = user["id"]
-    user_dir = _session_data_dir() / username
+    # Both ingestion layouts, same as the admin endpoints (#640): the legacy
+    # collector writes under the email LOCAL-PART, the upload API under
+    # users.id — scanning one of them hid the other's sessions from the
+    # self-service list until the usage processor indexed them. NOTE:
+    # ``_username_for_stats`` returns the user_id (the summary-table key),
+    # so the legacy dir name must be derived from the email — and the base
+    # comes from THIS module's ``_session_data_dir`` (it honors
+    # ``AGNES_SESSION_DATA_DIR`` + this endpoint's historical default).
+    email_local = (user.get("email") or "").split("@")[0]
+    base = _session_data_dir()
+    user_dirs = [
+        base / name for name in dict.fromkeys([email_local, user_id]) if name
+    ]
 
     try:
         rows_db = conn.execute(
@@ -154,14 +170,18 @@ def list_self_sessions(
         processed[Path(d["session_file"]).name] = d
 
     all_rows: list[dict] = list(processed.values())
-    if user_dir.is_dir():
+    seen_fs: set[str] = set()
+    for user_dir in user_dirs:
+        if not user_dir.is_dir():
+            continue
         for p in sorted(
             user_dir.glob("*.jsonl"),
             key=lambda x: x.stat().st_mtime,
             reverse=True,
         ):
-            if p.name in processed:
+            if p.name in processed or p.name in seen_fs:
                 continue
+            seen_fs.add(p.name)
             mtime = datetime.fromtimestamp(p.stat().st_mtime).isoformat()
             all_rows.append({
                 "session_file": p.name,
@@ -191,7 +211,9 @@ def list_self_sessions(
     if uploaded_dir.is_dir():
         uploaded_names = {p.name for p in uploaded_dir.glob("*.jsonl")}
     for row in all_rows:
-        fname = row.get("session_file", "")
+        # Basename — processed rows carry the pipeline's dir-prefixed
+        # session_file, which would never match the uploaded-file names.
+        fname = Path(row.get("session_file", "")).name
         if fname in uploaded_names:
             row["download_url"] = f"/profile/sessions/{fname}"
         else:
@@ -218,11 +240,19 @@ def _enrich_pipeline_status(
 ) -> None:
     """Add ``pipeline_status`` and ``items_extracted`` from
     ``session_processor_state`` (verification processor) to each row
-    in-place.  Matches are looked up by ``<user_id>/<session_file>``.
+    in-place.  The state table keys rows by ``<dir>/<filename>`` (the
+    pipeline runner's session_key); processed rows already carry that
+    prefixed value in ``session_file``, filesystem rows carry a bare
+    name uploaded under the user_id dir — prefixing unconditionally
+    double-prefixed the former and matched nothing (#640 review).
     """
     if not rows:
         return
-    keys = [f"{user_id}/{r['session_file']}" for r in rows]
+
+    def _state_key(session_file: str) -> str:
+        return session_file if "/" in session_file else f"{user_id}/{session_file}"
+
+    keys = [_state_key(r["session_file"]) for r in rows]
     state_map: dict[str, dict] = {}
     try:
         placeholders = ",".join("?" for _ in keys)
@@ -240,8 +270,7 @@ def _enrich_pipeline_status(
     except Exception:
         pass
     for row in rows:
-        key = f"{user_id}/{row['session_file']}"
-        state = state_map.get(key)
+        state = state_map.get(_state_key(row["session_file"]))
         if state is None:
             row["pipeline_status"] = "pending"
             row["items_extracted"] = None

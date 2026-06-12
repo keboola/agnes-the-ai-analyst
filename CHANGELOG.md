@@ -20,6 +20,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.23] — 2026-06-12
+
+### Fixed
+- **Session uploads: three silent data-loss vectors closed.** (1) Queue entries pointing at a transcript that doesn't exist *yet* (Claude Code writes the `.jsonl` lazily on the first prompt) were permanently dropped by any concurrent `agnes push`; they are now requeued with a first-failure stamp and only age out to the forensic failed-log after 30 days (`RETRY_TTL`). (2) The SessionEnd hook now runs `agnes capture-session` before the detached push, so an ending session always re-queues its final transcript — previously a push fired mid-session from another window (or by `/clear`) consumed the entry and the server kept a partial transcript, or an empty post-`/clear` stub, forever. Existing workspaces pick the new layout up via the `agnes self-upgrade` hook refresh. (3) 401 (expired / not-yet-imported PAT) dropped the whole queue permanently; it is now transient — retried until re-auth, bounded by the same TTL, which also caps persistent 5xx requeue loops. `agnes push` reports a new `requeued` counter. (#640)
+- **Admin session list & downloads now see API-uploaded sessions.** The endpoints scanned only the legacy collector layout (`user_sessions/<email local-part>/`), so sessions stored by `/api/upload/sessions` under `user_sessions/<user_id>/` were invisible in the list until the usage processor indexed them and their single-file download 404'd forever. List, single-file download, and bulk ZIP now scan both layouts, and the self-service `/api/me/stats/sessions` list gained the same dual-layout scan (plus basename matching for its download links). (#640)
+
 ## [0.71.22] — 2026-06-12
 
 ### Added

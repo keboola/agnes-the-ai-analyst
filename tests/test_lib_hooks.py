@@ -84,6 +84,26 @@ def test_install_creates_settings_file(tmp_path):
     assert "agnes push --quiet" in ends[0]
 
 
+def test_session_end_recaptures_before_push(tmp_path):
+    """SessionEnd must run `agnes capture-session` BEFORE the detached
+    push. The re-capture re-queues the ending session with its final
+    transcript state — without it, a session whose SessionStart queue
+    entry was consumed by an earlier push (another window closing, or
+    /clear) never uploads its final content. Order matters: the capture
+    must complete before the push snapshots the queue."""
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    ends = _commands_for(cfg, "SessionEnd")
+    assert len(ends) == 1
+    cmd = ends[0]
+    assert "agnes capture-session" in cmd
+    assert cmd.index("agnes capture-session") < cmd.index("agnes push"), (
+        f"capture-session must precede push in the SessionEnd command; got: {cmd!r}"
+    )
+    # The push (not the capture) is the detached part.
+    assert "nohup agnes push" in cmd
+
+
 def test_all_installed_hooks_are_bash_wrapped(tmp_path):
     """Pin the invariant: every Agnes-managed SessionStart / SessionEnd
     entry must be wrapped in `bash -c "..."`. Claude Code on Windows
