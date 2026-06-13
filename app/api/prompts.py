@@ -170,6 +170,40 @@ def _git_path_exists(kind: str, git_path: str) -> bool:
     return resolved is not None and resolved[1] == "iwt"
 
 
+class IwtFilesResponse(BaseModel):
+    iwt_configured: bool
+    files: list[str]
+    suggested: dict[str, str]  # kind -> canonical seed path
+
+
+# Registered BEFORE the dynamic /{kind} GET so the static `iwt-files` segment
+# wins route-matching — otherwise FastAPI binds it to get_prompt(kind="iwt-files")
+# and returns 404 unknown_prompt_kind.
+@router.get("/api/admin/prompts/iwt-files", response_model=IwtFilesResponse)
+async def list_iwt_files(user: dict = Depends(require_admin)):
+    """Repo-root-relative bindable file list from the synced IWT clone, for the
+    bind-git picker (#622 Slice 3). Returns ``files == []`` (200, not 404) when
+    IWT is unconfigured — the UI disables git mode in that case. Every path
+    returned is a valid ``bind-git`` input (load-bearing invariant). One
+    endpoint for both cards: the file set is the same repo; the front-end
+    pre-selects ``suggested[kind]`` per card.
+
+    Admin-web-only (no analyst CLI/MCP analogue) → EXEMPT in the triple-surface
+    gate, alongside the other ``/api/admin/prompts/*`` routes.
+    """
+    from src.initial_workspace import (
+        PROMPT_SEED_PATHS,
+        is_configured,
+        list_iwt_repo_files,
+    )
+
+    return IwtFilesResponse(
+        iwt_configured=is_configured(),
+        files=list_iwt_repo_files(),
+        suggested=dict(PROMPT_SEED_PATHS),
+    )
+
+
 @router.get("/api/admin/prompts/{kind}", response_model=PromptGetResponse)
 async def get_prompt(
     kind: str,
