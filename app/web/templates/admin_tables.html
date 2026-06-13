@@ -5788,6 +5788,23 @@
                       +   '<line x1="9" y1="14" x2="15" y2="14"/>'
                       + '</svg>'
                       + '</button>';
+                // Unregister (delete) the table — only offered on UNPACKAGED
+                // rows. An unpackaged table has no data_package_tables
+                // membership, so unregistering it leaves no dangling
+                // package -> table link. Tables shown inside a package expose
+                // "Remove from package" instead; the admin detaches first, the
+                // row reappears in this unpackaged section, then deletes it.
+                html += '<button class="btn-icon danger" type="button" '
+                      + 'data-tooltip="Unregister (delete) table" '
+                      + 'onclick="deleteTable(&#39;' + escapeHtmlAttr(id) + '&#39;)">'
+                      + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+                      +   '<polyline points="3 6 5 6 21 6"/>'
+                      +   '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>'
+                      +   '<line x1="10" y1="11" x2="10" y2="17"/>'
+                      +   '<line x1="14" y1="11" x2="14" y2="17"/>'
+                      +   '<path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/>'
+                      + '</svg>'
+                      + '</button>';
             }
             html += '</div></td></tr>';
         });

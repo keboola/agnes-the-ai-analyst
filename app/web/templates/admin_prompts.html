@@ -99,10 +99,18 @@
     <!-- Git mode -->
     <div data-pane="git" class="hidden">
       <div class="prompt-git-field">
-        <input type="text" class="search-input" data-role="git-path"
-               placeholder="repo-relative path (e.g. workspace/CLAUDE.md or install-prompt/template.md.tmpl)">
+        <select class="search-input" data-role="git-path-select" aria-label="Pick a repo file to bind">
+          <option value="">— pick a file from the IWT repo —</option>
+        </select>
         <button type="button" class="btn btn-primary" data-action="bind">Bind</button>
         <span class="prompt-status" data-role="git-status"></span>
+      </div>
+      <div class="prompt-git-field" data-role="git-manual-row">
+        <input type="text" class="search-input hidden" data-role="git-path"
+               placeholder="repo-relative path (e.g. workspace/CLAUDE.md or install-prompt/template.md.tmpl)">
+      </div>
+      <div class="prompt-hint">
+        <a href="#" data-action="toggle-manual">Type a path manually</a>
       </div>
       <div class="prompt-hint">
         Bound content is read-only here — edit it in the repo + click
@@ -144,6 +152,18 @@
     return 'Request failed';
   }
 
+  // The IWT file list is repo-global (same repo backs both cards). Fetch it
+  // once and share the promise across every card's picker. #622 Slice 3.
+  let _iwtFilesPromise = null;
+  function loadIwtFiles() {
+    if (_iwtFilesPromise === null) {
+      _iwtFilesPromise = api('GET', '/api/admin/prompts/iwt-files')
+        .then(function (r) { return r.ok ? r.data : { files: [], suggested: {} }; })
+        .catch(function () { return { files: [], suggested: {} }; });
+    }
+    return _iwtFilesPromise;
+  }
+
   document.querySelectorAll('.prompt-card').forEach(function (card) {
     const kind = card.getAttribute('data-kind');
     const base = '/api/admin/prompts/' + kind;
@@ -156,6 +176,8 @@
     const statusEl = card.querySelector('[data-role="status"]');
     const gitStatusEl = card.querySelector('[data-role="git-status"]');
     const gitPathInput = card.querySelector('[data-role="git-path"]');
+    const gitPathSelect = card.querySelector('[data-role="git-path-select"]');
+    const manualLink = card.querySelector('[data-action="toggle-manual"]');
     const toggleBtns = card.querySelectorAll('.prompt-toggle button');
 
     let cm = CodeMirror.fromTextArea(card.querySelector('[data-role="editor"]'), {
@@ -209,6 +231,35 @@
         provenance.textContent = state.content ? 'Editor override (active)' : 'Editor · using shipped default';
       }
       metaEl.textContent = state.updated_at ? ('Updated ' + state.updated_at + (state.updated_by ? (' by ' + state.updated_by) : '')) : '';
+      populatePicker();
+    }
+
+    // Fill the <select> with the repo's bindable files. Pre-select the bound
+    // git_path if any, else this card's canonical suggested seed path. Mirror
+    // the choice into the hidden text input so the existing Bind handler — which
+    // reads gitPathInput.value — needs zero change. #622 Slice 3.
+    async function populatePicker() {
+      gitPathSelect.disabled = !iwtConfigured;
+      if (!iwtConfigured) return;
+      const data = await loadIwtFiles();
+      const files = (data && data.files) || [];
+      const suggested = (data && data.suggested && data.suggested[kind]) || '';
+      const want = state.git_path || (files.indexOf(suggested) >= 0 ? suggested : '');
+      // Rebuild options (idempotent across reloads).
+      gitPathSelect.innerHTML = '';
+      const ph = document.createElement('option');
+      ph.value = '';
+      ph.textContent = files.length ? '— pick a file from the IWT repo —' : '(no files — Sync the IWT repo)';
+      gitPathSelect.appendChild(ph);
+      files.forEach(function (f) {
+        const opt = document.createElement('option');
+        opt.value = f; opt.textContent = f;
+        if (f === want) opt.selected = true;
+        gitPathSelect.appendChild(opt);
+      });
+      // Keep the hidden input in lockstep so Bind works whether the operator
+      // picks from the dropdown or types manually.
+      gitPathInput.value = gitPathSelect.value || gitPathInput.value || '';
     }
 
     toggleBtns.forEach(function (b) {
@@ -240,6 +291,17 @@
       if (w) { w.document.body.innerText = r.data.content; }
       setStatus(statusEl, 'Preview opened', true);
     });
+    // Picker → hidden input mirror (the Bind handler reads gitPathInput).
+    gitPathSelect.addEventListener('change', function () {
+      gitPathInput.value = gitPathSelect.value;
+    });
+    // Manual-path escape hatch for power users / paths the picker can't list.
+    manualLink.addEventListener('click', function (e) {
+      e.preventDefault();
+      gitPathInput.classList.toggle('hidden');
+      if (!gitPathInput.classList.contains('hidden')) gitPathInput.focus();
+    });
+
     card.querySelector('[data-action="bind"]').addEventListener('click', async function () {
       const r = await api('POST', base + '/bind-git', { git_path: gitPathInput.value.trim() });
       if (!r.ok) { setStatus(gitStatusEl, detailHint(r.data), false); return; }
