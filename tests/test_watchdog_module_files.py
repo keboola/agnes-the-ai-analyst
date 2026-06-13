@@ -149,3 +149,28 @@ def test_terraform_plumbing_declared():
     main = (MODULE / "main.tf").read_text()
     for ref in ["enable_watchdog", "alert_webhook_url", "watchdog_files_b64"]:
         assert ref in main, f"main.tf does not pass {ref} into the template"
+
+
+def test_watchdog_reports_image_and_schema_changes():
+    """Deployment-timeline info events (operator request after the
+    2026-06-12 incidents, where RESTARTS/HEALTH alerts arrived with no
+    context that an auto-upgrade had just recreated the container): the
+    watchdog reports an app image change and a DB schema-version change as
+    informational lines, tracked as run-to-run deltas in the state dir the
+    same way RestartCount/oom_kill already are. Info lines must bypass the
+    hourly alert-type anti-spam (they are one-shot by construction) and the
+    first run must seed state silently (no spam on fresh installs)."""
+    sh = (FILES / "agnes-watchdog.sh").read_text()
+    # Separate info channel, distinct from incident ALERTS.
+    assert "INFOS" in sh
+    # Image-change line, fed from a persisted previous image id.
+    assert "UPGRADE:" in sh
+    assert '"$STATE/image"' in sh
+    # Schema-change line, read from the /api/health body the liveness probe
+    # already fetches (no extra DB access).
+    assert "DB: schema" in sh
+    assert '"current":' in sh
+    assert '"$STATE/schema"' in sh
+    # Info-only runs must still notify: the early-exit guard has to consider
+    # both arrays, not just ALERTS.
+    assert '[ "${#ALERTS[@]}" -eq 0 ] && [ "${#INFOS[@]}" -eq 0 ] && exit 0' in sh

@@ -29,6 +29,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.30] — 2026-06-13
+
+### Added
+- **`/admin/prompts` bind-git file picker.** The Git-mode pane of each managed prompt (install / workspace) now offers a dropdown of the bindable files in the synced Initial Workspace Template repo instead of a raw free-text path field that silently 400'd on a typo. Options are repo-root-relative paths (e.g. `workspace/CLAUDE.md`, `install-prompt/template.md.tmpl`) — exactly the strings `bind-git` accepts — with this card's canonical seed path pre-selected. A "Type a path manually" escape hatch keeps the old text input for power users / re-bind. Backed by a new read-only `GET /api/admin/prompts/iwt-files` (returns `{iwt_configured, files, suggested}`; empty `files` when IWT is unconfigured) and `src.initial_workspace.list_iwt_repo_files()` (repo-root-relative, `.git/` + symlinks excluded). Admin-web-only (EXEMPT in the triple-surface gate). (#622 Slice 3)
+
+## [0.71.29] — 2026-06-12
+
+### Added
+- Admin → Tables: **Unregister** action on unpackaged table rows, giving admins a UI path to delete a registered table (previously only possible via `DELETE /api/admin/registry/{id}`). Wires the existing, until-now unreachable `deleteTable()` handler to a per-row danger button. The action is offered only on **unpackaged** rows: tables shown inside a package keep *Remove from package* (detach), so a table is unregistered only after it has been detached — deletion follows the safe detach-then-unregister order and never leaves a dangling package→table link. (#645)
+
+## [0.71.28] — 2026-06-12
+
+### Added
+- The customer-instance watchdog now also reports two informational deployment-timeline events alongside incident alerts: an app **image change** (auto-upgrade recreated the container; includes the boot banner version when available) and a **DB schema-version change** (startup self-migration or a manual migration run, read from the `/api/health` body the liveness probe already fetches). Both are tracked as run-to-run deltas in the watchdog state dir, prefixed `i` in the message body, bypass the hourly alert-type anti-spam (one-shot by construction), and seed silently on first run. Incident alerts that arrive right after an upgrade now carry that context instead of looking like spontaneous failures.
+
 ## [0.71.27] — 2026-06-12
 
 ### Fixed
