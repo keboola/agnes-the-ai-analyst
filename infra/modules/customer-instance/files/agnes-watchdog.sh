@@ -14,6 +14,12 @@
 #   - container restart bursts, cgroup OOM kills, scheduler HTTP-500
 #     streaks, /data disk pressure, dead health endpoint
 #
+# Besides incident alerts it also reports two informational deployment-
+# timeline events (prefixed ' i ' in the message body): an app image
+# change (auto-upgrade recreated the container) and a DB schema-version
+# change (startup self-migration or a manual alembic run), both tracked
+# as run-to-run deltas in the state dir.
+#
 # Alerts go to journald (`logger -t agnes-watchdog`) and
 # /var/log/agnes-watchdog.log, plus an optional webhook (Slack / Google
 # Chat compatible: POST {"text": "..."}). Configure in
@@ -55,6 +61,12 @@ echo "$NOW" > "$STATE/last_run"
 
 ALERTS=()
 add() { ALERTS+=("$1"); }
+# Informational deployment-timeline events (image upgrade, DB schema bump).
+# Separate channel from ALERTS: they ride along with alerts or go out on
+# their own, but never trip the hourly alert-type anti-spam (each is
+# one-shot by construction — the underlying value changed).
+INFOS=()
+info() { INFOS+=("$1"); }
 
 APP=agnes-app-1
 LOGS=$(docker logs "$APP" --since "$SINCE" 2>&1)
@@ -72,6 +84,19 @@ c=$(grep -c "Failed to append to PRIMARY_" <<<"$LOGS")
 
 newdisc=$(find /data/state -maxdepth 1 -name "*.wal.discarded.*" -newermt "$SINCE" 2>/dev/null)
 [ -n "$newdisc" ] && add "NEW DISCARDED WAL: $newdisc"
+
+# Deployment timeline: report an app image change (auto-upgrade recreated
+# the container with a new build). First run seeds state silently.
+img=$(docker inspect "$APP" --format '{{.Image}}' 2>/dev/null || echo "")
+if [ -n "$img" ]; then
+    prev_img=$(cat "$STATE/image" 2>/dev/null || echo "")
+    echo "$img" > "$STATE/image"
+    if [ -n "$prev_img" ] && [ "$img" != "$prev_img" ]; then
+        # Best-effort version context from the boot banner in the log window.
+        ver=$(grep -oE 'Agnes [0-9][0-9.]* \| channel: [a-z-]* \| schema v[0-9]*' <<<"$LOGS" | tail -1)
+        info "UPGRADE: app image ${prev_img#sha256:} -> ${img#sha256:}${ver:+ ($ver)}"
+    fi
+fi
 
 rc=$(docker inspect "$APP" --format '{{.RestartCount}}' 2>/dev/null || echo "")
 if [ -n "$rc" ]; then
@@ -96,14 +121,35 @@ fi
 duse=$(df --output=pcent /data 2>/dev/null | tail -1 | tr -dc 0-9)
 [ -n "$duse" ] && [ "$duse" -ge 85 ] && add "DISK: /data at ${duse}%"
 
-if ! docker exec "$APP" curl -sf -m 10 http://localhost:8000/api/health >/dev/null 2>&1; then
+health_body=$(docker exec "$APP" curl -sf -m 10 http://localhost:8000/api/health 2>/dev/null || echo "")
+if [ -z "$health_body" ]; then
     add "HEALTH: /api/health not returning 200"
+else
+    # Deployment timeline: report a DB schema-version change (startup
+    # self-migration / manual alembic run) from the health body the
+    # liveness probe already fetched — no extra DB access. First run
+    # seeds state silently.
+    schema=$(grep -o '"current":[0-9]*' <<<"$health_body" | head -1 | tr -dc 0-9)
+    if [ -n "$schema" ]; then
+        prev_schema=$(cat "$STATE/schema" 2>/dev/null || echo "")
+        echo "$schema" > "$STATE/schema"
+        if [ -n "$prev_schema" ] && [ "$schema" != "$prev_schema" ]; then
+            info "DB: schema v$prev_schema -> v$schema"
+        fi
+    fi
 fi
 
-[ "${#ALERTS[@]}" -eq 0 ] && exit 0
+[ "${#ALERTS[@]}" -eq 0 ] && [ "${#INFOS[@]}" -eq 0 ] && exit 0
 
+BODY=""
+[ "${#ALERTS[@]}" -gt 0 ] && BODY="$(printf ' - %s\n' "${ALERTS[@]}")"
+if [ "${#INFOS[@]}" -gt 0 ]; then
+    [ -n "$BODY" ] && BODY="$BODY
+"
+    BODY="$BODY$(printf ' i %s\n' "${INFOS[@]}")"
+fi
 MSG="[agnes-watchdog] $LABEL | $NOW
-$(printf ' - %s\n' "${ALERTS[@]}")"
+$BODY"
 logger -t agnes-watchdog "$MSG"
 echo "$MSG" >> /var/log/agnes-watchdog.log
 
@@ -114,12 +160,19 @@ echo "$MSG" >> /var/log/agnes-watchdog.log
 # which would make every hash unique and the suppression a no-op; and
 # joining the set into one line would truncate it to the first prefix and
 # over-suppress distinct alert sets.
-H=$(printf '%s\n' "${ALERTS[@]}" | sed 's/:.*//' | md5sum | cut -d' ' -f1)
-LAST_H=$(cat "$STATE/alert_hash" 2>/dev/null || echo "")
-LAST_T=$(cat "$STATE/alert_time" 2>/dev/null || echo 0)
-NOW_E=$(date +%s)
-if [ "$H" = "$LAST_H" ] && [ $((NOW_E - LAST_T)) -lt 3600 ]; then exit 0; fi
-echo "$H" > "$STATE/alert_hash"; echo "$NOW_E" > "$STATE/alert_time"
+# Info lines bypass the suppression entirely: a run carrying any info is
+# always sent (the info is one-shot), and an info-only run leaves the
+# alert hash/time untouched so it cannot reset an active suppression.
+if [ "${#ALERTS[@]}" -gt 0 ]; then
+    H=$(printf '%s\n' "${ALERTS[@]}" | sed 's/:.*//' | md5sum | cut -d' ' -f1)
+    LAST_H=$(cat "$STATE/alert_hash" 2>/dev/null || echo "")
+    LAST_T=$(cat "$STATE/alert_time" 2>/dev/null || echo 0)
+    NOW_E=$(date +%s)
+    if [ "$H" = "$LAST_H" ] && [ $((NOW_E - LAST_T)) -lt 3600 ] && [ "${#INFOS[@]}" -eq 0 ]; then
+        exit 0
+    fi
+    echo "$H" > "$STATE/alert_hash"; echo "$NOW_E" > "$STATE/alert_time"
+fi
 
 if [ -n "$WEBHOOK_URL" ]; then
     esc=$(printf '%s' "$MSG" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n", $0}')
