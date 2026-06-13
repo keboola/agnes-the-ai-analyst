@@ -818,6 +818,41 @@
             justify-content: flex-end;
             margin-bottom: 16px;
         }
+        /* Structured where_filters builder (#408) */
+        .where-filters-builder .wfb-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+            align-items: center;
+        }
+        .where-filters-builder .wfb-col { flex: 1 1 30%; }
+        .where-filters-builder .wfb-op { flex: 0 0 auto; min-width: 140px; }
+        .where-filters-builder .wfb-val { flex: 2 1 40%; }
+        .where-filters-builder .wfb-remove {
+            flex: 0 0 auto;
+            padding: 4px 10px;
+            line-height: 1;
+        }
+        .where-filters-builder .wfb-add { margin: 4px 0 12px; }
+        .where-filters-builder .wfb-range {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            padding-top: 8px;
+            border-top: 1px solid var(--border);
+        }
+        .where-filters-builder .wfb-range-label {
+            flex: 0 0 100%;
+            margin-bottom: 2px;
+        }
+        .where-filters-builder .wfb-range input { flex: 1 1 30%; }
+        .wfb-raw-toggle {
+            margin-left: 8px;
+            color: var(--ds-primary);
+            cursor: pointer;
+            text-decoration: underline;
+        }
     </style>
 {% endblock %}
 
@@ -1533,10 +1568,13 @@
                             </div>
 
                             <div class="form-group kb-strategy-not-incremental" style="display:none;">
-                                <label class="form-label" for="kbWhereFilters">Where filters
-                                    <span class="optional">(JSON array, optional)</span></label>
-                                <textarea class="form-textarea" id="kbWhereFilters" rows="6"
-                                          placeholder='[{"column": "date", "operator": "ge", "values": ["{{last_3_months}}"]}]'></textarea>
+                                <label class="form-label">Where filters
+                                    <span class="optional">(optional)</span></label>
+                                {# Structured builder (#408): column + operator + values rows
+                                   plus a date-range convenience. Serialises into the hidden
+                                   #kbWhereFilters textarea below, which the submit path reads
+                                   unchanged. The textarea stays as a raw-JSON escape hatch. #}
+                                <div id="kbWhereFiltersBuilder" class="where-filters-builder"></div>
                                 <div class="form-hint">
                                     Server-side row filter. Operators: <code>eq, ne, gt, ge, lt, le</code>.
                                     Date placeholders resolved at sync time:
@@ -1550,7 +1588,12 @@
                                     <code>{{ '{{last_2_years}}' }}</code>,
                                     <code>{{ '{{start_of_3_months_ago}}' }}</code>.
                                     Not compatible with Incremental strategy.
+                                    <a href="#" class="wfb-raw-toggle"
+                                       onclick="toggleWhereFiltersRaw(event, 'kbWhereFilters', 'kbWhereFiltersBuilder')">Edit raw JSON</a>
                                 </div>
+                                <textarea class="form-textarea wfb-raw" id="kbWhereFilters" rows="6"
+                                          style="display:none;"
+                                          placeholder='[{"column": "date", "operator": "ge", "values": ["{{last_3_months}}"]}]'></textarea>
                             </div>
                         </div>
                     </div>
@@ -1744,15 +1787,21 @@
                             </div>
 
                             <div class="form-group editkb-strategy-not-incremental" style="display:none;">
-                                <label class="form-label" for="editKbWhereFilters">Where filters
-                                    <span class="optional">(JSON array, optional)</span></label>
-                                <textarea class="form-textarea" id="editKbWhereFilters" rows="6"
-                                          placeholder='[{"column": "date", "operator": "ge", "values": ["{{last_3_months}}"]}]'></textarea>
+                                <label class="form-label">Where filters
+                                    <span class="optional">(optional)</span></label>
+                                {# Structured builder (#408) → hidden #editKbWhereFilters textarea
+                                   (raw-JSON escape hatch), read unchanged by the save path. #}
+                                <div id="editKbWhereFiltersBuilder" class="where-filters-builder"></div>
                                 <div class="form-hint">
                                     Operators: <code>eq, ne, gt, ge, lt, le</code>. Date placeholders
                                     (<code>{{ '{{today}}' }}</code>, <code>{{ '{{last_3_months}}' }}</code>, etc.) resolved at
                                     sync time. Not compatible with Incremental.
+                                    <a href="#" class="wfb-raw-toggle"
+                                       onclick="toggleWhereFiltersRaw(event, 'editKbWhereFilters', 'editKbWhereFiltersBuilder')">Edit raw JSON</a>
                                 </div>
+                                <textarea class="form-textarea wfb-raw" id="editKbWhereFilters" rows="6"
+                                          style="display:none;"
+                                          placeholder='[{"column": "date", "operator": "ge", "values": ["{{last_3_months}}"]}]'></textarea>
                             </div>
                         </div>
 
@@ -3627,6 +3676,9 @@
         // #607 — checkbox isn't covered by the .value='' loop above.
         var kbServerOnlyEl = document.getElementById('kbServerOnly');
         if (kbServerOnlyEl) kbServerOnlyEl.checked = false;
+        // The .value='' loop above cleared kbWhereFilters — rebuild the
+        // structured builder so it shows an empty editor, not stale rows.
+        _rebuildWhereFiltersBuilder('kbWhereFiltersBuilder');
         onKbSyncModeChange();  // apply default visibility
         var btn = document.getElementById('registerKeboolaSubmitBtn');
         btn.disabled = false;
@@ -3708,6 +3760,48 @@
             throw new Error('where_filters: invalid JSON — ' + e.message);
         }
     }
+
+    // ── Structured where_filters builder (#408) ──
+    // The builder writes its serialised JSON into the existing hidden
+    // textarea (kbWhereFilters / editKbWhereFilters); the submit path reads
+    // that textarea unchanged. Handles are kept so we can rebuild after the
+    // edit modal hydrates the textarea, or after the register modal resets it.
+    var _whereFilterBuilders = {};
+
+    function _initWhereFiltersBuilder(hostId, textareaId) {
+        if (typeof WhereFiltersBuilder === 'undefined') return;  // module not loaded
+        var host = document.getElementById(hostId);
+        var ta = document.getElementById(textareaId);
+        if (!host || !ta) return;
+        _whereFilterBuilders[hostId] = WhereFiltersBuilder.attach({ host: host, textarea: ta });
+    }
+
+    function _rebuildWhereFiltersBuilder(hostId) {
+        var b = _whereFilterBuilders[hostId];
+        if (b && typeof b.rebuild === 'function') b.rebuild();
+    }
+
+    // Escape hatch: toggle the raw-JSON textarea. Editing raw → rebuild the
+    // structured rows from it on toggle-off so the two stay in sync.
+    function toggleWhereFiltersRaw(ev, textareaId, hostId) {
+        if (ev) ev.preventDefault();
+        var ta = document.getElementById(textareaId);
+        if (!ta) return;
+        var showing = ta.style.display !== 'none';
+        if (showing) {
+            // Hiding raw → re-derive the structured rows from edited JSON.
+            ta.style.display = 'none';
+            _rebuildWhereFiltersBuilder(hostId);
+        } else {
+            ta.style.display = '';
+            ta.focus();
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        _initWhereFiltersBuilder('kbWhereFiltersBuilder', 'kbWhereFilters');
+        _initWhereFiltersBuilder('editKbWhereFiltersBuilder', 'editKbWhereFilters');
+    });
 
     function _buildKeboolaPayload() {
         // Three modes:
@@ -4078,6 +4172,8 @@
             table.initial_load_chunk_days != null ? table.initial_load_chunk_days : '';
         document.getElementById('editKbWhereFilters').value =
             table.where_filters ? JSON.stringify(table.where_filters, null, 2) : '';
+        // Rebuild the structured builder from the freshly-hydrated textarea.
+        _rebuildWhereFiltersBuilder('editKbWhereFiltersBuilder');
 
         onEditKbSyncModeChange();
         var btn = document.getElementById('editKeboolaSubmitBtn');
@@ -5928,4 +6024,5 @@
    it via the BQ Register modal's `data-name="bq_package_ids"` host). #}
 {% block extra_scripts %}
 <script type="module" src="{{ static_url('js/components/chip-input.js') }}"></script>
+<script src="{{ static_url('js/where-filters-builder.js') }}"></script>
 {% endblock %}
