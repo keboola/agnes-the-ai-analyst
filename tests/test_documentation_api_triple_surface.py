@@ -28,6 +28,8 @@ _COHORT: dict[str, tuple[str, str]] = {
     # Stack discovery (issue #621). subscribe/unsubscribe paths are already
     # grandfathered; browse is the new triple-surface endpoint.
     "/api/stack/browse": ("stack browse", "stack_browse"),
+    # Store thumbs up/down ratings (issue #398).
+    "/api/store/entities/{entity_id}/rate": ("store rate", "store_rate"),
 }
 
 
@@ -113,6 +115,7 @@ _EXEMPT: dict[str, str] = {
     "/api/admin/prompts/{kind}/source": _PROMPTS_REASON,
     "/api/admin/prompts/{kind}/bind-git": _PROMPTS_REASON,
     "/api/admin/prompts/{kind}/preview": _PROMPTS_REASON,
+    "/api/admin/prompts/iwt-files": _PROMPTS_REASON,
     "/api/admin/adoption/kpis": _ADOPTION_REASON,
     "/api/admin/adoption/series": _ADOPTION_REASON,
     "/api/admin/adoption/top-skills": _ADOPTION_REASON,

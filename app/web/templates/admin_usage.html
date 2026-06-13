@@ -180,6 +180,31 @@
     </div>
   </section>
 
+  {# Query telemetry (#410): top tables / scan bytes / remote-vs-local split,
+     aggregated on-demand from the query.* audit rows via /summary. #}
+  <section class="obs-table-wrap" id="qt-section" style="margin-top:20px;" aria-label="Query telemetry">
+    <div style="padding:12px 14px; border-bottom:1px solid var(--border, #e5e7eb);
+                background:var(--border-light, #f3f4f6); display:flex;
+                justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap;">
+      <strong>Query telemetry — top tables</strong>
+      <span id="qt-totals" class="obs-row-count">—</span>
+    </div>
+    <table class="obs-table">
+      <thead>
+        <tr>
+          <th>Table</th>
+          <th class="obs-num">Queries</th>
+          <th class="obs-num">Remote</th>
+          <th class="obs-num">Local</th>
+          <th class="obs-num">Scan bytes</th>
+        </tr>
+      </thead>
+      <tbody id="qt-rows">
+        <tr><td colspan="5" class="obs-empty">Loading…</td></tr>
+      </tbody>
+    </table>
+  </section>
+
 </div>
 
 <script>
@@ -309,6 +334,55 @@
       ' · <b>' + fmtN(d.distinct_users) + '</b> users' +
       ' · <b>' + fmtN(d.distinct_tools) + '</b> distinct tools' +
       ' · <b>' + (d.error_rate * 100).toFixed(2) + '%</b> errors' + f + '.';
+  }
+
+  // --- Query telemetry (#410) ---------------------------------------------
+  function summaryWindow(m) {
+    // /summary takes 7d|30d|all; map the minute-granular selector to it.
+    if (m <= 10080) return '7d';
+    if (m <= 43200) return '30d';
+    return 'all';
+  }
+  function fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + ' B';
+    const u = ['KB', 'MB', 'GB', 'TB', 'PB'];
+    let i = -1;
+    do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+    return n.toFixed(1) + ' ' + u[i];
+  }
+  async function loadQueryTelemetry() {
+    const qtRows = $('qt-rows'), qtTotals = $('qt-totals');
+    if (!qtRows) return;
+    let d;
+    try {
+      d = await get('/api/admin/telemetry/summary?window=' + summaryWindow(state.window));
+    } catch (e) {
+      qtRows.innerHTML = '<tr><td colspan="5" class="obs-empty">Failed to load query telemetry.</td></tr>';
+      return;
+    }
+    const qt = d.query_telemetry || {};
+    qtTotals.textContent =
+      fmtBytes(qt.total_scan_bytes) + ' scanned · ' +
+      fmtN(qt.remote_queries) + ' remote · ' +
+      fmtN(qt.local_queries) + ' local · ' +
+      fmtN(qt.snapshot_creates) + ' snapshots';
+    const rows = qt.top_tables || [];
+    if (!rows.length) {
+      qtRows.innerHTML = '<tr><td colspan="5" class="obs-empty">No query activity in this window.</td></tr>';
+      return;
+    }
+    qtRows.innerHTML = '';
+    rows.forEach(r => {
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td>' + escapeHtml(r.table_id == null ? '—' : r.table_id) + '</td>' +
+        '<td class="obs-num">' + fmtN(r.queries) + '</td>' +
+        '<td class="obs-num">' + fmtN(r.remote) + '</td>' +
+        '<td class="obs-num">' + fmtN(r.local) + '</td>' +
+        '<td class="obs-num">' + fmtBytes(r.scan_bytes) + '</td>';
+      qtRows.appendChild(tr);
+    });
   }
 
   // --- Query / table ------------------------------------------------------
@@ -498,7 +572,7 @@
   });
 
   function refreshOnFilter() { loadKpis().catch(()=>{}); loadTable().catch(()=>{}); }
-  function refreshAll()      { loadKpis().catch(()=>{}); loadFacets().catch(()=>{}); loadTable().catch(()=>{}); }
+  function refreshAll()      { loadKpis().catch(()=>{}); loadFacets().catch(()=>{}); loadTable().catch(()=>{}); loadQueryTelemetry().catch(()=>{}); }
   refreshAll();
 })();
 </script>

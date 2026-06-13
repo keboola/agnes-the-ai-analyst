@@ -18,6 +18,7 @@ from cli.v2_client import (
     V2ClientError,
     api_delete,
     api_get_stream,
+    api_post_json,
     api_post_multipart,
     api_put_multipart,
 )
@@ -187,3 +188,34 @@ def pull_my_entities(
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
     typer.echo(f"Wrote {size:,} bytes → {out}")
+
+
+@store_app.command("rate")
+def rate_entity(
+    entity_id: str = typer.Argument(...),
+    vote: int = typer.Option(
+        ..., "--vote", "-v",
+        help="1 = thumbs up, -1 = thumbs down, 0 = clear your vote",
+    ),
+):
+    """Rate a Flea Market entity thumbs up/down (#398).
+
+    Casts, changes, or clears your single vote on an entity. Prints the
+    updated ``{up, down, my_vote}`` tally. Server-side gated by
+    ``get_current_user``.
+
+    Example: ``agnes store rate <entity_id> --vote -1`` (thumbs down).
+    """
+    if vote not in (1, -1, 0):
+        typer.echo("vote must be 1, -1, or 0", err=True)
+        raise typer.Exit(1)
+    try:
+        body = api_post_json(
+            f"/api/store/entities/{entity_id}/rate", {"vote": vote}
+        )
+    except V2ClientError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+    typer.echo(
+        f"up={body['up']} down={body['down']} my_vote={body['my_vote']}"
+    )

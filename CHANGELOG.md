@@ -29,6 +29,94 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.34] — 2026-06-13
+
+### Added
+- **Thumbs up/down ratings on store / marketplace items.** Analysts can now
+  signal whether a store entity (skill / agent / plugin) was useful via a
+  per-user thumbs up/down vote. New endpoint `POST /api/store/entities/{id}/rate`
+  with `{vote: 1|-1|0}` (1 = up, -1 = down, 0 = clear), one vote per
+  (entity, user) — re-voting flips the value in place. The aggregate
+  (`{up, down, my_vote}`) is surfaced on the single-entity
+  `GET /api/store/entities/{id}` response under a new `rating` field. Reachable
+  from all three surfaces: `agnes store rate <id> --vote <n>` (CLI) and the
+  `store_rate` MCP tool. Requires the existing signed-in user gate. (#398, #651)
+
+### Internal
+- Schema v76 / Alembic `0023_store_entity_votes_v76`: new `store_entity_votes`
+  table (`entity_id, user_id, vote, voted_at`, PK `(entity_id, user_id)`),
+  mirroring `knowledge_votes`. New dual-backend `store_entity_votes` repository
+  (DuckDB + Postgres) with a cross-engine contract test. (#398, #651)
+
+## [0.71.33] — 2026-06-13
+
+### Added
+- **Query telemetry in the admin usage view** (addresses #410, on-demand slice).
+  `GET /api/admin/telemetry/summary` now returns a `query_telemetry` facet that
+  aggregates the existing `query.remote` / `query.local` / `snapshot.create`
+  audit rows over the selected window: `top_tables` (table id, query count,
+  remote/local split, summed `bytes_scanned`), per-day per-table `frequency`,
+  and window totals (`total_scan_bytes`, `remote_queries`, `local_queries`,
+  `snapshot_creates`). Surfaced as a "Query telemetry — top tables" panel on
+  `/admin/telemetry` and via a new `agnes admin telemetry summary` CLI command
+  (`--window`, `--json`). Computed on demand with a `GROUP BY` over `audit_log`
+  (no new table, no scheduler rollup — the periodic-aggregation step from the
+  issue is deferred). Implemented on both DuckDB and Postgres backends. (#650)
+
+## [0.71.32] — 2026-06-13
+
+### Added
+- **Structured `where_filters` builder in the admin Keboola register/edit modals**
+  (addresses #408). The Direct-extract (Storage API) registration path used to
+  expose row filters only as a raw-JSON textarea — error-prone for non-technical
+  operators. It now renders a structured editor: a column + operator
+  (`eq/ne/gt/ge/lt/le`) + comma-separated values row repeater, plus a date-range
+  convenience that emits the two boundary rows (`ge` / `le`) with date
+  placeholders (e.g. `{{last_3_months}}`, `{{today}}`) passed through verbatim
+  for server-side resolution at sync time. The builder serialises into the same
+  hidden textarea the submit path already reads, so the produced JSON is
+  byte-compatible with the existing `/api/admin/register-table` + registry PUT
+  contract — no schema or API change. An "Edit raw JSON" escape hatch is kept for
+  power users. Pure front-end (`app/web/static/js/where-filters-builder.js`). (#649)
+
+## [0.71.31] — 2026-06-13
+
+### Added
+- **Webhook alert on scheduled-sync failure.** When a scheduled sync fails —
+  either fatally, on an extractor/subprocess timeout, or with per-table errors
+  (materialized-pass errors, Keboola extractor exit 1/2) — Agnes now POSTs a
+  concise `{"text": ...}` payload to an operator-configured webhook so failures
+  are noticed proactively instead of on the next dashboard check. A run that
+  hits per-table errors and then crashes sends a single combined alert, not two
+  overlapping POSTs. Configure via the new `notifications.alert_webhook_url` in
+  `instance.yaml` (env override `AGNES_ALERT_WEBHOOK_URL`); the `{"text": ...}`
+  shape is Slack / Google Chat / Mattermost / Discord incoming-webhook
+  compatible. Best-effort by contract — a webhook outage never blocks the sync.
+  No-op when the URL is unset. (#397, #648)
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.30] — 2026-06-13
+
+### Added
+- **`/admin/prompts` bind-git file picker.** The Git-mode pane of each managed prompt (install / workspace) now offers a dropdown of the bindable files in the synced Initial Workspace Template repo instead of a raw free-text path field that silently 400'd on a typo. Options are repo-root-relative paths (e.g. `workspace/CLAUDE.md`, `install-prompt/template.md.tmpl`) — exactly the strings `bind-git` accepts — with this card's canonical seed path pre-selected. A "Type a path manually" escape hatch keeps the old text input for power users / re-bind. Backed by a new read-only `GET /api/admin/prompts/iwt-files` (returns `{iwt_configured, files, suggested}`; empty `files` when IWT is unconfigured) and `src.initial_workspace.list_iwt_repo_files()` (repo-root-relative, `.git/` + symlinks excluded). Admin-web-only (EXEMPT in the triple-surface gate). (#622 Slice 3)
+
+## [0.71.29] — 2026-06-12
+
+### Added
+- Admin → Tables: **Unregister** action on unpackaged table rows, giving admins a UI path to delete a registered table (previously only possible via `DELETE /api/admin/registry/{id}`). Wires the existing, until-now unreachable `deleteTable()` handler to a per-row danger button. The action is offered only on **unpackaged** rows: tables shown inside a package keep *Remove from package* (detach), so a table is unregistered only after it has been detached — deletion follows the safe detach-then-unregister order and never leaves a dangling package→table link. (#645)
+
+## [0.71.28] — 2026-06-12
+
+### Added
+- The customer-instance watchdog now also reports two informational deployment-timeline events alongside incident alerts: an app **image change** (auto-upgrade recreated the container; includes the boot banner version when available) and a **DB schema-version change** (startup self-migration or a manual migration run, read from the `/api/health` body the liveness probe already fetches). Both are tracked as run-to-run deltas in the watchdog state dir, prefixed `i` in the message body, bypass the hourly alert-type anti-spam (one-shot by construction), and seed silently on first run. Incident alerts that arrive right after an upgrade now carry that context instead of looking like spontaneous failures.
+
 ## [0.71.27] — 2026-06-12
 
 ### Fixed

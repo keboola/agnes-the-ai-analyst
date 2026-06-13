@@ -115,6 +115,9 @@ def test_admin_usage_page_renders(seeded_app, admin_user):
     assert "obs-page" in resp.text
     assert 'id="u-groupby"' in resp.text
     assert "Distinct users" in resp.text
+    # Query-telemetry panel (#410) — top-tables section + its JS loader anchor.
+    assert 'id="qt-rows"' in resp.text
+    assert "Query telemetry" in resp.text
 
 
 def test_admin_usage_page_admin_only(seeded_app, analyst_user):

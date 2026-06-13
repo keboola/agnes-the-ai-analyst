@@ -39,13 +39,16 @@ def usage_summary(
     window: Literal["7d", "30d", "all"] = Query("7d"),
     user: dict = Depends(require_admin),
 ):
-    """Compute six summaries:
+    """Compute seven summaries:
     - top_tools: list[{tool_name, invocations, source}]
     - top_users: list[{username, tool_calls}]
     - error_rate: list[{tool_name, invocations, errors, rate}]
     - dau_series: list[{day, active_users}] — 30 entries even when window=7d (sparkline likes 30)
     - dau_avg: float
     - slow_actions: list[{action, p50, p95, p99, max_ms, n}]
+    - query_telemetry: dict — on-demand aggregation over query.remote/query.local/
+      snapshot.create audit rows (top_tables, frequency, scan-byte totals,
+      remote/local split). See UsageRepository.summary_query_telemetry (#410).
     """
     now = datetime.now(timezone.utc)
     if window == "7d":
@@ -70,6 +73,7 @@ def usage_summary(
     dau_avg = sum(s["active_users"] for s in dau_series) / 30 if dau_series else 0
 
     slow_actions = repo.summary_slow_actions(cutoff)
+    query_telemetry = repo.summary_query_telemetry(cutoff)
 
     actor_id = user.get("id") or "anonymous"
     if _should_audit(actor_id, {"endpoint": "usage.summary", "window": window}):
@@ -92,6 +96,7 @@ def usage_summary(
         "dau_series": dau_series,
         "dau_avg": round(dau_avg, 1),
         "slow_actions": slow_actions,
+        "query_telemetry": query_telemetry,
     }
 
 

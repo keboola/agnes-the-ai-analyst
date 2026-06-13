@@ -164,3 +164,98 @@ def test_usage_purge_for_session(tel_engine):
     )
     deleted = repo.purge_for_session("f1")
     assert deleted == 1
+
+
+# ---------------------------------------------------------------------------
+# summary_query_telemetry (#410) — PG mirror of the DuckDB aggregation.
+# ---------------------------------------------------------------------------
+
+def _ins_audit(conn, *, action, resource, bytes_scanned, ts):
+    import json
+    import uuid as _uuid
+    import sqlalchemy as sa
+
+    params = {} if bytes_scanned is None else {"bytes_scanned": bytes_scanned}
+    conn.execute(
+        sa.text(
+            """INSERT INTO audit_log (id, timestamp, user_id, action, resource, params, result)
+               VALUES (:id, :ts, 'u1', :action, :resource, CAST(:params AS JSONB), 'success')"""
+        ),
+        {"id": str(_uuid.uuid4()), "ts": ts, "action": action,
+         "resource": resource, "params": json.dumps(params)},
+    )
+
+
+def test_summary_query_telemetry_pg(tel_engine):
+    from datetime import timedelta
+    from src.repositories.usage_pg import UsagePgRepository
+    import sqlalchemy as sa
+
+    now = datetime.now(timezone.utc)
+    with tel_engine.begin() as conn:
+        # orders: remote x3 (100/200/300), local x1
+        _ins_audit(conn, action="query.remote", resource="table:kbc.orders",
+                   bytes_scanned=100, ts=now - timedelta(hours=1))
+        _ins_audit(conn, action="query.remote", resource="table:kbc.orders",
+                   bytes_scanned=200, ts=now - timedelta(hours=2))
+        _ins_audit(conn, action="query.remote", resource="table:kbc.orders",
+                   bytes_scanned=300, ts=now - timedelta(hours=3))
+        _ins_audit(conn, action="query.local", resource="table:kbc.orders",
+                   bytes_scanned=None, ts=now - timedelta(hours=4))
+        # sessions: remote x1 (50), local x1
+        _ins_audit(conn, action="query.remote", resource="table:kbc.sessions",
+                   bytes_scanned=50, ts=now - timedelta(hours=5))
+        _ins_audit(conn, action="query.local", resource="table:kbc.sessions",
+                   bytes_scanned=None, ts=now - timedelta(hours=6))
+        # adhoc local — totals only, not per-table ranking
+        _ins_audit(conn, action="query.local", resource="adhoc",
+                   bytes_scanned=None, ts=now - timedelta(hours=7))
+        # snapshot.create on orders (resource carries :as: suffix), bytes 1000
+        _ins_audit(conn, action="snapshot.create",
+                   resource="table:kbc.orders:as:o_recent",
+                   bytes_scanned=1000, ts=now - timedelta(hours=1))
+        # out-of-window row — excluded by the 7d cutoff
+        _ins_audit(conn, action="query.remote", resource="table:kbc.old",
+                   bytes_scanned=999, ts=now - timedelta(days=40))
+
+    repo = UsagePgRepository(tel_engine)
+    out = repo.summary_query_telemetry(now - timedelta(days=7))
+
+    by_id = {t["table_id"]: t for t in out["top_tables"]}
+    assert out["top_tables"][0]["table_id"] == "kbc.orders"
+    assert by_id["kbc.orders"]["queries"] == 5      # 3 remote + 1 local + 1 snapshot
+    assert by_id["kbc.orders"]["scan_bytes"] == 1600
+    assert by_id["kbc.orders"]["remote"] == 3
+    assert by_id["kbc.orders"]["local"] == 1
+    assert by_id["kbc.sessions"]["queries"] == 2
+    assert by_id["kbc.sessions"]["scan_bytes"] == 50
+    assert "adhoc" not in by_id
+    assert "kbc.old" not in by_id
+
+    assert out["total_scan_bytes"] == 1650
+    assert out["remote_queries"] == 4
+    assert out["local_queries"] == 3
+    assert out["snapshot_creates"] == 1
+
+    # per-day frequency: orders today → 3 remote + 1 local
+    orders_freq = [r for r in out["frequency"] if r["table_id"] == "kbc.orders"]
+    assert sum(r["remote"] for r in orders_freq) == 3
+    assert sum(r["local"] for r in orders_freq) == 1
+
+
+def test_summary_query_telemetry_empty_window_pg(tel_engine):
+    from datetime import timedelta
+    from src.repositories.usage_pg import UsagePgRepository
+
+    now = datetime.now(timezone.utc)
+    with tel_engine.begin() as conn:
+        _ins_audit(conn, action="query.remote", resource="table:kbc.old",
+                   bytes_scanned=999, ts=now - timedelta(days=40))
+
+    out = UsagePgRepository(tel_engine).summary_query_telemetry(now - timedelta(days=7))
+    assert out["top_tables"] == []
+    assert out["frequency"] == []
+    assert out["total_scan_bytes"] == 0
+    assert out["remote_queries"] == 0
+    assert out["local_queries"] == 0
+    assert out["snapshot_creates"] == 0

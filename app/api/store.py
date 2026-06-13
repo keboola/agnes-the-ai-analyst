@@ -47,6 +47,7 @@ from fastapi import (
 from src.repositories import (
     audit_repo,
     store_entities_repo,
+    store_entity_votes_repo,
     store_submissions_repo,
     user_store_installs_repo,
     users_repo,
@@ -164,6 +165,18 @@ def _validate_video_url(value: Optional[str]) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
+class EntityRating(BaseModel):
+    """#398: per-user thumbs up/down tally for a store entity.
+
+    ``up`` / ``down`` are global counts; ``my_vote`` is the caller's own
+    vote (``1`` up, ``-1`` down, ``0`` = not voted).
+    """
+
+    up: int = 0
+    down: int = 0
+    my_vote: int = 0
+
+
 class StoreEntityResponse(BaseModel):
     id: str
     type: str
@@ -193,6 +206,11 @@ class StoreEntityResponse(BaseModel):
     title: Optional[str] = None
     tagline: Optional[str] = None
     synthetic_name: Optional[str] = None
+    # #398: per-user thumbs up/down ratings. ``up``/``down`` are global
+    # tallies; ``my_vote`` is the caller's own vote (1 / -1 / 0). Populated
+    # on the single-entity GET; left None in list responses (avoids an
+    # N-query aggregate per card).
+    rating: Optional[EntityRating] = None
 
 
 class StoreEntityListResponse(BaseModel):
@@ -205,6 +223,11 @@ class StoreEntityListResponse(BaseModel):
 class InstallResponse(BaseModel):
     entity_id: str
     installed: bool
+
+
+class RateRequest(BaseModel):
+    # 1 = thumbs up, -1 = thumbs down, 0 = clear the caller's vote (#398).
+    vote: int
 
 
 class PreviewComponent(BaseModel):
@@ -561,7 +584,9 @@ def _resolve_owner_display(user_id: str) -> Optional[str]:
 
 
 def _entity_to_response(
-    conn: duckdb.DuckDBPyConnection, entity: dict
+    conn: duckdb.DuckDBPyConnection,
+    entity: dict,
+    rating: Optional["EntityRating"] = None,
 ) -> StoreEntityResponse:
     photo_url = (
         # ``?v=`` cache-busting fingerprint via ``version_no`` (schema v37
@@ -597,6 +622,7 @@ def _entity_to_response(
         title=entity.get("title"),
         tagline=entity.get("tagline"),
         synthetic_name=entity.get("synthetic_name"),
+        rating=rating,
     )
 
 
@@ -1237,7 +1263,8 @@ async def get_entity(
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     _enforce_visibility(entity, user, conn)
-    return _entity_to_response(conn, entity)
+    agg = store_entity_votes_repo().get_aggregate(entity_id, user_id=user["id"])
+    return _entity_to_response(conn, entity, rating=EntityRating(**agg))
 
 
 @router.get("/entities/{entity_id}/files")
@@ -2605,6 +2632,7 @@ async def delete_entity(
         # mark_deleted_for_entity can find them by entity_id.
         store_submissions_repo().mark_deleted_for_entity(entity_id)
         user_store_installs_repo().delete_all_for_entity(entity_id)
+        store_entity_votes_repo().delete_all_for_entity(entity_id)
         store_entities_repo().delete(entity_id)
         shutil.rmtree(_entity_dir(entity_id), ignore_errors=True)
         # v46: attribution lookup is live — the next UsageProcessor tick
@@ -2725,6 +2753,46 @@ async def uninstall_entity(
         store_entities_repo().bump_install_count(entity_id, -1)
         _audit(conn, user["id"], "store.entity.uninstall", entity_id)
         _invalidate_etag()
+
+
+# ---------------------------------------------------------------------------
+# Rating (thumbs up/down) — #398
+# ---------------------------------------------------------------------------
+
+
+@router.post("/entities/{entity_id}/rate", response_model=EntityRating)
+async def rate_entity(
+    entity_id: str,
+    body: RateRequest,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Cast / change / clear the caller's thumbs up/down vote on an entity.
+
+    ``vote``: ``1`` = up, ``-1`` = down, ``0`` = clear the caller's vote.
+    One vote per (entity, user): re-voting replaces the prior value in place.
+    Returns the updated ``{up, down, my_vote}`` aggregate.
+    """
+    if body.vote not in (1, -1, 0):
+        raise HTTPException(
+            status_code=422, detail="vote must be 1, -1, or 0"
+        )
+    entity = store_entities_repo().get(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="entity_not_found")
+    _enforce_visibility(entity, user, conn)
+    votes = store_entity_votes_repo()
+    if body.vote == 0:
+        votes.unvote(entity_id, user["id"])
+        _audit(conn, user["id"], "store.entity.unrate", entity_id)
+    else:
+        votes.vote(entity_id, user["id"], body.vote)
+        _audit(
+            conn, user["id"], "store.entity.rate", entity_id,
+            {"vote": body.vote},
+        )
+    agg = votes.get_aggregate(entity_id, user_id=user["id"])
+    return EntityRating(**agg)
 
 
 # ---------------------------------------------------------------------------
