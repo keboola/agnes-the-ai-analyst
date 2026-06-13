@@ -35,11 +35,31 @@ def post_webhook(url: str, payload: dict, *, timeout: float = 10.0) -> bool:
         resp = httpx.post(url, json=payload, timeout=timeout)
         if 200 <= resp.status_code < 300:
             return True
-        logger.error("webhook POST to %s failed: %s", url, resp.status_code)
+        # NEVER log the full URL: for Slack / Google Chat / Discord /
+        # Mattermost the URL path itself embeds the secret token (the infra
+        # layer marks alert_webhook_url `sensitive` for the same reason).
+        # Log only host + status so a log aggregator can't leak the
+        # credential (#648 review).
+        logger.error("webhook POST failed: %s (host %s)", resp.status_code, _redact_url(url))
         return False
     except Exception:
-        logger.exception("webhook POST to %s raised", url)
+        logger.exception("webhook POST failed (URL redacted, host %s)", _redact_url(url))
         return False
+
+
+def _redact_url(url: str) -> str:
+    """Return ``scheme://host`` only — strips the path (where incoming-webhook
+    tokens live) and any query string, so the URL can be logged for triage
+    without leaking the embedded credential."""
+    try:
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(url)
+        if parts.scheme and parts.netloc:
+            return f"{parts.scheme}://{parts.netloc}"
+    except Exception:
+        pass
+    return "<unparseable>"
 
 
 async def send_message(

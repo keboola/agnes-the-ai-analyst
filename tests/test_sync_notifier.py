@@ -132,3 +132,52 @@ def test_notify_webhook_raising_is_swallowed(monkeypatch):
     sync_notifier.notify_sync_failure(
         failed_tables=[{"table": "t", "error": "e"}], fatal=None
     )
+
+
+# ── post_webhook URL redaction (#648 review: webhook URL is a credential) ──
+
+def test_redact_url_strips_path_and_query():
+    from services.telegram_bot.sender import _redact_url
+
+    secret = "https://hooks.slack.com/services/T00/B11/zzSECRETtoken?x=1"
+    out = _redact_url(secret)
+    assert out == "https://hooks.slack.com"
+    assert "zzSECRET" not in out
+    assert "B11" not in out
+
+
+def test_redact_url_unparseable_is_safe():
+    from services.telegram_bot.sender import _redact_url
+
+    assert _redact_url("not a url") == "<unparseable>"
+
+
+def test_post_webhook_non_2xx_does_not_log_full_url(monkeypatch, caplog):
+    import logging
+
+    import services.telegram_bot.sender as sender
+
+    class _Resp:
+        status_code = 500
+
+    monkeypatch.setattr(sender.httpx, "post", lambda *a, **k: _Resp())
+    secret = "https://hooks.slack.com/services/T00/B11/zzSECRETtoken"
+    with caplog.at_level(logging.ERROR):
+        assert sender.post_webhook(secret, {"text": "hi"}) is False
+    assert "zzSECRET" not in caplog.text
+    assert "B11" not in caplog.text
+
+
+def test_post_webhook_exception_does_not_log_full_url(monkeypatch, caplog):
+    import logging
+
+    import services.telegram_bot.sender as sender
+
+    def _boom(*a, **k):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(sender.httpx, "post", _boom)
+    secret = "https://hooks.slack.com/services/T00/B11/zzSECRETtoken"
+    with caplog.at_level(logging.ERROR):
+        assert sender.post_webhook(secret, {"text": "hi"}) is False
+    assert "zzSECRET" not in caplog.text

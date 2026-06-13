@@ -749,10 +749,25 @@ sys.exit(compute_exit_code(result, len(configs)))
                             logger.error(
                                 "Custom connector %s failed: %s", connector_dir.name, custom_result.stderr[-500:]
                             )
+                            # Symmetry with the Keboola extractor exit-code
+                            # path — a failed custom connector must also reach
+                            # the webhook alert, not just stderr (#648 review).
+                            collected_errors.append(
+                                {
+                                    "table": f"(custom connector: {connector_dir.name})",
+                                    "error": f"connector failed (exit {custom_result.returncode}) — see server logs",
+                                }
+                            )
                         else:
                             logger.info("Custom connector %s completed", connector_dir.name)
                     except subprocess.TimeoutExpired:
                         logger.error("Custom connector %s timed out", connector_dir.name)
+                        collected_errors.append(
+                            {
+                                "table": f"(custom connector: {connector_dir.name})",
+                                "error": "connector timed out after 600s",
+                            }
+                        )
 
         # Materialized SQL pass — runs admin-registered SQL through the
         # source's DuckDB extension (BQ via BqAccess, Keboola via
