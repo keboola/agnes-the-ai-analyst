@@ -34,8 +34,10 @@ def web_client(tmp_path, monkeypatch):
     (tmp_path / "analytics").mkdir()
     (tmp_path / "extracts").mkdir()
     from src.db import close_system_db
+
     close_system_db()
     from app.main import create_app
+
     app = create_app()
     yield TestClient(app)
     close_system_db()
@@ -45,11 +47,15 @@ def _create_user(client, email, password="UserPass1!"):
     from argon2 import PasswordHasher
     from src.db import get_system_db
     from src.repositories.users import UserRepository
+
     ph = PasswordHasher()
     conn = get_system_db()
     user_id = email.split("@")[0]
     UserRepository(conn).create(
-        id=user_id, email=email, name=user_id, password_hash=ph.hash(password),
+        id=user_id,
+        email=email,
+        name=user_id,
+        password_hash=ph.hash(password),
     )
     conn.close()
     r = client.post("/auth/token", json={"email": email, "password": password})
@@ -89,6 +95,22 @@ def _make_banned_skill_zip(skill_name: str = "evil-skill") -> bytes:
     return buf.getvalue()
 
 
+def _make_malformed_and_banned_zip(skill_name: str = "probe-skill") -> bytes:
+    """A bundle that fails the *validation* tier (content) AND trips
+    static-security — the shape an attacker uses to probe the deny-list
+    rule set behind an otherwise-malformed bundle. Manifest passes (SKILL.md
+    present, valid name) so metadata extraction succeeds and we reach the
+    inline checks; the short description + short body fail content_check."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(
+            f"{skill_name}/SKILL.md",
+            f"---\nname: {skill_name}\ndescription: short\n---\n\ntiny\n",
+        )
+        zf.writestr(f"{skill_name}/run.py", "import sys\neval(sys.argv[1])\n")
+    return buf.getvalue()
+
+
 # Verdict the mocked LLM review returns for the happy path — safe, no
 # findings, content quality pass → is_safe() == True.
 _SAFE_VERDICT = {
@@ -124,6 +146,7 @@ _RISKY_VERDICT = {
 def _row_counts():
     """(store_entities, store_submissions) row counts from system.duckdb."""
     from src.db import get_system_db
+
     conn = get_system_db()
     try:
         ents = conn.execute("SELECT COUNT(*) FROM store_entities").fetchone()[0]
@@ -142,6 +165,16 @@ def _enable_guardrails(monkeypatch):
     """
     monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
     monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
+
+
+def _enable_guardrails_no_provider(monkeypatch):
+    """Guardrails intent ON, but the LLM provider is NOT configured.
+
+    Mirrors the real create path's fail-CLOSED third state: the entity is
+    held at "pending" with no LLM review scheduled, so it never auto-publishes.
+    """
+    monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+    monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: False)
 
 
 class TestDryRunClean:
@@ -223,6 +256,92 @@ class TestDryRunBanned:
         assert body["inline_checks"]["manifest"]["status"] == "pass", body
         assert body["would_publish"] is False, body
         assert body["llm_findings"]["risk_level"] == "high"
+
+        assert _row_counts() == before
+
+
+class TestDryRunFailClosed:
+    """The three-state guardrail matrix must match the real create path.
+
+    enabled=False           → publication hinges on inline alone (safe).
+    enabled=True, ready=True → LLM verdict decides (covered above).
+    enabled=True, ready=False→ fail-CLOSED: real path holds at "pending"
+                               with no LLM review, so a dry-run must report
+                               would_publish=False even for a clean bundle.
+    """
+
+    def test_guardrails_on_provider_not_ready_fails_closed(self, web_client, monkeypatch):
+        # Regression for #652 review: the else branch used to set safe=True
+        # unconditionally, giving a false positive (would_publish=True) for a
+        # clean bundle that the real create path would strand at "pending".
+        _enable_guardrails_no_provider(monkeypatch)
+        _, cookies = _create_user(web_client, "frank@x.com")
+        before = _row_counts()
+
+        with patch("src.store_guardrails.llm_review.review_bundle") as mock_review:
+            r = web_client.post(
+                "/api/store/entities/dryrun",
+                files={"file": ("s.zip", _make_skill_zip("clean-skill"), "application/zip")},
+                data={"type": "skill", "description": _OK_DESC},
+                cookies=cookies,
+            )
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["inline_checks"]["manifest"]["status"] == "pass", body
+        # Clean bundle, but provider not configured → would NOT auto-publish.
+        assert body["would_publish"] is False, body
+        # The LLM tier never runs when the provider is unconfigured.
+        assert body["llm_findings"] is None, body
+        mock_review.assert_not_called()
+
+        assert _row_counts() == before
+
+    def test_guardrails_off_clean_bundle_would_publish(self, web_client, monkeypatch):
+        """enabled=False: the LLM tier is a no-op, so a clean bundle publishes."""
+        monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: False)
+        _, cookies = _create_user(web_client, "grace@x.com")
+
+        with patch("src.store_guardrails.llm_review.review_bundle") as mock_review:
+            r = web_client.post(
+                "/api/store/entities/dryrun",
+                files={"file": ("s.zip", _make_skill_zip("clean-skill"), "application/zip")},
+                data={"type": "skill", "description": _OK_DESC},
+                cookies=cookies,
+            )
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["would_publish"] is True, body
+        assert body["llm_findings"] is None, body
+        mock_review.assert_not_called()
+
+
+class TestDryRunAntiEnumeration:
+    def test_validation_fail_redacts_static_findings(self, web_client):
+        """A bundle that fails validation (content) must NOT leak static_scan
+        findings — mirrors the shadowing defense in _reject_inline_or_continue
+        so a malformed bundle can't be used to enumerate the deny-list."""
+        _, cookies = _create_user(web_client, "heidi@x.com")
+        before = _row_counts()
+
+        r = web_client.post(
+            "/api/store/entities/dryrun",
+            files={"file": ("s.zip", _make_malformed_and_banned_zip(), "application/zip")},
+            data={"type": "skill", "description": "short"},
+            cookies=cookies,
+        )
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Validation (content) failed → cannot publish.
+        assert body["would_publish"] is False, body
+        assert body["inline_checks"]["content"]["status"] == "fail", body
+        # static_security is shadowed — neither status "fail" nor any findings
+        # are exposed, so the deny-list rule set can't be probed.
+        static = body["inline_checks"]["static_security"]
+        assert static == {"status": "skipped"}, static
+        assert "findings" not in static, static
 
         assert _row_counts() == before
 
