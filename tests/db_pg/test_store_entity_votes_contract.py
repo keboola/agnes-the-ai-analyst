@@ -8,6 +8,7 @@ Models the per-user one-vote-per-entity pattern after the ``knowledge_votes``
 repo (see ``tests/db_pg/test_mcp_sources_contract.py`` for the fixture shape).
 Closes #398.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -20,6 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # ---------------------------------------------------------------------------
 # repo construction helpers — one per backend
 # ---------------------------------------------------------------------------
+
 
 def _make_duckdb_repo(tmp_path):
     # Route through `_open_duckdb` (rather than bare `duckdb.connect`) so the
@@ -46,10 +48,12 @@ def _make_pg_repo(pg_engine, monkeypatch):
 
     monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
     import src.db_pg as db_pg
+
     db_pg.dispose()
     db_pg.get_engine()
 
     from src.repositories.store_entity_votes_pg import StoreEntityVotesPgRepository
+
     return StoreEntityVotesPgRepository(db_pg.get_engine()), None
 
 
@@ -70,6 +74,7 @@ def repo(request, tmp_path, pg_engine, monkeypatch):
 # ---------------------------------------------------------------------------
 # contract tests — same calls, same answers from both engines
 # ---------------------------------------------------------------------------
+
 
 def test_empty_aggregate_is_zero(repo):
     agg = repo.get_aggregate("e1")
@@ -141,3 +146,25 @@ def test_votes_are_scoped_per_entity(repo):
     repo.vote("e2", "u1", -1)
     assert repo.get_aggregate("e1", user_id="u1") == {"up": 1, "down": 0, "my_vote": 1}
     assert repo.get_aggregate("e2", user_id="u1") == {"up": 0, "down": 1, "my_vote": -1}
+
+
+def test_delete_all_for_entity_clears_every_vote(repo):
+    """#651 review: sync-map requires a contract test for every repo method.
+    delete_all_for_entity removes all votes for one entity, returns the count
+    deleted, leaves other entities untouched, and zeroes the aggregate."""
+    repo.vote("e1", "u1", 1)
+    repo.vote("e1", "u2", 1)
+    repo.vote("e1", "u3", -1)
+    repo.vote("e2", "u1", 1)  # different entity — must survive
+
+    deleted = repo.delete_all_for_entity("e1")
+    assert deleted == 3
+
+    assert repo.get_aggregate("e1") == {"up": 0, "down": 0, "my_vote": 0}
+    # The other entity's vote is untouched.
+    assert repo.get_aggregate("e2", user_id="u1") == {"up": 1, "down": 0, "my_vote": 1}
+
+
+def test_delete_all_for_entity_no_votes_is_zero(repo):
+    """Deleting votes for an entity with none returns 0 and does not raise."""
+    assert repo.delete_all_for_entity("never-voted") == 0
