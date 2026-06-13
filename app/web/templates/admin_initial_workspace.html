@@ -272,6 +272,12 @@
 
 const IW_API = "/api/admin/initial-workspace";
 
+// The schedule value loaded into the edit modal. sync_schedule is only sent on
+// save when the admin actually changed it — sending it unconditionally would
+// turn an edit of an unrelated field (URL/branch/token) into an accidental
+// clear, flipping an instance off the default cadence to disabled (#653 review).
+let iwOriginalSchedule = "";
+
 // ── Helpers (re-provided) ──
 function escHtml(s) {
   const d = document.createElement("div");
@@ -438,7 +444,8 @@ function iwOpenModal(editing, data) {
     editing ? "Edit Template Repository" : "Link to Template Repository";
   document.getElementById("iw-url").value = (editing && data) ? (data.url || "") : "";
   document.getElementById("iw-branch").value = (editing && data) ? (data.branch || "") : "";
-  document.getElementById("iw-schedule").value = (editing && data) ? (data.sync_schedule || "") : "";
+  iwOriginalSchedule = (editing && data) ? (data.sync_schedule || "") : "";
+  document.getElementById("iw-schedule").value = iwOriginalSchedule;
   document.getElementById("iw-token").value = "";  // Never prefill PAT
   openModal("iw-modal");
 }
@@ -454,11 +461,12 @@ async function iwSave() {
   }
   const body = { url };
   if (branch) body.branch = branch;
-  // sync_schedule: always sent (the field is pre-filled with the current value
-  // on edit) — empty string clears it (disable auto-sync), a value sets it.
-  // Must NOT coalesce to null: null = "leave existing alone", which would make
-  // the blank-to-disable path unreachable.
-  body.sync_schedule = schedule;
+  // sync_schedule three-state (mirrors token): omit = "leave existing alone",
+  // "" = clear (disable auto-sync), value = set. Only send when the admin
+  // actually changed the field — otherwise editing URL/branch/token would
+  // re-send the prefilled value and, when that value is empty, silently
+  // disable an instance running on the default cadence (#653 review).
+  if (schedule !== iwOriginalSchedule) body.sync_schedule = schedule;
   // Only include token when admin typed one — empty string means "leave existing alone"
   if (token) body.token = token;
   try {

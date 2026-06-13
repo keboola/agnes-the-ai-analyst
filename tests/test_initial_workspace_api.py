@@ -811,6 +811,34 @@ def test_admin_post_sync_schedule_empty_clears(web_client):
     assert "sync_schedule" in section
 
 
+def test_admin_post_omitting_sync_schedule_preserves_existing(web_client):
+    """Omitting sync_schedule (field absent in the JSON) must leave the existing
+    schedule untouched — editing only URL/branch must NOT disable auto-sync.
+
+    This is the backend contract the edit form relies on after the #653 review:
+    the frontend now sends sync_schedule only when the admin changed it, so an
+    unrelated edit arrives with the key absent and the schedule survives."""
+    import yaml
+    from app.secrets import _state_dir
+
+    headers = _make_admin(web_client)
+    web_client.post(
+        "/api/admin/initial-workspace",
+        headers=headers,
+        json={"url": "https://github.com/a/b.git", "sync_schedule": "every 6h"},
+    )
+    # Edit only the branch — sync_schedule key absent from the payload.
+    r = web_client.post(
+        "/api/admin/initial-workspace",
+        headers=headers,
+        json={"url": "https://github.com/a/b.git", "branch": "main"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["sync_schedule"] == "every 6h"
+    section = yaml.safe_load((_state_dir() / "instance.yaml").read_text())["initial_workspace"]
+    assert section.get("sync_schedule") == "every 6h"
+
+
 def test_sync_if_configured_skips_when_unconfigured(web_client):
     """The load-bearing scheduler-gate invariant: the nightly wrapper returns
     200 {skipped:true} (NOT 400) on an instance without an IWT, so the job

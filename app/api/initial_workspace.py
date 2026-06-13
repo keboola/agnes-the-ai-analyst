@@ -31,6 +31,7 @@ from typing import Any, Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
@@ -458,7 +459,9 @@ async def admin_sync(
             status_code=400,
             detail={"kind": "not_configured", "hint": "Register a repo first"},
         )
-    return _do_sync(conn, user.get("id"))
+    # _do_sync runs blocking git clone/fast-forward; offload it so the async
+    # handler doesn't stall the event loop for the duration of the round-trip.
+    return await run_in_threadpool(_do_sync, conn, user.get("id"))
 
 
 @router.post("/api/admin/initial-workspace/sync-if-configured")
@@ -487,7 +490,8 @@ async def admin_sync_if_configured(
     section = _read_section()
     if not section.get("url"):
         return {"skipped": True, "reason": "not_configured"}
-    return _do_sync(conn, user.get("id"))
+    # Offload the blocking git sync off the event loop (see admin_sync).
+    return await run_in_threadpool(_do_sync, conn, user.get("id"))
 
 
 def _do_sync(conn: duckdb.DuckDBPyConnection, user_id: Optional[str]) -> dict:
