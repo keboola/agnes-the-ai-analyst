@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.33] — 2026-06-13
+
+### Added
 - **Query telemetry in the admin usage view** (addresses #410, on-demand slice).
   `GET /api/admin/telemetry/summary` now returns a `query_telemetry` facet that
   aggregates the existing `query.remote` / `query.local` / `snapshot.create`
@@ -21,15 +33,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `/admin/telemetry` and via a new `agnes admin telemetry summary` CLI command
   (`--window`, `--json`). Computed on demand with a `GROUP BY` over `audit_log`
   (no new table, no scheduler rollup — the periodic-aggregation step from the
-  issue is deferred). Implemented on both DuckDB and Postgres backends.
-
-### Changed
-
-### Fixed
-
-### Removed
-
-### Internal
+  issue is deferred). Implemented on both DuckDB and Postgres backends. (#650)
 
 ## [0.71.32] — 2026-06-13
 
