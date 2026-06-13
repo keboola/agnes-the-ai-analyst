@@ -259,6 +259,33 @@ def list_template_files() -> List[str]:
     return out
 
 
+def list_iwt_repo_files() -> List[str]:
+    """Repo-ROOT-relative file list of the synced IWT clone, for the admin
+    bind-git picker (#622 Slice 3).
+
+    Unlike list_template_files() (workspace/-relative, workspace/ subtree
+    only), this returns paths the bind-git endpoint accepts verbatim — e.g.
+    'workspace/CLAUDE.md', 'install-prompt/template.md.tmpl'. Excludes the
+    repo's own .git/ tree and any symlinks (a symlink target could escape the
+    clone root; resolve_prompt/_is_within would reject it at read time anyway,
+    so never surface an unbindable entry). Empty list when no clone exists /
+    IWT not configured.
+    """
+    iwt_root = _iwt_snapshot()
+    if iwt_root is None:
+        return []
+    out: List[str] = []
+    for entry in iwt_root.rglob("*"):
+        if entry.is_symlink() or not entry.is_file():
+            continue
+        rel = entry.relative_to(iwt_root)
+        if ".git" in rel.parts:
+            continue
+        out.append(rel.as_posix())
+    out.sort()
+    return out
+
+
 def build_zip(conn=None, *, user=None, server_url=None) -> bytes:
     """Build an in-memory zip of ``<initial-workspace>/workspace/``,
     excluding ``.git/`` and anything outside the ``workspace/`` subdir.

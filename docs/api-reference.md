@@ -786,7 +786,10 @@ Unified admin surface for the install + workspace prompts (`kind ∈
 install|workspace`), each with an explicit Git ⇄ Editor `source_mode` toggle.
 Editor mode keeps the DB override editable; Git mode binds the prompt to a file
 in the Initial Workspace Template clone. Backs the `/admin/prompts` page.
+`iwt-files` (read-only) lists the repo-root-relative bindable files in the
+synced IWT clone for the bind-git file picker.
 
+- /api/admin/prompts/iwt-files
 - /api/admin/prompts/{kind}
 - /api/admin/prompts/{kind}/source
 - /api/admin/prompts/{kind}/bind-git
