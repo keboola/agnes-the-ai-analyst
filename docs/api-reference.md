@@ -767,8 +767,17 @@ checks against.
 
 ### `/api/admin/initial-workspace` — Initial workspace template
 
+Admin-only (web UI at `/admin/initial-workspace`; no analyst CLI/MCP analogue).
+`/sync` is the manual "Sync now" action (errors loudly when no repo is
+registered). `/sync-if-configured` is the nightly-scheduler wrapper: it always
+returns 200, short-circuiting to `{"skipped": true, "reason": "not_configured"}`
+when no IWT repo is registered, so the nightly job is a no-op on instances
+without one. Cadence is configurable via `SCHEDULER_INITIAL_WORKSPACE_SCHEDULE`
+or `instance.yaml` `initial_workspace.sync_schedule` (default `daily 03:30`).
+
 - /api/admin/initial-workspace
 - /api/admin/initial-workspace/sync
+- /api/admin/initial-workspace/sync-if-configured
 
 ### `/api/admin/welcome-template` — Welcome message template
 

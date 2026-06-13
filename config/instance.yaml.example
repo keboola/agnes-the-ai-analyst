@@ -596,6 +596,12 @@ chat:
 #   url: https://github.com/keboola/agnes-the-ai-analyst-workspace-seed
 #   branch: main
 #   token_env: AGNES_INITIAL_WORKSPACE_TOKEN  # optional; PAT name in shell env
+#   sync_schedule: "daily 03:30"              # optional; nightly auto-sync cadence.
+#                                             # Grammar: src/scheduler.py (daily HH:MM
+#                                             # UTC / every Nm / every Nh). Empty = manual
+#                                             # sync only. Takes effect on next scheduler
+#                                             # restart. Env override:
+#                                             # SCHEDULER_INITIAL_WORKSPACE_SCHEDULE
 #   last_synced_at: ...                       # written by API after sync
 #   last_commit_sha: ...                      # written by API after sync
 #   last_error: ...                           # written by API on failure

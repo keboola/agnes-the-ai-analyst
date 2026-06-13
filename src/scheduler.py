@@ -98,9 +98,7 @@ def is_table_due(
         elapsed_minutes = (now - last_sync).total_seconds() / 60
         due = elapsed_minutes >= interval_minutes
         if due:
-            logger.debug(
-                f"Interval schedule: {elapsed_minutes:.0f}m elapsed >= {interval_minutes}m interval"
-            )
+            logger.debug(f"Interval schedule: {elapsed_minutes:.0f}m elapsed >= {interval_minutes}m interval")
         return due
 
     # Check daily schedule: "daily HH:MM" or "daily HH:MM,HH:MM,..."
@@ -155,9 +153,7 @@ def _is_daily_due(
     Returns True if ANY of the target times is due.
     """
     for target_hour, target_minute in target_times:
-        today_target = now.replace(
-            hour=target_hour, minute=target_minute, second=0, microsecond=0
-        )
+        today_target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
 
         if now >= today_target and last_sync < today_target:
             logger.debug(
@@ -287,9 +283,7 @@ def _is_cron_due(
             occurrence = None
             for hour in sorted(hour_set, reverse=True):
                 for minute in sorted(minute_set, reverse=True):
-                    cand = datetime.combine(
-                        day, time(hour, minute), tzinfo=now.tzinfo
-                    )
+                    cand = datetime.combine(day, time(hour, minute), tzinfo=now.tzinfo)
                     if cand <= cap:
                         occurrence = cand
                         break
@@ -298,8 +292,7 @@ def _is_cron_due(
             if occurrence is not None:
                 if occurrence > last_sync:
                     logger.debug(
-                        "Cron schedule: occurrence at %s in window "
-                        "(%s, %s] -> due",
+                        "Cron schedule: occurrence at %s in window (%s, %s] -> due",
                         occurrence.isoformat(),
                         last_sync.isoformat(),
                         now.isoformat(),

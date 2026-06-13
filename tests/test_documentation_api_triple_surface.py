@@ -102,6 +102,11 @@ _PROMPTS_REASON = (
     "no analyst CLI/MCP analogue (mirrors the grandfathered "
     "/api/admin/{welcome,workspace-prompt}-template editors)"
 )
+_IW_SYNC_IF_CONFIGURED_REASON = (
+    "admin-web/scheduler-only nightly auto-sync wrapper (#622 Slice 3 PR-B) — "
+    "the scheduler sidecar POSTs it via SCHEDULER_API_TOKEN; no analyst "
+    "CLI/MCP analogue, mirrors the manual /sync route's exemption"
+)
 _STORE_DRYRUN_REASON = (
     "Store upload-wizard helper (#317) — pre-submit dry-run that previews "
     "guardrail findings in the /store/new web form before the real "
@@ -110,6 +115,7 @@ _STORE_DRYRUN_REASON = (
     "create endpoint carries the triple-surface contract."
 )
 _EXEMPT: dict[str, str] = {
+    "/api/admin/initial-workspace/sync-if-configured": _IW_SYNC_IF_CONFIGURED_REASON,
     "/api/store/entities/dryrun": _STORE_DRYRUN_REASON,
     "/api/admin/prompts/{kind}": _PROMPTS_REASON,
     "/api/admin/prompts/{kind}/source": _PROMPTS_REASON,

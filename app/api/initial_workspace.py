@@ -31,6 +31,7 @@ from typing import Any, Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
@@ -73,11 +74,18 @@ class RegisterRequest(BaseModel):
     ``token = None`` means "leave existing PAT alone".
     ``token = ""``   means "clear PAT".
     ``token = "ghp_..."`` means "set/rotate PAT".
+
+    ``sync_schedule``: optional nightly auto-sync cadence (#622 Slice 3 PR-B).
+    ``None`` (field absent) leaves the existing schedule untouched; ``""``
+    clears it (disable auto-sync); a non-empty value sets it. Validated against
+    the scheduler grammar (``daily HH:MM`` / ``every Nm`` / ``cron …``) so a
+    typo can't silently disable the nightly job.
     """
 
     url: str
     branch: Optional[str] = None
     token: Optional[str] = None
+    sync_schedule: Optional[str] = None
 
 
 class AdminInitialWorkspaceResponse(BaseModel):
@@ -87,6 +95,7 @@ class AdminInitialWorkspaceResponse(BaseModel):
     url: Optional[str] = None
     branch: Optional[str] = None
     has_token: bool = False
+    sync_schedule: Optional[str] = None
     last_synced_at: Optional[str] = None
     last_commit_sha: Optional[str] = None
     last_error: Optional[str] = None
@@ -123,6 +132,7 @@ def _read_section() -> dict:
     instance.yaml, or empty dict when the section is absent.
     """
     from app.api.admin import _load_current_instance_yaml
+
     cfg = _load_current_instance_yaml()
     section = cfg.get("initial_workspace") if isinstance(cfg, dict) else None
     return section if isinstance(section, dict) else {}
@@ -179,9 +189,7 @@ def _write_section(patch: dict) -> dict:
         overlay_payload["initial_workspace"] = merged
 
         tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
-        tmp_path.write_text(
-            yaml.dump(overlay_payload, default_flow_style=False, sort_keys=False)
-        )
+        tmp_path.write_text(yaml.dump(overlay_payload, default_flow_style=False, sort_keys=False))
         os.replace(tmp_path, config_path)
         logger.info(
             "initial-workspace: wrote `initial_workspace:` section to %s",
@@ -226,9 +234,7 @@ def _drop_section() -> bool:
             return False
         overlay_payload.pop("initial_workspace", None)
         tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
-        tmp_path.write_text(
-            yaml.dump(overlay_payload, default_flow_style=False, sort_keys=False)
-        )
+        tmp_path.write_text(yaml.dump(overlay_payload, default_flow_style=False, sort_keys=False))
         os.replace(tmp_path, config_path)
         reset_cache()
         return True
@@ -267,9 +273,7 @@ def _audit(
         logger.exception("audit log write failed for %s", action)
 
 
-def _section_to_admin_response(
-    section: dict, file_count: int = 0
-) -> AdminInitialWorkspaceResponse:
+def _section_to_admin_response(section: dict, file_count: int = 0) -> AdminInitialWorkspaceResponse:
     if not section.get("url"):
         return AdminInitialWorkspaceResponse(configured=False)
     token_env = section.get("token_env") or ""
@@ -279,6 +283,10 @@ def _section_to_admin_response(
         url=section.get("url"),
         branch=section.get("branch"),
         has_token=has_token,
+        # Normalize the cleared marker ("" in the overlay — distinct from a
+        # null/absent key so the scheduler can tell "disabled" from "never
+        # configured") back to null for the API: externally, empty == disabled.
+        sync_schedule=section.get("sync_schedule") or None,
         last_synced_at=section.get("last_synced_at"),
         last_commit_sha=section.get("last_commit_sha"),
         last_error=section.get("last_error"),
@@ -337,6 +345,36 @@ async def admin_post(
         "branch": (body.branch or "").strip() or None,
     }
 
+    # sync_schedule routing — three-state like token (#622 Slice 3 PR-B):
+    #   None  → field absent, leave existing schedule untouched
+    #   ""    → clear (disable auto-sync)
+    #   "…"   → set, but only after validating against the scheduler grammar
+    #           so a typo can't silently disable the nightly job.
+    #
+    # The clear writes an explicit empty string (NOT None/null): the scheduler
+    # reads the YAML through get_value, which collapses both a null value and an
+    # absent key to its default — so a null would be indistinguishable from
+    # "never configured" and would silently fall back to the daily default. An
+    # explicit "" survives that read and lets _iw_sync_schedule() disable the
+    # nightly job, honoring the documented "leave empty to disable" contract.
+    if body.sync_schedule is not None:
+        sched = body.sync_schedule.strip()
+        if sched == "":
+            patch["sync_schedule"] = ""
+        else:
+            from src.scheduler import is_valid_schedule
+
+            if not is_valid_schedule(sched):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "sync_schedule must be a valid scheduler cadence: "
+                        "'daily HH:MM' (UTC), 'every Nm'/'every Nh', or "
+                        "'cron <5-field expr>'"
+                    ),
+                )
+            patch["sync_schedule"] = sched
+
     # Token routing — same three-state semantics as the marketplace POST:
     # None = leave alone, "" = clear, non-empty = rotate.
     token_changed: Optional[str] = None
@@ -363,9 +401,7 @@ async def admin_post(
         },
     )
 
-    file_count = (
-        len(list_template_files()) if merged.get("last_commit_sha") else 0
-    )
+    file_count = len(list_template_files()) if merged.get("last_commit_sha") else 0
     return _section_to_admin_response(merged, file_count=file_count)
 
 
@@ -411,6 +447,11 @@ async def admin_sync(
     surfaces a ``400`` with the validation / git error so the admin sees
     it in the Sync-now modal. The error payload uses the typed-``kind``
     shape the CLI's error renderer already understands.
+
+    Manual sync errors loudly (``400 not_configured``) when no repo is
+    registered — that's intentional UX for a button click. The nightly
+    scheduler uses ``/sync-if-configured`` instead, which short-circuits
+    silently.
     """
     section = _read_section()
     if not section.get("url"):
@@ -418,7 +459,52 @@ async def admin_sync(
             status_code=400,
             detail={"kind": "not_configured", "hint": "Register a repo first"},
         )
+    # _do_sync runs blocking git clone/fast-forward; offload it so the async
+    # handler doesn't stall the event loop for the duration of the round-trip.
+    return await run_in_threadpool(_do_sync, conn, user.get("id"))
 
+
+@router.post("/api/admin/initial-workspace/sync-if-configured")
+async def admin_sync_if_configured(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Scheduler-facing nightly auto-sync wrapper (#622 Slice 3 PR-B).
+
+    Short-circuits to ``200 {"skipped": true, "reason": "not_configured"}``
+    when no template repo is registered, so the nightly job never logs a
+    warning on instances without an IWT. When configured, delegates to the
+    same ``_do_sync`` logic the manual route uses — which still propagates a
+    genuine clone/fast-forward failure as ``400 {"kind": "git_failed"}``.
+    That is intentional: a git failure on a *configured* IWT should be loud,
+    and the scheduler logs the non-2xx as a warning without hard-failing the
+    job.
+
+    Mirrors the Jira jobs' "endpoint self-gates, scheduler stays dumb"
+    idiom — the scheduler tuple is a one-liner with no conditional logic.
+
+    Admin-web/scheduler-only (no analyst CLI/MCP analogue) → EXEMPT in the
+    triple-surface gate, alongside the other ``/api/admin/initial-workspace/*``
+    routes.
+    """
+    section = _read_section()
+    if not section.get("url"):
+        return {"skipped": True, "reason": "not_configured"}
+    # Offload the blocking git sync off the event loop (see admin_sync).
+    return await run_in_threadpool(_do_sync, conn, user.get("id"))
+
+
+def _do_sync(conn: duckdb.DuckDBPyConnection, user_id: Optional[str]) -> dict:
+    """Clone / fast-forward the registered template repo and persist sync
+    state. Shared by the manual ``/sync`` route and the nightly
+    ``/sync-if-configured`` wrapper.
+
+    Callers MUST ensure a repo is registered (``_read_section()['url']``
+    truthy) before calling — this helper assumes it and reads the section
+    fresh. Raises ``HTTPException`` (400 with a typed ``kind``) on
+    validation / git failure, persisting ``last_error`` first.
+    """
+    section = _read_section()
     try:
         result = sync_template(
             url=section["url"],
@@ -432,7 +518,7 @@ async def admin_sync(
         _write_section({"last_error": str(e)})
         _audit(
             conn,
-            actor_id=user.get("id"),
+            actor_id=user_id,
             action="initial_workspace.sync_failed",
             params={"error": str(e), "kind": "validation"},
         )
@@ -444,7 +530,7 @@ async def admin_sync(
         _write_section({"last_error": str(e)})
         _audit(
             conn,
-            actor_id=user.get("id"),
+            actor_id=user_id,
             action="initial_workspace.sync_failed",
             params={"error": str(e), "kind": "git"},
         )
@@ -454,17 +540,20 @@ async def admin_sync(
         ) from None
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    _write_section({
-        "last_synced_at": now_iso,
-        "last_commit_sha": result["commit_sha"],
-        "last_error": None,
-    })
+    _write_section(
+        {
+            "last_synced_at": now_iso,
+            "last_commit_sha": result["commit_sha"],
+            "last_error": None,
+        }
+    )
 
     # New seed content landed → connector manifest cache is stale. Drop it
     # so the next render scan picks up renamed/added/removed connectors
     # immediately rather than waiting for process restart.
     try:
         from src.connectors_manifest import invalidate_cache
+
         invalidate_cache()
     except Exception:
         logger.exception("connectors_manifest: cache invalidation after sync failed")
@@ -499,7 +588,7 @@ async def admin_sync(
 
     _audit(
         conn,
-        actor_id=user.get("id"),
+        actor_id=user_id,
         action="initial_workspace.sync",
         params={
             "commit_sha": result["commit_sha"],
@@ -643,9 +732,7 @@ async def analyst_zip(
         # `*/*` is curl's default and must keep getting the raw 401 so
         # tooling that parses `{"detail": "..."}` doesn't silently break.
         if "text/html" in request.headers.get("accept", ""):
-            return RedirectResponse(
-                url="/login?next=/api/initial-workspace.zip", status_code=302
-            )
+            return RedirectResponse(url="/login?next=/api/initial-workspace.zip", status_code=302)
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
 
     section = _read_section()
@@ -665,9 +752,7 @@ async def analyst_zip(
         # replaces the clone's workspace/CLAUDE.md for override-mode init
         # (#622) — rendered for the requesting analyst, since this zip
         # bypasses the /api/welcome render step (#638 review).
-        data = build_zip(
-            conn, user=user, server_url=str(request.base_url).rstrip("/")
-        )
+        data = build_zip(conn, user=user, server_url=str(request.base_url).rstrip("/"))
     except TemplateValidationError as e:
         # Defense in depth — sync_template already validates, but a
         # manual edit on disk between sync and zip-fetch should fail
@@ -713,10 +798,7 @@ async def analyst_applied(
     if body.mode not in ("force_overwrite", "fresh_install", "update"):
         raise HTTPException(
             status_code=422,
-            detail=(
-                "mode must be one of: force_overwrite, fresh_install, update "
-                f"(got {body.mode!r})"
-            ),
+            detail=(f"mode must be one of: force_overwrite, fresh_install, update (got {body.mode!r})"),
         )
     _audit(
         conn,

@@ -2801,6 +2801,18 @@ async def admin_marketplaces_page(
     return templates.TemplateResponse(request, "admin_marketplaces.html", ctx)
 
 
+@router.get("/admin/initial-workspace", response_class=HTMLResponse)
+async def admin_initial_workspace_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Admin page for the Initial Workspace Template repo (register / sync /
+    delete + per-file prompt provenance). Relocated from /admin/server-config
+    (#622 Slice 3 PR-B)."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_initial_workspace.html", ctx)
+
+
 # ── Inbound MCP source admin (RFC keboola/agnes-the-ai-analyst#461) ──
 #
 # Shell-only routes — every dynamic bit is fetched client-side from the
@@ -2854,6 +2866,10 @@ SCHEDULER_AUDIT_ACTIONS = [
     "run_corporate_memory",
     "marketplace.sync_all",
     "run_blocked_purge",
+    # Initial Workspace Template nightly auto-sync (#622 Slice 3 PR-B) —
+    # written by _do_sync via the /sync-if-configured scheduler job.
+    "initial_workspace.sync",
+    "initial_workspace.sync_failed",
 ]
 
 
