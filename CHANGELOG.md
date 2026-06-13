@@ -15,6 +15,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- `GET /api/health` no longer blocks the event loop on its DB schema read. The
+  liveness probe is `async`, but it ran the schema `SELECT` synchronously on the
+  same system connection the orchestrator writes `sync_state` to during a
+  rebuild — so a probe that landed mid-rebuild stalled the whole event loop and
+  timed out, tripping a false `HEALTH: /api/health not returning 200` watchdog
+  alert (seen recurring on busy BigQuery instances). The read is now offloaded
+  to a worker thread (`get_system_db()` hands out a cursor-per-call, so it's
+  thread-safe) and memoized for 30s, since the schema only changes at startup
+  migration. The response body is unchanged (`status` + `db_schema` + `current`),
+  so the watchdog's schema-bump info event and the docker smoke check keep working.
 
 ### Removed
 

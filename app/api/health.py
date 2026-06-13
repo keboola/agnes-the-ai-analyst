@@ -19,22 +19,24 @@ check function. The aggregator at the bottom of `health_check_detailed`
 treats `info` as non-promoting.
 """
 
+import asyncio
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import duckdb
+from fastapi import APIRouter, Depends, Query
+
+from app.auth.dependencies import _get_db, get_current_user
 from app.secrets_vault import vault_key_configured
+from src.db import SCHEMA_VERSION, get_system_db
 from src.repositories import (
     sync_state_repo,
 )
+
 logger = logging.getLogger(__name__)
-
-from fastapi import APIRouter, Depends, Query
-import duckdb
-
-from app.auth.dependencies import _get_db, get_current_user
-from src.db import SCHEMA_VERSION, get_system_db
 
 router = APIRouter(tags=["health"])
 
@@ -70,6 +72,7 @@ def _check_bq_billing_project() -> dict | None:
 
     try:
         from connectors.bigquery.access import get_bq_access
+
         bq = get_bq_access()
         billing = bq.projects.billing
         data = bq.projects.data
@@ -292,6 +295,7 @@ def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
 def time_now() -> float:
     """Wall-clock seconds since epoch — separated out for test seam parity."""
     import time as _t
+
     return _t.time()
 
 
@@ -316,9 +320,7 @@ def _check_db_schema() -> dict:
     """
     try:
         conn = get_system_db()
-        row = conn.execute(
-            "SELECT version FROM schema_version ORDER BY applied_at DESC LIMIT 1"
-        ).fetchone()
+        row = conn.execute("SELECT version FROM schema_version ORDER BY applied_at DESC LIMIT 1").fetchone()
         if row is None:
             return {"db_schema": "mismatch", "detail": "no schema_version row found"}
         current_version = row[0]
@@ -330,10 +332,45 @@ def _check_db_schema() -> dict:
         return {"db_schema": "unreachable", "detail": str(e)}
 
 
+# The liveness probe (`/api/health`) is hit every few seconds by the LB, the
+# compose healthcheck, and the on-VM watchdog. Re-running the schema `SELECT`
+# on every probe serializes it behind any in-flight orchestrator rebuild
+# (which writes `sync_state` on the same system connection) — the probe then
+# times out and the watchdog fires a false `HEALTH: not 200`. The schema only
+# changes at startup migration, so memoize the result for a short TTL.
+_SCHEMA_CACHE_TTL = 30.0  # seconds
+_schema_cache: dict | None = None
+_schema_cache_at: float = 0.0
+
+
+def _cached_db_schema() -> dict:
+    """`_check_db_schema()` memoized for `_SCHEMA_CACHE_TTL` seconds.
+
+    Transient `unreachable` results are never cached so a momentarily-busy DB
+    recovers to `ok` on the next probe rather than pinning a stale failure.
+    """
+    global _schema_cache, _schema_cache_at
+    now = time.monotonic()
+    cached = _schema_cache
+    if cached is not None and (now - _schema_cache_at) < _SCHEMA_CACHE_TTL:
+        return cached
+    result = _check_db_schema()
+    if result.get("db_schema") != "unreachable":
+        _schema_cache = result
+        _schema_cache_at = now
+    return result
+
+
 @router.get("/api/health")
 async def health_check():
-    """Minimal health check for load balancers / compose healthcheck. No auth required."""
-    schema_check = _check_db_schema()
+    """Minimal health check for load balancers / compose healthcheck. No auth required.
+
+    The schema read is offloaded to a worker thread (`get_system_db()` hands
+    out a cursor-per-call, so this is thread-safe) and memoized — see
+    `_cached_db_schema` — so a probe never blocks the event loop on DB
+    contention during an orchestrator rebuild.
+    """
+    schema_check = await asyncio.to_thread(_cached_db_schema)
     status = "ok"
     if schema_check["db_schema"] != "ok":
         status = "unhealthy"
@@ -389,8 +426,9 @@ async def health_check_detailed(
             if last:
                 try:
                     # Handle both tz-aware and tz-naive datetimes from DuckDB
-                    if hasattr(last, 'tzinfo') and last.tzinfo is None:
+                    if hasattr(last, "tzinfo") and last.tzinfo is None:
                         from datetime import timezone as tz
+
                         last = last.replace(tzinfo=tz.utc)
                     if (now - last).total_seconds() > 86400:
                         stale.append(s["table_id"])
@@ -431,11 +469,11 @@ async def health_check_detailed(
     # not their warning. ``audience`` lets clients compute a role-aware
     # headline without dropping checks from the response payload.
     _AUDIENCE = {
-        "duckdb_state": "analyst",   # query path; visible everywhere
-        "db_schema": "operator",     # schema migration sanity
-        "data": "operator",          # stale tables — admin scheduler
-        "users": "operator",         # admin-side ops only
-        "bq_config": "operator",     # cluster-level config
+        "duckdb_state": "analyst",  # query path; visible everywhere
+        "db_schema": "operator",  # schema migration sanity
+        "data": "operator",  # stale tables — admin scheduler
+        "users": "operator",  # admin-side ops only
+        "bq_config": "operator",  # cluster-level config
         "session_pipeline": "operator",  # admin-driven cadence
     }
     for name, check in checks.items():
@@ -458,9 +496,7 @@ async def health_check_detailed(
         return status
 
     overall = _apply_schema_escalation(_aggregate(checks.values()))
-    overall_analyst = _aggregate(
-        c for c in checks.values() if c.get("audience") == "analyst"
-    )
+    overall_analyst = _aggregate(c for c in checks.values() if c.get("audience") == "analyst")
     # db_schema is audience=operator, so it never escalates the analyst
     # headline — that's the intent.
 
@@ -504,6 +540,7 @@ async def debug_throw(
     """
     if os.environ.get("DEBUG", "").strip().lower() not in ("1", "true", "yes", "on"):
         from fastapi import HTTPException
+
         raise HTTPException(status_code=404)
 
     types = {
