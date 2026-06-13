@@ -20,6 +20,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.35] — 2026-06-13
+
+### Added
+- **Store pre-submit dry-run** — `POST /api/store/entities/dryrun` runs the full
+  guardrail pipeline (inline checks + LLM review) against a candidate bundle and
+  returns `{inline_checks, llm_findings, would_publish}` **without persisting any
+  `store_entities` / `store_submissions` / `audit_log` row**. Lets a submitter
+  preview what would block publication and iterate before the real upload —
+  instead of burning LLM tokens, eating the blocked-upload quota, and filing an
+  admin-queue entry on every retry. Same multipart payload and auth gate as
+  `POST /api/store/entities` (never anonymous). The verdict mirrors the real
+  create path's fail-CLOSED matrix (guardrails on + LLM provider not configured
+  → `would_publish=false`), withholds static-scan findings when the bundle also
+  fails validation (so a malformed bundle can't enumerate the deny-list), and
+  runs the LLM review off the event loop. Per-submitter dry-run quota and
+  identical-bundle verdict caching are deferred (tracked on #317). (#317, #652)
+
 ## [0.71.34] — 2026-06-13
 
 ### Added

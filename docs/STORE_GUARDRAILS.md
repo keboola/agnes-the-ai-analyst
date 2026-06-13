@@ -365,6 +365,56 @@ upload (useful for telemetry on what to harden checks against).
 
 ---
 
+## Pre-submit dry-run
+
+`POST /api/store/entities/dryrun` runs the **full pipeline** (inline
+checks + LLM review) against a candidate bundle and returns the findings
+**without persisting anything** — no `store_entities` row, no
+`store_submissions` row, no `audit_log` entry, no bundle left on disk.
+
+It exists so a submitter can iterate on a draft before the real upload:
+see what would block publication, fix it, and only `POST
+/api/store/entities` once the bundle is clean. Without it, every
+iteration burns LLM tokens, counts against the blocked-upload quota, and
+files an admin queue entry the admin then has to triage.
+
+- **Payload** — same multipart form as the real upload: `file` (the ZIP),
+  `type` (`skill` | `agent` | `plugin`), `description` (optional).
+- **Auth** — `Depends(get_current_user)`, the same gate as
+  `POST /api/store/entities`. Never anonymous: an open dry-run would be a
+  free LLM proxy.
+- **Response**
+
+  ```json
+  {
+    "inline_checks": { "manifest": …, "static_security": …, "content": …, "quality": … },
+    "llm_findings":  { "risk_level": …, "summary": …, "findings": […], … },
+    "would_publish": true
+  }
+  ```
+
+  `would_publish` is the AND of the inline verdict (`InlineResult.passed`)
+  and the LLM `is_safe(verdict)` decision — exactly the condition the real
+  create path uses to flip an entity to `approved`. `inline_checks` is the
+  same shape returned in the [422 contract](#uploader-facing-422-contract);
+  `llm_findings` is the raw verdict dict (`null` when guardrails are
+  disabled or the LLM provider has no credentials — in which case
+  `would_publish` rests on the inline tier alone).
+
+The bundle bytes are extracted to a scratch dir, baked into a throwaway
+plugin tree, checked, and wiped in `finally` — identical lifecycle to the
+`/entities/preview` wizard step.
+
+**Deferred (tracked on #317):** a per-submitter dry-run quota (so the
+endpoint can't be looped to burn unlimited LLM tokens) and
+identical-bundle verdict caching (`bundle_sha256 + review_model` →
+reuse the previous verdict). Until those land, the auth gate plus the
+HTTP-level rate limiter bound abuse. The endpoint is REST-only: it's a
+web-form helper with no analyst CLI/MCP analogue (the real create
+endpoint carries the triple-surface contract).
+
+---
+
 ## Disabling the pipeline
 
 Three ways:
