@@ -20,6 +20,29 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.31] — 2026-06-13
+
+### Added
+- **Webhook alert on scheduled-sync failure.** When a scheduled sync fails —
+  either fatally, on an extractor/subprocess timeout, or with per-table errors
+  (materialized-pass errors, Keboola extractor exit 1/2) — Agnes now POSTs a
+  concise `{"text": ...}` payload to an operator-configured webhook so failures
+  are noticed proactively instead of on the next dashboard check. A run that
+  hits per-table errors and then crashes sends a single combined alert, not two
+  overlapping POSTs. Configure via the new `notifications.alert_webhook_url` in
+  `instance.yaml` (env override `AGNES_ALERT_WEBHOOK_URL`); the `{"text": ...}`
+  shape is Slack / Google Chat / Mattermost / Discord incoming-webhook
+  compatible. Best-effort by contract — a webhook outage never blocks the sync.
+  No-op when the URL is unset. (#397, #648)
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
 ## [0.71.30] — 2026-06-13
 
 ### Added
