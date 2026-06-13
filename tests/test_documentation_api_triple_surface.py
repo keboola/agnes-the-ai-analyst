@@ -28,6 +28,8 @@ _COHORT: dict[str, tuple[str, str]] = {
     # Stack discovery (issue #621). subscribe/unsubscribe paths are already
     # grandfathered; browse is the new triple-surface endpoint.
     "/api/stack/browse": ("stack browse", "stack_browse"),
+    # Store thumbs up/down ratings (issue #398).
+    "/api/store/entities/{entity_id}/rate": ("store rate", "store_rate"),
 }
 
 

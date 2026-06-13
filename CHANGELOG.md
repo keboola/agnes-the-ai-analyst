@@ -20,6 +20,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.34] — 2026-06-13
+
+### Added
+- **Thumbs up/down ratings on store / marketplace items.** Analysts can now
+  signal whether a store entity (skill / agent / plugin) was useful via a
+  per-user thumbs up/down vote. New endpoint `POST /api/store/entities/{id}/rate`
+  with `{vote: 1|-1|0}` (1 = up, -1 = down, 0 = clear), one vote per
+  (entity, user) — re-voting flips the value in place. The aggregate
+  (`{up, down, my_vote}`) is surfaced on the single-entity
+  `GET /api/store/entities/{id}` response under a new `rating` field. Reachable
+  from all three surfaces: `agnes store rate <id> --vote <n>` (CLI) and the
+  `store_rate` MCP tool. Requires the existing signed-in user gate. (#398, #651)
+
+### Internal
+- Schema v76 / Alembic `0023_store_entity_votes_v76`: new `store_entity_votes`
+  table (`entity_id, user_id, vote, voted_at`, PK `(entity_id, user_id)`),
+  mirroring `knowledge_votes`. New dual-backend `store_entity_votes` repository
+  (DuckDB + Postgres) with a cross-engine contract test. (#398, #651)
+
 ## [0.71.33] — 2026-06-13
 
 ### Added
