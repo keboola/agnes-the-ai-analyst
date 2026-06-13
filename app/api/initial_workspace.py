@@ -131,6 +131,7 @@ def _read_section() -> dict:
     instance.yaml, or empty dict when the section is absent.
     """
     from app.api.admin import _load_current_instance_yaml
+
     cfg = _load_current_instance_yaml()
     section = cfg.get("initial_workspace") if isinstance(cfg, dict) else None
     return section if isinstance(section, dict) else {}
@@ -187,9 +188,7 @@ def _write_section(patch: dict) -> dict:
         overlay_payload["initial_workspace"] = merged
 
         tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
-        tmp_path.write_text(
-            yaml.dump(overlay_payload, default_flow_style=False, sort_keys=False)
-        )
+        tmp_path.write_text(yaml.dump(overlay_payload, default_flow_style=False, sort_keys=False))
         os.replace(tmp_path, config_path)
         logger.info(
             "initial-workspace: wrote `initial_workspace:` section to %s",
@@ -234,9 +233,7 @@ def _drop_section() -> bool:
             return False
         overlay_payload.pop("initial_workspace", None)
         tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
-        tmp_path.write_text(
-            yaml.dump(overlay_payload, default_flow_style=False, sort_keys=False)
-        )
+        tmp_path.write_text(yaml.dump(overlay_payload, default_flow_style=False, sort_keys=False))
         os.replace(tmp_path, config_path)
         reset_cache()
         return True
@@ -275,9 +272,7 @@ def _audit(
         logger.exception("audit log write failed for %s", action)
 
 
-def _section_to_admin_response(
-    section: dict, file_count: int = 0
-) -> AdminInitialWorkspaceResponse:
+def _section_to_admin_response(section: dict, file_count: int = 0) -> AdminInitialWorkspaceResponse:
     if not section.get("url"):
         return AdminInitialWorkspaceResponse(configured=False)
     token_env = section.get("token_env") or ""
@@ -287,7 +282,10 @@ def _section_to_admin_response(
         url=section.get("url"),
         branch=section.get("branch"),
         has_token=has_token,
-        sync_schedule=section.get("sync_schedule"),
+        # Normalize the cleared marker ("" in the overlay — distinct from a
+        # null/absent key so the scheduler can tell "disabled" from "never
+        # configured") back to null for the API: externally, empty == disabled.
+        sync_schedule=section.get("sync_schedule") or None,
         last_synced_at=section.get("last_synced_at"),
         last_commit_sha=section.get("last_commit_sha"),
         last_error=section.get("last_error"),
@@ -351,10 +349,17 @@ async def admin_post(
     #   ""    → clear (disable auto-sync)
     #   "…"   → set, but only after validating against the scheduler grammar
     #           so a typo can't silently disable the nightly job.
+    #
+    # The clear writes an explicit empty string (NOT None/null): the scheduler
+    # reads the YAML through get_value, which collapses both a null value and an
+    # absent key to its default — so a null would be indistinguishable from
+    # "never configured" and would silently fall back to the daily default. An
+    # explicit "" survives that read and lets _iw_sync_schedule() disable the
+    # nightly job, honoring the documented "leave empty to disable" contract.
     if body.sync_schedule is not None:
         sched = body.sync_schedule.strip()
         if sched == "":
-            patch["sync_schedule"] = None
+            patch["sync_schedule"] = ""
         else:
             from src.scheduler import is_valid_schedule
 
@@ -395,9 +400,7 @@ async def admin_post(
         },
     )
 
-    file_count = (
-        len(list_template_files()) if merged.get("last_commit_sha") else 0
-    )
+    file_count = len(list_template_files()) if merged.get("last_commit_sha") else 0
     return _section_to_admin_response(merged, file_count=file_count)
 
 
@@ -533,17 +536,20 @@ def _do_sync(conn: duckdb.DuckDBPyConnection, user_id: Optional[str]) -> dict:
         ) from None
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    _write_section({
-        "last_synced_at": now_iso,
-        "last_commit_sha": result["commit_sha"],
-        "last_error": None,
-    })
+    _write_section(
+        {
+            "last_synced_at": now_iso,
+            "last_commit_sha": result["commit_sha"],
+            "last_error": None,
+        }
+    )
 
     # New seed content landed → connector manifest cache is stale. Drop it
     # so the next render scan picks up renamed/added/removed connectors
     # immediately rather than waiting for process restart.
     try:
         from src.connectors_manifest import invalidate_cache
+
         invalidate_cache()
     except Exception:
         logger.exception("connectors_manifest: cache invalidation after sync failed")
@@ -722,9 +728,7 @@ async def analyst_zip(
         # `*/*` is curl's default and must keep getting the raw 401 so
         # tooling that parses `{"detail": "..."}` doesn't silently break.
         if "text/html" in request.headers.get("accept", ""):
-            return RedirectResponse(
-                url="/login?next=/api/initial-workspace.zip", status_code=302
-            )
+            return RedirectResponse(url="/login?next=/api/initial-workspace.zip", status_code=302)
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
 
     section = _read_section()
@@ -744,9 +748,7 @@ async def analyst_zip(
         # replaces the clone's workspace/CLAUDE.md for override-mode init
         # (#622) — rendered for the requesting analyst, since this zip
         # bypasses the /api/welcome render step (#638 review).
-        data = build_zip(
-            conn, user=user, server_url=str(request.base_url).rstrip("/")
-        )
+        data = build_zip(conn, user=user, server_url=str(request.base_url).rstrip("/"))
     except TemplateValidationError as e:
         # Defense in depth — sync_template already validates, but a
         # manual edit on disk between sync and zip-fetch should fail
@@ -792,10 +794,7 @@ async def analyst_applied(
     if body.mode not in ("force_overwrite", "fresh_install", "update"):
         raise HTTPException(
             status_code=422,
-            detail=(
-                "mode must be one of: force_overwrite, fresh_install, update "
-                f"(got {body.mode!r})"
-            ),
+            detail=(f"mode must be one of: force_overwrite, fresh_install, update (got {body.mode!r})"),
         )
     _audit(
         conn,

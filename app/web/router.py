@@ -2866,6 +2866,10 @@ SCHEDULER_AUDIT_ACTIONS = [
     "run_corporate_memory",
     "marketplace.sync_all",
     "run_blocked_purge",
+    # Initial Workspace Template nightly auto-sync (#622 Slice 3 PR-B) —
+    # written by _do_sync via the /sync-if-configured scheduler job.
+    "initial_workspace.sync",
+    "initial_workspace.sync_failed",
 ]
 
 

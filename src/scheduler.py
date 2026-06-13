@@ -59,35 +59,6 @@ def parse_interval_minutes(schedule: str) -> Optional[int]:
     return value
 
 
-def is_valid_schedule(schedule: str) -> bool:
-    """True iff ``schedule`` is a well-formed schedule string ``is_table_due``
-    would actually honor — one of:
-
-      - ``every Nm`` / ``every Nh``     (interval)
-      - ``daily HH:MM`` / ``daily HH:MM,HH:MM,...``  (with valid 0-23 / 0-59 times)
-      - ``cron <5-field expr>``         (valid field ranges)
-
-    Used to validate operator-supplied cadences at config-write time so a typo
-    can't silently disable a scheduled job (``is_table_due`` returns ``False``
-    on an unparseable string and just logs a warning).
-    """
-    if not isinstance(schedule, str) or not schedule.strip():
-        return False
-
-    if INTERVAL_PATTERN.match(schedule):
-        return True
-
-    daily = DAILY_PATTERN.match(schedule)
-    if daily:
-        return bool(_parse_daily_times(daily.group(1)))
-
-    cron = CRON_PATTERN.match(schedule)
-    if cron:
-        return _parse_cron_fields(cron.group(1)) is not None
-
-    return False
-
-
 def is_table_due(
     schedule: str,
     last_sync_iso: Optional[str],
@@ -127,9 +98,7 @@ def is_table_due(
         elapsed_minutes = (now - last_sync).total_seconds() / 60
         due = elapsed_minutes >= interval_minutes
         if due:
-            logger.debug(
-                f"Interval schedule: {elapsed_minutes:.0f}m elapsed >= {interval_minutes}m interval"
-            )
+            logger.debug(f"Interval schedule: {elapsed_minutes:.0f}m elapsed >= {interval_minutes}m interval")
         return due
 
     # Check daily schedule: "daily HH:MM" or "daily HH:MM,HH:MM,..."
@@ -184,9 +153,7 @@ def _is_daily_due(
     Returns True if ANY of the target times is due.
     """
     for target_hour, target_minute in target_times:
-        today_target = now.replace(
-            hour=target_hour, minute=target_minute, second=0, microsecond=0
-        )
+        today_target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
 
         if now >= today_target and last_sync < today_target:
             logger.debug(
@@ -316,9 +283,7 @@ def _is_cron_due(
             occurrence = None
             for hour in sorted(hour_set, reverse=True):
                 for minute in sorted(minute_set, reverse=True):
-                    cand = datetime.combine(
-                        day, time(hour, minute), tzinfo=now.tzinfo
-                    )
+                    cand = datetime.combine(day, time(hour, minute), tzinfo=now.tzinfo)
                     if cand <= cap:
                         occurrence = cand
                         break
@@ -327,8 +292,7 @@ def _is_cron_due(
             if occurrence is not None:
                 if occurrence > last_sync:
                     logger.debug(
-                        "Cron schedule: occurrence at %s in window "
-                        "(%s, %s] -> due",
+                        "Cron schedule: occurrence at %s in window (%s, %s] -> due",
                         occurrence.isoformat(),
                         last_sync.isoformat(),
                         now.isoformat(),

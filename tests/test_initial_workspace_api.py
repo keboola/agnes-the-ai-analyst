@@ -65,18 +65,14 @@ def fake_remote(tmp_path: Path):
     # Workspace subdir — this is what reaches the analyst
     workspace = work / "workspace"
     workspace.mkdir()
-    (workspace / "CLAUDE.md").write_text(
-        "# Custom Workspace\n\nInternal rules.\n", encoding="utf-8"
-    )
+    (workspace / "CLAUDE.md").write_text("# Custom Workspace\n\nInternal rules.\n", encoding="utf-8")
     (workspace / ".claude").mkdir()
     (workspace / ".claude" / "settings.json").write_text(
         json.dumps(
             {
                 "model": "sonnet",
                 "hooks": {
-                    "SessionStart": [
-                        {"hooks": [{"type": "command", "command": "agnes pull --quiet || true"}]}
-                    ],
+                    "SessionStart": [{"hooks": [{"type": "command", "command": "agnes pull --quiet || true"}]}],
                 },
             },
             indent=2,
@@ -107,6 +103,7 @@ def clean_env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(data_dir))
 
     import src.db as db
+
     if getattr(db, "_system_db_conn", None) is not None:
         try:
             db._system_db_conn.close()
@@ -151,9 +148,7 @@ def test_sync_template_fetch_reset_on_resync(clean_env, fake_remote):
     # Add a commit upstream — file in workspace/ subdir
     work = fake_remote["work"]
     (work / "workspace" / "docs").mkdir(exist_ok=True)
-    (work / "workspace" / "docs" / "handbook.md").write_text(
-        "handbook\n", encoding="utf-8"
-    )
+    (work / "workspace" / "docs" / "handbook.md").write_text("handbook\n", encoding="utf-8")
     _git("add", ".", cwd=work)
     _git("commit", "-m", "add handbook", cwd=work)
     _git("push", "origin", "main", cwd=work)
@@ -355,8 +350,10 @@ def web_client(clean_env, monkeypatch):
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-min-32-characters!!")
     from fastapi.testclient import TestClient
     from src.db import close_system_db
+
     close_system_db()
     from app.main import create_app
+
     app = create_app()
     yield TestClient(app)
     close_system_db()
@@ -372,15 +369,18 @@ def _make_admin(client, email="admin@example.com"):
     ph = PasswordHasher()
     conn = get_system_db()
     UserRepository(conn).create(
-        id="admin", email=email, name="Admin", password_hash=ph.hash("AdminPass1!"),
+        id="admin",
+        email=email,
+        name="Admin",
+        password_hash=ph.hash("AdminPass1!"),
     )
     # Admin group is seeded as is_system=TRUE on schema init; look up its id.
-    admin_row = conn.execute(
-        "SELECT id FROM user_groups WHERE name = 'Admin'"
-    ).fetchone()
+    admin_row = conn.execute("SELECT id FROM user_groups WHERE name = 'Admin'").fetchone()
     assert admin_row is not None, "Admin group not seeded"
     UserGroupMembersRepository(conn).add_member(
-        user_id="admin", group_id=admin_row[0], source="admin",
+        user_id="admin",
+        group_id=admin_row[0],
+        source="admin",
     )
     conn.close()
     r = client.post("/auth/token", json={"email": email, "password": "AdminPass1!"})
@@ -396,7 +396,10 @@ def _make_user(client, email="user@example.com"):
     ph = PasswordHasher()
     conn = get_system_db()
     UserRepository(conn).create(
-        id="user", email=email, name="User", password_hash=ph.hash("UserPass1!"),
+        id="user",
+        email=email,
+        name="User",
+        password_hash=ph.hash("UserPass1!"),
     )
     conn.close()
     r = client.post("/auth/token", json={"email": email, "password": "UserPass1!"})
@@ -419,10 +422,10 @@ def test_admin_endpoints_require_admin(web_client):
     write/delete paths to any analyst with a PAT)."""
     headers = _make_user(web_client)
     cases = [
-        ("GET",    "/api/admin/initial-workspace",      None),
-        ("POST",   "/api/admin/initial-workspace",      {"url": "https://example.com/x.git"}),
-        ("DELETE", "/api/admin/initial-workspace",      None),
-        ("POST",   "/api/admin/initial-workspace/sync", None),
+        ("GET", "/api/admin/initial-workspace", None),
+        ("POST", "/api/admin/initial-workspace", {"url": "https://example.com/x.git"}),
+        ("DELETE", "/api/admin/initial-workspace", None),
+        ("POST", "/api/admin/initial-workspace/sync", None),
     ]
     for method, path, body in cases:
         r = web_client.request(method, path, headers=headers, json=body)
@@ -431,8 +434,6 @@ def test_admin_endpoints_require_admin(web_client):
 
 def test_admin_post_writes_yaml_section(web_client, fake_remote):
     """POST persists `initial_workspace:` to instance.yaml overlay."""
-    import yaml
-    from app.secrets import _state_dir
 
     headers = _make_admin(web_client)
     r = web_client.post(
@@ -571,10 +572,12 @@ def test_analyst_status_configured_synced(web_client, fake_remote):
     # Register + sync directly (bypass https:// check)
     _write_section({"url": fake_remote["url"], "branch": "main", "token_env": None})
     result = sync_template(url=fake_remote["url"], branch="main")
-    _write_section({
-        "last_synced_at": "2026-05-13T10:00:00+00:00",
-        "last_commit_sha": result["commit_sha"],
-    })
+    _write_section(
+        {
+            "last_synced_at": "2026-05-13T10:00:00+00:00",
+            "last_commit_sha": result["commit_sha"],
+        }
+    )
 
     headers = _make_user(web_client)
     r = web_client.get("/api/initial-workspace", headers=headers)
@@ -657,10 +660,12 @@ def test_analyst_zip_returns_bytes_and_etag(web_client, fake_remote):
 
     _write_section({"url": fake_remote["url"], "branch": "main", "token_env": None})
     result = sync_template(url=fake_remote["url"], branch="main")
-    _write_section({
-        "last_synced_at": "2026-05-13T10:00:00+00:00",
-        "last_commit_sha": result["commit_sha"],
-    })
+    _write_section(
+        {
+            "last_synced_at": "2026-05-13T10:00:00+00:00",
+            "last_commit_sha": result["commit_sha"],
+        }
+    )
 
     headers = _make_user(web_client)
     r = web_client.get("/api/initial-workspace.zip", headers=headers)
@@ -679,10 +684,12 @@ def test_analyst_zip_writes_fetch_started_audit(web_client, fake_remote):
 
     _write_section({"url": fake_remote["url"], "branch": "main", "token_env": None})
     result = sync_template(url=fake_remote["url"], branch="main")
-    _write_section({
-        "last_synced_at": "2026-05-13T10:00:00+00:00",
-        "last_commit_sha": result["commit_sha"],
-    })
+    _write_section(
+        {
+            "last_synced_at": "2026-05-13T10:00:00+00:00",
+            "last_commit_sha": result["commit_sha"],
+        }
+    )
 
     headers = _make_user(web_client)
     web_client.get("/api/initial-workspace.zip", headers=headers)
@@ -715,9 +722,7 @@ def test_analyst_applied_writes_audit(web_client):
     assert r.status_code == 200
 
     conn = get_system_db()
-    rows = conn.execute(
-        "SELECT params FROM audit_log WHERE action = 'initial_workspace.applied'"
-    ).fetchall()
+    rows = conn.execute("SELECT params FROM audit_log WHERE action = 'initial_workspace.applied'").fetchall()
     conn.close()
     assert len(rows) == 1
     params = json.loads(rows[0][0])
@@ -777,7 +782,12 @@ def test_admin_post_sync_schedule_garbage_rejected(web_client):
 
 
 def test_admin_post_sync_schedule_empty_clears(web_client):
-    """An empty-string sync_schedule clears it (disable auto-sync)."""
+    """An empty-string sync_schedule clears it (disable auto-sync).
+
+    The overlay stores an explicit ``""`` (NOT null) so the scheduler can tell
+    "admin cleared → disable" apart from "never configured → default" — both of
+    which get_value otherwise collapses to its default (#622 Slice 3 PR-B
+    review). The API still echoes ``null`` externally: empty == disabled."""
     import yaml
     from app.secrets import _state_dir
 
@@ -795,7 +805,10 @@ def test_admin_post_sync_schedule_empty_clears(web_client):
     assert r.status_code == 200, r.text
     assert r.json()["sync_schedule"] is None
     section = yaml.safe_load((_state_dir() / "instance.yaml").read_text())["initial_workspace"]
-    assert section.get("sync_schedule") is None
+    # Persisted as an explicit empty string — the distinguishable disable
+    # marker — not null/absent.
+    assert section.get("sync_schedule") == ""
+    assert "sync_schedule" in section
 
 
 def test_sync_if_configured_skips_when_unconfigured(web_client):
@@ -803,9 +816,7 @@ def test_sync_if_configured_skips_when_unconfigured(web_client):
     200 {skipped:true} (NOT 400) on an instance without an IWT, so the job
     never errors."""
     headers = _make_admin(web_client)
-    r = web_client.post(
-        "/api/admin/initial-workspace/sync-if-configured", headers=headers
-    )
+    r = web_client.post("/api/admin/initial-workspace/sync-if-configured", headers=headers)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["skipped"] is True
@@ -828,9 +839,7 @@ def test_sync_if_configured_runs_when_configured(web_client, fake_remote):
 
     _write_section({"url": fake_remote["url"], "branch": "main", "token_env": None})
     headers = _make_admin(web_client)
-    r = web_client.post(
-        "/api/admin/initial-workspace/sync-if-configured", headers=headers
-    )
+    r = web_client.post("/api/admin/initial-workspace/sync-if-configured", headers=headers)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body.get("action") == "sync_ok"
@@ -841,9 +850,7 @@ def test_sync_if_configured_requires_admin(web_client):
     """The scheduler wrapper is admin-gated (scheduler token → Admin user).
     A plain analyst PAT must get 403."""
     headers = _make_user(web_client)
-    r = web_client.post(
-        "/api/admin/initial-workspace/sync-if-configured", headers=headers
-    )
+    r = web_client.post("/api/admin/initial-workspace/sync-if-configured", headers=headers)
     assert r.status_code == 403
 
 
@@ -856,16 +863,14 @@ def test_admin_initial_workspace_page_renders(web_client):
     headers = _make_admin(web_client)
     r = web_client.get("/admin/initial-workspace", headers=headers)
     assert r.status_code == 200, r.text
-    assert "iw-prov-tbody" in r.text       # prompt-bindings provenance table
+    assert "iw-prov-tbody" in r.text  # prompt-bindings provenance table
     assert "Link to Template Repository" in r.text
 
 
 def test_admin_initial_workspace_page_denies_non_admin(web_client):
     """A non-admin is blocked from the page (403 or login redirect)."""
     headers = _make_user(web_client)
-    r = web_client.get(
-        "/admin/initial-workspace", headers=headers, follow_redirects=False
-    )
+    r = web_client.get("/admin/initial-workspace", headers=headers, follow_redirects=False)
     assert r.status_code in (302, 303, 307, 403), r.status_code
 
 

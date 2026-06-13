@@ -310,17 +310,35 @@ document.addEventListener("keydown", e => {
 function confirmModal(message) {
   return new Promise((resolve) => {
     document.getElementById("iw-confirm-text").textContent = message;
+    const modal = document.getElementById("iw-confirm-modal");
     const okBtn = document.getElementById("iw-confirm-ok");
-    const onOk = () => { cleanup(); closeModal("iw-confirm-modal"); resolve(true); };
-    const onCancel = () => { cleanup(); resolve(false); };
+    const cancelEls = document.querySelectorAll('[data-close-modal="iw-confirm-modal"]');
+    // Settle once. Dismissing via the OK/Cancel buttons, a backdrop click, or
+    // Escape must ALL resolve the promise — otherwise `await confirmModal(...)`
+    // hangs forever (the global backdrop/Escape handlers above only toggle the
+    // is-open class) and the listeners leak. Mirrors server-config's onBackdrop.
+    let settled = false;
+    function settle(value) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      closeModal("iw-confirm-modal");
+      resolve(value);
+    }
+    const onOk = () => settle(true);
+    const onCancel = () => settle(false);
+    const onBackdrop = (e) => { if (e.target === modal) settle(false); };
+    const onKeydown = (e) => { if (e.key === "Escape") settle(false); };
     function cleanup() {
       okBtn.removeEventListener("click", onOk);
-      document.querySelectorAll('[data-close-modal="iw-confirm-modal"]')
-        .forEach(el => el.removeEventListener("click", onCancel));
+      cancelEls.forEach(el => el.removeEventListener("click", onCancel));
+      modal.removeEventListener("click", onBackdrop);
+      document.removeEventListener("keydown", onKeydown);
     }
     okBtn.addEventListener("click", onOk);
-    document.querySelectorAll('[data-close-modal="iw-confirm-modal"]')
-      .forEach(el => el.addEventListener("click", onCancel));
+    cancelEls.forEach(el => el.addEventListener("click", onCancel));
+    modal.addEventListener("click", onBackdrop);
+    document.addEventListener("keydown", onKeydown);
     openModal("iw-confirm-modal");
   });
 }
