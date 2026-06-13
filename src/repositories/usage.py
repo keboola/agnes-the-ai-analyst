@@ -136,6 +136,90 @@ class UsageRepository:
             ).fetchall()
             return _slow_actions_from_raw(raw, limit)
 
+    def summary_query_telemetry(self, cutoff: datetime, limit: int = 10) -> dict:
+        """On-demand aggregation over the query-telemetry audit rows (#410).
+
+        Aggregates ``audit_log`` rows with action ∈ {query.remote, query.local,
+        snapshot.create} written by ``app/api/query.py`` / ``app/api/v2_scan.py``.
+        The queried table id is parsed from ``resource`` (``table:<id>`` or
+        ``table:<id>:as:<snapshot>``); rows without a table resource (``adhoc``)
+        count toward totals but not the per-table ranking. ``scan_bytes`` is
+        summed from ``params.$.bytes_scanned`` (NULL on the local path).
+
+        Returns:
+            top_tables: [{table_id, queries, scan_bytes, remote, local}]
+            frequency:  [{day, table_id, remote, local}]
+            total_scan_bytes, remote_queries, local_queries, snapshot_creates
+        """
+        # ``table:<id>`` or ``table:<id>:as:<name>`` → <id>. split_part on the
+        # 4-char-stripped tail (drop the leading "table:") then cut any ":as:".
+        table_id_expr = (
+            "split_part(substr(resource, 7), ':as:', 1)"
+        )
+        bytes_expr = "TRY_CAST(json_extract_string(params, '$.bytes_scanned') AS BIGINT)"
+
+        # Per-table ranking (only rows that carry a table resource).
+        top_rows = self.conn.execute(
+            f"""SELECT {table_id_expr} AS table_id,
+                       COUNT(*) AS queries,
+                       COALESCE(SUM({bytes_expr}), 0) AS scan_bytes,
+                       SUM(CASE WHEN action = 'query.remote' THEN 1 ELSE 0 END) AS remote,
+                       SUM(CASE WHEN action = 'query.local'  THEN 1 ELSE 0 END) AS local
+                FROM audit_log
+                WHERE timestamp >= ?
+                  AND action IN ('query.remote', 'query.local', 'snapshot.create')
+                  AND resource LIKE 'table:%'
+                GROUP BY table_id
+                ORDER BY queries DESC, scan_bytes DESC
+                LIMIT ?""",
+            [cutoff, limit],
+        ).fetchall()
+        top_tables = [
+            {"table_id": r[0], "queries": int(r[1]), "scan_bytes": int(r[2] or 0),
+             "remote": int(r[3] or 0), "local": int(r[4] or 0)}
+            for r in top_rows
+        ]
+
+        # Per-day per-table remote/local frequency (table rows only).
+        freq_rows = self.conn.execute(
+            f"""SELECT CAST(timestamp AS DATE) AS day,
+                       {table_id_expr} AS table_id,
+                       SUM(CASE WHEN action = 'query.remote' THEN 1 ELSE 0 END) AS remote,
+                       SUM(CASE WHEN action = 'query.local'  THEN 1 ELSE 0 END) AS local
+                FROM audit_log
+                WHERE timestamp >= ?
+                  AND action IN ('query.remote', 'query.local')
+                  AND resource LIKE 'table:%'
+                GROUP BY day, table_id
+                ORDER BY day DESC, (remote + local) DESC""",
+            [cutoff],
+        ).fetchall()
+        frequency = [
+            {"day": r[0].isoformat() if r[0] else None, "table_id": r[1],
+             "remote": int(r[2] or 0), "local": int(r[3] or 0)}
+            for r in freq_rows
+        ]
+
+        # Window totals across all query-telemetry rows (incl. adhoc).
+        totals = self.conn.execute(
+            f"""SELECT COALESCE(SUM({bytes_expr}), 0) AS total_scan_bytes,
+                       SUM(CASE WHEN action = 'query.remote'    THEN 1 ELSE 0 END) AS remote,
+                       SUM(CASE WHEN action = 'query.local'     THEN 1 ELSE 0 END) AS local,
+                       SUM(CASE WHEN action = 'snapshot.create' THEN 1 ELSE 0 END) AS snaps
+                FROM audit_log
+                WHERE timestamp >= ?
+                  AND action IN ('query.remote', 'query.local', 'snapshot.create')""",
+            [cutoff],
+        ).fetchone()
+        return {
+            "top_tables": top_tables,
+            "frequency": frequency,
+            "total_scan_bytes": int(totals[0] or 0),
+            "remote_queries": int(totals[1] or 0),
+            "local_queries": int(totals[2] or 0),
+            "snapshot_creates": int(totals[3] or 0),
+        }
+
     def telemetry_facets(self, since: datetime) -> dict:
         users = self.conn.execute(
             "SELECT username, COUNT(*) AS n FROM usage_events WHERE occurred_at >= ? "

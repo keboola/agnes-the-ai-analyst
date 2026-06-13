@@ -1026,12 +1026,14 @@ synced IWT clone for the bind-git file picker.
 - /api/store/bundle.zip
 - /api/store/categories
 - /api/store/entities
+- /api/store/entities/dryrun
 - /api/store/entities/preview
 - /api/store/entities/{entity_id}
 - /api/store/entities/{entity_id}/docs/{filename}
 - /api/store/entities/{entity_id}/files
 - /api/store/entities/{entity_id}/install
 - /api/store/entities/{entity_id}/photo
+- /api/store/entities/{entity_id}/rate
 - /api/store/entities/{entity_id}/versions/{version_no}/restore
 - /api/store/import-bundle
 - /api/store/owners
