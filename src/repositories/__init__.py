@@ -92,6 +92,7 @@ __all__ = [
     "marketplace_registry_repo",
     "marketplace_plugins_repo",
     "store_entities_repo",
+    "store_entity_votes_repo",
     "user_store_installs_repo",
     "user_curated_subscriptions_repo",
     "store_submissions_repo",
@@ -296,6 +297,10 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.store_entities", "StoreEntitiesRepository"),
         PG: ("src.repositories.store_entities_pg", "StoreEntitiesPgRepository"),
     },
+    "store_entity_votes": {
+        DUCKDB: ("src.repositories.store_entity_votes", "StoreEntityVotesRepository"),
+        PG: ("src.repositories.store_entity_votes_pg", "StoreEntityVotesPgRepository"),
+    },
     "user_store_installs": {
         DUCKDB: ("src.repositories.user_store_installs", "UserStoreInstallsRepository"),
         PG: ("src.repositories.user_store_installs_pg", "UserStoreInstallsPgRepository"),
@@ -436,6 +441,7 @@ def usage_repo() -> Any: return _build("usage")
 def marketplace_registry_repo() -> Any: return _build("marketplace_registry")
 def marketplace_plugins_repo() -> Any: return _build("marketplace_plugins")
 def store_entities_repo() -> Any: return _build("store_entities")
+def store_entity_votes_repo() -> Any: return _build("store_entity_votes")
 def user_store_installs_repo() -> Any: return _build("user_store_installs")
 def user_curated_subscriptions_repo() -> Any: return _build("user_curated_subscriptions")
 def store_submissions_repo() -> Any: return _build("store_submissions")

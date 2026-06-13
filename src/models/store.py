@@ -1,6 +1,7 @@
 """SQLAlchemy models for the marketplace + store + flea cluster:
 marketplace_registry, marketplace_plugins, store_entities,
-user_store_installs, user_plugin_optouts, store_submissions.
+user_store_installs, user_plugin_optouts, store_submissions,
+store_entity_votes.
 
 Also includes user_curated_subscriptions (from src/repositories/user_curated_subscriptions.py).
 
@@ -236,4 +237,28 @@ class UserStackSubscription(Base):
     __table_args__ = (
         PrimaryKeyConstraint("user_id", "resource_type", "resource_id"),
         Index("idx_user_stack_subscriptions_user", "user_id"),
+    )
+
+
+class StoreEntityVote(Base):
+    """Per-user thumbs up/down rating on a store / marketplace entity (#398).
+
+    Mirrors ``KnowledgeVote``: one row per (entity, user). The repo upserts on
+    the PK so a re-vote flips ``vote``; a clear deletes the row. Mirrors DuckDB
+    ``src/db.py`` ``store_entity_votes`` (v76).
+    """
+
+    __tablename__ = "store_entity_votes"
+
+    entity_id: Mapped[str] = mapped_column(String, nullable=False)
+    user_id: Mapped[str] = mapped_column(String, nullable=False)
+    vote: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    voted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+    __table_args__ = (
+        PrimaryKeyConstraint("entity_id", "user_id"),
     )

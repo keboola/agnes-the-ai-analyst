@@ -468,6 +468,138 @@ def test_welcome_render_honors_editor_override(admin_client):
 
 
 # ---------------------------------------------------------------------------
+# Slice 3 (#622) — git file-picker (GET /api/admin/prompts/iwt-files)
+# ---------------------------------------------------------------------------
+
+
+def _make_iwt_clone_with_install(tmp_path: Path, *, claude_md: str) -> Path:
+    """Like _make_iwt_clone but also drops an install-prompt template at the
+    REPO ROOT (outside workspace/) so we can prove the picker is
+    repo-root-relative — list_template_files() can never see this file."""
+    iwt = _make_iwt_clone(tmp_path, claude_md=claude_md)
+    install_dir = iwt / "install-prompt"
+    install_dir.mkdir(parents=True)
+    (install_dir / "template.md.tmpl").write_text("INSTALL", encoding="utf-8")
+    return iwt
+
+
+def test_iwt_files_empty_when_unconfigured(admin_client):
+    client, token = admin_client
+    r = client.get("/api/admin/prompts/iwt-files", headers=_hdr(token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["iwt_configured"] is False
+    assert body["files"] == []
+    assert body["suggested"] == {
+        "install": "install-prompt/template.md.tmpl",
+        "workspace": "workspace/CLAUDE.md",
+    }
+
+
+def test_iwt_files_lists_repo_root_relative(admin_client, tmp_path, monkeypatch):
+    client, token = admin_client
+    iwt = _make_iwt_clone_with_install(tmp_path, claude_md="CLONE")
+
+    import src.initial_workspace as iw
+
+    monkeypatch.setattr(iw, "is_configured", lambda: True)
+    monkeypatch.setattr(iw, "_iwt_snapshot", lambda: iwt)
+
+    r = client.get("/api/admin/prompts/iwt-files", headers=_hdr(token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["iwt_configured"] is True
+    # repo-ROOT-relative: BOTH the workspace/ file AND the install file at root
+    # show up. list_template_files() (workspace/-relative) could express
+    # neither — proves the picker uses a different enumeration.
+    assert "workspace/CLAUDE.md" in body["files"]
+    assert "install-prompt/template.md.tmpl" in body["files"]
+
+
+def test_iwt_files_excludes_git_and_symlinks(admin_client, tmp_path, monkeypatch):
+    client, token = admin_client
+    iwt = _make_iwt_clone(tmp_path, claude_md="CLONE")
+    git_dir = iwt / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "config").write_text("[core]\n", encoding="utf-8")
+    # a symlink pointing at a real in-repo file — must be skipped
+    (iwt / "workspace" / "link.md").symlink_to(iwt / "workspace" / "CLAUDE.md")
+
+    import src.initial_workspace as iw
+
+    monkeypatch.setattr(iw, "is_configured", lambda: True)
+    monkeypatch.setattr(iw, "_iwt_snapshot", lambda: iwt)
+
+    r = client.get("/api/admin/prompts/iwt-files", headers=_hdr(token))
+    assert r.status_code == 200, r.text
+    files = r.json()["files"]
+    assert not any(f.startswith(".git") for f in files), files
+    assert "workspace/link.md" not in files, files
+    assert "workspace/CLAUDE.md" in files
+
+
+def test_picker_value_binds(admin_client, tmp_path, monkeypatch):
+    """Load-bearing invariant: everything iwt-files lists must be bindable.
+    A value returned by the picker is accepted verbatim by bind-git."""
+    client, token = admin_client
+    iwt = _make_iwt_clone(tmp_path, claude_md="CLONE CLAUDE")
+
+    import src.initial_workspace as iw
+
+    monkeypatch.setattr(iw, "is_configured", lambda: True)
+    monkeypatch.setattr(iw, "_iwt_snapshot", lambda: iwt)
+
+    listing = client.get("/api/admin/prompts/iwt-files", headers=_hdr(token)).json()
+    assert "workspace/CLAUDE.md" in listing["files"]
+    picked = "workspace/CLAUDE.md"
+
+    r = client.post(
+        "/api/admin/prompts/workspace/bind-git",
+        headers=_hdr(token),
+        json={"git_path": picked},
+    )
+    assert r.status_code == 200, r.text
+    content, mode = iw.resolve_prompt("workspace", None)
+    assert (content, mode) == ("CLONE CLAUDE", "git")
+
+
+def test_iwt_files_requires_admin(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AGNES_DISABLE_GUARDRAILS", "1")
+    from app.main import app
+
+    client = TestClient(app)
+    client.post(
+        "/auth/bootstrap",
+        json={"email": "admin@example.com", "name": "A", "password": "TestPass123!"},
+    )
+    r = client.get("/api/admin/prompts/iwt-files")
+    assert r.status_code in (401, 403)
+
+
+def test_list_iwt_repo_files_unit(tmp_path, monkeypatch):
+    """Pure unit on src.initial_workspace.list_iwt_repo_files: sorted order,
+    .git exclusion, [] when no clone."""
+    import src.initial_workspace as iw
+
+    # no clone → empty
+    monkeypatch.setattr(iw, "_iwt_snapshot", lambda: None)
+    assert iw.list_iwt_repo_files() == []
+
+    iwt = _make_iwt_clone_with_install(tmp_path, claude_md="CLONE")
+    git_dir = iwt / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    monkeypatch.setattr(iw, "_iwt_snapshot", lambda: iwt)
+
+    files = iw.list_iwt_repo_files()
+    assert files == sorted(files), "must be sorted"
+    assert not any(f.startswith(".git") for f in files)
+    assert "workspace/CLAUDE.md" in files
+    assert "install-prompt/template.md.tmpl" in files
+
+
+# ---------------------------------------------------------------------------
 # 9. Page + redirects
 # ---------------------------------------------------------------------------
 

@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 75
+SCHEMA_VERSION = 76
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -249,6 +249,17 @@ CREATE TABLE IF NOT EXISTS knowledge_votes (
     vote INTEGER,
     voted_at TIMESTAMP DEFAULT current_timestamp,
     PRIMARY KEY (item_id, user_id)
+);
+
+-- v76: per-user thumbs up/down ratings on store / marketplace entities.
+-- Mirrors knowledge_votes (one vote per (entity, user); ON CONFLICT upsert
+-- flips the value; a missing row means "no vote"). Issue #398.
+CREATE TABLE IF NOT EXISTS store_entity_votes (
+    entity_id VARCHAR NOT NULL,
+    user_id VARCHAR NOT NULL,
+    vote INTEGER,
+    voted_at TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (entity_id, user_id)
 );
 
 -- v46: per-user opt-out for knowledge items. A row here means the user has
@@ -4951,6 +4962,28 @@ def _v74_to_v75(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 75")
 
 
+def _v75_to_v76(conn: duckdb.DuckDBPyConnection) -> None:
+    """v76: ``store_entity_votes`` — per-user thumbs up/down on store entities.
+
+    Mirrors ``knowledge_votes``: one row per (entity, user), the vote value
+    flips on re-vote (ON CONFLICT upsert in the repo), and a clear deletes the
+    row. Additive-only; ``_SYSTEM_SCHEMA`` already creates the table on fresh
+    installs (no-op CREATE IF NOT EXISTS here). Issue #398.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS store_entity_votes (
+            entity_id VARCHAR NOT NULL,
+            user_id VARCHAR NOT NULL,
+            vote INTEGER,
+            voted_at TIMESTAMP DEFAULT current_timestamp,
+            PRIMARY KEY (entity_id, user_id)
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 76")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -5260,6 +5293,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # _SYSTEM_SCHEMA already declares the columns on fresh installs
             # (no-op ALTER here). Issue #622 Slice 1.
             _v74_to_v75(conn)
+            # v75→v76: store_entity_votes (per-user thumbs up/down on store
+            # entities). _SYSTEM_SCHEMA already creates the table on fresh
+            # installs (no-op CREATE here). Issue #398.
+            _v75_to_v76(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5463,6 +5500,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v73_to_v74(conn)
             if current < 75:
                 _v74_to_v75(conn)
+            if current < 76:
+                _v75_to_v76(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

@@ -64,14 +64,16 @@ responsibilities listed below.
 
 ## Configuration
 
-On the admin UI at `/admin/server-config`, scroll to the **Initial
-Workspace Template** section:
+On the admin UI at `/admin/initial-workspace` (in the Admin → Agent
+Experience menu):
 
 1. Click **Link to Template Repository**.
 2. In the modal, fill in:
    - **Repository URL (HTTPS)** — required, must be `https://`.
    - **Branch** — optional; leave blank to track the remote's default
      branch.
+   - **Auto-sync schedule** — optional nightly cadence (see below); leave
+     blank for manual-only sync.
    - **GitHub PAT** — required only for private repos. Stored at
      `${DATA_DIR}/state/.env_overlay` (chmod 600), never in the YAML
      overlay or DuckDB.
@@ -81,6 +83,11 @@ Workspace Template** section:
    file count on success, or a typed error if the clone fails or the
    repo contains a reserved path.
 
+The same page also surfaces a read-only **Prompt bindings** table — which
+repo file each managed prompt (`install` / `workspace`) reads from and
+whether the bound file has diverged from its baseline. Bindings are edited
+on `/admin/prompts`.
+
 The config persists to `${DATA_DIR}/state/instance.yaml` under the
 `initial_workspace:` section:
 
@@ -89,14 +96,31 @@ initial_workspace:
   url: https://github.com/your-org/agnes-workspace-template
   branch: main
   token_env: AGNES_INITIAL_WORKSPACE_TOKEN
+  sync_schedule: "daily 03:30"   # optional; nightly auto-sync
   last_synced_at: 2026-05-13T10:00:00Z
   last_commit_sha: 1a2b3c4d5e
   last_error: null
 ```
 
-Sync is **manual only**. There is no nightly auto-sync; you click "Sync
-now" whenever you want the on-disk working copy to match the latest
-commit on the configured branch.
+### Sync: manual + optional nightly auto-sync
+
+You can always click **Sync now** to fast-forward the on-disk working copy
+to the latest commit on the configured branch.
+
+Set **`sync_schedule`** (UI field or `instance.yaml`) to also auto-sync
+nightly. Grammar matches the rest of the scheduler (`src/scheduler.py`):
+`daily HH:MM` (UTC), `every Nm`/`every Nh`, or `cron <5-field>`. The
+default when set via the UI is `daily 03:30` (offset from the marketplaces
+job at 03:00 so the two nightly git-clone bursts don't stack). An env
+override `SCHEDULER_INITIAL_WORKSPACE_SCHEDULE` takes precedence.
+
+When configured, every nightly run clones/fast-forwards the repo, drops the
+connector-manifest cache, re-runs the render dry-run, probes prompt
+divergence, and writes one `initial_workspace.sync` audit row. The
+scheduler reads `sync_schedule` **once at container start** (`build_jobs()`),
+so a UI edit takes effect only on the next scheduler restart. On instances
+with no IWT registered the nightly job is a silent no-op (the
+`/sync-if-configured` endpoint short-circuits with `{"skipped": true}`).
 
 ## Repo layout
 
@@ -324,8 +348,9 @@ incrementally, rather than writing one from scratch.
 ## Sync workflow
 
 1. Edit files in your template repo, commit, push.
-2. Go to `/admin/server-config`, scroll to **Initial Workspace Template**.
-3. Click **Sync now**.
+2. Go to `/admin/initial-workspace`.
+3. Click **Sync now** (or wait for the nightly auto-sync if `sync_schedule`
+   is set).
 4. The modal shows the new commit SHA and file count. Analysts will
    pick up the new content on their next `agnes init --force` (or fresh
    install).
@@ -393,7 +418,7 @@ copy that file into your template repo at
 For private repos:
 
 1. Mint a new GitHub PAT with `repo:read` scope.
-2. On `/admin/server-config`, click **Edit** on the Initial Workspace
+2. On `/admin/initial-workspace`, click **Edit** on the Initial Workspace
    Template card.
 3. Paste the new PAT into the **GitHub PAT** field (the field is
    never prefilled — leaving it blank keeps the existing PAT).
@@ -430,8 +455,8 @@ Every override workflow writes audit rows. Query them via
 | Action                                  | Written by                                  | Carries                                                       |
 |-----------------------------------------|---------------------------------------------|---------------------------------------------------------------|
 | `initial_workspace.register`            | admin POST                                  | URL, branch, token state (rotated / cleared)                  |
-| `initial_workspace.sync`                | admin "Sync now" success                    | commit_sha, file_count                                        |
-| `initial_workspace.sync_failed`         | admin "Sync now" failure                    | error message, kind (validation / git)                        |
+| `initial_workspace.sync`                | "Sync now" or nightly auto-sync success     | commit_sha, file_count                                        |
+| `initial_workspace.sync_failed`         | "Sync now" or nightly auto-sync failure     | error message, kind (validation / git)                        |
 | `initial_workspace.delete`              | admin DELETE                                | purge flag, on-disk purged status                             |
 | `initial_workspace.fetch_started`       | server-side, on `GET /api/initial-workspace.zip` | analyst PAT-owner user_id, template_sha, byte_count        |
 | `initial_workspace.applied`             | CLI `POST /api/initial-workspace/applied`   | mode (`force_overwrite` / `fresh_install` / `update`), files counts |
@@ -475,7 +500,11 @@ not flag these as regressions.
    workspace dir manually and run `agnes init` fresh.
 
 For implementation details, see:
-- `app/api/initial_workspace.py` — admin + analyst endpoints
+- `app/api/initial_workspace.py` — admin + analyst endpoints (`_do_sync` shared by the manual `/sync` route and the nightly `/sync-if-configured` wrapper)
+- `app/web/router.py` — `/admin/initial-workspace` page route
+- `app/web/templates/admin_initial_workspace.html` — the admin page (register / sync / delete + prompt-bindings provenance)
+- `services/scheduler/__main__.py` — `_iw_sync_schedule()` + the `initial-workspace` nightly job tuple
+- `src/scheduler.py` — `is_valid_schedule()` cadence validator + grammar
 - `src/initial_workspace.py` — clone/validate/zip
 - `cli/lib/initial_workspace.py` — probe/download/extract/confirm/report + update orchestration (`preview_update`, `prompt_update_confirmation`, `apply_update`) + client-side baseline storage (`save_template_baseline` / `load_template_baseline`)
 - `cli/commands/update_workspace.py` — `agnes update-workspace` command

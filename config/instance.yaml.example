@@ -252,6 +252,17 @@ telegram:
   bot_username: ""
   domain_suffix: ""
 
+# --- Operator alerting (optional) ---
+# When a SCHEDULED sync fails, Agnes POSTs a concise {"text": ...} payload to
+# this webhook so operators hear about it without watching the dashboard. The
+# payload shape is the lowest common denominator across Slack, Google Chat,
+# Mattermost and Discord incoming webhooks — point `alert_webhook_url` at
+# whichever channel you already run. Best-effort: a webhook outage never blocks
+# the sync. Leave empty (the default) to disable. Env override:
+# AGNES_ALERT_WEBHOOK_URL.
+notifications:
+  alert_webhook_url: ""
+
 # --- Jira integration (optional) ---
 jira:
   domain: ""
@@ -585,6 +596,12 @@ chat:
 #   url: https://github.com/keboola/agnes-the-ai-analyst-workspace-seed
 #   branch: main
 #   token_env: AGNES_INITIAL_WORKSPACE_TOKEN  # optional; PAT name in shell env
+#   sync_schedule: "daily 03:30"              # optional; nightly auto-sync cadence.
+#                                             # Grammar: src/scheduler.py (daily HH:MM
+#                                             # UTC / every Nm / every Nh). Empty = manual
+#                                             # sync only. Takes effect on next scheduler
+#                                             # restart. Env override:
+#                                             # SCHEDULER_INITIAL_WORKSPACE_SCHEDULE
 #   last_synced_at: ...                       # written by API after sync
 #   last_commit_sha: ...                      # written by API after sync
 #   last_error: ...                           # written by API on failure

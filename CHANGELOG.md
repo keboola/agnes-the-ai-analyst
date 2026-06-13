@@ -30,6 +30,107 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.36] — 2026-06-13
+
+### Added
+- **`/admin/prompts` bind-git file picker.** The Git-mode pane of each managed prompt (install / workspace) now offers a dropdown of the bindable files in the synced Initial Workspace Template repo instead of a raw free-text path field that silently 400'd on a typo. Options are repo-root-relative paths (e.g. `workspace/CLAUDE.md`, `install-prompt/template.md.tmpl`) — exactly the strings `bind-git` accepts — with this card's canonical seed path pre-selected. A "Type a path manually" escape hatch keeps the old text input for power users / re-bind. Backed by a new read-only `GET /api/admin/prompts/iwt-files` (returns `{iwt_configured, files, suggested}`; empty `files` when IWT is unconfigured) and `src.initial_workspace.list_iwt_repo_files()` (repo-root-relative, `.git/` + symlinks excluded). Admin-web-only (EXEMPT in the triple-surface gate). (#622 Slice 3, #653)
+- **Initial Workspace Template moved to its own page + optional nightly auto-sync.** The IWT register / sync / delete UI now lives at `/admin/initial-workspace` (Admin → Agent Experience) instead of buried in a `/admin/server-config` section; the old anchor leaves a cross-link. The new page also surfaces a read-only **Prompt bindings** provenance table (which repo file each managed prompt reads from + divergence state, deep-linking to `/admin/prompts`). Optional **nightly auto-sync**: set `initial_workspace.sync_schedule` (UI field or `instance.yaml`; grammar `daily HH:MM` / `every Nm` / `cron …`, default `daily 03:30` when never configured, **leave empty to disable** — the scheduler then omits the nightly job entirely; env override `SCHEDULER_INITIAL_WORKSPACE_SCHEDULE`) and the scheduler fast-forwards the repo nightly via a new always-200 `POST /api/admin/initial-workspace/sync-if-configured` wrapper (silent no-op when no IWT is registered; the manual `/sync` still errors loudly). Cadence is read once at scheduler-container start — a UI edit takes effect on the next scheduler restart. Each nightly run writes an `initial_workspace.sync` / `initial_workspace.sync_failed` audit row, surfaced under the `/admin/activity` scheduler filter. (#622 Slice 3, #653)
+
+## [0.71.35] — 2026-06-13
+
+### Added
+- **Store pre-submit dry-run** — `POST /api/store/entities/dryrun` runs the full
+  guardrail pipeline (inline checks + LLM review) against a candidate bundle and
+  returns `{inline_checks, llm_findings, would_publish}` **without persisting any
+  `store_entities` / `store_submissions` / `audit_log` row**. Lets a submitter
+  preview what would block publication and iterate before the real upload —
+  instead of burning LLM tokens, eating the blocked-upload quota, and filing an
+  admin-queue entry on every retry. Same multipart payload and auth gate as
+  `POST /api/store/entities` (never anonymous). The verdict mirrors the real
+  create path's fail-CLOSED matrix (guardrails on + LLM provider not configured
+  → `would_publish=false`), withholds static-scan findings when the bundle also
+  fails validation (so a malformed bundle can't enumerate the deny-list), and
+  runs the LLM review off the event loop. Per-submitter dry-run quota and
+  identical-bundle verdict caching are deferred (tracked on #317). (#317, #652)
+
+## [0.71.34] — 2026-06-13
+
+### Added
+- **Thumbs up/down ratings on store / marketplace items.** Analysts can now
+  signal whether a store entity (skill / agent / plugin) was useful via a
+  per-user thumbs up/down vote. New endpoint `POST /api/store/entities/{id}/rate`
+  with `{vote: 1|-1|0}` (1 = up, -1 = down, 0 = clear), one vote per
+  (entity, user) — re-voting flips the value in place. The aggregate
+  (`{up, down, my_vote}`) is surfaced on the single-entity
+  `GET /api/store/entities/{id}` response under a new `rating` field. Reachable
+  from all three surfaces: `agnes store rate <id> --vote <n>` (CLI) and the
+  `store_rate` MCP tool. Requires the existing signed-in user gate. (#398, #651)
+
+### Internal
+- Schema v76 / Alembic `0023_store_entity_votes_v76`: new `store_entity_votes`
+  table (`entity_id, user_id, vote, voted_at`, PK `(entity_id, user_id)`),
+  mirroring `knowledge_votes`. New dual-backend `store_entity_votes` repository
+  (DuckDB + Postgres) with a cross-engine contract test. (#398, #651)
+
+## [0.71.33] — 2026-06-13
+
+### Added
+- **Query telemetry in the admin usage view** (addresses #410, on-demand slice).
+  `GET /api/admin/telemetry/summary` now returns a `query_telemetry` facet that
+  aggregates the existing `query.remote` / `query.local` / `snapshot.create`
+  audit rows over the selected window: `top_tables` (table id, query count,
+  remote/local split, summed `bytes_scanned`), per-day per-table `frequency`,
+  and window totals (`total_scan_bytes`, `remote_queries`, `local_queries`,
+  `snapshot_creates`). Surfaced as a "Query telemetry — top tables" panel on
+  `/admin/telemetry` and via a new `agnes admin telemetry summary` CLI command
+  (`--window`, `--json`). Computed on demand with a `GROUP BY` over `audit_log`
+  (no new table, no scheduler rollup — the periodic-aggregation step from the
+  issue is deferred). Implemented on both DuckDB and Postgres backends. (#650)
+
+## [0.71.32] — 2026-06-13
+
+### Added
+- **Structured `where_filters` builder in the admin Keboola register/edit modals**
+  (addresses #408). The Direct-extract (Storage API) registration path used to
+  expose row filters only as a raw-JSON textarea — error-prone for non-technical
+  operators. It now renders a structured editor: a column + operator
+  (`eq/ne/gt/ge/lt/le`) + comma-separated values row repeater, plus a date-range
+  convenience that emits the two boundary rows (`ge` / `le`) with date
+  placeholders (e.g. `{{last_3_months}}`, `{{today}}`) passed through verbatim
+  for server-side resolution at sync time. The builder serialises into the same
+  hidden textarea the submit path already reads, so the produced JSON is
+  byte-compatible with the existing `/api/admin/register-table` + registry PUT
+  contract — no schema or API change. An "Edit raw JSON" escape hatch is kept for
+  power users. Pure front-end (`app/web/static/js/where-filters-builder.js`). (#649)
+
+## [0.71.31] — 2026-06-13
+
+### Added
+- **Webhook alert on scheduled-sync failure.** When a scheduled sync fails —
+  either fatally, on an extractor/subprocess timeout, or with per-table errors
+  (materialized-pass errors, Keboola extractor exit 1/2) — Agnes now POSTs a
+  concise `{"text": ...}` payload to an operator-configured webhook so failures
+  are noticed proactively instead of on the next dashboard check. A run that
+  hits per-table errors and then crashes sends a single combined alert, not two
+  overlapping POSTs. Configure via the new `notifications.alert_webhook_url` in
+  `instance.yaml` (env override `AGNES_ALERT_WEBHOOK_URL`); the `{"text": ...}`
+  shape is Slack / Google Chat / Mattermost / Discord incoming-webhook
+  compatible. Best-effort by contract — a webhook outage never blocks the sync.
+  No-op when the URL is unset. (#397, #648)
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.30] — 2026-06-13
+
+### Added
+- **`/admin/prompts` bind-git file picker.** The Git-mode pane of each managed prompt (install / workspace) now offers a dropdown of the bindable files in the synced Initial Workspace Template repo instead of a raw free-text path field that silently 400'd on a typo. Options are repo-root-relative paths (e.g. `workspace/CLAUDE.md`, `install-prompt/template.md.tmpl`) — exactly the strings `bind-git` accepts — with this card's canonical seed path pre-selected. A "Type a path manually" escape hatch keeps the old text input for power users / re-bind. Backed by a new read-only `GET /api/admin/prompts/iwt-files` (returns `{iwt_configured, files, suggested}`; empty `files` when IWT is unconfigured) and `src.initial_workspace.list_iwt_repo_files()` (repo-root-relative, `.git/` + symlinks excluded). Admin-web-only (EXEMPT in the triple-surface gate). (#622 Slice 3)
+
 ## [0.71.29] — 2026-06-12
 
 ### Added

@@ -28,6 +28,8 @@ _COHORT: dict[str, tuple[str, str]] = {
     # Stack discovery (issue #621). subscribe/unsubscribe paths are already
     # grandfathered; browse is the new triple-surface endpoint.
     "/api/stack/browse": ("stack browse", "stack_browse"),
+    # Store thumbs up/down ratings (issue #398).
+    "/api/store/entities/{entity_id}/rate": ("store rate", "store_rate"),
 }
 
 
@@ -100,11 +102,26 @@ _PROMPTS_REASON = (
     "no analyst CLI/MCP analogue (mirrors the grandfathered "
     "/api/admin/{welcome,workspace-prompt}-template editors)"
 )
+_IW_SYNC_IF_CONFIGURED_REASON = (
+    "admin-web/scheduler-only nightly auto-sync wrapper (#622 Slice 3 PR-B) — "
+    "the scheduler sidecar POSTs it via SCHEDULER_API_TOKEN; no analyst "
+    "CLI/MCP analogue, mirrors the manual /sync route's exemption"
+)
+_STORE_DRYRUN_REASON = (
+    "Store upload-wizard helper (#317) — pre-submit dry-run that previews "
+    "guardrail findings in the /store/new web form before the real "
+    "POST /api/store/entities. No analyst CLI/MCP analogue (mirrors the "
+    "grandfathered /api/store/entities/preview wizard step); the real "
+    "create endpoint carries the triple-surface contract."
+)
 _EXEMPT: dict[str, str] = {
+    "/api/admin/initial-workspace/sync-if-configured": _IW_SYNC_IF_CONFIGURED_REASON,
+    "/api/store/entities/dryrun": _STORE_DRYRUN_REASON,
     "/api/admin/prompts/{kind}": _PROMPTS_REASON,
     "/api/admin/prompts/{kind}/source": _PROMPTS_REASON,
     "/api/admin/prompts/{kind}/bind-git": _PROMPTS_REASON,
     "/api/admin/prompts/{kind}/preview": _PROMPTS_REASON,
+    "/api/admin/prompts/iwt-files": _PROMPTS_REASON,
     "/api/admin/adoption/kpis": _ADOPTION_REASON,
     "/api/admin/adoption/series": _ADOPTION_REASON,
     "/api/admin/adoption/top-skills": _ADOPTION_REASON,

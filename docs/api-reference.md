@@ -767,8 +767,17 @@ checks against.
 
 ### `/api/admin/initial-workspace` — Initial workspace template
 
+Admin-only (web UI at `/admin/initial-workspace`; no analyst CLI/MCP analogue).
+`/sync` is the manual "Sync now" action (errors loudly when no repo is
+registered). `/sync-if-configured` is the nightly-scheduler wrapper: it always
+returns 200, short-circuiting to `{"skipped": true, "reason": "not_configured"}`
+when no IWT repo is registered, so the nightly job is a no-op on instances
+without one. Cadence is configurable via `SCHEDULER_INITIAL_WORKSPACE_SCHEDULE`
+or `instance.yaml` `initial_workspace.sync_schedule` (default `daily 03:30`).
+
 - /api/admin/initial-workspace
 - /api/admin/initial-workspace/sync
+- /api/admin/initial-workspace/sync-if-configured
 
 ### `/api/admin/welcome-template` — Welcome message template
 
@@ -786,7 +795,10 @@ Unified admin surface for the install + workspace prompts (`kind ∈
 install|workspace`), each with an explicit Git ⇄ Editor `source_mode` toggle.
 Editor mode keeps the DB override editable; Git mode binds the prompt to a file
 in the Initial Workspace Template clone. Backs the `/admin/prompts` page.
+`iwt-files` (read-only) lists the repo-root-relative bindable files in the
+synced IWT clone for the bind-git file picker.
 
+- /api/admin/prompts/iwt-files
 - /api/admin/prompts/{kind}
 - /api/admin/prompts/{kind}/source
 - /api/admin/prompts/{kind}/bind-git
@@ -1014,12 +1026,14 @@ in the Initial Workspace Template clone. Backs the `/admin/prompts` page.
 - /api/store/bundle.zip
 - /api/store/categories
 - /api/store/entities
+- /api/store/entities/dryrun
 - /api/store/entities/preview
 - /api/store/entities/{entity_id}
 - /api/store/entities/{entity_id}/docs/{filename}
 - /api/store/entities/{entity_id}/files
 - /api/store/entities/{entity_id}/install
 - /api/store/entities/{entity_id}/photo
+- /api/store/entities/{entity_id}/rate
 - /api/store/entities/{entity_id}/versions/{version_no}/restore
 - /api/store/import-bundle
 - /api/store/owners

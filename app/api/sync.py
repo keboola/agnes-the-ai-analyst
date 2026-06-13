@@ -414,6 +414,11 @@ def _run_sync(
         )
         return
 
+    # Accumulates per-table failures across the sync (materialized pass +
+    # extractor) so both the per-table operator alert below and the fatal-path
+    # alert in the outer `except` can report the same context.
+    collected_errors: List[dict] = []
+
     try:
         from app.instance_config import get_data_source_type
         from src.db import get_system_db
@@ -669,6 +674,18 @@ sys.exit(compute_exit_code(result, len(configs)))
                     flush=True,
                 )
                 result = None
+                # Record the timeout so the per-table webhook alert fires —
+                # this LOCAL catch (the common timeout path) sets result=None
+                # and skips the exit-code error collection below, so without
+                # this append a clean materialized pass + rebuild would leave
+                # collected_errors empty and the operator never learns the
+                # extractor stalled (#397, #648 review).
+                collected_errors.append(
+                    {
+                        "table": "(keboola extractor)",
+                        "error": f"extractor timed out after {extractor_timeout}s — process group killed",
+                    }
+                )
 
             if result is not None:
                 if result.stdout:
@@ -690,8 +707,20 @@ sys.exit(compute_exit_code(result, len(configs)))
                         file=_sys.stderr,
                         flush=True,
                     )
+                    collected_errors.append(
+                        {
+                            "table": "(keboola extractor)",
+                            "error": "partial failure (exit 2) — see server logs for per-table errors",
+                        }
+                    )
                 else:
                     print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
+                    collected_errors.append(
+                        {
+                            "table": "(keboola extractor)",
+                            "error": f"extractor failed (exit {result.returncode}) — see server logs",
+                        }
+                    )
 
             # Run custom connectors (Tier A: local mount) — only when there
             # were local-mode tables to drive the extractor. Custom connectors
@@ -720,10 +749,25 @@ sys.exit(compute_exit_code(result, len(configs)))
                             logger.error(
                                 "Custom connector %s failed: %s", connector_dir.name, custom_result.stderr[-500:]
                             )
+                            # Symmetry with the Keboola extractor exit-code
+                            # path — a failed custom connector must also reach
+                            # the webhook alert, not just stderr (#648 review).
+                            collected_errors.append(
+                                {
+                                    "table": f"(custom connector: {connector_dir.name})",
+                                    "error": f"connector failed (exit {custom_result.returncode}) — see server logs",
+                                }
+                            )
                         else:
                             logger.info("Custom connector %s completed", connector_dir.name)
                     except subprocess.TimeoutExpired:
                         logger.error("Custom connector %s timed out", connector_dir.name)
+                        collected_errors.append(
+                            {
+                                "table": f"(custom connector: {connector_dir.name})",
+                                "error": "connector timed out after 600s",
+                            }
+                        )
 
         # Materialized SQL pass — runs admin-registered SQL through the
         # source's DuckDB extension (BQ via BqAccess, Keboola via
@@ -766,6 +810,10 @@ sys.exit(compute_exit_code(result, len(configs)))
                     file=_sys.stderr,
                     flush=True,
                 )
+            # Carry the per-table failures forward for the operator alert
+            # (fired after this block, and also surfaced if a later fatal
+            # error hits the outer except).
+            collected_errors.extend(mat_summary["errors"])
         except Exception as e:
             print(
                 f"[SYNC] Materialized SQL pass FAILED: {e}",
@@ -773,6 +821,10 @@ sys.exit(compute_exit_code(result, len(configs)))
                 flush=True,
             )
             traceback.print_exc()
+            # The whole materialized pass blowing up is itself a per-table-ish
+            # failure operators should hear about; record it so the alert below
+            # (and the fatal-path alert) include it.
+            collected_errors.append({"table": "(materialized pass)", "error": str(e)})
 
         # Rebuild master views (reads extract.duckdb files, no write conflict)
         from src.orchestrator import SyncOrchestrator
@@ -839,15 +891,48 @@ sys.exit(compute_exit_code(result, len(configs)))
         except Exception as e:
             print(f"[SYNC] Profiler skipped: {e}", file=_sys.stderr, flush=True)
 
-    except subprocess.TimeoutExpired:
+        # Operator alert on per-table sync errors (non-fatal). Fired at the
+        # END of the try — AFTER the orchestrator rebuild — not mid-flow:
+        # if a later step (rebuild) raises, the fatal handler below sends a
+        # single combined alert (failed_tables=collected_errors, fatal=e)
+        # instead of this firing first and the fatal path firing a second,
+        # overlapping POST for the same run (#648 review). Best-effort:
+        # notify_sync_failure no-ops without a webhook and never raises.
+        if collected_errors:
+            try:
+                from app.services.sync_notifier import notify_sync_failure
+
+                notify_sync_failure(failed_tables=collected_errors, fatal=None)
+            except Exception:
+                logger.exception("sync-failure notifier raised on per-table path")
+
+    except subprocess.TimeoutExpired as e:
         # Outer-handler fallback for any subprocess.run call site (e.g.
         # custom-connectors below) that didn't already catch its own
         # TimeoutExpired. Concrete timeout value isn't available here —
         # log generically.
         print("[SYNC] Extractor subprocess timed out", file=_sys.stderr, flush=True)
+        # A swallowed timeout is exactly the silent failure this feature
+        # exists to surface — alert operators, same best-effort wrapping as
+        # the generic-exception path below (#397, #648 review).
+        try:
+            from app.services.sync_notifier import notify_sync_failure
+
+            notify_sync_failure(failed_tables=collected_errors, fatal=e)
+        except Exception:
+            logger.exception("sync-failure notifier raised on timeout path")
     except Exception as e:
         print(f"[SYNC] FAILED: {e}", file=_sys.stderr, flush=True)
         traceback.print_exc()
+        # Operator alert on the fatal path. Best-effort: notify_sync_failure
+        # never raises, but wrap anyway so an import-time issue can't mask the
+        # original failure or leave _sync_lock held.
+        try:
+            from app.services.sync_notifier import notify_sync_failure
+
+            notify_sync_failure(failed_tables=collected_errors, fatal=e)
+        except Exception:
+            logger.exception("sync-failure notifier raised on fatal path")
     finally:
         _sync_lock.release()
 

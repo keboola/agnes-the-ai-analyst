@@ -124,6 +124,10 @@ class TestToolRegistration:
             "stack_browse",
             "stack_subscribe",
             "stack_unsubscribe",
+            # Store thumbs up/down ratings (issue #398) — an analyst's Claude
+            # can rate a store entity without leaving the chat. See
+            # tests/test_documentation_api_triple_surface.py for the policy.
+            "store_rate",
         }
 
     def test_no_client_only_tools(self):
