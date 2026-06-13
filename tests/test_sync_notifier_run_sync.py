@@ -246,3 +246,112 @@ def test_run_sync_timeout_notifies(tmp_path, monkeypatch):
 
     assert "fatal" in captured, "notifier must be called on the timeout path"
     assert isinstance(captured["fatal"], subprocess.TimeoutExpired)
+
+
+def test_run_sync_extractor_timeout_notifies(tmp_path, monkeypatch, capsys):
+    """#648 review: the Keboola extractor's LOCAL timeout catch sets
+    result=None and skips exit-code error collection, yet a stalled
+    extractor must still raise a per-table webhook alert — so the timeout
+    now appends to collected_errors and the end-of-try notifier fires."""
+    import subprocess
+    from unittest.mock import MagicMock
+
+    from app.api import sync as sync_mod
+
+    class _TimeoutPopen:
+        def __init__(self, cmd, **kwargs):
+            self.pid = 999
+            self.returncode = None
+            self._calls = 0
+
+        def communicate(self, input=None, timeout=None):
+            self._calls += 1
+            if self._calls == 1:
+                raise subprocess.TimeoutExpired(cmd="extractor", timeout=timeout)
+            return ("", "")
+
+    monkeypatch.setattr(subprocess, "Popen", _TimeoutPopen)
+    monkeypatch.setattr(sync_mod.os, "killpg", lambda *a, **k: None)
+
+    from src import orchestrator as orch_mod
+    monkeypatch.setattr(
+        orch_mod, "SyncOrchestrator",
+        lambda *a, **kw: MagicMock(rebuild=MagicMock(return_value={})),
+        raising=False,
+    )
+
+    monkeypatch.setenv("KEBOOLA_STORAGE_TOKEN", "test-token")
+    monkeypatch.setenv("KEBOOLA_STACK_URL", "https://test.example")
+
+    from src.repositories.table_registry import TableRegistryRepository
+    monkeypatch.setattr(
+        TableRegistryRepository, "list_local",
+        lambda self, *a, **kw: [
+            {"id": "x", "name": "x", "source_type": "keboola",
+             "bucket": "in.c-x", "source_table": "y", "query_mode": "local"}
+        ],
+    )
+
+    fake_conn = MagicMock()
+    from src import db as db_mod
+    from app import instance_config as ic_mod
+    monkeypatch.setattr(db_mod, "get_system_db", lambda: fake_conn)
+    monkeypatch.setattr(ic_mod, "get_data_source_type", lambda: "keboola")
+    monkeypatch.setattr(ic_mod, "get_value", lambda *a, **kw: "")
+
+    captured = {}
+
+    def _spy_notify(*, failed_tables, fatal):
+        captured["failed_tables"] = failed_tables
+        captured["fatal"] = fatal
+
+    monkeypatch.setattr("app.services.sync_notifier.notify_sync_failure", _spy_notify)
+
+    sync_mod._run_sync()
+
+    assert "failed_tables" in captured, "extractor timeout must trigger the notifier"
+    assert captured["fatal"] is None
+    assert any("timed out" in e["error"] for e in captured["failed_tables"])
+
+
+def test_run_sync_per_table_then_fatal_notifies_once(tmp_path, monkeypatch):
+    """#648 review: per-table errors from the materialized pass + a later
+    fatal crash (orchestrator rebuild) must produce ONE combined webhook
+    alert (the fatal path), not a per-table POST followed by an overlapping
+    fatal POST for the same run."""
+    _seed_bq_only_registry(tmp_path)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    _patch_bq_only(monkeypatch)
+
+    from app.api import sync as sync_mod
+
+    monkeypatch.setattr(
+        "app.api.sync._run_materialized_pass",
+        lambda _c, _b, *, tables=None, source_type=None: {
+            "materialized": [],
+            "skipped": [],
+            "errors": [{"table": "m1", "error": "budget exceeded"}],
+        },
+    )
+
+    class _OrchBoom:
+        def rebuild(self):
+            raise RuntimeError("rebuild exploded")
+
+    monkeypatch.setattr(
+        "src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchBoom()
+    )
+
+    calls = []
+
+    def _spy_notify(*, failed_tables, fatal):
+        calls.append({"failed_tables": failed_tables, "fatal": fatal})
+
+    monkeypatch.setattr("app.services.sync_notifier.notify_sync_failure", _spy_notify)
+
+    sync_mod._run_sync()
+
+    assert len(calls) == 1, f"expected a single combined alert, got {len(calls)}"
+    assert isinstance(calls[0]["fatal"], RuntimeError)
+    # The combined alert still carries the per-table errors collected earlier.
+    assert calls[0]["failed_tables"] == [{"table": "m1", "error": "budget exceeded"}]

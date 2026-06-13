@@ -674,6 +674,18 @@ sys.exit(compute_exit_code(result, len(configs)))
                     flush=True,
                 )
                 result = None
+                # Record the timeout so the per-table webhook alert fires —
+                # this LOCAL catch (the common timeout path) sets result=None
+                # and skips the exit-code error collection below, so without
+                # this append a clean materialized pass + rebuild would leave
+                # collected_errors empty and the operator never learns the
+                # extractor stalled (#397, #648 review).
+                collected_errors.append(
+                    {
+                        "table": "(keboola extractor)",
+                        "error": f"extractor timed out after {extractor_timeout}s — process group killed",
+                    }
+                )
 
             if result is not None:
                 if result.stdout:
@@ -799,18 +811,6 @@ sys.exit(compute_exit_code(result, len(configs)))
             # (and the fatal-path alert) include it.
             collected_errors.append({"table": "(materialized pass)", "error": str(e)})
 
-        # Operator alert on per-table sync errors (non-fatal). Best-effort:
-        # notify_sync_failure no-ops when no webhook is configured and never
-        # raises. Fired here — not in the outer except — so a sync that
-        # completes-with-errors still alerts even though it never throws.
-        if collected_errors:
-            try:
-                from app.services.sync_notifier import notify_sync_failure
-
-                notify_sync_failure(failed_tables=collected_errors, fatal=None)
-            except Exception:
-                logger.exception("sync-failure notifier raised on per-table path")
-
         # Rebuild master views (reads extract.duckdb files, no write conflict)
         from src.orchestrator import SyncOrchestrator
 
@@ -875,6 +875,21 @@ sys.exit(compute_exit_code(result, len(configs)))
             print(f"[SYNC] Profiled {profiled} tables", file=_sys.stderr, flush=True)
         except Exception as e:
             print(f"[SYNC] Profiler skipped: {e}", file=_sys.stderr, flush=True)
+
+        # Operator alert on per-table sync errors (non-fatal). Fired at the
+        # END of the try — AFTER the orchestrator rebuild — not mid-flow:
+        # if a later step (rebuild) raises, the fatal handler below sends a
+        # single combined alert (failed_tables=collected_errors, fatal=e)
+        # instead of this firing first and the fatal path firing a second,
+        # overlapping POST for the same run (#648 review). Best-effort:
+        # notify_sync_failure no-ops without a webhook and never raises.
+        if collected_errors:
+            try:
+                from app.services.sync_notifier import notify_sync_failure
+
+                notify_sync_failure(failed_tables=collected_errors, fatal=None)
+            except Exception:
+                logger.exception("sync-failure notifier raised on per-table path")
 
     except subprocess.TimeoutExpired as e:
         # Outer-handler fallback for any subprocess.run call site (e.g.
