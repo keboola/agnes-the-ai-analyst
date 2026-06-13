@@ -876,12 +876,21 @@ sys.exit(compute_exit_code(result, len(configs)))
         except Exception as e:
             print(f"[SYNC] Profiler skipped: {e}", file=_sys.stderr, flush=True)
 
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         # Outer-handler fallback for any subprocess.run call site (e.g.
         # custom-connectors below) that didn't already catch its own
         # TimeoutExpired. Concrete timeout value isn't available here —
         # log generically.
         print("[SYNC] Extractor subprocess timed out", file=_sys.stderr, flush=True)
+        # A swallowed timeout is exactly the silent failure this feature
+        # exists to surface — alert operators, same best-effort wrapping as
+        # the generic-exception path below (#397, #648 review).
+        try:
+            from app.services.sync_notifier import notify_sync_failure
+
+            notify_sync_failure(failed_tables=collected_errors, fatal=e)
+        except Exception:
+            logger.exception("sync-failure notifier raised on timeout path")
     except Exception as e:
         print(f"[SYNC] FAILED: {e}", file=_sys.stderr, flush=True)
         traceback.print_exc()

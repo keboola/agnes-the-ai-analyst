@@ -202,3 +202,47 @@ def test_run_sync_notifier_raising_does_not_break_sync(tmp_path, monkeypatch):
     # Must not raise; the orchestrator rebuild must still have run.
     sync_mod._run_sync()
     assert rebuilt["n"] == 1
+
+
+def test_run_sync_timeout_notifies(tmp_path, monkeypatch):
+    """#648 review: a subprocess.TimeoutExpired reaching the OUTER handler
+    (its own except branch, more specific than `except Exception`) must still
+    fire the webhook notifier — a swallowed timeout is exactly the silent
+    failure this feature exists to surface."""
+    import subprocess
+
+    _seed_bq_only_registry(tmp_path)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    _patch_bq_only(monkeypatch)
+
+    from app.api import sync as sync_mod
+
+    monkeypatch.setattr(
+        "app.api.sync._run_materialized_pass",
+        lambda _c, _b, *, tables=None, source_type=None: {
+            "materialized": ["m1"],
+            "skipped": [],
+            "errors": [],
+        },
+    )
+
+    class _OrchTimeout:
+        def rebuild(self):
+            raise subprocess.TimeoutExpired(cmd="extractor", timeout=600)
+
+    monkeypatch.setattr(
+        "src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchTimeout()
+    )
+
+    captured = {}
+
+    def _spy_notify(*, failed_tables, fatal):
+        captured["failed_tables"] = failed_tables
+        captured["fatal"] = fatal
+
+    monkeypatch.setattr("app.services.sync_notifier.notify_sync_failure", _spy_notify)
+
+    sync_mod._run_sync()
+
+    assert "fatal" in captured, "notifier must be called on the timeout path"
+    assert isinstance(captured["fatal"], subprocess.TimeoutExpired)
