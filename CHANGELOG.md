@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.32] — 2026-06-13
+
+### Added
 - **Structured `where_filters` builder in the admin Keboola register/edit modals**
   (addresses #408). The Direct-extract (Storage API) registration path used to
   expose row filters only as a raw-JSON textarea — error-prone for non-technical
@@ -22,15 +34,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   hidden textarea the submit path already reads, so the produced JSON is
   byte-compatible with the existing `/api/admin/register-table` + registry PUT
   contract — no schema or API change. An "Edit raw JSON" escape hatch is kept for
-  power users. Pure front-end (`app/web/static/js/where-filters-builder.js`).
-
-### Changed
-
-### Fixed
-
-### Removed
-
-### Internal
+  power users. Pure front-end (`app/web/static/js/where-filters-builder.js`). (#649)
 
 ## [0.71.31] — 2026-06-13
 
