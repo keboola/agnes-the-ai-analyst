@@ -91,6 +91,58 @@ def export(
 
 
 @app.command()
+def summary(
+    window: str = typer.Option("7d", "--window", help="7d|30d|all"),
+    json_out: bool = typer.Option(False, "--json", help="Emit raw JSON instead of a table."),
+    limit: int = typer.Option(10, "--limit", help="Max tables to show."),
+):
+    """Query telemetry: top tables, scan bytes, and remote/local split (#410).
+
+    Aggregates the query.remote / query.local / snapshot.create audit rows over
+    the selected window — which tables are queried, how often, and (for remote
+    tables) how many bytes were scanned.
+    """
+    if window not in ("7d", "30d", "all"):
+        typer.echo(f"[err] window must be 7d|30d|all, got {window!r}", err=True)
+        raise typer.Exit(1)
+
+    client = get_client(timeout=60)
+    try:
+        resp = client.get("/api/admin/telemetry/summary", params={"window": window})
+    except Exception as e:
+        typer.echo(f"[err] cannot reach server: {e}", err=True)
+        raise typer.Exit(1)
+    _handle_error(resp, "summary")
+    data = resp.json()
+    qt = data.get("query_telemetry") or {}
+
+    if json_out:
+        import json
+        typer.echo(json.dumps(qt, indent=2))
+        return
+
+    typer.echo(f"Query telemetry — window {data.get('window', window)}")
+    typer.echo(
+        f"  total scan bytes: {qt.get('total_scan_bytes', 0):,}   "
+        f"remote: {qt.get('remote_queries', 0)}   "
+        f"local: {qt.get('local_queries', 0)}   "
+        f"snapshots: {qt.get('snapshot_creates', 0)}"
+    )
+    tables = (qt.get("top_tables") or [])[:limit]
+    if not tables:
+        typer.echo("  (no query activity in this window)")
+        return
+    typer.echo("")
+    typer.echo(f"  {'table':<40} {'queries':>8} {'remote':>7} {'local':>6} {'scan_bytes':>14}")
+    for t in tables:
+        typer.echo(
+            f"  {str(t.get('table_id', ''))[:40]:<40} "
+            f"{t.get('queries', 0):>8} {t.get('remote', 0):>7} "
+            f"{t.get('local', 0):>6} {t.get('scan_bytes', 0):>14,}"
+        )
+
+
+@app.command()
 def reprocess():
     """Force re-extraction of all sessions for the usage processor."""
     client = get_client(timeout=60)
