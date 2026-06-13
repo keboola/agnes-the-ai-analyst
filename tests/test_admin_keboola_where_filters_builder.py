@@ -17,6 +17,7 @@ Three layers of coverage:
   3. Byte-compatibility — that exact JSON round-trips through the live
      /api/admin/register-table endpoint AND PUT update path unchanged.
 """
+
 import json
 import shutil
 import subprocess
@@ -24,10 +25,7 @@ from pathlib import Path
 
 import pytest
 
-_JS = (
-    Path(__file__).resolve().parents[1]
-    / "app" / "web" / "static" / "js" / "where-filters-builder.js"
-)
+_JS = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "js" / "where-filters-builder.js"
 
 
 def _auth(token):
@@ -79,13 +77,8 @@ def _run_builder(rows_expr):
     node = shutil.which("node")
     if not node:
         pytest.skip("node not available — JS serialisation test needs a runtime")
-    script = (
-        "const B = require(%r);\n"
-        "process.stdout.write(JSON.stringify(%s));\n" % (str(_JS), rows_expr)
-    )
-    out = subprocess.run(
-        [node, "-e", script], capture_output=True, text=True, check=True
-    )
+    script = "const B = require(%r);\nprocess.stdout.write(JSON.stringify(%s));\n" % (str(_JS), rows_expr)
+    out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True)
     return json.loads(out.stdout)
 
 
@@ -94,17 +87,13 @@ def test_serialize_where_row():
     split into the IN-list the Storage API expects."""
     rows = "[{column:'country', operator:'eq', values:'CZ, SK'}]"
     result = _run_builder("B.serializeFilterRows(%s)" % rows)
-    assert result == [
-        {"column": "country", "operator": "eq", "values": ["CZ", "SK"]}
-    ]
+    assert result == [{"column": "country", "operator": "eq", "values": ["CZ", "SK"]}]
 
 
 def test_date_range_emits_two_boundary_rows():
     """A date range → two boundary rows (ge + le) on the same column, with
     placeholders passed through verbatim for server-side resolution."""
-    result = _run_builder(
-        "B.dateRangeRows('event_date', '{{last_3_months}}', '{{today}}')"
-    )
+    result = _run_builder("B.dateRangeRows('event_date', '{{last_3_months}}', '{{today}}')")
     assert result == [
         {"column": "event_date", "operator": "ge", "values": ["{{last_3_months}}"]},
         {"column": "event_date", "operator": "le", "values": ["{{today}}"]},
@@ -133,11 +122,19 @@ def test_builder_emits_expected_json_for_sample():
 def test_half_typed_rows_are_dropped():
     """A row with a blank column or no values must NOT emit an invalid filter
     (which the backend would 400 on). Empty result → empty string."""
-    rows = (
-        "[{column:'', operator:'eq', values:'x'}, "
-        "{column:'c', operator:'eq', values:''}]"
-    )
+    rows = "[{column:'', operator:'eq', values:'x'}, {column:'c', operator:'eq', values:''}]"
     assert _run_builder("B.rowsToJSON(%s)" % rows) == ""
+
+
+def test_comma_in_value_detected_for_rawonly():
+    """#649 review: a stored value containing a comma (e.g. "Smith, John")
+    cannot round-trip the CSV row editor without silently splitting, so the
+    builder must detect it and defer to raw-JSON mode."""
+    parsed = "[{column:'name', operator:'eq', values:['Smith, John']}]"
+    assert _run_builder("B.parsedHasCommaValue(%s)" % parsed) is True
+    # Plain values (no comma) stay in the structured editor.
+    plain = "[{column:'country', operator:'eq', values:['CZ','SK']}]"
+    assert _run_builder("B.parsedHasCommaValue(%s)" % plain) is False
 
 
 # ──────────────────────── 3. byte-compatibility ────────────────────────────
@@ -154,10 +151,9 @@ def test_register_accepts_builder_json(seeded_app, monkeypatch):
     """The JSON the builder emits is accepted unchanged by the existing
     Direct-extract register path (query_mode='local', full_refresh)."""
     fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
-    monkeypatch.setattr(
-        "app.instance_config.load_instance_config", lambda: fake_cfg, raising=False
-    )
+    monkeypatch.setattr("app.instance_config.load_instance_config", lambda: fake_cfg, raising=False)
     from app.instance_config import reset_cache
+
     reset_cache()
     try:
         c = seeded_app["client"]
@@ -190,10 +186,9 @@ def test_update_accepts_builder_json(seeded_app, monkeypatch):
     Direct-extract row — the edit modal's builder writes into editKbWhereFilters
     which feeds the unchanged update payload."""
     fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
-    monkeypatch.setattr(
-        "app.instance_config.load_instance_config", lambda: fake_cfg, raising=False
-    )
+    monkeypatch.setattr("app.instance_config.load_instance_config", lambda: fake_cfg, raising=False)
     from app.instance_config import reset_cache
+
     reset_cache()
     try:
         c = seeded_app["client"]

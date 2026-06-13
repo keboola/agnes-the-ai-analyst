@@ -62,6 +62,22 @@
   }
 
   /**
+   * True iff any value in a parsed filter array contains a comma. The CSV
+   * row editor uses comma as its IN-list delimiter, so a stored value like
+   * "Smith, John" cannot round-trip through it without silently splitting
+   * into two values. When this returns true the builder refuses to render
+   * its lossy editor and defers to the raw-JSON textarea (#649 review).
+   */
+  function parsedHasCommaValue(parsed) {
+    if (!Array.isArray(parsed)) return false;
+    return parsed.some(function (f) {
+      return f && Array.isArray(f.values) && f.values.some(function (v) {
+        return typeof v === 'string' && v.indexOf(',') !== -1;
+      });
+    });
+  }
+
+  /**
    * Serialise an array of {column, operator, values} row descriptors into
    * the backend filter-array shape. `values` may be a string (CSV) or an
    * array. Rows with a blank column OR no values are dropped (a half-typed
@@ -137,9 +153,14 @@
     var textarea = opts.textarea;
     if (!host || !textarea) return null;
 
-    var state = { rows: [], rangeColumn: '', rangeFrom: '', rangeTo: '' };
+    var state = { rows: [], rangeColumn: '', rangeFrom: '', rangeTo: '', rawOnly: false };
 
     function syncTextarea() {
+      // In raw-only mode the textarea is the source of truth (it holds
+      // comma-bearing values the CSV editor can't represent); never
+      // overwrite it from the builder, or the round-trip would corrupt
+      // those values (#649 review).
+      if (state.rawOnly) return;
       var rows = state.rows.concat(
         dateRangeRows(state.rangeColumn, state.rangeFrom, state.rangeTo)
       );
@@ -149,11 +170,18 @@
     function hydrateFromTextarea() {
       state.rows = [];
       state.rangeColumn = state.rangeFrom = state.rangeTo = '';
+      state.rawOnly = false;
       var raw = (textarea.value || '').trim();
       if (raw) {
         try {
           var parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) {
+          if (parsedHasCommaValue(parsed)) {
+            // A stored value contains a comma — the CSV row editor would
+            // silently split it on the next interaction. Refuse to render
+            // the lossy editor; the operator edits the raw JSON instead
+            // (#649 review).
+            state.rawOnly = true;
+          } else if (Array.isArray(parsed)) {
             parsed.forEach(function (f) {
               state.rows.push({
                 column: f.column || '',
@@ -175,6 +203,19 @@
 
     function render() {
       host.innerHTML = '';
+
+      // Raw-only mode: a stored value contains a comma the CSV editor can't
+      // represent losslessly. Show a notice instead of the lossy row UI and
+      // leave the textarea (raw JSON) untouched as the source of truth.
+      if (state.rawOnly) {
+        host.appendChild(_el('div', { class: 'form-hint wfb-rawonly-notice' },
+          [_el('span', {
+            text: 'A filter value contains a comma, which the structured '
+              + 'editor can’t represent. Use “Edit raw JSON” '
+              + 'to view or change these filters.',
+          })]));
+        return;
+      }
 
       // Filter rows
       state.rows.forEach(function (row, idx) {
@@ -264,6 +305,7 @@
   var api = {
     OPERATORS: OPERATORS,
     splitValues: splitValues,
+    parsedHasCommaValue: parsedHasCommaValue,
     serializeFilterRows: serializeFilterRows,
     dateRangeRows: dateRangeRows,
     rowsToJSON: rowsToJSON,
