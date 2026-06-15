@@ -108,19 +108,21 @@ class UsersPgRepository:
         email: str,
         name: str,
         password_hash: Optional[str] = None,
+        must_change_password: bool = False,
     ) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
-                    """INSERT INTO users (id, email, name, password_hash, created_at, updated_at)
-                       VALUES (:id, :email, :name, :password_hash, :created_at, :updated_at)"""
+                    """INSERT INTO users (id, email, name, password_hash, must_change_password, created_at, updated_at)
+                       VALUES (:id, :email, :name, :password_hash, :must_change_password, :created_at, :updated_at)"""
                 ),
                 {
                     "id": id,
                     "email": email,
                     "name": name,
                     "password_hash": password_hash,
+                    "must_change_password": must_change_password,
                     "created_at": now,
                     "updated_at": now,
                 },
@@ -141,6 +143,7 @@ class UsersPgRepository:
             "onboarded",
             "last_pull_at",
             "slack_user_id",
+            "must_change_password",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
@@ -152,6 +155,26 @@ class UsersPgRepository:
                 sa.text(f"UPDATE users SET {set_clause} WHERE id = :user_id"),
                 {**updates, "user_id": id},
             )
+
+    def consume_reset_token(self, *, email: str, token: str, cutoff, consume_id: str) -> bool:
+        """Atomically consume a password-reset token (PG sibling of the DuckDB
+        method). UPDATE + verifying SELECT run in one transaction; returns True
+        iff this call won the race."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "UPDATE users SET reset_token = :cid, reset_token_created = NULL "
+                    "WHERE email = :email AND reset_token = :token "
+                    "AND reset_token_created IS NOT NULL AND reset_token_created >= :cutoff "
+                    "AND active = TRUE"
+                ),
+                {"cid": consume_id, "email": email, "token": token, "cutoff": cutoff},
+            )
+            row = conn.execute(
+                sa.text("SELECT reset_token FROM users WHERE email = :email"),
+                {"email": email},
+            ).fetchone()
+        return bool(row and row[0] == consume_id)
 
     def count_admins(self, active_only: bool = True) -> int:
         sql = """
