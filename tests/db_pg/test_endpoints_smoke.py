@@ -39,6 +39,21 @@ class TestAuthSmoke:
         })
         assert r.status_code in (401, 422), r.text
 
+    def test_token_with_password_user(self, seeded_app_both):
+        """POST /auth/token returns 200 + access_token for a user with a password_hash."""
+        from argon2 import PasswordHasher
+        from src.repositories import users_repo
+        ph = PasswordHasher()
+        users_repo().create(
+            id="pw-user1", email="pw@test.com", name="PwUser",
+            password_hash=ph.hash("test-password"),
+        )
+        r = seeded_app_both["client"].post("/auth/token", json={
+            "email": "pw@test.com", "password": "test-password",
+        })
+        assert r.status_code == 200, r.text
+        assert "access_token" in r.json()
+
 
 # ---------------------------------------------------------------------------
 # Health / Version
@@ -811,6 +826,19 @@ class TestFleaUploadSmoke:
         r2 = self._upload(seeded_app_both["client"], self._admin_headers(seeded_app_both), zb)
         assert r2.status_code == 409
 
+    def test_upload_type_mismatch_returns_422(self, seeded_app_both):
+        """Uploading a skill zip with type='plugin' declared → validation_failed."""
+        from tests.helpers.factories import make_skill_zip
+        # skill zip but type=plugin is a type-mismatch
+        r = self._upload(
+            seeded_app_both["client"],
+            self._admin_headers(seeded_app_both),
+            make_skill_zip("smoke-type-mismatch"),
+            entity_type="plugin",  # wrong type for a skill zip
+        )
+        # Should fail with validation error (wrong manifest for type)
+        assert r.status_code == 422, r.text
+
     def test_pending_entity_not_visible_to_other_user(self, seeded_app_both, monkeypatch):
         from tests.helpers.factories import make_skill_zip
         monkeypatch.setattr("src.store_guardrails.llm_review.review_bundle", lambda *a, **kw: {
@@ -841,6 +869,34 @@ class TestFleaUploadSmoke:
         # analyst direct get should be 403/404
         rd = seeded_app_both["client"].get(f"/api/store/entities/{entity_id}", headers=self._analyst_headers(seeded_app_both))
         assert rd.status_code in (403, 404)
+
+    def test_pending_entity_visible_to_admin(self, seeded_app_both, monkeypatch):
+        """Admin can GET a pending entity directly."""
+        from tests.helpers.factories import make_skill_zip
+        monkeypatch.setattr("src.store_guardrails.llm_review.review_bundle", lambda *a, **kw: {
+            "risk_level": "low", "summary": "mock", "findings": [],
+            "reviewed_by_model": "mock", "error": None,
+        })
+        monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
+        import io
+        zb = make_skill_zip("smoke-admin-sees-pending")
+        rc = seeded_app_both["client"].post(
+            "/api/store/entities",
+            files={"file": ("bundle.zip", io.BytesIO(zb), "application/zip")},
+            data={"type": "skill"},
+            headers=self._admin_headers(seeded_app_both),
+        )
+        assert rc.status_code == 201
+        entity = rc.json()
+        assert entity["visibility_status"] == "pending_llm"
+        entity_id = entity["id"]
+        # Admin can see it directly
+        r = seeded_app_both["client"].get(
+            f"/api/store/entities/{entity_id}",
+            headers=self._admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 200, r.text
 
     def test_approved_entity_visible_to_everyone(self, seeded_app_both):
         from tests.helpers.factories import make_skill_zip
@@ -940,6 +996,27 @@ class TestMyStackSmoke:
         rs = client.get("/api/my-stack", headers=h)
         assert entity_id not in [e["id"] for e in rs.json()]
 
+    def test_cli_my_stack_show_lists_installed(self, cli_client_both, seeded_app_both):
+        """agnes my-stack show output contains entity name after install."""
+        client = seeded_app_both["client"]
+        h = self._admin_headers(seeded_app_both)
+        entity_id = self._upload_skill(client, h, "cli-stack-show-skill")
+        client.post(f"/api/store/entities/{entity_id}/install", headers=h)
+        result = cli_client_both["invoke"](["my-stack", "show"])
+        assert result.exit_code == 0
+        assert "cli-stack-show-skill" in result.output
+
+    def test_cli_my_stack_show_after_removal(self, cli_client_both, seeded_app_both):
+        """agnes my-stack show output does not contain entity after uninstall."""
+        client = seeded_app_both["client"]
+        h = self._admin_headers(seeded_app_both)
+        entity_id = self._upload_skill(client, h, "cli-stack-remove-skill")
+        client.post(f"/api/store/entities/{entity_id}/install", headers=h)
+        client.delete(f"/api/store/entities/{entity_id}/install", headers=h)
+        result = cli_client_both["invoke"](["my-stack", "show"])
+        assert result.exit_code == 0
+        assert "cli-stack-remove-skill" not in result.output
+
 
 # ---------------------------------------------------------------------------
 # CLI — CliRunner through in-process transport
@@ -995,6 +1072,12 @@ class TestCLISmoke:
     def test_snapshot_help(self, cli_client_both):
         result = cli_client_both["invoke"](["snapshot", "--help"])
         assert result.exit_code == 0
+
+    def test_schema_table(self, cli_client_both, registered_table_both):
+        """agnes schema <table_id> exits 0 and prints column info."""
+        table_id = registered_table_both["table_id"]
+        result = cli_client_both["invoke"](["schema", table_id])
+        assert result.exit_code == 0, f"schema failed: {result.output}"
 
 
 # ---------------------------------------------------------------------------
