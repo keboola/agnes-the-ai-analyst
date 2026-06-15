@@ -1,7 +1,10 @@
 # Authoring Agents — conversational web assistants for building harness content
 
-- **Status:** Draft (brainstorming output, pre-implementation-plan)
+- **Status:** Draft, revised after review (brainstorming output, pre-implementation-plan)
 - **Date:** 2026-06-15
+- **Revision note:** §§3.1, 4.4, 5, 6, 7, 9, 10 + new §12 reflect a three-reviewer pass
+  (product/red-team, technical-feasibility, conventions). Security and privacy holes and the
+  runtime-reuse over-claim were the load-bearing findings.
 - **Topic:** Four specialized, web-based conversational agents that help users author the
   things Agnes distributes to AI chats — marketplace content, data packages, MCP
   connections, and corporate memory — each with deep, grounded context about how Agnes works.
@@ -43,9 +46,10 @@ Exploration of the codebase established that the infrastructure is ~80% present:
   - Corporate memory: `app/api/memory_domains.py`, `app/api/memory.py`, and an existing
     **suggestion-and-approval queue** `memory_domain_suggestions` (analyst suggests, admin
     approves).
-- **Sessions are captured server-side** by `agnes push` and stored at
-  `${DATA_DIR}/users/{email}/sessions/{id}/transcript.jsonl`, browsable via
-  `app/api/admin_sessions.py` and parsed by `services/session_pipeline/`.
+- **Sessions are captured server-side** by `agnes push` and stored under the session data dir
+  (`SESSION_DATA_DIR`, default `/data/user_sessions`, organized by user), browsable via the
+  **admin-only** `app/api/admin_sessions.py` and parsed by `services/session_pipeline/`. There
+  is no analyst-facing session API.
 
 **Conclusion:** "four web agents" is not greenfield. It is **four specializations of the
 existing chat runtime**, plus a thin authoring layer (preview + suggestion queue) and four
@@ -85,12 +89,23 @@ domain knowledge skills.
 
 ### 3.1 Runtime: reuse the E2B chat runtime
 
-The four agents reuse `app/chat/` end-to-end. Each authoring session is a chat session with a
-specialized **agent profile** (system prompt + knowledge skill + toolset + gate policy). The
-E2B sandbox is justified beyond mere reuse: three of the four agents benefit from executing
-code in isolation — the Marketplace agent scaffolds and validates a skill folder (and may
-`git`-init a repo), and the Corporate-memory agent parses session JSONL transcripts with code.
-Token budget, concurrency caps, crash recovery, and co-drive are inherited.
+The four agents reuse the **execution** side of `app/chat/` (E2B sandbox, the Claude Agent SDK
+loop in `runner.py`, the `LiveSession` state machine, token budget, concurrency caps, crash
+recovery, co-drive). The sandbox is justified beyond reuse: three of the four agents benefit
+from executing code — the Marketplace agent scaffolds and validates a skill folder (and may
+`git`-init a repo), and the Corporate-memory agent parses session transcripts with code.
+
+**Honest scope correction (review finding):** the runtime today is **single-persona**. The
+runner constructs `ClaudeAgentOptions` with only `permission_mode`, `cwd`, and
+`setting_sources` — **no `system_prompt`, no `allowed_tools`/`disallowed_tools`, no
+`mcp_servers`**. The agent's persona comes entirely from the workspace `CLAUDE.md` loaded via
+`setting_sources`. So "specialized agent profile" is **net-new foundation work, not a thin
+extension**: a `profile` must thread through `POST /api/chat/sessions` → persistence → the
+manager spawn path → the runner. **Preferred mechanism:** rather than plumbing a `system_prompt`
+string through three layers, have the spawn path write a **profile-specific `CLAUDE.md` + a
+read-only knowledge skill into the session workdir** (which `WorkdirManager` already builds),
+so the existing `setting_sources` loader picks it up. The toolset restriction is layered on top
+(§5).
 
 ### 3.2 Agents are specializations, not new infrastructure
 
@@ -157,13 +172,33 @@ Each agent shares the §3.2 skeleton; only the payload differs.
   analysts via the sync manifest.
 - **Reads:** `app/api/admin_sessions.py` to list/parse transcripts (via
   `services/session_pipeline/`); existing memory for dedupe + contradiction detection.
-- **Does:** in the sandbox, walks session JSONL transcripts → extracts recurring solved
-  problems, discovered facts, and golden query patterns → clusters them into a domain as
-  `knowledge_items` → checks against existing memory → creates the domain + items → grants.
+- **Does:** in the sandbox, walks session transcripts → extracts recurring solved problems,
+  discovered facts, and golden query patterns → clusters them into a domain as
+  `knowledge_items` → checks against existing memory → proposes the domain + items.
 - **Done when:** a memory domain populated from real session evidence is created (or queued),
   with contradictions against existing memory surfaced for human resolution.
 - **Note:** this is also the *value/eval* dimension — memory grounded in what actually
   happened rather than invented.
+
+> **⚠️ Privacy is a hard gate (review finding — this agent does not ship until satisfied).**
+> Session privacy today is **whole-session opt-out** (`/agnes-private` excludes a session from
+> `agnes push`); there is **no field/content-level redaction** in `services/session_pipeline/`.
+> A non-private transcript is stored verbatim and may contain PII, customer data, or secrets.
+> Mining the not-marked-private long tail into a **shared, group-distributed** memory domain
+> promotes per-user-private content into a broadcast trust tier. Therefore:
+> 1. **Opt-IN consent, not implicit.** Mine only transcripts whose author positively opted into
+>    corporate-memory mining (a new consent flag, distinct from the existing opt-out list).
+> 2. **Provenance on every item.** Each proposed `knowledge_item` records which session/author
+>    it derived from; that provenance is visible in the approval UI.
+> 3. **Secret/PII scan before draft.** Extracted text runs through a secret/PII scan before it
+>    can become a proposal.
+> 4. **No admin-direct-write.** Memory-from-sessions always routes through the human approval
+>    gate (§5), never the admin fast-path.
+>
+> **Scope correction:** the only session API is **admin-only** (`require_admin`). Under the §5
+> "agent runs with the caller's permissions" invariant a non-admin session *cannot* read other
+> users' transcripts. So this agent is inherently an **admin-scoped / server-side processor**,
+> not a per-user chat tool like the other three.
 
 ---
 
@@ -186,7 +221,25 @@ for one domain (`memory_domain_suggestions`: analyst suggests, admin approves/re
 Generalize it into a unified **`authoring_suggestions`** queue spanning all four domains, so
 an admin has one place to review "what people proposed for publication." Each suggestion
 stores: domain, proposed payload (the draft), proposer, created_at, status, and the target
-grant. Approval replays the draft through the same author tools the admin agent would use.
+grant. (Sequencing note, §9: keep the queue **single-domain** until a *second* agent needs it
+— do not generalize speculatively.)
+
+**Approval is re-validation, not trusted replay (review finding — security).** A draft is
+**attacker-shaped data**: a non-admin proposer (or a prompt-injected transcript feeding the
+corporate-memory agent) controls the payload, including the skill/memory body text and the
+*target grant*. On approve, the payload MUST re-run the **full** mutation path — the same
+guardrails (`src/store_guardrails/`), the same RBAC checks, and an explicit check that the
+**proposer was entitled to target that grant** (evaluated against the proposer's groups, not
+just the approving admin's authority) — never a trusted fast-path. The admin-review UI renders
+the **complete** payload (full skill body, full memory item text, exact grant target), not a
+summary. Required adversarial tests: a suggestion whose draft embeds an out-of-scope grant or
+an injection string must be caught at approve-time.
+
+**RBAC shape decision.** To avoid a premature new `ResourceType`, the queue is **admin-only**
+for review/approve/reject (`require_admin`); a non-admin may list **only their own** proposals
+via a `created_by`-scoped filter on an authenticated endpoint (not a `resource_grant`). If a
+later requirement makes proposals group-scoped, *then* register an `AUTHORING_SUGGESTION`
+`ResourceType` + `ResourceTypeSpec` in `app/resource_types.py` (§12).
 
 ---
 
@@ -229,11 +282,19 @@ REST × CLI × MCP coverage ratchet for any new endpoint.
 
 Per the product decision to "generate now," there is **no blocking quality gate**. Instead,
 the following are surfaced as advisory signals during authoring:
-- **Dedupe** — read-tools check for near-duplicates before proposing new content.
+- **Dedupe + consumption signal (review finding).** Read-tools check for near-duplicates
+  before proposing new content, **and surface a usefulness signal** (times pulled / installed /
+  referenced) on existing content, so authoring is grounded in *what actually gets used* — the
+  bottleneck is demand/curation, not supply. This is part of the foundation, not a deferral.
 - **Dry-run** — marketplace artifacts validate through the existing `/entities/dryrun`.
 - **Contradiction detection** — corporate-memory proposals are checked against existing items.
 - **Security guardrails remain mandatory** for marketplace publishes (`src/store_guardrails/`
   is a security gate, not a quality gate — it stays on).
+- **Grounded-on references (review finding — cheap drift substrate).** Every authored artifact
+  records which catalog tables / MCP sources / metrics it was grounded against (the agent
+  already reads these via §3.2 read-tools). The scheduled drift *detector* is deferred (§10),
+  but recording the coupling now is cheap and is the data a later detector needs — deferring
+  the provenance is the actual mistake, not deferring the scheduler.
 
 **Accepted risk:** without a blocking value/eval gate, low-value or subtly-wrong content can
 be published. Mitigations are the human approval gate (§5) for non-admins and the advisory
@@ -257,16 +318,32 @@ No bespoke transpiler is built; the neutral triple already compiles to multiple 
 
 ## 9. Sequencing
 
-Build the **agent profile mechanism + one agent end-to-end first**, then replicate the proven
-pattern. Recommended order (highest value / lowest runtime risk first):
+Revised after review to de-risk the single biggest unknown (custom persona in the existing
+runtime) before any schema change or queue work:
 
-1. **Foundation** — agent profile mechanism, role-filtered toolset binding, preview step,
-   generalized `authoring_suggestions` queue (replacing `memory_domain_suggestions`).
-2. **Pilot: Data package agent** — purely internal REST calls, no code execution, immediately
-   useful, lowest risk. Proves the skeleton.
-3. **MCP agent** — wraps an existing multi-step flow; classifier already present.
-4. **Marketplace agent** — adds sandbox scaffolding + dry-run + guardrails.
-5. **Corporate-memory agent** — most novel; adds session-transcript mining.
+0. **Slice 0 — prove one custom-persona session, zero migration.** Add a `profile` param to
+   `POST /api/chat/sessions`, persist it, and have the spawn path write a profile-specific
+   `CLAUDE.md` (+ read-only skill) into the session workdir (§3.1). Use the **data-package**
+   domain, **admin caller only** (RBAC is god-mode, so no role-filtering yet), driving the
+   existing `/api/admin/data-packages` endpoints via the in-sandbox `agnes` CLI. **No new
+   toolset binding, no suggestion queue, no `memory_domain_suggestions` migration.** This
+   proves the only genuinely unproven claim with zero schema risk.
+1. **Foundation (after Slice 0 is green)** — role-filtered toolset binding, the uniform preview
+   step, and the consumption/grounded-on signals (§7). The `authoring_suggestions` queue stays
+   **single-domain** for now.
+2. **First real agent: MCP** — wraps a multi-step flow with genuine risk, leans on the existing
+   classifier, has **no transcript-privacy minefield**, and meaningfully exercises the
+   role-filtered toolset + approval path. (Data package was Slice-0 plumbing, not the pilot —
+   a green data-package run proves none of the risky parts.)
+3. **Marketplace agent** — adds sandbox scaffolding + dry-run + guardrails.
+4. **Corporate-memory agent — LAST and explicitly admin-scoped.** Blocked on the §4.4 privacy
+   gate (opt-in consent + provenance + PII scan). Do not start until that is designed.
+
+**Migration discipline:** when a *second* agent forces generalizing the queue into
+`authoring_suggestions`, that migration (table generalization + dual-ladder + data preservation
+of existing `memory_domain_suggestions` rows) is its **own serialized unit, sequenced last**
+within its slice — never co-mingled with parallel agent work (per the `/agnes-build` "migration
+serialized last" discipline).
 
 Each agent is its own spec → plan → implementation cycle on top of the foundation.
 
@@ -274,8 +351,16 @@ Each agent is its own spec → plan → implementation cycle on top of the found
 
 ## 10. Open questions / risks
 
-- **Slop risk (accepted).** No blocking quality gate by decision; relies on the approval gate
-  and advisory checks. Revisit if marketplace signal-to-noise degrades.
+- **Transcript privacy (BLOCKING for §4.4).** `/agnes-private` is whole-session opt-out with
+  no in-pipeline redaction. Corporate-memory mining must be opt-IN with provenance + PII scan +
+  human approval, and is admin-scoped. The corporate-memory agent must not ship until this is
+  satisfied. (See §4.4.)
+- **Approval confused-deputy (BLOCKING for the queue).** Approval must be full re-validation,
+  not trusted replay, including a check that the proposer could target the requested grant.
+  Adversarial tests required. (See §5.)
+- **Slop risk (accepted).** No blocking quality gate by decision; relies on the approval gate,
+  advisory checks, and the new consumption signal (§7). Revisit if marketplace
+  signal-to-noise degrades.
 - **Lifecycle / drift (deferred).** Generated content can rot when underlying tables/MCP
   servers change; no drift detection in this iteration. Flagged as the top follow-up.
 - **E2B cost.** Reusing the sandbox per authoring session carries VM cost; acceptable given
@@ -304,3 +389,34 @@ Each agent is its own spec → plan → implementation cycle on top of the found
   `app/api/admin_sessions.py`.
 - RBAC: `app/auth/access.py`, `app/resource_types.py`, `docs/RBAC.md`.
 - Conventions: `CLAUDE.md`, `CONTRIBUTING.md` (sync-map), `.claude/skills/agnes-conventions/`.
+
+---
+
+## 12. Convention checklist (per implementing PR)
+
+Surfaced by the conventions review against `CONTRIBUTING.md` (sync-map). Each implementing PR
+must satisfy the rows it touches:
+
+- [ ] **Dual-backend parity:** new `authoring_suggestions` repo gets a `_pg.py` sibling **+** a
+      symmetric `{DUCKDB, PG}` factory entry in `src/repositories/__init__.py` **+** a contract
+      test `tests/db_pg/test_authoring_suggestions_contract.py` — all in the same change.
+- [ ] **Migration ladder:** concrete new `SCHEMA_VERSION` (77+) with a paired Alembic revision
+      **and** a `_vN_to_v(N+1)` step in `src/db.py`, both reaching the same endpoint and
+      performing the same data-preserving transform of existing `memory_domain_suggestions`
+      rows on **both** engines. Serialized last (§9).
+- [ ] **REST × CLI × MCP triple:** every new `authoring_suggestions` endpoint (list / get /
+      approve / reject / count) gets a CLI command (`cli/commands/` via `cli/client.py`) **and**
+      an MCP tool, with parity cases in `tests/test_cli_api_parity.py` for approve/reject; run
+      `make update-openapi-snapshot`.
+- [ ] **`profile` on `POST /api/chat/sessions` is a modification** of a grandfathered endpoint,
+      so it carries no new triple-surface obligation (note this for reviewers).
+- [ ] **RBAC:** queue endpoints `require_admin` (admin-only review); non-admin "my proposals"
+      list is `created_by`-scoped, not a `resource_grant`. No new `ResourceType` unless the
+      queue becomes group-scoped (then register the value **+** `ResourceTypeSpec`).
+- [ ] **Backend-split:** new endpoint reads go through `*_repo()` factory fns — do **not**
+      propagate the raw `_get_db` read pattern from the `memory_domain_suggestions` template.
+- [ ] **Web-page contract:** new pages extend `base_ds.html`/`base_page.html` (never
+      `base.html`); CSS in `{% block head_extra %}` (no inline body CSS); `var(--ds-*)` only;
+      no `.container:has()`, no bare `:root{}`, no raw `#hex`.
+- [ ] **CHANGELOG:** each implementing PR adds an `[Unreleased]` bullet.
+- [ ] **Tool-binding enforcement** (§5) is verified by tests, not prompt instructions.
