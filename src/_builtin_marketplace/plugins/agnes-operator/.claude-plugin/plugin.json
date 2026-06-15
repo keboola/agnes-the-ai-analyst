@@ -1,0 +1,5 @@
+{
+  "name": "agnes-operator",
+  "description": "Guides operators on how to configure this Agnes instance: init prompt, workspace, branding, and connectors.",
+  "version": "1.0.0"
+}

@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 77
+SCHEMA_VERSION = 78
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -480,7 +480,11 @@ CREATE TABLE IF NOT EXISTS marketplace_registry (
     -- rows from pre-v37 instances survive migration; admin must fill via the
     -- /admin/marketplaces edit modal before the placeholder disappears.
     curator_name    VARCHAR,
-    curator_email   VARCHAR
+    curator_email   VARCHAR,
+    -- v78: built-in marketplace shipped with the wheel (not a git clone).
+    -- TRUE for the single system-seeded row; FALSE for all admin-registered rows.
+    -- The nightly git-sync path skips is_builtin=TRUE rows (nothing to fetch).
+    is_builtin      BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS marketplace_plugins (
@@ -514,6 +518,11 @@ CREATE TABLE IF NOT EXISTS marketplace_plugins (
     -- resolver itself is unchanged — system semantics are emergent from
     -- the materialized rows, not a new filter layer.
     is_system       BOOLEAN DEFAULT FALSE,
+    -- v78: per-plugin admin disable flag for built-in plugins. When TRUE,
+    -- the plugin is excluded from the served feed for all callers even
+    -- when they hold a resource_grant for it. Distinct from the per-user
+    -- user_plugin_optouts — this is an instance-wide admin decision.
+    admin_disabled  BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (marketplace_id, name)
 );
 
@@ -4937,9 +4946,7 @@ def _v73_to_v74(conn: duckdb.DuckDBPyConnection) -> None:
     Idempotent ADD COLUMN IF NOT EXISTS — safe on fresh and upgrade paths.
     Default ``false`` leaves every existing row unchanged.
     """
-    conn.execute(
-        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS server_only BOOLEAN DEFAULT false"
-    )
+    conn.execute("ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS server_only BOOLEAN DEFAULT false")
     conn.execute("UPDATE schema_version SET version = 74")
 
 
@@ -4957,14 +4964,10 @@ def _v74_to_v75(conn: duckdb.DuckDBPyConnection) -> None:
     so the explicit ``UPDATE ... WHERE source_mode IS NULL`` is required to
     stamp pre-existing 'welcome'/'claude_md' rows as 'editor'.
     """
-    conn.execute(
-        "ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS source_mode VARCHAR DEFAULT 'editor'"
-    )
+    conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS source_mode VARCHAR DEFAULT 'editor'")
     conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS git_path VARCHAR")
     conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS base_sha VARCHAR")
-    conn.execute(
-        "UPDATE instance_templates SET source_mode = 'editor' WHERE source_mode IS NULL"
-    )
+    conn.execute("UPDATE instance_templates SET source_mode = 'editor' WHERE source_mode IS NULL")
     conn.execute("UPDATE schema_version SET version = 75")
 
 
@@ -5005,6 +5008,32 @@ def _v76_to_v77(conn: duckdb.DuckDBPyConnection) -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE"
     )
     conn.execute("UPDATE schema_version SET version = 77")
+
+
+def _v77_to_v78(conn: duckdb.DuckDBPyConnection) -> None:
+    """v78: built-in marketplace columns.
+
+    Adds ``marketplace_registry.is_builtin`` (BOOLEAN NOT NULL DEFAULT FALSE) so
+    the system-seeded built-in marketplace row is distinguishable from
+    admin-registered rows. The nightly git-sync path skips is_builtin=TRUE rows.
+
+    Adds ``marketplace_plugins.admin_disabled`` (BOOLEAN NOT NULL DEFAULT FALSE)
+    so an admin can disable an individual built-in plugin instance-wide without
+    revoking its RBAC grant. Disabled plugins are filtered from the served feed
+    for all callers.
+
+    Both columns default to FALSE so pre-existing rows are unaffected. Additive
+    ADD COLUMN IF NOT EXISTS — idempotent on fresh and upgrade paths.
+    """
+    # DuckDB ALTER TABLE ADD COLUMN does NOT support inline constraints
+    # (NOT NULL) — "Adding columns with constraints not yet supported". The
+    # fresh-create path in CREATE TABLE keeps NOT NULL; the upgrade path adds a
+    # nullable column with DEFAULT FALSE (every writer supplies a value, so the
+    # nullable-vs-not-null divergence on upgraded DuckDB DBs is cosmetic). This
+    # matches the established additive ADD COLUMN pattern elsewhere in this file.
+    conn.execute("ALTER TABLE marketplace_registry ADD COLUMN IF NOT EXISTS is_builtin BOOLEAN DEFAULT FALSE")
+    conn.execute("ALTER TABLE marketplace_plugins ADD COLUMN IF NOT EXISTS admin_disabled BOOLEAN DEFAULT FALSE")
+    conn.execute("UPDATE schema_version SET version = 78")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -5324,6 +5353,11 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # seeded/admin-set passwords. _SYSTEM_SCHEMA already creates the
             # column on fresh installs (no-op ALTER here).
             _v76_to_v77(conn)
+            # v77→v78: built-in marketplace columns. is_builtin on
+            # marketplace_registry; admin_disabled on marketplace_plugins.
+            # ADD COLUMN IF NOT EXISTS — no-op on fresh installs where
+            # _SYSTEM_SCHEMA already declares both columns.
+            _v77_to_v78(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5531,6 +5565,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v75_to_v76(conn)
             if current < 77:
                 _v76_to_v77(conn)
+            if current < 78:
+                _v77_to_v78(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

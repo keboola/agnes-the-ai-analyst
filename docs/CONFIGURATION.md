@@ -87,6 +87,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Operator-authored Overview HTML on `/home` | `AGNES_INSTANCE_OVERVIEW` | `instance.overview` | `""` (hidden) | `get_instance_overview()` |
 | Operator-authored Support HTML on `/home` | `AGNES_INSTANCE_SUPPORT` | `instance.support` | `""` (hidden) | `get_instance_support()` |
 | Admin contact address for user-side "email admin" prompts | `AGNES_INSTANCE_ADMIN_EMAIL` | `instance.admin_email` | `""` | `get_instance_admin_email()` |
+| Infrastructure/provisioning repo URL (used by operator plugin to name the concrete infra repo for this instance; empty = vendor-neutral OSS default) | `AGNES_INFRA_REPO_URL` | `instance.infra_repo_url` | `""` (unset) | `get_infra_repo_url()` |
 | Refresh-cadence string shown in the welcome prompt | — | `instance.sync_interval` | `1 hour` | `get_sync_interval()` |
 
 ### Connector pre-provisioning
