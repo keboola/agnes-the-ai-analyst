@@ -543,3 +543,164 @@ def test_standalone_allowlist_has_no_stale_entries() -> None:
         "stale _STANDALONE_ALLOWLIST entr(ies) — page migrated or removed, "
         f"drop from the allowlist: {stale}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# #400 — legacy section design-token migration guard.
+#
+# The selectors in the absorbed style.css block (~lines 130–1270 of
+# style-custom.css) were migrated from hardcoded hex/rem literals to
+# --* token variables in issue #400.  These tests assert that the
+# migrated class families no longer contain raw literals so a future
+# change cannot regress without a CI failure.
+# --------------------------------------------------------------------------- #
+
+# Selectors whose declarations must NOT contain hardcoded hex literals or
+# bare rem values after the #400 migration.  The check extracts the rule body
+# for each selector and scans it for raw colour/size literals.
+_MIGRATED_LEGACY_SELECTORS: tuple[str, ...] = (
+    ".card-error",
+    ".card-highlight",
+    ".card-ai",
+    ".card-success",
+    ".badge-analyst",
+    ".badge-privileged",
+    ".badge-admin",
+    ".flash-success",
+    ".flash-error",
+    ".flash-info",
+    ".flash-warning",
+    ".flash-success-v2",
+    ".flash-error-v2",
+    ".code-block",
+    ".username-box",
+    ".btn-copy",
+    ".btn-copy-inline",
+    ".btn-copy-block",
+    ".info-box",
+    ".cc-setup-card",
+    ".support-info",
+)
+
+# Matches a raw hex colour literal outside of a CSS comment.
+_HEX_LITERAL_RE = re.compile(r"(?<!#)#[0-9a-fA-F]{3,6}\b")
+# Matches a bare rem value (e.g. 0.8125rem) that is NOT inside a token definition.
+_REM_LITERAL_RE = re.compile(r"\b\d+\.\d+rem\b")
+
+
+def _extract_rule_body(css: str, selector: str) -> str:
+    """Return the concatenated bodies of every rule block whose selector
+    matches *selector* exactly (possibly followed by a pseudo-class, modifier,
+    or space, but NOT by an alphanumeric/-_ character that would indicate a
+    longer class name such as ``.flash-success-v2`` when checking
+    ``.flash-success``).  Returns an empty string if the selector is not found."""
+    escaped = re.escape(selector)
+    # The selector token must end at a word boundary: followed by whitespace,
+    # `{`, `:`, `.`, `+`, `>`, `~`, or `[` — anything that is a valid CSS
+    # combinator or the start of a rule block — but NOT another word character
+    # (which would indicate ``.flash-success-v2`` etc.).
+    pattern = re.compile(
+        escaped + r"(?![\w-])[^{]*\{([^}]*)\}",
+        re.DOTALL,
+    )
+    bodies = pattern.findall(css)
+    return "\n".join(bodies)
+
+
+def test_legacy_selectors_use_no_raw_hex_literals() -> None:
+    """Migrated legacy selectors must not contain hardcoded hex colours.
+
+    Each selector in _MIGRATED_LEGACY_SELECTORS was converted in #400 to
+    reference a --* token instead of a raw ``#RRGGBB`` literal.  A future
+    edit that re-introduces a literal breaks the operator-override contract
+    (instance.yaml overrides only propagate through token variables).
+    """
+    css = (STATIC / "style-custom.css").read_text(encoding="utf-8")
+    offenders: dict[str, list[str]] = {}
+    for sel in _MIGRATED_LEGACY_SELECTORS:
+        body = _extract_rule_body(css, sel)
+        # Strip CSS-comment lines (/* … */) before scanning so documented
+        # token values inside comments don't trigger false positives.
+        body_no_comments = re.sub(r"/\*.*?\*/", "", body, flags=re.DOTALL)
+        hits = _HEX_LITERAL_RE.findall(body_no_comments)
+        if hits:
+            offenders[sel] = hits
+    assert not offenders, (
+        "hardcoded hex literals found in migrated legacy selectors "
+        "(use a --* token instead):\n"
+        + "\n".join(f"  {sel}: {vals}" for sel, vals in offenders.items())
+    )
+
+
+def test_legacy_selectors_use_no_bare_rem_literals() -> None:
+    """Migrated legacy selectors must not contain bare rem font-size values.
+
+    The #400 migration replaced rem literals (e.g. ``0.8125rem``) with
+    ``var(--text-13)`` / ``var(--text-15)`` etc. so operator font-scale
+    overrides propagate correctly.
+    """
+    css = (STATIC / "style-custom.css").read_text(encoding="utf-8")
+    offenders: dict[str, list[str]] = {}
+    for sel in _MIGRATED_LEGACY_SELECTORS:
+        body = _extract_rule_body(css, sel)
+        body_no_comments = re.sub(r"/\*.*?\*/", "", body, flags=re.DOTALL)
+        hits = _REM_LITERAL_RE.findall(body_no_comments)
+        if hits:
+            offenders[sel] = hits
+    assert not offenders, (
+        "bare rem literals found in migrated legacy selectors "
+        "(use a --text-* token instead):\n"
+        + "\n".join(f"  {sel}: {vals}" for sel, vals in offenders.items())
+    )
+
+
+def test_legacy_token_aliases_defined_in_root() -> None:
+    """The new tokens added by #400 must be declared in the :root block.
+
+    A missing token declaration means the selector falls back to ``unset``
+    (invisible / zero-size) when no operator override is supplied.
+    """
+    css = (STATIC / "style-custom.css").read_text(encoding="utf-8")
+    required_tokens = [
+        "--text-13",
+        "--text-15",
+        "--text-22",
+        "--text-28",
+        "--card-error-bg",
+        "--card-highlight-bg",
+        "--card-ai-bg",
+        "--card-success-bg",
+        "--badge-success-bg",
+        "--badge-success-ink",
+        "--badge-warn-bg",
+        "--badge-warn-ink",
+        "--badge-info-bg",
+        "--badge-info-ink",
+        "--flash-success-bg",
+        "--flash-error-bg",
+        "--flash-info-bg",
+        "--flash-warn-bg",
+        "--code-dark-bg",
+        "--code-dark-ink",
+        "--code-dark-border",
+        "--placeholder-color",
+        "--username-box-bg",
+        "--username-box-line",
+        "--username-ink",
+        "--btn-copy-bg",
+        "--btn-copy-hover",
+        "--btn-copy-success",
+        "--info-box-bg",
+        "--info-box-border",
+        "--cc-gradient-from",
+        "--cc-gradient-to",
+        "--support-info-bg",
+        "--username-preview-color",
+        "--flash-success-v2-ink",
+        "--flash-error-v2-ink",
+    ]
+    missing = [t for t in required_tokens if f"{t}:" not in css]
+    assert not missing, (
+        "tokens introduced by #400 are missing from style-custom.css :root:\n"
+        + "\n".join(f"  {t}" for t in missing)
+    )
