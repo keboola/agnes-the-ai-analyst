@@ -424,3 +424,30 @@ class TestDeleteFile:
             headers=_auth(seeded_app["analyst_token"]),
         )
         assert resp.status_code == 403
+
+
+def test_list_collections_session_principal_filters_without_crash(seeded_app):
+    """Regression: a co-session ``SessionPrincipal`` caller must not crash on
+    ``user['id']`` (it is not subscriptable) and must be RBAC-filtered to its
+    intersection — not see every collection.
+    """
+    import asyncio
+
+    from app.api.collections import list_collections
+    from app.auth.session_principal import SessionPrincipal
+    from src.repositories import file_corpora_repo
+
+    repo = file_corpora_repo()
+    granted = repo.create(name="SP Granted", slug="sp-granted", description=None, created_by="admin1")
+    other = repo.create(name="SP Other", slug="sp-other", description=None, created_by="admin1")
+
+    principal = SessionPrincipal(
+        "chat_sp",
+        ["analyst1"],
+        ["analyst@test.com"],
+        {"collection": frozenset({granted})},
+    )
+    result = asyncio.run(list_collections(user=principal))
+    ids = {c["id"] for c in result["items"]}
+    assert granted in ids
+    assert other not in ids

@@ -27,17 +27,17 @@ import logging
 import re
 from typing import List, Optional
 
-import duckdb
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from app.auth.access import (
     can_access,
-    is_user_admin,
+    can_access_session,
     require_admin,
     require_resource_access,
 )
-from app.auth.dependencies import _get_db, get_current_user
+from app.auth.dependencies import get_current_user
+from app.auth.session_principal import SessionPrincipal
 from app.resource_types import ResourceType
 from src.corpus_allowlist import classify
 from src.file_storage import delete_corpus_file, store_corpus_file
@@ -146,17 +146,23 @@ async def create_collection(
 @router.get("")
 async def list_collections(
     user=Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List collections accessible to the caller.
 
-    Admins see all live (non-soft-deleted) collections. Non-admins see only
-    collections for which their groups hold an explicit ``resource_grants``
-    row (``resource_type='collection'``). Fail-closed: no grant → not visible.
+    Admins see all live (non-soft-deleted) collections — ``can_access``
+    short-circuits on the Admin group; non-admins see only collections their
+    groups are granted. Handles both dict users and ``SessionPrincipal``
+    co-session callers (routes through ``can_access_session``). Fail-closed: no
+    grant → not visible. No raw DuckDB connection — the access helpers go
+    through the repository factory, so this is correct on the Postgres backend.
     """
-    rows = file_corpora_repo().list()
-    if not is_user_admin(user["id"], conn):
-        rows = [r for r in rows if can_access(user["id"], ResourceType.COLLECTION.value, r["id"], conn)]
+
+    def _allowed(corpus_id: str) -> bool:
+        if isinstance(user, SessionPrincipal):
+            return can_access_session(user, ResourceType.COLLECTION.value, corpus_id)
+        return can_access(user["id"], ResourceType.COLLECTION.value, corpus_id)
+
+    rows = [r for r in file_corpora_repo().list() if _allowed(r["id"])]
     return {"items": [_collection_out(r) for r in rows]}
 
 
