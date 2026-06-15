@@ -307,3 +307,17 @@ only), HNSW/scale work, write-back. Each is an additive slice.
 - Corpus granularity for RBAC: per-file vs per-"document-set" grants (likely
   the latter as the `ResourceType`).
 - Reranking: whether a cross-encoder reranker is worth it in v1 or an S-slice.
+
+## Carried-over review findings (from the Foundation slice review)
+
+- **Embedding column type must be tightened before the Retrieval slice.** The
+  Foundation migration declares DuckDB `FLOAT[384]` (dimension-enforced) but PG
+  `ARRAY(Float)` (unbounded `float8[]`). The Retrieval slice must either adopt
+  `pgvector` `vector(384)` on PG or enforce the 384 bound, so wrong-dimension
+  vectors can't be stored on the PG backend.
+- **`list_blocks` projections (incl. `_collection_blocks`) read a raw DuckDB
+  connection** — on a Postgres deployment they hit the empty DuckDB system file
+  and return nothing, so `/admin/access` shows no collections there. This is a
+  *pre-existing* framework limitation shared by every `ResourceType`'s
+  `list_blocks` delegate (not introduced by Collections); fixing it belongs to a
+  framework-wide change, not this feature. Tracked here so it isn't lost.

@@ -102,6 +102,18 @@ def test_add_then_get_returns_same_shape(repo):
     assert row["processing_detail"] is None
 
 
+def test_add_id_has_cf_prefix(repo):
+    file_id = repo.add(
+        corpus_id=CORPUS_ID,
+        filename="x.txt",
+        sha256="d",
+        file_type=None,
+        size_bytes=None,
+        storage_path=None,
+    )
+    assert file_id.startswith("cf_")
+
+
 def test_add_default_status_is_pending(repo):
     file_id = repo.add(
         corpus_id=CORPUS_ID,

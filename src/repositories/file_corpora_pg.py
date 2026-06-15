@@ -97,9 +97,12 @@ class FileCorporaPgRepository:
         return [dict(r) for r in rows]
 
     def soft_delete(self, corpus_id: str) -> None:
-        """Set ``deleted_at`` to now. Idempotent."""
+        """Set ``deleted_at`` to now (also bumps ``updated_at``). Idempotent."""
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text("UPDATE file_corpora SET deleted_at = CURRENT_TIMESTAMP WHERE id = :id"),
+                sa.text(
+                    "UPDATE file_corpora SET deleted_at = CURRENT_TIMESTAMP, "
+                    "updated_at = CURRENT_TIMESTAMP WHERE id = :id"
+                ),
                 {"id": corpus_id},
             )

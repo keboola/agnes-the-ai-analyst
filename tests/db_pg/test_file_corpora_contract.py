@@ -145,6 +145,9 @@ def test_soft_delete_sets_deleted_at(repo):
     row = repo.get(corpus_id, include_deleted=True)
     assert row is not None
     assert row["deleted_at"] is not None
+    # soft_delete is a mutation — updated_at moves with it
+    assert row["updated_at"] is not None
+    assert row["updated_at"] >= row["created_at"]
 
 
 def test_list_search_filters_by_name(repo):

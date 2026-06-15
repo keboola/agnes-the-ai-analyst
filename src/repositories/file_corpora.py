@@ -98,8 +98,8 @@ class FileCorporaRepository:
         return [dict(zip(self._COLS, r)) for r in rows]
 
     def soft_delete(self, corpus_id: str) -> None:
-        """Set ``deleted_at`` to now. Idempotent."""
+        """Set ``deleted_at`` to now (also bumps ``updated_at``). Idempotent."""
         self.conn.execute(
-            "UPDATE file_corpora SET deleted_at = current_timestamp WHERE id = ?",
+            "UPDATE file_corpora SET deleted_at = current_timestamp, updated_at = current_timestamp WHERE id = ?",
             [corpus_id],
         )
