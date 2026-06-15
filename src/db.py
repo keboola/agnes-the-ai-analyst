@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 76
+SCHEMA_VERSION = 77
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -379,7 +379,27 @@ CREATE TABLE IF NOT EXISTS table_registry (
     -- lists it for catalog discovery + RBAC). Only meaningful for
     -- query_mode IN ('local', 'materialized'); ignored for 'remote'
     -- (which has no server-stored parquet to suppress). Issue #607.
-    server_only   BOOLEAN DEFAULT false
+    server_only   BOOLEAN DEFAULT false,
+    -- v77: nullable FK to source_connections.id. NULL = use the default
+    -- connection for the row's source_type (backwards-compatible).
+    connection_id VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS source_connections (
+    id          VARCHAR PRIMARY KEY,
+    name        VARCHAR NOT NULL UNIQUE,
+    source_type VARCHAR NOT NULL,
+    config      TEXT NOT NULL,
+    token_env   VARCHAR,
+    is_default  BOOLEAN DEFAULT FALSE,
+    created_by  VARCHAR,
+    created_at  TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS connection_secrets (
+    connection_id VARCHAR PRIMARY KEY,
+    ciphertext    TEXT NOT NULL,
+    updated_at    TIMESTAMP DEFAULT current_timestamp
 );
 
 CREATE TABLE IF NOT EXISTS table_profiles (
@@ -1212,7 +1232,7 @@ CREATE TABLE IF NOT EXISTS user_workdirs (
 """
 
 
-import threading
+import threading  # noqa: E402
 
 _system_db_lock = threading.Lock()
 _system_db_conn: duckdb.DuckDBPyConnection | None = None
@@ -4931,9 +4951,7 @@ def _v73_to_v74(conn: duckdb.DuckDBPyConnection) -> None:
     Idempotent ADD COLUMN IF NOT EXISTS — safe on fresh and upgrade paths.
     Default ``false`` leaves every existing row unchanged.
     """
-    conn.execute(
-        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS server_only BOOLEAN DEFAULT false"
-    )
+    conn.execute("ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS server_only BOOLEAN DEFAULT false")
     conn.execute("UPDATE schema_version SET version = 74")
 
 
@@ -4951,14 +4969,10 @@ def _v74_to_v75(conn: duckdb.DuckDBPyConnection) -> None:
     so the explicit ``UPDATE ... WHERE source_mode IS NULL`` is required to
     stamp pre-existing 'welcome'/'claude_md' rows as 'editor'.
     """
-    conn.execute(
-        "ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS source_mode VARCHAR DEFAULT 'editor'"
-    )
+    conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS source_mode VARCHAR DEFAULT 'editor'")
     conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS git_path VARCHAR")
     conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS base_sha VARCHAR")
-    conn.execute(
-        "UPDATE instance_templates SET source_mode = 'editor' WHERE source_mode IS NULL"
-    )
+    conn.execute("UPDATE instance_templates SET source_mode = 'editor' WHERE source_mode IS NULL")
     conn.execute("UPDATE schema_version SET version = 75")
 
 
@@ -4982,6 +4996,32 @@ def _v75_to_v76(conn: duckdb.DuckDBPyConnection) -> None:
         """
     )
     conn.execute("UPDATE schema_version SET version = 76")
+
+
+def _v76_to_v77(conn: duckdb.DuckDBPyConnection) -> None:
+    """Named source connections (spec 2026-06-12): generic connection
+    registry + vault-backed secrets + table_registry.connection_id."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS source_connections (
+            id          VARCHAR PRIMARY KEY,
+            name        VARCHAR NOT NULL UNIQUE,
+            source_type VARCHAR NOT NULL,
+            config      TEXT NOT NULL,
+            token_env   VARCHAR,
+            is_default  BOOLEAN DEFAULT FALSE,
+            created_by  VARCHAR,
+            created_at  TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS connection_secrets (
+            connection_id VARCHAR PRIMARY KEY,
+            ciphertext    TEXT NOT NULL,
+            updated_at    TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS connection_id VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 77")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -5297,6 +5337,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # entities). _SYSTEM_SCHEMA already creates the table on fresh
             # installs (no-op CREATE here). Issue #398.
             _v75_to_v76(conn)
+            # v76→v77: named source_connections + vault-backed connection_secrets
+            # + table_registry.connection_id (spec 2026-06-12). IF NOT EXISTS
+            # guards make this a no-op on fresh installs.
+            _v76_to_v77(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5502,6 +5546,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v74_to_v75(conn)
             if current < 76:
                 _v75_to_v76(conn)
+            if current < 77:
+                _v76_to_v77(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
