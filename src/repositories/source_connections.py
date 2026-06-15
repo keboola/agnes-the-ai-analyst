@@ -44,17 +44,26 @@ class SourceConnectionsRepository:
         is_default: bool = False,
         created_by: Optional[str] = None,
     ) -> None:
-        if is_default:
+        # Wrap the default-demotion UPDATE + INSERT in one transaction so a
+        # mid-way failure can't leave the old default demoted with no new row
+        # inserted — matches the PG sibling's engine.begin() atomicity.
+        self.conn.execute("BEGIN")
+        try:
+            if is_default:
+                self.conn.execute(
+                    "UPDATE source_connections SET is_default = FALSE WHERE source_type = ?",
+                    [source_type],
+                )
             self.conn.execute(
-                "UPDATE source_connections SET is_default = FALSE WHERE source_type = ?",
-                [source_type],
+                """INSERT INTO source_connections
+                   (id, name, source_type, config, token_env, is_default, created_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                [id, name, source_type, json.dumps(config), token_env, is_default, created_by],
             )
-        self.conn.execute(
-            """INSERT INTO source_connections
-               (id, name, source_type, config, token_env, is_default, created_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            [id, name, source_type, json.dumps(config), token_env, is_default, created_by],
-        )
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
 
     def get(self, connection_id: str) -> Optional[Dict[str, Any]]:
         return self._fetch_one("SELECT * FROM source_connections WHERE id = ?", [connection_id])
@@ -86,16 +95,24 @@ class SourceConnectionsRepository:
         config: Optional[Dict[str, Any]] = None,
         token_env: Optional[str] = None,
     ) -> None:
-        if config is not None:
-            self.conn.execute(
-                "UPDATE source_connections SET config = ? WHERE id = ?",
-                [json.dumps(config), connection_id],
-            )
-        if token_env is not None:
-            self.conn.execute(
-                "UPDATE source_connections SET token_env = ? WHERE id = ?",
-                [token_env, connection_id],
-            )
+        # Atomic multi-column update — same transaction guarantee as the PG
+        # sibling, so a failure between the two UPDATEs can't half-apply.
+        self.conn.execute("BEGIN")
+        try:
+            if config is not None:
+                self.conn.execute(
+                    "UPDATE source_connections SET config = ? WHERE id = ?",
+                    [json.dumps(config), connection_id],
+                )
+            if token_env is not None:
+                self.conn.execute(
+                    "UPDATE source_connections SET token_env = ? WHERE id = ?",
+                    [token_env, connection_id],
+                )
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
 
     def delete(self, connection_id: str) -> None:
         self.conn.execute("DELETE FROM source_connections WHERE id = ?", [connection_id])
