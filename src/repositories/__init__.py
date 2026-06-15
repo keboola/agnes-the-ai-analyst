@@ -120,6 +120,7 @@ __all__ = [
     # Collections
     "file_corpora_repo",
     "corpus_files_repo",
+    "corpus_chunks_repo",
 ]
 
 
@@ -397,6 +398,10 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.corpus_files", "CorpusFilesRepository"),
         PG: ("src.repositories.corpus_files_pg", "CorpusFilesPgRepository"),
     },
+    "corpus_chunks": {
+        DUCKDB: ("src.repositories.corpus_chunks", "CorpusChunksRepository"),
+        PG: ("src.repositories.corpus_chunks_pg", "CorpusChunksPgRepository"),
+    },
 }
 
 
@@ -620,3 +625,7 @@ def file_corpora_repo() -> Any:
 
 def corpus_files_repo() -> Any:
     return _build("corpus_files")
+
+
+def corpus_chunks_repo() -> Any:
+    return _build("corpus_chunks")
