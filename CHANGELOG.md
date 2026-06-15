@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.39] — 2026-06-15
+
+### Added
 - `agnes diagnose` now includes a **Jira partition-format** check
   (`jira-partition-format`) that detects whether the Jira connector's
   on-disk parquet files use the old flat `YYYY-MM.parquet` layout or the
