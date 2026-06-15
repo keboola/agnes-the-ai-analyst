@@ -222,6 +222,13 @@ async def password_login(
         logger.exception("Unexpected error during password verification")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+    # Forced rotation: the password was set by someone else (seeded admin /
+    # admin-set) and emailed/shared in plaintext. The password is verified
+    # first (so this can't probe which accounts are flagged), then we refuse to
+    # issue a token until the user rotates via the reset flow.
+    if user.get("must_change_password"):
+        raise HTTPException(status_code=403, detail="password_change_required")
+
     role_label = _role_label(user, conn)
     token = create_access_token(user["id"], user["email"])
     return {"access_token": token, "token_type": "bearer", "email": user["email"], "role": role_label}
@@ -254,6 +261,21 @@ async def password_login_web(
     except Exception:
         logger.exception("Unexpected error during web password verification for %s", email)
         return RedirectResponse(url="/login/password?err=auth_internal", status_code=302)
+
+    if user.get("must_change_password"):
+        # Password set by someone else (seeded / admin-set): refuse a full
+        # session and route the user through the existing reset flow to choose
+        # their own password. Mint a one-time reset token and redirect.
+        reset_tok = secrets.token_urlsafe(32)
+        users_repo().update(
+            id=user["id"],
+            reset_token=reset_tok,
+            reset_token_created=datetime.now(timezone.utc),
+        )
+        return RedirectResponse(
+            url=f"/auth/password/reset?email={quote(email, safe='')}&token={reset_tok}",
+            status_code=303,
+        )
 
     if next.startswith("/") and not next.startswith("//"):
         target = next
@@ -299,7 +321,17 @@ async def password_setup(
     ph = PasswordHasher()
     hashed = ph.hash(request_body.password)
 
-    repo.update(id=user["id"], password_hash=hashed, setup_token=None, setup_token_created=None)
+    # The user is choosing their OWN password here, so clear any forced-rotation
+    # flag (consistent with the web setup_confirm sibling). Without this, a user
+    # who was admin-set (must_change_password=True) while still holding a valid
+    # setup token would stay flagged after self-serving a new password.
+    repo.update(
+        id=user["id"],
+        password_hash=hashed,
+        setup_token=None,
+        setup_token_created=None,
+        must_change_password=False,
+    )
     token = create_access_token(user["id"], user["email"])
     return {"access_token": token, "token_type": "bearer", "message": "Password set successfully"}
 
@@ -427,6 +459,8 @@ async def reset_confirm(
         password_hash=ph.hash(password),
         reset_token=None,
         reset_token_created=None,
+        # Clear the forced-rotation flag: the user has now set their own password.
+        must_change_password=False,
     )
 
     response = RedirectResponse(url="/login/password?msg=password_reset", status_code=302)
@@ -528,6 +562,8 @@ async def setup_confirm(
         password_hash=ph.hash(password),
         setup_token=None,
         setup_token_created=None,
+        # Clear the forced-rotation flag: the user has now set their own password.
+        must_change_password=False,
     )
     if name.strip():
         updates["name"] = name.strip()

@@ -106,6 +106,7 @@ class UserRepository:
         email: str,
         name: str,
         password_hash: Optional[str] = None,
+        must_change_password: bool = False,
     ) -> None:
         """Create a user. Group memberships are populated separately.
 
@@ -122,9 +123,9 @@ class UserRepository:
         """
         now = datetime.now(timezone.utc)
         self.conn.execute(
-            """INSERT INTO users (id, email, name, password_hash, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)""",
-            [id, email, name, password_hash, now, now],
+            """INSERT INTO users (id, email, name, password_hash, must_change_password, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [id, email, name, password_hash, must_change_password, now, now],
         )
 
     def update(self, id: str, **kwargs) -> None:
@@ -151,6 +152,9 @@ class UserRepository:
             # v71: Slack identity binding — set when the analyst redeems a
             # /agnes verification code (services/slack_bot/binding.py).
             "slack_user_id",
+            # v77: forced-password-change flag (set on seeded/admin-set
+            # passwords, cleared when the user sets their own).
+            "must_change_password",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
