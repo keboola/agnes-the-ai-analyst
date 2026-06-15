@@ -1782,6 +1782,24 @@ async def memory_domain_detail(
     return templates.TemplateResponse(request, "memory_domain_detail.html", ctx)
 
 
+@router.get("/admin/studio/data-package", response_class=HTMLResponse)
+async def studio_data_package(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Data-package builder studio — admin-only (authoring agents Slice 0).
+
+    A form-based builder with an embedded assistant panel: the page opens a
+    chat session bound to the ``data-package-builder`` profile and wires the
+    Create action to the existing ``/api/admin/data-packages`` endpoints.
+    """
+    return templates.TemplateResponse(
+        request,
+        "admin_studio_data_package.html",
+        {"profile_slug": "data-package-builder"},
+    )
+
+
 @router.get("/admin/corporate-memory", response_class=HTMLResponse)
 async def corporate_memory_admin(
     request: Request,
