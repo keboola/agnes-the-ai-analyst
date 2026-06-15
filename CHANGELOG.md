@@ -27,6 +27,33 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+## [0.71.38] — 2026-06-15
+
+### Added
+- **Forced password change on first sign-in for non-self-chosen passwords.** A
+  new `users.must_change_password` flag (schema v77; Alembic
+  `0024_must_change_password_v77`) is set whenever a password is established by
+  someone other than the account owner: the seed admin created from
+  `SEED_ADMIN_PASSWORD` (emailed in plaintext by the cloud control-plane or
+  shared by an operator) and the admin `POST /api/users/{id}/set-password`
+  endpoint. While the flag is set, password login is blocked — the JSON
+  `/auth/password/login` returns `403 password_change_required` and the web
+  `/auth/password/login/web` mints a one-time reset token and redirects the user
+  through the existing reset flow. The flag clears the moment the user sets
+  their own password (reset / setup confirm). SSO and magic-link accounts are
+  unaffected (they have no password); a seed admin who has already rotated is
+  never re-flagged on restart.
+
+### Fixed
+- **Password reset now works on Postgres deployments.** `reset_confirm`'s atomic
+  reset-token compare-and-swap ran through a raw DuckDB cursor (`Depends(_get_db)`),
+  so on a Postgres-backed instance the token — written via the backend-aware repo
+  factory — was never found and every reset (and the new forced-rotation login)
+  failed with "Invalid or expired reset link". The CAS now goes through a new
+  `consume_reset_token()` repo method (DuckDB + Postgres parity, contract-tested).
+
+### Internal
 - Fixed a `duplicate parametrization of 'state_backend'` collection error in
   `tests/db_pg/test_parity_internal_query.py` that red-X'd every CI test shard
   under newer pytest. The PG-only `test_postgres_tvf_is_unavailable_pg` now skips

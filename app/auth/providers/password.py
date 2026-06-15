@@ -222,6 +222,13 @@ async def password_login(
         logger.exception("Unexpected error during password verification")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+    # Forced rotation: the password was set by someone else (seeded admin /
+    # admin-set) and emailed/shared in plaintext. The password is verified
+    # first (so this can't probe which accounts are flagged), then we refuse to
+    # issue a token until the user rotates via the reset flow.
+    if user.get("must_change_password"):
+        raise HTTPException(status_code=403, detail="password_change_required")
+
     role_label = _role_label(user, conn)
     token = create_access_token(user["id"], user["email"])
     return {"access_token": token, "token_type": "bearer", "email": user["email"], "role": role_label}
@@ -254,6 +261,21 @@ async def password_login_web(
     except Exception:
         logger.exception("Unexpected error during web password verification for %s", email)
         return RedirectResponse(url="/login/password?err=auth_internal", status_code=302)
+
+    if user.get("must_change_password"):
+        # Password set by someone else (seeded / admin-set): refuse a full
+        # session and route the user through the existing reset flow to choose
+        # their own password. Mint a one-time reset token and redirect.
+        reset_tok = secrets.token_urlsafe(32)
+        users_repo().update(
+            id=user["id"],
+            reset_token=reset_tok,
+            reset_token_created=datetime.now(timezone.utc),
+        )
+        return RedirectResponse(
+            url=f"/auth/password/reset?email={quote(email, safe='')}&token={reset_tok}",
+            status_code=303,
+        )
 
     if next.startswith("/") and not next.startswith("//"):
         target = next
@@ -299,7 +321,17 @@ async def password_setup(
     ph = PasswordHasher()
     hashed = ph.hash(request_body.password)
 
-    repo.update(id=user["id"], password_hash=hashed, setup_token=None, setup_token_created=None)
+    # The user is choosing their OWN password here, so clear any forced-rotation
+    # flag (consistent with the web setup_confirm sibling). Without this, a user
+    # who was admin-set (must_change_password=True) while still holding a valid
+    # setup token would stay flagged after self-serving a new password.
+    repo.update(
+        id=user["id"],
+        password_hash=hashed,
+        setup_token=None,
+        setup_token_created=None,
+        must_change_password=False,
+    )
     token = create_access_token(user["id"], user["email"])
     return {"access_token": token, "token_type": "bearer", "message": "Password set successfully"}
 
@@ -363,7 +395,6 @@ async def reset_confirm(
     token: str = Form(...),
     password: str = Form(...),
     confirm_password: str = Form(...),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Submit a new password using a reset token.
 
@@ -388,35 +419,26 @@ async def reset_confirm(
     # token AND to race the legitimate user) but closes the asymmetry.
     cutoff = datetime.now(timezone.utc) - RESET_TOKEN_TTL
     consume_id = f"CONSUMED:{secrets.token_hex(16)}"
+    repo = users_repo()
+    # Atomic compare-and-swap to consume the reset token, via the repo factory so
+    # it hits the ACTIVE backend. (A raw DuckDB `conn.execute` here silently
+    # failed on Postgres deployments — the token was written to PG by the factory
+    # but the CAS read DuckDB, so every reset / forced-rotation login 'expired'.)
     try:
-        conn.execute(
-            "UPDATE users SET reset_token = ?, reset_token_created = NULL "
-            "WHERE email = ? AND reset_token = ? AND reset_token_created IS NOT NULL "
-            "AND reset_token_created >= ? AND active = TRUE",
-            [consume_id, email, token, cutoff],
+        won = repo.consume_reset_token(
+            email=email, token=token, cutoff=cutoff, consume_id=consume_id
         )
     except Exception as exc:
         err = str(exc).lower()
         if "conflict" in err or "transaction" in err:
             return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
         raise
-
-    # Verify OUR marker won the race. A concurrent winner will have a
-    # different consume_id (or NULL if they already cleared it).
-    row = conn.execute(
-        "SELECT reset_token FROM users WHERE email = ?",
-        [email],
-    ).fetchone()
-    if not row or row[0] != consume_id:
-        # Could be: token never matched, expired, account deactivated, or
-        # the race was lost. Single error keeps the UX simple and avoids
-        # leaking which condition tripped.
+    if not won:
+        # Token never matched, expired, account deactivated, or the race was
+        # lost. Single error keeps the UX simple and avoids leaking which.
         return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
 
-    # Won the race — fetch the user (we need id/email for the response)
-    # and apply the password change. Clearing the marker happens as part
-    # of the same UPDATE.
-    repo = users_repo()
+    # Won the race — fetch the user and apply the password change.
     user = repo.get_by_email(email)
     if not user:
         return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
@@ -427,6 +449,8 @@ async def reset_confirm(
         password_hash=ph.hash(password),
         reset_token=None,
         reset_token_created=None,
+        # Clear the forced-rotation flag: the user has now set their own password.
+        must_change_password=False,
     )
 
     response = RedirectResponse(url="/login/password?msg=password_reset", status_code=302)
@@ -528,6 +552,8 @@ async def setup_confirm(
         password_hash=ph.hash(password),
         setup_token=None,
         setup_token_created=None,
+        # Clear the forced-rotation flag: the user has now set their own password.
+        must_change_password=False,
     )
     if name.strip():
         updates["name"] = name.strip()
