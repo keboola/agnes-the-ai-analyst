@@ -465,6 +465,58 @@ class TestCacheFirstEntityType:
         conn.close()
         assert row is not None, "orders must appear in _meta"
 
+    def test_live_fallback_materialized_view_normalized(self, output_dir, monkeypatch):
+        """On cache miss the live _detect_table_type returns the raw BQ value
+        'MATERIALIZED VIEW' (space). It must be normalized to 'MATERIALIZED_VIEW'
+        so the VIEW branch fires and the table is registered, not skipped as an
+        unverified entity type."""
+        detect_calls = []
+
+        def _live_detect(*args, **kwargs):
+            detect_calls.append(args)
+            return "MATERIALIZED VIEW"  # raw BQ INFORMATION_SCHEMA form (space)
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            _live_detect,
+        )
+
+        # Cache miss for everything → forces the live fallback path.
+        mock_repo = MagicMock()
+        mock_repo.get.return_value = None
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.bq_metadata_cache_repo",
+            lambda: mock_repo,
+        )
+
+        configs = [
+            {
+                "id": "proj.analytics.orders",
+                "name": "orders",
+                "source_type": "bigquery",
+                "bucket": "analytics",
+                "source_table": "orders",
+                "query_mode": "remote",
+                "description": "Orders",
+            }
+        ]
+
+        with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
+            mock_mod.connect = _proxy_connect
+            from connectors.bigquery.extractor import init_extract
+
+            result = init_extract(output_dir, "my-project", configs)
+
+        # Registered via the VIEW/bigquery_query path, not skipped as unknown.
+        assert result["tables_registered"] == 1
+        assert result["errors"] == []
+        assert len(detect_calls) == 1, "live detect must run on cache miss"
+
     def test_no_table_id_falls_back_to_live_detect(self, output_dir, monkeypatch):
         """When tc has no 'id' key, cache lookup is skipped and live detect runs."""
         detect_calls = []

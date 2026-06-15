@@ -753,9 +753,15 @@ def _init_extract_locked(
                 table_id = tc.get("id")
                 entity_type = _get_cached_entity_type(table_id)
                 if entity_type is None:
-                    entity_type = _detect_table_type(
-                        conn, fqn_project, dataset, source_table,
-                        billing_project=project_id,
+                    # _detect_table_type returns the raw BQ INFORMATION_SCHEMA
+                    # value ("MATERIALIZED VIEW" with a space); normalize it to
+                    # the underscore form the branch below expects, same as the
+                    # cached path.
+                    entity_type = _normalize_entity_type(
+                        _detect_table_type(
+                            conn, fqn_project, dataset, source_table,
+                            billing_project=project_id,
+                        )
                     )
                 if entity_type is None:
                     raise RuntimeError(
