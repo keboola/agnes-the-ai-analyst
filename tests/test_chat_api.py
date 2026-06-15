@@ -127,6 +127,17 @@ def test_list_sessions(api_client: TestClient, logged_in_user):
     assert arr[0]["surface"] == "web"
 
 
+def test_create_session_accepts_known_profile(api_client: TestClient, logged_in_user):
+    r = api_client.post("/api/chat/sessions", json={"surface": "web", "profile": "data-package-builder"})
+    assert r.status_code == 201, r.text
+
+
+def test_create_session_rejects_unknown_profile(api_client: TestClient, logged_in_user):
+    r = api_client.post("/api/chat/sessions", json={"surface": "web", "profile": "nope"})
+    assert r.status_code == 400
+    assert r.json()["detail"]["kind"] == "unknown_profile"
+
+
 def test_get_messages_empty(api_client: TestClient, logged_in_user):
     c = api_client.post("/api/chat/sessions", json={"surface": "web"}).json()
     r = api_client.get(f"/api/chat/sessions/{c['id']}/messages")

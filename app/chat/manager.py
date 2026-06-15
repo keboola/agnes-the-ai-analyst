@@ -15,6 +15,7 @@ from typing import Optional
 from app.chat.audit import hash_args, write_audit
 from app.chat.config import ChatConfig
 from app.chat.persistence import ChatRepository
+from app.chat.profiles import get_profile
 from app.chat.provider import SandboxHandle, SandboxProvider
 from app.chat.types import ChatSession, SessionState, Surface
 from app.chat.workdir import WorkdirManager
@@ -130,6 +131,11 @@ class ChatManager:
         self._deque_cls = deque
         # TTL cache: user_email → (monotonic_timestamp, (tokens_in, tokens_out))
         self._daily_tokens_cache: dict[str, tuple[float, tuple[int, int]]] = {}
+        # Spawn-time authoring profile per session id (not persisted). Set in
+        # create_session, consumed in _spawn_live. After a process restart the
+        # map is empty, but the profile is already materialized on disk in the
+        # session workdir, so resume still resolves the persona + skill.
+        self._session_profiles: dict[str, str] = {}
 
     def _cached_daily_tokens(self, user_email: str) -> tuple[int, int]:
         """Return (tokens_in, tokens_out) for today, with a 60-second TTL cache.
@@ -154,6 +160,7 @@ class ChatManager:
         slack_channel_id: Optional[str] = None,
         slack_thread_ts: Optional[str] = None,
         title: Optional[str] = None,
+        profile: Optional[str] = None,
     ) -> ChatSession:
         if not self._config.enabled:
             raise RuntimeError("chat.enabled is false")
@@ -179,6 +186,8 @@ class ChatManager:
             slack_thread_ts=slack_thread_ts,
             title=title,
         )
+        if profile is not None:
+            self._session_profiles[created.id] = profile
         # Garbage-collect orphan empty sessions for this user on every
         # web-surface create. Clicking "+ New chat" repeatedly was
         # accumulating ten-plus 'Untitled chat' rows in the sidebar
@@ -346,7 +355,9 @@ class ChatManager:
         else:
             emails = []  # participant_emails is empty for single-user sessions
             self._workdir_mgr.ensure_user_workdir(session.user_email)
-            session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, chat_id)
+            prof_slug = self._session_profiles.get(session.id)
+            prof = get_profile(prof_slug) if prof_slug else None
+            session_dir = self._workdir_mgr.prepare_session_dir(session.user_email, chat_id, profile=prof)
 
         handle = await self._spawn_runner(session, session_dir)
         import time as _t
