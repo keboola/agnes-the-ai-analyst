@@ -481,7 +481,7 @@ CREATE TABLE IF NOT EXISTS marketplace_registry (
     -- /admin/marketplaces edit modal before the placeholder disappears.
     curator_name    VARCHAR,
     curator_email   VARCHAR,
-    -- v77: built-in marketplace shipped with the wheel (not a git clone).
+    -- v78: built-in marketplace shipped with the wheel (not a git clone).
     -- TRUE for the single system-seeded row; FALSE for all admin-registered rows.
     -- The nightly git-sync path skips is_builtin=TRUE rows (nothing to fetch).
     is_builtin      BOOLEAN NOT NULL DEFAULT FALSE
@@ -518,7 +518,7 @@ CREATE TABLE IF NOT EXISTS marketplace_plugins (
     -- resolver itself is unchanged — system semantics are emergent from
     -- the materialized rows, not a new filter layer.
     is_system       BOOLEAN DEFAULT FALSE,
-    -- v77: per-plugin admin disable flag for built-in plugins. When TRUE,
+    -- v78: per-plugin admin disable flag for built-in plugins. When TRUE,
     -- the plugin is excluded from the served feed for all callers even
     -- when they hold a resource_grant for it. Distinct from the per-user
     -- user_plugin_optouts — this is an instance-wide admin decision.

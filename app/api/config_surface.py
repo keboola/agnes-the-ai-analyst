@@ -251,11 +251,17 @@ def _build_initial_workspace() -> Optional[dict[str, Any]]:
 
 
 def _build_marketplaces(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
-    """Return [{name, url}] for every registered marketplace."""
+    """Return [{name, url}] for every admin-registered marketplace.
+
+    The built-in marketplace is excluded: it ships with the wheel and carries
+    a non-actionable sentinel URL (``builtin://agnes-builtin``), so it is noise
+    for the operator-facing config surface, which exists to expose real,
+    instance-configured pointers.
+    """
     try:
         from src.repositories import marketplace_registry_repo
 
-        rows = marketplace_registry_repo().list_all()
+        rows = marketplace_registry_repo().list_non_builtin()
         return [{"name": r["name"], "url": r["url"]} for r in rows]
     except Exception:
         logger.exception("config_surface: could not list marketplaces")

@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.40] — 2026-06-15
+
+### Added
 - **Config-surface introspection** — `GET /api/admin/config-surface` (admin-gated), the `agnes admin config-surface` CLI, and a matching MCP tool expose this instance's complete configurable surface in one read: every `instance_config` knob with its resolved value + source (env / yaml / default), the registered Initial Workspace Template (url/branch/last-sync-sha), the registered marketplaces, and `infra_repo_url`. The machine-readable form of `docs/CONFIGURATION.md`. Also adds the optional `instance.infra_repo_url` / `AGNES_INFRA_REPO_URL` knob (empty default) — the one deployment pointer the app cannot self-discover.
 - **Built-in marketplace** — two vendor-neutral plugins ship with every instance and are seeded automatically (offline, from `src/_builtin_marketplace/`, no git fetch): `agnes-analyst` (how to query/discover/snapshot Agnes data + look up metrics, served to `Everyone`) and `agnes-operator` (how to configure the instance — init prompt, workspace, branding, connectors — backed by a live `config-surface` call so guidance names this instance's real pointers, served to `Admin`). New `marketplace_registry.is_builtin` flag (the nightly git-sync skips built-in rows) and `marketplace_plugins.admin_disabled` flag for per-plugin admin disable, on both the DuckDB (v77→v78) and Postgres ladders.
 
