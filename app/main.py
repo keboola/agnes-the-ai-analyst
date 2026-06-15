@@ -449,14 +449,6 @@ async def lifespan(app):
     except Exception:
         logger.exception("internal data-source seed failed; continuing")
 
-    # Seed default source connections from env/yaml on first boot
-    # (spec 2026-06-12 §3.4). One-time; the registry rules afterwards.
-    try:
-        from app.connections_seed import seed_default_connections
-        seed_default_connections()
-    except Exception:
-        logger.exception("source-connection seed failed; continuing")
-
     # Baked-data images (no scheduler) need master views built at boot.
     _maybe_rebuild_on_boot()
 
@@ -503,6 +495,19 @@ async def lifespan(app):
         from src.db_pg import ensure_pg_at_head
 
         ensure_pg_at_head()
+
+    # Seed default source connections from env/yaml on first boot
+    # (spec 2026-06-12 §3.4). MUST run after ensure_pg_at_head(): on a
+    # Postgres backend the source_connections table is created by Alembic
+    # 0024, which ensure_pg_at_head() applies — seeding earlier hits a
+    # missing table, gets swallowed by the try/except, and silently no-ops
+    # until the next restart (Devin Review on #671). DuckDB is unaffected
+    # (get_system_db lazily runs _ensure_schema). One-time; registry rules after.
+    try:
+        from app.connections_seed import seed_default_connections
+        seed_default_connections()
+    except Exception:
+        logger.exception("source-connection seed failed; continuing")
 
     # Seed the Admin/Everyone system groups into the ACTIVE state backend.
     # On DuckDB this duplicates src.db._seed_system_groups (idempotent), but
