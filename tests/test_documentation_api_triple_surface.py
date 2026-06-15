@@ -19,6 +19,9 @@ extend ``_COHORT`` below and the test fails until the CLI/MCP entries land.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 
 # Endpoints that must have all three surfaces. Forward-only — add new
 # entries when they land, do NOT retroactively backfill old endpoints
@@ -30,6 +33,11 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/stack/browse": ("stack browse", "stack_browse"),
     # Store thumbs up/down ratings (issue #398).
     "/api/store/entities/{entity_id}/rate": ("store rate", "store_rate"),
+    # Collections — bring-your-files (Slice 2). The read surfaces are
+    # triple-surface; the multipart-upload + file-mutation paths are _EXEMPT
+    # below (binary upload has no MCP analogue).
+    "/api/collections": ("collections list", "collections_list"),
+    "/api/collections/{collection_id}": ("collections show", "collection_get"),
 }
 
 
@@ -86,9 +94,6 @@ def test_mcp_tools_registered():
         )
 
 
-import os
-from pathlib import Path
-
 _BASELINE_PATH = Path(__file__).resolve().parent / "api_triple_surface_grandfathered.txt"
 
 # Endpoints consciously REST-only (admin mutations, internal, webhooks). Reason
@@ -114,7 +119,16 @@ _STORE_DRYRUN_REASON = (
     "grandfathered /api/store/entities/preview wizard step); the real "
     "create endpoint carries the triple-surface contract."
 )
+_COLLECTIONS_FILES_REASON = (
+    "Collections file endpoints (Slice 2) — multipart upload has no MCP/JSON "
+    "analogue (binary body), reachable via `agnes collections upload`; file "
+    "listing is folded into the collection_get MCP tool + `agnes collections "
+    "show`; file deletion is a maintenance mutation with no analyst CLI/MCP "
+    "analogue. The collection read surfaces carry the triple-surface contract."
+)
 _EXEMPT: dict[str, str] = {
+    "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
+    "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
     "/api/admin/initial-workspace/sync-if-configured": _IW_SYNC_IF_CONFIGURED_REASON,
     "/api/store/entities/dryrun": _STORE_DRYRUN_REASON,
     "/api/admin/prompts/{kind}": _PROMPTS_REASON,

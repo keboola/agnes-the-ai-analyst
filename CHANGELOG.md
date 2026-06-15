@@ -18,6 +18,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `ResourceType.COLLECTION` ("collection") grantable via `/admin/access`;
   the projection lists non-deleted `file_corpora` rows in a single
   "Collections" block.
+- Collections upload: `/api/collections` (create/list/read/delete) +
+  `/api/collections/{id}/files` multipart upload, RBAC-gated (admin creates,
+  granted-group members upload/read), with an extension→tier allowlist that
+  rejects unsupported types at the door. Reachable via `agnes collections`
+  CLI (create/list/show/upload/rm) and `collections_list`/`collection_get`
+  MCP tools (triple-surface for the read paths; upload is CLI-only).
 
 ### Changed
 
