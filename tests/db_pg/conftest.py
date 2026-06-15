@@ -440,13 +440,7 @@ def registered_table_both(seeded_app_both):
     source_name = "smoke_orders"
     bucket = "smoke_src"
 
-    # Create the parquet that SyncOrchestrator.rebuild() will pick up
-    extract_dir = data_dir / "extracts" / bucket
-    extract_dir.mkdir(parents=True, exist_ok=True)
-    parquet_path = extract_dir / f"{source_name}.parquet"
-    pd.DataFrame({"id": [1, 2, 3], "amount": [10.0, 20.0, 30.0]}).to_parquet(str(parquet_path))
-
-    # Register via API
+    # Register first to get the table_id the download handler looks up
     r = client.post(
         "/api/admin/register-table",
         json={
@@ -460,6 +454,13 @@ def registered_table_both(seeded_app_both):
     )
     assert r.status_code == 201, f"register-table failed: {r.text}"
     table_id = r.json()["id"]
+
+    # Write parquet to the path the download handler resolves via rglob:
+    #   data_dir/extracts/{bucket}/data/{table_id}.parquet
+    parquet_dir = data_dir / "extracts" / bucket / "data"
+    parquet_dir.mkdir(parents=True, exist_ok=True)
+    parquet_path = parquet_dir / f"{table_id}.parquet"
+    pd.DataFrame({"id": [1, 2, 3], "amount": [10.0, 20.0, 30.0]}).to_parquet(str(parquet_path))
 
     # Rebuild master views so the table is queryable
     SyncOrchestrator(str(data_dir)).rebuild()
