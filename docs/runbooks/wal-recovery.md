@@ -299,7 +299,9 @@ print('ok' if orphan_members == 0 and orphan_grants == 0 else 'MISMATCH — inve
 
 ```bash
 curl -sf http://localhost:5000/api/health | python3 -m json.tool
-# Expected: {"status": "ok", "db_schema": 76, ...}
+# Expected: {"status": "ok", "db_schema": "ok", "current": 76, "expected": 76, ...}
+# (db_schema is a status string — "ok" / "mismatch" / "unreachable";
+#  the numeric schema version is in "current".)
 ```
 
 ---
