@@ -27,15 +27,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.access import require_admin
-from app.auth.dependencies import _get_db, get_current_user
+from app.auth.dependencies import get_current_user
 from app.web.studio import get_domain
-from src.repositories import authoring_suggestions_repo
-from src.repositories.audit import AuditRepository
+from src.repositories import audit_repo, authoring_suggestions_repo
 
 logger = logging.getLogger(__name__)
 
@@ -56,14 +54,13 @@ class ResolveBody(BaseModel):
 async def submit_suggestion(
     body: CreateSuggestionBody,
     user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     if get_domain(body.domain) is None:
         raise HTTPException(status_code=400, detail={"kind": "unknown_domain", "hint": body.domain})
     if not body.payload:
         raise HTTPException(status_code=400, detail={"kind": "empty_payload"})
     sid = authoring_suggestions_repo().create(domain=body.domain, payload=body.payload, created_by=user["email"])
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user["email"],
         action="authoring_suggestion.submit",
         resource=sid,
@@ -93,9 +90,8 @@ async def approve_suggestion(
     sid: str,
     body: ResolveBody,
     admin: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    return _resolve(sid, "approved", body.note, admin, conn)
+    return _resolve(sid, "approved", body.note, admin)
 
 
 @admin_router.post("/authoring-suggestions/{sid}/reject")
@@ -103,19 +99,18 @@ async def reject_suggestion(
     sid: str,
     body: ResolveBody,
     admin: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    return _resolve(sid, "rejected", body.note, admin, conn)
+    return _resolve(sid, "rejected", body.note, admin)
 
 
-def _resolve(sid: str, status: str, note: Optional[str], admin: dict, conn) -> dict:
+def _resolve(sid: str, status: str, note: Optional[str], admin: dict) -> dict:
     repo = authoring_suggestions_repo()
     if repo.get(sid) is None:
         raise HTTPException(status_code=404, detail={"kind": "not_found"})
     flipped = repo.resolve(sid, status=status, resolved_by=admin["email"], resolution_note=note)
     if not flipped:
         raise HTTPException(status_code=409, detail={"kind": "already_resolved"})
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=admin["email"],
         action=f"authoring_suggestion.{status}",
         resource=sid,
