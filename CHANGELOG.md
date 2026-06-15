@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- Authoring agents (Slice 0): profiled chat sessions (`profile` on `POST /api/chat/sessions`, materialized into the session workdir, no migration) + an admin-only **Data-package builder** studio page at `/admin/studio/data-package` with an embedded assistant panel.
 
 ### Changed
 
