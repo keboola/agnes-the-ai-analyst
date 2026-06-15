@@ -13,9 +13,7 @@ def _all_html() -> list[Path]:
     reference design-system tokens. Includes `*.jinja` (e.g.
     `_claude_setup_cta.jinja`) so the token-sweep regression guards
     cover them too."""
-    return sorted(
-        list(TEMPLATES.rglob("*.html")) + list(TEMPLATES.rglob("*.jinja"))
-    )
+    return sorted(list(TEMPLATES.rglob("*.html")) + list(TEMPLATES.rglob("*.jinja")))
 
 
 # Match every class="..." or class='...' attribute, possibly multi-line.
@@ -62,9 +60,7 @@ DEPRECATED_CLASSES = {
 
 def test_style_css_deleted() -> None:
     """style.css must stay deleted — all rules live in style-custom.css."""
-    assert not (STATIC / "style.css").exists(), (
-        "style.css must stay deleted — all rules live in style-custom.css"
-    )
+    assert not (STATIC / "style.css").exists(), "style.css must stay deleted — all rules live in style-custom.css"
 
 
 def test_no_template_references_style_css() -> None:
@@ -84,9 +80,7 @@ def test_style_custom_has_single_root_block() -> None:
     css = (STATIC / "style-custom.css").read_text(encoding="utf-8")
     # Match :root { (no attribute selectors after it).
     bare_root = re.findall(r"^:root\s*\{", css, flags=re.MULTILINE)
-    assert len(bare_root) == 1, (
-        f"expected exactly one bare :root block, found {len(bare_root)}"
-    )
+    assert len(bare_root) == 1, f"expected exactly one bare :root block, found {len(bare_root)}"
 
 
 def test_canonical_primitives_defined() -> None:
@@ -135,12 +129,8 @@ def test_no_deprecated_class_in_templates() -> None:
         for cls in DEPRECATED_CLASSES:
             if cls in used:
                 offenders.setdefault(cls, []).append(path.name)
-    assert not offenders, (
-        "deprecated classes found in templates:\n"
-        + "\n".join(
-            f"  .{cls} → use {DEPRECATED_CLASSES[cls]} ({sorted(files)})"
-            for cls, files in offenders.items()
-        )
+    assert not offenders, "deprecated classes found in templates:\n" + "\n".join(
+        f"  .{cls} → use {DEPRECATED_CLASSES[cls]} ({sorted(files)})" for cls, files in offenders.items()
     )
 
 
@@ -168,9 +158,8 @@ def test_no_legacy_primary_token_with_hex_fallback() -> None:
             continue
         if pattern.search(path.read_text(encoding="utf-8")):
             offenders.append(str(path))
-    assert not offenders, (
-        "var(--primary, #<hex>) found — use var(--ds-primary) instead:\n"
-        + "\n".join(f"  {p}" for p in offenders)
+    assert not offenders, "var(--primary, #<hex>) found — use var(--ds-primary) instead:\n" + "\n".join(
+        f"  {p}" for p in offenders
     )
 
 
@@ -193,9 +182,8 @@ def test_swept_templates_use_no_raw_hex() -> None:
         hexes = pattern.findall(text)
         if hexes:
             offenders[name] = hexes
-    assert not offenders, (
-        "raw hex literals found in swept templates:\n"
-        + "\n".join(f"  {n}: {hs}" for n, hs in offenders.items())
+    assert not offenders, "raw hex literals found in swept templates:\n" + "\n".join(
+        f"  {n}: {hs}" for n, hs in offenders.items()
     )
 
 
@@ -218,9 +206,8 @@ def test_no_unprefixed_primary_token_in_templates() -> None:
             continue
         if pattern.search(path.read_text(encoding="utf-8")):
             offenders.append(str(path))
-    assert not offenders, (
-        "`var(--primary…)` found — use `var(--ds-primary…)` instead:\n"
-        + "\n".join(f"  {p}" for p in offenders)
+    assert not offenders, "`var(--primary…)` found — use `var(--ds-primary…)` instead:\n" + "\n".join(
+        f"  {p}" for p in offenders
     )
 
 
@@ -262,7 +249,10 @@ def test_component_macros_emit_only_classes_with_css_rules() -> None:
     # want the literal class strings the author wrote, not Jinja runtime
     # gunk or comment-block examples (`{# … class="…" … #}`).
     jinja_free = re.sub(
-        r"\{\{.*?\}\}|\{%.*?%\}|\{#.*?#\}", " ", text, flags=re.DOTALL,
+        r"\{\{.*?\}\}|\{%.*?%\}|\{#.*?#\}",
+        " ",
+        text,
+        flags=re.DOTALL,
     )
 
     static_classes: set[str] = set()
@@ -283,15 +273,20 @@ def test_component_macros_emit_only_classes_with_css_rules() -> None:
     # this contract loudly.
     variant_classes: set[str] = {
         # tabs_rich
-        "mp-tabs", "stack-tabs",
+        "mp-tabs",
+        "stack-tabs",
         # segmented_strip
-        "os-tabs", "mode-tabs",
+        "os-tabs",
+        "mode-tabs",
         # hero_search_btn
-        "search-btn", "stack-hero__search-btn",
+        "search-btn",
+        "stack-hero__search-btn",
         # info_panel_accent — all four canonical accents
         "info-panel-accent",
-        "info-panel-accent--info", "info-panel-accent--warn",
-        "info-panel-accent--success", "info-panel-accent--danger",
+        "info-panel-accent--info",
+        "info-panel-accent--warn",
+        "info-panel-accent--success",
+        "info-panel-accent--danger",
     }
 
     expected = static_classes | button_classes | variant_classes
@@ -310,8 +305,7 @@ def test_component_macros_emit_only_classes_with_css_rules() -> None:
             missing.append(cls)
     assert not missing, (
         f"_components.html emits classes with no CSS rule in any of "
-        f"{[str(p) for p in _CANONICAL_CSS]}:\n"
-        + "\n".join(f"  .{m}" for m in missing)
+        f"{[str(p) for p in _CANONICAL_CSS]}:\n" + "\n".join(f"  .{m}" for m in missing)
     )
 
 
@@ -330,14 +324,15 @@ def test_app_js_referenced_by_base_only() -> None:
 # Helper-level unit tests for the class-tokenizer itself — keeps the
 # audit logic honest as the design-pass evolves.
 
+
 def test_classes_helper_multiline_attr() -> None:
     """class= attributes split across lines (typical Jinja conditional
     pattern) must still tokenize cleanly."""
-    sample = '''
+    sample = """
     <a class="app-nav-link
         is-active"
        href="/">Home</a>
-    '''
+    """
     assert _classes_in_template(sample) == {"app-nav-link", "is-active"}
 
 
@@ -345,7 +340,7 @@ def test_classes_helper_skips_jinja_tokens() -> None:
     """Jinja-constructed class fragments don't get audited (can't be statically
     resolved). Verify the {% if %}, {{ … }} pieces are filtered out, real
     literal tokens around them stay."""
-    sample = '''<button class="btn {% if active %}is-active{% endif %} btn-primary">Go</button>'''
+    sample = """<button class="btn {% if active %}is-active{% endif %} btn-primary">Go</button>"""
     tokens = _classes_in_template(sample)
     assert "btn" in tokens
     assert "btn-primary" in tokens
@@ -357,11 +352,11 @@ def test_classes_helper_skips_jinja_tokens() -> None:
 def test_classes_helper_compound_match_is_not_false_positive() -> None:
     """Prose containing the word 'pill' or 'btn' in a comment should NOT be
     detected as a deprecated class. Only class= attribute values count."""
-    sample = '''
+    sample = """
     <!-- this is the filter pill row -->
     <p>The button (btn) below opens the menu.</p>
     <span class="badge">x</span>
-    '''
+    """
     assert _classes_in_template(sample) == {"badge"}
 
 
@@ -406,8 +401,7 @@ def test_no_container_has_optout_in_leaf_templates() -> None:
             offenders.append(str(path))
     assert not offenders, (
         "`.container:has(` opt-out found in a leaf template — use a canonical "
-        "`.container--wide/--narrow/--full` modifier instead:\n"
-        + "\n".join(f"  {p}" for p in offenders)
+        "`.container--wide/--narrow/--full` modifier instead:\n" + "\n".join(f"  {p}" for p in offenders)
     )
 
 
@@ -424,8 +418,7 @@ def test_no_bare_root_block_in_leaf_templates() -> None:
             offenders.append(str(path))
     assert not offenders, (
         "bare `:root {` block found in a leaf template — design tokens live in "
-        "design-tokens.css / _theme.html, not per-page:\n"
-        + "\n".join(f"  {p}" for p in offenders)
+        "design-tokens.css / _theme.html, not per-page:\n" + "\n".join(f"  {p}" for p in offenders)
     )
 
 
@@ -437,10 +430,7 @@ def test_base_ds_carries_operator_custom_scripts() -> None:
     page migration). `test_custom_scripts_render.py` proves the loop mechanism
     renders; this guard just keeps the loops present in base_ds."""
     text = (TEMPLATES / "base_ds.html").read_text(encoding="utf-8")
-    missing = [
-        p for p in ("head_start", "head_end", "body_end")
-        if f"s.placement == '{p}'" not in text
-    ]
+    missing = [p for p in ("head_start", "head_end", "body_end") if f"s.placement == '{p}'" not in text]
     assert not missing, (
         f"base_ds.html is missing operator custom_scripts loop(s): {missing} — "
         "pages migrated onto base_ds will drop operator scripts"
@@ -479,11 +469,7 @@ def test_no_new_standalone_page_templates() -> None:
     offenders: list[str] = []
     for path in _all_html():
         name = path.name
-        if (
-            name.startswith("_")
-            or name in _PAGE_SCAFFOLD_BASES
-            or name in _STANDALONE_ALLOWLIST
-        ):
+        if name.startswith("_") or name in _PAGE_SCAFFOLD_BASES or name in _STANDALONE_ALLOWLIST:
             continue
         text = path.read_text(encoding="utf-8")
         if _EXTENDS_RE.search(text):
@@ -507,26 +493,15 @@ def test_setup_html_uses_design_system_base() -> None:
     or their hardcoded `max-width: 520px` inline widths."""
     text = (TEMPLATES / "setup.html").read_text(encoding="utf-8")
     # (a) extends the design-system base, not base_login.
-    assert '{% extends "base_ds.html" %}' in text, (
-        "setup.html must extend base_ds.html"
-    )
-    assert "base_login.html" not in text, (
-        "setup.html must no longer reference base_login.html"
-    )
+    assert '{% extends "base_ds.html" %}' in text, "setup.html must extend base_ds.html"
+    assert "base_login.html" not in text, "setup.html must no longer reference base_login.html"
     # (b) the hardcoded card width is gone (both inline occurrences).
-    assert "max-width: 520px" not in text, (
-        "setup.html must not hardcode `max-width: 520px`"
-    )
+    assert "max-width: 520px" not in text, "setup.html must not hardcode `max-width: 520px`"
     # (c) opts into the canonical narrow shell.
-    assert "container--narrow" in text, (
-        "setup.html must opt into the .container--narrow design-system shell"
-    )
+    assert "container--narrow" in text, "setup.html must opt into the .container--narrow design-system shell"
     # (d) the login-card chrome wrapper divs are removed.
-    for cls in ('class="login-page"', 'class="login-card-wrapper"',
-                'class="login-card"'):
-        assert cls not in text, (
-            f"setup.html must not carry the login-chrome wrapper ({cls})"
-        )
+    for cls in ('class="login-page"', 'class="login-card-wrapper"', 'class="login-card"'):
+        assert cls not in text, f"setup.html must not carry the login-chrome wrapper ({cls})"
 
 
 def test_standalone_allowlist_has_no_stale_entries() -> None:
@@ -540,8 +515,7 @@ def test_standalone_allowlist_has_no_stale_entries() -> None:
         if not path.exists() or _EXTENDS_RE.search(path.read_text(encoding="utf-8")):
             stale.append(name)
     assert not stale, (
-        "stale _STANDALONE_ALLOWLIST entr(ies) — page migrated or removed, "
-        f"drop from the allowlist: {stale}"
+        f"stale _STANDALONE_ALLOWLIST entr(ies) — page migrated or removed, drop from the allowlist: {stale}"
     )
 
 
@@ -627,8 +601,7 @@ def test_legacy_selectors_use_no_raw_hex_literals() -> None:
             offenders[sel] = hits
     assert not offenders, (
         "hardcoded hex literals found in migrated legacy selectors "
-        "(use a --* token instead):\n"
-        + "\n".join(f"  {sel}: {vals}" for sel, vals in offenders.items())
+        "(use a --* token instead):\n" + "\n".join(f"  {sel}: {vals}" for sel, vals in offenders.items())
     )
 
 
@@ -649,8 +622,7 @@ def test_legacy_selectors_use_no_bare_rem_literals() -> None:
             offenders[sel] = hits
     assert not offenders, (
         "bare rem literals found in migrated legacy selectors "
-        "(use a --text-* token instead):\n"
-        + "\n".join(f"  {sel}: {vals}" for sel, vals in offenders.items())
+        "(use a --text-* token instead):\n" + "\n".join(f"  {sel}: {vals}" for sel, vals in offenders.items())
     )
 
 
@@ -677,12 +649,21 @@ def test_legacy_token_aliases_defined_in_root() -> None:
         "--badge-info-bg",
         "--badge-info-ink",
         "--flash-success-bg",
+        "--flash-success-ink",
+        "--flash-success-border",
         "--flash-error-bg",
+        "--flash-error-ink",
+        "--flash-error-border",
         "--flash-info-bg",
+        "--flash-info-ink",
+        "--flash-info-border",
         "--flash-warn-bg",
+        "--flash-warn-ink",
+        "--flash-warn-border",
         "--code-dark-bg",
         "--code-dark-ink",
         "--code-dark-border",
+        "--code-wrapper-ink",
         "--placeholder-color",
         "--username-box-bg",
         "--username-box-line",
@@ -700,7 +681,6 @@ def test_legacy_token_aliases_defined_in_root() -> None:
         "--flash-error-v2-ink",
     ]
     missing = [t for t in required_tokens if f"{t}:" not in css]
-    assert not missing, (
-        "tokens introduced by #400 are missing from style-custom.css :root:\n"
-        + "\n".join(f"  {t}" for t in missing)
+    assert not missing, "tokens introduced by #400 are missing from style-custom.css :root:\n" + "\n".join(
+        f"  {t}" for t in missing
     )

@@ -171,6 +171,9 @@
     --code-dark-bg:     #1a1a2e;
     --code-dark-ink:    #e4e4e7;
     --code-dark-border: #2d2d44;
+    /* Pure white for .code-block inside .code-block-wrapper (dark translucent
+       surface) — distinct from --code-dark-ink so contrast there is maximal. */
+    --code-wrapper-ink: #fff;
 
     /* Form placeholder — the medium-grey used in text inputs and textareas. */
     --placeholder-color: #9aa0a6;
@@ -2243,7 +2246,9 @@ a.slack-badge:hover {
     flex: 1;
     font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
     font-size: var(--text-13);
-    color: var(--code-dark-ink);
+    /* Pure white (not --code-dark-ink's #e4e4e7): this .code-block sits inside
+       .code-block-wrapper's dark translucent surface and needs max contrast. */
+    color: var(--code-wrapper-ink);
     background: transparent;
     border: none;
     white-space: pre;
