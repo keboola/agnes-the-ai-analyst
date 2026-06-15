@@ -193,6 +193,48 @@
     --ds-text-link:     var(--ds-primary);
 }
 
+/* ─── Theme: dark + blue variant ──────────────────────────────────
+   Activated by `<html data-theme="dark" data-theme-variant="blue">`.
+   Stamped by _theme_resolve.html when the user's light-mode brand is
+   "blue" and they switch to dark.  Overrides only the brand tokens so
+   the blue palette persists in dark mode instead of falling back to
+   the default green.
+
+   Colour selection rationale (WCAG AA contrast on --ds-surface #141a30):
+     --ds-primary      #4f9deb  → 6.1:1  ✓ (AA ≥ 4.5:1)
+     --ds-primary-dark #3a87d4  → 4.8:1  ✓ (AA ≥ 4.5:1)
+     --ds-brand-accent #7ab8f2  → 8.1:1  ✓ (lighter, used for hero)
+   Light tint is a translucent fill, not body text, so 3:1 is sufficient.
+   Hero tokens mirror the light-blue theme's white-on-blue convention. */
+:root[data-theme="dark"][data-theme-variant="blue"] {
+    --ds-primary:       #4f9deb;
+    --ds-primary-dark:  #3a87d4;
+    --ds-primary-light: rgba(79, 157, 235, 0.18);
+    --ds-brand-accent:  #7ab8f2;
+
+    /* Hero surface — stays blue even in dark mode. */
+    --ds-hero-bg:      #0a2a5e;
+    --ds-hero-bg-deep: #061a45;
+
+    /* Hero eyebrow + CTA: translucent-white convention from the blue
+       light theme — mint-on-blue has poor contrast. */
+    --ds-hero-shadow:     rgba(0, 80, 180, 0.35);
+    --ds-hero-eyebrow:    rgba(255, 255, 255, 0.92);
+    --ds-hero-cta-bg:     #ffffff;
+    --ds-hero-cta-fg:     #0a2a5e;
+    --ds-hero-cta-bg-hover: rgba(255, 255, 255, 0.88);
+    --ds-hero-cta-fg-hover: #0a2a5e;
+
+    /* Info callout vocabulary re-tinted to brand-blue family (same
+       reasoning as the light blue theme). */
+    --ds-info-bg:         rgba(79, 157, 235, 0.18);
+    --ds-info-line:       #4f9deb;
+    --ds-info-ink:        #a8c8f5;
+    --ds-accent-info-bg:  rgba(79, 157, 235, 0.18);
+    --ds-accent-info-line: #4f9deb;
+    --ds-accent-info-ink:  #a8c8f5;
+}
+
 /* ─── Theme: dark ──────────────────────────────────────────────────
    Activated by ``<html data-theme="dark">``. Overrides the surface,
    text, border, and accent tokens so every consumer of ``--ds-*``

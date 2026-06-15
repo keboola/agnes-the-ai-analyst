@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 77
+SCHEMA_VERSION = 78
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -89,7 +89,13 @@ CREATE TABLE IF NOT EXISTS users (
     -- lazy ALTER in services/slack_bot/binding.py) so it lives in the active
     -- state backend — the binding broke on Postgres when it only existed in
     -- the DuckDB system file.
-    slack_user_id VARCHAR
+    slack_user_id VARCHAR,
+    -- v77: forces a password change on first sign-in for accounts whose
+    -- password was set BY SOMEONE ELSE — the seed admin created from
+    -- SEED_ADMIN_PASSWORD (emailed in plaintext) and admin-set passwords.
+    -- Cleared when the user sets their own password via reset/setup confirm.
+    -- Irrelevant to SSO/magic-link accounts (they have no password).
+    must_change_password BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS sync_state (
@@ -4988,7 +4994,24 @@ def _v75_to_v76(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def _v76_to_v77(conn: duckdb.DuckDBPyConnection) -> None:
-    """v77: built-in marketplace columns.
+    """v77: ``users.must_change_password`` — force a password change on first
+    sign-in for accounts whose password was set by someone else (seed admin
+    from SEED_ADMIN_PASSWORD, admin-set passwords). Additive-only; cleared when
+    the user sets their own password. Idempotent ADD COLUMN IF NOT EXISTS, so
+    safe on fresh and upgrade paths; ``_SYSTEM_SCHEMA`` already creates the
+    column on fresh installs. Issue: emailed-credential rotation.
+    """
+    conn.execute(
+        # DuckDB ALTER can't add a NOT NULL column ("constraints not yet
+        # supported"); DEFAULT FALSE backfills existing rows. Fresh installs
+        # get NOT NULL from _SYSTEM_SCHEMA. New rows always set it via the repo.
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE"
+    )
+    conn.execute("UPDATE schema_version SET version = 77")
+
+
+def _v77_to_v78(conn: duckdb.DuckDBPyConnection) -> None:
+    """v78: built-in marketplace columns.
 
     Adds ``marketplace_registry.is_builtin`` (BOOLEAN NOT NULL DEFAULT FALSE) so
     the system-seeded built-in marketplace row is distinguishable from
@@ -5010,7 +5033,7 @@ def _v76_to_v77(conn: duckdb.DuckDBPyConnection) -> None:
     # matches the established additive ADD COLUMN pattern elsewhere in this file.
     conn.execute("ALTER TABLE marketplace_registry ADD COLUMN IF NOT EXISTS is_builtin BOOLEAN DEFAULT FALSE")
     conn.execute("ALTER TABLE marketplace_plugins ADD COLUMN IF NOT EXISTS admin_disabled BOOLEAN DEFAULT FALSE")
-    conn.execute("UPDATE schema_version SET version = 77")
+    conn.execute("UPDATE schema_version SET version = 78")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -5326,11 +5349,15 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # entities). _SYSTEM_SCHEMA already creates the table on fresh
             # installs (no-op CREATE here). Issue #398.
             _v75_to_v76(conn)
-            # v76→v77: built-in marketplace columns. is_builtin on
+            # v76→v77: users.must_change_password — forced rotation flag for
+            # seeded/admin-set passwords. _SYSTEM_SCHEMA already creates the
+            # column on fresh installs (no-op ALTER here).
+            _v76_to_v77(conn)
+            # v77→v78: built-in marketplace columns. is_builtin on
             # marketplace_registry; admin_disabled on marketplace_plugins.
             # ADD COLUMN IF NOT EXISTS — no-op on fresh installs where
             # _SYSTEM_SCHEMA already declares both columns.
-            _v76_to_v77(conn)
+            _v77_to_v78(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5538,6 +5565,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v75_to_v76(conn)
             if current < 77:
                 _v76_to_v77(conn)
+            if current < 78:
+                _v77_to_v78(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

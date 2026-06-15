@@ -761,16 +761,16 @@ def test_v77_builtin_marketplace_columns(tmp_path):
     conn.close()
 
 
-def test_v76_to_v77_migration(tmp_path):
-    """A DB at v76 upgrades cleanly to v77 — adds is_builtin + admin_disabled,
+def test_v77_to_v78_migration(tmp_path):
+    """A DB at v77 upgrades cleanly to v78 — adds is_builtin + admin_disabled,
     existing rows survive with both columns defaulting to FALSE."""
-    from src.db import _v76_to_v77
+    from src.db import _v77_to_v78
 
     db_path = tmp_path / "system.duckdb"
     conn = duckdb.connect(str(db_path))
 
     conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)")
-    conn.execute("INSERT INTO schema_version (version) VALUES (76)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (77)")
     conn.execute("""
         CREATE TABLE marketplace_registry (
             id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL,
@@ -789,9 +789,9 @@ def test_v76_to_v77_migration(tmp_path):
     )
     conn.execute("INSERT INTO marketplace_plugins (marketplace_id, name) VALUES ('old', 'foo')")
 
-    _v76_to_v77(conn)
+    _v77_to_v78(conn)
 
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 77
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 78
 
     reg_row = conn.execute("SELECT is_builtin FROM marketplace_registry WHERE id = 'old'").fetchone()
     assert reg_row[0] is False, f"pre-existing registry row got is_builtin={reg_row[0]!r}"

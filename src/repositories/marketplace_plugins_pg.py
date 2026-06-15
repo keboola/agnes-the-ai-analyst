@@ -150,6 +150,9 @@ class MarketplacePluginsPgRepository:
             f"rg.group_id IN ({','.join(gid_keys)})",
             "rg.resource_type = 'marketplace_plugin'",
             "rg.resource_id = mp.marketplace_id || '/' || mp.name",
+            # Admin-disabled built-in plugins are hidden from the browse listing
+            # too — mirrors the served-feed filter in list_granted_for_groups.
+            "mp.admin_disabled = FALSE",
         ]
         if search:
             where.append(
@@ -226,6 +229,7 @@ class MarketplacePluginsPgRepository:
                     f"  ON rg.resource_id = mp.marketplace_id || '/' || mp.name "
                     f"WHERE rg.group_id IN ({','.join(gid_keys)}) "
                     f"  AND rg.resource_type = 'marketplace_plugin' "
+                    f"  AND mp.admin_disabled = FALSE "
                     f"GROUP BY cat"
                 ),
                 params,

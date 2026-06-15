@@ -22,8 +22,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0024_builtin_marketplace_v77"
-down_revision: Union[str, None] = "0023_store_entity_votes_v76"
+revision: str = "0025_builtin_marketplace_v78"
+down_revision: Union[str, None] = "0024_must_change_password_v77"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

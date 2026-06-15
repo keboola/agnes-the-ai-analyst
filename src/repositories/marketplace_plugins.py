@@ -156,6 +156,9 @@ class MarketplacePluginsRepository:
             f"rg.group_id IN ({placeholders})",
             "rg.resource_type = 'marketplace_plugin'",
             "rg.resource_id = mp.marketplace_id || '/' || mp.name",
+            # Admin-disabled built-in plugins are hidden from the browse listing
+            # too — mirrors the served-feed filter in list_granted_for_groups.
+            "mp.admin_disabled = FALSE",
         ]
         params: List[Any] = list(gids)
         if search:
@@ -227,6 +230,7 @@ class MarketplacePluginsRepository:
             f"  ON rg.resource_id = mp.marketplace_id || '/' || mp.name "
             f"WHERE rg.group_id IN ({placeholders}) "
             f"  AND rg.resource_type = 'marketplace_plugin' "
+            f"  AND mp.admin_disabled = FALSE "
             f"GROUP BY cat",
             list(gids),
         ).fetchall()
