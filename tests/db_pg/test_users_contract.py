@@ -9,7 +9,7 @@ This follows the pattern established in test_audit_contract.py.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import duckdb
 import pytest
@@ -275,3 +275,90 @@ def test_search_recent_combines_search_and_group_filter(users_repo):
     # Both match "al", but only user-1 is in the group.
     rows = repo.search_recent(search="al", group_id="grp-1")
     assert [r["id"] for r in rows] == ["user-1"]
+
+
+# ---------------------------------------------------------------------------
+# must_change_password — forced-rotation flag parity (v77)
+# ---------------------------------------------------------------------------
+
+
+def test_must_change_password_defaults_false(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo)
+    row = repo.get_by_id("user-1")
+    assert row is not None
+    assert row["must_change_password"] is False
+
+
+def test_create_with_must_change_password_true_round_trips(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo, must_change_password=True)
+    row = repo.get_by_id("user-1")
+    assert row is not None
+    assert row["must_change_password"] is True
+
+
+def test_update_toggles_must_change_password(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo, must_change_password=True)
+    repo.update("user-1", must_change_password=False)
+    assert repo.get_by_id("user-1")["must_change_password"] is False
+    repo.update("user-1", must_change_password=True)
+    assert repo.get_by_id("user-1")["must_change_password"] is True
+
+
+# ---------------------------------------------------------------------------
+# consume_reset_token — backend-aware atomic CAS parity
+# ---------------------------------------------------------------------------
+
+
+def _seed_reset_token(repo, *, created):
+    """Create user-1 with a reset token issued at ``created``."""
+    _make_user(repo)
+    repo.update("user-1", reset_token="rtok", reset_token_created=created)
+
+
+def test_consume_reset_token_valid_wins_and_stamps(users_repo):
+    repo, _, _ = users_repo
+    now = datetime.now(timezone.utc)
+    _seed_reset_token(repo, created=now)
+    won = repo.consume_reset_token(
+        email="u@example.com", token="rtok", cutoff=now - timedelta(hours=24),
+        consume_id="CONSUMED:abc",
+    )
+    assert won is True
+    # token is replaced by the consume marker (single-use)
+    assert repo.get_by_id("user-1")["reset_token"] == "CONSUMED:abc"
+
+
+def test_consume_reset_token_wrong_token_loses(users_repo):
+    repo, _, _ = users_repo
+    now = datetime.now(timezone.utc)
+    _seed_reset_token(repo, created=now)
+    won = repo.consume_reset_token(
+        email="u@example.com", token="WRONG", cutoff=now - timedelta(hours=24),
+        consume_id="CONSUMED:abc",
+    )
+    assert won is False
+    assert repo.get_by_id("user-1")["reset_token"] == "rtok"  # untouched
+
+
+def test_consume_reset_token_expired_loses(users_repo):
+    repo, _, _ = users_repo
+    now = datetime.now(timezone.utc)
+    _seed_reset_token(repo, created=now - timedelta(hours=25))  # older than the 24h cutoff
+    won = repo.consume_reset_token(
+        email="u@example.com", token="rtok", cutoff=now - timedelta(hours=24),
+        consume_id="CONSUMED:abc",
+    )
+    assert won is False
+
+
+def test_consume_reset_token_single_use(users_repo):
+    repo, _, _ = users_repo
+    now = datetime.now(timezone.utc)
+    _seed_reset_token(repo, created=now)
+    cutoff = now - timedelta(hours=24)
+    assert repo.consume_reset_token(email="u@example.com", token="rtok", cutoff=cutoff, consume_id="CONSUMED:1") is True
+    # second attempt with the same original token loses (already consumed)
+    assert repo.consume_reset_token(email="u@example.com", token="rtok", cutoff=cutoff, consume_id="CONSUMED:2") is False
