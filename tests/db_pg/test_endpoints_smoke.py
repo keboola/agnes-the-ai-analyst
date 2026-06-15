@@ -314,7 +314,7 @@ class TestDataSmoke:
             f"/api/data/{table_id}/check-access",
             headers={"Authorization": f"Bearer {seeded_app_both['admin_token']}"},
         )
-        assert r.status_code == 200
+        assert r.status_code == 204
 
     def test_check_access_analyst_denied(self, seeded_app_both, registered_table_both):
         table_id = registered_table_both["table_id"]
@@ -641,8 +641,8 @@ class TestAdminStoreSmoke:
         r = seeded_app_both["client"].post("/api/admin/run-reap-stuck-reviews", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
         body = r.json()
-        assert "reaped" in body
-        assert body["reaped"] == 0
+        assert body.get("ok") is True
+        assert body.get("details", {}).get("reaped", -1) == 0
 
     def test_submissions_override_missing(self, seeded_app_both):
         r = seeded_app_both["client"].post(
@@ -827,6 +827,34 @@ class TestFleaUploadSmoke:
         # analyst direct get should be 403/404
         rd = seeded_app_both["client"].get(f"/api/store/entities/{entity_id}", headers=_analyst_headers(seeded_app_both))
         assert rd.status_code in (403, 404)
+
+    def test_pending_entity_visible_to_owner(self, seeded_app_both, monkeypatch):
+        """Owner (uploader) can see their own pending entity in the store listing."""
+        monkeypatch.setattr("src.store_guardrails.llm_review.review_bundle", lambda *a, **kw: {
+            "risk_level": "low", "summary": "mock", "findings": [],
+            "reviewed_by_model": "mock", "error": None,
+        })
+        monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
+        import io
+        zb = make_skill_zip("smoke-owner-sees-own-pending")
+        rc = seeded_app_both["client"].post(
+            "/api/store/entities",
+            files={"file": ("bundle.zip", io.BytesIO(zb), "application/zip")},
+            data={"type": "skill"},
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert rc.status_code == 201
+        entity = rc.json()
+        assert entity["visibility_status"] == "pending_llm"
+        entity_id = entity["id"]
+        # Owner (admin) should see it in their own listing
+        rl = seeded_app_both["client"].get("/api/store/entities", headers=_admin_headers(seeded_app_both))
+        assert rl.status_code == 200
+        ids_in_list = [e["id"] for e in rl.json()]
+        assert entity_id in ids_in_list, (
+            f"Owner cannot see their own pending entity in store listing"
+        )
 
     def test_pending_entity_visible_to_admin(self, seeded_app_both, monkeypatch):
         """Admin can GET a pending entity directly."""

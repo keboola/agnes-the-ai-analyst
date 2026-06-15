@@ -42,13 +42,18 @@ def _analyst_headers(s):
 
 
 def _duck_probe(table, id_col, id_val):
-    """Probe the DuckDB system DB for a row — returns None on any error or miss."""
+    """Probe the DuckDB system DB for a row.
+
+    Returns None when the table doesn't exist (CatalogException) or the row
+    is absent. Re-raises unexpected errors so they don't silence real bugs.
+    """
+    import duckdb
     try:
         from src.db import get_system_db
         return get_system_db().execute(
             f"SELECT 1 FROM {table} WHERE {id_col} = ?", [id_val]
         ).fetchone()
-    except Exception:
+    except duckdb.CatalogException:
         return None
 
 
@@ -222,6 +227,58 @@ class TestUsersRBACBehavioral:
             f"manifest tables: {table_ids!r}"
         )
 
+    def test_revoke_grant_removes_from_manifest(self, seeded_app_both, registered_table_both):
+        """POST grant → analyst sees table → DELETE grant → table absent from manifest."""
+        s = seeded_app_both
+        client = s["client"]
+        table_id = registered_table_both["table_id"]
+
+        # Create group + add analyst
+        rg = client.post(
+            "/api/admin/groups",
+            json={"name": "RevokeGrantGroup", "description": "Group for grant revocation test"},
+            headers=_admin_headers(s),
+        )
+        assert rg.status_code == 201, rg.text
+        group_id = rg.json()["id"]
+
+        client.post(
+            f"/api/admin/groups/{group_id}/members",
+            json={"user_id": "analyst1"},
+            headers=_admin_headers(s),
+        )
+
+        # Grant table access
+        rp = client.post(
+            "/api/admin/grants",
+            json={"group_id": group_id, "resource_type": "table", "resource_id": table_id},
+            headers=_admin_headers(s),
+        )
+        assert rp.status_code == 201, rp.text
+        grant_id = rp.json()["id"]
+
+        # Analyst sees table in manifest
+        rm = client.get("/api/sync/manifest", headers=_analyst_headers(s))
+        assert rm.status_code == 200, rm.text
+        assert table_id in [t["id"] for t in rm.json().get("tables", [])], (
+            f"table not in manifest after grant (pre-revoke check)"
+        )
+
+        # Revoke grant
+        rd = client.delete(f"/api/admin/grants/{grant_id}", headers=_admin_headers(s))
+        assert rd.status_code == 204, rd.text
+
+        # Table is no longer in manifest
+        rm2 = client.get("/api/sync/manifest", headers=_analyst_headers(s))
+        assert rm2.status_code == 200, rm2.text
+        assert table_id not in [t["id"] for t in rm2.json().get("tables", [])], (
+            f"table still in manifest after grant revoked"
+        )
+
+        # Grant row is gone from active backend
+        from src.repositories import resource_grants_repo
+        assert resource_grants_repo().get(grant_id) is None
+
 
 # ---------------------------------------------------------------------------
 # Cluster 2: Table Registry + Sync
@@ -321,6 +378,64 @@ class TestTableRegistrySyncBehavioral:
 
         assert table_registry_repo().get(table_id) is None
 
+    def test_sync_manifest_is_rbac_filtered_per_backend(self, seeded_app_both, registered_table_both):
+        """Manifest only shows tables the requesting user is granted.
+
+        Grant table to analyst; analyst sees it. Create a second table with
+        no grant; analyst does NOT see it. Verifies grant lookup uses the
+        active backend (the critical cross-backend bug surface from PR #558).
+        """
+        s = seeded_app_both
+        client = s["client"]
+        table_id = registered_table_both["table_id"]
+
+        # Register a second table (no grant to analyst)
+        r2 = client.post(
+            "/api/admin/register-table",
+            json={
+                "name": "ungrantd_table",
+                "source_type": "keboola",
+                "bucket": "ungrantd_src",
+                "source_table": "ungrantd_table",
+                "query_mode": "local",
+            },
+            headers=_admin_headers(s),
+        )
+        assert r2.status_code == 201, r2.text
+        ungranted_id = r2.json()["id"]
+
+        # Create group + add analyst + grant first table only
+        rg = client.post(
+            "/api/admin/groups",
+            json={"name": "ManifestFilterGroup", "description": "Group for RBAC manifest test"},
+            headers=_admin_headers(s),
+        )
+        assert rg.status_code == 201, rg.text
+        group_id = rg.json()["id"]
+
+        client.post(
+            f"/api/admin/groups/{group_id}/members",
+            json={"user_id": "analyst1"},
+            headers=_admin_headers(s),
+        )
+
+        client.post(
+            "/api/admin/grants",
+            json={"group_id": group_id, "resource_type": "table", "resource_id": table_id},
+            headers=_admin_headers(s),
+        )
+
+        # Analyst manifest has granted table but NOT ungranted table
+        rm = client.get("/api/sync/manifest", headers=_analyst_headers(s))
+        assert rm.status_code == 200, rm.text
+        manifest_ids = [t["id"] for t in rm.json().get("tables", [])]
+        assert table_id in manifest_ids, (
+            f"granted table {table_id!r} missing from analyst manifest"
+        )
+        assert ungranted_id not in manifest_ids, (
+            f"ungranted table {ungranted_id!r} leaked into analyst manifest"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Cluster 3: Memory (Knowledge items)
@@ -389,6 +504,38 @@ class TestMemoryBehavioral:
         # After reject the item still exists but with rejected status
         assert item is not None
         assert item.get("status") == "rejected"
+
+    def test_update_knowledge_item_persists(self, seeded_app_both):
+        """PATCH /api/memory/admin/{item_id} → updated content reflects in repo."""
+        s = seeded_app_both
+        client = s["client"]
+
+        r = client.post(
+            "/api/memory",
+            json={
+                "title": "Item to update",
+                "content": "Original content before update.",
+                "category": "process",
+            },
+            headers=_admin_headers(s),
+        )
+        assert r.status_code == 201, r.text
+        item_id = r.json()["id"]
+
+        new_title = "Updated title for behavioral test"
+        rp = client.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"title": new_title},
+            headers=_admin_headers(s),
+        )
+        assert rp.status_code == 200, rp.text
+
+        from src.repositories import knowledge_repo
+        updated = knowledge_repo().get_by_id(item_id)
+        assert updated is not None
+        assert updated.get("title") == new_title, (
+            f"Expected title {new_title!r}, got {updated.get('title')!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +681,104 @@ class TestStoreBehavioral:
             f"Expected approved after override, got {overridden_entity['visibility_status']!r}"
         )
 
+    def test_pending_entity_hidden_from_non_owner_backend_verified(self, seeded_app_both, monkeypatch):
+        """Pending entity is absent from non-owner's store listing; active backend confirms status.
+
+        Verifies the visibility filter reads the correct backend. On the [pg] run,
+        if the filter falls back to DuckDB (empty), all entities appear as visible —
+        which would cause this assertion to fail on entity_id appearing in analyst's list.
+        """
+        monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
+
+        s = seeded_app_both
+        backend = s["backend"]
+        client = s["client"]
+
+        r = self._upload_skill(client, _admin_headers(s), "behavioral-hidden-pending")
+        assert r.status_code == 201, r.text
+        entity = r.json()
+        entity_id = entity["id"]
+        assert entity["visibility_status"] in ("pending", "pending_llm"), (
+            f"Expected pending status with guardrails on, got {entity['visibility_status']!r}"
+        )
+
+        # Analyst (non-owner) GET /api/store/entities → entity absent
+        rl = client.get("/api/store/entities", headers=_analyst_headers(s))
+        assert rl.status_code == 200, rl.text
+        listed_ids = [e["id"] for e in rl.json()]
+        assert entity_id not in listed_ids, (
+            f"Pending entity {entity_id!r} leaked into non-owner analyst listing"
+        )
+
+        # Active backend confirms entity is still pending (not approved)
+        from src.repositories import store_entities_repo
+        assert_only_in_active_backend(
+            repo_read=lambda: store_entities_repo().get(entity_id),
+            backend=backend,
+            duckdb_probe=lambda: _duck_probe("store_entities", "id", entity_id),
+        )
+        db_entity = store_entities_repo().get(entity_id)
+        assert db_entity["visibility_status"] in ("pending", "pending_llm"), (
+            f"Expected pending in backend, got {db_entity['visibility_status']!r}"
+        )
+
+    def test_approved_entity_visible_after_override(self, seeded_app_both, monkeypatch):
+        """Block → admin override → entity visible to non-owner in store listing."""
+        monkeypatch.setattr("src.store_guardrails.llm_review.review_bundle", lambda *a, **kw: {
+            "risk_level": "high", "summary": "mock block",
+            "findings": [{"file": "x", "explanation": "mock"}],
+            "reviewed_by_model": "mock", "error": None,
+        })
+        monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
+
+        s = seeded_app_both
+        client = s["client"]
+
+        r = self._upload_skill(client, _admin_headers(s), "behavioral-override-visible")
+        assert r.status_code == 201, r.text
+        entity_id = r.json()["id"]
+
+        from src.repositories import store_submissions_repo, store_entities_repo
+        from src.store_guardrails.runner import run_llm_review
+
+        sub = store_submissions_repo().latest_for_entity(entity_id)
+        assert sub is not None
+        sub_id = sub["id"]
+
+        plugin_dir = s["data_dir"] / "store_uploads" / entity_id
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+
+        run_llm_review(
+            sub_id,
+            plugin_dir=plugin_dir,
+            api_key_loader=lambda: "mock-key",
+            model_loader=lambda: "mock-model",
+        )
+
+        # Override to approved
+        ro = client.post(
+            f"/api/admin/store/submissions/{sub_id}/override",
+            json={"reason": "approving for visibility test"},
+            headers=_admin_headers(s),
+        )
+        assert ro.status_code == 200, ro.text
+
+        # Analyst (non-owner) can now see entity in store listing
+        rl = client.get("/api/store/entities", headers=_analyst_headers(s))
+        assert rl.status_code == 200, rl.text
+        listed_ids = [e["id"] for e in rl.json()]
+        assert entity_id in listed_ids, (
+            f"Approved entity {entity_id!r} missing from analyst store listing after override"
+        )
+
+        # Active backend confirms approved status
+        db_entity = store_entities_repo().get(entity_id)
+        assert db_entity["visibility_status"] == "approved", (
+            f"Expected approved in backend after override, got {db_entity['visibility_status']!r}"
+        )
+
     def test_install_entity_writes_to_active_backend(self, seeded_app_both, monkeypatch):
         """Upload → install; user_store_installs shows entity; /api/my-stack reflects it."""
         monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: False)
@@ -610,8 +855,10 @@ class TestReaperContract:
 
     def _backdate_submission(self, sub_id: str, backend: str, hours: int = 2) -> None:
         """Backdate a submission's created_at to now() - hours."""
-        old_ts = datetime.now(timezone.utc) - timedelta(hours=hours)
+        # DuckDB TIMESTAMP columns have no timezone; strip tzinfo before passing.
+        old_ts_utc = datetime.now(timezone.utc) - timedelta(hours=hours)
         if backend == "duckdb":
+            old_ts = old_ts_utc.replace(tzinfo=None)
             from src.db import get_system_db
             get_system_db().execute(
                 "UPDATE store_submissions SET created_at = ? WHERE id = ?",
@@ -625,7 +872,7 @@ class TestReaperContract:
                     sa.text(
                         "UPDATE store_submissions SET created_at = :ts WHERE id = :id"
                     ),
-                    {"ts": old_ts, "id": sub_id},
+                    {"ts": old_ts_utc, "id": sub_id},
                 )
 
     def test_reaper_flips_aged_pending_llm_to_review_error(self, seeded_app_both):
@@ -725,6 +972,11 @@ class TestReaperContract:
 
         r = client.post("/api/admin/run-reap-stuck-reviews", headers=_admin_headers(s))
         assert r.status_code == 200, r.text
+        result = r.json()
+        # Response must report exactly 3 reaped (not 0 from wrong-backend read)
+        assert result.get("details", {}).get("reaped") == 3, (
+            f"Expected reaped=3 in response, got: {result!r}"
+        )
 
         # All 3 aged rows should be review_error
         for sid in aged_ids:
@@ -785,13 +1037,13 @@ class TestDataAccessBehavioral:
         )
         assert rp.status_code == 201, rp.text
 
-        # Analyst should now have access → 200
+        # Analyst should now have access → 204 (check-access returns No Content on success)
         r_after = client.get(
             f"/api/data/{table_id}/check-access",
             headers=_analyst_headers(s),
         )
-        assert r_after.status_code == 200, (
-            f"Expected 200 after grant, got {r_after.status_code}: {r_after.text}"
+        assert r_after.status_code == 204, (
+            f"Expected 204 after grant, got {r_after.status_code}: {r_after.text}"
         )
 
     def test_download_returns_parquet_for_granted_user(self, seeded_app_both, registered_table_both):
