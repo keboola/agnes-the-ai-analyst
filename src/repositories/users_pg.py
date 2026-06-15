@@ -108,19 +108,21 @@ class UsersPgRepository:
         email: str,
         name: str,
         password_hash: Optional[str] = None,
+        must_change_password: bool = False,
     ) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text(
-                    """INSERT INTO users (id, email, name, password_hash, created_at, updated_at)
-                       VALUES (:id, :email, :name, :password_hash, :created_at, :updated_at)"""
+                    """INSERT INTO users (id, email, name, password_hash, must_change_password, created_at, updated_at)
+                       VALUES (:id, :email, :name, :password_hash, :must_change_password, :created_at, :updated_at)"""
                 ),
                 {
                     "id": id,
                     "email": email,
                     "name": name,
                     "password_hash": password_hash,
+                    "must_change_password": must_change_password,
                     "created_at": now,
                     "updated_at": now,
                 },
@@ -141,6 +143,7 @@ class UsersPgRepository:
             "onboarded",
             "last_pull_at",
             "slack_user_id",
+            "must_change_password",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:

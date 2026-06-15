@@ -275,3 +275,33 @@ def test_search_recent_combines_search_and_group_filter(users_repo):
     # Both match "al", but only user-1 is in the group.
     rows = repo.search_recent(search="al", group_id="grp-1")
     assert [r["id"] for r in rows] == ["user-1"]
+
+
+# ---------------------------------------------------------------------------
+# must_change_password — forced-rotation flag parity (v77)
+# ---------------------------------------------------------------------------
+
+
+def test_must_change_password_defaults_false(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo)
+    row = repo.get_by_id("user-1")
+    assert row is not None
+    assert row["must_change_password"] is False
+
+
+def test_create_with_must_change_password_true_round_trips(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo, must_change_password=True)
+    row = repo.get_by_id("user-1")
+    assert row is not None
+    assert row["must_change_password"] is True
+
+
+def test_update_toggles_must_change_password(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo, must_change_password=True)
+    repo.update("user-1", must_change_password=False)
+    assert repo.get_by_id("user-1")["must_change_password"] is False
+    repo.update("user-1", must_change_password=True)
+    assert repo.get_by_id("user-1")["must_change_password"] is True
