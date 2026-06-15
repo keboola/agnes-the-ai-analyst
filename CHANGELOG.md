@@ -11,6 +11,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **WAL-recovery runbook** (`docs/runbooks/wal-recovery.md`). Step-by-step
+  operator guide for a `system.duckdb` WAL-replay failure: detection log
+  signatures, explanation of the two-step auto-recovery (Step A WAL salvage /
+  Step B snapshot restore), manual recovery options when auto-recovery is
+  refused (stale/future snapshot), parquet-salvage procedure, verification
+  commands, and a cross-reference table mapping every symbol and file path to
+  its location in `src/db.py`. (#383)
 
 ### Changed
 
@@ -23,8 +30,43 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   now go through the backend-aware `data_packages_repo()` factory
   (`list_packages_of_table` / `list_member_ids_bulk`), so the check reads the
   active backend.
+- **Theming: legacy hardcoded values in `style-custom.css` now resolve through
+  design tokens.** The legacy section absorbed from the old `style.css` mixed
+  named tokens with hardcoded literals (font sizes, card/badge/flash fills,
+  code-block surfaces, placeholder grey, the username/copy-button blues, the CC
+  setup-card gradient). Operator overrides of the corresponding `--ds-*` /
+  instance-level tokens didn't reach those spots, so theming was only partially
+  functional. The hardcoded values are now lifted to named `:root` tokens and
+  referenced via `var(...)`, so operator overrides flow through. (#400)
 
 ### Removed
+
+### Internal
+
+## [0.71.38] — 2026-06-15
+
+### Added
+- **Forced password change on first sign-in for non-self-chosen passwords.** A
+  new `users.must_change_password` flag (schema v77; Alembic
+  `0024_must_change_password_v77`) is set whenever a password is established by
+  someone other than the account owner: the seed admin created from
+  `SEED_ADMIN_PASSWORD` (emailed in plaintext by the cloud control-plane or
+  shared by an operator) and the admin `POST /api/users/{id}/set-password`
+  endpoint. While the flag is set, password login is blocked — the JSON
+  `/auth/password/login` returns `403 password_change_required` and the web
+  `/auth/password/login/web` mints a one-time reset token and redirects the user
+  through the existing reset flow. The flag clears the moment the user sets
+  their own password (reset / setup confirm). SSO and magic-link accounts are
+  unaffected (they have no password); a seed admin who has already rotated is
+  never re-flagged on restart.
+
+### Fixed
+- **Password reset now works on Postgres deployments.** `reset_confirm`'s atomic
+  reset-token compare-and-swap ran through a raw DuckDB cursor (`Depends(_get_db)`),
+  so on a Postgres-backed instance the token — written via the backend-aware repo
+  factory — was never found and every reset (and the new forced-rotation login)
+  failed with "Invalid or expired reset link". The CAS now goes through a new
+  `consume_reset_token()` repo method (DuckDB + Postgres parity, contract-tested).
 
 ### Internal
 - Fixed a `duplicate parametrization of 'state_backend'` collection error in

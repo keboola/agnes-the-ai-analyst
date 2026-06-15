@@ -511,7 +511,10 @@ async def set_password(
         raise HTTPException(status_code=404, detail="User not found")
     _reject_if_sso(target["id"], conn)
     ph = PasswordHasher()
-    repo.update(id=user_id, password_hash=ph.hash(payload.password))
+    # An admin-chosen password is communicated out-of-band, so force the
+    # target user to set their own on next sign-in (same policy as seeded
+    # passwords — see app/auth/providers/password.py login enforcement).
+    repo.update(id=user_id, password_hash=ph.hash(payload.password), must_change_password=True)
     _audit(conn, user["id"], "user.set_password", user_id, {"email": target["email"]})
 
 

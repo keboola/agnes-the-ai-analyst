@@ -550,12 +550,20 @@ async def lifespan(app):
                     email=seed_email,
                     name="Admin",
                     password_hash=password_hash,
+                    # A seeded password is communicated in plaintext (emailed by
+                    # the cloud control-plane, or shared by an operator), so force
+                    # a change on first sign-in. SSO-only seed admins (no
+                    # password) have nothing to rotate and stay unflagged.
+                    must_change_password=bool(password_hash),
                 )
                 logger.info("Seeded admin user: %s (password=%s)", seed_email, "yes" if password_hash else "no")
             else:
                 user_id = existing["id"]
                 if password_hash and not existing.get("password_hash"):
-                    repo.update(id=user_id, password_hash=password_hash)
+                    # Only fires for a still-password-less seed admin, so a user
+                    # who already rotated (has a hash) is never re-flagged on a
+                    # restart. The seeded password must still be changed.
+                    repo.update(id=user_id, password_hash=password_hash, must_change_password=True)
                     logger.info("Set password on existing seed admin: %s", seed_email)
             # Make sure the seed admin is actually in the Admin group — this
             # is what gives them admin access in v12. Idempotent. Look the

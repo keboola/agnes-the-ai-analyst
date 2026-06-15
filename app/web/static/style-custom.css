@@ -116,6 +116,94 @@
     --text-light: var(--text-secondary);
     --secondary: var(--text-secondary);
     --radius: var(--radius-lg);
+
+    /* Intermediate font sizes used by the legacy absorbed section.
+       These fill gaps in the 10/12/14/16/18/24/30px scale. Added in
+       the design-token migration pass (issue #400) so rem literals
+       in legacy selectors resolve through a named token and follow
+       operator overrides. */
+    --text-13: 13px;   /* 0.8125rem — help text, small labels, code snippets */
+    --text-15: 15px;   /* 0.9375rem — slightly-larger body copy */
+    --text-22: 22px;   /* 1.375rem  — logo / brand lockup heading */
+    --text-28: 28px;   /* 1.75rem   — login card h2 display size */
+
+    /* Card accent surface tints — applied as background on .card-error,
+       .card-highlight, .card-ai, .card-success. Operator overrides to
+       the corresponding --ds-accent-* set automatically flow through. */
+    --card-error-bg:     #fff8f8;
+    --card-highlight-bg: #f8faff;
+    --card-ai-bg:        #f8fdf8;
+    --card-success-bg:   #f8fdf8;
+
+    /* Badge role colors — semantic fills for .badge-analyst / .badge-privileged /
+       .badge-admin. These live outside the --ds-accent-* family because they map
+       to UX roles rather than alert severity, but operator overrides apply. */
+    --badge-success-bg:  #e8f5e9;
+    --badge-success-ink: #2e7d32;
+    --badge-warn-bg:     #fff3e0;
+    --badge-warn-ink:    #ef6c00;
+    --badge-info-bg:     #e3f2fd;
+    --badge-info-ink:    #1565c0;
+
+    /* Flash message fills — success / error / info / warning. Kept separate
+       from --ds-accent-* so an operator can tune the flash palette independently
+       of card accents. Names follow the existing .flash-{variant} class family. */
+    --flash-success-bg:     #e8f5e9;
+    --flash-success-ink:    #2e7d32;
+    --flash-success-border: #c8e6c9;
+    --flash-error-bg:       #ffebee;
+    --flash-error-ink:      #c62828;
+    --flash-error-border:   #ffcdd2;
+    --flash-info-bg:        #e3f2fd;
+    --flash-info-ink:       #1565c0;
+    --flash-info-border:    #bbdefb;
+    --flash-warn-bg:        #fff3e0;
+    --flash-warn-ink:       #ef6c00;
+    --flash-warn-border:    #ffe0b2;
+    /* v2 flash ink shades (slightly darker than .flash-* for the v2 family). */
+    --flash-success-v2-ink: #0d9668;
+    --flash-error-v2-ink:   #c2410c;
+
+    /* Code-block dark surface — the pre-highlight dark code panel used in the
+       legacy Quick Start / SSH setup cards. Distinct from the page surface
+       tokens (which are light) so dark-on-light and light-on-dark don't
+       accidentally share the same token. */
+    --code-dark-bg:     #1a1a2e;
+    --code-dark-ink:    #e4e4e7;
+    --code-dark-border: #2d2d44;
+    /* Pure white for .code-block inside .code-block-wrapper (dark translucent
+       surface) — distinct from --code-dark-ink so contrast there is maximal. */
+    --code-wrapper-ink: #fff;
+
+    /* Form placeholder — the medium-grey used in text inputs and textareas. */
+    --placeholder-color: #9aa0a6;
+
+    /* Username box — sky-blue highlight panel on the dashboard setup page.
+       The copy-button family reuses the same blue so the panel reads
+       as one coherent block. */
+    --username-box-bg:   #f0f9ff;
+    --username-box-line: #0ea5e9;
+    --username-ink:      #0369a1;
+    --btn-copy-bg:       #0ea5e9;
+    --btn-copy-hover:    #0284c7;
+    --btn-copy-success:  #22c55e;
+
+    /* Info box — subtle surface used for hint / info panels in forms. */
+    --info-box-bg:     #f8fafc;
+    --info-box-border: #e2e8f0;
+
+    /* CC setup card gradient — purple-to-indigo used by the Claude Code
+       setup card. Exposed as tokens so an operator can swap the gradient
+       without editing the rule directly. */
+    --cc-gradient-from: #667eea;
+    --cc-gradient-to:   #764ba2;
+
+    /* Support info panel — same surface as --info-box-bg; named separately
+       so the .support-info component can be themed independently. */
+    --support-info-bg: var(--info-box-bg);
+
+    /* Username preview text — slate-grey used in .username-preview label. */
+    --username-preview-color: #64748b;
 }
 
 * {
@@ -194,7 +282,7 @@ a.logo { text-decoration: none; color: inherit; display: block; }
 a.logo:hover h1 { color: var(--primary); }
 
 .logo h1 {
-    font-size: 1.375rem;
+    font-size: var(--text-22);
     font-weight: 600;
     color: var(--text);
     margin: 0;
@@ -202,7 +290,7 @@ a.logo:hover h1 { color: var(--primary); }
 }
 
 .logo .subtitle {
-    font-size: 0.8125rem;
+    font-size: var(--text-13);
     color: var(--text-light);
     margin-top: 2px;
 }
@@ -332,17 +420,17 @@ nav {
 
 .card-error {
     border-left: 4px solid var(--error);
-    background-color: #fff8f8;
+    background-color: var(--card-error-bg);
 }
 
 .card-highlight {
     border-left: 4px solid var(--primary);
-    background-color: #f8faff;
+    background-color: var(--card-highlight-bg);
 }
 
 .card-ai {
     border-left: 4px solid var(--success);
-    background-color: #f8fdf8;
+    background-color: var(--card-ai-bg);
 }
 
 /* Manual setup collapsible */
@@ -409,18 +497,18 @@ nav {
 }
 
 .badge-analyst {
-    background-color: #e8f5e9;
-    color: #2e7d32;
+    background-color: var(--badge-success-bg);
+    color: var(--badge-success-ink);
 }
 
 .badge-privileged {
-    background-color: #fff3e0;
-    color: #ef6c00;
+    background-color: var(--badge-warn-bg);
+    color: var(--badge-warn-ink);
 }
 
 .badge-admin {
-    background-color: #e3f2fd;
-    color: #1565c0;
+    background-color: var(--badge-info-bg);
+    color: var(--badge-info-ink);
 }
 
 /* Code blocks */
@@ -450,13 +538,13 @@ code {
 }
 
 .code-block {
-    background-color: #1a1a2e;
-    color: #e4e4e7;
+    background-color: var(--code-dark-bg);
+    color: var(--code-dark-ink);
     padding: 14px 16px;
     border-radius: var(--radius);
     overflow-x: auto;
     margin: 12px 0;
-    border: 1px solid #2d2d44;
+    border: 1px solid var(--code-dark-border);
 }
 
 .code-block code,
@@ -465,7 +553,7 @@ code {
     border: none;
     border-radius: 0;
     padding: 0;
-    font-size: 0.8125rem;
+    font-size: var(--text-13);
     color: inherit;
     line-height: 1.6;
 }
@@ -545,7 +633,7 @@ code {
     width: 100%;
     padding: 12px 14px;
     font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", monospace;
-    font-size: 0.8125rem;
+    font-size: var(--text-13);
     line-height: 1.5;
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -558,15 +646,15 @@ code {
 .form-group textarea:focus {
     outline: none;
     border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.15);
+    box-shadow: var(--focus-ring);
 }
 
 .form-group textarea::placeholder {
-    color: #9aa0a6;
+    color: var(--placeholder-color);
 }
 
 .help-text {
-    font-size: 0.8125rem;
+    font-size: var(--text-13);
     color: var(--text-light);
     margin-top: 8px;
     line-height: 1.5;
@@ -591,27 +679,27 @@ code {
 }
 
 .flash-success {
-    background-color: #e8f5e9;
-    color: #2e7d32;
-    border: 1px solid #c8e6c9;
+    background-color: var(--flash-success-bg);
+    color: var(--flash-success-ink);
+    border: 1px solid var(--flash-success-border);
 }
 
 .flash-error {
-    background-color: #ffebee;
-    color: #c62828;
-    border: 1px solid #ffcdd2;
+    background-color: var(--flash-error-bg);
+    color: var(--flash-error-ink);
+    border: 1px solid var(--flash-error-border);
 }
 
 .flash-info {
-    background-color: #e3f2fd;
-    color: #1565c0;
-    border: 1px solid #bbdefb;
+    background-color: var(--flash-info-bg);
+    color: var(--flash-info-ink);
+    border: 1px solid var(--flash-info-border);
 }
 
 .flash-warning {
-    background-color: #fff3e0;
-    color: #ef6c00;
-    border: 1px solid #ffe0b2;
+    background-color: var(--flash-warn-bg);
+    color: var(--flash-warn-ink);
+    border: 1px solid var(--flash-warn-border);
 }
 
 /* Login page */
@@ -654,7 +742,7 @@ code {
 
 .login-card h2 {
     margin-bottom: 12px;
-    font-size: 1.75rem;
+    font-size: var(--text-28);
     font-weight: 600;
     color: var(--text);
 }
@@ -711,7 +799,7 @@ code {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-size: 0.8125rem;
+    font-size: var(--text-13);
     color: var(--text-light);
 }
 
@@ -740,7 +828,7 @@ code {
     margin-top: 16px;
     padding-top: 12px;
     border-top: 1px solid var(--border);
-    font-size: 0.8125rem;
+    font-size: var(--text-13);
     color: var(--text-light);
 }
 
@@ -769,7 +857,7 @@ code {
 }
 
 .login-note {
-    font-size: 0.8125rem;
+    font-size: var(--text-13);
     color: var(--text-light);
     margin-top: 12px;
 }
@@ -804,13 +892,13 @@ footer {
     border-top: 1px solid var(--border);
     text-align: center;
     color: var(--text-light);
-    font-size: 0.8125rem;
+    font-size: var(--text-13);
 }
 
 /* Username box and copy buttons */
 .username-box {
-    background: #f0f9ff;
-    border: 2px solid #0ea5e9;
+    background: var(--username-box-bg);
+    border: 2px solid var(--username-box-line);
     border-radius: 8px;
     padding: 16px;
     margin: 16px 0;
@@ -826,7 +914,7 @@ footer {
 .username-display code {
     font-size: 20px;
     font-weight: bold;
-    color: #0369a1;
+    color: var(--username-ink);
     background: white;
     padding: 8px 16px;
     border-radius: 6px;
@@ -834,13 +922,13 @@ footer {
 }
 
 .btn-copy {
-    background: #0ea5e9;
+    background: var(--btn-copy-bg);
     color: white;
     border: none;
     padding: 8px 16px;
     border-radius: 6px;
     cursor: pointer;
-    font-size: 14px;
+    font-size: var(--text-base);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -848,7 +936,7 @@ footer {
 }
 
 .btn-copy:hover {
-    background: #0284c7;
+    background: var(--btn-copy-hover);
 }
 
 .btn-copy:active {
@@ -856,33 +944,33 @@ footer {
 }
 
 .btn-copy.copied {
-    background: #22c55e;
+    background: var(--btn-copy-success);
 }
 
 .btn-copy-inline {
-    background: #0ea5e9;
+    background: var(--btn-copy-bg);
     color: white;
     border: none;
     padding: 4px 10px;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 12px;
+    font-size: var(--text-sm);
     margin-left: 8px;
     transition: background 0.15s ease;
 }
 
 .btn-copy-inline:hover {
-    background: #0284c7;
+    background: var(--btn-copy-hover);
 }
 
 .btn-copy-block {
-    background: #0ea5e9;
+    background: var(--btn-copy-bg);
     color: white;
     border: none;
     padding: 10px 24px;
     border-radius: 6px;
     cursor: pointer;
-    font-size: 14px;
+    font-size: var(--text-base);
     font-weight: 600;
     width: 100%;
     transition: all 0.2s ease;
@@ -891,7 +979,7 @@ footer {
 }
 
 .btn-copy-block:hover {
-    background: #0284c7;
+    background: var(--btn-copy-hover);
     box-shadow: 0 2px 8px rgba(14, 165, 233, 0.3);
 }
 
@@ -900,17 +988,17 @@ footer {
 }
 
 .btn-copy-block.copied {
-    background: #22c55e;
+    background: var(--btn-copy-success);
 }
 
 .username-preview {
     font-size: 18px;
-    color: #64748b;
+    color: var(--username-preview-color);
 }
 
 .info-box {
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
+    background: var(--info-box-bg);
+    border: 1px solid var(--info-box-border);
     border-radius: 6px;
     padding: 12px;
     margin-bottom: 16px;
@@ -918,7 +1006,7 @@ footer {
 
 .card-success {
     border-left: 4px solid var(--success);
-    background-color: #f8fdf8;
+    background-color: var(--card-success-bg);
 }
 
 .help-details {
@@ -949,7 +1037,7 @@ footer {
 
 /* Claude Code Setup Card on Dashboard */
 .cc-setup-card {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: linear-gradient(135deg, var(--cc-gradient-from) 0%, var(--cc-gradient-to) 100%);
     color: white;
     border: none;
     margin-bottom: 24px;
@@ -963,26 +1051,26 @@ footer {
 .cc-setup-card .cc-instruction {
     color: rgba(255, 255, 255, 0.95);
     margin-bottom: 16px;
-    font-size: 0.9375rem;
+    font-size: var(--text-15);
     line-height: 1.6;
 }
 
 .cc-setup-card .cc-helper-text {
     color: rgba(255, 255, 255, 0.8);
-    font-size: 0.8125rem;
+    font-size: var(--text-13);
     margin-top: 12px;
     margin-bottom: 0;
 }
 
 .cc-setup-card .btn-copy-block {
     background: white;
-    color: #667eea;
+    color: var(--cc-gradient-from);
     font-weight: 600;
     padding: 12px 24px;
     border-radius: 6px;
     border: none;
     cursor: pointer;
-    font-size: 14px;
+    font-size: var(--text-base);
     width: 100%;
     transition: all 0.2s ease;
     text-transform: uppercase;
@@ -990,7 +1078,7 @@ footer {
 }
 
 .cc-setup-card .btn-copy-block:hover {
-    background: #f0f0f0;
+    background: var(--border-light);
     transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
@@ -1000,7 +1088,7 @@ footer {
 }
 
 .cc-setup-card .btn-copy-block.copied {
-    background: #34a853;
+    background: var(--btn-copy-success);
     color: white;
 }
 
@@ -1014,7 +1102,7 @@ footer {
 .cc-setup-card .cli-hint summary {
     cursor: pointer;
     color: rgba(255, 255, 255, 0.85);
-    font-size: 0.8125rem;
+    font-size: var(--text-13);
     font-weight: 500;
     padding: 4px 0;
 }
@@ -1049,9 +1137,9 @@ footer {
 .support-info {
     text-align: center;
     color: var(--text-light);
-    font-size: 0.8125rem;
+    font-size: var(--text-13);
     padding: 12px 16px;
-    background: #f8fafc;
+    background: var(--support-info-bg);
     border-radius: 6px;
     margin-bottom: 20px;
     border: 1px solid var(--border);
@@ -1076,7 +1164,7 @@ footer {
     border: none;
     border-bottom: 2px solid transparent;
     margin-bottom: -2px;
-    font-size: 0.9375rem;
+    font-size: var(--text-15);
     font-weight: 500;
     color: var(--text-light);
     cursor: pointer;
@@ -1109,7 +1197,7 @@ footer {
 
 .signup-note {
     color: var(--text-light);
-    font-size: 0.8125rem;
+    font-size: var(--text-13);
     text-align: center;
     margin-top: 16px;
 }
@@ -1135,7 +1223,7 @@ footer {
 .login-form .form-group input {
     width: 100%;
     padding: 12px 14px;
-    font-size: 0.9375rem;
+    font-size: var(--text-15);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background-color: var(--card-bg);
@@ -1145,11 +1233,11 @@ footer {
 .login-form .form-group input:focus {
     outline: none;
     border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.15);
+    box-shadow: var(--focus-ring);
 }
 
 .login-form .form-group input::placeholder {
-    color: #9aa0a6;
+    color: var(--placeholder-color);
 }
 
 .login-form .form-hint {
@@ -1226,7 +1314,7 @@ footer {
     padding: 12px 16px;
     margin-bottom: 20px;
     text-align: center;
-    font-size: 0.9375rem;
+    font-size: var(--text-15);
 }
 
 /* Responsive */
@@ -1814,13 +1902,13 @@ footer {
 
 .flash-success-v2 {
     background: rgba(16, 183, 127, 0.1);
-    color: #0d9668;
+    color: var(--flash-success-v2-ink);
     border: 1px solid rgba(16, 183, 127, 0.3);
 }
 
 .flash-error-v2 {
     background: rgba(234, 88, 12, 0.1);
-    color: #c2410c;
+    color: var(--flash-error-v2-ink);
     border: 1px solid rgba(234, 88, 12, 0.3);
 }
 
@@ -2157,8 +2245,10 @@ a.slack-badge:hover {
 .code-block {
     flex: 1;
     font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
-    font-size: 13px;
-    color: #fff;
+    font-size: var(--text-13);
+    /* Pure white (not --code-dark-ink's #e4e4e7): this .code-block sits inside
+       .code-block-wrapper's dark translucent surface and needs max contrast. */
+    color: var(--code-wrapper-ink);
     background: transparent;
     border: none;
     white-space: pre;
