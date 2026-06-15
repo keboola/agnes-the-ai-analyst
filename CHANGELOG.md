@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- Authoring agents — non-admin suggestion queue (`authoring_suggestions`, DuckDB v77 + Alembic, dual-backend): `POST /api/studio/suggestions` lets a non-admin submit a proposed create payload per studio domain; admins review via `GET/POST /api/admin/authoring-suggestions[/{id}/approve|reject]` (guarded state transitions; auto-replay into the real resource is a documented follow-up).
 - Authoring agents: profiled chat sessions (`profile` on `POST /api/chat/sessions`, materialized into the session workdir, no migration) + a generic admin-only **authoring studio** at `/admin/studio/{domain}` with an embedded assistant panel, covering four domains — **data-package**, **mcp**, **marketplace**, and **corporate-memory** — each wiring its Create action to the existing admin endpoint.
 
 ### Changed

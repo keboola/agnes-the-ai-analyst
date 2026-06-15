@@ -253,6 +253,10 @@ from app.api.memory_domain_suggestions import (
     public_router as memory_domain_suggestions_public_router,
     admin_router as memory_domain_suggestions_admin_router,
 )
+from app.api.authoring_suggestions import (
+    public_router as authoring_suggestions_public_router,
+    admin_router as authoring_suggestions_admin_router,
+)
 from app.api.uploads import router as admin_uploads_router
 from app.api.stack import router as stack_router
 from app.api.stack_views import router as stack_views_router
@@ -1341,6 +1345,8 @@ def create_app() -> FastAPI:
     app.include_router(recipes_admin_router)
     app.include_router(memory_domain_suggestions_public_router)
     app.include_router(memory_domain_suggestions_admin_router)
+    app.include_router(authoring_suggestions_public_router)
+    app.include_router(authoring_suggestions_admin_router)
     app.include_router(admin_uploads_router)
     app.include_router(stack_router)
     app.include_router(stack_views_router)

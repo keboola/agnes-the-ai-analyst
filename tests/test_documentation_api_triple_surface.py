@@ -114,7 +114,19 @@ _STORE_DRYRUN_REASON = (
     "grandfathered /api/store/entities/preview wizard step); the real "
     "create endpoint carries the triple-surface contract."
 )
+_AUTHORING_SUGGESTIONS_REASON = (
+    "Authoring-studio suggestion queue (v77) — web-form/admin-moderation flow. "
+    "Non-admins submit a proposed create payload from the /admin/studio/{domain} "
+    "builder and admins approve/reject from the moderation UI. No analyst "
+    "CLI/MCP analogue (mirrors the grandfathered /api/memory-domain-suggestions "
+    "moderation queue); the real domain create endpoints carry the contract."
+)
 _EXEMPT: dict[str, str] = {
+    "/api/studio/suggestions": _AUTHORING_SUGGESTIONS_REASON,
+    "/api/studio/suggestions/mine": _AUTHORING_SUGGESTIONS_REASON,
+    "/api/admin/authoring-suggestions": _AUTHORING_SUGGESTIONS_REASON,
+    "/api/admin/authoring-suggestions/{sid}/approve": _AUTHORING_SUGGESTIONS_REASON,
+    "/api/admin/authoring-suggestions/{sid}/reject": _AUTHORING_SUGGESTIONS_REASON,
     "/api/admin/initial-workspace/sync-if-configured": _IW_SYNC_IF_CONFIGURED_REASON,
     "/api/store/entities/dryrun": _STORE_DRYRUN_REASON,
     "/api/admin/prompts/{kind}": _PROMPTS_REASON,
