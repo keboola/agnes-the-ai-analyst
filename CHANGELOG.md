@@ -16,8 +16,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 - **`/admin/chat` is now reachable from the Admin menu.** The cloud-chat session dashboard had no nav entry anywhere — admins could only find it by typing the URL, and the adjacent Activity Center item "Sessions" (analyst-uploaded Claude Code session files) was easy to mistake for it. The Admin → Activity Center menu now lists both with distinct labels: "Analyst sessions" (`/admin/sessions`, renamed incl. its page title) and "Chat sessions" (`/admin/chat`).
-
-### Removed
+- **Cowork bundle no longer breaks when a stale credential file lingers.** The bundled `mcp_server.py` / `agnes.py` resolved credentials by returning the first *existing* creds file without checking token expiry, so an expired `.agnes-creds.json` could shadow a valid `~/.config/agnes/token.json` sitting right beside it — the MCP server then reported "Invalid or expired token" even though a live token was available. `_load_creds` is now expiry-aware: it collects every source and returns the first holding a **live** token, falling through past expired ones. Credentials are also re-read **per tool call** (a rotated/refreshed token takes effect without restarting Claude Desktop), and HTTP failures carry typed hints (401 = token rejected, 403 = RBAC/egress block, connection error = no network route) instead of a blanket "token expired".
 
 ### Internal
 

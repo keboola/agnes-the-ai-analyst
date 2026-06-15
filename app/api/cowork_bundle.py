@@ -337,31 +337,37 @@ def _bundle_mcp_server_py() -> str:
 
         # ── credentials ──────────────────────────────────────────────────────
 
+        def _token_exp(tok):
+            \"\"\"Return a JWT's `exp` (epoch seconds), or None if undecodable.\"\"\"
+            import base64
+            try:
+                seg = tok.split(".")[1]
+                seg += "=" * (-len(seg) % 4)
+                return json.loads(base64.urlsafe_b64decode(seg)).get("exp")
+            except Exception:
+                return None
+
         def _load_creds():
-            \"\"\"Return (server_url, pat) or ('', '') if not found.\"\"\"
-            # Pre-setup: pre-baked PAT in the bundle JSON
-            bf = HERE / "agnes-bundle.json"
-            if bf.exists():
-                try:
-                    b = json.loads(bf.read_text())
-                    u, p = b.get("server_url", "").rstrip("/"), b.get("access_token", "")
-                    if u and p:
-                        return u, p
-                except Exception:
-                    pass
-            # Post-setup: persistent credentials file in the project folder.
-            # setup.py writes this to the Mac filesystem so it survives
-            # cowork VM restarts even when ~/.config/agnes/ is on the VM.
-            cf = HERE / ".agnes-creds.json"
-            if cf.exists():
-                try:
-                    b = json.loads(cf.read_text())
-                    u = b.get("server_url", "").rstrip("/")
-                    p = b.get("access_token", "")
-                    if u and p:
-                        return u, p
-                except Exception:
-                    pass
+            \"\"\"Resolve (server_url, pat), skipping EXPIRED tokens.
+
+            Collects every known credential source (pre-baked bundle JSON,
+            project ``.agnes-creds.json``, ``~/.config/agnes/token.json``) and
+            returns the first source whose token is still LIVE, in priority
+            order. A stale file therefore never shadows a valid token below it
+            — the failure mode that silently broke Cowork onboarding. Returns
+            ('', '') only when no source holds a live token.
+            \"\"\"
+            import time
+            sources = []  # (server_url, pat) in priority order
+            for _p in (HERE / "agnes-bundle.json", HERE / ".agnes-creds.json"):
+                if _p.exists():
+                    try:
+                        b = json.loads(_p.read_text())
+                        u, p = b.get("server_url", "").rstrip("/"), b.get("access_token", "")
+                        if u and p:
+                            sources.append((u, p))
+                    except Exception:
+                        pass
             cfg = CONFIG_DIR / "config.yaml"
             tok = CONFIG_DIR / "token.json"
             if cfg.exists() and tok.exists():
@@ -370,10 +376,18 @@ def _bundle_mcp_server_py() -> str:
                     u = m.group(1).strip() if m else ""
                     p = json.loads(tok.read_text()).get("access_token", "")
                     if u and p:
-                        return u, p
+                        sources.append((u, p))
                 except Exception:
                     pass
-            return "", ""
+            now = time.time()
+            undated = []
+            for u, p in sources:
+                e = _token_exp(p)
+                if e is None:
+                    undated.append((u, p))   # non-JWT / undecodable → last resort
+                elif e > now:
+                    return u, p              # first LIVE token wins
+            return undated[0] if undated else ("", "")
 
         # ── HTTP helper ───────────────────────────────────────────────────────
 
@@ -386,12 +400,16 @@ def _bundle_mcp_server_py() -> str:
                 with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
                     return json.loads(r.read())
             except urllib.error.HTTPError as e:
+                _hints = {401: "token rejected — run `agnes auth login` for a fresh token",
+                          403: "forbidden — either RBAC denies this, or the sandbox is blocking egress to the Agnes host (Anthropic network policy)"}
                 try:
-                    return {"error": json.loads(e.read()).get("detail", str(e))}
+                    _detail = json.loads(e.read()).get("detail", str(e))
                 except Exception:
-                    return {"error": str(e)}
+                    _detail = str(e)
+                return {"error": _detail, "status": e.code, "hint": _hints.get(e.code, "")}
             except Exception as e:
-                return {"error": str(e)}
+                return {"error": str(e),
+                        "hint": "cannot reach the Agnes server (network/egress) — the connector process has no route to the host"}
 
         # ── MCP tool definitions ──────────────────────────────────────────────
 
@@ -482,6 +500,10 @@ def _bundle_mcp_server_py() -> str:
                 p    = msg.get("params", {})
                 name = p.get("name", "")
                 args = p.get("arguments", {})
+                # Re-read creds on every call so a rotated/refreshed token (or a
+                # repaired stale file) takes effect without restarting the MCP
+                # server / Claude Desktop.
+                server_url, pat = _load_creds()
                 if not server_url or not pat:
                     _send({"jsonrpc": "2.0", "id": mid,
                            "error": {"code": -32000,
@@ -548,31 +570,34 @@ def _bundle_agnes_py() -> str:
 
         _SSL_CTX = _ssl_context()
 
+        def _token_exp(tok):
+            \"\"\"Return a JWT's `exp` (epoch seconds), or None if undecodable.\"\"\"
+            import base64
+            try:
+                seg = tok.split(".")[1]
+                seg += "=" * (-len(seg) % 4)
+                return json.loads(base64.urlsafe_b64decode(seg)).get("exp")
+            except Exception:
+                return None
+
         def _load_creds():
-            \"\"\"Return (server_url, pat) or raise SystemExit.\"\"\"
-            # Persistent creds file written by setup.py — survives VM restarts
-            cf = HERE / ".agnes-creds.json"
-            if cf.exists():
-                try:
-                    b = json.loads(cf.read_text())
-                    u = b.get("server_url", "").rstrip("/")
-                    p = b.get("access_token", "")
-                    if u and p:
-                        return u, p
-                except Exception:
-                    pass
-            # Pre-setup: pre-baked PAT in bundle JSON (before setup.py runs)
-            bf = HERE / "agnes-bundle.json"
-            if bf.exists():
-                try:
-                    b = json.loads(bf.read_text())
-                    u = b.get("server_url", "").rstrip("/")
-                    p = b.get("access_token", "")
-                    if u and p:
-                        return u, p
-                except Exception:
-                    pass
-            # Fallback: ~/.config/agnes/ (may not persist in cowork VM)
+            \"\"\"Return (server_url, pat), skipping EXPIRED tokens; exit if none live.
+
+            Collects every credential source and returns the first holding a
+            LIVE token, so a stale ``.agnes-creds.json`` never shadows a valid
+            token below it.
+            \"\"\"
+            import time
+            sources = []  # (server_url, pat) in priority order
+            for _p in (HERE / ".agnes-creds.json", HERE / "agnes-bundle.json"):
+                if _p.exists():
+                    try:
+                        b = json.loads(_p.read_text())
+                        u, p = b.get("server_url", "").rstrip("/"), b.get("access_token", "")
+                        if u and p:
+                            sources.append((u, p))
+                    except Exception:
+                        pass
             cfg = CONFIG_DIR / "config.yaml"
             tok = CONFIG_DIR / "token.json"
             if cfg.exists() and tok.exists():
@@ -581,10 +606,20 @@ def _bundle_agnes_py() -> str:
                     u = m.group(1).strip() if m else ""
                     p = json.loads(tok.read_text()).get("access_token", "")
                     if u and p:
-                        return u, p
+                        sources.append((u, p))
                 except Exception:
                     pass
-            print("ERROR: Agnes credentials not found. Run setup.py first.")
+            now = time.time()
+            undated = []
+            for u, p in sources:
+                e = _token_exp(p)
+                if e is None:
+                    undated.append((u, p))
+                elif e > now:
+                    return u, p
+            if undated:
+                return undated[0]
+            print("ERROR: Agnes credentials not found or expired. Run setup.py / `agnes auth login`.")
             sys.exit(2)
 
         def _api(method, path, server_url, pat, body=None, timeout=30):
@@ -596,12 +631,16 @@ def _bundle_agnes_py() -> str:
                 with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
                     return json.loads(r.read())
             except urllib.error.HTTPError as e:
+                _hints = {401: "token rejected — run `agnes auth login` for a fresh token",
+                          403: "forbidden — either RBAC denies this, or the sandbox is blocking egress to the Agnes host (Anthropic network policy)"}
                 try:
-                    return {"error": json.loads(e.read()).get("detail", str(e))}
+                    _detail = json.loads(e.read()).get("detail", str(e))
                 except Exception:
-                    return {"error": str(e)}
+                    _detail = str(e)
+                return {"error": _detail, "status": e.code, "hint": _hints.get(e.code, "")}
             except Exception as e:
-                return {"error": str(e)}
+                return {"error": str(e),
+                        "hint": "cannot reach the Agnes server (network/egress) — the connector process has no route to the host"}
 
         def main():
             args = sys.argv[1:]
