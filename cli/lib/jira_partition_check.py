@@ -117,8 +117,6 @@ def detect_jira_partition_layout(
     is_mixed = bool(mixed_tables) or (bool(flat_tables) and bool(hive_tables))
 
     if is_mixed:
-        mixed_desc = sorted(mixed_tables + flat_tables)
-        tables_str = ", ".join(mixed_desc) if mixed_desc else ", ".join(sorted(hive_tables))
         return {
             "name": "jira-partition-format",
             "status": "warning",
