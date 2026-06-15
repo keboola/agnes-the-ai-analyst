@@ -10,6 +10,27 @@ import pytest
 from tests.helpers.contract import validate_extract_contract
 
 
+# ---------------------------------------------------------------------------
+# Helpers for cache-first entity_type tests
+# ---------------------------------------------------------------------------
+
+
+def _make_cache_row(entity_type: str) -> dict:
+    """Build a minimal bq_metadata_cache row dict with the given entity_type."""
+    return {
+        "table_id": "placeholder",
+        "rows": 1000,
+        "size_bytes": 512000,
+        "partition_by": None,
+        "clustered_by": None,
+        "entity_type": entity_type,
+        "known_columns": None,
+        "refreshed_at": None,
+        "error_at": None,
+        "error_msg": None,
+    }
+
+
 @pytest.fixture
 def output_dir(tmp_path):
     d = tmp_path / "extracts" / "bigquery"
@@ -105,6 +126,7 @@ class TestBigQueryExtractorFull:
         with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
             mock_mod.connect = _proxy_connect
             from connectors.bigquery.extractor import init_extract
+
             result = init_extract(output_dir, "my-gcp-project", sample_configs)
 
         assert result["tables_registered"] == 2
@@ -118,6 +140,7 @@ class TestBigQueryExtractorFull:
         with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
             mock_mod.connect = _proxy_connect
             from connectors.bigquery.extractor import init_extract
+
             init_extract(output_dir, "acme-project", sample_configs)
 
         conn = duckdb.connect(str(Path(output_dir) / "extract.duckdb"), read_only=True)
@@ -134,6 +157,7 @@ class TestBigQueryExtractorFull:
         with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
             mock_mod.connect = _proxy_connect
             from connectors.bigquery.extractor import init_extract
+
             init_extract(output_dir, "my-project", sample_configs)
 
         conn = duckdb.connect(str(Path(output_dir) / "extract.duckdb"), read_only=True)
@@ -148,6 +172,7 @@ class TestBigQueryExtractorFull:
         with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
             mock_mod.connect = _proxy_connect
             from connectors.bigquery.extractor import init_extract
+
             init_extract(output_dir, "my-project", sample_configs)
 
         assert not (Path(output_dir) / "data").exists()
@@ -160,14 +185,11 @@ class TestBigQueryExtractorFull:
         conn = duckdb.connect(str(db_path))
         _create_meta_table(conn)
         cols = conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name='_meta' ORDER BY ordinal_position"
+            "SELECT column_name FROM information_schema.columns WHERE table_name='_meta' ORDER BY ordinal_position"
         ).fetchall()
         conn.close()
 
-        assert [c[0] for c in cols] == [
-            "table_name", "description", "rows", "size_bytes", "extracted_at", "query_mode"
-        ]
+        assert [c[0] for c in cols] == ["table_name", "description", "rows", "size_bytes", "extracted_at", "query_mode"]
 
     def test_remote_attach_table_schema(self, output_dir):
         """_remote_attach table must have the exact contract-required columns."""
@@ -209,6 +231,7 @@ class TestBigQueryExtractorFull:
         with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
             mock_mod.connect = failing_connect
             from connectors.bigquery.extractor import init_extract
+
             result = init_extract(output_dir, "my-project", configs)
 
         assert result["tables_registered"] == 1
@@ -220,6 +243,7 @@ class TestBigQueryExtractorFull:
         with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
             mock_mod.connect = _proxy_connect
             from connectors.bigquery.extractor import init_extract
+
             result = init_extract(output_dir, "my-project", [])
 
         assert result["tables_registered"] == 0
@@ -231,3 +255,259 @@ class TestBigQueryExtractorFull:
         count = conn.execute("SELECT count(*) FROM _meta").fetchone()[0]
         conn.close()
         assert count == 0
+
+
+class TestCacheFirstEntityType:
+    """Verify that init_extract uses bq_metadata_cache for entity_type when available.
+
+    On a warm cache the live _detect_table_type BQ round-trip must be skipped
+    entirely so that O(N) BQ jobs-API calls don't saturate the box during
+    back-to-back rebuilds.
+    """
+
+    def _configs_with_ids(self):
+        return [
+            {
+                "id": "proj.analytics.orders",
+                "name": "orders",
+                "source_type": "bigquery",
+                "bucket": "analytics",
+                "source_table": "orders",
+                "query_mode": "remote",
+                "description": "Orders",
+            },
+            {
+                "id": "proj.analytics.sessions",
+                "name": "sessions",
+                "source_type": "bigquery",
+                "bucket": "analytics",
+                "source_table": "sessions",
+                "query_mode": "remote",
+                "description": "Sessions",
+            },
+        ]
+
+    def test_warm_cache_skips_live_detect(self, output_dir, monkeypatch):
+        """When cache has entity_type for all tables, _detect_table_type is never called."""
+        detect_calls = []
+
+        def _fail_if_called(*args, **kwargs):
+            detect_calls.append(args)
+            raise AssertionError("_detect_table_type must not be called when cache is warm")
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            _fail_if_called,
+        )
+
+        cache = {
+            "proj.analytics.orders": _make_cache_row("BASE TABLE"),
+            "proj.analytics.sessions": _make_cache_row("BASE TABLE"),
+        }
+
+        mock_repo = MagicMock()
+        mock_repo.get.side_effect = lambda table_id: cache.get(table_id)
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.bq_metadata_cache_repo",
+            lambda: mock_repo,
+        )
+
+        with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
+            mock_mod.connect = _proxy_connect
+            from connectors.bigquery.extractor import init_extract
+
+            result = init_extract(output_dir, "my-project", self._configs_with_ids())
+
+        assert result["tables_registered"] == 2
+        assert result["errors"] == []
+        assert detect_calls == [], "live _detect_table_type must not be called on warm cache"
+
+    def test_cache_miss_falls_back_to_live_detect(self, output_dir, monkeypatch):
+        """When cache returns None for a table, falls back to live _detect_table_type."""
+        detect_calls = []
+
+        def _live_detect(*args, **kwargs):
+            detect_calls.append(args)
+            return "BASE TABLE"
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            _live_detect,
+        )
+
+        # Cache only has orders, sessions is a miss
+        cache = {
+            "proj.analytics.orders": _make_cache_row("BASE TABLE"),
+        }
+
+        mock_repo = MagicMock()
+        mock_repo.get.side_effect = lambda table_id: cache.get(table_id)
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.bq_metadata_cache_repo",
+            lambda: mock_repo,
+        )
+
+        with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
+            mock_mod.connect = _proxy_connect
+            from connectors.bigquery.extractor import init_extract
+
+            result = init_extract(output_dir, "my-project", self._configs_with_ids())
+
+        assert result["tables_registered"] == 2
+        assert result["errors"] == []
+        # Live detect called exactly once — for the sessions cache miss
+        assert len(detect_calls) == 1
+
+    def test_repo_unavailable_falls_back_to_live_detect(self, output_dir, monkeypatch):
+        """When the cache repo raises (e.g. no system DB), falls back gracefully."""
+        detect_calls = []
+
+        def _live_detect(*args, **kwargs):
+            detect_calls.append(args)
+            return "BASE TABLE"
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            _live_detect,
+        )
+
+        def _failing_repo():
+            raise RuntimeError("no system DB in standalone context")
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.bq_metadata_cache_repo",
+            _failing_repo,
+        )
+
+        with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
+            mock_mod.connect = _proxy_connect
+            from connectors.bigquery.extractor import init_extract
+
+            result = init_extract(output_dir, "my-project", self._configs_with_ids())
+
+        assert result["tables_registered"] == 2
+        assert result["errors"] == []
+        # Live detect called for all 2 tables when repo is unavailable
+        assert len(detect_calls) == 2
+
+    def test_materialized_view_space_format_normalized(self, output_dir, monkeypatch):
+        """Cache stores 'MATERIALIZED VIEW' (space, BQ canonical); extractor
+        normalizes it to 'MATERIALIZED_VIEW' so the VIEW branch still fires."""
+        detect_calls = []
+
+        def _fail_if_called(*args, **kwargs):
+            detect_calls.append(args)
+            raise AssertionError("_detect_table_type must not be called when cache is warm")
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            _fail_if_called,
+        )
+
+        # Cache stores BQ-canonical "MATERIALIZED VIEW" with a space
+        cache = {
+            "proj.analytics.orders": _make_cache_row("MATERIALIZED VIEW"),
+        }
+
+        mock_repo = MagicMock()
+        mock_repo.get.side_effect = lambda table_id: cache.get(table_id)
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.bq_metadata_cache_repo",
+            lambda: mock_repo,
+        )
+
+        configs = [
+            {
+                "id": "proj.analytics.orders",
+                "name": "orders",
+                "source_type": "bigquery",
+                "bucket": "analytics",
+                "source_table": "orders",
+                "query_mode": "remote",
+                "description": "Orders",
+            }
+        ]
+
+        with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
+            mock_mod.connect = _proxy_connect
+            from connectors.bigquery.extractor import init_extract
+
+            result = init_extract(output_dir, "my-project", configs)
+
+        # Must register via the VIEW/bigquery_query path, not be skipped as unknown
+        assert result["tables_registered"] == 1
+        assert result["errors"] == []
+        assert detect_calls == [], "live detect must not be called for cached MATERIALIZED VIEW"
+
+        # Confirm the inner view exists (as a dummy TABLE from _proxy_connect)
+        db_path = Path(output_dir) / "extract.duckdb"
+        conn = duckdb.connect(str(db_path), read_only=True)
+        row = conn.execute("SELECT table_name FROM _meta WHERE table_name = 'orders'").fetchone()
+        conn.close()
+        assert row is not None, "orders must appear in _meta"
+
+    def test_no_table_id_falls_back_to_live_detect(self, output_dir, monkeypatch):
+        """When tc has no 'id' key, cache lookup is skipped and live detect runs."""
+        detect_calls = []
+
+        def _live_detect(*args, **kwargs):
+            detect_calls.append(args)
+            return "BASE TABLE"
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            _live_detect,
+        )
+
+        mock_repo = MagicMock()
+        mock_repo.get.return_value = _make_cache_row("BASE TABLE")
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.bq_metadata_cache_repo",
+            lambda: mock_repo,
+        )
+
+        # Configs WITHOUT 'id' key (legacy path)
+        configs_no_id = [
+            {
+                "name": "orders",
+                "bucket": "analytics",
+                "source_table": "orders",
+                "query_mode": "remote",
+                "description": "Orders",
+            }
+        ]
+
+        with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
+            mock_mod.connect = _proxy_connect
+            from connectors.bigquery.extractor import init_extract
+
+            result = init_extract(output_dir, "my-project", configs_no_id)
+
+        assert result["tables_registered"] == 1
+        assert result["errors"] == []
+        # Live detect called because no 'id' to key the cache lookup
+        assert len(detect_calls) == 1

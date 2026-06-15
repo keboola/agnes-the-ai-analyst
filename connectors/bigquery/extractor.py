@@ -42,6 +42,73 @@ from src.identifier_validation import validate_identifier, validate_quoted_ident
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# ``bq_metadata_cache`` stores the BQ INFORMATION_SCHEMA ``table_type`` value
+# refreshed every 4 h by the scheduler job. The cache uses the BQ-canonical
+# spelling ``MATERIALIZED VIEW`` (with a space), while the extractor loop
+# branches on ``MATERIALIZED_VIEW`` (underscore). We normalise here so the
+# existing branch logic does not change.
+_MATERIALIZED_VIEW_SPACE = "MATERIALIZED VIEW"
+_MATERIALIZED_VIEW_UNDER = "MATERIALIZED_VIEW"
+
+
+def _normalize_entity_type(raw: str | None) -> str | None:
+    """Normalise a cached entity_type value for use in the extractor loop.
+
+    BigQuery INFORMATION_SCHEMA returns ``MATERIALIZED VIEW`` (space); the
+    extractor loop branches on ``MATERIALIZED_VIEW`` (underscore). This
+    function converts the cached form to the extractor's expected form so
+    the VIEW branch still fires correctly. All other values pass through
+    unchanged.
+    """
+    if raw == _MATERIALIZED_VIEW_SPACE:
+        return _MATERIALIZED_VIEW_UNDER
+    return raw
+
+
+def bq_metadata_cache_repo():
+    """Thin shim so tests can monkeypatch ``connectors.bigquery.extractor.bq_metadata_cache_repo``.
+
+    Deferred import keeps the module importable in standalone / offline contexts
+    (no app layer, no system DB) — the import error only occurs when the
+    function is actually called.
+    """
+    from src.repositories import bq_metadata_cache_repo as _factory  # noqa: PLC0415
+
+    return _factory()
+
+
+def _get_cached_entity_type(table_id: str | None) -> str | None:
+    """Return a normalised entity_type from the metadata cache, or ``None``.
+
+    ``None`` means "cache miss or unavailable" — caller must fall back to
+    the live ``_detect_table_type`` BQ round-trip.  Any error (no system DB,
+    missing table, import failure) is absorbed and logged at DEBUG so the
+    standalone extractor path continues to work without app-layer imports.
+
+    The returned value is normalised via ``_normalize_entity_type``:
+    ``MATERIALIZED VIEW`` → ``MATERIALIZED_VIEW``.
+    """
+    if not table_id:
+        return None
+    try:
+        row = bq_metadata_cache_repo().get(table_id)
+    except Exception as exc:
+        logger.debug(
+            "bq_metadata_cache lookup skipped for %r (repo unavailable: %s) — "
+            "falling back to live entity-type detection",
+            table_id,
+            exc,
+        )
+        return None
+    if row is None:
+        return None
+    raw = row.get("entity_type")
+    if not raw:
+        return None
+    return _normalize_entity_type(raw)
+
+
 def parse_bq_fqn(value: Optional[str]) -> Optional[tuple]:
     """Parse a ``project.dataset.table`` fully-qualified BigQuery name.
 
@@ -683,10 +750,13 @@ def _init_extract_locked(
                 # and the cross-project VIEW path at line ~696 never
                 # executes. (Same-project rows: ``fqn_project == project_id``
                 # so this is a no-op.)
-                entity_type = _detect_table_type(
-                    conn, fqn_project, dataset, source_table,
-                    billing_project=project_id,
-                )
+                table_id = tc.get("id")
+                entity_type = _get_cached_entity_type(table_id)
+                if entity_type is None:
+                    entity_type = _detect_table_type(
+                        conn, fqn_project, dataset, source_table,
+                        billing_project=project_id,
+                    )
                 if entity_type is None:
                     raise RuntimeError(
                         f"BQ entity {fqn_project}.{dataset}.{source_table} not found"
