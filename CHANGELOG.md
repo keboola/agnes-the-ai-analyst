@@ -52,6 +52,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- BigQuery extractor (`connectors/bigquery/extractor.py`): `init_extract` now
+  uses `bq_metadata_cache` as the primary source of `entity_type` per table.
+  On a warm cache the O(N) BQ jobs-API round-trips that previously ran inside
+  every rebuild are eliminated entirely; live `_detect_table_type` detection is
+  only called on a cache miss, missing `id` key, or when the cache repo is
+  unavailable (standalone context). The cache stores `MATERIALIZED VIEW` (BQ
+  canonical, with a space); the extractor normalizes it to `MATERIALIZED_VIEW`
+  (underscore) before branching so existing view-path logic is unaffected.
 
 ## [0.71.38] — 2026-06-15
 
