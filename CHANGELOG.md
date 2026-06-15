@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.38] — 2026-06-15
+
+### Added
 - **Forced password change on first sign-in for non-self-chosen passwords.** A
   new `users.must_change_password` flag (schema v77; Alembic
   `0024_must_change_password_v77`) is set whenever a password is established by
@@ -25,8 +37,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   unaffected (they have no password); a seed admin who has already rotated is
   never re-flagged on restart.
 
-### Changed
-
 ### Fixed
 - **Password reset now works on Postgres deployments.** `reset_confirm`'s atomic
   reset-token compare-and-swap ran through a raw DuckDB cursor (`Depends(_get_db)`),
@@ -34,8 +44,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   factory — was never found and every reset (and the new forced-rotation login)
   failed with "Invalid or expired reset link". The CAS now goes through a new
   `consume_reset_token()` repo method (DuckDB + Postgres parity, contract-tested).
-
-### Removed
 
 ### Internal
 - Fixed a `duplicate parametrization of 'state_backend'` collection error in
