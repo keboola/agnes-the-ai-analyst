@@ -249,11 +249,15 @@ def state_backend(request, monkeypatch, tmp_path, _pg_url, pg_engine):
     and once with it set to the per-test pgserver instance + alembic
     upgraded to head.
 
-    Tests that should ONLY run against one backend can override the
-    parametrization::
+    Tests that should ONLY run against one backend skip the other inside the
+    body (do NOT re-``@parametrize`` ``state_backend`` — re-parametrizing a name
+    already supplied by this parametrized fixture is a duplicate-parametrization
+    collection error under newer pytest)::
 
-        @pytest.mark.parametrize("state_backend", ["pg"], indirect=True)
-        def test_pg_only_thing(seeded_app_both): ...
+        def test_pg_only_thing(state_backend, seeded_app_both):
+            if state_backend != "pg":
+                pytest.skip("PG-only")
+            ...
     """
     if request.param == "pg":
         # pg_engine already created the engine and bumped schema cleanly.
