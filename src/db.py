@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 76
+SCHEMA_VERSION = 77
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -697,6 +697,25 @@ CREATE TABLE IF NOT EXISTS memory_domain_suggestions (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_domain_suggestions_status
     ON memory_domain_suggestions(status);
+
+-- v77: ``authoring_suggestions`` — generic non-admin suggestion queue for the
+-- authoring studio. A non-admin submits a proposed create payload (per studio
+-- domain); an admin approves (replays the payload through the real endpoint)
+-- or rejects. Generalizes ``memory_domain_suggestions`` across all domains.
+CREATE TABLE IF NOT EXISTS authoring_suggestions (
+    id                  VARCHAR PRIMARY KEY,
+    domain              VARCHAR NOT NULL,
+    payload             JSON,
+    status              VARCHAR DEFAULT 'pending',  -- 'pending' / 'approved' / 'rejected'
+    created_by          VARCHAR,
+    created_at          TIMESTAMP DEFAULT current_timestamp,
+    resolved_at         TIMESTAMP,
+    resolved_by         VARCHAR,
+    resolution_note     TEXT,
+    created_resource_id VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_authoring_suggestions_status
+    ON authoring_suggestions(status);
 
 -- v61: ``cli_auth_codes`` — short-lived, single-use exchange codes for the
 -- browser-loopback `agnes auth login` flow (gh-style). The browser, holding
@@ -4931,9 +4950,7 @@ def _v73_to_v74(conn: duckdb.DuckDBPyConnection) -> None:
     Idempotent ADD COLUMN IF NOT EXISTS — safe on fresh and upgrade paths.
     Default ``false`` leaves every existing row unchanged.
     """
-    conn.execute(
-        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS server_only BOOLEAN DEFAULT false"
-    )
+    conn.execute("ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS server_only BOOLEAN DEFAULT false")
     conn.execute("UPDATE schema_version SET version = 74")
 
 
@@ -4951,14 +4968,10 @@ def _v74_to_v75(conn: duckdb.DuckDBPyConnection) -> None:
     so the explicit ``UPDATE ... WHERE source_mode IS NULL`` is required to
     stamp pre-existing 'welcome'/'claude_md' rows as 'editor'.
     """
-    conn.execute(
-        "ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS source_mode VARCHAR DEFAULT 'editor'"
-    )
+    conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS source_mode VARCHAR DEFAULT 'editor'")
     conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS git_path VARCHAR")
     conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS base_sha VARCHAR")
-    conn.execute(
-        "UPDATE instance_templates SET source_mode = 'editor' WHERE source_mode IS NULL"
-    )
+    conn.execute("UPDATE instance_templates SET source_mode = 'editor' WHERE source_mode IS NULL")
     conn.execute("UPDATE schema_version SET version = 75")
 
 
@@ -4982,6 +4995,37 @@ def _v75_to_v76(conn: duckdb.DuckDBPyConnection) -> None:
         """
     )
     conn.execute("UPDATE schema_version SET version = 76")
+
+
+def _v76_to_v77(conn: duckdb.DuckDBPyConnection) -> None:
+    """v77: ``authoring_suggestions`` — generic non-admin suggestion queue for
+    the authoring studio (data-package / mcp / marketplace / corporate-memory).
+
+    A non-admin who lacks the admin mutation right submits a proposed create
+    payload here (``status='pending'``); an admin approves (replays the payload
+    through the real endpoint, stamps ``status='approved'`` + the created
+    resource id) or rejects. Generalizes the v55 ``memory_domain_suggestions``
+    pattern across all studio domains. Additive-only; ``_SYSTEM_SCHEMA`` creates
+    it on fresh installs (no-op CREATE IF NOT EXISTS here).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS authoring_suggestions (
+            id                  VARCHAR PRIMARY KEY,
+            domain              VARCHAR NOT NULL,
+            payload             JSON,
+            status              VARCHAR DEFAULT 'pending',
+            created_by          VARCHAR,
+            created_at          TIMESTAMP DEFAULT current_timestamp,
+            resolved_at         TIMESTAMP,
+            resolved_by         VARCHAR,
+            resolution_note     TEXT,
+            created_resource_id VARCHAR
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_authoring_suggestions_status ON authoring_suggestions(status)")
+    conn.execute("UPDATE schema_version SET version = 77")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -5297,6 +5341,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # entities). _SYSTEM_SCHEMA already creates the table on fresh
             # installs (no-op CREATE here). Issue #398.
             _v75_to_v76(conn)
+            # v76→v77: authoring_suggestions (generic non-admin suggestion
+            # queue for the authoring studio). _SYSTEM_SCHEMA already creates
+            # the table on fresh installs (no-op CREATE here).
+            _v76_to_v77(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5502,6 +5550,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v74_to_v75(conn)
             if current < 76:
                 _v75_to_v76(conn)
+            if current < 77:
+                _v76_to_v77(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
