@@ -11,6 +11,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **WAL-recovery runbook** (`docs/runbooks/wal-recovery.md`). Step-by-step
+  operator guide for a `system.duckdb` WAL-replay failure: detection log
+  signatures, explanation of the two-step auto-recovery (Step A WAL salvage /
+  Step B snapshot restore), manual recovery options when auto-recovery is
+  refused (stale/future snapshot), parquet-salvage procedure, verification
+  commands, and a cross-reference table mapping every symbol and file path to
+  its location in `src/db.py`. (#383)
 
 ### Changed
 
