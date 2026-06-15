@@ -33,6 +33,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   / `--ds-accent-info-ink`) so they stay visually distinct from native tool
   cards while flipping correctly in dark mode. Both elements follow the
   design-system token stack and remain WCAG AA-compliant in all themes. (#656)
+- **Theming: legacy hardcoded values in `style-custom.css` now resolve through
+  design tokens.** The legacy section absorbed from the old `style.css` mixed
+  named tokens with hardcoded literals (font sizes, card/badge/flash fills,
+  code-block surfaces, placeholder grey, the username/copy-button blues, the CC
+  setup-card gradient). Operator overrides of the corresponding `--ds-*` /
+  instance-level tokens didn't reach those spots, so theming was only partially
+  functional. The hardcoded values are now lifted to named `:root` tokens and
+  referenced via `var(...)`, so operator overrides flow through. (#400)
 
 ### Removed
 
