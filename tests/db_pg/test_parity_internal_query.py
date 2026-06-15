@@ -108,13 +108,19 @@ def test_cte_shadow_cannot_escape_rbac_both_backends(_env):
         )
 
 
-@pytest.mark.parametrize("state_backend", ["pg"], indirect=True)
 def test_postgres_tvf_is_unavailable_pg(_env):
     """PG-only: the DuckDB ``postgres`` extension is NOT loaded on the query
     handle (we materialise instead of ATTACHing), so ``postgres_query`` &
     friends — which would otherwise bypass RBAC by reaching PG directly with a
     string-literal catalog arg — simply don't exist. The query fails rather
-    than leaking."""
+    than leaking.
+
+    Restricted to the PG backend via an in-body skip rather than a
+    ``@parametrize("state_backend", ["pg"], indirect=True)`` marker: re-parametrizing
+    a name already supplied by the parametrized ``state_backend`` fixture is a
+    duplicate-parametrization collection error under newer pytest."""
+    if _env != "pg":
+        pytest.skip("PG-only: the DuckDB query handle never loads the postgres extension")
     from connectors.internal.access import execute_internal_query
 
     _seed_events()
