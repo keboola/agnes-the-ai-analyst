@@ -277,6 +277,25 @@ class TestFileUpload:
         assert results[0]["filename"] == "notes.txt"
         assert "file_id" in results[0]
 
+    def test_upload_triggers_background_ingestion(self, seeded_app):
+        """A tabular upload kicks off ingestion; a follow-up GET shows it
+        indexed (TestClient runs BackgroundTasks before the POST returns)."""
+        c = seeded_app["client"]
+        corpus_id = self._create_and_grant(seeded_app, "Ingest Trigger")
+        up = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files={"files": ("metrics.csv", io.BytesIO(b"a,b\n1,2\n3,4\n"), "text/csv")},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert up.status_code == 201, up.text
+        listing = c.get(
+            f"/api/collections/{corpus_id}/files",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        files = listing.json()["files"]
+        assert files[0]["processing_status"] == "indexed"
+        assert files[0]["processing_detail"]["kind"] == "tabular"
+
     def test_member_uploads_unsupported_type_returns_422_rejected(self, seeded_app):
         """DWG file → 422 response but file row persisted with status='rejected'."""
         c = seeded_app["client"]

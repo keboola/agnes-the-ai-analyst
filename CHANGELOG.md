@@ -11,6 +11,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- Collections Tier-1 ingestion: uploaded files are indexed in the background —
+  tabular files (CSV/TSV/Parquet/JSON/XLSX) become queryable DuckDB tables
+  registered in `table_registry` (answered with SQL, not embeddings); prose
+  documents (txt/md/html, PDF/DOCX/etc. when extractable) become `corpus_chunks`
+  rows (text only; embeddings are a later slice). Docling is an optional extra
+  (`agnes[docling]`) — without it a lightweight per-format fallback handles the
+  common text formats and unreadable files are marked `rejected`, never crash.
 - Collections foundation: new `file_corpora` (collection containers) and
   `corpus_files` (per-file processing lifecycle) tables with DuckDB and
   Postgres repositories (`file_corpora_repo()`, `corpus_files_repo()`).

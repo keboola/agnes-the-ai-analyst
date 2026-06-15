@@ -27,7 +27,7 @@ import logging
 import re
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from app.auth.access import (
@@ -211,6 +211,7 @@ async def delete_collection(
 @router.post("/{collection_id}/files", status_code=201)
 async def upload_files(
     collection_id: str,
+    background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     user=Depends(require_resource_access(ResourceType.COLLECTION, "{collection_id}")),
 ):
@@ -239,6 +240,7 @@ async def upload_files(
     cf_repo = corpus_files_repo()
     results = []
     any_rejected = False
+    _to_ingest: List[str] = []
 
     for upload in files:
         fname = upload.filename or "unknown"
@@ -314,6 +316,7 @@ async def upload_files(
             # Default status is 'pending' (set by the repo on insert).
             row = cf_repo.get(file_id)
             results.append(_file_out(row))
+            _to_ingest.append(file_id)
             logger.info(
                 "corpus_file uploaded collection=%s file_id=%s sha=%s tier=%s",
                 collection_id,
@@ -321,6 +324,13 @@ async def upload_files(
                 stored.sha256[:12],
                 tier,
             )
+
+    # Kick off Tier-1 ingestion in the background (tabular → registered DuckDB
+    # table; documents → chunks). Rejected/unsupported files are not scheduled.
+    from src.ingest.runner import ingest_file
+
+    for fid in _to_ingest:
+        background_tasks.add_task(ingest_file, fid)
 
     if any_rejected:
         # Return 422 with full result list so clients know which files
