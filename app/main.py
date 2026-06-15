@@ -449,6 +449,14 @@ async def lifespan(app):
     except Exception:
         logger.exception("internal data-source seed failed; continuing")
 
+    # Seed default source connections from env/yaml on first boot
+    # (spec 2026-06-12 §3.4). One-time; the registry rules afterwards.
+    try:
+        from app.connections_seed import seed_default_connections
+        seed_default_connections()
+    except Exception:
+        logger.exception("source-connection seed failed; continuing")
+
     # Baked-data images (no scheduler) need master views built at boot.
     _maybe_rebuild_on_boot()
 
