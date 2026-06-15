@@ -58,8 +58,115 @@ _DATA_PACKAGE_BUILDER = ChatProfile(
     ),
 )
 
+_MCP_CONNECT = ChatProfile(
+    slug="mcp-connect",
+    claude_md=(
+        "# MCP Connection Builder\n\n"
+        "You help an admin connect an **external MCP server** to Agnes and grant "
+        "its tools to a user group.\n\n"
+        "Rules:\n"
+        "- Inspect what is already registered (`agnes admin mcp source list`) before "
+        "proposing a new connection; avoid duplicates.\n"
+        "- Explain each discovered tool in plain language and recommend a mode "
+        "(materialize vs passthrough).\n"
+        "- Propose; never claim a source is connected until the admin clicks Create.\n"
+        "- Use the `agnes-mcp` skill for the exact model, transports, and endpoints.\n"
+    ),
+    skill_name="agnes-mcp",
+    skill_body=(
+        "---\n"
+        "name: agnes-mcp\n"
+        "description: How external MCP servers are connected in Agnes — transports, "
+        "introspect/classify, materialize vs passthrough, and the admin endpoints.\n"
+        "---\n\n"
+        "# MCP connections in Agnes\n\n"
+        "An MCP source = `mcp_sources` row (transport stdio/http/sse + auth) whose tools "
+        "become `tool_registry` rows, granted to groups via `tool_grants`.\n\n"
+        "## Connect (admin endpoints)\n"
+        "- `POST /api/admin/mcp-sources` — register `{name, transport, command|url, auth}`.\n"
+        "- `POST /api/admin/mcp-sources/{id}/introspect` — discover the tools live.\n"
+        "- `POST /api/admin/mcp-sources/{id}/classify` — heuristic materialize/passthrough.\n"
+        "- `POST /api/admin/mcp-tools` — register a tool row; grants via `/{tool_id}/grants`.\n\n"
+        "## Modes\n"
+        "- **materialize** — poll the tool on a schedule, result → parquet → catalog table.\n"
+        "- **passthrough** — forward the call live to the AI client at request time.\n"
+    ),
+)
+
+_MARKETPLACE_AUTHOR = ChatProfile(
+    slug="marketplace-author",
+    claude_md=(
+        "# Marketplace Builder\n\n"
+        "You help an admin register a **curated marketplace** (a git repo of Claude "
+        "Code skills/agents/plugins) into Agnes and grant its plugins to groups.\n\n"
+        "Rules:\n"
+        "- List existing marketplaces first; avoid registering a duplicate URL.\n"
+        "- Collect the git URL, a slug, and a curator name; the repo is cloned and its "
+        "`.claude-plugin/marketplace.json` plugins are ingested on sync.\n"
+        "- Propose; never claim it is registered until the admin clicks Create.\n"
+        "- Use the `agnes-marketplace` skill for the contract and endpoints.\n"
+    ),
+    skill_name="agnes-marketplace",
+    skill_body=(
+        "---\n"
+        "name: agnes-marketplace\n"
+        "description: How curated marketplaces are registered in Agnes — the git-repo "
+        "contract and the admin endpoints to register and sync one.\n"
+        "---\n\n"
+        "# Curated marketplaces in Agnes\n\n"
+        "A marketplace = `marketplace_registry` row (git url + branch + curator) whose "
+        "`.claude-plugin/marketplace.json` plugins are ingested into `marketplace_plugins` "
+        "on sync and granted to groups via `resource_grants`.\n\n"
+        "## Register (admin endpoints)\n"
+        "- `POST /api/marketplaces` — register `{name, slug, url, curator_name}`.\n"
+        "- `POST /api/marketplaces/{id}/sync` — clone + ingest plugins.\n\n"
+        "Content authoring (the `marketplace-metadata.json` enrichment) lives in the "
+        "git repo, not in Agnes.\n"
+    ),
+)
+
+_CORPORATE_MEMORY = ChatProfile(
+    slug="corporate-memory",
+    claude_md=(
+        "# Corporate Memory Builder\n\n"
+        "You help an admin distill reusable knowledge into a **corporate memory "
+        "domain** granted to a user group.\n\n"
+        "Rules:\n"
+        "- Only mine session transcripts whose author opted IN to memory mining; never "
+        "mine the not-marked-private long tail by default.\n"
+        "- Every proposed knowledge item carries provenance (which session/author) and a "
+        "PII/secret check before it can become a draft.\n"
+        "- Check existing memory for duplicates and contradictions.\n"
+        "- Propose; admin approval is required — never write memory directly from "
+        "session content.\n"
+        "- Use the `agnes-corporate-memory` skill for the model and endpoints.\n"
+    ),
+    skill_name="agnes-corporate-memory",
+    skill_body=(
+        "---\n"
+        "name: agnes-corporate-memory\n"
+        "description: How corporate memory works in Agnes — domains, knowledge items, "
+        "sensitivity/provenance, and the admin endpoints.\n"
+        "---\n\n"
+        "# Corporate memory in Agnes\n\n"
+        "A memory domain = `memory_domains` row + `knowledge_items` (M:N via "
+        "`knowledge_item_domains`), granted to groups via `resource_grants`.\n\n"
+        "## Build (admin endpoints)\n"
+        "- `POST /api/admin/memory-domains` — create `{name, slug, description}`.\n"
+        "- `POST /api/admin/memory-domains/{id}/items` — add a knowledge item.\n\n"
+        "## Privacy (hard gate)\n"
+        "Session privacy is whole-session opt-out with no in-pipeline redaction. Mining "
+        "into a shared domain promotes private data to a broadcast tier — so mining is "
+        "opt-IN, every item records provenance, and all of it routes through human "
+        "approval. Never admin-direct-write memory derived from sessions.\n"
+    ),
+)
+
 _PROFILES: dict[str, ChatProfile] = {
     _DATA_PACKAGE_BUILDER.slug: _DATA_PACKAGE_BUILDER,
+    _MCP_CONNECT.slug: _MCP_CONNECT,
+    _MARKETPLACE_AUTHOR.slug: _MARKETPLACE_AUTHOR,
+    _CORPORATE_MEMORY.slug: _CORPORATE_MEMORY,
 }
 
 
