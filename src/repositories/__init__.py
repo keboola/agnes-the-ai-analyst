@@ -45,6 +45,7 @@ The dispatch logic in :func:`_build` is backend-count-agnostic — no
 per-repo function changes — and ``tests/test_repository_registry.py``
 verifies the table stays complete and symmetric across backends.
 """
+
 from __future__ import annotations
 
 import os
@@ -116,6 +117,9 @@ __all__ = [
     "chat_message_repo",
     "user_workdirs_repo",
     "chat_session_participants_repo",
+    # Collections
+    "file_corpora_repo",
+    "corpus_files_repo",
 ]
 
 
@@ -129,6 +133,7 @@ def use_pg() -> bool:
     """
     try:
         from src.db_state_machine import BackendState, _OVERLAY_PATH, read_backend_state
+
         state, _ = read_backend_state()
         if state in (
             BackendState.SIDE_CAR,
@@ -150,6 +155,7 @@ def use_pg() -> bool:
 
 def _pg_engine() -> Any:
     from src.db_pg import get_engine
+
     return get_engine()
 
 
@@ -382,6 +388,15 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("app.chat.persistence", "ChatRepository"),
         PG: ("src.repositories.chat_session_participants_pg", "ChatSessionParticipantPgRepository"),
     },
+    # collections
+    "file_corpora": {
+        DUCKDB: ("src.repositories.file_corpora", "FileCorporaRepository"),
+        PG: ("src.repositories.file_corpora_pg", "FileCorporaPgRepository"),
+    },
+    "corpus_files": {
+        DUCKDB: ("src.repositories.corpus_files", "CorpusFilesRepository"),
+        PG: ("src.repositories.corpus_files_pg", "CorpusFilesPgRepository"),
+    },
 }
 
 
@@ -392,8 +407,7 @@ def _build(key: str) -> Any:
         module_path, class_name = _REGISTRY[key][backend]
     except KeyError as exc:
         raise KeyError(
-            f"no '{backend}' repository registered for '{key}' "
-            f"(known: {sorted(_REGISTRY.get(key, {}))})"
+            f"no '{backend}' repository registered for '{key}' (known: {sorted(_REGISTRY.get(key, {}))})"
         ) from exc
     klass = getattr(import_module(module_path), class_name)
     return klass(_ARG_PROVIDERS[backend]())
@@ -404,68 +418,205 @@ def _build(key: str) -> Any:
 # contract are unchanged; callsites are unaffected.
 # ---------------------------------------------------------------------------
 
+
 # core user / RBAC
-def users_repo() -> Any: return _build("users")
-def user_groups_repo() -> Any: return _build("user_groups")
-def user_group_members_repo() -> Any: return _build("user_group_members")
-def resource_grants_repo() -> Any: return _build("resource_grants")
-def audit_repo() -> Any: return _build("audit")
+def users_repo() -> Any:
+    return _build("users")
+
+
+def user_groups_repo() -> Any:
+    return _build("user_groups")
+
+
+def user_group_members_repo() -> Any:
+    return _build("user_group_members")
+
+
+def resource_grants_repo() -> Any:
+    return _build("resource_grants")
+
+
+def audit_repo() -> Any:
+    return _build("audit")
+
 
 # ops triad
-def table_registry_repo() -> Any: return _build("table_registry")
-def sync_state_repo() -> Any: return _build("sync_state")
+def table_registry_repo() -> Any:
+    return _build("table_registry")
+
+
+def sync_state_repo() -> Any:
+    return _build("sync_state")
+
 
 # config / templates / tokens
-def metric_repo() -> Any: return _build("metric")
-def claude_md_template_repo() -> Any: return _build("claude_md_template")
-def welcome_template_repo() -> Any: return _build("welcome_template")
-def news_template_repo() -> Any: return _build("news_template")
-def access_token_repo() -> Any: return _build("access_token")
-def profile_repo() -> Any: return _build("profile")
+def metric_repo() -> Any:
+    return _build("metric")
+
+
+def claude_md_template_repo() -> Any:
+    return _build("claude_md_template")
+
+
+def welcome_template_repo() -> Any:
+    return _build("welcome_template")
+
+
+def news_template_repo() -> Any:
+    return _build("news_template")
+
+
+def access_token_repo() -> Any:
+    return _build("access_token")
+
+
+def profile_repo() -> Any:
+    return _build("profile")
+
 
 # lookup / cache / settings
-def view_ownership_repo() -> Any: return _build("view_ownership")
-def column_metadata_repo() -> Any: return _build("column_metadata")
-def bq_metadata_cache_repo() -> Any: return _build("bq_metadata_cache")
-def sync_settings_repo() -> Any: return _build("sync_settings")
-def notifications_telegram_repo() -> Any: return _build("notifications_telegram")
-def notifications_pending_code_repo() -> Any: return _build("notifications_pending_code")
-def notifications_script_repo() -> Any: return _build("notifications_script")
+def view_ownership_repo() -> Any:
+    return _build("view_ownership")
+
+
+def column_metadata_repo() -> Any:
+    return _build("column_metadata")
+
+
+def bq_metadata_cache_repo() -> Any:
+    return _build("bq_metadata_cache")
+
+
+def sync_settings_repo() -> Any:
+    return _build("sync_settings")
+
+
+def notifications_telegram_repo() -> Any:
+    return _build("notifications_telegram")
+
+
+def notifications_pending_code_repo() -> Any:
+    return _build("notifications_pending_code")
+
+
+def notifications_script_repo() -> Any:
+    return _build("notifications_script")
+
 
 # telemetry
-def session_processor_state_repo() -> Any: return _build("session_processor_state")
-def observability_views_repo() -> Any: return _build("observability_views")
-def usage_repo() -> Any: return _build("usage")
+def session_processor_state_repo() -> Any:
+    return _build("session_processor_state")
+
+
+def observability_views_repo() -> Any:
+    return _build("observability_views")
+
+
+def usage_repo() -> Any:
+    return _build("usage")
+
 
 # store / marketplace
-def marketplace_registry_repo() -> Any: return _build("marketplace_registry")
-def marketplace_plugins_repo() -> Any: return _build("marketplace_plugins")
-def store_entities_repo() -> Any: return _build("store_entities")
-def store_entity_votes_repo() -> Any: return _build("store_entity_votes")
-def user_store_installs_repo() -> Any: return _build("user_store_installs")
-def user_curated_subscriptions_repo() -> Any: return _build("user_curated_subscriptions")
-def store_submissions_repo() -> Any: return _build("store_submissions")
+def marketplace_registry_repo() -> Any:
+    return _build("marketplace_registry")
+
+
+def marketplace_plugins_repo() -> Any:
+    return _build("marketplace_plugins")
+
+
+def store_entities_repo() -> Any:
+    return _build("store_entities")
+
+
+def store_entity_votes_repo() -> Any:
+    return _build("store_entity_votes")
+
+
+def user_store_installs_repo() -> Any:
+    return _build("user_store_installs")
+
+
+def user_curated_subscriptions_repo() -> Any:
+    return _build("user_curated_subscriptions")
+
+
+def store_submissions_repo() -> Any:
+    return _build("store_submissions")
+
 
 # knowledge
-def knowledge_repo() -> Any: return _build("knowledge")
+def knowledge_repo() -> Any:
+    return _build("knowledge")
+
 
 # data packages / memory / recipes / subscriptions
-def data_packages_repo() -> Any: return _build("data_packages")
-def memory_domains_repo() -> Any: return _build("memory_domains")
-def memory_domain_suggestions_repo() -> Any: return _build("memory_domain_suggestions")
-def recipes_repo() -> Any: return _build("recipes")
-def user_stack_subscriptions_repo() -> Any: return _build("user_stack_subscriptions")
+def data_packages_repo() -> Any:
+    return _build("data_packages")
+
+
+def memory_domains_repo() -> Any:
+    return _build("memory_domains")
+
+
+def memory_domain_suggestions_repo() -> Any:
+    return _build("memory_domain_suggestions")
+
+
+def recipes_repo() -> Any:
+    return _build("recipes")
+
+
+def user_stack_subscriptions_repo() -> Any:
+    return _build("user_stack_subscriptions")
+
 
 # MCP / Cowork
-def mcp_sources_repo() -> Any: return _build("mcp_sources")
-def per_user_secrets_repo() -> Any: return _build("per_user_secrets")
-def shared_secrets_repo() -> Any: return _build("shared_secrets")
-def system_secrets_repo() -> Any: return _build("system_secrets")
-def tool_registry_repo() -> Any: return _build("tool_registry")
-def setup_tokens_repo() -> Any: return _build("setup_tokens")
+def mcp_sources_repo() -> Any:
+    return _build("mcp_sources")
+
+
+def per_user_secrets_repo() -> Any:
+    return _build("per_user_secrets")
+
+
+def shared_secrets_repo() -> Any:
+    return _build("shared_secrets")
+
+
+def system_secrets_repo() -> Any:
+    return _build("system_secrets")
+
+
+def tool_registry_repo() -> Any:
+    return _build("tool_registry")
+
+
+def setup_tokens_repo() -> Any:
+    return _build("setup_tokens")
+
 
 # cloud chat
-def chat_session_repo() -> Any: return _build("chat_session")
-def chat_message_repo() -> Any: return _build("chat_message")
-def user_workdirs_repo() -> Any: return _build("user_workdirs")
-def chat_session_participants_repo() -> Any: return _build("chat_session_participants")
+def chat_session_repo() -> Any:
+    return _build("chat_session")
+
+
+def chat_message_repo() -> Any:
+    return _build("chat_message")
+
+
+def user_workdirs_repo() -> Any:
+    return _build("user_workdirs")
+
+
+def chat_session_participants_repo() -> Any:
+    return _build("chat_session_participants")
+
+
+# collections
+def file_corpora_repo() -> Any:
+    return _build("file_corpora")
+
+
+def corpus_files_repo() -> Any:
+    return _build("corpus_files")

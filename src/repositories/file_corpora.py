@@ -1,0 +1,105 @@
+"""DuckDB-backed repository for ``file_corpora`` (v77).
+
+A file corpus is a self-service Collection container — an admin or user
+creates one, uploads files into it, and the ingestion pipeline turns those
+files into ``corpus_files`` rows (and eventually ``corpus_chunks``).
+
+Template: src/repositories/data_packages.py.
+"""
+
+from __future__ import annotations
+
+import secrets
+from typing import Any, Dict, List, Optional
+
+import duckdb
+
+
+class FileCorporaRepository:
+    """DuckDB twin for the ``file_corpora`` table."""
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+        self.conn = conn
+
+    _COLS = [
+        "id",
+        "slug",
+        "name",
+        "description",
+        "created_by",
+        "created_at",
+        "updated_at",
+        "deleted_at",
+    ]
+    _SELECT = ", ".join(_COLS)
+
+    # ------------------------------------------------------------------
+    # CRUD
+    # ------------------------------------------------------------------
+
+    def create(
+        self,
+        *,
+        name: str,
+        slug: str,
+        description: Optional[str],
+        created_by: str,
+    ) -> str:
+        """Insert a new corpus; returns the generated ``col_*`` id.
+
+        Raises ``duckdb.ConstraintException`` if ``slug`` collides.
+        """
+        corpus_id = "col_" + secrets.token_hex(8)
+        self.conn.execute(
+            "INSERT INTO file_corpora (id, slug, name, description, created_by) VALUES (?, ?, ?, ?, ?)",
+            [corpus_id, slug, name, description, created_by],
+        )
+        return corpus_id
+
+    def get(self, corpus_id: str, *, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
+        """Fetch one corpus by id. Returns ``None`` if not found.
+
+        Soft-deleted rows are hidden by default; pass
+        ``include_deleted=True`` for the restore path.
+        """
+        guard = "" if include_deleted else " AND deleted_at IS NULL"
+        row = self.conn.execute(
+            f"SELECT {self._SELECT} FROM file_corpora WHERE id = ?{guard}",
+            [corpus_id],
+        ).fetchone()
+        if not row:
+            return None
+        return dict(zip(self._COLS, row))
+
+    def get_by_slug(self, slug: str, *, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
+        """Fetch one corpus by slug. Returns ``None`` if not found or soft-deleted."""
+        guard = "" if include_deleted else " AND deleted_at IS NULL"
+        row = self.conn.execute(
+            f"SELECT id FROM file_corpora WHERE slug = ?{guard}",
+            [slug],
+        ).fetchone()
+        return self.get(row[0], include_deleted=include_deleted) if row else None
+
+    def list(
+        self,
+        *,
+        search: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """List live (non-soft-deleted) corpora, name-ordered."""
+        query = f"SELECT {self._SELECT} FROM file_corpora WHERE deleted_at IS NULL"
+        params: List[Any] = []
+        if search:
+            query += " AND name ILIKE ?"
+            params.append(f"%{search}%")
+        query += " ORDER BY name LIMIT ?"
+        params.append(limit)
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(zip(self._COLS, r)) for r in rows]
+
+    def soft_delete(self, corpus_id: str) -> None:
+        """Set ``deleted_at`` to now. Idempotent."""
+        self.conn.execute(
+            "UPDATE file_corpora SET deleted_at = current_timestamp WHERE id = ?",
+            [corpus_id],
+        )

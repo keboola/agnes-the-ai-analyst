@@ -8,17 +8,22 @@ PG notes:
   vector(384) is a Retrieval-slice option, not a foundation dependency.
 - processing_detail stores JSON as VARCHAR text (same as DuckDB side);
   no JSONB cast needed since reads come back as strings.
+- CorpusChunk.text_ is mapped to the DB column "text" via __table_args__
+  style; we use sa.text_ alias to avoid shadowing the imported sa.text().
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Integer, String, text
-from sqlalchemy.dialects.postgresql import ARRAY
+import sqlalchemy as sa
+from sqlalchemy import BigInteger, DateTime, Float, Integer, String
+from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db_pg import Base
+
+_text = sa.text  # alias so column named "text" doesn't shadow it
 
 
 class FileCorpus(Base):
@@ -31,12 +36,12 @@ class FileCorpus(Base):
     created_by: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
-        server_default=text("CURRENT_TIMESTAMP"),
+        server_default=_text("CURRENT_TIMESTAMP"),
         nullable=True,
     )
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
-        server_default=text("CURRENT_TIMESTAMP"),
+        server_default=_text("CURRENT_TIMESTAMP"),
         nullable=True,
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -53,17 +58,17 @@ class CorpusFile(Base):
     size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     storage_path: Mapped[str | None] = mapped_column(String, nullable=True)
     # Four-state lifecycle: pending | processing | indexed | rejected
-    processing_status: Mapped[str] = mapped_column(String, server_default=text("'pending'"), nullable=False)
+    processing_status: Mapped[str] = mapped_column(String, server_default=_text("'pending'"), nullable=False)
     # JSON text: {tier, vision_used, error, derived_table_id, chunk_count}
     processing_detail: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
-        server_default=text("CURRENT_TIMESTAMP"),
+        server_default=_text("CURRENT_TIMESTAMP"),
         nullable=True,
     )
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
-        server_default=text("CURRENT_TIMESTAMP"),
+        server_default=_text("CURRENT_TIMESTAMP"),
         nullable=True,
     )
 
@@ -75,18 +80,22 @@ class CorpusChunk(Base):
     corpus_id: Mapped[str] = mapped_column(String, nullable=False)
     file_id: Mapped[str] = mapped_column(String, nullable=False)
     ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    text: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Column is named "text" in DB; attribute uses same name — we've imported
+    # sa.text as _text above so there is no shadowing.
+    text: Mapped[str | None] = mapped_column("text", String, nullable=True)
     # float8[]: plain PG array; pgvector vector(384) is a Retrieval-slice option.
     embedding: Mapped[list[float] | None] = mapped_column(
-        ARRAY(item_type=String),  # declared as ARRAY; actual type resolved by Alembic
+        PG_ARRAY(Float()),
         nullable=True,
     )
     section_path: Mapped[str | None] = mapped_column(String, nullable=True)
     page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     bbox: Mapped[str | None] = mapped_column(String, nullable=True)
-    metadata: Mapped[str | None] = mapped_column(String, nullable=True)
+    # "metadata" is reserved by SQLAlchemy's Declarative API; map the DB
+    # column "metadata" via an explicit column name argument to avoid the clash.
+    chunk_metadata: Mapped[str | None] = mapped_column("metadata", String, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
-        server_default=text("CURRENT_TIMESTAMP"),
+        server_default=_text("CURRENT_TIMESTAMP"),
         nullable=True,
     )
