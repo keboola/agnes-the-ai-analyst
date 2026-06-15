@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 76
+SCHEMA_VERSION = 77
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1208,6 +1208,53 @@ CREATE TABLE IF NOT EXISTS user_workdirs (
     marketplace_sha        VARCHAR,
     initial_workspace_sha  VARCHAR,
     agnes_version_at_init  VARCHAR
+);
+
+-- v77: Collections (bring-your-files) foundation.
+-- file_corpora: a Collection -- self-service container of uploaded files.
+CREATE TABLE IF NOT EXISTS file_corpora (
+    id VARCHAR PRIMARY KEY,
+    slug VARCHAR UNIQUE NOT NULL,
+    name VARCHAR NOT NULL,
+    description VARCHAR,
+    created_by VARCHAR NOT NULL,
+    created_at TIMESTAMP DEFAULT current_timestamp,
+    updated_at TIMESTAMP DEFAULT current_timestamp,
+    deleted_at TIMESTAMP
+);
+
+-- corpus_files: one row per uploaded file + its processing lifecycle.
+-- processing_status: pending | processing | indexed | rejected
+CREATE TABLE IF NOT EXISTS corpus_files (
+    id VARCHAR PRIMARY KEY,
+    corpus_id VARCHAR NOT NULL,
+    filename VARCHAR NOT NULL,
+    sha256 VARCHAR NOT NULL,
+    file_type VARCHAR,
+    size_bytes BIGINT,
+    storage_path VARCHAR,
+    processing_status VARCHAR NOT NULL DEFAULT 'pending',
+    processing_detail VARCHAR,
+    created_at TIMESTAMP DEFAULT current_timestamp,
+    updated_at TIMESTAMP DEFAULT current_timestamp
+);
+
+-- corpus_chunks: prose-document chunks + embedding vector.
+-- embedding FLOAT[384]: fixed-size array for array_cosine_similarity.
+-- Repo deferred to Retrieval slice; table created here so a single
+-- migration covers all Collections schema.
+CREATE TABLE IF NOT EXISTS corpus_chunks (
+    id VARCHAR PRIMARY KEY,
+    corpus_id VARCHAR NOT NULL,
+    file_id VARCHAR NOT NULL,
+    ordinal INTEGER,
+    text VARCHAR,
+    embedding FLOAT[384],
+    section_path VARCHAR,
+    page INTEGER,
+    bbox VARCHAR,
+    metadata VARCHAR,
+    created_at TIMESTAMP DEFAULT current_timestamp
 );
 """
 
@@ -4931,9 +4978,7 @@ def _v73_to_v74(conn: duckdb.DuckDBPyConnection) -> None:
     Idempotent ADD COLUMN IF NOT EXISTS — safe on fresh and upgrade paths.
     Default ``false`` leaves every existing row unchanged.
     """
-    conn.execute(
-        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS server_only BOOLEAN DEFAULT false"
-    )
+    conn.execute("ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS server_only BOOLEAN DEFAULT false")
     conn.execute("UPDATE schema_version SET version = 74")
 
 
@@ -4951,14 +4996,10 @@ def _v74_to_v75(conn: duckdb.DuckDBPyConnection) -> None:
     so the explicit ``UPDATE ... WHERE source_mode IS NULL`` is required to
     stamp pre-existing 'welcome'/'claude_md' rows as 'editor'.
     """
-    conn.execute(
-        "ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS source_mode VARCHAR DEFAULT 'editor'"
-    )
+    conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS source_mode VARCHAR DEFAULT 'editor'")
     conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS git_path VARCHAR")
     conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS base_sha VARCHAR")
-    conn.execute(
-        "UPDATE instance_templates SET source_mode = 'editor' WHERE source_mode IS NULL"
-    )
+    conn.execute("UPDATE instance_templates SET source_mode = 'editor' WHERE source_mode IS NULL")
     conn.execute("UPDATE schema_version SET version = 75")
 
 
@@ -4982,6 +5023,71 @@ def _v75_to_v76(conn: duckdb.DuckDBPyConnection) -> None:
         """
     )
     conn.execute("UPDATE schema_version SET version = 76")
+
+
+def _v76_to_v77(conn: duckdb.DuckDBPyConnection) -> None:
+    """v77: Collections (bring-your-files) foundation.
+
+    Creates three new tables: ``file_corpora`` (collection container),
+    ``corpus_files`` (per-file row + processing lifecycle), and
+    ``corpus_chunks`` (prose chunks + 384-dim embedding for future
+    retrieval). All additive; ``_SYSTEM_SCHEMA`` already creates them on
+    fresh installs via IF NOT EXISTS (no-op here).
+
+    ``corpus_chunks.embedding`` uses DuckDB's ``FLOAT[384]`` fixed-size
+    array type, queryable via ``array_cosine_similarity``. The chunk
+    repository is deferred to the Retrieval slice; the table lands here
+    so the single-migration-per-build-run constraint is met.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS file_corpora (
+            id VARCHAR PRIMARY KEY,
+            slug VARCHAR UNIQUE NOT NULL,
+            name VARCHAR NOT NULL,
+            description VARCHAR,
+            created_by VARCHAR NOT NULL,
+            created_at TIMESTAMP DEFAULT current_timestamp,
+            updated_at TIMESTAMP DEFAULT current_timestamp,
+            deleted_at TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS corpus_files (
+            id VARCHAR PRIMARY KEY,
+            corpus_id VARCHAR NOT NULL,
+            filename VARCHAR NOT NULL,
+            sha256 VARCHAR NOT NULL,
+            file_type VARCHAR,
+            size_bytes BIGINT,
+            storage_path VARCHAR,
+            processing_status VARCHAR NOT NULL DEFAULT 'pending',
+            processing_detail VARCHAR,
+            created_at TIMESTAMP DEFAULT current_timestamp,
+            updated_at TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS corpus_chunks (
+            id VARCHAR PRIMARY KEY,
+            corpus_id VARCHAR NOT NULL,
+            file_id VARCHAR NOT NULL,
+            ordinal INTEGER,
+            text VARCHAR,
+            embedding FLOAT[384],
+            section_path VARCHAR,
+            page INTEGER,
+            bbox VARCHAR,
+            metadata VARCHAR,
+            created_at TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 77")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -5297,6 +5403,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # entities). _SYSTEM_SCHEMA already creates the table on fresh
             # installs (no-op CREATE here). Issue #398.
             _v75_to_v76(conn)
+            # v76→v77: Collections foundation — file_corpora, corpus_files,
+            # corpus_chunks. _SYSTEM_SCHEMA already creates them on fresh
+            # installs (no-op CREATE IF NOT EXISTS here).
+            _v76_to_v77(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5502,6 +5612,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v74_to_v75(conn)
             if current < 76:
                 _v75_to_v76(conn)
+            if current < 77:
+                _v76_to_v77(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
