@@ -24,10 +24,12 @@
     var bound = false;
 
     // Stamp data-theme-variant so CSS can target "dark + blue brand" without a
-    // second attribute value on data-theme. Set only when the light variant is
-    // non-default (i.e. 'blue'); the default navy brand needs no variant stamp.
+    // second attribute value on data-theme. Gate on the *configured* brand
+    // (server === 'blue'), not on lightTheme: lightTheme also resolves to 'blue'
+    // as the light-mode fallback for a dark-default instance (server === 'dark'),
+    // which must NOT pick up the blue dark-variant — its brand isn't blue.
     function setVariant(dark) {
-      if (dark && lightTheme === 'blue') { el.dataset.themeVariant = 'blue'; }
+      if (dark && server === 'blue') { el.dataset.themeVariant = 'blue'; }
       else { delete el.dataset.themeVariant; }
     }
 
