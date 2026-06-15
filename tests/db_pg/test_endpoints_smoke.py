@@ -8,8 +8,25 @@ from __future__ import annotations
 
 import pytest
 
+from tests.helpers.factories import (
+    make_skill_zip,
+    make_plugin_zip,
+    make_agent_zip,
+    make_bad_desc_zip,
+    make_no_name_zip,
+    make_security_fail_zip,
+)
+
 
 pytestmark = pytest.mark.integration
+
+
+def _admin_headers(s):
+    return {"Authorization": f"Bearer {s['admin_token']}"}
+
+
+def _analyst_headers(s):
+    return {"Authorization": f"Bearer {s['analyst_token']}"}
 
 # ---------------------------------------------------------------------------
 # Auth
@@ -37,7 +54,7 @@ class TestAuthSmoke:
         r = seeded_app_both["client"].post("/auth/password/login", json={
             "email": "admin@test.com", "password": "wrong",
         })
-        assert r.status_code in (401, 422), r.text
+        assert r.status_code == 401, r.text
 
     def test_token_with_password_user(self, seeded_app_both):
         """POST /auth/token returns 200 + access_token for a user with a password_hash."""
@@ -94,20 +111,17 @@ class TestMeSmoke:
         "POST /api/me/onboarded",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_me_home_stats(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/me/home-stats", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/me/home-stats", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_me_effective_access(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/me/effective-access", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/me/effective-access", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
         assert "groups" in r.json()
 
     def test_me_onboarded(self, seeded_app_both):
-        r = seeded_app_both["client"].post("/api/me/onboarded", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].post("/api/me/onboarded", headers=_admin_headers(seeded_app_both))
         assert r.status_code in (200, 204)
 
 
@@ -123,23 +137,20 @@ class TestMeStatsSmoke:
         "GET /api/me/stats/sync",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_stats_sessions(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/me/stats/sessions", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/me/stats/sessions", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_stats_tokens(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/me/stats/tokens", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/me/stats/tokens", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_stats_queries(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/me/stats/queries", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/me/stats/queries", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_stats_sync(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/me/stats/sync", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/me/stats/sync", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
 
@@ -160,16 +171,13 @@ class TestUsersSmoke:
         "POST /api/users/{user_id}/activate",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_list_users(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/users", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/users", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
         assert isinstance(r.json(), list)
 
     def test_get_user(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/users/admin1", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/users/admin1", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
         assert "email" in r.json()
 
@@ -199,36 +207,33 @@ class TestRBACSmoke:
         "GET /api/admin/activity/sync",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_list_groups(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/groups", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/groups", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
         assert isinstance(r.json(), list)
 
     def test_access_overview(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/access-overview", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/access-overview", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_grants_list(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/grants", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/grants", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_resource_types(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/resource-types", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/resource-types", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_activity(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/activity", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/activity", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_activity_health(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/activity/health", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/activity/health", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_activity_sync(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/activity/sync", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/activity/sync", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
 
@@ -245,29 +250,26 @@ class TestSyncSmoke:
         "GET /api/sync/table-subscriptions",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_sync_status(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/sync/status", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/sync/status", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_sync_manifest(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/sync/manifest", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/sync/manifest", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
         assert "tables" in r.json()
 
     def test_sync_trigger(self, seeded_app_both, monkeypatch):
         monkeypatch.setattr("src.orchestrator.SyncOrchestrator.run_incremental", lambda *a, **kw: None)
-        r = seeded_app_both["client"].post("/api/sync/trigger", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].post("/api/sync/trigger", headers=_admin_headers(seeded_app_both))
         assert r.status_code in (200, 202)
 
     def test_sync_settings(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/sync/settings", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/sync/settings", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_sync_table_subscriptions(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/sync/table-subscriptions", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/sync/table-subscriptions", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
 
@@ -282,20 +284,17 @@ class TestCatalogSmoke:
         "POST /api/catalog/profile/{table_id}/refresh",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_catalog_tables(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/catalog/tables", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/catalog/tables", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
         assert isinstance(r.json(), list)
 
     def test_catalog_profile_missing(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/catalog/profile/nonexistent-table", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/catalog/profile/nonexistent-table", headers=_admin_headers(seeded_app_both))
         assert r.status_code in (404, 422)
 
     def test_catalog_profile_refresh_missing(self, seeded_app_both):
-        r = seeded_app_both["client"].post("/api/catalog/profile/nonexistent-table/refresh", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].post("/api/catalog/profile/nonexistent-table/refresh", headers=_admin_headers(seeded_app_both))
         assert r.status_code in (404, 422)
 
 
@@ -344,14 +343,11 @@ class TestQuerySmoke:
         "POST /api/query/hybrid",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_query_select_one(self, seeded_app_both, registered_table_both):
         r = seeded_app_both["client"].post(
             "/api/query",
             json={"sql": "SELECT 1 AS n"},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code == 200
         body = r.json()
@@ -363,7 +359,7 @@ class TestQuerySmoke:
         r = seeded_app_both["client"].post(
             "/api/query/hybrid",
             json={"sql": "SELECT 1", "source": "local"},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code in (200, 422, 501)
 
@@ -381,23 +377,20 @@ class TestV2Smoke:
         "POST /api/v2/scan/estimate",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_v2_catalog(self, seeded_app_both, registered_table_both):
-        r = seeded_app_both["client"].get("/api/v2/catalog", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/v2/catalog", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
         assert isinstance(r.json(), list)
 
     def test_v2_schema(self, seeded_app_both, registered_table_both):
         table_id = registered_table_both["table_id"]
-        r = seeded_app_both["client"].get(f"/api/v2/schema/{table_id}", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get(f"/api/v2/schema/{table_id}", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
         assert "columns" in r.json()
 
     def test_v2_sample(self, seeded_app_both, registered_table_both):
         table_id = registered_table_both["table_id"]
-        r = seeded_app_both["client"].get(f"/api/v2/sample/{table_id}", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get(f"/api/v2/sample/{table_id}", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_v2_scan(self, seeded_app_both, registered_table_both, monkeypatch):
@@ -405,7 +398,7 @@ class TestV2Smoke:
         r = seeded_app_both["client"].post(
             "/api/v2/scan",
             json={"table_id": registered_table_both["table_id"]},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code in (200, 202, 422)
 
@@ -413,9 +406,9 @@ class TestV2Smoke:
         r = seeded_app_both["client"].post(
             "/api/v2/scan/estimate",
             json={"table_id": registered_table_both["table_id"]},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
-        assert r.status_code in (200, 422)
+        assert r.status_code in (200, 501)
 
 
 # ---------------------------------------------------------------------------
@@ -429,22 +422,19 @@ class TestMetricsSmoke:
         "POST /api/admin/metrics/import",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_metrics_list(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/metrics", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/metrics", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_admin_metrics(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/metrics", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/metrics", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_admin_metrics_import(self, seeded_app_both):
         r = seeded_app_both["client"].post(
             "/api/admin/metrics/import",
             json={"metrics": []},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code in (200, 204, 422)
 
@@ -462,11 +452,8 @@ class TestMemorySmoke:
         "POST /api/memory/{item_id}/vote",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_memory_list(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/memory", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/memory", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
         assert isinstance(r.json(), list)
 
@@ -474,38 +461,38 @@ class TestMemorySmoke:
         r = seeded_app_both["client"].post(
             "/api/memory",
             json={"title": "Smoke test fact", "content": "Revenue doubled QoQ in Q1.", "category": "business"},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code == 201
         assert "id" in r.json()
 
     def test_memory_stats(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/memory/stats", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/memory/stats", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_memory_provenance(self, seeded_app_both):
         rc = seeded_app_both["client"].post(
             "/api/memory",
             json={"title": "Prov test", "content": "Revenue doubled QoQ in Q1.", "category": "business"},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert rc.status_code == 201
         item_id = rc.json()["id"]
-        r = seeded_app_both["client"].get(f"/api/memory/{item_id}/provenance", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get(f"/api/memory/{item_id}/provenance", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_memory_vote(self, seeded_app_both):
         rc = seeded_app_both["client"].post(
             "/api/memory",
             json={"title": "Vote test", "content": "Revenue doubled QoQ in Q1.", "category": "business"},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert rc.status_code == 201
         item_id = rc.json()["id"]
         r = seeded_app_both["client"].post(
             f"/api/memory/{item_id}/vote",
             json={"vote": "up"},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code == 200
 
@@ -521,14 +508,11 @@ class TestUploadSmoke:
         "POST /api/upload/local-md",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_upload_session(self, seeded_app_both):
         r = seeded_app_both["client"].post(
             "/api/upload/sessions",
             json={"filename": "test.md", "content_type": "text/markdown"},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code in (200, 201)
 
@@ -536,17 +520,17 @@ class TestUploadSmoke:
         r = seeded_app_both["client"].post(
             "/api/upload/artifacts",
             json={"content": "# Test\nSome content.", "filename": "test.md"},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
-        assert r.status_code in (200, 201, 422)
+        assert r.status_code in (200, 201)
 
     def test_upload_local_md(self, seeded_app_both):
         r = seeded_app_both["client"].post(
             "/api/upload/local-md",
             json={"content": "# Local doc\nContent.", "path": "test.md"},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
-        assert r.status_code in (200, 201, 422)
+        assert r.status_code in (200, 201)
 
 
 # ---------------------------------------------------------------------------
@@ -568,28 +552,25 @@ class TestAdminRegistrySmoke:
         "POST /api/admin/metadata/{table_id}/push",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_registry_list(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/registry", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/registry", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
         assert isinstance(r.json(), list)
 
     def test_server_config(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/server-config", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/server-config", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_register_precheck(self, seeded_app_both):
         r = seeded_app_both["client"].post(
             "/api/admin/register-table/precheck",
             json={"name": "chk_orders", "source_type": "keboola", "bucket": "in.c-smoke", "source_table": "orders", "query_mode": "local"},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code in (200, 422)
 
     def test_register_table_crud(self, seeded_app_both):
-        h = self._admin_headers(seeded_app_both)
+        h = _admin_headers(seeded_app_both)
         rc = seeded_app_both["client"].post(
             "/api/admin/register-table",
             json={"name": "crud_test_table", "source_type": "keboola", "bucket": "in.c-crud", "source_table": "orders", "query_mode": "local"},
@@ -609,24 +590,24 @@ class TestAdminRegistrySmoke:
         assert rd.status_code == 204
 
     def test_discover_tables(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/discover-tables", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/discover-tables", headers=_admin_headers(seeded_app_both))
         assert r.status_code in (200, 503)
 
     def test_configure(self, seeded_app_both):
-        r = seeded_app_both["client"].post("/api/admin/configure", json={}, headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].post("/api/admin/configure", json={}, headers=_admin_headers(seeded_app_both))
         assert r.status_code in (200, 422)
 
     def test_metadata_get(self, seeded_app_both, registered_table_both):
         r = seeded_app_both["client"].get(
             f"/api/admin/metadata/{registered_table_both['table_id']}",
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code in (200, 404)
 
     def test_metadata_push(self, seeded_app_both, registered_table_both):
         r = seeded_app_both["client"].post(
             f"/api/admin/metadata/{registered_table_both['table_id']}/push",
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code in (200, 404, 422, 503)
 
@@ -647,20 +628,17 @@ class TestAdminStoreSmoke:
         "POST /api/admin/run-reap-stuck-reviews",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_submissions_list(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/store/submissions", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/store/submissions", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
         assert isinstance(r.json(), list)
 
     def test_submissions_detail_missing(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/store/submissions/nonexistent", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/store/submissions/nonexistent", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 404
 
     def test_reap_stuck_reviews_empty(self, seeded_app_both):
-        r = seeded_app_both["client"].post("/api/admin/run-reap-stuck-reviews", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].post("/api/admin/run-reap-stuck-reviews", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
         body = r.json()
         assert "reaped" in body
@@ -670,24 +648,24 @@ class TestAdminStoreSmoke:
         r = seeded_app_both["client"].post(
             "/api/admin/store/submissions/nonexistent/override",
             json={"action": "approve"},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code == 404
 
     def test_submissions_rescan_missing(self, seeded_app_both):
-        r = seeded_app_both["client"].post("/api/admin/store/submissions/nonexistent/rescan", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].post("/api/admin/store/submissions/nonexistent/rescan", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 404
 
     def test_submissions_retry_missing(self, seeded_app_both):
-        r = seeded_app_both["client"].post("/api/admin/store/submissions/nonexistent/retry", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].post("/api/admin/store/submissions/nonexistent/retry", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 404
 
     def test_submissions_delete_missing(self, seeded_app_both):
-        r = seeded_app_both["client"].delete("/api/admin/store/submissions/nonexistent", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].delete("/api/admin/store/submissions/nonexistent", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 404
 
     def test_submissions_bundle_missing(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/store/submissions/nonexistent/bundle.zip", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/store/submissions/nonexistent/bundle.zip", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 404
 
 
@@ -702,19 +680,16 @@ class TestAdminSessionsSmoke:
         "GET /api/admin/sessions/facets",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_sessions_list(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/sessions/list", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/sessions/list", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_sessions_kpis(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/sessions/kpis", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/sessions/kpis", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_sessions_facets(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/sessions/facets", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/admin/sessions/facets", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
 
@@ -743,34 +718,30 @@ class TestStoreSmoke:
         "POST /api/store/import-bundle",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_categories(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/store/categories", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/store/categories", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
         assert isinstance(r.json(), list)
 
     def test_owners(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/store/owners", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/store/owners", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_entities_list(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/store/entities", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/store/entities", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
         assert isinstance(r.json(), list)
 
     def test_entities_preview(self, seeded_app_both):
-        from tests.helpers.factories import make_skill_zip
         import io
         zb = make_skill_zip("preview-skill")
         r = seeded_app_both["client"].post(
             "/api/store/entities/preview",
             files={"file": ("preview-skill.zip", io.BytesIO(zb), "application/zip")},
             data={"type": "skill"},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
-        assert r.status_code in (200, 422)
+        assert r.status_code == 200, r.text
 
 
 # ---------------------------------------------------------------------------
@@ -779,12 +750,6 @@ class TestStoreSmoke:
 
 class TestFleaUploadSmoke:
     COVERED_ROUTES: set = set()  # covered by TestStoreSmoke already
-
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
-    def _analyst_headers(self, s):
-        return {"Authorization": f"Bearer {s['analyst_token']}"}
 
     def _upload(self, client, headers, zip_bytes, entity_type="skill"):
         import io
@@ -796,43 +761,37 @@ class TestFleaUploadSmoke:
         )
 
     def test_upload_valid_skill_approved(self, seeded_app_both):
-        from tests.helpers.factories import make_skill_zip
-        r = self._upload(seeded_app_both["client"], self._admin_headers(seeded_app_both), make_skill_zip("smoke-skill-valid"))
+        r = self._upload(seeded_app_both["client"], _admin_headers(seeded_app_both), make_skill_zip("smoke-skill-valid"))
         assert r.status_code == 201
         assert r.json()["visibility_status"] == "approved"
 
     def test_upload_fails_short_description(self, seeded_app_both):
-        from tests.helpers.factories import make_bad_desc_zip
-        r = self._upload(seeded_app_both["client"], self._admin_headers(seeded_app_both), make_bad_desc_zip("smoke-bad-desc"))
+        r = self._upload(seeded_app_both["client"], _admin_headers(seeded_app_both), make_bad_desc_zip("smoke-bad-desc"))
         assert r.status_code == 422
         assert r.json()["code"] == "validation_failed"
 
     def test_upload_fails_missing_name(self, seeded_app_both):
-        from tests.helpers.factories import make_no_name_zip
-        r = self._upload(seeded_app_both["client"], self._admin_headers(seeded_app_both), make_no_name_zip())
+        r = self._upload(seeded_app_both["client"], _admin_headers(seeded_app_both), make_no_name_zip())
         assert r.status_code == 422
         assert r.json()["code"] == "validation_failed"
 
     def test_upload_fails_security_blocked(self, seeded_app_both):
-        from tests.helpers.factories import make_security_fail_zip
-        r = self._upload(seeded_app_both["client"], self._admin_headers(seeded_app_both), make_security_fail_zip("smoke-sec-fail"))
+        r = self._upload(seeded_app_both["client"], _admin_headers(seeded_app_both), make_security_fail_zip("smoke-sec-fail"))
         assert r.status_code == 422
         assert r.json()["code"] == "security_blocked"
 
     def test_upload_duplicate_name_409(self, seeded_app_both):
-        from tests.helpers.factories import make_skill_zip
         zb = make_skill_zip("smoke-duplicate-skill")
-        self._upload(seeded_app_both["client"], self._admin_headers(seeded_app_both), zb)
-        r2 = self._upload(seeded_app_both["client"], self._admin_headers(seeded_app_both), zb)
+        self._upload(seeded_app_both["client"], _admin_headers(seeded_app_both), zb)
+        r2 = self._upload(seeded_app_both["client"], _admin_headers(seeded_app_both), zb)
         assert r2.status_code == 409
 
     def test_upload_type_mismatch_returns_422(self, seeded_app_both):
         """Uploading a skill zip with type='plugin' declared → validation_failed."""
-        from tests.helpers.factories import make_skill_zip
         # skill zip but type=plugin is a type-mismatch
         r = self._upload(
             seeded_app_both["client"],
-            self._admin_headers(seeded_app_both),
+            _admin_headers(seeded_app_both),
             make_skill_zip("smoke-type-mismatch"),
             entity_type="plugin",  # wrong type for a skill zip
         )
@@ -840,7 +799,6 @@ class TestFleaUploadSmoke:
         assert r.status_code == 422, r.text
 
     def test_pending_entity_not_visible_to_other_user(self, seeded_app_both, monkeypatch):
-        from tests.helpers.factories import make_skill_zip
         monkeypatch.setattr("src.store_guardrails.llm_review.review_bundle", lambda *a, **kw: {
             "risk_level": "low", "summary": "mock approve", "findings": [], "reviewed_by_model": "mock", "error": None,
         })
@@ -853,7 +811,7 @@ class TestFleaUploadSmoke:
             "/api/store/entities",
             files={"file": ("bundle.zip", io.BytesIO(zb), "application/zip")},
             data={"type": "skill"},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert rc.status_code == 201
         entity = rc.json()
@@ -861,18 +819,17 @@ class TestFleaUploadSmoke:
         entity_id = entity["id"]
 
         # analyst (non-owner) should NOT see it in list
-        rl = seeded_app_both["client"].get("/api/store/entities", headers=self._analyst_headers(seeded_app_both))
+        rl = seeded_app_both["client"].get("/api/store/entities", headers=_analyst_headers(seeded_app_both))
         assert rl.status_code == 200
         ids_in_list = [e["id"] for e in rl.json()]
         assert entity_id not in ids_in_list
 
         # analyst direct get should be 403/404
-        rd = seeded_app_both["client"].get(f"/api/store/entities/{entity_id}", headers=self._analyst_headers(seeded_app_both))
+        rd = seeded_app_both["client"].get(f"/api/store/entities/{entity_id}", headers=_analyst_headers(seeded_app_both))
         assert rd.status_code in (403, 404)
 
     def test_pending_entity_visible_to_admin(self, seeded_app_both, monkeypatch):
         """Admin can GET a pending entity directly."""
-        from tests.helpers.factories import make_skill_zip
         monkeypatch.setattr("src.store_guardrails.llm_review.review_bundle", lambda *a, **kw: {
             "risk_level": "low", "summary": "mock", "findings": [],
             "reviewed_by_model": "mock", "error": None,
@@ -885,7 +842,7 @@ class TestFleaUploadSmoke:
             "/api/store/entities",
             files={"file": ("bundle.zip", io.BytesIO(zb), "application/zip")},
             data={"type": "skill"},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert rc.status_code == 201
         entity = rc.json()
@@ -894,23 +851,22 @@ class TestFleaUploadSmoke:
         # Admin can see it directly
         r = seeded_app_both["client"].get(
             f"/api/store/entities/{entity_id}",
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code == 200, r.text
 
     def test_approved_entity_visible_to_everyone(self, seeded_app_both):
-        from tests.helpers.factories import make_skill_zip
         import io
         zb = make_skill_zip("smoke-approved-visible")
         rc = seeded_app_both["client"].post(
             "/api/store/entities",
             files={"file": ("bundle.zip", io.BytesIO(zb), "application/zip")},
             data={"type": "skill"},
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert rc.status_code == 201
         entity_id = rc.json()["id"]
-        r = seeded_app_both["client"].get(f"/api/store/entities/{entity_id}", headers=self._analyst_headers(seeded_app_both))
+        r = seeded_app_both["client"].get(f"/api/store/entities/{entity_id}", headers=_analyst_headers(seeded_app_both))
         assert r.status_code == 200
 
 
@@ -924,11 +880,7 @@ class TestMyStackSmoke:
         "PUT /api/my-stack",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def _upload_skill(self, client, admin_headers, name):
-        from tests.helpers.factories import make_skill_zip
         import io
         r = client.post(
             "/api/store/entities",
@@ -941,7 +893,7 @@ class TestMyStackSmoke:
 
     def test_install_skill_appears_in_stack(self, seeded_app_both):
         client = seeded_app_both["client"]
-        h = self._admin_headers(seeded_app_both)
+        h = _admin_headers(seeded_app_both)
         entity_id = self._upload_skill(client, h, "stack-install-skill")
         ri = client.post(f"/api/store/entities/{entity_id}/install", headers=h)
         assert ri.status_code in (200, 201)
@@ -951,10 +903,9 @@ class TestMyStackSmoke:
         assert entity_id in ids
 
     def test_install_plugin_appears_in_stack(self, seeded_app_both):
-        from tests.helpers.factories import make_plugin_zip
         import io
         client = seeded_app_both["client"]
-        h = self._admin_headers(seeded_app_both)
+        h = _admin_headers(seeded_app_both)
         r = client.post(
             "/api/store/entities",
             files={"file": ("bundle.zip", io.BytesIO(make_plugin_zip("stack-install-plugin")), "application/zip")},
@@ -969,10 +920,9 @@ class TestMyStackSmoke:
         assert entity_id in [e["id"] for e in rs.json()]
 
     def test_install_agent_appears_in_stack(self, seeded_app_both):
-        from tests.helpers.factories import make_agent_zip
         import io
         client = seeded_app_both["client"]
-        h = self._admin_headers(seeded_app_both)
+        h = _admin_headers(seeded_app_both)
         r = client.post(
             "/api/store/entities",
             files={"file": ("bundle.zip", io.BytesIO(make_agent_zip("stack-install-agent")), "application/zip")},
@@ -988,7 +938,7 @@ class TestMyStackSmoke:
 
     def test_uninstall_removes_from_stack(self, seeded_app_both):
         client = seeded_app_both["client"]
-        h = self._admin_headers(seeded_app_both)
+        h = _admin_headers(seeded_app_both)
         entity_id = self._upload_skill(client, h, "stack-uninstall-skill")
         client.post(f"/api/store/entities/{entity_id}/install", headers=h)
         rd = client.delete(f"/api/store/entities/{entity_id}/install", headers=h)
@@ -999,7 +949,7 @@ class TestMyStackSmoke:
     def test_cli_my_stack_show_lists_installed(self, cli_client_both, seeded_app_both):
         """agnes my-stack show output contains entity name after install."""
         client = seeded_app_both["client"]
-        h = self._admin_headers(seeded_app_both)
+        h = _admin_headers(seeded_app_both)
         entity_id = self._upload_skill(client, h, "cli-stack-show-skill")
         client.post(f"/api/store/entities/{entity_id}/install", headers=h)
         result = cli_client_both["invoke"](["my-stack", "show"])
@@ -1009,7 +959,7 @@ class TestMyStackSmoke:
     def test_cli_my_stack_show_after_removal(self, cli_client_both, seeded_app_both):
         """agnes my-stack show output does not contain entity after uninstall."""
         client = seeded_app_both["client"]
-        h = self._admin_headers(seeded_app_both)
+        h = _admin_headers(seeded_app_both)
         entity_id = self._upload_skill(client, h, "cli-stack-remove-skill")
         client.post(f"/api/store/entities/{entity_id}/install", headers=h)
         client.delete(f"/api/store/entities/{entity_id}/install", headers=h)
@@ -1094,15 +1044,12 @@ class TestTokensSmoke:
         "DELETE /auth/admin/tokens/{token_id}",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_tokens_list(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/auth/tokens", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/auth/tokens", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_token_create_get_delete(self, seeded_app_both):
-        h = self._admin_headers(seeded_app_both)
+        h = _admin_headers(seeded_app_both)
         rc = seeded_app_both["client"].post("/auth/tokens", json={"name": "smoke-token"}, headers=h)
         assert rc.status_code == 201
         assert "token" in rc.json()
@@ -1113,7 +1060,7 @@ class TestTokensSmoke:
         assert rd.status_code == 204
 
     def test_admin_tokens_list(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/auth/admin/tokens", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/auth/admin/tokens", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
 
@@ -1144,15 +1091,12 @@ class TestSettingsSmoke:
         "PUT /api/settings/dataset",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_settings_get(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/settings", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/settings", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_settings_dataset_put(self, seeded_app_both):
-        r = seeded_app_both["client"].put("/api/settings/dataset", json={}, headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].put("/api/settings/dataset", json={}, headers=_admin_headers(seeded_app_both))
         assert r.status_code in (200, 422)
 
 
@@ -1173,32 +1117,29 @@ class TestMarketplacesSmoke:
         "DELETE /api/marketplace/curated/{mp_id}/{plugin_name}/install",
     }
 
-    def _admin_headers(self, s):
-        return {"Authorization": f"Bearer {s['admin_token']}"}
-
     def test_marketplaces_list(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/marketplaces", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/marketplaces", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_marketplace_items(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/marketplace/items", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/marketplace/items", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_marketplace_categories(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/marketplace/categories", headers=self._admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get("/api/marketplace/categories", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_marketplace_curated_missing(self, seeded_app_both):
         r = seeded_app_both["client"].get(
             "/api/marketplace/curated/nonexistent-mp/nonexistent-plugin",
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code in (200, 404)
 
     def test_marketplace_flea_detail_missing(self, seeded_app_both):
         r = seeded_app_both["client"].get(
             "/api/marketplace/flea/nonexistent-entity/detail",
-            headers=self._admin_headers(seeded_app_both),
+            headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code in (200, 404)
 
