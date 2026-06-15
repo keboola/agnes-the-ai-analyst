@@ -4,6 +4,7 @@ Each test class declares COVERED_ROUTES consumed by the route-coverage guard at
 the bottom of this file. Depth: HTTP status code + top-level response shape only.
 All tests run twice via seeded_app_both (DuckDB-only + Postgres).
 """
+
 from __future__ import annotations
 
 import pytest
@@ -28,9 +29,11 @@ def _admin_headers(s):
 def _analyst_headers(s):
     return {"Authorization": f"Bearer {s['analyst_token']}"}
 
+
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
+
 
 class TestAuthSmoke:
     COVERED_ROUTES = {
@@ -43,31 +46,48 @@ class TestAuthSmoke:
         """Bootstrap window is closed once a user with a password exists."""
         from argon2 import PasswordHasher
         from src.repositories import users_repo
+
         users_repo().update(id="admin1", password_hash=PasswordHasher().hash("admin-pass"))
-        r = seeded_app_both["client"].post("/auth/bootstrap", json={
-            "email": "new@test.com", "password": "newpass123", "name": "New",
-        })
+        r = seeded_app_both["client"].post(
+            "/auth/bootstrap",
+            json={
+                "email": "new@test.com",
+                "password": "newpass123",
+                "name": "New",
+            },
+        )
         assert r.status_code in (403, 409), r.text
 
     def test_password_login_returns_token(self, seeded_app_both):
         """Password login endpoint is reachable (401 expected — no password set)."""
-        r = seeded_app_both["client"].post("/auth/password/login", json={
-            "email": "admin@test.com", "password": "wrong",
-        })
+        r = seeded_app_both["client"].post(
+            "/auth/password/login",
+            json={
+                "email": "admin@test.com",
+                "password": "wrong",
+            },
+        )
         assert r.status_code == 401, r.text
 
     def test_token_with_password_user(self, seeded_app_both):
         """POST /auth/token returns 200 + access_token for a user with a password_hash."""
         from argon2 import PasswordHasher
         from src.repositories import users_repo
+
         ph = PasswordHasher()
         users_repo().create(
-            id="pw-user1", email="pw@test.com", name="PwUser",
+            id="pw-user1",
+            email="pw@test.com",
+            name="PwUser",
             password_hash=ph.hash("test-password"),
         )
-        r = seeded_app_both["client"].post("/auth/token", json={
-            "email": "pw@test.com", "password": "test-password",
-        })
+        r = seeded_app_both["client"].post(
+            "/auth/token",
+            json={
+                "email": "pw@test.com",
+                "password": "test-password",
+            },
+        )
         assert r.status_code == 200, r.text
         assert "access_token" in r.json()
 
@@ -75,6 +95,7 @@ class TestAuthSmoke:
 # ---------------------------------------------------------------------------
 # Health / Version
 # ---------------------------------------------------------------------------
+
 
 class TestHealthSmoke:
     COVERED_ROUTES = {
@@ -104,6 +125,7 @@ class TestHealthSmoke:
 # Me
 # ---------------------------------------------------------------------------
 
+
 class TestMeSmoke:
     COVERED_ROUTES = {
         "GET /api/me/home-stats",
@@ -128,6 +150,7 @@ class TestMeSmoke:
 # ---------------------------------------------------------------------------
 # Me Stats  (DuckDB analytics side — should return 200 even in PG mode)
 # ---------------------------------------------------------------------------
+
 
 class TestMeStatsSmoke:
     COVERED_ROUTES = {
@@ -158,6 +181,7 @@ class TestMeStatsSmoke:
 # Users
 # ---------------------------------------------------------------------------
 
+
 class TestUsersSmoke:
     COVERED_ROUTES = {
         "GET /api/users",
@@ -185,6 +209,7 @@ class TestUsersSmoke:
 # ---------------------------------------------------------------------------
 # RBAC (groups + grants + access-overview)
 # ---------------------------------------------------------------------------
+
 
 class TestRBACSmoke:
     COVERED_ROUTES = {
@@ -241,6 +266,7 @@ class TestRBACSmoke:
 # Sync
 # ---------------------------------------------------------------------------
 
+
 class TestSyncSmoke:
     COVERED_ROUTES = {
         "GET /api/sync/status",
@@ -277,6 +303,7 @@ class TestSyncSmoke:
 # Catalog
 # ---------------------------------------------------------------------------
 
+
 class TestCatalogSmoke:
     COVERED_ROUTES = {
         "GET /api/catalog/tables",
@@ -292,17 +319,22 @@ class TestCatalogSmoke:
         assert isinstance(tables, list)
 
     def test_catalog_profile_missing(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/catalog/profile/nonexistent-table", headers=_admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get(
+            "/api/catalog/profile/nonexistent-table", headers=_admin_headers(seeded_app_both)
+        )
         assert r.status_code in (404, 422)
 
     def test_catalog_profile_refresh_missing(self, seeded_app_both):
-        r = seeded_app_both["client"].post("/api/catalog/profile/nonexistent-table/refresh", headers=_admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].post(
+            "/api/catalog/profile/nonexistent-table/refresh", headers=_admin_headers(seeded_app_both)
+        )
         assert r.status_code in (404, 422)
 
 
 # ---------------------------------------------------------------------------
 # Data (requires registered_table_both)
 # ---------------------------------------------------------------------------
+
 
 class TestDataSmoke:
     COVERED_ROUTES = {
@@ -339,6 +371,7 @@ class TestDataSmoke:
 # Query (requires registered_table_both)
 # ---------------------------------------------------------------------------
 
+
 class TestQuerySmoke:
     COVERED_ROUTES = {
         "POST /api/query",
@@ -369,6 +402,7 @@ class TestQuerySmoke:
 # ---------------------------------------------------------------------------
 # V2 (requires registered_table_both)
 # ---------------------------------------------------------------------------
+
 
 class TestV2Smoke:
     COVERED_ROUTES = {
@@ -419,6 +453,7 @@ class TestV2Smoke:
 # Metrics
 # ---------------------------------------------------------------------------
 
+
 class TestMetricsSmoke:
     COVERED_ROUTES = {
         "GET /api/metrics",
@@ -450,6 +485,7 @@ class TestMetricsSmoke:
 # ---------------------------------------------------------------------------
 # Memory
 # ---------------------------------------------------------------------------
+
 
 class TestMemorySmoke:
     COVERED_ROUTES = {
@@ -511,6 +547,7 @@ class TestMemorySmoke:
 # Upload
 # ---------------------------------------------------------------------------
 
+
 class TestUploadSmoke:
     COVERED_ROUTES = {
         "POST /api/upload/sessions",
@@ -520,6 +557,7 @@ class TestUploadSmoke:
 
     def test_upload_session(self, seeded_app_both):
         import io
+
         r = seeded_app_both["client"].post(
             "/api/upload/sessions",
             files={"file": ("test.jsonl", io.BytesIO(b'{"type":"text"}\n'), "application/octet-stream")},
@@ -529,6 +567,7 @@ class TestUploadSmoke:
 
     def test_upload_artifact(self, seeded_app_both):
         import io
+
         r = seeded_app_both["client"].post(
             "/api/upload/artifacts",
             files={"file": ("test.html", io.BytesIO(b"<h1>Test</h1>"), "text/html")},
@@ -548,6 +587,7 @@ class TestUploadSmoke:
 # ---------------------------------------------------------------------------
 # Admin Registry (register-table, precheck, CRUD)
 # ---------------------------------------------------------------------------
+
 
 class TestAdminRegistrySmoke:
     COVERED_ROUTES = {
@@ -578,7 +618,13 @@ class TestAdminRegistrySmoke:
     def test_register_precheck(self, seeded_app_both):
         r = seeded_app_both["client"].post(
             "/api/admin/register-table/precheck",
-            json={"name": "chk_orders", "source_type": "keboola", "bucket": "in.c-smoke", "source_table": "orders", "query_mode": "local"},
+            json={
+                "name": "chk_orders",
+                "source_type": "keboola",
+                "bucket": "in.c-smoke",
+                "source_table": "orders",
+                "query_mode": "local",
+            },
             headers=_admin_headers(seeded_app_both),
         )
         assert r.status_code in (200, 422)
@@ -587,7 +633,13 @@ class TestAdminRegistrySmoke:
         h = _admin_headers(seeded_app_both)
         rc = seeded_app_both["client"].post(
             "/api/admin/register-table",
-            json={"name": "crud_test_table", "source_type": "keboola", "bucket": "in.c-crud", "source_table": "orders", "query_mode": "local"},
+            json={
+                "name": "crud_test_table",
+                "source_type": "keboola",
+                "bucket": "in.c-crud",
+                "source_table": "orders",
+                "query_mode": "local",
+            },
             headers=h,
         )
         assert rc.status_code == 201
@@ -630,6 +682,7 @@ class TestAdminRegistrySmoke:
 # Admin Store  (submissions queue + reaper)
 # ---------------------------------------------------------------------------
 
+
 class TestAdminStoreSmoke:
     COVERED_ROUTES = {
         "GET /api/admin/store/submissions",
@@ -644,7 +697,9 @@ class TestAdminStoreSmoke:
         assert isinstance(items, list)
 
     def test_submissions_detail_missing(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/store/submissions/nonexistent", headers=_admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get(
+            "/api/admin/store/submissions/nonexistent", headers=_admin_headers(seeded_app_both)
+        )
         assert r.status_code == 404
 
     def test_reap_stuck_reviews_empty(self, seeded_app_both):
@@ -663,25 +718,34 @@ class TestAdminStoreSmoke:
         assert r.status_code == 404
 
     def test_submissions_rescan_missing(self, seeded_app_both):
-        r = seeded_app_both["client"].post("/api/admin/store/submissions/nonexistent/rescan", headers=_admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].post(
+            "/api/admin/store/submissions/nonexistent/rescan", headers=_admin_headers(seeded_app_both)
+        )
         assert r.status_code == 404
 
     def test_submissions_retry_missing(self, seeded_app_both):
-        r = seeded_app_both["client"].post("/api/admin/store/submissions/nonexistent/retry", headers=_admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].post(
+            "/api/admin/store/submissions/nonexistent/retry", headers=_admin_headers(seeded_app_both)
+        )
         assert r.status_code == 404
 
     def test_submissions_delete_missing(self, seeded_app_both):
-        r = seeded_app_both["client"].delete("/api/admin/store/submissions/nonexistent", headers=_admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].delete(
+            "/api/admin/store/submissions/nonexistent", headers=_admin_headers(seeded_app_both)
+        )
         assert r.status_code == 404
 
     def test_submissions_bundle_missing(self, seeded_app_both):
-        r = seeded_app_both["client"].get("/api/admin/store/submissions/nonexistent/bundle.zip", headers=_admin_headers(seeded_app_both))
+        r = seeded_app_both["client"].get(
+            "/api/admin/store/submissions/nonexistent/bundle.zip", headers=_admin_headers(seeded_app_both)
+        )
         assert r.status_code == 404
 
 
 # ---------------------------------------------------------------------------
 # Admin Sessions
 # ---------------------------------------------------------------------------
+
 
 class TestAdminSessionsSmoke:
     COVERED_ROUTES = {
@@ -706,6 +770,7 @@ class TestAdminSessionsSmoke:
 # ---------------------------------------------------------------------------
 # Store (public listing, categories, owners, preview)
 # ---------------------------------------------------------------------------
+
 
 class TestStoreSmoke:
     COVERED_ROUTES = {
@@ -746,6 +811,7 @@ class TestStoreSmoke:
 
     def test_entities_preview(self, seeded_app_both):
         import io
+
         zb = make_skill_zip("preview-skill")
         r = seeded_app_both["client"].post(
             "/api/store/entities/preview",
@@ -760,11 +826,13 @@ class TestStoreSmoke:
 # Flea Upload — state machine, visibility rules
 # ---------------------------------------------------------------------------
 
+
 class TestFleaUploadSmoke:
     COVERED_ROUTES: set = set()  # covered by TestStoreSmoke already
 
     def _upload(self, client, headers, zip_bytes, entity_type="skill"):
         import io
+
         return client.post(
             "/api/store/entities",
             files={"file": ("bundle.zip", io.BytesIO(zip_bytes), "application/zip")},
@@ -773,12 +841,16 @@ class TestFleaUploadSmoke:
         )
 
     def test_upload_valid_skill_approved(self, seeded_app_both):
-        r = self._upload(seeded_app_both["client"], _admin_headers(seeded_app_both), make_skill_zip("smoke-skill-valid"))
+        r = self._upload(
+            seeded_app_both["client"], _admin_headers(seeded_app_both), make_skill_zip("smoke-skill-valid")
+        )
         assert r.status_code == 201
         assert r.json()["visibility_status"] == "approved"
 
     def test_upload_fails_short_description(self, seeded_app_both):
-        r = self._upload(seeded_app_both["client"], _admin_headers(seeded_app_both), make_bad_desc_zip("smoke-bad-desc"))
+        r = self._upload(
+            seeded_app_both["client"], _admin_headers(seeded_app_both), make_bad_desc_zip("smoke-bad-desc")
+        )
         assert r.status_code == 422
         assert r.json()["detail"]["code"] == "validation_failed"
 
@@ -787,7 +859,9 @@ class TestFleaUploadSmoke:
         assert r.status_code in (400, 422)
 
     def test_upload_fails_security_blocked(self, seeded_app_both):
-        r = self._upload(seeded_app_both["client"], _admin_headers(seeded_app_both), make_security_fail_zip("smoke-sec-fail"))
+        r = self._upload(
+            seeded_app_both["client"], _admin_headers(seeded_app_both), make_security_fail_zip("smoke-sec-fail")
+        )
         assert r.status_code == 422
         assert r.json()["detail"]["code"] == "security_blocked"
 
@@ -810,13 +884,21 @@ class TestFleaUploadSmoke:
         assert r.status_code == 422, r.text
 
     def test_pending_entity_not_visible_to_other_user(self, seeded_app_both, monkeypatch):
-        monkeypatch.setattr("src.store_guardrails.llm_review.review_bundle", lambda *a, **kw: {
-            "risk_level": "low", "summary": "mock approve", "findings": [], "reviewed_by_model": "mock", "error": None,
-        })
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle",
+            lambda *a, **kw: {
+                "risk_level": "low",
+                "summary": "mock approve",
+                "findings": [],
+                "reviewed_by_model": "mock",
+                "error": None,
+            },
+        )
         monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
         monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
 
         import io
+
         zb = make_skill_zip("smoke-pending-skill")
         rc = seeded_app_both["client"].post(
             "/api/store/entities",
@@ -838,18 +920,27 @@ class TestFleaUploadSmoke:
         assert entity_id not in ids_in_list
 
         # analyst direct get should be 403/404
-        rd = seeded_app_both["client"].get(f"/api/store/entities/{entity_id}", headers=_analyst_headers(seeded_app_both))
+        rd = seeded_app_both["client"].get(
+            f"/api/store/entities/{entity_id}", headers=_analyst_headers(seeded_app_both)
+        )
         assert rd.status_code in (403, 404)
 
     def test_pending_entity_visible_to_owner(self, seeded_app_both, monkeypatch):
         """Owner (uploader) can see their own pending entity in the store listing."""
-        monkeypatch.setattr("src.store_guardrails.llm_review.review_bundle", lambda *a, **kw: {
-            "risk_level": "low", "summary": "mock", "findings": [],
-            "reviewed_by_model": "mock", "error": None,
-        })
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle",
+            lambda *a, **kw: {
+                "risk_level": "low",
+                "summary": "mock",
+                "findings": [],
+                "reviewed_by_model": "mock",
+                "error": None,
+            },
+        )
         monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
         monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
         import io
+
         zb = make_skill_zip("smoke-owner-sees-own-pending")
         rc = seeded_app_both["client"].post(
             "/api/store/entities",
@@ -871,13 +962,20 @@ class TestFleaUploadSmoke:
 
     def test_pending_entity_visible_to_admin(self, seeded_app_both, monkeypatch):
         """Admin can GET a pending entity directly."""
-        monkeypatch.setattr("src.store_guardrails.llm_review.review_bundle", lambda *a, **kw: {
-            "risk_level": "low", "summary": "mock", "findings": [],
-            "reviewed_by_model": "mock", "error": None,
-        })
+        monkeypatch.setattr(
+            "src.store_guardrails.llm_review.review_bundle",
+            lambda *a, **kw: {
+                "risk_level": "low",
+                "summary": "mock",
+                "findings": [],
+                "reviewed_by_model": "mock",
+                "error": None,
+            },
+        )
         monkeypatch.setattr("app.api.store.get_guardrails_enabled", lambda: True)
         monkeypatch.setattr("app.api.store.get_guardrails_llm_provider_ready", lambda: True)
         import io
+
         zb = make_skill_zip("smoke-admin-sees-pending")
         rc = seeded_app_both["client"].post(
             "/api/store/entities",
@@ -898,6 +996,7 @@ class TestFleaUploadSmoke:
 
     def test_approved_entity_visible_to_everyone(self, seeded_app_both):
         import io
+
         zb = make_skill_zip("smoke-approved-visible")
         rc = seeded_app_both["client"].post(
             "/api/store/entities",
@@ -915,6 +1014,7 @@ class TestFleaUploadSmoke:
 # My Stack
 # ---------------------------------------------------------------------------
 
+
 class TestMyStackSmoke:
     COVERED_ROUTES = {
         "GET /api/my-stack",
@@ -922,6 +1022,7 @@ class TestMyStackSmoke:
 
     def _upload_skill(self, client, admin_headers, name):
         import io
+
         r = client.post(
             "/api/store/entities",
             files={"file": ("bundle.zip", io.BytesIO(make_skill_zip(name)), "application/zip")},
@@ -944,6 +1045,7 @@ class TestMyStackSmoke:
 
     def test_install_plugin_appears_in_stack(self, seeded_app_both):
         import io
+
         client = seeded_app_both["client"]
         h = _admin_headers(seeded_app_both)
         r = client.post(
@@ -961,6 +1063,7 @@ class TestMyStackSmoke:
 
     def test_install_agent_appears_in_stack(self, seeded_app_both):
         import io
+
         client = seeded_app_both["client"]
         h = _admin_headers(seeded_app_both)
         r = client.post(
@@ -1011,6 +1114,7 @@ class TestMyStackSmoke:
 # ---------------------------------------------------------------------------
 # CLI — CliRunner through in-process transport
 # ---------------------------------------------------------------------------
+
 
 class TestCLISmoke:
     COVERED_ROUTES: set = set()  # CLI hits the same routes as web tests above
@@ -1074,6 +1178,7 @@ class TestCLISmoke:
 # Tokens
 # ---------------------------------------------------------------------------
 
+
 class TestTokensSmoke:
     COVERED_ROUTES = {
         "GET /auth/tokens",
@@ -1108,6 +1213,7 @@ class TestTokensSmoke:
 # Scripts
 # ---------------------------------------------------------------------------
 
+
 class TestScriptsSmoke:
     COVERED_ROUTES = {
         "GET /api/scripts",
@@ -1124,6 +1230,7 @@ class TestScriptsSmoke:
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
+
 
 class TestSettingsSmoke:
     COVERED_ROUTES = {
@@ -1143,6 +1250,7 @@ class TestSettingsSmoke:
 # ---------------------------------------------------------------------------
 # Marketplaces
 # ---------------------------------------------------------------------------
+
 
 class TestMarketplacesSmoke:
     COVERED_ROUTES = {
@@ -1675,6 +1783,7 @@ KNOWN_UNTESTED = {
 def _collect_covered_routes() -> set:
     """Aggregate COVERED_ROUTES from every test class in both smoke and behavioral files."""
     import importlib
+
     covered: set = set()
     for mod_name in (
         "tests.db_pg.test_endpoints_smoke",
@@ -1690,14 +1799,20 @@ def _collect_covered_routes() -> set:
     return covered
 
 
-@pytest.mark.parametrize("state_backend", ["duckdb"], indirect=True)
-def test_every_route_is_covered_or_excluded(seeded_app_both):
-    """Route-coverage guard: fails CI when a new endpoint has no test or exclusion."""
+def test_every_route_is_covered_or_excluded(state_backend, seeded_app_both):
+    """Route-coverage guard: fails CI when a new endpoint has no test or exclusion.
+
+    The app's route set is backend-independent, so this runs once on the duckdb
+    leg of the parametrized ``state_backend`` fixture. The restriction is an
+    in-body skip rather than a ``@parametrize("state_backend", ["duckdb"])``
+    marker: re-parametrizing a name the fixture already supplies is a
+    duplicate-parametrization collection error under newer pytest.
+    """
+    if state_backend != "duckdb":
+        pytest.skip("route set is backend-independent; checked once on duckdb")
     app = seeded_app_both["client"].app
     all_routes = {
-        f"{m} {r.path}"
-        for r in app.routes
-        for m in (getattr(r, "methods", None) or set()) - {"HEAD", "OPTIONS"}
+        f"{m} {r.path}" for r in app.routes for m in (getattr(r, "methods", None) or set()) - {"HEAD", "OPTIONS"}
     }
     covered = _collect_covered_routes() | KNOWN_UNTESTED
     missing = sorted(all_routes - covered)
