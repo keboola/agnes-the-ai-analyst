@@ -9,8 +9,6 @@ Verifies:
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,6 +16,7 @@ import pytest
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────────
+
 
 def _run(coro):
     """Run a coroutine synchronously (no pytest-asyncio dependency)."""
@@ -40,10 +39,12 @@ def _mock_resp(data: Any, status: int = 200) -> MagicMock:
 def _import_mod():
     pytest.importorskip("mcp", reason="mcp package not installed")
     import app.api.mcp_http as mod
+
     return mod
 
 
 # ── auth middleware ─────────────────────────────────────────────────────────────
+
 
 class TestAuthMiddleware:
     def test_no_token_returns_401(self, seeded_app):
@@ -51,9 +52,7 @@ class TestAuthMiddleware:
         assert r.status_code == 401
 
     def test_bad_token_returns_401(self, seeded_app):
-        r = seeded_app["client"].get(
-            "/api/mcp/sse", headers={"Authorization": "Bearer not-a-real-jwt"}
-        )
+        r = seeded_app["client"].get("/api/mcp/sse", headers={"Authorization": "Bearer not-a-real-jwt"})
         assert r.status_code == 401
 
     def test_valid_token_passes_through_to_mcp(self, seeded_app):
@@ -103,6 +102,7 @@ class TestAuthMiddleware:
 
 # ── tool registration ────────────────────────────────────────────────────────────
 
+
 class TestToolRegistration:
     def test_exact_server_side_tool_set(self):
         mod = _import_mod()
@@ -128,6 +128,11 @@ class TestToolRegistration:
             # can rate a store entity without leaving the chat. See
             # tests/test_documentation_api_triple_surface.py for the policy.
             "store_rate",
+            # Collections read surfaces (Slice 2) — list collections and read
+            # one collection's files. Upload/delete are CLI-only (multipart /
+            # mutation). See tests/test_documentation_api_triple_surface.py.
+            "collections_list",
+            "collection_get",
         }
 
     def test_no_client_only_tools(self):
@@ -140,17 +145,15 @@ class TestToolRegistration:
 
 # ── catalog tool ────────────────────────────────────────────────────────────────
 
+
 class TestCatalogTool:
     def test_returns_table_list(self):
         mod = _import_mod()
         data = {"tables": [{"id": "orders", "name": "Orders", "query_mode": "local"}]}
 
-        with patch("app.api.mcp_http._current_token") as tv, \
-             patch("httpx.AsyncClient") as MC:
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
             tv.get.return_value = "tok"
-            MC.return_value.__aenter__.return_value.get = AsyncMock(
-                return_value=_mock_resp(data)
-            )
+            MC.return_value.__aenter__.return_value.get = AsyncMock(return_value=_mock_resp(data))
             result = _run(mod.catalog())
 
         assert result["tables"][0]["id"] == "orders"
@@ -158,8 +161,7 @@ class TestCatalogTool:
     def test_url_contains_v2_catalog(self):
         mod = _import_mod()
 
-        with patch("app.api.mcp_http._current_token") as tv, \
-             patch("httpx.AsyncClient") as MC:
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
             tv.get.return_value = "tok"
             mock_get = AsyncMock(return_value=_mock_resp({}))
             MC.return_value.__aenter__.return_value.get = mock_get
@@ -171,13 +173,13 @@ class TestCatalogTool:
 
 # ── schema tool ─────────────────────────────────────────────────────────────────
 
+
 class TestSchemaTool:
     def test_passes_table_id_in_url(self):
         mod = _import_mod()
         data = {"table_id": "orders", "columns": [{"name": "id", "type": "VARCHAR"}]}
 
-        with patch("app.api.mcp_http._current_token") as tv, \
-             patch("httpx.AsyncClient") as MC:
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
             tv.get.return_value = "tok"
             mock_get = AsyncMock(return_value=_mock_resp(data))
             MC.return_value.__aenter__.return_value.get = mock_get
@@ -189,6 +191,7 @@ class TestSchemaTool:
 
 # ── describe tool ───────────────────────────────────────────────────────────────
 
+
 class TestDescribeTool:
     def test_returns_schema_and_sample(self):
         mod = _import_mod()
@@ -198,8 +201,7 @@ class TestDescribeTool:
         def _side(url, **kw):
             return _mock_resp(schema_data if "schema" in url else sample_data)
 
-        with patch("app.api.mcp_http._current_token") as tv, \
-             patch("httpx.AsyncClient") as MC:
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
             tv.get.return_value = "tok"
             MC.return_value.__aenter__.return_value.get = AsyncMock(side_effect=_side)
             result = _run(mod.describe("orders"))
@@ -215,8 +217,7 @@ class TestDescribeTool:
             calls.append((url, kw))
             return _mock_resp({})
 
-        with patch("app.api.mcp_http._current_token") as tv, \
-             patch("httpx.AsyncClient") as MC:
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
             tv.get.return_value = "tok"
             MC.return_value.__aenter__.return_value.get = AsyncMock(side_effect=_side)
             _run(mod.describe("orders", rows=9999))
@@ -228,13 +229,13 @@ class TestDescribeTool:
 
 # ── query tool ──────────────────────────────────────────────────────────────────
 
+
 class TestQueryTool:
     def test_posts_sql_and_limit(self):
         mod = _import_mod()
         resp_data = {"columns": ["x"], "rows": [[1]], "truncated": False}
 
-        with patch("app.api.mcp_http._current_token") as tv, \
-             patch("httpx.AsyncClient") as MC:
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
             tv.get.return_value = "tok"
             mock_post = AsyncMock(return_value=_mock_resp(resp_data))
             MC.return_value.__aenter__.return_value.post = mock_post
@@ -248,8 +249,7 @@ class TestQueryTool:
     def test_default_limit_is_1000(self):
         mod = _import_mod()
 
-        with patch("app.api.mcp_http._current_token") as tv, \
-             patch("httpx.AsyncClient") as MC:
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
             tv.get.return_value = "tok"
             mock_post = AsyncMock(return_value=_mock_resp({}))
             MC.return_value.__aenter__.return_value.post = mock_post
@@ -260,13 +260,13 @@ class TestQueryTool:
 
 # ── stack tools (issue #621) ──────────────────────────────────────────────────────
 
+
 class TestStackTools:
     def test_browse_passes_type_param(self):
         mod = _import_mod()
         data = {"items": [{"id": "pkg_a", "name": "A", "in_stack": False}]}
 
-        with patch("app.api.mcp_http._current_token") as tv, \
-             patch("httpx.AsyncClient") as MC:
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
             tv.get.return_value = "tok"
             mock_get = AsyncMock(return_value=_mock_resp(data))
             MC.return_value.__aenter__.return_value.get = mock_get
@@ -280,8 +280,7 @@ class TestStackTools:
     def test_subscribe_posts_payload_and_adds_hint(self):
         mod = _import_mod()
 
-        with patch("app.api.mcp_http._current_token") as tv, \
-             patch("httpx.AsyncClient") as MC:
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
             tv.get.return_value = "tok"
             mock_post = AsyncMock(return_value=_mock_resp({"subscribed": True}))
             MC.return_value.__aenter__.return_value.post = mock_post
@@ -298,8 +297,7 @@ class TestStackTools:
     def test_unsubscribe_calls_subscription_endpoint(self):
         mod = _import_mod()
 
-        with patch("app.api.mcp_http._current_token") as tv, \
-             patch("httpx.AsyncClient") as MC:
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
             tv.get.return_value = "tok"
             mock_delete = AsyncMock(return_value=_mock_resp({}, status=204))
             MC.return_value.__aenter__.return_value.delete = mock_delete
@@ -312,6 +310,7 @@ class TestStackTools:
 
 # ── server_info tool ────────────────────────────────────────────────────────────
 
+
 class TestServerInfoTool:
     def test_returns_health_and_email(self):
         mod = _import_mod()
@@ -323,8 +322,7 @@ class TestServerInfoTool:
                 return _mock_resp({"email": "analyst@test.com"})
             return _mock_resp({})
 
-        with patch("app.api.mcp_http._current_token") as tv, \
-             patch("httpx.AsyncClient") as MC:
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
             tv.get.return_value = "tok"
             MC.return_value.__aenter__.return_value.get = AsyncMock(side_effect=_side)
             result = _run(mod.server_info())
@@ -341,8 +339,7 @@ class TestServerInfoTool:
                 raise ConnectionError("refused")
             return _mock_resp({"email": "x@y.com"})
 
-        with patch("app.api.mcp_http._current_token") as tv, \
-             patch("httpx.AsyncClient") as MC:
+        with patch("app.api.mcp_http._current_token") as tv, patch("httpx.AsyncClient") as MC:
             tv.get.return_value = "tok"
             MC.return_value.__aenter__.return_value.get = AsyncMock(side_effect=_side)
             result = _run(mod.server_info())

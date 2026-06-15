@@ -202,7 +202,7 @@ async def delete_collection(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{collection_id}/files")
+@router.post("/{collection_id}/files", status_code=201)
 async def upload_files(
     collection_id: str,
     files: List[UploadFile] = File(...),
@@ -356,11 +356,7 @@ async def delete_file(
     if row.get("storage_path"):
         delete_corpus_file(row["storage_path"])
     # Hard-delete the corpus_files row — no soft-delete on individual files.
-    from src.db import get_system_db
-
-    conn = get_system_db()
-    conn.execute("DELETE FROM corpus_files WHERE id = ?", [file_id])
-    conn.close()
+    cf_repo.delete(file_id)
     logger.info(
         "corpus_file deleted file_id=%s collection=%s by=%s",
         file_id,

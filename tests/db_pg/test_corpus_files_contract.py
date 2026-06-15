@@ -224,3 +224,17 @@ def test_set_status_rejected_with_error_detail(repo):
     row = repo.get(file_id)
     assert row["processing_status"] == "rejected"
     assert row["processing_detail"]["error"] == "parse failed"
+
+
+def test_delete_removes_file(repo):
+    file_id = repo.add(
+        corpus_id=CORPUS_ID,
+        filename="gone.pdf",
+        sha256="h6",
+        file_type=None,
+        size_bytes=None,
+        storage_path=None,
+    )
+    assert repo.get(file_id) is not None
+    repo.delete(file_id)
+    assert repo.get(file_id) is None

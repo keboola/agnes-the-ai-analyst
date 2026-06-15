@@ -34,7 +34,6 @@ from mcp.server.fastmcp import FastMCP
 
 from cli.client import api_get
 from cli.config import get_server_url, get_token
-from cli.lib.pull import run_pull
 from cli.v2_client import V2ClientError, api_get_json, api_post_json
 from src.duckdb_conn import _open_duckdb
 
@@ -257,6 +256,9 @@ def pull(skip_materialize: bool = False) -> dict:
     Run at the start of a session to make sure local data is fresh.
     Equivalent to ``agnes pull`` on the command line.
     """
+    # Imported inside the function (not at module scope) so tests can patch
+    # ``cli.lib.pull.run_pull`` and have the patch take effect at call time.
+    from cli.lib.pull import run_pull
 
     server_url = get_server_url()
     token = get_token()

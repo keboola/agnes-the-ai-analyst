@@ -873,6 +873,13 @@ synced IWT clone for the bind-git file picker.
 - /api/chat/{session_id}/leave
 - /api/chat/{session_id}/messages
 
+### `/api/collections` — File collections (bring-your-files)
+
+- /api/collections
+- /api/collections/{collection_id}
+- /api/collections/{collection_id}/files
+- /api/collections/{collection_id}/files/{file_id}
+
 ### `/api/connectors` — Connector manifest
 
 - /api/connectors/manifest

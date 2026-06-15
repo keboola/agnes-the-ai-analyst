@@ -270,7 +270,7 @@ class TestFileUpload:
             files={"files": ("notes.txt", io.BytesIO(b"hello world"), "text/plain")},
             headers=_auth(seeded_app["analyst_token"]),
         )
-        assert resp.status_code == 200, resp.text
+        assert resp.status_code == 201, resp.text
         results = resp.json()
         assert len(results) == 1
         assert results[0]["processing_status"] == "pending"

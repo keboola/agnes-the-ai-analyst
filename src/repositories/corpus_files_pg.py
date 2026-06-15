@@ -136,3 +136,11 @@ class CorpusFilesPgRepository:
                 ),
                 {"status": status, "detail": detail_json, "id": file_id},
             )
+
+    def delete(self, file_id: str) -> None:
+        """Hard-delete a file row (individual files are not soft-deleted)."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("DELETE FROM corpus_files WHERE id = :id"),
+                {"id": file_id},
+            )

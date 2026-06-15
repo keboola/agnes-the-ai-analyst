@@ -114,3 +114,7 @@ class CorpusFilesRepository:
             "WHERE id = ?",
             [status, detail_json, file_id],
         )
+
+    def delete(self, file_id: str) -> None:
+        """Hard-delete a file row (individual files are not soft-deleted)."""
+        self.conn.execute("DELETE FROM corpus_files WHERE id = ?", [file_id])
