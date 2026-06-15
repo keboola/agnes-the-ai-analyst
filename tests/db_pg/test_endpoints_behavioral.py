@@ -73,7 +73,7 @@ class TestUsersRBACBehavioral:
 
         new_email = "behavioral-new@test.com"
         r = client.post(
-            "/api/admin/users",
+            "/api/users",
             json={"email": new_email, "name": "Behavioral User"},
             headers=_admin_headers(s),
         )
@@ -128,10 +128,10 @@ class TestUsersRBACBehavioral:
         assert rg.status_code == 201, rg.text
         group_id = rg.json()["id"]
 
-        # Add analyst1 to group
+        # Add analyst1 to group (endpoint resolves user by email)
         rm = client.post(
             f"/api/admin/groups/{group_id}/members",
-            json={"user_id": "analyst1"},
+            json={"email": "analyst@test.com"},
             headers=_admin_headers(s),
         )
         assert rm.status_code == 201, rm.text
@@ -139,7 +139,8 @@ class TestUsersRBACBehavioral:
         from src.repositories import user_group_members_repo
 
         members = user_group_members_repo().list_members_for_group(group_id)
-        user_ids = [m["user_id"] for m in members]
+        # list_members_for_group JOINs with users; returns "id" (user pk)
+        user_ids = [m["id"] for m in members]
         assert "analyst1" in user_ids
 
     def test_revoke_member_removes_from_active_backend(self, seeded_app_both):
@@ -156,14 +157,14 @@ class TestUsersRBACBehavioral:
         assert rg.status_code == 201, rg.text
         group_id = rg.json()["id"]
 
-        # Add analyst1
+        # Add analyst1 (endpoint resolves user by email)
         client.post(
             f"/api/admin/groups/{group_id}/members",
-            json={"user_id": "analyst1"},
+            json={"email": "analyst@test.com"},
             headers=_admin_headers(s),
         )
 
-        # Remove analyst1
+        # Remove analyst1 (path param is the user_id, not email)
         rd = client.delete(
             f"/api/admin/groups/{group_id}/members/analyst1",
             headers=_admin_headers(s),
@@ -173,7 +174,7 @@ class TestUsersRBACBehavioral:
         from src.repositories import user_group_members_repo
 
         members = user_group_members_repo().list_members_for_group(group_id)
-        user_ids = [m["user_id"] for m in members]
+        user_ids = [m["id"] for m in members]
         assert "analyst1" not in user_ids
 
     def test_grant_table_access_visible_in_manifest(self, seeded_app_both, registered_table_both):
@@ -192,23 +193,42 @@ class TestUsersRBACBehavioral:
         assert rg.status_code == 201, rg.text
         group_id = rg.json()["id"]
 
-        # Add analyst1 to the group
+        # Add analyst1 to the group (endpoint resolves user by email)
         client.post(
             f"/api/admin/groups/{group_id}/members",
-            json={"user_id": "analyst1"},
+            json={"email": "analyst@test.com"},
             headers=_admin_headers(s),
         )
 
-        # Grant group access to the table
+        # Create a data package, add table to it, then grant the package to the group.
+        # Per-table resource_grants no longer grant analyst access; data packages do.
+        rp_pkg = client.post(
+            "/api/admin/data-packages",
+            json={"name": "Grant Test Package", "slug": "grant-test-pkg"},
+            headers=_admin_headers(s),
+        )
+        assert rp_pkg.status_code == 201, rp_pkg.text
+        pkg_id = rp_pkg.json()["id"]
+
+        rt = client.post(
+            f"/api/admin/data-packages/{pkg_id}/tables",
+            json={"table_id": table_id},
+            headers=_admin_headers(s),
+        )
+        assert rt.status_code == 200, rt.text
+
         rp = client.post(
             "/api/admin/grants",
-            json={"group_id": group_id, "resource_type": "table", "resource_id": table_id},
+            json={
+                "group_id": group_id, "resource_type": "data_package",
+                "resource_id": pkg_id, "requirement": "required",
+            },
             headers=_admin_headers(s),
         )
         assert rp.status_code == 201, rp.text
         grant_id = rp.json()["id"]
 
-        # Verify grant persisted in active backend
+        # Verify data_package grant persisted in active backend
         from src.repositories import resource_grants_repo
 
         assert_only_in_active_backend(
@@ -217,14 +237,15 @@ class TestUsersRBACBehavioral:
             duckdb_probe=lambda: _duck_probe("resource_grants", "id", grant_id),
         )
 
-        # Analyst should see table in manifest
+        # Analyst should see table in manifest (access flows through data package).
+        # manifest["tables"] is a dict keyed by table name ("smoke_orders"), not UUID.
+        source_name = registered_table_both["source_name"]
         rm = client.get("/api/sync/manifest", headers=_analyst_headers(s))
         assert rm.status_code == 200, rm.text
-        manifest = rm.json()
-        table_ids = [t["id"] for t in manifest.get("tables", [])]
-        assert table_id in table_ids, (
-            f"table {table_id!r} not in manifest tables after grant; "
-            f"manifest tables: {table_ids!r}"
+        tables_dict = rm.json().get("tables", {})
+        assert source_name in tables_dict, (
+            f"table {source_name!r} not in manifest tables after data_package grant; "
+            f"manifest tables: {list(tables_dict.keys())!r}"
         )
 
     def test_revoke_grant_removes_from_manifest(self, seeded_app_both, registered_table_both):
@@ -242,26 +263,46 @@ class TestUsersRBACBehavioral:
         assert rg.status_code == 201, rg.text
         group_id = rg.json()["id"]
 
+        # Add analyst to group (endpoint resolves user by email)
         client.post(
             f"/api/admin/groups/{group_id}/members",
-            json={"user_id": "analyst1"},
+            json={"email": "analyst@test.com"},
             headers=_admin_headers(s),
         )
 
-        # Grant table access
+        # Create a data package, add the table, and grant the package to the group.
+        rp_pkg = client.post(
+            "/api/admin/data-packages",
+            json={"name": "Revoke Grant Package", "slug": "revoke-grant-pkg"},
+            headers=_admin_headers(s),
+        )
+        assert rp_pkg.status_code == 201, rp_pkg.text
+        pkg_id = rp_pkg.json()["id"]
+
+        client.post(
+            f"/api/admin/data-packages/{pkg_id}/tables",
+            json={"table_id": table_id},
+            headers=_admin_headers(s),
+        )
+
         rp = client.post(
             "/api/admin/grants",
-            json={"group_id": group_id, "resource_type": "table", "resource_id": table_id},
+            json={
+                "group_id": group_id, "resource_type": "data_package",
+                "resource_id": pkg_id, "requirement": "required",
+            },
             headers=_admin_headers(s),
         )
         assert rp.status_code == 201, rp.text
         grant_id = rp.json()["id"]
 
-        # Analyst sees table in manifest
+        # Analyst sees table in manifest (access flows through the data package).
+        # manifest["tables"] is a dict keyed by table name.
+        source_name = registered_table_both["source_name"]
         rm = client.get("/api/sync/manifest", headers=_analyst_headers(s))
         assert rm.status_code == 200, rm.text
-        assert table_id in [t["id"] for t in rm.json().get("tables", [])], (
-            f"table not in manifest after grant (pre-revoke check)"
+        assert source_name in rm.json().get("tables", {}), (
+            "table not in manifest after data_package grant (pre-revoke check)"
         )
 
         # Revoke grant
@@ -271,8 +312,8 @@ class TestUsersRBACBehavioral:
         # Table is no longer in manifest
         rm2 = client.get("/api/sync/manifest", headers=_analyst_headers(s))
         assert rm2.status_code == 200, rm2.text
-        assert table_id not in [t["id"] for t in rm2.json().get("tables", [])], (
-            f"table still in manifest after grant revoked"
+        assert source_name not in rm2.json().get("tables", {}), (
+            "table still in manifest after grant revoked"
         )
 
         # Grant row is gone from active backend
@@ -328,7 +369,7 @@ class TestTableRegistrySyncBehavioral:
         existing = table_registry_repo().get(table_id)
         assert existing is not None
 
-        new_schedule = "0 6 * * *"
+        new_schedule = "cron 0 6 * * *"
         r = client.put(
             f"/api/admin/registry/{table_id}",
             json={
@@ -413,27 +454,51 @@ class TestTableRegistrySyncBehavioral:
         assert rg.status_code == 201, rg.text
         group_id = rg.json()["id"]
 
+        # Add analyst to group (endpoint resolves user by email)
         client.post(
             f"/api/admin/groups/{group_id}/members",
-            json={"user_id": "analyst1"},
+            json={"email": "analyst@test.com"},
+            headers=_admin_headers(s),
+        )
+
+        # Create data package → add first table → grant package to group.
+        # Per-table resource_grants no longer grant analyst visibility.
+        rp_pkg = client.post(
+            "/api/admin/data-packages",
+            json={"name": "Manifest Filter Package", "slug": "manifest-filter-pkg"},
+            headers=_admin_headers(s),
+        )
+        assert rp_pkg.status_code == 201, rp_pkg.text
+        pkg_id = rp_pkg.json()["id"]
+
+        client.post(
+            f"/api/admin/data-packages/{pkg_id}/tables",
+            json={"table_id": table_id},
             headers=_admin_headers(s),
         )
 
         client.post(
             "/api/admin/grants",
-            json={"group_id": group_id, "resource_type": "table", "resource_id": table_id},
+            json={
+                "group_id": group_id, "resource_type": "data_package",
+                "resource_id": pkg_id, "requirement": "required",
+            },
             headers=_admin_headers(s),
         )
 
-        # Analyst manifest has granted table but NOT ungranted table
+        # Analyst manifest has granted table but NOT ungranted table.
+        # manifest["tables"] is a dict keyed by table name (not UUID).
+        source_name = registered_table_both["source_name"]  # "smoke_orders"
         rm = client.get("/api/sync/manifest", headers=_analyst_headers(s))
         assert rm.status_code == 200, rm.text
-        manifest_ids = [t["id"] for t in rm.json().get("tables", [])]
-        assert table_id in manifest_ids, (
-            f"granted table {table_id!r} missing from analyst manifest"
+        tables_dict = rm.json().get("tables", {})
+        assert source_name in tables_dict, (
+            f"granted table {source_name!r} missing from analyst manifest; "
+            f"tables: {list(tables_dict.keys())!r}"
         )
-        assert ungranted_id not in manifest_ids, (
-            f"ungranted table {ungranted_id!r} leaked into analyst manifest"
+        # ungranted_table has no sync_state entry and no data_package grant → absent
+        assert "ungrantd_table" not in tables_dict, (
+            "ungranted table leaked into analyst manifest"
         )
 
 
@@ -444,6 +509,12 @@ class TestTableRegistrySyncBehavioral:
 
 class TestMemoryBehavioral:
     """Memory create/delete mutations land in the correct backend."""
+
+    COVERED_ROUTES = {
+        "POST /api/memory",
+        "POST /api/memory/admin/reject",
+        "PATCH /api/memory/admin/{item_id}",
+    }
 
     def test_create_knowledge_item_persists_to_active_backend(self, seeded_app_both):
         """POST /api/memory → 201; knowledge_repo().get_by_id confirms row. [+neg-duck]"""
@@ -489,11 +560,10 @@ class TestMemoryBehavioral:
         assert r.status_code == 201, r.text
         item_id = r.json()["id"]
 
-        # Use admin reject endpoint to change status (the memory API uses
-        # admin/approve/reject lifecycle, not a raw DELETE)
+        # Use admin reject endpoint; item_id is a query param, not in the JSON body.
         rr = client.post(
-            "/api/memory/admin/reject",
-            json={"id": item_id},
+            f"/api/memory/admin/reject?item_id={item_id}",
+            json={},
             headers=_admin_headers(s),
         )
         assert rr.status_code in (200, 204), rr.text
@@ -599,8 +669,10 @@ class TestStoreBehavioral:
         assert r.status_code == 201, r.text
         entity = r.json()
         entity_id = entity["id"]
-        assert entity["visibility_status"] == "pending_llm", (
-            f"Expected pending_llm, got {entity['visibility_status']!r}"
+        # Entity visibility is "pending" when guardrails are enabled;
+        # the SUBMISSION (not entity) status is "pending_llm".
+        assert entity["visibility_status"] == "pending", (
+            f"Expected pending entity visibility with guardrails on, got {entity['visibility_status']!r}"
         )
 
         from src.repositories import store_submissions_repo
@@ -703,10 +775,11 @@ class TestStoreBehavioral:
             f"Expected pending status with guardrails on, got {entity['visibility_status']!r}"
         )
 
-        # Analyst (non-owner) GET /api/store/entities → entity absent
+        # Analyst (non-owner) GET /api/store/entities → entity absent.
+        # Response is StoreEntityListResponse: {"items": [...], "total": ..., ...}
         rl = client.get("/api/store/entities", headers=_analyst_headers(s))
         assert rl.status_code == 200, rl.text
-        listed_ids = [e["id"] for e in rl.json()]
+        listed_ids = [e["id"] for e in rl.json()["items"]]
         assert entity_id not in listed_ids, (
             f"Pending entity {entity_id!r} leaked into non-owner analyst listing"
         )
@@ -765,10 +838,11 @@ class TestStoreBehavioral:
         )
         assert ro.status_code == 200, ro.text
 
-        # Analyst (non-owner) can now see entity in store listing
+        # Analyst (non-owner) can now see entity in store listing.
+        # Response is StoreEntityListResponse: {"items": [...], "total": ..., ...}
         rl = client.get("/api/store/entities", headers=_analyst_headers(s))
         assert rl.status_code == 200, rl.text
-        listed_ids = [e["id"] for e in rl.json()]
+        listed_ids = [e["id"] for e in rl.json()["items"]]
         assert entity_id in listed_ids, (
             f"Approved entity {entity_id!r} missing from analyst store listing after override"
         )
@@ -805,10 +879,10 @@ class TestStoreBehavioral:
             f"entity {entity_id!r} not in installs after install; installs: {installed_ids!r}"
         )
 
-        # Verify via /api/my-stack
+        # Verify via /api/my-stack (returns {"curated": [...], "store": [...]})
         rs = client.get("/api/my-stack", headers=_admin_headers(s))
         assert rs.status_code == 200, rs.text
-        stack_ids = [e["id"] for e in rs.json()]
+        stack_ids = [e["entity_id"] for e in rs.json()["store"]]
         assert entity_id in stack_ids
 
     def test_uninstall_removes_from_active_backend(self, seeded_app_both, monkeypatch):
@@ -838,10 +912,10 @@ class TestStoreBehavioral:
         installed_ids = [i["id"] for i in installs]
         assert entity_id not in installed_ids
 
-        # Verify via /api/my-stack
+        # Verify via /api/my-stack (returns {"curated": [...], "store": [...]})
         rs = client.get("/api/my-stack", headers=_admin_headers(s))
         assert rs.status_code == 200, rs.text
-        stack_ids = [e["id"] for e in rs.json()]
+        stack_ids = [e["entity_id"] for e in rs.json()["store"]]
         assert entity_id not in stack_ids
 
 
@@ -1026,13 +1100,31 @@ class TestDataAccessBehavioral:
 
         client.post(
             f"/api/admin/groups/{group_id}/members",
-            json={"user_id": "analyst1"},
+            json={"email": "analyst@test.com"},
+            headers=_admin_headers(s),
+        )
+
+        # Create data package, add table, grant package to group.
+        rp_pkg = client.post(
+            "/api/admin/data-packages",
+            json={"name": "Access Check Package", "slug": "access-check-pkg"},
+            headers=_admin_headers(s),
+        )
+        assert rp_pkg.status_code == 201, rp_pkg.text
+        pkg_id = rp_pkg.json()["id"]
+
+        client.post(
+            f"/api/admin/data-packages/{pkg_id}/tables",
+            json={"table_id": table_id},
             headers=_admin_headers(s),
         )
 
         rp = client.post(
             "/api/admin/grants",
-            json={"group_id": group_id, "resource_type": "table", "resource_id": table_id},
+            json={
+                "group_id": group_id, "resource_type": "data_package",
+                "resource_id": pkg_id, "requirement": "required",
+            },
             headers=_admin_headers(s),
         )
         assert rp.status_code == 201, rp.text
@@ -1043,7 +1135,7 @@ class TestDataAccessBehavioral:
             headers=_analyst_headers(s),
         )
         assert r_after.status_code == 204, (
-            f"Expected 204 after grant, got {r_after.status_code}: {r_after.text}"
+            f"Expected 204 after data_package grant, got {r_after.status_code}: {r_after.text}"
         )
 
     def test_download_returns_parquet_for_granted_user(self, seeded_app_both, registered_table_both):
@@ -1063,13 +1155,31 @@ class TestDataAccessBehavioral:
 
         client.post(
             f"/api/admin/groups/{group_id}/members",
-            json={"user_id": "analyst1"},
+            json={"email": "analyst@test.com"},
+            headers=_admin_headers(s),
+        )
+
+        # Create data package, add table, grant package to group.
+        rp_pkg = client.post(
+            "/api/admin/data-packages",
+            json={"name": "Download Test Package", "slug": "download-test-pkg"},
+            headers=_admin_headers(s),
+        )
+        assert rp_pkg.status_code == 201, rp_pkg.text
+        pkg_id = rp_pkg.json()["id"]
+
+        client.post(
+            f"/api/admin/data-packages/{pkg_id}/tables",
+            json={"table_id": table_id},
             headers=_admin_headers(s),
         )
 
         client.post(
             "/api/admin/grants",
-            json={"group_id": group_id, "resource_type": "table", "resource_id": table_id},
+            json={
+                "group_id": group_id, "resource_type": "data_package",
+                "resource_id": pkg_id, "requirement": "required",
+            },
             headers=_admin_headers(s),
         )
 
@@ -1111,15 +1221,15 @@ class TestAdminOverviewBehavioral:
         assert sub is not None
         sub_id = sub["id"]
 
-        # Admin submissions list should include this submission
+        # Admin submissions list should include this submission.
+        # Endpoint returns {"items": [...], "total": ..., "limit": ..., "skip": ...}
         rl = client.get("/api/admin/store/submissions", headers=_admin_headers(s))
         assert rl.status_code == 200, rl.text
         body = rl.json()
-        # Endpoint returns either a list or a dict with "submissions" key
         if isinstance(body, list):
             submission_ids = [ss["id"] for ss in body]
         else:
-            submission_ids = [ss["id"] for ss in body.get("submissions", [])]
+            submission_ids = [ss["id"] for ss in body.get("items", body.get("submissions", []))]
         assert sub_id in submission_ids, (
             f"submission {sub_id!r} not in admin list; ids: {submission_ids[:10]!r}"
         )

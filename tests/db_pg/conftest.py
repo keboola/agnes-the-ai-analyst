@@ -380,11 +380,11 @@ def cli_client_both(seeded_app_both, monkeypatch):
     admin_token = seeded_app_both["admin_token"]
 
     def _make_client(timeout=30.0):
-        return httpx.Client(
-            transport=httpx.ASGITransport(app=tc.app),
+        from starlette.testclient import TestClient as _TC
+        return _TC(
+            app=tc.app,
             base_url="http://testserver",
             headers={"Authorization": f"Bearer {admin_token}"},
-            timeout=timeout,
         )
 
     @contextlib.contextmanager
@@ -400,6 +400,45 @@ def cli_client_both(seeded_app_both, monkeypatch):
     monkeypatch.setattr(_cli_client, "_get_shared_client", lambda: _make_client())
     _cli_client._SHARED_CLIENT = None
     monkeypatch.setenv("AGNES_SERVER_URL", "http://testserver")
+
+    # v2_client uses httpx.get/post/etc. directly — patch each helper to
+    # route through the in-process TestClient so CLI commands that call
+    # v2_client (catalog, schema, my-stack, …) don't try a real TCP connection.
+    import cli.v2_client as _v2_client
+    from cli.v2_client import V2ClientError, _parse_error_body as _v2_parse_error
+
+    def _v2_get(path, **params):
+        c = _make_client()
+        r = c.get(path, params=params or None)
+        if r.status_code >= 400:
+            raise V2ClientError(status_code=r.status_code, body=_v2_parse_error(r))
+        return r.json()
+
+    def _v2_post(path, payload=None):
+        c = _make_client()
+        r = c.post(path, json=payload)
+        if r.status_code >= 400:
+            raise V2ClientError(status_code=r.status_code, body=_v2_parse_error(r))
+        return r.json()
+
+    def _v2_delete(path):
+        c = _make_client()
+        r = c.delete(path)
+        if r.status_code >= 400:
+            raise V2ClientError(status_code=r.status_code, body=_v2_parse_error(r))
+        return r.json() if r.content else {}
+
+    def _v2_put(path, payload=None):
+        c = _make_client()
+        r = c.put(path, json=payload)
+        if r.status_code >= 400:
+            raise V2ClientError(status_code=r.status_code, body=_v2_parse_error(r))
+        return r.json()
+
+    monkeypatch.setattr(_v2_client, "api_get_json", _v2_get)
+    monkeypatch.setattr(_v2_client, "api_post_json", _v2_post)
+    monkeypatch.setattr(_v2_client, "api_delete", _v2_delete)
+    monkeypatch.setattr(_v2_client, "api_put_json", _v2_put)
 
     runner = CliRunner()
 
@@ -424,13 +463,17 @@ def cli_client_both(seeded_app_both, monkeypatch):
 
 @pytest.fixture
 def registered_table_both(seeded_app_both):
-    """Register a table via the API, create a minimal DuckDB extract, rebuild.
+    """Register a table via the API, write parquet + sync_state, yield table info.
 
     Returns {"table_id": str, "source_name": str, "data_dir": Path}.
+
+    - ``table_id`` is the UUID from table_registry (used by download handler rglob
+      and RBAC grants).
+    - ``source_name`` is the human name ("smoke_orders") which is the key used in
+      sync_state and the manifest ``tables`` dict.
     """
-    import duckdb
     import pandas as pd
-    from src.orchestrator import SyncOrchestrator
+    from src.repositories import sync_state_repo
 
     client = seeded_app_both["client"]
     admin_token = seeded_app_both["admin_token"]
@@ -440,7 +483,7 @@ def registered_table_both(seeded_app_both):
     source_name = "smoke_orders"
     bucket = "smoke_src"
 
-    # Register first to get the table_id the download handler looks up
+    # Register first to get the table_id (UUID) the download handler looks up
     r = client.post(
         "/api/admin/register-table",
         json={
@@ -455,14 +498,22 @@ def registered_table_both(seeded_app_both):
     assert r.status_code == 201, f"register-table failed: {r.text}"
     table_id = r.json()["id"]
 
-    # Write parquet to the path the download handler resolves via rglob:
-    #   data_dir/extracts/{bucket}/data/{table_id}.parquet
+    # Write parquet at extracts/{bucket}/data/{table_id}.parquet so the download
+    # handler (which rglob-searches "data/{table_id}.parquet") can stream it.
     parquet_dir = data_dir / "extracts" / bucket / "data"
     parquet_dir.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame({"id": [1, 2, 3], "amount": [10.0, 20.0, 30.0]})
     parquet_path = parquet_dir / f"{table_id}.parquet"
-    pd.DataFrame({"id": [1, 2, 3], "amount": [10.0, 20.0, 30.0]}).to_parquet(str(parquet_path))
+    df.to_parquet(str(parquet_path))
 
-    # Rebuild master views so the table is queryable
-    SyncOrchestrator(str(data_dir)).rebuild()
+    # Populate sync_state directly so the manifest returns this table.
+    # sync_state.table_id mirrors table_registry.name ("smoke_orders"), which is
+    # the key the manifest uses in its ``tables`` dict.
+    sync_state_repo().update_sync(
+        table_id=source_name,
+        rows=3,
+        file_size_bytes=parquet_path.stat().st_size,
+        hash="",
+    )
 
     yield {"table_id": table_id, "source_name": source_name, "data_dir": data_dir}

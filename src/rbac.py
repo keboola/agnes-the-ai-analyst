@@ -101,15 +101,10 @@ def can_access_table(
         pkg_entries = resolver.stack(user_id, ResourceType.DATA_PACKAGE)
         if not pkg_entries:
             return False
-        pkg_ids = [e.id for e in pkg_entries]
-        placeholders = ",".join(["?"] * len(pkg_ids))
-        row = conn.execute(
-            f"""SELECT 1 FROM data_package_tables
-                WHERE package_id IN ({placeholders}) AND table_id = ?
-                LIMIT 1""",
-            [*pkg_ids, table_id],
-        ).fetchone()
-        return bool(row)
+        pkg_ids_set = {e.id for e in pkg_entries}
+        from src.repositories import data_packages_repo as _dp_repo
+        table_pkg_ids = {p["id"] for p in _dp_repo().list_packages_of_table(table_id)}
+        return bool(pkg_ids_set & table_pkg_ids)
     finally:
         if should_close:
             conn.close()
@@ -160,14 +155,10 @@ def get_accessible_tables(
         pkg_entries = resolver.stack(user_id, ResourceType.DATA_PACKAGE)
         result: list[str] = []
         if pkg_entries:
-            pkg_ids = [e.id for e in pkg_entries]
-            placeholders = ",".join(["?"] * len(pkg_ids))
-            rows = conn.execute(
-                f"""SELECT DISTINCT table_id FROM data_package_tables
-                    WHERE package_id IN ({placeholders})""",
-                pkg_ids,
-            ).fetchall()
-            result = [r[0] for r in rows]
+            pkg_ids_set = {e.id for e in pkg_entries}
+            from src.repositories import data_packages_repo as _dp_repo
+            bulk = _dp_repo().list_member_ids_bulk()
+            result = list({tid for pid, tids in bulk.items() if pid in pkg_ids_set for tid in tids})
         # Internal tables — always accessible (row-level RBAC at query time).
         from connectors.internal.access import INTERNAL_TABLES
         for t in INTERNAL_TABLES:
