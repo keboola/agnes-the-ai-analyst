@@ -213,8 +213,11 @@ class ResourceGrantsRepository:
         resource_id: str,
         assigned_by: Optional[str] = None,
     ) -> bool:
-        """Create a grant if it does not already exist. Returns True iff a new
-        row was inserted, False if the grant was already present (no-op).
+        """Create a grant if it does not already exist. Returns True iff the
+        grant row exists after the call (whether newly inserted or already
+        present) — mirrors the Postgres sibling's contract. The post-insert
+        ``SELECT`` cannot distinguish a fresh insert from a pre-existing row,
+        so callers must not treat the return value as "was inserted".
 
         Uses INSERT OR IGNORE so repeated calls (e.g. on every boot from the
         built-in marketplace seeder) are idempotent and cheap.
