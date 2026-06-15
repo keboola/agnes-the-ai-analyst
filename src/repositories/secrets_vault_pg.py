@@ -13,6 +13,7 @@ Tables:
 ``secret_value_enc`` is a ``BYTEA`` column on Postgres; SQLAlchemy returns
 it as ``bytes``, matching the DuckDB ``BLOB`` round-trip.
 """
+
 from __future__ import annotations
 
 import logging
@@ -60,10 +61,7 @@ class SharedSecretsPgRepository:
         caller can fall back to the env-var path."""
         with self._engine.connect() as conn:
             row = conn.execute(
-                sa.text(
-                    "SELECT secret_value_enc FROM mcp_secrets "
-                    "WHERE source_id = :source_id"
-                ),
+                sa.text("SELECT secret_value_enc FROM mcp_secrets WHERE source_id = :source_id"),
                 {"source_id": source_id},
             ).fetchone()
         if row is None:
@@ -75,8 +73,7 @@ class SharedSecretsPgRepository:
             return decrypt_secret(bytes(token))
         except InvalidToken:
             logger.warning(
-                "mcp_secrets row for %s failed to decrypt — vault key rotated? "
-                "Falling back to env-var lookup.",
+                "mcp_secrets row for %s failed to decrypt — vault key rotated? Falling back to env-var lookup.",
                 source_id,
             )
             return None
@@ -91,9 +88,7 @@ class SharedSecretsPgRepository:
     def has(self, source_id: str) -> bool:
         with self._engine.connect() as conn:
             row = conn.execute(
-                sa.text(
-                    "SELECT 1 FROM mcp_secrets WHERE source_id = :source_id LIMIT 1"
-                ),
+                sa.text("SELECT 1 FROM mcp_secrets WHERE source_id = :source_id LIMIT 1"),
                 {"source_id": source_id},
             ).fetchone()
         return row is not None
@@ -126,9 +121,7 @@ class SystemSecretsPgRepository:
     def get(self, name: str) -> Optional[str]:
         with self._engine.connect() as conn:
             row = conn.execute(
-                sa.text(
-                    "SELECT secret_value_enc FROM system_secrets WHERE name = :name"
-                ),
+                sa.text("SELECT secret_value_enc FROM system_secrets WHERE name = :name"),
                 {"name": name},
             ).fetchone()
         if row is None:
@@ -140,8 +133,7 @@ class SystemSecretsPgRepository:
             return decrypt_secret(bytes(token))
         except (InvalidToken, RuntimeError):
             logger.warning(
-                "system_secrets row for %s failed to decrypt — vault key "
-                "rotated or malformed? Treating as unset.",
+                "system_secrets row for %s failed to decrypt — vault key rotated or malformed? Treating as unset.",
                 name,
             )
             return None
@@ -194,8 +186,7 @@ class PerUserSecretsPgRepository:
         with self._engine.connect() as conn:
             row = conn.execute(
                 sa.text(
-                    "SELECT secret_value_enc FROM mcp_user_secrets "
-                    "WHERE source_id = :source_id AND user_id = :user_id"
+                    "SELECT secret_value_enc FROM mcp_user_secrets WHERE source_id = :source_id AND user_id = :user_id"
                 ),
                 {"source_id": source_id, "user_id": user_id},
             ).fetchone()
@@ -210,27 +201,22 @@ class PerUserSecretsPgRepository:
             logger.warning(
                 "mcp_user_secrets row (%s, %s) failed to decrypt — vault key "
                 "rotated? Falling back to shared vault / env-var.",
-                source_id, user_id,
+                source_id,
+                user_id,
             )
             return None
 
     def delete(self, source_id: str, user_id: str) -> None:
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "DELETE FROM mcp_user_secrets "
-                    "WHERE source_id = :source_id AND user_id = :user_id"
-                ),
+                sa.text("DELETE FROM mcp_user_secrets WHERE source_id = :source_id AND user_id = :user_id"),
                 {"source_id": source_id, "user_id": user_id},
             )
 
     def has(self, source_id: str, user_id: str) -> bool:
         with self._engine.connect() as conn:
             row = conn.execute(
-                sa.text(
-                    "SELECT 1 FROM mcp_user_secrets "
-                    "WHERE source_id = :source_id AND user_id = :user_id LIMIT 1"
-                ),
+                sa.text("SELECT 1 FROM mcp_user_secrets WHERE source_id = :source_id AND user_id = :user_id LIMIT 1"),
                 {"source_id": source_id, "user_id": user_id},
             ).fetchone()
         return row is not None
@@ -243,10 +229,74 @@ class PerUserSecretsPgRepository:
         """
         with self._engine.connect() as conn:
             rows = conn.execute(
-                sa.text(
-                    "SELECT user_id FROM mcp_user_secrets "
-                    "WHERE source_id = :source_id ORDER BY user_id"
-                ),
+                sa.text("SELECT user_id FROM mcp_user_secrets WHERE source_id = :source_id ORDER BY user_id"),
                 {"source_id": source_id},
             ).fetchall()
         return [r[0] for r in rows]
+
+
+class ConnectionSecretsPgRepository:
+    """Vault scope for source_connections tokens (PG).
+
+    Signature-compatible with ``app.secrets_vault.ConnectionSecretsRepository``.
+    """
+
+    def __init__(self, engine: Engine):
+        self._engine = engine
+
+    def upsert(self, connection_id: str, value: str) -> None:
+        # Store the Fernet token as text (URL-safe base64) — matches the
+        # `ciphertext TEXT` column and the DuckDB sibling. Storing raw bytes
+        # into a text column round-trips through a bytes-repr string and then
+        # fails to decrypt on read.
+        token = encrypt_secret(value).decode()
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    """INSERT INTO connection_secrets
+                           (connection_id, ciphertext, updated_at)
+                       VALUES (:connection_id, :token, CURRENT_TIMESTAMP)
+                       ON CONFLICT (connection_id) DO UPDATE SET
+                           ciphertext = EXCLUDED.ciphertext,
+                           updated_at = EXCLUDED.updated_at"""
+                ),
+                {"connection_id": connection_id, "token": token},
+            )
+
+    def get(self, connection_id: str) -> Optional[str]:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text("SELECT ciphertext FROM connection_secrets WHERE connection_id = :connection_id"),
+                {"connection_id": connection_id},
+            ).fetchone()
+        if row is None:
+            return None
+        token = row[0]
+        if not isinstance(token, (bytes, bytearray, memoryview)):
+            # stored as text (Fernet token is URL-safe base64)
+            token = token.encode() if isinstance(token, str) else bytes(token)
+        else:
+            token = bytes(token)
+        try:
+            return decrypt_secret(token)
+        except InvalidToken:
+            logger.warning(
+                "connection_secrets row for %s failed to decrypt — vault key rotated?",
+                connection_id,
+            )
+            return None
+
+    def delete(self, connection_id: str) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("DELETE FROM connection_secrets WHERE connection_id = :connection_id"),
+                {"connection_id": connection_id},
+            )
+
+    def has(self, connection_id: str) -> bool:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text("SELECT 1 FROM connection_secrets WHERE connection_id = :connection_id LIMIT 1"),
+                {"connection_id": connection_id},
+            ).fetchone()
+        return row is not None
