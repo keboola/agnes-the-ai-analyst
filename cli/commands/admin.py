@@ -4,7 +4,7 @@ import json
 
 import typer
 
-from cli.client import api_get, api_post, api_delete, api_patch, api_put
+from cli.client import api_get, api_post, api_delete, api_put
 from cli.commands.admin_activity import activity_app
 from cli.commands.admin_ask import app as admin_ask_app
 from cli.commands.admin_autodoc import autodoc_tables
@@ -26,8 +26,11 @@ from src.repositories import (
     user_groups_repo,
     users_repo,
 )
+
 admin_app = typer.Typer(help="Admin operations (requires admin role)")
-admin_app.add_typer(activity_app, name="activity", help="Activity Center — audit_log timeline, health pulse, sync history")
+admin_app.add_typer(
+    activity_app, name="activity", help="Activity Center — audit_log timeline, health pulse, sync history"
+)
 admin_app.add_typer(admin_ask_app, name="ask", help="Ask a natural-language question about telemetry")
 admin_app.add_typer(admin_metrics_app, name="metrics")
 admin_app.add_typer(admin_sessions_app, name="sessions", help="Browse Claude Code sessions across all users")
@@ -41,7 +44,9 @@ admin_app.add_typer(memory_admin_app, name="memory")
 admin_app.add_typer(admin_usage_app, name="telemetry", help="Telemetry export and admin queries")
 admin_app.add_typer(admin_usage_app, name="usage", help="(deprecated alias of `telemetry`)")
 admin_app.add_typer(admin_data_package_app, name="data-package", help="Data Package CRUD (v49)")
-admin_app.add_typer(admin_data_semantics_app, name="data-semantics", help="Generate the workspace data-semantics pack (#469)")
+admin_app.add_typer(
+    admin_data_semantics_app, name="data-semantics", help="Generate the workspace data-semantics pack (#469)"
+)
 admin_app.add_typer(admin_memory_domain_app, name="memory-domain", help="Memory Domain CRUD (v49)")
 admin_app.add_typer(admin_db_app, name="db", help="Manage app-state DB backend (DuckDB / Postgres)")
 admin_app.add_typer(admin_mcp_app, name="mcp", help="Universal MCP source + tool admin")
@@ -84,9 +89,7 @@ def list_users(as_json: bool = typer.Option(False, "--json")):
         for u in users:
             status_str = "active" if u.get("active", True) else "DEACTIVATED"
             admin_flag = "admin" if u.get("is_admin") else "user"
-            typer.echo(
-                f"  {u['email']:30s} {admin_flag:6s} {status_str:12s} id={u['id'][:8]}"
-            )
+            typer.echo(f"  {u['email']:30s} {admin_flag:6s} {status_str:12s} id={u['id'][:8]}")
 
 
 @admin_app.command("remove-user")
@@ -111,8 +114,7 @@ def register_table(
         "",
         "--query",
         help=(
-            "SQL body for query_mode='materialized' (BigQuery only). "
-            "Inline SQL or `@path/to.sql` to read from disk."
+            "SQL body for query_mode='materialized' (BigQuery only). Inline SQL or `@path/to.sql` to read from disk."
         ),
     ),
     description: str = typer.Option("", help="Table description"),
@@ -215,7 +217,8 @@ def register_table(
     # which the admin must spell out).
     if query_mode == "materialized" and not source_query and source_type != "keboola":
         typer.echo(
-            "Error: --query-mode materialized requires --query (literal SQL or @path.sql) for source_type=" + source_type,
+            "Error: --query-mode materialized requires --query (literal SQL or @path.sql) for source_type="
+            + source_type,
             err=True,
         )
         raise typer.Exit(2)
@@ -278,6 +281,7 @@ def register_table(
             wf_text = where_filters_json
         try:
             import json as _json
+
             payload["where_filters"] = _json.loads(wf_text)
         except _json.JSONDecodeError as e:
             typer.echo(f"Error: --where-filters-json is not valid JSON: {e}", err=True)
@@ -339,8 +343,7 @@ def register_table(
         # different signal, so don't double-message there.
         if query_mode in ("local", "materialized") and resp.status_code != 202:
             typer.echo(
-                "  Next: run `agnes setup first-sync` to materialize "
-                "the parquet (or wait for the scheduler tick)."
+                "  Next: run `agnes setup first-sync` to materialize the parquet (or wait for the scheduler tick)."
             )
         typer.echo(
             f"  Note: register-table does not auto-grant. Run "
@@ -353,8 +356,8 @@ def register_table(
         if query_mode == "remote":
             typer.echo(
                 f"  Note: this is a remote-query table. Verify the SA can read it:\n"
-                f"    agnes query --remote \"SELECT COUNT(*) FROM {name}\"\n"
-                f"  If it 403s, see docs/admin/query-modes.md → \"BigQuery → IAM\"."
+                f'    agnes query --remote "SELECT COUNT(*) FROM {name}"\n'
+                f'  If it 403s, see docs/admin/query-modes.md → "BigQuery → IAM".'
             )
     elif resp.status_code == 409:
         typer.echo(f"Already exists: {name}")
@@ -383,16 +386,26 @@ def discover_and_register(
         raise typer.Exit(1)
 
     typer.echo(f"Discovering tables from {kbc_url}...")
-    resp = httpx.get(f"{kbc_url.rstrip('/')}/v2/storage/tables",
-                     headers={"X-StorageApi-Token": kbc_token}, timeout=30)
+    resp = httpx.get(f"{kbc_url.rstrip('/')}/v2/storage/tables", headers={"X-StorageApi-Token": kbc_token}, timeout=30)
     resp.raise_for_status()
     tables = resp.json()
     typer.echo(f"Found {len(tables)} tables")
 
     if as_json and dry_run:
-        typer.echo(json.dumps([{"id": t["id"], "name": t["name"],
-                                "bucket": t.get("bucket", {}).get("id", ""),
-                                "rows": t.get("rowsCount", 0)} for t in tables], indent=2))
+        typer.echo(
+            json.dumps(
+                [
+                    {
+                        "id": t["id"],
+                        "name": t["name"],
+                        "bucket": t.get("bucket", {}).get("id", ""),
+                        "rows": t.get("rowsCount", 0),
+                    }
+                    for t in tables
+                ],
+                indent=2,
+            )
+        )
         return
 
     registered = 0
@@ -400,7 +413,6 @@ def discover_and_register(
     errors = 0
 
     for t in tables:
-        table_id = t["id"]
         name = t["name"]
         bucket_id = t.get("bucket", {}).get("id", "")
 
@@ -416,14 +428,17 @@ def discover_and_register(
         # connectors/keboola/storage_api.py + the v25→v26 migration.
         # Other connectors keep their per-source default.
         default_mode = "materialized" if source_type == "keboola" else "local"
-        resp = api_post("/api/admin/register-table", json={
-            "name": name,
-            "source_type": source_type,
-            "bucket": bucket_id,
-            "source_table": name,
-            "query_mode": default_mode,
-            "description": f"Auto-discovered from {source_type}",
-        })
+        resp = api_post(
+            "/api/admin/register-table",
+            json={
+                "name": name,
+                "source_type": source_type,
+                "bucket": bucket_id,
+                "source_table": name,
+                "query_mode": default_mode,
+                "description": f"Auto-discovered from {source_type}",
+            },
+        )
 
         # 200 (BQ synchronous materialize), 201 (legacy non-BQ insert),
         # and 202 (BQ background materialize) are all success — mirrors
@@ -447,7 +462,8 @@ def discover_and_register(
 @admin_app.command("sync")
 def sync(
     source: str = typer.Option(
-        None, "--source",
+        None,
+        "--source",
         help=(
             "Restrict the rebuild to one source_type (keboola | bigquery | "
             "jira | local). Omit for a full sweep of every registered table."
@@ -500,14 +516,18 @@ def list_tables(as_json: bool = typer.Option(False, "--json")):
     else:
         typer.echo(f"Registered tables: {data['count']}")
         for t in data["tables"]:
-            typer.echo(f"  {t['name']:30s} src={t.get('source_type','?'):10s} mode={t.get('query_mode','?'):6s} bucket={t.get('bucket',''):20s}")
+            typer.echo(
+                f"  {t['name']:30s} src={t.get('source_type', '?'):10s} mode={t.get('query_mode', '?'):6s} bucket={t.get('bucket', ''):20s}"
+            )
 
 
 @admin_app.command("unregister-table")
 def unregister_table(
     table_id: str = typer.Argument(..., help="Table id to unregister"),
     yes: bool = typer.Option(
-        False, "--yes", "-y",
+        False,
+        "--yes",
+        "-y",
         help="Skip the confirmation prompt (for scripts).",
     ),
 ):
@@ -542,9 +562,7 @@ def update_table(
     table_id: str = typer.Argument(..., help="Table id to update"),
     name: str = typer.Option(None, "--name", help="New display name"),
     bucket: str = typer.Option(None, "--bucket", help="New bucket / dataset"),
-    source_table: str = typer.Option(
-        None, "--source-table", help="New source table name"
-    ),
+    source_table: str = typer.Option(None, "--source-table", help="New source table name"),
     query_mode: str = typer.Option(
         None,
         "--query-mode",
@@ -559,9 +577,7 @@ def update_table(
             "`--query=` (empty value) to clear."
         ),
     ),
-    description: str = typer.Option(
-        None, "--description", help="New description"
-    ),
+    description: str = typer.Option(None, "--description", help="New description"),
     sync_schedule: str = typer.Option(
         None,
         "--sync-schedule",
@@ -795,7 +811,10 @@ def reset_password(user_ref: str = typer.Argument(..., help="User id or email"))
 def set_password(
     user_ref: str = typer.Argument(..., help="User id or email"),
     password: str = typer.Option(
-        ..., prompt=True, hide_input=True, confirmation_prompt=True,
+        ...,
+        prompt=True,
+        hide_input=True,
+        confirmation_prompt=True,
         help="New password (hidden input)",
     ),
 ):
@@ -867,17 +886,13 @@ def _resolve_grant_id(ref: str) -> str:
     resp = api_get("/api/admin/grants")
     if resp.status_code != 200:
         _fail(resp, prefix="Could not list grants")
-    matches = [
-        g for g in resp.json()
-        if g.get("id") == ref or (g.get("id") or "").startswith(ref)
-    ]
+    matches = [g for g in resp.json() if g.get("id") == ref or (g.get("id") or "").startswith(ref)]
     if not matches:
         typer.echo(f"Grant not found: {ref}", err=True)
         raise typer.Exit(1)
     if len(matches) > 1:
         typer.echo(
-            f"Ambiguous grant prefix {ref!r} matches {len(matches)} grants: "
-            + ", ".join(m["id"][:8] for m in matches),
+            f"Ambiguous grant prefix {ref!r} matches {len(matches)} grants: " + ", ".join(m["id"][:8] for m in matches),
             err=True,
         )
         raise typer.Exit(1)
@@ -892,15 +907,19 @@ def group_list(as_json: bool = typer.Option(False, "--json")):
         _fail(resp)
     rows = resp.json()
     if as_json:
-        typer.echo(json.dumps(rows, indent=2)); return
+        typer.echo(json.dumps(rows, indent=2))
+        return
     typer.echo(f"User groups: {len(rows)}")
-    _print_rows(rows, [
-        ("name", "NAME", 24),
-        ("description", "DESCRIPTION", 40),
-        ("is_system", "SYSTEM", 7),
-        ("member_count", "MEMBERS", 8),
-        ("grant_count", "GRANTS", 7),
-    ])
+    _print_rows(
+        rows,
+        [
+            ("name", "NAME", 24),
+            ("description", "DESCRIPTION", 40),
+            ("is_system", "SYSTEM", 7),
+            ("member_count", "MEMBERS", 8),
+            ("grant_count", "GRANTS", 7),
+        ],
+    )
 
 
 @group_app.command("create")
@@ -921,7 +940,8 @@ def group_delete(group_ref: str = typer.Argument(..., help="Group id or name")):
     gid = _resolve_group_id(group_ref)
     resp = api_delete(f"/api/admin/groups/{gid}")
     if resp.status_code in (200, 204):
-        typer.echo(f"Deleted group {group_ref}"); return
+        typer.echo(f"Deleted group {group_ref}")
+        return
     _fail(resp)
 
 
@@ -934,12 +954,15 @@ def group_members(group_ref: str = typer.Argument(..., help="Group id or name"))
         _fail(resp)
     rows = resp.json()
     typer.echo(f"Members: {len(rows)}")
-    _print_rows(rows, [
-        ("email", "EMAIL", 30),
-        ("name", "NAME", 20),
-        ("source", "SOURCE", 14),
-        ("active", "ACTIVE", 7),
-    ])
+    _print_rows(
+        rows,
+        [
+            ("email", "EMAIL", 30),
+            ("name", "NAME", 20),
+            ("source", "SOURCE", 14),
+            ("active", "ACTIVE", 7),
+        ],
+    )
 
 
 @group_app.command("add-member")
@@ -965,7 +988,8 @@ def group_remove_member(
     user_id = _resolve_user_id(email)
     resp = api_delete(f"/api/admin/groups/{gid}/members/{user_id}")
     if resp.status_code in (200, 204):
-        typer.echo(f"Removed {email} from {group_ref}"); return
+        typer.echo(f"Removed {email} from {group_ref}")
+        return
     _fail(resp)
 
 
@@ -986,7 +1010,8 @@ def grant_list(
         _fail(resp)
     rows = resp.json()
     if as_json:
-        typer.echo(json.dumps(rows, indent=2)); return
+        typer.echo(json.dumps(rows, indent=2))
+        return
     typer.echo(f"Resource grants: {len(rows)}")
     # Surface a short id so the default tabular output is usable as
     # input to `agnes admin grant delete <id>` without first re-running
@@ -998,14 +1023,17 @@ def grant_list(
     # printed here — and aborts loudly on the rare ambiguous prefix.
     for r in rows:
         r["short_id"] = (r.get("id") or "")[:8]
-    _print_rows(rows, [
-        ("short_id", "ID", 9),
-        ("group_name", "GROUP", 20),
-        ("resource_type", "RESOURCE TYPE", 22),
-        ("resource_id", "RESOURCE ID", 40),
-        ("requirement", "REQUIREMENT", 12),
-        ("assigned_by", "ASSIGNED BY", 24),
-    ])
+    _print_rows(
+        rows,
+        [
+            ("short_id", "ID", 9),
+            ("group_name", "GROUP", 20),
+            ("resource_type", "RESOURCE TYPE", 22),
+            ("resource_id", "RESOURCE ID", 40),
+            ("requirement", "REQUIREMENT", 12),
+            ("assigned_by", "ASSIGNED BY", 24),
+        ],
+    )
 
 
 @grant_app.command("create")
@@ -1014,7 +1042,8 @@ def grant_create(
     resource_type: str = typer.Argument(..., help="Resource type (e.g. marketplace_plugin)"),
     resource_id: str = typer.Argument(..., help="Resource path (e.g. foundry-ai/metrics-plugin)"),
     requirement: str = typer.Option(
-        "available", "--requirement",
+        "available",
+        "--requirement",
         help="'available' (user opts in via stack) or 'required' (auto-in-stack for all group members)",
     ),
 ):
@@ -1050,11 +1079,14 @@ def grant_create(
         )
         raise typer.Exit(2)
     gid = _resolve_group_id(group_ref)
-    resp = api_post("/api/admin/grants", json={
-        "group_id": gid,
-        "resource_type": resource_type,
-        "resource_id": resource_id,
-    })
+    resp = api_post(
+        "/api/admin/grants",
+        json={
+            "group_id": gid,
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+        },
+    )
     if resp.status_code == 409:
         # Existing grant — find its id so we can PUT a requirement update.
         # Re-list with both filters to scope the lookup tightly.
@@ -1070,7 +1102,7 @@ def grant_create(
         )
         if not existing:
             typer.echo(
-                f"Server reported grant exists but list lookup couldn't find it.",
+                "Server reported grant exists but list lookup couldn't find it.",
                 err=True,
             )
             raise typer.Exit(1)
@@ -1078,8 +1110,7 @@ def grant_create(
         current = existing.get("requirement") or "available"
         if current == requirement:
             typer.echo(
-                f"Grant {group_ref}: {resource_type}/{resource_id} "
-                f"already exists with requirement={requirement}"
+                f"Grant {group_ref}: {resource_type}/{resource_id} already exists with requirement={requirement}"
             )
             return
         upd = api_put(
@@ -1088,10 +1119,7 @@ def grant_create(
         )
         if upd.status_code != 200:
             _fail(upd)
-        typer.echo(
-            f"Updated existing grant {group_ref}: {resource_type}/"
-            f"{resource_id} requirement={requirement}"
-        )
+        typer.echo(f"Updated existing grant {group_ref}: {resource_type}/{resource_id} requirement={requirement}")
         return
     if resp.status_code != 201:
         _fail(resp)
@@ -1106,15 +1134,15 @@ def grant_create(
         )
         if upd.status_code != 200:
             _fail(upd)
-        typer.echo(
-            f"Granted {group_ref}: {resource_type}/{resource_id} requirement=required"
-        )
+        typer.echo(f"Granted {group_ref}: {resource_type}/{resource_id} requirement=required")
         return
     typer.echo(f"Granted {group_ref}: {resource_type}/{resource_id}")
 
 
 @grant_app.command("delete")
-def grant_delete(grant_ref: str = typer.Argument(..., help="Grant id (full UUID or 8-char short_id from `grant list`)")):
+def grant_delete(
+    grant_ref: str = typer.Argument(..., help="Grant id (full UUID or 8-char short_id from `grant list`)"),
+):
     """Delete a grant by id.
 
     Accepts either the full UUID or the 8-char short_id printed by
@@ -1124,7 +1152,8 @@ def grant_delete(grant_ref: str = typer.Argument(..., help="Grant id (full UUID 
     grant_id = _resolve_grant_id(grant_ref)
     resp = api_delete(f"/api/admin/grants/{grant_id}")
     if resp.status_code in (200, 204):
-        typer.echo(f"Deleted grant {grant_id}"); return
+        typer.echo(f"Deleted grant {grant_id}")
+        return
     _fail(resp)
 
 
@@ -1136,12 +1165,80 @@ def grant_resource_types(as_json: bool = typer.Option(False, "--json")):
         _fail(resp)
     rows = resp.json()
     if as_json:
-        typer.echo(json.dumps(rows, indent=2)); return
-    _print_rows(rows, [
-        ("key", "KEY", 28),
-        ("display_name", "DISPLAY NAME", 28),
-        ("id_format", "ID FORMAT", 36),
-    ])
+        typer.echo(json.dumps(rows, indent=2))
+        return
+    _print_rows(
+        rows,
+        [
+            ("key", "KEY", 28),
+            ("display_name", "DISPLAY NAME", 28),
+            ("id_format", "ID FORMAT", 36),
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Config-surface introspection
+# ---------------------------------------------------------------------------
+
+
+@admin_app.command("config-surface")
+def config_surface(
+    as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show the complete per-instance configuration surface.
+
+    Prints every instance.yaml/env-var knob with its current value, which
+    tier supplied it (env/yaml/default), the registered Initial Workspace
+    Template (if any), and every registered marketplace. Corresponds to
+    GET /api/admin/config-surface.
+    """
+    resp = api_get("/api/admin/config-surface")
+    if resp.status_code != 200:
+        typer.echo(f"Failed: {resp.json().get('detail', resp.text)}", err=True)
+        raise typer.Exit(1)
+
+    data = resp.json()
+
+    if as_json:
+        typer.echo(json.dumps(data, indent=2))
+        return
+
+    # Knobs table
+    knobs = data.get("knobs", [])
+    typer.echo(f"Config knobs ({len(knobs)}):")
+    typer.echo(f"  {'RESOLVER':<38s} {'SOURCE':<8s} {'CURRENT VALUE'}")
+    typer.echo("  " + "-" * 76)
+    for k in knobs:
+        val = k.get("current_value")
+        val_str = str(val) if val is not None else ""
+        if len(val_str) > 40:
+            val_str = val_str[:37] + "..."
+        typer.echo(f"  {k['resolver']:<38s} {k['source']:<8s} {val_str}")
+
+    # Initial workspace
+    iw = data.get("initial_workspace")
+    typer.echo("")
+    if iw:
+        typer.echo(f"Initial Workspace Template: {iw.get('url')}")
+        typer.echo(f"  branch:       {iw.get('branch') or '(default)'}")
+        typer.echo(f"  last_sync:    {iw.get('last_sync_sha') or '(never synced)'}")
+    else:
+        typer.echo("Initial Workspace Template: (not registered)")
+
+    # Marketplaces
+    mps = data.get("marketplaces", [])
+    typer.echo("")
+    typer.echo(f"Marketplaces ({len(mps)}):")
+    for m in mps:
+        typer.echo(f"  {m['name']}: {m['url']}")
+    if not mps:
+        typer.echo("  (none registered)")
+
+    # Infra repo
+    infra = data.get("infra_repo_url", "")
+    typer.echo("")
+    typer.echo(f"Infra repo URL: {infra or '(not set)'}")
 
 
 # ---------------------------------------------------------------------------
@@ -1164,9 +1261,7 @@ admin_app.add_typer(breakglass_app, name="break-glass")
 @breakglass_app.command("grant-admin")
 def break_glass_grant_admin(
     email: str = typer.Argument(..., help="Email of the user to promote"),
-    yes: bool = typer.Option(
-        False, "--yes", "-y", help="Skip confirmation prompt"
-    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
 ) -> None:
     """Grant Admin-group membership to a user without going through the API.
 
@@ -1220,9 +1315,7 @@ def break_glass_grant_admin(
             user_id = existing["id"]
 
         if members.has_membership(user_id, admin_group["id"]):
-            typer.echo(
-                f"{email} is already a member of '{SYSTEM_ADMIN_GROUP}'."
-            )
+            typer.echo(f"{email} is already a member of '{SYSTEM_ADMIN_GROUP}'.")
             return
 
         members.add_member(
@@ -1231,9 +1324,7 @@ def break_glass_grant_admin(
             source="cli_break_glass",
             added_by="cli:break-glass",
         )
-        typer.echo(
-            f"Granted Admin to {email}. Audit source='cli_break_glass'."
-        )
+        typer.echo(f"Granted Admin to {email}. Audit source='cli_break_glass'.")
     finally:
         try:
             conn.close()

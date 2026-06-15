@@ -1,0 +1,5 @@
+{
+  "name": "agnes-analyst",
+  "description": "Guides analysts on how to use Agnes: discovery, querying, snapshots, and metrics.",
+  "version": "1.0.0"
+}

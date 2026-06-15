@@ -1,0 +1,18 @@
+{
+  "name": "Agnes Built-in",
+  "description": "Built-in guidance plugins shipped with every Agnes instance.",
+  "plugins": [
+    {
+      "name": "agnes-analyst",
+      "description": "Guides analysts on how to use Agnes: discovery, querying, snapshots, and metrics.",
+      "version": "1.0.0",
+      "source": "./plugins/agnes-analyst"
+    },
+    {
+      "name": "agnes-operator",
+      "description": "Guides operators on how to configure this Agnes instance: init prompt, workspace, branding, and connectors.",
+      "version": "1.0.0",
+      "source": "./plugins/agnes-operator"
+    }
+  ]
+}

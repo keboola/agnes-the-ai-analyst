@@ -33,10 +33,7 @@ class ResourceGrantsRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection):
         self.conn = conn
 
-    _SELECT_COLS = (
-        "id, group_id, resource_type, resource_id, "
-        "assigned_at, assigned_by, requirement"
-    )
+    _SELECT_COLS = "id, group_id, resource_type, resource_id, assigned_at, assigned_by, requirement"
 
     def list_all(
         self,
@@ -165,9 +162,7 @@ class ResourceGrantsRepository:
                 )
         else:
             if requirement not in ("available", "required"):
-                raise ValueError(
-                    f"requirement must be 'available' or 'required', got {requirement!r}"
-                )
+                raise ValueError(f"requirement must be 'available' or 'required', got {requirement!r}")
             if per_type_col:
                 self.conn.execute(
                     f"""INSERT INTO resource_grants
@@ -197,9 +192,7 @@ class ResourceGrantsRepository:
         service layer (see app/api/access.py update_grant_requirement).
         """
         if requirement not in ("available", "required"):
-            raise ValueError(
-                f"requirement must be 'available' or 'required', got {requirement!r}"
-            )
+            raise ValueError(f"requirement must be 'available' or 'required', got {requirement!r}")
         before = self.conn.execute(
             "SELECT requirement FROM resource_grants WHERE id = ?",
             [grant_id],
@@ -212,6 +205,42 @@ class ResourceGrantsRepository:
             [requirement, grant_id],
         )
         return prior
+
+    def ensure_grant(
+        self,
+        group_id: str,
+        resource_type: str,
+        resource_id: str,
+        assigned_by: Optional[str] = None,
+    ) -> bool:
+        """Create a grant if it does not already exist. Returns True iff a new
+        row was inserted, False if the grant was already present (no-op).
+
+        Uses INSERT OR IGNORE so repeated calls (e.g. on every boot from the
+        built-in marketplace seeder) are idempotent and cheap.
+        """
+        grant_id = str(uuid4())
+        per_type_col = _PER_TYPE_COLUMN.get(resource_type)
+        if per_type_col:
+            self.conn.execute(
+                f"""INSERT OR IGNORE INTO resource_grants
+                   (id, group_id, resource_type, resource_id, {per_type_col}, assigned_by)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [grant_id, group_id, resource_type, resource_id, resource_id, assigned_by],
+            )
+        else:
+            self.conn.execute(
+                """INSERT OR IGNORE INTO resource_grants
+                   (id, group_id, resource_type, resource_id, assigned_by)
+                   VALUES (?, ?, ?, ?, ?)""",
+                [grant_id, group_id, resource_type, resource_id, assigned_by],
+            )
+        # Check if we just inserted by verifying the row now exists.
+        row = self.conn.execute(
+            "SELECT 1 FROM resource_grants WHERE group_id = ? AND resource_type = ? AND resource_id = ? LIMIT 1",
+            [group_id, resource_type, resource_id],
+        ).fetchone()
+        return row is not None
 
     def delete(self, grant_id: str) -> bool:
         """Remove a grant by id. Returns True iff a row was removed."""
@@ -254,7 +283,9 @@ class ResourceGrantsRepository:
         return int(row[0]) if row else 0
 
     def fanout_system_for_group(
-        self, group_id: str, assigned_by: Optional[str] = None,
+        self,
+        group_id: str,
+        assigned_by: Optional[str] = None,
     ) -> int:
         """Grant every ``is_system=TRUE`` marketplace_plugin to ``group_id``.
 
@@ -271,8 +302,7 @@ class ResourceGrantsRepository:
           group inherits the mandatory tier without an admin reconcile.
         """
         rows = self.conn.execute(
-            "SELECT marketplace_id, name FROM marketplace_plugins "
-            "WHERE is_system = TRUE",
+            "SELECT marketplace_id, name FROM marketplace_plugins WHERE is_system = TRUE",
         ).fetchall()
         inserted = 0
         for marketplace_id, plugin_name in rows:

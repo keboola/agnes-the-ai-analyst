@@ -257,6 +257,7 @@ from app.api.uploads import router as admin_uploads_router
 from app.api.stack import router as stack_router
 from app.api.stack_views import router as stack_views_router
 from app.api.initial_workspace import router as initial_workspace_router
+from app.api.config_surface import router as config_surface_router
 from app.api.store import router as store_router
 from app.api.my_stack import router as my_stack_router
 from app.api.marketplace import router as marketplace_router
@@ -511,6 +512,16 @@ async def lifespan(app):
             _ug_repo.ensure_system(_grp_name, _grp_desc)
     except Exception as e:
         logger.warning("Could not seed system groups: %s", e)
+
+    # Seed (or re-bake) the built-in marketplace from the wheel bundle. Runs
+    # after system-groups are ensured so the RBAC seed can look up Admin/Everyone.
+    # Non-fatal: a missing bundle dir only means the plugin cache is empty.
+    try:
+        from src.marketplace import seed_builtin_marketplace
+
+        seed_builtin_marketplace()
+    except Exception as e:
+        logger.warning("Could not seed built-in marketplace: %s", e)
 
     # Seed admin user (SEED_ADMIN_EMAIL) and add them to the Admin user_group.
     # Optional SEED_ADMIN_PASSWORD lets the seeded user sign in immediately
@@ -1345,6 +1356,7 @@ def create_app() -> FastAPI:
     app.include_router(stack_router)
     app.include_router(stack_views_router)
     app.include_router(initial_workspace_router)
+    app.include_router(config_surface_router)
     app.include_router(store_router)
     app.include_router(my_stack_router)
     app.include_router(marketplace_router)
