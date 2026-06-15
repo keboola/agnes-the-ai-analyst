@@ -1,11 +1,9 @@
 """E2E tests — extractor + orchestrator pipeline."""
 
-import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import duckdb
-import pytest
 
 
 class TestKeboolaExtractToQuery:
@@ -17,10 +15,17 @@ class TestKeboolaExtractToQuery:
         # 1. Register table in registry
         from src.db import get_system_db
         from src.repositories.table_registry import TableRegistryRepository
+
         conn = get_system_db()
         repo = TableRegistryRepository(conn)
-        repo.register(id="orders", name="orders", source_type="keboola",
-                      bucket="in.c-crm", source_table="orders", query_mode="local")
+        repo.register(
+            id="orders",
+            name="orders",
+            source_type="keboola",
+            bucket="in.c-crm",
+            source_table="orders",
+            query_mode="local",
+        )
         tables = repo.list_by_source("keboola")
         conn.close()
 
@@ -36,8 +41,10 @@ class TestKeboolaExtractToQuery:
             local.close()
 
         output = str(env["extracts_dir"] / "keboola")
-        with patch("connectors.keboola.extractor._try_attach_extension", return_value=False), \
-             patch("connectors.keboola.extractor._extract_via_legacy", side_effect=mock_legacy):
+        with (
+            patch("connectors.keboola.extractor._try_attach_extension", return_value=False),
+            patch("connectors.keboola.extractor._extract_via_legacy", side_effect=mock_legacy),
+        ):
             result = keboola_run(output, tables, "https://example.com", "fake-token")
 
         assert result["tables_extracted"] == 1
@@ -53,6 +60,7 @@ class TestKeboolaExtractToQuery:
 
         # 4. Run orchestrator
         from src.orchestrator import SyncOrchestrator
+
         orch = SyncOrchestrator(analytics_db_path=env["analytics_db"])
         result = orch.rebuild()
         assert "keboola" in result
@@ -61,6 +69,7 @@ class TestKeboolaExtractToQuery:
         # 5. Verify sync_state updated
         conn2 = get_system_db()
         from src.repositories.sync_state import SyncStateRepository
+
         state = SyncStateRepository(conn2).get_table_state("orders")
         assert state is not None
         assert state["rows"] == 2
@@ -97,6 +106,7 @@ class TestBigQueryRemoteExtract:
         conn = duckdb.connect(str(db_path))
         bq_mod._create_meta_table(conn)
         from datetime import datetime, timezone
+
         now = datetime.now(timezone.utc)
         for tc in table_configs:
             name = tc["name"]
@@ -121,6 +131,7 @@ class TestBigQueryRemoteExtract:
 
         # Verify orchestrator picks up remote tables
         from src.orchestrator import SyncOrchestrator
+
         orch = SyncOrchestrator(analytics_db_path=env["analytics_db"])
         result = orch.rebuild()
         assert "bigquery" in result
@@ -137,11 +148,14 @@ class TestJiraWebhookToQuery:
 
         # 1. Init Jira extract
         from connectors.jira.extract_init import init_extract, update_meta
+
         init_extract(jira_dir)
 
-        # 2. Simulate incremental_transform: write a parquet to data/issues/
-        issues_dir = jira_dir / "data" / "issues"
-        pq_path = str(issues_dir / "2026-03.parquet")
+        # 2. Simulate incremental_transform: write a parquet to the hive
+        #    layout data/issues/month=<YYYY-MM>/data.parquet
+        issues_dir = jira_dir / "data" / "issues" / "month=2026-03"
+        issues_dir.mkdir(parents=True, exist_ok=True)
+        pq_path = str(issues_dir / "data.parquet")
         tmp = duckdb.connect()
         tmp.execute(
             f"COPY (SELECT 'PROJ-1' AS issue_key, 'Bug' AS type, 'Fix login' AS summary) "
@@ -165,6 +179,7 @@ class TestJiraWebhookToQuery:
 
         # 6. Orchestrator picks it up
         from src.orchestrator import SyncOrchestrator
+
         orch = SyncOrchestrator(analytics_db_path=env["analytics_db"])
         result = orch.rebuild()
         assert "jira" in result
@@ -179,18 +194,27 @@ class TestMultiSourceOrchestration:
         from tests.conftest import create_mock_extract
 
         # Keboola: 2 tables
-        create_mock_extract(env["extracts_dir"], "keboola", [
-            {"name": "orders", "data": [{"id": "1", "total": "100"}]},
-            {"name": "customers", "data": [{"id": "1", "name": "Alice"}]},
-        ])
+        create_mock_extract(
+            env["extracts_dir"],
+            "keboola",
+            [
+                {"name": "orders", "data": [{"id": "1", "total": "100"}]},
+                {"name": "customers", "data": [{"id": "1", "name": "Alice"}]},
+            ],
+        )
 
         # Jira: 1 table
-        create_mock_extract(env["extracts_dir"], "jira", [
-            {"name": "issues", "data": [{"issue_key": "PROJ-1"}]},
-        ])
+        create_mock_extract(
+            env["extracts_dir"],
+            "jira",
+            [
+                {"name": "issues", "data": [{"issue_key": "PROJ-1"}]},
+            ],
+        )
 
         # Rebuild
         from src.orchestrator import SyncOrchestrator
+
         orch = SyncOrchestrator(analytics_db_path=env["analytics_db"])
         result = orch.rebuild()
 
@@ -201,6 +225,7 @@ class TestMultiSourceOrchestration:
         # Verify sync_state
         from src.db import get_system_db
         from src.repositories.sync_state import SyncStateRepository
+
         conn = get_system_db()
         states = SyncStateRepository(conn).get_all_states()
         conn.close()
@@ -216,9 +241,13 @@ class TestCorruptExtractHandling:
         from tests.conftest import create_mock_extract
 
         # Valid source
-        create_mock_extract(env["extracts_dir"], "keboola", [
-            {"name": "orders", "data": [{"id": "1"}]},
-        ])
+        create_mock_extract(
+            env["extracts_dir"],
+            "keboola",
+            [
+                {"name": "orders", "data": [{"id": "1"}]},
+            ],
+        )
 
         # Corrupt source: write garbage to extract.duckdb
         corrupt_dir = env["extracts_dir"] / "broken"
@@ -226,6 +255,7 @@ class TestCorruptExtractHandling:
         (corrupt_dir / "extract.duckdb").write_bytes(b"this is not a duckdb file")
 
         from src.orchestrator import SyncOrchestrator
+
         orch = SyncOrchestrator(analytics_db_path=env["analytics_db"])
         result = orch.rebuild()
 
@@ -253,14 +283,26 @@ class TestSchemaMigration:
         )""")
         conn.execute("INSERT INTO table_registry (id, name, folder) VALUES ('old_table', 'Old', 'legacy')")
         # Create minimal required tables
-        for tbl in ["users", "sync_state", "sync_history", "user_sync_settings",
-                     "knowledge_items", "knowledge_votes", "audit_log", "telegram_links",
-                     "pending_codes", "script_registry", "table_profiles", "dataset_permissions"]:
+        for tbl in [
+            "users",
+            "sync_state",
+            "sync_history",
+            "user_sync_settings",
+            "knowledge_items",
+            "knowledge_votes",
+            "audit_log",
+            "telegram_links",
+            "pending_codes",
+            "script_registry",
+            "table_profiles",
+            "dataset_permissions",
+        ]:
             conn.execute(f"CREATE TABLE IF NOT EXISTS {tbl} (id VARCHAR PRIMARY KEY)")
         conn.close()
 
         # Open via get_system_db -> triggers migration
         from src.db import get_system_db, get_schema_version, SCHEMA_VERSION
+
         conn2 = get_system_db()
 
         assert get_schema_version(conn2) == SCHEMA_VERSION
@@ -272,9 +314,11 @@ class TestSchemaMigration:
 
         # New columns exist and work
         from src.repositories.table_registry import TableRegistryRepository
+
         repo = TableRegistryRepository(conn2)
-        repo.register(id="new_table", name="New", source_type="keboola",
-                      bucket="in.c-crm", source_table="new", query_mode="local")
+        repo.register(
+            id="new_table", name="New", source_type="keboola", bucket="in.c-crm", source_table="new", query_mode="local"
+        )
 
         new = repo.get("new_table")
         assert new["source_type"] == "keboola"
