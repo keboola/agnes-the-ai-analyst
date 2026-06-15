@@ -11,6 +11,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- Collections foundation: new `file_corpora` (collection containers) and
+  `corpus_files` (per-file processing lifecycle) tables with DuckDB and
+  Postgres repositories (`file_corpora_repo()`, `corpus_files_repo()`).
+  Both backends covered by cross-engine contract tests.
+- `ResourceType.COLLECTION` ("collection") grantable via `/admin/access`;
+  the projection lists non-deleted `file_corpora` rows in a single
+  "Collections" block.
 
 ### Changed
 
@@ -19,6 +26,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- Schema v77: adds `file_corpora`, `corpus_files`, and `corpus_chunks`
+  (384-dim embedding column; chunk repo deferred to Retrieval slice).
+  DuckDB `_v76_to_v77` migration + Alembic `0024_collections_v77`.
 
 ## [0.71.37] — 2026-06-13
 
