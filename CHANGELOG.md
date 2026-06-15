@@ -29,6 +29,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- Dark mode now preserves the blue brand colour on blue-theme instances. A new
+  `data-theme-variant="blue"` attribute is stamped by the pre-paint theme
+  resolver when the user switches to dark while the light variant is blue, and
+  `design-tokens.css` overrides the `--ds-primary` family to a lighter blue
+  (`#4f9deb`, 6.1:1 contrast on `--ds-surface`) for that combination. Previously
+  `[data-theme="dark"]` always hardcoded green regardless of the light theme.
+- `admin_users.html`: `.copy-btn.copied` state now uses
+  `var(--ds-accent-success-line)` instead of a hardcoded `#10b981` green, so the
+  success colour follows the active theme token.
 - **AI Cowork page — dark-theme unreadable text.** The "About skills" note box
   (`.cowork-skills-note`) and the passthrough tool cards
   (`.cowork-tool-card.is-passthrough`) used hardcoded light-purple hex values
