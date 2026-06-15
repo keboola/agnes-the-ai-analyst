@@ -164,6 +164,23 @@ class UserRepository:
         values = list(updates.values()) + [id]
         self.conn.execute(f"UPDATE users SET {set_clause} WHERE id = ?", values)
 
+    def consume_reset_token(self, *, email: str, token: str, cutoff, consume_id: str) -> bool:
+        """Atomically consume a password-reset token: stamp it with ``consume_id``
+        iff it is the valid, unexpired token for an active ``email``. Returns True
+        iff THIS call won the race (mirrors the magic-link CAS). Goes through the
+        repo (not a raw connection) so it runs on the ACTIVE backend — a raw
+        DuckDB cursor here silently failed on Postgres instances."""
+        self.conn.execute(
+            "UPDATE users SET reset_token = ?, reset_token_created = NULL "
+            "WHERE email = ? AND reset_token = ? AND reset_token_created IS NOT NULL "
+            "AND reset_token_created >= ? AND active = TRUE",
+            [consume_id, email, token, cutoff],
+        )
+        row = self.conn.execute(
+            "SELECT reset_token FROM users WHERE email = ?", [email]
+        ).fetchone()
+        return bool(row and row[0] == consume_id)
+
     def count_admins(self, active_only: bool = True) -> int:
         """Count active users in the Admin system group."""
         sql = """

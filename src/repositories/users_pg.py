@@ -156,6 +156,26 @@ class UsersPgRepository:
                 {**updates, "user_id": id},
             )
 
+    def consume_reset_token(self, *, email: str, token: str, cutoff, consume_id: str) -> bool:
+        """Atomically consume a password-reset token (PG sibling of the DuckDB
+        method). UPDATE + verifying SELECT run in one transaction; returns True
+        iff this call won the race."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "UPDATE users SET reset_token = :cid, reset_token_created = NULL "
+                    "WHERE email = :email AND reset_token = :token "
+                    "AND reset_token_created IS NOT NULL AND reset_token_created >= :cutoff "
+                    "AND active = TRUE"
+                ),
+                {"cid": consume_id, "email": email, "token": token, "cutoff": cutoff},
+            )
+            row = conn.execute(
+                sa.text("SELECT reset_token FROM users WHERE email = :email"),
+                {"email": email},
+            ).fetchone()
+        return bool(row and row[0] == consume_id)
+
     def count_admins(self, active_only: bool = True) -> int:
         sql = """
             SELECT COUNT(DISTINCT u.id)

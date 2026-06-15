@@ -395,7 +395,6 @@ async def reset_confirm(
     token: str = Form(...),
     password: str = Form(...),
     confirm_password: str = Form(...),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Submit a new password using a reset token.
 
@@ -420,35 +419,26 @@ async def reset_confirm(
     # token AND to race the legitimate user) but closes the asymmetry.
     cutoff = datetime.now(timezone.utc) - RESET_TOKEN_TTL
     consume_id = f"CONSUMED:{secrets.token_hex(16)}"
+    repo = users_repo()
+    # Atomic compare-and-swap to consume the reset token, via the repo factory so
+    # it hits the ACTIVE backend. (A raw DuckDB `conn.execute` here silently
+    # failed on Postgres deployments — the token was written to PG by the factory
+    # but the CAS read DuckDB, so every reset / forced-rotation login 'expired'.)
     try:
-        conn.execute(
-            "UPDATE users SET reset_token = ?, reset_token_created = NULL "
-            "WHERE email = ? AND reset_token = ? AND reset_token_created IS NOT NULL "
-            "AND reset_token_created >= ? AND active = TRUE",
-            [consume_id, email, token, cutoff],
+        won = repo.consume_reset_token(
+            email=email, token=token, cutoff=cutoff, consume_id=consume_id
         )
     except Exception as exc:
         err = str(exc).lower()
         if "conflict" in err or "transaction" in err:
             return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
         raise
-
-    # Verify OUR marker won the race. A concurrent winner will have a
-    # different consume_id (or NULL if they already cleared it).
-    row = conn.execute(
-        "SELECT reset_token FROM users WHERE email = ?",
-        [email],
-    ).fetchone()
-    if not row or row[0] != consume_id:
-        # Could be: token never matched, expired, account deactivated, or
-        # the race was lost. Single error keeps the UX simple and avoids
-        # leaking which condition tripped.
+    if not won:
+        # Token never matched, expired, account deactivated, or the race was
+        # lost. Single error keeps the UX simple and avoids leaking which.
         return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
 
-    # Won the race — fetch the user (we need id/email for the response)
-    # and apply the password change. Clearing the marker happens as part
-    # of the same UPDATE.
-    repo = users_repo()
+    # Won the race — fetch the user and apply the password change.
     user = repo.get_by_email(email)
     if not user:
         return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")

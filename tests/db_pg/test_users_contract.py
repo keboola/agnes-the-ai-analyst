@@ -9,7 +9,7 @@ This follows the pattern established in test_audit_contract.py.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import duckdb
 import pytest
@@ -305,3 +305,60 @@ def test_update_toggles_must_change_password(users_repo):
     assert repo.get_by_id("user-1")["must_change_password"] is False
     repo.update("user-1", must_change_password=True)
     assert repo.get_by_id("user-1")["must_change_password"] is True
+
+
+# ---------------------------------------------------------------------------
+# consume_reset_token — backend-aware atomic CAS parity
+# ---------------------------------------------------------------------------
+
+
+def _seed_reset_token(repo, *, created):
+    """Create user-1 with a reset token issued at ``created``."""
+    _make_user(repo)
+    repo.update("user-1", reset_token="rtok", reset_token_created=created)
+
+
+def test_consume_reset_token_valid_wins_and_stamps(users_repo):
+    repo, _, _ = users_repo
+    now = datetime.now(timezone.utc)
+    _seed_reset_token(repo, created=now)
+    won = repo.consume_reset_token(
+        email="u@example.com", token="rtok", cutoff=now - timedelta(hours=24),
+        consume_id="CONSUMED:abc",
+    )
+    assert won is True
+    # token is replaced by the consume marker (single-use)
+    assert repo.get_by_id("user-1")["reset_token"] == "CONSUMED:abc"
+
+
+def test_consume_reset_token_wrong_token_loses(users_repo):
+    repo, _, _ = users_repo
+    now = datetime.now(timezone.utc)
+    _seed_reset_token(repo, created=now)
+    won = repo.consume_reset_token(
+        email="u@example.com", token="WRONG", cutoff=now - timedelta(hours=24),
+        consume_id="CONSUMED:abc",
+    )
+    assert won is False
+    assert repo.get_by_id("user-1")["reset_token"] == "rtok"  # untouched
+
+
+def test_consume_reset_token_expired_loses(users_repo):
+    repo, _, _ = users_repo
+    now = datetime.now(timezone.utc)
+    _seed_reset_token(repo, created=now - timedelta(hours=25))  # older than the 24h cutoff
+    won = repo.consume_reset_token(
+        email="u@example.com", token="rtok", cutoff=now - timedelta(hours=24),
+        consume_id="CONSUMED:abc",
+    )
+    assert won is False
+
+
+def test_consume_reset_token_single_use(users_repo):
+    repo, _, _ = users_repo
+    now = datetime.now(timezone.utc)
+    _seed_reset_token(repo, created=now)
+    cutoff = now - timedelta(hours=24)
+    assert repo.consume_reset_token(email="u@example.com", token="rtok", cutoff=cutoff, consume_id="CONSUMED:1") is True
+    # second attempt with the same original token loses (already consumed)
+    assert repo.consume_reset_token(email="u@example.com", token="rtok", cutoff=cutoff, consume_id="CONSUMED:2") is False

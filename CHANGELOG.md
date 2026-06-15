@@ -28,6 +28,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- **Password reset now works on Postgres deployments.** `reset_confirm`'s atomic
+  reset-token compare-and-swap ran through a raw DuckDB cursor (`Depends(_get_db)`),
+  so on a Postgres-backed instance the token — written via the backend-aware repo
+  factory — was never found and every reset (and the new forced-rotation login)
+  failed with "Invalid or expired reset link". The CAS now goes through a new
+  `consume_reset_token()` repo method (DuckDB + Postgres parity, contract-tested).
 
 ### Removed
 
