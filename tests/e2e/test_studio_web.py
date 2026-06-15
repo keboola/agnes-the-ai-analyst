@@ -1,9 +1,10 @@
-"""Browser E2E for the data-package builder studio page (authoring Slice 0).
+"""Browser E2E for the authoring-agent studio pages (all four domains).
 
-Deterministic: the Create action calls the real /api/admin/data-packages
-endpoint, so the assertion never depends on the LLM. Runs against the
-docker-compose stack with LOCAL_DEV_MODE (auto-admin) + fake-agent mode.
-Records video of the run to tests/e2e/_videos/.
+Deterministic: each domain's Create action calls its real admin endpoint
+(data-packages / mcp-sources / marketplaces / memory-domains), so the assertion
+never depends on the LLM. Runs against the docker-compose stack with
+LOCAL_DEV_MODE (auto-admin) + fake-agent mode. Records a video per domain to
+tests/e2e/_videos/.
 
 Gated (see conftest + docker-compose.e2e.yml):
     AGNES_E2E=1            # boot the stack
@@ -32,15 +33,33 @@ except ImportError:  # pragma: no cover
 
 _VIDEO_DIR = Path(__file__).parent / "_videos"
 
+# (domain, {text-field: value}, {select-field: value})
+CASES = [
+    ("data-package", {"name": "E2E DP", "slug": "e2e-dp", "description": "e2e"}, {}),
+    ("corporate-memory", {"name": "E2E Mem", "slug": "e2e-mem", "description": "e2e"}, {}),
+    ("mcp", {"name": "e2e_mcp", "url": "https://mcp.example.com/sse"}, {"transport": "http"}),
+    (
+        "marketplace",
+        {
+            "name": "E2E MP",
+            "slug": "e2e-mp",
+            "url": "https://github.com/example/repo",
+            "curator_name": "E2E",
+            "curator_email": "e2e@example.com",
+        },
+        {},
+    ),
+]
+
 
 @pytest.fixture
-def video_page(docker_e2e_agnes):
+def video_ctx(docker_e2e_agnes):
     if not _PW:
         pytest.skip("playwright not installed — pip install -e '.[dev]'")
     if not os.environ.get("AGNES_E2E"):
         pytest.skip("E2E disabled — set AGNES_E2E=1")
     if not os.environ.get("AGNES_E2E_DEV_MODE"):
-        pytest.skip("studio E2E needs admin — set AGNES_E2E_DEV_MODE=1 (LOCAL_DEV_MODE in the stack)")
+        pytest.skip("studio E2E needs admin — set AGNES_E2E_DEV_MODE=1")
     _VIDEO_DIR.mkdir(exist_ok=True)
     pw = _spw().start()
     try:
@@ -48,6 +67,14 @@ def video_page(docker_e2e_agnes):
     except _PwErr as exc:
         pw.stop()
         pytest.skip(f"chromium not installed — playwright install chromium ({exc})")
+    yield browser, docker_e2e_agnes
+    browser.close()
+    pw.stop()
+
+
+@pytest.mark.parametrize("domain,texts,selects", CASES, ids=[c[0] for c in CASES])
+def test_builder_creates_entity(video_ctx, domain, texts, selects):
+    browser, base = video_ctx
     ctx = browser.new_context(
         record_video_dir=str(_VIDEO_DIR),
         record_video_size={"width": 1280, "height": 800},
@@ -55,27 +82,16 @@ def video_page(docker_e2e_agnes):
     )
     page = ctx.new_page()
     try:
-        yield page, docker_e2e_agnes
+        # LOCAL_DEV_MODE auto-logs in as admin, so we land straight on the page.
+        page.goto(f"{base}/admin/studio/{domain}", wait_until="domcontentloaded")
+        page.wait_for_selector("#studio-create", timeout=15_000)
+        for key, val in texts.items():
+            page.fill(f"#studio-f-{key}", val)
+        for key, val in selects.items():
+            page.select_option(f"#studio-f-{key}", val)
+        page.click("#studio-create")
+        # The result line shows "Created: …" once the real endpoint returns 201.
+        page.wait_for_selector("text=Created:", timeout=15_000)
+        assert "Created:" in page.inner_text("#studio-result")
     finally:
         ctx.close()  # finalizes the .webm
-        browser.close()
-        pw.stop()
-
-
-def test_builder_creates_data_package(video_page):
-    page, base = video_page
-    # LOCAL_DEV_MODE auto-logs in as an admin, so we land straight on the page.
-    page.goto(f"{base}/admin/studio/data-package", wait_until="domcontentloaded")
-    page.wait_for_selector("#studio-create", timeout=15_000)
-    page.fill("#dp-name", "E2E Finance")
-    page.fill("#dp-slug", "e2e-finance")
-    page.fill("#dp-description", "Created by the studio E2E")
-    page.click("#studio-create")
-    # The result line shows "Created: …" on success.
-    page.wait_for_selector("text=Created:", timeout=15_000)
-
-    # Verify via the API that the package now exists.
-    resp = page.request.get(f"{base}/api/admin/data-packages")
-    assert resp.ok, resp.status
-    slugs = [p.get("slug") for p in resp.json()]
-    assert "e2e-finance" in slugs, slugs

@@ -18,6 +18,7 @@ import duckdb
 import jinja2
 
 from app.auth.access import is_user_admin, require_admin
+from app.web.studio import get_domain as get_studio_domain
 from app.auth.dependencies import get_current_user, get_optional_user, _get_db
 from app.instance_config import (
     get_instance_name,
@@ -1782,21 +1783,25 @@ async def memory_domain_detail(
     return templates.TemplateResponse(request, "memory_domain_detail.html", ctx)
 
 
-@router.get("/admin/studio/data-package", response_class=HTMLResponse)
-async def studio_data_package(
+@router.get("/admin/studio/{domain}", response_class=HTMLResponse)
+async def studio(
+    domain: str,
     request: Request,
     user: dict = Depends(require_admin),
 ):
-    """Data-package builder studio — admin-only (authoring agents Slice 0).
+    """Authoring-agent studio — admin-only.
 
-    A form-based builder with an embedded assistant panel: the page opens a
-    chat session bound to the ``data-package-builder`` profile and wires the
-    Create action to the existing ``/api/admin/data-packages`` endpoints.
+    A generic form-based builder with an embedded assistant panel. The domain
+    config (``app/web/studio.py``) drives the fields, the chat profile, and the
+    create endpoint, so all four authoring agents share one surface.
     """
+    spec = get_studio_domain(domain)
+    if spec is None:
+        raise HTTPException(status_code=404, detail="unknown studio domain")
     return templates.TemplateResponse(
         request,
-        "admin_studio_data_package.html",
-        {"profile_slug": "data-package-builder"},
+        "admin_studio.html",
+        {"domain": spec, "profile_slug": spec.profile},
     )
 
 
