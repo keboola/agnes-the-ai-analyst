@@ -364,8 +364,13 @@ class ConnectionSecretsRepository:
         ).fetchone()
         if not row:
             return None
+        token = row[0]
+        # Defensive bytes/str handling, matching the PG sibling and the other
+        # vault repos (SharedSecretsRepository / PerUserSecretsRepository): the
+        # ciphertext column is TEXT so DuckDB returns str, but guard anyway.
+        token = token.encode() if isinstance(token, str) else bytes(token)
         try:
-            return decrypt_secret(row[0].encode())
+            return decrypt_secret(token)
         except InvalidToken:
             logger.warning("connection secret for %s unreadable (key rotated?)", connection_id)
             return None
