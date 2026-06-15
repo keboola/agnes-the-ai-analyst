@@ -65,7 +65,8 @@ domain knowledge skills.
   genuinely different and stay separate.
 - Each agent has **grounded context**: a domain knowledge skill *plus* live read tools so it
   reasons about the instance's actual state, not from memory.
-- **Conversation → reviewable draft → approval → write.** Never write-and-pray.
+- **AI-assisted edit → reviewable draft → approval → write.** Never write-and-pray. The user
+  drives a step-wise builder; the agent assists/prefills (§13).
 - Available to **all users**; the action a user can finalize depends on their role
   (admin executes; non-admin produces a suggestion routed to approval).
 - Outputs use the **vendor-neutral triple** where applicable — Agent Skills folder
@@ -80,7 +81,9 @@ domain knowledge skills.
 - ❌ A **blocking** quality gate. Per product decision, generation proceeds without a
   hard eval wall; eval/dedupe/contradiction checks are advisory signals, not blockers.
   (See §7 — this is an explicitly accepted slop risk.)
-- ❌ A visual node-graph builder. Conversation + reviewable draft is the authoring surface.
+- ❌ A visual **node-graph** builder (boxes-and-wires) à la OpenAI AgentKit's canvas. The
+  authoring surface is a **form-based, step-wise builder with an AI assistant panel** (§13) —
+  not a node graph, and not chat-led.
 - ❌ A new agent runtime. Reuse the E2B chat runtime (decision in §4).
 
 ---
@@ -106,6 +109,13 @@ string through three layers, have the spawn path write a **profile-specific `CLA
 read-only knowledge skill into the session workdir** (which `WorkdirManager` already builds),
 so the existing `setting_sources` loader picks it up. The toolset restriction is layered on top
 (§5).
+
+**Frontend vs backend split.** The chat runtime is the **backend brain** (the agent runs in
+E2B, streams over the existing WebSocket). The **frontend is net-new**: per the UI decision
+(§13) the primary surface is a *form-based step-wise builder*, not the existing chat shell —
+the agent appears as an **assistant panel** embedded in the builder, reusing `chat.js`'s
+streaming logic but not its full-page layout. "Reuse the runtime" holds for execution and
+streaming; the builder pages are new work.
 
 ### 3.2 Agents are specializations, not new infrastructure
 
@@ -420,3 +430,88 @@ must satisfy the rows it touches:
       no `.container:has()`, no bare `:root{}`, no raw `#hex`.
 - [ ] **CHANGELOG:** each implementing PR adds an `[Unreleased]` bullet.
 - [ ] **Tool-binding enforcement** (§5) is verified by tests, not prompt instructions.
+
+---
+
+## 13. UI / UX
+
+### 13.1 Model: AI-assisted builder (decided)
+
+The primary surface is a **form-based, step-wise builder with a fully editable canvas and an
+embedded AI assistant panel** — not a chat-led split, and not a node graph. The user drives;
+the agent advises and prefills. This matches the modern trajectory (OpenAI's move from
+chat-only Custom GPTs to a structured, versioned builder) while staying conversational where it
+helps.
+
+```
+┌─ <Agent> builder (full page) ───────────────────────────────────┐
+│  Steps:  ① Basics  ② Content  ③ Access  ④ Review        [stepper] │
+├──────────────────────────────────────────┬───────────────────────┤
+│  EDITABLE CANVAS (the draft, by step)      │  AI ASSISTANT (panel) │
+│  - real form fields, user edits directly   │  - streams suggestions│
+│  - agent prefills / proposes into fields    │  - "Reading catalog…" │
+│  - inline validation + grounding hints      │  - dedupe / warnings  │
+│                                            │  - [Apply suggestion] │
+├──────────────────────────────────────────┴───────────────────────┤
+│  Sticky footer:  [Discard]  [Save draft]   Admin:[Approve&publish] │
+│                                            Analyst:[Submit]        │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+### 13.2 State ownership (editable canvas + agent both write the same fields)
+
+Because both the user (mouse) and the agent (suggestions) target the same fields, ownership
+must be explicit to avoid the chat×canvas drift risk:
+- The **builder form state is the single source of truth.** The agent never writes fields
+  directly; it emits **proposals** the user accepts via **[Apply]** (per-field or per-step).
+- **User edits always win** and are never silently overwritten by a later agent suggestion.
+- The agent always **reads the current field state** as context, so its next suggestion
+  accounts for the user's edits.
+- Applying a suggestion is an explicit, undoable action (not auto-merge).
+
+### 13.3 Per-agent builder, shared shell
+
+One shared builder shell + assistant-panel component; the **step set and canvas renderer swap
+per agent** (mirrors the §3.2 adapter):
+- **Marketplace:** Basics → SKILL.md body (markdown editor + live render) → references/ →
+  Access → Review (with `/entities/dryrun` result).
+- **Data package:** Basics → Tables (catalog picker, `query_mode`/size badges) → Metrics
+  (chips) → Access (group + requirement) → Review.
+- **MCP:** Connection (transport/url/auth) → Introspect&Classify (tool list + mode toggles +
+  plain-language explanations) → Grants → Review.
+- **Corporate memory (admin-scoped, §4.4):** Source sessions (opt-in only) → Proposed items
+  (cards w/ provenance + contradiction flags + sensitivity) → Domain → Access → Review.
+
+### 13.4 Craft: "beautiful" within the design-system contract
+
+Beauty comes from restraint + craft, not novelty (the contract test forbids off-system styling
+anyway):
+- 100% `--ds-*` tokens + `ds.*` macros; calm-editorial, borders-dominant, shadows reserved; no
+  gradients / emoji-soup / off-brand color. Brand green `--ds-primary` for the single primary
+  CTA per step.
+- The "wow" is in **motion and state**: the canvas filling in as the agent works, a visible
+  **grounding line** ("Reading catalog… 47 tables ✓"), **dedupe warnings**, thoughtful
+  empty/loading/error states, and a deliberate approve moment.
+- Markdown via the already-vendored `marked.js` + `highlight.js`. Streaming reuses `chat.js`
+  frame handling in the assistant panel.
+
+### 13.5 Net-new UI components (within the design system)
+
+- A **stepper/wizard** primitive — none exists today (`ds.tabs` / `ds.segmented_strip` are the
+  closest); add a canonical `ds.stepper` rather than a one-off.
+- The **assistant panel** component (streaming + [Apply] affordances), factored out of the
+  chat shell.
+- Four **canvas renderers** (one per agent), each emitting `ds.*` markup.
+- A **builder page shell** extending `base_page.html` (hero + toolbar) or `base_ds.html`.
+
+All must honor the web-page contract (§12): extend `base_ds.html`/`base_page.html`, CSS in
+`{% block head_extra %}` (no inline body CSS), `var(--ds-*)` only, mandatory ARIA + focus
+rings, light/dark theme.
+
+### 13.6 Note on the earlier mockup
+
+The first mockup shown during design was a **chat-led split** (conversation drives, canvas
+previews). The decided model inverts the driver: **builder drives, assistant advises.** The
+visual language (tokens, grounding line, dedupe, green CTA, card/row/chip styling) carries
+over; the *layout* shifts from "chat | preview" to "editable canvas + assistant panel under a
+stepper."
