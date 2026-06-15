@@ -190,9 +190,9 @@ def test_schema_version_is_62():
     #            stdio MCP sources.
     # v69 → v70: live co-drive foundation — chat_session_participants +
     #            is_co_session/ephemeral/sender_email.
-    # v76 → v77: built-in marketplace — is_builtin on marketplace_registry,
+    # v77 → v78: built-in marketplace — is_builtin on marketplace_registry,
     #            admin_disabled on marketplace_plugins.
-    assert SCHEMA_VERSION >= 77
+    assert SCHEMA_VERSION >= 78
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
@@ -717,8 +717,8 @@ def test_v69_to_v70_migration(tmp_path):
     conn.close()
 
 
-def test_v77_builtin_marketplace_columns(tmp_path):
-    """Fresh install reaches v77 with is_builtin on marketplace_registry and
+def test_v78_builtin_marketplace_columns(tmp_path):
+    """Fresh install reaches v78 with is_builtin on marketplace_registry and
     admin_disabled on marketplace_plugins. Both default to FALSE so existing rows
     and freshly-registered admin marketplaces are unaffected."""
     db_path = tmp_path / "system.duckdb"

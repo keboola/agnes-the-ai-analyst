@@ -1,4 +1,4 @@
-"""builtin_marketplace (DuckDB v77 parity).
+"""builtin_marketplace (DuckDB v78 parity).
 
 Adds ``marketplace_registry.is_builtin`` (BOOLEAN NOT NULL DEFAULT FALSE) so the
 system-seeded built-in marketplace row is distinguishable from admin-registered
@@ -8,10 +8,10 @@ Adds ``marketplace_plugins.admin_disabled`` (BOOLEAN NOT NULL DEFAULT FALSE) for
 per-plugin admin disable of built-in plugins. Disabled plugins are filtered from
 the served feed for all callers regardless of their RBAC grants.
 
-Mirrors DuckDB ``_v76_to_v77``. Additive-only — two new columns on existing tables.
+Mirrors DuckDB ``_v77_to_v78``. Additive-only — two new columns on existing tables.
 
-Revision ID: 0024_builtin_marketplace_v77
-Revises: 0023_store_entity_votes_v76
+Revision ID: 0025_builtin_marketplace_v78
+Revises: 0024_must_change_password_v77
 Create Date: 2026-06-15
 """
 

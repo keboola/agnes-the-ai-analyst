@@ -400,6 +400,26 @@ class TestAdminDisabled:
         assert "plug-vis" in names
         assert "plug-hidden" not in names
 
+    def test_disabled_plugin_excluded_from_browse_and_counts(self, repos):
+        """admin_disabled=TRUE plugins must also be hidden from the browse
+        listing (list_with_filters) and category_counts, not just the served
+        feed — mirrors the list_granted_for_groups filter on both backends."""
+        g = repos["groups"].create(name="g-dis-browse", created_by="test")
+        _seed_registry(repos, "mp-d6", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _seed_plugins(repos, "mp-d6", ["plug-shown", "plug-off"])
+        _seed_grant(repos, g["id"], "mp-d6", "plug-shown")
+        _seed_grant(repos, g["id"], "mp-d6", "plug-off")
+        repos["plugins"].set_admin_disabled("mp-d6", "plug-off", True)
+
+        items, total = repos["plugins"].list_with_filters(group_ids=[g["id"]])
+        names = [r["name"] for r in items]
+        assert "plug-shown" in names
+        assert "plug-off" not in names
+        assert total == 1
+
+        counts = repos["plugins"].category_counts(group_ids=[g["id"]])
+        assert sum(counts.values()) == 1
+
     def test_set_admin_disabled_nonexistent_returns_false(self, repos):
         found = repos["plugins"].set_admin_disabled("no-market", "no-plug", True)
         assert found is False
