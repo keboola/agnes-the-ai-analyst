@@ -23,7 +23,19 @@
     var mq = window.matchMedia('(prefers-color-scheme: dark)');
     var bound = false;
 
-    function applySystem() { el.dataset.theme = mq.matches ? 'dark' : lightTheme; }
+    // Stamp data-theme-variant so CSS can target "dark + blue brand" without a
+    // second attribute value on data-theme. Set only when the light variant is
+    // non-default (i.e. 'blue'); the default navy brand needs no variant stamp.
+    function setVariant(dark) {
+      if (dark && lightTheme === 'blue') { el.dataset.themeVariant = 'blue'; }
+      else { delete el.dataset.themeVariant; }
+    }
+
+    function applySystem() {
+      var dark = mq.matches;
+      el.dataset.theme = dark ? 'dark' : lightTheme;
+      setVariant(dark);
+    }
     function bindSystem(on) {
       if (!mq.addEventListener) return;
       if (on && !bound) { mq.addEventListener('change', applySystem); bound = true; }
@@ -47,8 +59,8 @@
 
     function apply(choice, persist) {
       if (persist) { try { localStorage.setItem(KEY, choice); } catch (e) { /* no-op */ } }
-      if (choice === 'dark') { bindSystem(false); el.dataset.theme = 'dark'; }
-      else if (choice === 'light') { bindSystem(false); el.dataset.theme = lightTheme; }
+      if (choice === 'dark') { bindSystem(false); el.dataset.theme = 'dark'; setVariant(true); }
+      else if (choice === 'light') { bindSystem(false); el.dataset.theme = lightTheme; setVariant(false); }
       else { applySystem(); bindSystem(true); }           // 'system'
     }
 
