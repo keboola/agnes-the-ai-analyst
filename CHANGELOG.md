@@ -19,6 +19,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- Fixed a `duplicate parametrization of 'state_backend'` collection error in
+  `tests/db_pg/test_parity_internal_query.py` that red-X'd every CI test shard
+  under newer pytest. The PG-only `test_postgres_tvf_is_unavailable_pg` now skips
+  the DuckDB variant in-body instead of re-`@parametrize`-ing the already
+  fixture-parametrized `state_backend` name; the `db_pg/conftest.py` docstring
+  that documented the broken override pattern is updated to match.
 
 ## [0.71.37] — 2026-06-13
 
