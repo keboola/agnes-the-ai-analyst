@@ -11,6 +11,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `agnes diagnose` now includes a **Jira partition-format** check
+  (`jira-partition-format`) that detects whether the Jira connector's
+  on-disk parquet files use the old flat `YYYY-MM.parquet` layout or the
+  new hive `month=*/` layout.  Status is `ok` (hive), `warning`
+  (flat/mixed — migration recommended), or `info` (no Jira data present).
+  Audience tag is `operator` so it does not drive the analyst-facing
+  headline. (#394)
 - **WAL-recovery runbook** (`docs/runbooks/wal-recovery.md`). Step-by-step
   operator guide for a `system.duckdb` WAL-replay failure: detection log
   signatures, explanation of the two-step auto-recovery (Step A WAL salvage /
