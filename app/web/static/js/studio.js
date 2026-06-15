@@ -34,17 +34,24 @@ function appendStream(text) {
   el.scrollTop = el.scrollHeight;
 }
 
-async function createEntity() {
-  const result = $("studio-result");
+function collectPayload() {
   const payload = {};
   for (const key of CFG.fields) {
     const el = $(`studio-f-${key}`);
     if (el && el.value.trim()) payload[key] = el.value.trim();
   }
+  return payload;
+}
+
+async function createEntity() {
+  const result = $("studio-result");
+  const payload = collectPayload();
   if (!payload.name && !payload.slug) {
     result.textContent = "Fill in the required fields.";
     return;
   }
+  // Admins create directly; everyone else submits to the moderation queue.
+  if (!CFG.isAdmin) return submitSuggestion(payload);
   result.textContent = "Creating…";
   try {
     const created = await api(CFG.endpoint, {
@@ -57,6 +64,21 @@ async function createEntity() {
         : payload.slug || payload.name;
     result.textContent = `Created: ${id}`;
     if (window.appToast) window.appToast(`Created: ${id}`);
+  } catch (e) {
+    result.textContent = `Failed: ${e.message}`;
+  }
+}
+
+async function submitSuggestion(payload) {
+  const result = $("studio-result");
+  result.textContent = "Submitting…";
+  try {
+    const r = await api("/api/studio/suggestions", {
+      method: "POST",
+      body: JSON.stringify({ domain: CFG.domain, payload }),
+    });
+    result.textContent = `Submitted for approval: ${r.id}`;
+    if (window.appToast) window.appToast("Submitted for admin approval");
   } catch (e) {
     result.textContent = `Failed: ${e.message}`;
   }

@@ -91,7 +91,10 @@
         {% endif %}
       </div>
       {% endfor %}
-      <button class="btn btn-primary" id="studio-create" type="button">Create</button>
+      <button class="btn btn-primary" id="studio-create" type="button">{% if is_admin %}Create{% else %}Submit for approval{% endif %}</button>
+      {% if not is_admin %}
+      <p class="studio-sub" style="margin-top: var(--space-2);">An admin reviews your submission before it goes live.</p>
+      {% endif %}
       <div class="studio-ground" id="studio-result" aria-live="polite"></div>
     </section>
 
@@ -111,7 +114,9 @@
 <script>
   window.STUDIO = {
     profile: "{{ profile_slug }}",
+    domain: "{{ domain.slug }}",
     endpoint: "{{ domain.endpoint }}",
+    isAdmin: {{ 'true' if is_admin else 'false' }},
     fields: [{% for f in domain.fields %}"{{ f.key }}"{% if not loop.last %}, {% endif %}{% endfor %}],
   };
 </script>

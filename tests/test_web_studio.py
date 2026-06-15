@@ -10,22 +10,35 @@ def _auth(token: str) -> dict:
 
 
 @pytest.mark.parametrize("domain", DOMAINS)
-def test_studio_requires_admin(seeded_app, domain):
-    c = seeded_app["client"]
-    resp = c.get(f"/admin/studio/{domain}", headers=_auth(seeded_app["analyst_token"]))
-    assert resp.status_code in (302, 401, 403)
-
-
-@pytest.mark.parametrize("domain", DOMAINS)
-def test_studio_renders_for_admin(seeded_app, domain):
+def test_studio_renders_for_admin_in_create_mode(seeded_app, domain):
     c = seeded_app["client"]
     resp = c.get(f"/admin/studio/{domain}", headers=_auth(seeded_app["admin_token"]))
     assert resp.status_code == 200
     body = resp.text
     assert 'id="studio-create"' in body
     assert "/static/js/studio.js" in body
-    # the profile slug + the create endpoint are wired into the page config
     assert "window.STUDIO" in body
+    assert "isAdmin: true" in body
+    assert ">Create<" in body  # admin sees the direct-create action
+
+
+@pytest.mark.parametrize("domain", DOMAINS)
+def test_studio_renders_for_non_admin_in_submit_mode(seeded_app, domain):
+    c = seeded_app["client"]
+    resp = c.get(f"/admin/studio/{domain}", headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    body = resp.text
+    assert "isAdmin: false" in body
+    assert "Submit for approval" in body  # non-admin sees the suggestion action
+
+
+def test_studio_requires_login(seeded_app):
+    c = seeded_app["client"]
+    # No auth header → redirect to login (don't follow it) or 401/403.
+    resp = c.get("/admin/studio/data-package", follow_redirects=False)
+    assert resp.status_code in (302, 307, 401, 403)
+    if resp.status_code in (302, 307):
+        assert "/login" in resp.headers.get("location", "")
 
 
 def test_studio_unknown_domain_404s(seeded_app):

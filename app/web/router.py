@@ -1787,13 +1787,15 @@ async def memory_domain_detail(
 async def studio(
     domain: str,
     request: Request,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(get_current_user),
 ):
-    """Authoring-agent studio — admin-only.
+    """Authoring-agent studio — available to all signed-in users.
 
     A generic form-based builder with an embedded assistant panel. The domain
     config (``app/web/studio.py``) drives the fields, the chat profile, and the
-    create endpoint, so all four authoring agents share one surface.
+    create endpoint, so all four authoring agents share one surface. Admins
+    create directly; non-admins submit a suggestion to the moderation queue
+    (the page renders the right action via ``is_admin``).
     """
     spec = get_studio_domain(domain)
     if spec is None:
@@ -1801,7 +1803,11 @@ async def studio(
     return templates.TemplateResponse(
         request,
         "admin_studio.html",
-        {"domain": spec, "profile_slug": spec.profile},
+        {
+            "domain": spec,
+            "profile_slug": spec.profile,
+            "is_admin": is_user_admin(user["id"]),
+        },
     )
 
 
