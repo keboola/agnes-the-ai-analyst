@@ -17,8 +17,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the `month` column is available as a virtual partition column, enabling
   predicate push-down and partition pruning on month-range queries. All tables
   (issues, comments, attachments, changelog, issuelinks, remote_links) are
-  affected. Existing flat parquet files are auto-migrated to the hive layout on
-  the next `init_extract` or incremental transform run. (#406)
+  affected. Existing flat parquet files are auto-migrated to the hive layout:
+  the next `init_extract` run migrates all months at once; the incremental
+  transform path migrates each month lazily as it is next written. Run
+  `init_extract` (e.g. an orchestrator rebuild) to migrate all historical
+  partitions in one pass. (#406)
 
 ### Changed
 - **Jira connector: ZSTD compression + column statistics.** All Jira parquet
