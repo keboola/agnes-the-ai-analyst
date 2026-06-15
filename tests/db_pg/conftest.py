@@ -358,3 +358,110 @@ def seeded_app_both(state_backend, tmp_path, monkeypatch):
         "backend": state_backend,
         "data_dir": tmp_path,
     }
+
+
+# ---------------------------------------------------------------------------
+# CLI fixture — CliRunner wired through the same in-process FastAPI app
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def cli_client_both(seeded_app_both, monkeypatch):
+    """CliRunner whose HTTP calls go to the in-process TestClient app.
+
+    Patches cli.client.get_client and cli.client._get_shared_client so
+    every CLI command hits the same FastAPI app as the web tests —
+    no real ports, full API surface, both backends.
+    """
+    import contextlib
+    import httpx
+    from typer.testing import CliRunner
+
+    tc = seeded_app_both["client"]
+    admin_token = seeded_app_both["admin_token"]
+
+    def _make_client(timeout=30.0):
+        return httpx.Client(
+            transport=httpx.ASGITransport(app=tc.app),
+            base_url="http://testserver",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=timeout,
+        )
+
+    @contextlib.contextmanager
+    def _patched_get_client(timeout=30.0):
+        client = _make_client(timeout)
+        try:
+            yield client
+        finally:
+            client.close()
+
+    import cli.client as _cli_client
+    monkeypatch.setattr(_cli_client, "get_client", _patched_get_client)
+    monkeypatch.setattr(_cli_client, "_get_shared_client", lambda: _make_client())
+    _cli_client._SHARED_CLIENT = None
+    monkeypatch.setenv("AGNES_SERVER_URL", "http://testserver")
+
+    runner = CliRunner()
+
+    def invoke(args):
+        from cli.main import app as cli_app
+        return runner.invoke(cli_app, args, catch_exceptions=False)
+
+    yield {
+        "runner": runner,
+        "invoke": invoke,
+        "backend": seeded_app_both["backend"],
+        "admin_token": admin_token,
+        "analyst_token": seeded_app_both["analyst_token"],
+        "client": tc,
+        "data_dir": seeded_app_both["data_dir"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# registered_table_both — a queryable table registered in the active backend
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def registered_table_both(seeded_app_both):
+    """Register a table via the API, create a minimal DuckDB extract, rebuild.
+
+    Returns {"table_id": str, "source_name": str, "data_dir": Path}.
+    """
+    import duckdb
+    import pandas as pd
+    from src.orchestrator import SyncOrchestrator
+
+    client = seeded_app_both["client"]
+    admin_token = seeded_app_both["admin_token"]
+    data_dir = seeded_app_both["data_dir"]
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    source_name = "smoke_orders"
+    bucket = "smoke_src"
+
+    # Create the parquet that SyncOrchestrator.rebuild() will pick up
+    extract_dir = data_dir / "extracts" / bucket
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    parquet_path = extract_dir / f"{source_name}.parquet"
+    pd.DataFrame({"id": [1, 2, 3], "amount": [10.0, 20.0, 30.0]}).to_parquet(str(parquet_path))
+
+    # Register via API
+    r = client.post(
+        "/api/admin/register-table",
+        json={
+            "name": source_name,
+            "source_type": "keboola",
+            "bucket": bucket,
+            "source_table": source_name,
+            "query_mode": "local",
+        },
+        headers=headers,
+    )
+    assert r.status_code == 201, f"register-table failed: {r.text}"
+    table_id = r.json()["id"]
+
+    # Rebuild master views so the table is queryable
+    SyncOrchestrator(str(data_dir)).rebuild()
+
+    yield {"table_id": table_id, "source_name": source_name, "data_dir": data_dir}
