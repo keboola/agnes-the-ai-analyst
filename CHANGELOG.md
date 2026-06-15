@@ -29,6 +29,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- **AI Cowork page — dark-theme unreadable text.** The "About skills" note box
+  (`.cowork-skills-note`) and the passthrough tool cards
+  (`.cowork-tool-card.is-passthrough`) used hardcoded light-purple hex values
+  (`#f5f3ff` background, `#c7d2fe` border, `#5b21b6` text) that rendered
+  near-invisible on dark surfaces. The hardcoded values are replaced with
+  design-system tokens: the "About skills" box uses `--ds-surface-dim` /
+  `--ds-border` / `--ds-primary`, and the passthrough tool cards use the
+  `--ds-accent-info-*` triplet (`--ds-accent-info-bg` / `--ds-accent-info-line`
+  / `--ds-accent-info-ink`) so they stay visually distinct from native tool
+  cards while flipping correctly in dark mode. Both elements follow the
+  design-system token stack and remain WCAG AA-compliant in all themes. (#656)
 - **Theming: legacy hardcoded values in `style-custom.css` now resolve through
   design tokens.** The legacy section absorbed from the old `style.css` mixed
   named tokens with hardcoded literals (font sizes, card/badge/flash fills,
