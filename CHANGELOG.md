@@ -15,6 +15,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- **AI Cowork page — dark-theme unreadable text.** The "About skills" note box
+  (`.cowork-skills-note`) and the passthrough tool cards
+  (`.cowork-tool-card.is-passthrough`) used hardcoded light-purple hex values
+  (`#f5f3ff` background, `#c7d2fe` border, `#5b21b6` text) that rendered
+  near-invisible on dark surfaces. All three values are replaced with
+  `--ds-surface-dim`, `--ds-border`, and `--ds-primary` respectively, so both
+  elements follow the design-system token stack and remain WCAG AA-compliant in
+  all themes. (#656)
 
 ### Removed
 
