@@ -102,7 +102,7 @@ IMAGE="ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}"
 # The conditional TLS overlay (further down) APPENDS via the same
 # colon-separator so docker compose sees a unified list — interleaving
 # ``-f`` args and a COMPOSE_FILE env var is unspecified behaviour.
-export COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml}"
+export COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml:docker-compose.gcp-logging.yml}"
 PROFILE_ARGS=()
 
 # Re-fetch the bind-mounted config files (compose overlays + Caddyfile)
@@ -125,7 +125,7 @@ RAW_BASE="https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main"
 CONFIG_FILES=(
   docker-compose.yml docker-compose.prod.yml docker-compose.host-mount.yml
   docker-compose.postgres.yml docker-compose.postgres-host-mount.yml
-  docker-compose.tls.yml Caddyfile
+  docker-compose.gcp-logging.yml docker-compose.tls.yml Caddyfile
 )
 hash_config_files() {
   # Sort to keep hash stable across operator add/remove, missing files

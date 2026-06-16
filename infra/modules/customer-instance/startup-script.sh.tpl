@@ -298,10 +298,14 @@ fi
 # ran the one-shot `migrate` against it, which fails and blocks app startup via
 # depends_on.
 PERSISTED_BACKEND=$(sed -n 's/^[[:space:]]*backend:[[:space:]]*//p' "$INSTANCE_YAML" 2>/dev/null | tr -d '"' | head -1)
+# docker-compose.gcp-logging.yml engages the gcplogs Docker driver so container
+# stdout/stderr (app, scheduler, ...) flows to GCP Cloud Logging next to the
+# VM/system logs. It is appended ONLY here (the GCE deploy path) — it is not in
+# the generic OSS prod stack because gcplogs requires GCE metadata-server creds.
 if [ "$PERSISTED_BACKEND" = "side_car" ]; then
-    COMPOSE_FILE_VALUE="docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:docker-compose.host-mount.yml:docker-compose.postgres-host-mount.yml"
+    COMPOSE_FILE_VALUE="docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:docker-compose.host-mount.yml:docker-compose.postgres-host-mount.yml:docker-compose.gcp-logging.yml"
 else
-    COMPOSE_FILE_VALUE="docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml"
+    COMPOSE_FILE_VALUE="docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml:docker-compose.gcp-logging.yml"
 fi
 
 cat > "$APP_DIR/.env" <<ENVEOF
@@ -365,7 +369,7 @@ fi
 # /compose_file); docker compose reads it from the working-directory .env
 # automatically. Export so the value is visible to the docker compose
 # subprocess regardless of whether docker's own dotenv loader fires first.
-COMPOSE_FILE_DEFAULT="docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml"
+COMPOSE_FILE_DEFAULT="docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml:docker-compose.gcp-logging.yml"
 # shellcheck disable=SC1091
 set -a; . "$APP_DIR/.env"; set +a
 export COMPOSE_FILE="$${COMPOSE_FILE:-$COMPOSE_FILE_DEFAULT}"

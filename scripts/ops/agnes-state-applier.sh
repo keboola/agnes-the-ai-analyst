@@ -58,6 +58,13 @@ set -a; . "$COMPOSE_DIR/.env"; set +a
 # agnes-auto-upgrade.sh so this daemon plays well with the existing -f
 # argument style on agnes-dev/agnes-prod (no COMPOSE_FILE env coupling).
 COMPOSE_FILES=( -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml )
+# gcplogs overlay — ships container logs to GCP Cloud Logging on GCE VMs.
+# Guarded on file presence so a legacy VM whose image predates the overlay
+# degrades gracefully to the default json-file driver rather than failing the
+# state-apply with "no such file".
+if [ -f "$COMPOSE_DIR/docker-compose.gcp-logging.yml" ]; then
+    COMPOSE_FILES+=( -f docker-compose.gcp-logging.yml )
+fi
 if [ -f "$COMPOSE_DIR/docker-compose.tls.yml" ] && [ -d /data/state/certs ]; then
     COMPOSE_FILES+=( -f docker-compose.tls.yml )
 fi
