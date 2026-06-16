@@ -93,8 +93,11 @@ def upgrade() -> None:
         sa.Column("file_id", sa.String(), nullable=False),
         sa.Column("ordinal", sa.Integer(), nullable=True),
         sa.Column("text", sa.String(), nullable=True),
-        # PG side: float8[] — pgvector vector(384) is a Retrieval-slice option.
-        sa.Column("embedding", sa.ARRAY(sa.Float()), nullable=True),
+        # PG side: real[] (float4) to match the DuckDB ``FLOAT[384]`` storage
+        # precision so embeddings round-trip identically on both backends and
+        # cosine scores don't diverge. pgvector vector(384) is a Retrieval-slice
+        # option.
+        sa.Column("embedding", sa.ARRAY(sa.REAL()), nullable=True),
         sa.Column("section_path", sa.String(), nullable=True),
         sa.Column("page", sa.Integer(), nullable=True),
         sa.Column("bbox", sa.String(), nullable=True),

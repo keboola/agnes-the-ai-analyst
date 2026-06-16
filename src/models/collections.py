@@ -1,11 +1,12 @@
-"""SQLAlchemy models for the Collections cluster (v77):
+"""SQLAlchemy models for the Collections cluster (v80):
 file_corpora, corpus_files, corpus_chunks.
 
-Mirrors DuckDB DDL in src/db.py (_v76_to_v77 / _SYSTEM_SCHEMA).
+Mirrors DuckDB DDL in src/db.py (_v79_to_v80 / _SYSTEM_SCHEMA).
 
 PG notes:
-- corpus_chunks.embedding uses float8[] (sa.ARRAY(sa.Float)); pgvector
-  vector(384) is a Retrieval-slice option, not a foundation dependency.
+- corpus_chunks.embedding uses real[] (sa.ARRAY(sa.REAL), float4 — matches the
+  DuckDB FLOAT[384] storage precision); pgvector vector(384) is a
+  Retrieval-slice option, not a foundation dependency.
 - processing_detail stores JSON as VARCHAR text (same as DuckDB side);
   no JSONB cast needed since reads come back as strings.
 - CorpusChunk.text_ is mapped to the DB column "text" via __table_args__
@@ -17,7 +18,7 @@ from __future__ import annotations
 from datetime import datetime
 
 import sqlalchemy as sa
-from sqlalchemy import BigInteger, DateTime, Float, Integer, String
+from sqlalchemy import REAL, BigInteger, DateTime, Integer, String
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -83,9 +84,11 @@ class CorpusChunk(Base):
     # Column is named "text" in DB; attribute uses same name — we've imported
     # sa.text as _text above so there is no shadowing.
     text: Mapped[str | None] = mapped_column("text", String, nullable=True)
-    # float8[]: plain PG array; pgvector vector(384) is a Retrieval-slice option.
+    # real[] (float4): matches the DuckDB FLOAT[384] storage precision so
+    # embeddings round-trip identically on both backends; pgvector vector(384)
+    # is a Retrieval-slice option.
     embedding: Mapped[list[float] | None] = mapped_column(
-        PG_ARRAY(Float()),
+        PG_ARRAY(REAL()),
         nullable=True,
     )
     section_path: Mapped[str | None] = mapped_column(String, nullable=True)

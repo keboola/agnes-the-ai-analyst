@@ -1,4 +1,4 @@
-"""Postgres-backed repository for ``corpus_chunks`` (v77).
+"""Postgres-backed repository for ``corpus_chunks`` (v80).
 
 Mirrors ``src/repositories/corpus_chunks.py`` (the DuckDB impl) on the
 ``CorpusChunksRepository`` public surface. Cross-engine parity is covered
@@ -33,20 +33,25 @@ class CorpusChunksPgRepository:
         ``text``.  Optional keys: ``embedding`` (list of 384 floats, else NULL),
         ``section_path``, ``page``, ``bbox``, ``metadata``.
 
-        The PG ``embedding`` column is an unbounded ``float8[]`` (pgvector is a
-        later option), so we enforce the 384 dimension here — the DuckDB side
-        gets it for free from its ``FLOAT[384]`` column type.
+        The PG ``embedding`` column is an unbounded ``real[]`` (float4, matching
+        the DuckDB ``FLOAT[384]`` storage precision; pgvector is a later option),
+        so the dimension is not enforced by the column type on either backend.
+        Both repos therefore validate explicitly, up front in a pre-loop pass —
+        so a wrong-dimension vector raises the same ``ValueError`` before any
+        insert round-trip, mirroring the DuckDB sibling.
 
         Returns the number of rows inserted.
         """
         if not chunks:
             return 0
+        for chunk in chunks:
+            embedding = chunk.get("embedding")
+            if embedding is not None and len(embedding) != _EMBED_DIM:
+                raise ValueError(f"embedding must be {_EMBED_DIM}-dim, got {len(embedding)}")
         with self._engine.begin() as conn:
             for chunk in chunks:
                 chunk_id = "ck_" + secrets.token_hex(8)
                 embedding = chunk.get("embedding")
-                if embedding is not None and len(embedding) != _EMBED_DIM:
-                    raise ValueError(f"embedding must be {_EMBED_DIM}-dim, got {len(embedding)}")
                 conn.execute(
                     sa.text(
                         "INSERT INTO corpus_chunks "

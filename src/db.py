@@ -1245,7 +1245,7 @@ CREATE TABLE IF NOT EXISTS user_workdirs (
     agnes_version_at_init  VARCHAR
 );
 
--- v77: Collections (bring-your-files) foundation.
+-- v80: Collections (bring-your-files) foundation.
 -- file_corpora: a Collection -- self-service container of uploaded files.
 CREATE TABLE IF NOT EXISTS file_corpora (
     id VARCHAR PRIMARY KEY,
