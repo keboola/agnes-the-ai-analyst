@@ -4,8 +4,9 @@ Two tiers decide how an uploaded file is processed:
 
 * **tier1** — text/document formats the ingestion pipeline can currently
   extract text from (PDF, Office, plain text, structured data).
-* **tier2** — image formats stored now and processed later via vision/OCR
-  (Slice 5); accepted and written to disk today with status ``'pending'``.
+* **tier2** — image formats (PNG, JPEG, GIF, WebP) stored now and processed
+  later via vision/OCR (Slice 5); accepted and written to disk today with
+  status ``'pending'``. Kept in lock-step with the vision-supported set.
 * **None** — unsupported; upload is rejected with HTTP 422.
 
 100 MiB ceiling per file. The cap is enforced during streaming by
@@ -43,13 +44,21 @@ TIER1_EXTENSIONS: frozenset[str] = frozenset(
     }
 )
 
+# Must stay in lock-step with the image formats the vision path can actually
+# process — ``IMAGE_EXTS`` in ``src/ingest/runner.py`` and ``_EXT_MEDIA`` in
+# ``src/ingest/vision.py`` (the Anthropic vision API media types: PNG, JPEG,
+# GIF, WebP). A format here that the ingest pipeline can't route to vision
+# would be accepted as ``pending`` at upload and then ``rejected`` by the
+# background task — violating the tier2 "stored now, processed later" contract.
+# TIFF is deliberately absent: the vision API does not accept ``image/tiff``,
+# so such uploads are rejected up front with a clear 422.
 TIER2_EXTENSIONS: frozenset[str] = frozenset(
     {
         "png",
         "jpg",
         "jpeg",
-        "tif",
-        "tiff",
+        "gif",
+        "webp",
     }
 )
 

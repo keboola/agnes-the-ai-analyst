@@ -69,11 +69,19 @@ class TestTier2Extensions:
     def test_jpeg_is_tier2(self):
         assert classify("photo.jpeg") == "tier2"
 
-    def test_tif_is_tier2(self):
-        assert classify("scan.tif") == "tier2"
+    def test_gif_is_tier2(self):
+        assert classify("anim.gif") == "tier2"
 
-    def test_tiff_is_tier2(self):
-        assert classify("scan.tiff") == "tier2"
+    def test_webp_is_tier2(self):
+        assert classify("image.webp") == "tier2"
+
+    def test_tiff_is_rejected(self):
+        # TIFF is not accepted by the vision API, so it must be rejected up
+        # front rather than accepted as tier2 and later marked rejected by the
+        # background ingest task (the tier2 contract is "stored now, processed
+        # later" — only honour-able for vision-supported formats).
+        assert classify("scan.tif") is None
+        assert classify("scan.tiff") is None
 
 
 class TestCaseInsensitive:
