@@ -11,6 +11,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.42] - 2026-06-16
+
+### Added
+- Named source connections (phase 1/5): `source_connections` + vault-backed `connection_secrets` registry (DuckDB v79 + Alembic `0026`), per-type config validation with URL normalization, a connection/token resolver (vault → `token_env`), and first-boot seeding of `keboola`/`bigquery` defaults from env/yaml. Invisible in this phase — extraction switches over to per-connection `extracts/<name>/` in phase 2. Lays the groundwork for N connections per source type (multiple Keboola stacks/projects, multiple BigQuery projects) without changing single-connection deployments.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.41] - 2026-06-16
+
+### Added
+- **Built-in marketplace: owner + richer plugin descriptions.** The seeded built-in marketplace now sets `curator_name="Agnes"`, so it shows a clear owner/attribution in the admin and browse UI (distinct from admin-registered marketplaces that carry their curator's name). The `marketplace.json` + per-plugin `plugin.json` descriptions now spell out what each plugin actually covers — `agnes-analyst` (discovery, local-vs-remote query path, estimate-first snapshots, per-source SQL flavour, metric definitions) and `agnes-operator` (the three config layers + live config-surface) — so users browsing know what they're installing.
 - **Jira connector: hive-partitioned parquet layout.** Monthly parquet files are
   now written to `month=YYYY-MM/data.parquet` hive partition directories instead
   of flat `YYYY-MM.parquet` files. DuckDB views use `hive_partitioning=true` so
