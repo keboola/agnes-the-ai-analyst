@@ -124,14 +124,17 @@ async def create_collection(
     """Create a new file corpus (admin only).
 
     Returns the created collection object (id, slug, name, …).
-    ``slug`` is auto-generated from ``name`` when omitted; a collision
-    on the unique slug index returns **409**.
+    ``slug`` is auto-generated from ``name`` when omitted, and an explicit
+    ``slug`` is normalised to a URL-safe form (``[a-z0-9-]``) so it always
+    resolves via ``/library/{slug}``; a collision on the unique slug index
+    returns **409**.
     """
-    # A whitespace-only explicit slug ("   ") is truthy, so strip *first* and
-    # fall back to the auto-slug when nothing survives — otherwise the empty
-    # string would create a collection unreachable via /library/{slug} and
-    # collide on the unique index. _auto_slug has its own "collection" fallback.
-    slug = (payload.slug or "").strip() or _auto_slug(payload.name)
+    # Always normalise through _auto_slug so the stored slug is URL-safe
+    # ([a-z0-9-]) and reachable via /library/{slug}, whether it was admin-
+    # provided or derived from the name. An explicit slug like "my/collection"
+    # becomes "my-collection"; a whitespace-only or all-symbol slug collapses to
+    # empty and falls back to the name (then _auto_slug's "collection" default).
+    slug = _auto_slug(payload.slug) if (payload.slug or "").strip() else _auto_slug(payload.name)
     repo = file_corpora_repo()
     try:
         corpus_id = repo.create(

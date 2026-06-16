@@ -124,6 +124,18 @@ class TestCreateCollection:
         assert slug.strip()  # non-empty, non-whitespace
         assert slug == "whitespace-slug"
 
+    def test_explicit_slug_normalised_to_url_safe(self, seeded_app):
+        # An admin-provided slug with URL-unsafe chars must be normalised so it
+        # resolves via /library/{slug} (path params don't consume "/").
+        c = seeded_app["client"]
+        resp = c.post(
+            "/api/collections",
+            json={"name": "Has Slashes", "slug": "my/collection path"},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["slug"] == "my-collection-path"
+
 
 class TestListCollections:
     def test_admin_sees_all_collections(self, seeded_app):
