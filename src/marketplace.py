@@ -545,13 +545,21 @@ def seed_builtin_marketplace() -> None:
     slug = BUILTIN_MARKETPLACE_SLUG
     reg_repo = marketplace_registry_repo()
 
-    # 1. Upsert registry row.
+    # 1. Upsert registry row. curator_name gives the marketplace a visible
+    # owner in the admin/browse UI — "Agnes" attributes the built-in content to
+    # the platform itself (vendor-neutral), distinct from admin-registered
+    # marketplaces which carry their curator's name.
     reg_repo.register(
         id=slug,
         name="Agnes Built-in",
         url=_BUILTIN_SENTINEL_URL,
-        description="Built-in guidance plugins shipped with every Agnes instance.",
+        description=(
+            "First-party guidance that ships with every Agnes instance: how to "
+            "use Agnes as an analyst and how to configure it as an operator. "
+            "Maintained by Agnes, served to all users (RBAC-scoped per plugin)."
+        ),
         registered_by="system:seed",
+        curator_name="Agnes",
         is_builtin=True,
     )
     logger.info("built-in marketplace: registry row seeded (slug=%s)", slug)

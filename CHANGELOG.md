@@ -11,6 +11,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.41] - 2026-06-16
+
+### Added
+- **Built-in marketplace: owner + richer plugin descriptions.** The seeded built-in marketplace now sets `curator_name="Agnes"`, so it shows a clear owner/attribution in the admin and browse UI (distinct from admin-registered marketplaces that carry their curator's name). The `marketplace.json` + per-plugin `plugin.json` descriptions now spell out what each plugin actually covers — `agnes-analyst` (discovery, local-vs-remote query path, estimate-first snapshots, per-source SQL flavour, metric definitions) and `agnes-operator` (the three config layers + live config-surface) — so users browsing know what they're installing.
 - **Jira connector: hive-partitioned parquet layout.** Monthly parquet files are
   now written to `month=YYYY-MM/data.parquet` hive partition directories instead
   of flat `YYYY-MM.parquet` files. DuckDB views use `hive_partitioning=true` so
