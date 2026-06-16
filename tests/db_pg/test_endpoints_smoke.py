@@ -1817,9 +1817,18 @@ def test_every_route_is_covered_or_excluded(state_backend, seeded_app_both):
     """
     if state_backend != "duckdb":
         pytest.skip("route set is backend-independent; checked once on duckdb")
-    app = seeded_app_both["client"].app
+    # Use a fresh create_app() call for route introspection rather than going through
+    # TestClient.app — avoids an xdist worker ordering quirk where TestClient.app.routes
+    # appears empty when the worker that owns the fixture hasn't synced its internal state
+    # to the worker running this test.  Routes are registered at import time so a fresh
+    # app has the same route set as the one used by every other test in this shard.
+    from app.main import create_app as _create_app  # noqa: PLC0415
+
+    _inspection_app = _create_app()
     all_routes = {
-        f"{m} {r.path}" for r in app.routes for m in (getattr(r, "methods", None) or set()) - {"HEAD", "OPTIONS"}
+        f"{m} {r.path}"
+        for r in _inspection_app.routes
+        for m in (getattr(r, "methods", None) or set()) - {"HEAD", "OPTIONS"}
     }
     covered = _collect_covered_routes() | KNOWN_UNTESTED
     missing = sorted(all_routes - covered)
