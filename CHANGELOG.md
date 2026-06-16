@@ -55,9 +55,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
-- Schema v77: adds `file_corpora`, `corpus_files`, and `corpus_chunks`
+- Schema v80: adds `file_corpora`, `corpus_files`, and `corpus_chunks`
   (384-dim embedding column; chunk repo deferred to Retrieval slice).
-  DuckDB `_v76_to_v77` migration + Alembic `0024_collections_v77`.
+  DuckDB `_v79_to_v80` migration + Alembic `0027_collections_v80`.
 
 ## [0.71.43] - 2026-06-16
 
