@@ -29,6 +29,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   plus `write_page_index=True` for improved DuckDB query performance.
 
 ### Fixed
+- Data-package table access now resolves correctly on Postgres-backed instances.
+  `can_access_table` / `get_accessible_tables` (`src/rbac.py`) read the
+  `data_package_tables` membership via raw SQL on the DuckDB system connection,
+  which is empty on a PG-backed instance — so analysts whose table access came
+  through a data-package grant were silently denied every such table. Both paths
+  now go through the backend-aware `data_packages_repo()` factory
+  (`list_packages_of_table` / `list_member_ids_bulk`), so the check reads the
+  active backend.
 
 ### Removed
 
@@ -69,14 +77,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
-- Data-package table access now resolves correctly on Postgres-backed instances.
-  `can_access_table` / `get_accessible_tables` (`src/rbac.py`) read the
-  `data_package_tables` membership via raw SQL on the DuckDB system connection,
-  which is empty on a PG-backed instance — so analysts whose table access came
-  through a data-package grant were silently denied every such table. Both paths
-  now go through the backend-aware `data_packages_repo()` factory
-  (`list_packages_of_table` / `list_member_ids_bulk`), so the check reads the
-  active backend.
 - Dark mode now preserves the blue brand colour on blue-theme instances. A new
   `data-theme-variant="blue"` attribute is stamped by the pre-paint theme
   resolver when the user switches to dark while the light variant is blue, and
