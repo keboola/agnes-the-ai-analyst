@@ -397,6 +397,32 @@ async def documentation_api() -> str:
         return "# API reference unavailable\n\nThe source markdown file is missing from this deployment."
 
 
+@mcp.tool()
+async def admin_config_surface() -> dict:
+    """Return the complete per-instance configuration surface (admin only).
+
+    Reads every ``get_*`` resolver in ``app/instance_config.py`` and returns
+    their current values alongside which tier supplied each one (env/yaml/default),
+    the registered Initial Workspace Template (if any), every registered
+    marketplace, and the ``infra_repo_url`` knob.
+
+    Useful for an operator's Claude that needs instance-accurate pointers
+    (IWT URL, marketplace URLs, knob values, infra repo) without hardcoding
+    anything. Mirrors ``GET /api/admin/config-surface`` and
+    ``agnes admin config-surface``.
+
+    Requires an admin PAT.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.get(
+            f"{_BASE}/api/admin/config-surface",
+            headers=_headers(),
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
 # ── auth middleware ─────────────────────────────────────────────────────────────
 
 

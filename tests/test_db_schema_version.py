@@ -190,7 +190,10 @@ def test_schema_version_is_62():
     #            stdio MCP sources.
     # v69 → v70: live co-drive foundation — chat_session_participants +
     #            is_co_session/ephemeral/sender_email.
-    assert SCHEMA_VERSION >= 77
+    # v77 → v78: built-in marketplace — is_builtin on marketplace_registry,
+    #            admin_disabled on marketplace_plugins.
+    # v79 → v80: collections (file_corpora / corpus_files / corpus_chunks).
+    assert SCHEMA_VERSION >= 80
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
@@ -711,5 +714,92 @@ def test_v69_to_v70_migration(tmp_path):
 
     tables = {r[0] for r in conn.execute("SHOW TABLES").fetchall()}
     assert "chat_session_participants" in tables
+
+    conn.close()
+
+
+def test_v78_builtin_marketplace_columns(tmp_path):
+    """Fresh install reaches v78 with is_builtin on marketplace_registry and
+    admin_disabled on marketplace_plugins. Both default to FALSE so existing rows
+    and freshly-registered admin marketplaces are unaffected."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    reg_cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'marketplace_registry'"
+        ).fetchall()
+    }
+    assert "is_builtin" in reg_cols, f"is_builtin missing from marketplace_registry: {reg_cols}"
+
+    plugin_cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'marketplace_plugins'"
+        ).fetchall()
+    }
+    assert "admin_disabled" in plugin_cols, f"admin_disabled missing from marketplace_plugins: {plugin_cols}"
+
+    # New admin-registered rows default to is_builtin=FALSE.
+    conn.execute(
+        "INSERT INTO marketplace_registry (id, name, url) "
+        "VALUES ('admin-reg', 'Admin Reg', 'https://example.com/reg.git')"
+    )
+    row = conn.execute("SELECT is_builtin FROM marketplace_registry WHERE id = 'admin-reg'").fetchone()
+    assert row[0] is False, f"admin row defaulted to is_builtin={row[0]!r}"
+
+    # New plugin rows default to admin_disabled=FALSE.
+    conn.execute("INSERT INTO marketplace_plugins (marketplace_id, name) VALUES ('admin-reg', 'plug')")
+    row = conn.execute(
+        "SELECT admin_disabled FROM marketplace_plugins WHERE marketplace_id = 'admin-reg' AND name = 'plug'"
+    ).fetchone()
+    assert row[0] is False, f"new plugin defaulted to admin_disabled={row[0]!r}"
+
+    conn.close()
+
+
+def test_v77_to_v78_migration(tmp_path):
+    """A DB at v77 upgrades cleanly to v78 — adds is_builtin + admin_disabled,
+    existing rows survive with both columns defaulting to FALSE."""
+    from src.db import _v77_to_v78
+
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+
+    conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (77)")
+    conn.execute("""
+        CREATE TABLE marketplace_registry (
+            id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL,
+            url VARCHAR NOT NULL, curator_name VARCHAR, curator_email VARCHAR
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE marketplace_plugins (
+            marketplace_id VARCHAR NOT NULL, name VARCHAR NOT NULL,
+            is_system BOOLEAN DEFAULT FALSE,
+            PRIMARY KEY (marketplace_id, name)
+        )
+    """)
+    conn.execute(
+        "INSERT INTO marketplace_registry (id, name, url) VALUES ('old', 'Old', 'https://example.com/old.git')"
+    )
+    conn.execute("INSERT INTO marketplace_plugins (marketplace_id, name) VALUES ('old', 'foo')")
+
+    _v77_to_v78(conn)
+
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 78
+
+    reg_row = conn.execute("SELECT is_builtin FROM marketplace_registry WHERE id = 'old'").fetchone()
+    assert reg_row[0] is False, f"pre-existing registry row got is_builtin={reg_row[0]!r}"
+
+    plug_row = conn.execute(
+        "SELECT admin_disabled FROM marketplace_plugins WHERE marketplace_id = 'old' AND name = 'foo'"
+    ).fetchone()
+    assert plug_row[0] is False, f"pre-existing plugin row got admin_disabled={plug_row[0]!r}"
 
     conn.close()

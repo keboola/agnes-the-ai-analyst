@@ -106,6 +106,7 @@ class UserRepository:
         email: str,
         name: str,
         password_hash: Optional[str] = None,
+        must_change_password: bool = False,
     ) -> None:
         """Create a user. Group memberships are populated separately.
 
@@ -122,9 +123,9 @@ class UserRepository:
         """
         now = datetime.now(timezone.utc)
         self.conn.execute(
-            """INSERT INTO users (id, email, name, password_hash, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)""",
-            [id, email, name, password_hash, now, now],
+            """INSERT INTO users (id, email, name, password_hash, must_change_password, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [id, email, name, password_hash, must_change_password, now, now],
         )
 
     def update(self, id: str, **kwargs) -> None:
@@ -151,6 +152,9 @@ class UserRepository:
             # v71: Slack identity binding — set when the analyst redeems a
             # /agnes verification code (services/slack_bot/binding.py).
             "slack_user_id",
+            # v77: forced-password-change flag (set on seeded/admin-set
+            # passwords, cleared when the user sets their own).
+            "must_change_password",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
@@ -159,6 +163,23 @@ class UserRepository:
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [id]
         self.conn.execute(f"UPDATE users SET {set_clause} WHERE id = ?", values)
+
+    def consume_reset_token(self, *, email: str, token: str, cutoff, consume_id: str) -> bool:
+        """Atomically consume a password-reset token: stamp it with ``consume_id``
+        iff it is the valid, unexpired token for an active ``email``. Returns True
+        iff THIS call won the race (mirrors the magic-link CAS). Goes through the
+        repo (not a raw connection) so it runs on the ACTIVE backend — a raw
+        DuckDB cursor here silently failed on Postgres instances."""
+        self.conn.execute(
+            "UPDATE users SET reset_token = ?, reset_token_created = NULL "
+            "WHERE email = ? AND reset_token = ? AND reset_token_created IS NOT NULL "
+            "AND reset_token_created >= ? AND active = TRUE",
+            [consume_id, email, token, cutoff],
+        )
+        row = self.conn.execute(
+            "SELECT reset_token FROM users WHERE email = ?", [email]
+        ).fetchone()
+        return bool(row and row[0] == consume_id)
 
     def count_admins(self, active_only: bool = True) -> int:
         """Count active users in the Admin system group."""

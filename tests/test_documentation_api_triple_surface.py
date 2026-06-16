@@ -39,6 +39,8 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/collections": ("collections list", "collections_list"),
     "/api/collections/{collection_id}": ("collections show", "collection_get"),
     "/api/collections/search": ("collections search", "collections_search"),
+    # Config-surface introspection (built-in marketplace spec Phase 1).
+    "/api/admin/config-surface": ("admin config-surface", "admin_config_surface"),
 }
 
 
@@ -127,6 +129,11 @@ _COLLECTIONS_FILES_REASON = (
     "show`; file deletion is a maintenance mutation with no analyst CLI/MCP "
     "analogue. The collection read surfaces carry the triple-surface contract."
 )
+_BUILTIN_DISABLE_REASON = (
+    "admin-only per-plugin disable toggle for built-in marketplace plugins — "
+    "web UI only at /admin/marketplaces, no analyst CLI/MCP analogue (mirrors "
+    "the grandfathered admin marketplace register/sync/delete mutations)"
+)
 _EXEMPT: dict[str, str] = {
     "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
@@ -145,6 +152,8 @@ _EXEMPT: dict[str, str] = {
     "/api/admin/adoption/users/{user_id}/series": _ADOPTION_REASON,
     "/api/admin/adoption/users/{user_id}/top-skills": _ADOPTION_REASON,
     "/api/admin/adoption/users/{user_id}/top-tools": _ADOPTION_REASON,
+    "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/disable": _BUILTIN_DISABLE_REASON,
+    "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/enable": _BUILTIN_DISABLE_REASON,
 }
 
 

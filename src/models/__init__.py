@@ -13,6 +13,7 @@ from src.models.audit import AuditLog
 from src.models.chat import ChatMessage, ChatSession, UserWorkdir
 from src.models.collections import CorpusChunk, CorpusFile, FileCorpus
 from src.models.config import InstanceTemplate, MetricDefinition, PersonalAccessToken
+from src.models.connections import ConnectionSecret, SourceConnection
 from src.models.data_packages import DataPackage, DataPackageTable, DataPackageTool
 from src.models.knowledge import (
     KnowledgeContradiction,
@@ -82,6 +83,7 @@ __all__ = [
     "ChatMessage",
     "ChatSession",
     "ColumnMetadata",
+    "ConnectionSecret",
     "CorpusChunk",
     "CorpusFile",
     "FileCorpus",
@@ -111,6 +113,7 @@ __all__ = [
     "SetupToken",
     "ScriptRegistry",
     "SessionProcessorState",
+    "SourceConnection",
     "StoreEntity",
     "StoreEntityVote",
     "StoreSubmission",

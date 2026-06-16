@@ -143,6 +143,11 @@ class TestToolRegistration:
             "collections_list",
             "collection_get",
             "collections_search",
+            # Config-surface introspection — an operator's Claude reads this
+            # instance's live configurable surface (knobs + sources, registered
+            # IWT, marketplaces, infra_repo_url). Triple-surface with
+            # GET /api/admin/config-surface + `agnes admin config-surface`.
+            "admin_config_surface",
         }
 
     def test_no_client_only_tools(self):

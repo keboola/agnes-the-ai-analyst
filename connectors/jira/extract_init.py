@@ -9,7 +9,6 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-import duckdb
 
 from src.duckdb_conn import _open_duckdb
 
@@ -48,19 +47,36 @@ def init_extract(output_dir: str | Path) -> None:
             table_dir = data_dir / table_name
             table_dir.mkdir(exist_ok=True)
 
-            # Create view only if parquet files exist (DuckDB glob fails on empty dirs)
+            # Migrate any remaining flat YYYY-MM.parquet files to hive layout
+            # before building the view so the glob always points at hive dirs.
+            try:
+                from .incremental_transform import migrate_flat_to_hive
+
+                migrated = migrate_flat_to_hive(table_dir)
+                if migrated:
+                    logger.info(
+                        "Migrated %d flat parquet(s) to hive layout for %s: %s",
+                        len(migrated),
+                        table_name,
+                        migrated,
+                    )
+            except Exception as mig_err:
+                logger.warning("Could not migrate flat parquets for %s: %s", table_name, mig_err)
+
+            # Create view only if hive partition dirs exist
+            # (DuckDB glob fails on empty dirs / non-existent paths).
             rows = 0
             size_bytes = 0
-            parquets = list(table_dir.glob("*.parquet"))
-            if parquets:
-                glob_path = str(table_dir / "*.parquet")
+            hive_parquets = list(table_dir.glob("month=*/data.parquet"))
+            if hive_parquets:
+                glob_path = str(table_dir / "month=*" / "*.parquet")
                 conn.execute(
                     f'CREATE OR REPLACE VIEW "{table_name}" AS '
-                    f"SELECT * FROM read_parquet('{glob_path}', union_by_name=true, hive_partitioning=false)"
+                    f"SELECT * FROM read_parquet('{glob_path}', union_by_name=true, hive_partitioning=true)"
                 )
                 try:
                     rows = conn.execute(f'SELECT count(*) FROM "{table_name}"').fetchone()[0]
-                    size_bytes = sum(f.stat().st_size for f in parquets)
+                    size_bytes = sum(f.stat().st_size for f in hive_parquets)
                 except Exception:
                     pass
 
@@ -89,22 +105,22 @@ def update_meta(output_dir: str | Path, table_name: str) -> None:
     conn = _open_duckdb(str(db_path))
     try:
         table_dir = output_path / "data" / table_name
-        parquets = list(table_dir.glob("*.parquet"))
+        hive_parquets = list(table_dir.glob("month=*/data.parquet"))
 
         rows = 0
         size_bytes = 0
-        if parquets:
+        if hive_parquets:
             try:
-                glob_path = str(table_dir / "*.parquet")
-                # Recreate view to pick up new/changed parquet files
+                glob_path = str(table_dir / "month=*" / "*.parquet")
+                # Recreate view to pick up new/changed hive partition dirs
                 conn.execute(
                     f'CREATE OR REPLACE VIEW "{table_name}" AS '
-                    f"SELECT * FROM read_parquet('{glob_path}', union_by_name=true, hive_partitioning=false)"
+                    f"SELECT * FROM read_parquet('{glob_path}', union_by_name=true, hive_partitioning=true)"
                 )
-                rows = conn.execute(f"SELECT count(*) FROM read_parquet('{glob_path}', union_by_name=true)").fetchone()[
-                    0
-                ]
-                size_bytes = sum(f.stat().st_size for f in parquets)
+                rows = conn.execute(
+                    f"SELECT count(*) FROM read_parquet('{glob_path}', union_by_name=true, hive_partitioning=true)"
+                ).fetchone()[0]
+                size_bytes = sum(f.stat().st_size for f in hive_parquets)
             except Exception as e:
                 logger.warning("Could not count rows for %s: %s", table_name, e)
 

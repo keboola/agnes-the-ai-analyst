@@ -1,4 +1,4 @@
-"""Collections foundation (DuckDB v77 parity).
+"""Collections foundation (DuckDB v80 parity).
 
 Creates three new tables that form the Collections (bring-your-files) feature:
 
@@ -10,10 +10,10 @@ Creates three new tables that form the Collections (bring-your-files) feature:
   vector retrieval (repo deferred to Retrieval slice; table created now
   so the single-migration-per-build-run constraint is met).
 
-Mirrors DuckDB ``_v76_to_v77``. All additive; downgrade drops in reverse.
+Mirrors DuckDB ``_v79_to_v80``. All additive; downgrade drops in reverse.
 
-Revision ID: 0024_collections_v77
-Revises: 0023_store_entity_votes_v76
+Revision ID: 0027_collections_v80
+Revises: 0026_source_connections_v79
 Create Date: 2026-06-15
 """
 
@@ -24,8 +24,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0024_collections_v77"
-down_revision: Union[str, None] = "0023_store_entity_votes_v76"
+revision: str = "0027_collections_v80"
+down_revision: Union[str, None] = "0026_source_connections_v79"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -19,6 +19,13 @@ def conn(tmp_path, monkeypatch):
     db_path = tmp_path / "system.duckdb"
     c = duckdb.connect(str(db_path))
     _ensure_schema(c)
+    # RBAC reads that go through the repository factory (e.g.
+    # get_accessible_tables → data_packages_repo()) resolve their connection
+    # via src.repositories.get_system_db, NOT the conn passed in here. Redirect
+    # that name to this fixture's connection so the factory reads the same DB
+    # the test seeds — otherwise the factory opens a separate (empty) system DB
+    # and package-scoped grants resolve to nothing.
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: c)
     yield c
     c.close()
 
@@ -36,6 +43,7 @@ def _user(email="alice@example.com", is_admin=False):
 # ---------------------------------------------------------------------------
 # Default (no override) — renders a non-empty markdown string
 # ---------------------------------------------------------------------------
+
 
 def test_compute_default_returns_non_empty(conn):
     out = compute_default_claude_md(conn, user=_user(), server_url="https://example.com")
@@ -63,6 +71,7 @@ def test_render_uses_default_when_no_override(conn):
 # Override renders correctly
 # ---------------------------------------------------------------------------
 
+
 def test_render_uses_override_when_set(conn):
     ClaudeMdTemplateRepository(conn).set(
         "# {{ instance.name }} Workspace\n\nHello {{ user.email }}.",
@@ -81,6 +90,7 @@ def test_render_override_tables_list(conn):
     )
     from src.repositories.users import UserRepository
     from src.repositories.user_group_members import UserGroupMembersRepository
+
     UserRepository(conn).create(id="u1", email="alice@example.com", name="Alice")
     admin_gid = conn.execute("SELECT id FROM user_groups WHERE name='Admin'").fetchone()[0]
     UserGroupMembersRepository(conn).add_member("u1", admin_gid, source="admin")
@@ -112,6 +122,7 @@ def test_render_override_metrics_summary(conn):
 # RBAC-filtered marketplaces — two users with different grants render differently
 # ---------------------------------------------------------------------------
 
+
 def test_marketplaces_empty_for_user_with_no_grants(conn):
     # No grants seeded — _marketplaces_for_user returns []
     ClaudeMdTemplateRepository(conn).set(
@@ -125,6 +136,7 @@ def test_marketplaces_empty_for_user_with_no_grants(conn):
 # ---------------------------------------------------------------------------
 # Anonymous / minimal user context
 # ---------------------------------------------------------------------------
+
 
 def test_render_with_minimal_user_context(conn):
     """Templates referencing user fields must work with minimal user dict."""
@@ -141,9 +153,21 @@ def test_render_with_minimal_user_context(conn):
 # Build context shape
 # ---------------------------------------------------------------------------
 
+
 def test_context_exposes_all_documented_keys(conn):
     ctx = build_claude_md_context(conn, user=_user(), server_url="https://example.com")
-    for key in ("instance", "server", "sync_interval", "data_source", "tables", "metrics", "marketplaces", "user", "now", "today"):
+    for key in (
+        "instance",
+        "server",
+        "sync_interval",
+        "data_source",
+        "tables",
+        "metrics",
+        "marketplaces",
+        "user",
+        "now",
+        "today",
+    ):
         assert key in ctx, f"missing context key: {key}"
 
 
@@ -167,10 +191,9 @@ def test_context_marketplaces_is_list(conn):
 # Render failure raises (caller handles)
 # ---------------------------------------------------------------------------
 
+
 def test_render_raises_on_template_error(conn):
-    ClaudeMdTemplateRepository(conn).set(
-        "{{ does_not_exist }}", updated_by="admin@example.com"
-    )
+    ClaudeMdTemplateRepository(conn).set("{{ does_not_exist }}", updated_by="admin@example.com")
     with pytest.raises(TemplateError):
         render_claude_md(conn, user=_user(), server_url="https://example.com")
 
@@ -179,18 +202,22 @@ def test_render_raises_on_template_error(conn):
 # RBAC-filtered tables — two users with different grants see different tables
 # ---------------------------------------------------------------------------
 
+
 def _make_user(conn, *, user_id: str, email: str) -> None:
     from src.repositories.users import UserRepository
+
     UserRepository(conn).create(id=user_id, email=email, name=email.split("@")[0])
 
 
 def _make_group(conn, *, name: str) -> str:
     from src.repositories.user_groups import UserGroupsRepository
+
     return UserGroupsRepository(conn).create(name=name)["id"]
 
 
 def _add_member(conn, *, user_id: str, group_id: str) -> None:
     from src.repositories.user_group_members import UserGroupMembersRepository
+
     UserGroupMembersRepository(conn).add_member(user_id, group_id, source="admin")
 
 
@@ -200,6 +227,7 @@ def _grant_table(conn, *, group_id: str, table_id: str) -> None:
     so every user in the group has the package in their stack."""
     from src.repositories.resource_grants import ResourceGrantsRepository
     from src.repositories.data_packages import DataPackagesRepository
+
     pkgs = DataPackagesRepository(conn)
     pkg_slug = f"_test-pkg-{table_id.lower()}"[:63]
     existing = pkgs.get_by_slug(pkg_slug)
@@ -207,12 +235,18 @@ def _grant_table(conn, *, group_id: str, table_id: str) -> None:
         pkg_id = existing["id"]
     else:
         pkg_id = pkgs.create(
-            name=f"Test wrap {table_id}", slug=pkg_slug,
-            description=None, icon=None, color=None, created_by="test",
+            name=f"Test wrap {table_id}",
+            slug=pkg_slug,
+            description=None,
+            icon=None,
+            color=None,
+            created_by="test",
         )
     pkgs.add_table(pkg_id, table_id, added_by="test")
     ResourceGrantsRepository(conn).create(
-        group_id=group_id, resource_type="data_package", resource_id=pkg_id,
+        group_id=group_id,
+        resource_type="data_package",
+        resource_id=pkg_id,
         requirement="required",
     )
 

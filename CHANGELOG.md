@@ -59,6 +59,186 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   (384-dim embedding column; chunk repo deferred to Retrieval slice).
   DuckDB `_v76_to_v77` migration + Alembic `0024_collections_v77`.
 
+## [0.71.43] - 2026-06-16
+
+### Added
+
+### Changed
+
+### Fixed
+- Data-package table access now resolves correctly on Postgres-backed instances.
+  `can_access_table` / `get_accessible_tables` (`src/rbac.py`) read the
+  `data_package_tables` membership via raw SQL on the DuckDB system connection,
+  which is empty on a PG-backed instance — so analysts whose table access came
+  through a data-package grant were silently denied every such table. Both paths
+  now go through the backend-aware `data_packages_repo()` factory
+  (`list_packages_of_table` / `list_member_ids_bulk`), so the check reads the
+  active backend.
+
+### Removed
+
+### Internal
+- Dual-backend endpoint smoke tests (`tests/db_pg/test_endpoints_smoke.py`):
+  covers every registered route against both DuckDB and Postgres backends with
+  parametrized auth scenarios (anonymous, non-admin, admin). Includes a route-
+  coverage guard that fails CI when a new endpoint has no test or exclusion entry.
+
+## [0.71.42] - 2026-06-16
+
+### Added
+- Named source connections (phase 1/5): `source_connections` + vault-backed `connection_secrets` registry (DuckDB v79 + Alembic `0026`), per-type config validation with URL normalization, a connection/token resolver (vault → `token_env`), and first-boot seeding of `keboola`/`bigquery` defaults from env/yaml. Invisible in this phase — extraction switches over to per-connection `extracts/<name>/` in phase 2. Lays the groundwork for N connections per source type (multiple Keboola stacks/projects, multiple BigQuery projects) without changing single-connection deployments.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.41] - 2026-06-16
+
+### Added
+- **Built-in marketplace: owner + richer plugin descriptions.** The seeded built-in marketplace now sets `curator_name="Agnes"`, so it shows a clear owner/attribution in the admin and browse UI (distinct from admin-registered marketplaces that carry their curator's name). The `marketplace.json` + per-plugin `plugin.json` descriptions now spell out what each plugin actually covers — `agnes-analyst` (discovery, local-vs-remote query path, estimate-first snapshots, per-source SQL flavour, metric definitions) and `agnes-operator` (the three config layers + live config-surface) — so users browsing know what they're installing.
+- **Jira connector: hive-partitioned parquet layout.** Monthly parquet files are
+  now written to `month=YYYY-MM/data.parquet` hive partition directories instead
+  of flat `YYYY-MM.parquet` files. DuckDB views use `hive_partitioning=true` so
+  the `month` column is available as a virtual partition column, enabling
+  predicate push-down and partition pruning on month-range queries. All tables
+  (issues, comments, attachments, changelog, issuelinks, remote_links) are
+  affected. Existing flat parquet files are auto-migrated to the hive layout:
+  the next `init_extract` run migrates all months at once; the incremental
+  transform path migrates each month lazily as it is next written. Run
+  `init_extract` (e.g. an orchestrator rebuild) to migrate all historical
+  partitions in one pass. (#406)
+
+### Changed
+- **Jira connector: ZSTD compression + column statistics.** All Jira parquet
+  writes now use ZSTD compression (was Snappy) and have `write_statistics=True`
+  plus `write_page_index=True` for improved DuckDB query performance.
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.40] — 2026-06-15
+
+### Added
+- **Config-surface introspection** — `GET /api/admin/config-surface` (admin-gated), the `agnes admin config-surface` CLI, and a matching MCP tool expose this instance's complete configurable surface in one read: every `instance_config` knob with its resolved value + source (env / yaml / default), the registered Initial Workspace Template (url/branch/last-sync-sha), the registered marketplaces, and `infra_repo_url`. The machine-readable form of `docs/CONFIGURATION.md`. Also adds the optional `instance.infra_repo_url` / `AGNES_INFRA_REPO_URL` knob (empty default) — the one deployment pointer the app cannot self-discover.
+- **Built-in marketplace** — two vendor-neutral plugins ship with every instance and are seeded automatically (offline, from `src/_builtin_marketplace/`, no git fetch): `agnes-analyst` (how to query/discover/snapshot Agnes data + look up metrics, served to `Everyone`) and `agnes-operator` (how to configure the instance — init prompt, workspace, branding, connectors — backed by a live `config-surface` call so guidance names this instance's real pointers, served to `Admin`). New `marketplace_registry.is_builtin` flag (the nightly git-sync skips built-in rows) and `marketplace_plugins.admin_disabled` flag for per-plugin admin disable, on both the DuckDB (v77→v78) and Postgres ladders.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.39] — 2026-06-15
+
+### Added
+- `agnes diagnose` now includes a **Jira partition-format** check
+  (`jira-partition-format`) that detects whether the Jira connector's
+  on-disk parquet files use the old flat `YYYY-MM.parquet` layout or the
+  new hive `month=*/` layout.  Status is `ok` (hive), `warning`
+  (flat/mixed — migration recommended), or `info` (no Jira data present).
+  Audience tag is `operator` so it does not drive the analyst-facing
+  headline. (#394)
+- **WAL-recovery runbook** (`docs/runbooks/wal-recovery.md`). Step-by-step
+  operator guide for a `system.duckdb` WAL-replay failure: detection log
+  signatures, explanation of the two-step auto-recovery (Step A WAL salvage /
+  Step B snapshot restore), manual recovery options when auto-recovery is
+  refused (stale/future snapshot), parquet-salvage procedure, verification
+  commands, and a cross-reference table mapping every symbol and file path to
+  its location in `src/db.py`. (#383)
+
+### Changed
+
+### Fixed
+- Dark mode now preserves the blue brand colour on blue-theme instances. A new
+  `data-theme-variant="blue"` attribute is stamped by the pre-paint theme
+  resolver when the user switches to dark while the light variant is blue, and
+  `design-tokens.css` overrides the `--ds-primary` family to a lighter blue
+  (`#4f9deb`, 6.1:1 contrast on `--ds-surface`) for that combination. Previously
+  `[data-theme="dark"]` always hardcoded green regardless of the light theme.
+- `admin_users.html`: `.copy-btn.copied` state now uses
+  `var(--ds-accent-success-line)` instead of a hardcoded `#10b981` green, so the
+  success colour follows the active theme token.
+- **AI Cowork page — dark-theme unreadable text.** The "About skills" note box
+  (`.cowork-skills-note`) and the passthrough tool cards
+  (`.cowork-tool-card.is-passthrough`) used hardcoded light-purple hex values
+  (`#f5f3ff` background, `#c7d2fe` border, `#5b21b6` text) that rendered
+  near-invisible on dark surfaces. The hardcoded values are replaced with
+  design-system tokens: the "About skills" box uses `--ds-surface-dim` /
+  `--ds-border` / `--ds-primary`, and the passthrough tool cards use the
+  `--ds-accent-info-*` triplet (`--ds-accent-info-bg` / `--ds-accent-info-line`
+  / `--ds-accent-info-ink`) so they stay visually distinct from native tool
+  cards while flipping correctly in dark mode. Both elements follow the
+  design-system token stack and remain WCAG AA-compliant in all themes. (#656)
+- **Theming: legacy hardcoded values in `style-custom.css` now resolve through
+  design tokens.** The legacy section absorbed from the old `style.css` mixed
+  named tokens with hardcoded literals (font sizes, card/badge/flash fills,
+  code-block surfaces, placeholder grey, the username/copy-button blues, the CC
+  setup-card gradient). Operator overrides of the corresponding `--ds-*` /
+  instance-level tokens didn't reach those spots, so theming was only partially
+  functional. The hardcoded values are now lifted to named `:root` tokens and
+  referenced via `var(...)`, so operator overrides flow through. (#400)
+
+### Removed
+
+### Internal
+- BigQuery extractor (`connectors/bigquery/extractor.py`): `init_extract` now
+  uses `bq_metadata_cache` as the primary source of `entity_type` per table.
+  On a warm cache the O(N) BQ jobs-API round-trips that previously ran inside
+  every rebuild are eliminated entirely; live `_detect_table_type` detection is
+  only called on a cache miss, missing `id` key, or when the cache repo is
+  unavailable (standalone context). The cache stores `MATERIALIZED VIEW` (BQ
+  canonical, with a space); the extractor normalizes it to `MATERIALIZED_VIEW`
+  (underscore) before branching so existing view-path logic is unaffected.
+
+## [0.71.38] — 2026-06-15
+
+### Added
+- **Forced password change on first sign-in for non-self-chosen passwords.** A
+  new `users.must_change_password` flag (schema v77; Alembic
+  `0024_must_change_password_v77`) is set whenever a password is established by
+  someone other than the account owner: the seed admin created from
+  `SEED_ADMIN_PASSWORD` (emailed in plaintext by the cloud control-plane or
+  shared by an operator) and the admin `POST /api/users/{id}/set-password`
+  endpoint. While the flag is set, password login is blocked — the JSON
+  `/auth/password/login` returns `403 password_change_required` and the web
+  `/auth/password/login/web` mints a one-time reset token and redirects the user
+  through the existing reset flow. The flag clears the moment the user sets
+  their own password (reset / setup confirm). SSO and magic-link accounts are
+  unaffected (they have no password); a seed admin who has already rotated is
+  never re-flagged on restart.
+
+### Fixed
+- **Password reset now works on Postgres deployments.** `reset_confirm`'s atomic
+  reset-token compare-and-swap ran through a raw DuckDB cursor (`Depends(_get_db)`),
+  so on a Postgres-backed instance the token — written via the backend-aware repo
+  factory — was never found and every reset (and the new forced-rotation login)
+  failed with "Invalid or expired reset link". The CAS now goes through a new
+  `consume_reset_token()` repo method (DuckDB + Postgres parity, contract-tested).
+
+### Internal
+- Fixed a `duplicate parametrization of 'state_backend'` collection error in
+  `tests/db_pg/test_parity_internal_query.py` that red-X'd every CI test shard
+  under newer pytest. The PG-only `test_postgres_tvf_is_unavailable_pg` now skips
+  the DuckDB variant in-body instead of re-`@parametrize`-ing the already
+  fixture-parametrized `state_backend` name; the `db_pg/conftest.py` docstring
+  that documented the broken override pattern is updated to match.
+- Made `test_toolbar_html_present_when_debug` robust to per-route debug-toolbar
+  injection quirks. It asserted the toolbar markup on the *first* HTML-200 route,
+  which deterministically red-X'd CI shard 4 when `/first-time-setup` came back
+  200-but-empty under pytest-split (the toolbar injects fine on `/login` and on
+  `/first-time-setup` in isolation). The test now scans all candidate routes and
+  passes on the first that carries the markup — matching its own docstring
+  ("at least one HTML 200 response") — and only skips when none do.
+
 ## [0.71.37] — 2026-06-13
 
 ### Fixed

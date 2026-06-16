@@ -258,6 +258,7 @@ from app.api.collections import router as collections_router  # Slice 2: file co
 from app.api.stack import router as stack_router
 from app.api.stack_views import router as stack_views_router
 from app.api.initial_workspace import router as initial_workspace_router
+from app.api.config_surface import router as config_surface_router
 from app.api.store import router as store_router
 from app.api.my_stack import router as my_stack_router
 from app.api.marketplace import router as marketplace_router
@@ -496,6 +497,20 @@ async def lifespan(app):
 
         ensure_pg_at_head()
 
+    # Seed default source connections from env/yaml on first boot
+    # (spec 2026-06-12 §3.4). MUST run after ensure_pg_at_head(): on a
+    # Postgres backend the source_connections table is created by Alembic
+    # 0026, which ensure_pg_at_head() applies — seeding earlier hits a
+    # missing table, gets swallowed by the try/except, and silently no-ops
+    # until the next restart (Devin Review on #671). DuckDB is unaffected
+    # (get_system_db lazily runs _ensure_schema). One-time; registry rules after.
+    try:
+        from app.connections_seed import seed_default_connections
+
+        seed_default_connections()
+    except Exception:
+        logger.exception("source-connection seed failed; continuing")
+
     # Seed the Admin/Everyone system groups into the ACTIVE state backend.
     # On DuckDB this duplicates src.db._seed_system_groups (idempotent), but
     # that runs ONLY on a DuckDB connect — nothing seeds these groups on a
@@ -512,6 +527,16 @@ async def lifespan(app):
             _ug_repo.ensure_system(_grp_name, _grp_desc)
     except Exception as e:
         logger.warning("Could not seed system groups: %s", e)
+
+    # Seed (or re-bake) the built-in marketplace from the wheel bundle. Runs
+    # after system-groups are ensured so the RBAC seed can look up Admin/Everyone.
+    # Non-fatal: a missing bundle dir only means the plugin cache is empty.
+    try:
+        from src.marketplace import seed_builtin_marketplace
+
+        seed_builtin_marketplace()
+    except Exception as e:
+        logger.warning("Could not seed built-in marketplace: %s", e)
 
     # Seed admin user (SEED_ADMIN_EMAIL) and add them to the Admin user_group.
     # Optional SEED_ADMIN_PASSWORD lets the seeded user sign in immediately
@@ -551,12 +576,20 @@ async def lifespan(app):
                     email=seed_email,
                     name="Admin",
                     password_hash=password_hash,
+                    # A seeded password is communicated in plaintext (emailed by
+                    # the cloud control-plane, or shared by an operator), so force
+                    # a change on first sign-in. SSO-only seed admins (no
+                    # password) have nothing to rotate and stay unflagged.
+                    must_change_password=bool(password_hash),
                 )
                 logger.info("Seeded admin user: %s (password=%s)", seed_email, "yes" if password_hash else "no")
             else:
                 user_id = existing["id"]
                 if password_hash and not existing.get("password_hash"):
-                    repo.update(id=user_id, password_hash=password_hash)
+                    # Only fires for a still-password-less seed admin, so a user
+                    # who already rotated (has a hash) is never re-flagged on a
+                    # restart. The seeded password must still be changed.
+                    repo.update(id=user_id, password_hash=password_hash, must_change_password=True)
                     logger.info("Set password on existing seed admin: %s", seed_email)
             # Make sure the seed admin is actually in the Admin group — this
             # is what gives them admin access in v12. Idempotent. Look the
@@ -1347,6 +1380,7 @@ def create_app() -> FastAPI:
     app.include_router(stack_router)
     app.include_router(stack_views_router)
     app.include_router(initial_workspace_router)
+    app.include_router(config_surface_router)
     app.include_router(store_router)
     app.include_router(my_stack_router)
     app.include_router(marketplace_router)

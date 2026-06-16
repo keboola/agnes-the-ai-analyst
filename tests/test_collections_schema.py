@@ -116,23 +116,23 @@ def test_corpus_chunks_columns(tmp_path):
     conn.close()
 
 
-def test_v76_to_v77_upgrade(tmp_path):
-    """A DB at v76 upgrades cleanly to v77 (adds the three collections tables)."""
-    from src.db import _v76_to_v77
+def test_v79_to_v80_upgrade(tmp_path):
+    """A DB at v79 upgrades cleanly to v80 (adds the three collections tables)."""
+    from src.db import _v79_to_v80
 
     db_path = tmp_path / "system.duckdb"
     conn = duckdb.connect(str(db_path))
 
-    # Minimal v76 shape: just schema_version
+    # Minimal v79 shape: just schema_version
     conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)")
-    conn.execute("INSERT INTO schema_version (version) VALUES (76)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (79)")
 
-    _v76_to_v77(conn)
+    _v79_to_v80(conn)
 
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 77
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 80
 
     tables = _table_names(conn)
     for t in COLLECTIONS_TABLES:
-        assert t in tables, f"'{t}' missing after _v76_to_v77; tables: {tables}"
+        assert t in tables, f"'{t}' missing after _v79_to_v80; tables: {tables}"
 
     conn.close()

@@ -5,6 +5,7 @@ Mirrors:
   - ``sync_state``      (src/db.py:81-91)
   - ``sync_history``    (src/db.py:106-114)
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -25,16 +26,10 @@ class TableRegistry(Base):
     bucket: Mapped[str | None] = mapped_column(String, nullable=True)
     source_table: Mapped[str | None] = mapped_column(String, nullable=True)
     source_query: Mapped[str | None] = mapped_column(Text, nullable=True)
-    sync_strategy: Mapped[str] = mapped_column(
-        String, server_default=text("'full_refresh'"), nullable=False
-    )
-    query_mode: Mapped[str] = mapped_column(
-        String, server_default=text("'local'"), nullable=False
-    )
+    sync_strategy: Mapped[str] = mapped_column(String, server_default=text("'full_refresh'"), nullable=False)
+    query_mode: Mapped[str] = mapped_column(String, server_default=text("'local'"), nullable=False)
     sync_schedule: Mapped[str | None] = mapped_column(String, nullable=True)
-    profile_after_sync: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("TRUE"), nullable=False
-    )
+    profile_after_sync: Mapped[bool] = mapped_column(Boolean, server_default=text("TRUE"), nullable=False)
     primary_key: Mapped[str | None] = mapped_column(String, nullable=True)
     folder: Mapped[str | None] = mapped_column(String, nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -67,9 +62,10 @@ class TableRegistry(Base):
     # table is kept server-side & queryable via `agnes query --remote`, but
     # `agnes pull` does not download its parquet. Only meaningful for
     # query_mode IN ('local', 'materialized'); ignored for 'remote'.
-    server_only: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("FALSE"), nullable=False
-    )
+    server_only: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), nullable=False)
+    # v79: named source connections (spec 2026-06-12). NULL => default
+    # connection for this row's source_type.
+    connection_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         Index("ix_table_registry_source_type", "source_type"),
@@ -87,9 +83,7 @@ class SyncState(Base):
     uncompressed_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     columns: Mapped[int | None] = mapped_column(Integer, nullable=True)
     hash: Mapped[str | None] = mapped_column(String, nullable=True)
-    status: Mapped[str] = mapped_column(
-        String, server_default=text("'ok'"), nullable=False
-    )
+    status: Mapped[str] = mapped_column(String, server_default=text("'ok'"), nullable=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
