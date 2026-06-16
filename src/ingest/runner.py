@@ -86,11 +86,25 @@ def ingest_file(file_id: str) -> str:
             }
             for c in chunks
         ]
+        # Embed when the (optional) model is installed; otherwise leave NULL and
+        # retrieval runs lexical-only. Embedding failures must not fail ingest.
+        embedded = False
+        try:
+            from src.ingest.embeddings import embed_texts
+
+            vectors = embed_texts([r["text"] for r in rows]) if rows else None
+            if vectors is not None and len(vectors) == len(rows):
+                for r, v in zip(rows, vectors):
+                    r["embedding"] = v
+                embedded = True
+        except Exception:  # pragma: no cover - model runtime issues
+            logger.warning("embedding failed for file_id=%s — storing chunks without vectors", file_id)
+
         n = chunks_repo.add_many(rows)
         cf_repo.set_status(
             file_id,
             status="indexed",
-            detail={"tier": 1, "kind": "document", "chunk_count": n},
+            detail={"tier": 1, "kind": "document", "chunk_count": n, "embedded": embedded},
         )
         return "indexed"
 

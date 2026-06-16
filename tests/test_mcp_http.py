@@ -142,6 +142,7 @@ class TestToolRegistration:
             # mutation). See tests/test_documentation_api_triple_surface.py.
             "collections_list",
             "collection_get",
+            "collections_search",
         }
 
     def test_no_client_only_tools(self):

@@ -150,6 +150,32 @@ async def collection_get(collection_id: str) -> dict:
 
 
 @mcp.tool()
+async def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict:
+    """Hybrid search across your accessible file Collections (RBAC-filtered).
+
+    Returns ranked chunks with citations (``filename``, ``ordinal``, ``text``,
+    ``score``). Optionally restrict to one collection via ``collection_id``.
+
+    Args:
+        query: Natural-language or keyword query.
+        k: Max results (default 10).
+        collection_id: Optional ``col_...`` id to restrict the search.
+    """
+    params: dict = {"q": query, "k": k}
+    if collection_id:
+        params["corpus_id"] = collection_id
+    async with httpx.AsyncClient() as c:
+        r = await c.get(
+            f"{_BASE}/api/collections/search",
+            headers=_headers(),
+            params=params,
+            timeout=60,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
 async def schema(table_id: str) -> dict:
     """Show column names, types, and SQL dialect hints for a table.
 

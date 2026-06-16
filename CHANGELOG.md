@@ -11,6 +11,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- Collections hybrid search: `GET /api/collections/search` (+ `agnes collections
+  search` CLI + `collections_search` MCP tool) runs lexical + (optional) vector
+  retrieval across the caller's accessible collections, fail-closed and RBAC-
+  scoped, returning ranked chunks with citations. Embeddings are an optional
+  extra (`agnes[embeddings]`, bge-small, 384-dim); without it retrieval is
+  lexical-only. Documents are embedded at ingest when the extra is installed.
 - Collections Tier-1 ingestion: uploaded files are indexed in the background —
   tabular files (CSV/TSV/Parquet/JSON/XLSX) become queryable DuckDB tables
   registered in `table_registry` (answered with SQL, not embeddings); prose

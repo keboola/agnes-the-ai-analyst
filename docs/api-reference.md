@@ -876,6 +876,7 @@ synced IWT clone for the bind-git file picker.
 ### `/api/collections` — File collections (bring-your-files)
 
 - /api/collections
+- /api/collections/search
 - /api/collections/{collection_id}
 - /api/collections/{collection_id}/files
 - /api/collections/{collection_id}/files/{file_id}

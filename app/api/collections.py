@@ -143,27 +143,51 @@ async def create_collection(
     return _collection_out(row)
 
 
+def _accessible_corpus_ids(user) -> list[str]:
+    """The collection ids the caller may access (fail-closed).
+
+    Admins are waved through by ``can_access`` (Admin-group short-circuit);
+    non-admins get only granted collections; ``SessionPrincipal`` co-session
+    callers route through ``can_access_session``. Goes through the repository
+    factory (no raw DuckDB conn) → correct on the Postgres backend.
+    """
+    rows = file_corpora_repo().list()
+    if isinstance(user, SessionPrincipal):
+        return [r["id"] for r in rows if can_access_session(user, ResourceType.COLLECTION.value, r["id"])]
+    uid = user["id"]
+    return [r["id"] for r in rows if can_access(uid, ResourceType.COLLECTION.value, r["id"])]
+
+
 @router.get("")
 async def list_collections(
     user=Depends(get_current_user),
 ):
-    """List collections accessible to the caller.
-
-    Admins see all live (non-soft-deleted) collections — ``can_access``
-    short-circuits on the Admin group; non-admins see only collections their
-    groups are granted. Handles both dict users and ``SessionPrincipal``
-    co-session callers (routes through ``can_access_session``). Fail-closed: no
-    grant → not visible. No raw DuckDB connection — the access helpers go
-    through the repository factory, so this is correct on the Postgres backend.
-    """
-
-    def _allowed(corpus_id: str) -> bool:
-        if isinstance(user, SessionPrincipal):
-            return can_access_session(user, ResourceType.COLLECTION.value, corpus_id)
-        return can_access(user["id"], ResourceType.COLLECTION.value, corpus_id)
-
-    rows = [r for r in file_corpora_repo().list() if _allowed(r["id"])]
+    """List collections accessible to the caller (fail-closed)."""
+    allowed = set(_accessible_corpus_ids(user))
+    rows = [r for r in file_corpora_repo().list() if r["id"] in allowed]
     return {"items": [_collection_out(r) for r in rows]}
+
+
+@router.get("/search")
+async def search_collections(
+    q: str,
+    k: int = 10,
+    corpus_id: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    """Hybrid search across the caller's accessible collections.
+
+    Fail-closed: only the caller's granted collections are searched; an
+    optional ``corpus_id`` narrows to one (ignored if not accessible). Declared
+    before ``/{collection_id}`` so ``search`` isn't captured as a collection id.
+    """
+    from src.ingest.retrieval import search as _search
+
+    allowed = _accessible_corpus_ids(user)
+    if corpus_id is not None:
+        allowed = [c for c in allowed if c == corpus_id]
+    k = max(1, min(k, 50))
+    return {"results": _search(allowed, q, k=k)}
 
 
 @router.get("/{collection_id}")

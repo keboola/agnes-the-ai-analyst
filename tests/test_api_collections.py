@@ -470,3 +470,69 @@ def test_list_collections_session_principal_filters_without_crash(seeded_app):
     ids = {c["id"] for c in result["items"]}
     assert granted in ids
     assert other not in ids
+
+
+class TestSearch:
+    def _seed_corpus_with_chunk(self, seeded_app, name, text, *, grant):
+        c = seeded_app["client"]
+        cr = c.post(
+            "/api/collections",
+            json={"name": name},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        corpus_id = cr.json()["id"]
+        if grant:
+            _seed_collection_grant(corpus_id, "analyst1")
+        from src.repositories import corpus_chunks_repo, corpus_files_repo
+
+        fid = corpus_files_repo().add(
+            corpus_id=corpus_id, filename="d.txt", sha256="s", file_type="txt",
+            size_bytes=1, storage_path="/x",
+        )
+        corpus_chunks_repo().add_many(
+            [{"corpus_id": corpus_id, "file_id": fid, "ordinal": 0, "text": text}]
+        )
+        return corpus_id
+
+    def test_member_searches_accessible_collection(self, seeded_app):
+        c = seeded_app["client"]
+        self._seed_corpus_with_chunk(
+            seeded_app, "Searchable", "the magic keyword appears here", grant=True
+        )
+        resp = c.get(
+            "/api/collections/search",
+            params={"q": "magic keyword"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 200, resp.text
+        results = resp.json()["results"]
+        assert any("magic" in (r.get("text") or "") for r in results)
+        assert results[0]["filename"] == "d.txt"
+
+    def test_search_fail_closed_excludes_ungranted(self, seeded_app):
+        c = seeded_app["client"]
+        # Collection is NOT granted to analyst1.
+        self._seed_corpus_with_chunk(
+            seeded_app, "Private", "the magic keyword appears here", grant=False
+        )
+        resp = c.get(
+            "/api/collections/search",
+            params={"q": "magic keyword"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 200, resp.text
+        # Fail-closed: an analyst with no grant sees nothing from it.
+        assert resp.json()["results"] == []
+
+    def test_admin_search_sees_all(self, seeded_app):
+        c = seeded_app["client"]
+        self._seed_corpus_with_chunk(
+            seeded_app, "AdminSee", "the magic keyword appears here", grant=False
+        )
+        resp = c.get(
+            "/api/collections/search",
+            params={"q": "magic keyword"},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 200
+        assert any("magic" in (r.get("text") or "") for r in resp.json()["results"])

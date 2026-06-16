@@ -97,6 +97,40 @@ def list_collections(
 
 
 # ---------------------------------------------------------------------------
+# search
+# ---------------------------------------------------------------------------
+
+
+@collections_app.command("search")
+def search_collections(
+    query: str = typer.Argument(..., help="Search query"),
+    k: int = typer.Option(10, "--k", help="Max results"),
+    collection_id: Optional[str] = typer.Option(None, "--collection", "-c", help="Restrict to one collection id"),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON"),
+):
+    """Hybrid search across your accessible collections (RBAC-filtered)."""
+    params: dict = {"q": query, "k": k}
+    if collection_id:
+        params["corpus_id"] = collection_id
+    try:
+        body = api_get_json("/api/collections/search", **params)
+    except V2ClientError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+
+    if as_json:
+        typer.echo(json_lib.dumps(body, indent=2, default=str))
+        return
+    results = body.get("results", [])
+    if not results:
+        typer.echo("No matches.")
+        return
+    for r in results:
+        loc = r.get("filename") or r.get("file_id")
+        typer.echo(f"[{r.get('score')}] {loc} #{r.get('ordinal')}: {(r.get('text') or '')[:120]}")
+
+
+# ---------------------------------------------------------------------------
 # show
 # ---------------------------------------------------------------------------
 

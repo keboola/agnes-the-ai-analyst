@@ -38,6 +38,7 @@ _COHORT: dict[str, tuple[str, str]] = {
     # below (binary upload has no MCP analogue).
     "/api/collections": ("collections list", "collections_list"),
     "/api/collections/{collection_id}": ("collections show", "collection_get"),
+    "/api/collections/search": ("collections search", "collections_search"),
 }
 
 

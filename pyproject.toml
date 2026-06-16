@@ -171,6 +171,12 @@ observability = [
     # be explicit can `pip install -e ".[observability]"` and signal intent.
     "posthog>=3.7.0",
 ]
+embeddings = [
+    # Self-hosted semantic embeddings for Collections retrieval (bge-small).
+    # HEAVY — pulls torch — so opt-in only; imported lazily in
+    # src/ingest/embeddings.py. Without it, retrieval runs lexical-only.
+    "sentence-transformers>=3.0",
+]
 docling = [
     # Rich document parsing for Collections ingestion (PDF layout/tables,
     # DOCX, PPTX, scans). HEAVY — pulls torch and ML models — so it is an
