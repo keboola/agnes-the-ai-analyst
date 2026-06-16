@@ -109,7 +109,7 @@ def collections_list() -> dict:
     """List the file Collections you can access (RBAC-filtered).
 
     A Collection is a user-uploaded set of files Agnes has indexed. Returns a
-    dict with a ``collections`` list (``id``, ``name``, ``slug``, counts). Use
+    dict with an ``items`` list (``id``, ``name``, ``slug``, counts). Use
     ``collection_get`` for the files inside one collection.
     """
     try:

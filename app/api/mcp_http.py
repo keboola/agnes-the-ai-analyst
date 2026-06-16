@@ -122,7 +122,7 @@ async def collections_list() -> dict:
     """List the file Collections you can access (RBAC-filtered).
 
     A Collection is a user-uploaded set of files Agnes has indexed. Returns a
-    dict with a ``collections`` list; each entry has ``id``, ``name``,
+    dict with an ``items`` list; each entry has ``id``, ``name``,
     ``slug``, and file/table counts. Use ``collection_get`` for the files in
     one collection.
     """
