@@ -110,6 +110,20 @@ class TestCreateCollection:
         assert "slug" in body
         assert body["slug"]  # non-empty
 
+    def test_whitespace_only_slug_falls_back_to_auto_slug(self, seeded_app):
+        # A whitespace-only explicit slug is truthy; it must not survive as an
+        # empty slug (unreachable via /library/{slug} + bogus 409 collisions).
+        c = seeded_app["client"]
+        resp = c.post(
+            "/api/collections",
+            json={"name": "Whitespace Slug", "slug": "   "},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 201, resp.text
+        slug = resp.json()["slug"]
+        assert slug.strip()  # non-empty, non-whitespace
+        assert slug == "whitespace-slug"
+
 
 class TestListCollections:
     def test_admin_sees_all_collections(self, seeded_app):
@@ -486,19 +500,19 @@ class TestSearch:
         from src.repositories import corpus_chunks_repo, corpus_files_repo
 
         fid = corpus_files_repo().add(
-            corpus_id=corpus_id, filename="d.txt", sha256="s", file_type="txt",
-            size_bytes=1, storage_path="/x",
+            corpus_id=corpus_id,
+            filename="d.txt",
+            sha256="s",
+            file_type="txt",
+            size_bytes=1,
+            storage_path="/x",
         )
-        corpus_chunks_repo().add_many(
-            [{"corpus_id": corpus_id, "file_id": fid, "ordinal": 0, "text": text}]
-        )
+        corpus_chunks_repo().add_many([{"corpus_id": corpus_id, "file_id": fid, "ordinal": 0, "text": text}])
         return corpus_id
 
     def test_member_searches_accessible_collection(self, seeded_app):
         c = seeded_app["client"]
-        self._seed_corpus_with_chunk(
-            seeded_app, "Searchable", "the magic keyword appears here", grant=True
-        )
+        self._seed_corpus_with_chunk(seeded_app, "Searchable", "the magic keyword appears here", grant=True)
         resp = c.get(
             "/api/collections/search",
             params={"q": "magic keyword"},
@@ -512,9 +526,7 @@ class TestSearch:
     def test_search_fail_closed_excludes_ungranted(self, seeded_app):
         c = seeded_app["client"]
         # Collection is NOT granted to analyst1.
-        self._seed_corpus_with_chunk(
-            seeded_app, "Private", "the magic keyword appears here", grant=False
-        )
+        self._seed_corpus_with_chunk(seeded_app, "Private", "the magic keyword appears here", grant=False)
         resp = c.get(
             "/api/collections/search",
             params={"q": "magic keyword"},
@@ -526,9 +538,7 @@ class TestSearch:
 
     def test_admin_search_sees_all(self, seeded_app):
         c = seeded_app["client"]
-        self._seed_corpus_with_chunk(
-            seeded_app, "AdminSee", "the magic keyword appears here", grant=False
-        )
+        self._seed_corpus_with_chunk(seeded_app, "AdminSee", "the magic keyword appears here", grant=False)
         resp = c.get(
             "/api/collections/search",
             params={"q": "magic keyword"},
@@ -544,21 +554,19 @@ def test_delete_file_removes_its_chunks(seeded_app):
     from src.repositories import corpus_chunks_repo, corpus_files_repo
 
     c = seeded_app["client"]
-    cid = c.post(
-        "/api/collections", json={"name": "Del Chunks"}, headers=_auth(seeded_app["admin_token"])
-    ).json()["id"]
+    cid = c.post("/api/collections", json={"name": "Del Chunks"}, headers=_auth(seeded_app["admin_token"])).json()["id"]
     fid = corpus_files_repo().add(
-        corpus_id=cid, filename="d.txt", sha256="s", file_type="txt",
-        size_bytes=1, storage_path=None,
+        corpus_id=cid,
+        filename="d.txt",
+        sha256="s",
+        file_type="txt",
+        size_bytes=1,
+        storage_path=None,
     )
-    corpus_chunks_repo().add_many(
-        [{"corpus_id": cid, "file_id": fid, "ordinal": 0, "text": "hello world"}]
-    )
+    corpus_chunks_repo().add_many([{"corpus_id": cid, "file_id": fid, "ordinal": 0, "text": "hello world"}])
     assert len(corpus_chunks_repo().list_for_file(fid)) == 1
 
-    r = c.delete(
-        f"/api/collections/{cid}/files/{fid}", headers=_auth(seeded_app["admin_token"])
-    )
+    r = c.delete(f"/api/collections/{cid}/files/{fid}", headers=_auth(seeded_app["admin_token"]))
     assert r.status_code == 204, r.text
     assert corpus_chunks_repo().list_for_file(fid) == []
 

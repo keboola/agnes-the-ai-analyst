@@ -127,7 +127,11 @@ async def create_collection(
     ``slug`` is auto-generated from ``name`` when omitted; a collision
     on the unique slug index returns **409**.
     """
-    slug = (payload.slug or _auto_slug(payload.name)).strip()
+    # A whitespace-only explicit slug ("   ") is truthy, so strip *first* and
+    # fall back to the auto-slug when nothing survives — otherwise the empty
+    # string would create a collection unreachable via /library/{slug} and
+    # collide on the unique index. _auto_slug has its own "collection" fallback.
+    slug = (payload.slug or "").strip() or _auto_slug(payload.name)
     repo = file_corpora_repo()
     try:
         corpus_id = repo.create(
