@@ -255,6 +255,10 @@ def _posthog_user_block(request: Optional[Request]) -> Optional[dict]:
 
 templates.env.globals["posthog_config"] = _posthog_config_global()
 templates.env.globals["posthog_user_block"] = _posthog_user_block
+# Stateless asset helper — register as a global so EVERY template resolves CSS/JS
+# URLs even on routes that build a minimal context (e.g. the studio pages).
+# Without this, base_ds.html emits <link href=""> and the page renders unstyled.
+templates.env.globals["static_url"] = _static_url
 
 # Onboarding / guided-tour steps. Exposed as a Jinja global so the global
 # `_tour.html` partial (included by both base layouts) can render the

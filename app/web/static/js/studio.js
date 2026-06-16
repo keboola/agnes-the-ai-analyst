@@ -101,13 +101,19 @@ async function openAssistant() {
       else if (frame.type === "error") appendStream(`\n[error] ${frame.message || ""}\n`);
     };
     const msg = $("studio-msg");
-    msg.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && msg.value.trim() && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "user_msg", content: msg.value.trim() }));
-        appendStream(`\n> ${msg.value.trim()}\n`);
+    const send = () => {
+      const v = msg.value.trim();
+      if (v && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "user_msg", content: v }));
+        appendStream(`\n> ${v}\n`);
         msg.value = "";
       }
+    };
+    msg.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") send();
     });
+    const sendBtn = $("studio-send");
+    if (sendBtn) sendBtn.addEventListener("click", send);
   } catch (e) {
     appendStream(`Assistant unavailable: ${e.message}\n`);
   }
