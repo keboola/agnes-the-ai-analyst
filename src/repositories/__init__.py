@@ -102,6 +102,7 @@ __all__ = [
     # Data packages / memory / recipes / subscriptions
     "data_packages_repo",
     "authoring_suggestions_repo",
+    "memory_mining_consent_repo",
     "memory_domain_suggestions_repo",
     "memory_domains_repo",
     "recipes_repo",
@@ -339,6 +340,10 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.authoring_suggestions", "AuthoringSuggestionsRepository"),
         PG: ("src.repositories.authoring_suggestions_pg", "AuthoringSuggestionsPgRepository"),
     },
+    "memory_mining_consent": {
+        DUCKDB: ("src.repositories.memory_mining_consent", "MemoryMiningConsentRepository"),
+        PG: ("src.repositories.memory_mining_consent_pg", "MemoryMiningConsentPgRepository"),
+    },
     "recipes": {
         DUCKDB: ("src.repositories.recipes", "RecipesRepository"),
         PG: ("src.repositories.recipes_pg", "RecipesPgRepository"),
@@ -558,6 +563,10 @@ def memory_domain_suggestions_repo() -> Any:
 
 def authoring_suggestions_repo() -> Any:
     return _build("authoring_suggestions")
+
+
+def memory_mining_consent_repo() -> Any:
+    return _build("memory_mining_consent")
 
 
 def recipes_repo() -> Any:

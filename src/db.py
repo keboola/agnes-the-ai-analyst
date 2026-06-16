@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 77
+SCHEMA_VERSION = 78
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -716,6 +716,15 @@ CREATE TABLE IF NOT EXISTS authoring_suggestions (
 );
 CREATE INDEX IF NOT EXISTS idx_authoring_suggestions_status
     ON authoring_suggestions(status);
+
+-- v78: ``memory_mining_consent`` — per-user opt-IN to having their session
+-- transcripts mined into shared corporate memory (privacy gate, spec §4.4).
+CREATE TABLE IF NOT EXISTS memory_mining_consent (
+    user_email   VARCHAR PRIMARY KEY,
+    opted_in_at  TIMESTAMP,
+    opted_out_at TIMESTAMP,
+    updated_at   TIMESTAMP DEFAULT current_timestamp
+);
 
 -- v61: ``cli_auth_codes`` — short-lived, single-use exchange codes for the
 -- browser-loopback `agnes auth login` flow (gh-style). The browser, holding
@@ -5028,6 +5037,30 @@ def _v76_to_v77(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 77")
 
 
+def _v77_to_v78(conn: duckdb.DuckDBPyConnection) -> None:
+    """v78: ``memory_mining_consent`` — per-user opt-IN to having their session
+    transcripts mined into shared corporate memory.
+
+    Privacy gate (design spec §4.4): session privacy today is whole-session
+    opt-OUT with no in-pipeline redaction, so mining the not-marked-private long
+    tail into a shared, group-distributed memory domain would promote per-user
+    data to a broadcast tier. The miner therefore consults this table and only
+    mines transcripts whose author positively opted in. Additive-only;
+    ``_SYSTEM_SCHEMA`` creates it on fresh installs (no-op CREATE here).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_mining_consent (
+            user_email   VARCHAR PRIMARY KEY,
+            opted_in_at  TIMESTAMP,
+            opted_out_at TIMESTAMP,
+            updated_at   TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 78")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -5345,6 +5378,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # queue for the authoring studio). _SYSTEM_SCHEMA already creates
             # the table on fresh installs (no-op CREATE here).
             _v76_to_v77(conn)
+            # v77→v78: memory_mining_consent (per-user opt-in to session mining).
+            _v77_to_v78(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5552,6 +5587,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v75_to_v76(conn)
             if current < 77:
                 _v76_to_v77(conn)
+            if current < 78:
+                _v77_to_v78(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
