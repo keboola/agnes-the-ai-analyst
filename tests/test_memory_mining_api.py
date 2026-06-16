@@ -40,6 +40,19 @@ def test_run_only_mines_opted_in_users(seeded_app):
     assert any(s["payload"].get("provenance", {}).get("author") == "analyst@test.com" for s in q)
 
 
+def test_run_is_deduped_on_rerun(seeded_app):
+    """Re-running the miner must not spam duplicate pending proposals."""
+    c = seeded_app["client"]
+    c.post("/api/studio/memory-mining/consent", headers=_auth(seeded_app["analyst_token"]), json={"opt_in": True})
+
+    first = c.post("/api/admin/memory-mining/run", headers=_auth(seeded_app["admin_token"]), json={}).json()
+    assert len(first["created"]) == 1
+
+    second = c.post("/api/admin/memory-mining/run", headers=_auth(seeded_app["admin_token"]), json={}).json()
+    assert len(second["created"]) == 0
+    assert second["skipped_existing"] == 1
+
+
 def test_run_requires_admin(seeded_app):
     c = seeded_app["client"]
     r = c.post("/api/admin/memory-mining/run", headers=_auth(seeded_app["analyst_token"]), json={})

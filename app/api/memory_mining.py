@@ -70,9 +70,19 @@ async def run_mining(_admin: dict = Depends(require_admin)) -> Dict[str, Any]:
     """Mine opted-in users into corporate-memory suggestions (privacy-gated)."""
     consent = memory_mining_consent_repo()
     sugg = authoring_suggestions_repo()
+    # Dedup: skip authors who already have a PENDING corporate-memory proposal,
+    # so re-running the miner doesn't spam the moderation queue with duplicates.
+    already_pending = {
+        (s.get("payload") or {}).get("provenance", {}).get("author")
+        for s in sugg.list(status="pending", domain="corporate-memory")
+    }
     created: list[str] = []
     skipped_pii = 0
+    skipped_existing = 0
     for author in consent.list_opted_in():
+        if author in already_pending:
+            skipped_existing += 1
+            continue
         # Placeholder extraction: one provenance-tagged seed per opted-in author.
         # The author's email lives ONLY in provenance (their own attribution) —
         # never in the candidate name/description, which is PII-scanned as the
@@ -90,4 +100,9 @@ async def run_mining(_admin: dict = Depends(require_admin)) -> Dict[str, Any]:
             "provenance": {"source": "sessions", "author": author},
         }
         created.append(sugg.create(domain="corporate-memory", payload=payload, created_by="memory-miner"))
-    return {"created": created, "skipped_pii": skipped_pii, "authors": len(created) + skipped_pii}
+    return {
+        "created": created,
+        "skipped_pii": skipped_pii,
+        "skipped_existing": skipped_existing,
+        "authors": len(created) + skipped_pii + skipped_existing,
+    }
