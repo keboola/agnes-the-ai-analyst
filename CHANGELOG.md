@@ -11,8 +11,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Jira connector: hive-partitioned parquet layout.** Monthly parquet files are
+  now written to `month=YYYY-MM/data.parquet` hive partition directories instead
+  of flat `YYYY-MM.parquet` files. DuckDB views use `hive_partitioning=true` so
+  the `month` column is available as a virtual partition column, enabling
+  predicate push-down and partition pruning on month-range queries. All tables
+  (issues, comments, attachments, changelog, issuelinks, remote_links) are
+  affected. Existing flat parquet files are auto-migrated to the hive layout:
+  the next `init_extract` run migrates all months at once; the incremental
+  transform path migrates each month lazily as it is next written. Run
+  `init_extract` (e.g. an orchestrator rebuild) to migrate all historical
+  partitions in one pass. (#406)
 
 ### Changed
+- **Jira connector: ZSTD compression + column statistics.** All Jira parquet
+  writes now use ZSTD compression (was Snappy) and have `write_statistics=True`
+  plus `write_page_index=True` for improved DuckDB query performance.
 
 ### Fixed
 
