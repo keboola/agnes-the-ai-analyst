@@ -63,7 +63,7 @@ class TableRegistry(Base):
     # `agnes pull` does not download its parquet. Only meaningful for
     # query_mode IN ('local', 'materialized'); ignored for 'remote'.
     server_only: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), nullable=False)
-    # v77: named source connections (spec 2026-06-12). NULL => default
+    # v79: named source connections (spec 2026-06-12). NULL => default
     # connection for this row's source_type.
     connection_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
