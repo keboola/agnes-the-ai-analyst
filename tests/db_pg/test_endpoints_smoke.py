@@ -1806,22 +1806,16 @@ def _collect_covered_routes() -> set:
     return covered
 
 
-def test_every_route_is_covered_or_excluded(state_backend, seeded_app_both):
+def test_every_route_is_covered_or_excluded():
     """Route-coverage guard: fails CI when a new endpoint has no test or exclusion.
 
-    The app's route set is backend-independent, so this runs once on the duckdb
-    leg of the parametrized ``state_backend`` fixture. The restriction is an
-    in-body skip rather than a ``@parametrize("state_backend", ["duckdb"])``
-    marker: re-parametrizing a name the fixture already supplies is a
-    duplicate-parametrization collection error under newer pytest.
+    Intentionally has NO fixture dependencies: create_app() does not need the
+    database to be set up to register routes, and keeping this test out of the
+    state_backend / seeded_app_both ecosystem avoids the xdist worker-state
+    interference that caused all_routes to appear empty in CI (importlib.reload
+    of src.repositories in the state_backend fixture corrupts module-level app
+    state when the worker has run many other tests before reaching this one).
     """
-    if state_backend != "duckdb":
-        pytest.skip("route set is backend-independent; checked once on duckdb")
-    # Use a fresh create_app() call for route introspection rather than going through
-    # TestClient.app — avoids an xdist worker ordering quirk where TestClient.app.routes
-    # appears empty when the worker that owns the fixture hasn't synced its internal state
-    # to the worker running this test.  Routes are registered at import time so a fresh
-    # app has the same route set as the one used by every other test in this shard.
     from app.main import create_app as _create_app  # noqa: PLC0415
 
     _inspection_app = _create_app()
