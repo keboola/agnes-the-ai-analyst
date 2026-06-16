@@ -280,11 +280,21 @@ class JiraConsistencyChecker:
             logger.warning(f"Parquet directory not found: {issues_dir}")
             return set()
 
-        # Build pattern for reading Parquet files
+        # Collect parquet files across both the flat (<YYYY-MM>.parquet) and
+        # hive (month=<YYYY-MM>/data.parquet) layouts.
         if month:
-            pattern = str(issues_dir / f"{month}.parquet")
+            candidates = [
+                issues_dir / f"{month}.parquet",
+                issues_dir / f"month={month}" / "data.parquet",
+            ]
+            files = [p for p in candidates if p.exists()]
         else:
-            pattern = str(issues_dir / "*.parquet")
+            files = sorted(issues_dir.rglob("*.parquet"))
+
+        if not files:
+            return set()
+
+        files_sql = "[" + ",".join("'" + str(p).replace("'", "''") + "'" for p in files) + "]"
 
         try:
             con = duckdb.connect()
@@ -294,7 +304,7 @@ class JiraConsistencyChecker:
                 pass
             result = con.execute(f"""
                 SELECT DISTINCT issue_key
-                FROM read_parquet('{pattern}')
+                FROM read_parquet({files_sql}, union_by_name=true)
             """).fetchall()
 
             issue_keys = {row[0] for row in result}

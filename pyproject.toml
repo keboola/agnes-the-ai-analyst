@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.71.38"
+version = "0.71.40"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -15,9 +15,9 @@ dependencies = [
     # Web framework (FastAPI)
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
-    "python-multipart>=0.0.27",
+    "python-multipart>=0.0.31",
     "jinja2>=3.1.0",
-    "starlette>=1.0.1",
+    "starlette>=1.3.1",
     # Authentication
     "PyJWT>=2.8.0",
     "itsdangerous>=2.1.0",
@@ -247,6 +247,9 @@ target-version = "py313"
 # main.py deliberately runs env/config setup before its imports — the
 # 80+ E402s are the file's design, not drift.
 "app/main.py" = ["E402"]
+# db.py has a single mid-file `import threading` that precedes the lock
+# singleton; extracting it would break the sequential read. Pre-existing.
+"src/db.py" = ["E402"]
 
 [tool.uv]
 dev-dependencies = [

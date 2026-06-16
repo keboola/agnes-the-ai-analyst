@@ -11,6 +11,46 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Jira connector: hive-partitioned parquet layout.** Monthly parquet files are
+  now written to `month=YYYY-MM/data.parquet` hive partition directories instead
+  of flat `YYYY-MM.parquet` files. DuckDB views use `hive_partitioning=true` so
+  the `month` column is available as a virtual partition column, enabling
+  predicate push-down and partition pruning on month-range queries. All tables
+  (issues, comments, attachments, changelog, issuelinks, remote_links) are
+  affected. Existing flat parquet files are auto-migrated to the hive layout:
+  the next `init_extract` run migrates all months at once; the incremental
+  transform path migrates each month lazily as it is next written. Run
+  `init_extract` (e.g. an orchestrator rebuild) to migrate all historical
+  partitions in one pass. (#406)
+
+### Changed
+- **Jira connector: ZSTD compression + column statistics.** All Jira parquet
+  writes now use ZSTD compression (was Snappy) and have `write_statistics=True`
+  plus `write_page_index=True` for improved DuckDB query performance.
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.40] — 2026-06-15
+
+### Added
+- **Config-surface introspection** — `GET /api/admin/config-surface` (admin-gated), the `agnes admin config-surface` CLI, and a matching MCP tool expose this instance's complete configurable surface in one read: every `instance_config` knob with its resolved value + source (env / yaml / default), the registered Initial Workspace Template (url/branch/last-sync-sha), the registered marketplaces, and `infra_repo_url`. The machine-readable form of `docs/CONFIGURATION.md`. Also adds the optional `instance.infra_repo_url` / `AGNES_INFRA_REPO_URL` knob (empty default) — the one deployment pointer the app cannot self-discover.
+- **Built-in marketplace** — two vendor-neutral plugins ship with every instance and are seeded automatically (offline, from `src/_builtin_marketplace/`, no git fetch): `agnes-analyst` (how to query/discover/snapshot Agnes data + look up metrics, served to `Everyone`) and `agnes-operator` (how to configure the instance — init prompt, workspace, branding, connectors — backed by a live `config-surface` call so guidance names this instance's real pointers, served to `Admin`). New `marketplace_registry.is_builtin` flag (the nightly git-sync skips built-in rows) and `marketplace_plugins.admin_disabled` flag for per-plugin admin disable, on both the DuckDB (v77→v78) and Postgres ladders.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.39] — 2026-06-15
+
+### Added
 - `agnes diagnose` now includes a **Jira partition-format** check
   (`jira-partition-format`) that detects whether the Jira connector's
   on-disk parquet files use the old flat `YYYY-MM.parquet` layout or the
@@ -37,6 +77,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   now go through the backend-aware `data_packages_repo()` factory
   (`list_packages_of_table` / `list_member_ids_bulk`), so the check reads the
   active backend.
+- Dark mode now preserves the blue brand colour on blue-theme instances. A new
+  `data-theme-variant="blue"` attribute is stamped by the pre-paint theme
+  resolver when the user switches to dark while the light variant is blue, and
+  `design-tokens.css` overrides the `--ds-primary` family to a lighter blue
+  (`#4f9deb`, 6.1:1 contrast on `--ds-surface`) for that combination. Previously
+  `[data-theme="dark"]` always hardcoded green regardless of the light theme.
+- `admin_users.html`: `.copy-btn.copied` state now uses
+  `var(--ds-accent-success-line)` instead of a hardcoded `#10b981` green, so the
+  success colour follows the active theme token.
+- **AI Cowork page — dark-theme unreadable text.** The "About skills" note box
+  (`.cowork-skills-note`) and the passthrough tool cards
+  (`.cowork-tool-card.is-passthrough`) used hardcoded light-purple hex values
+  (`#f5f3ff` background, `#c7d2fe` border, `#5b21b6` text) that rendered
+  near-invisible on dark surfaces. The hardcoded values are replaced with
+  design-system tokens: the "About skills" box uses `--ds-surface-dim` /
+  `--ds-border` / `--ds-primary`, and the passthrough tool cards use the
+  `--ds-accent-info-*` triplet (`--ds-accent-info-bg` / `--ds-accent-info-line`
+  / `--ds-accent-info-ink`) so they stay visually distinct from native tool
+  cards while flipping correctly in dark mode. Both elements follow the
+  design-system token stack and remain WCAG AA-compliant in all themes. (#656)
 - **Theming: legacy hardcoded values in `style-custom.css` now resolve through
   design tokens.** The legacy section absorbed from the old `style.css` mixed
   named tokens with hardcoded literals (font sizes, card/badge/flash fills,
@@ -49,6 +109,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- BigQuery extractor (`connectors/bigquery/extractor.py`): `init_extract` now
+  uses `bq_metadata_cache` as the primary source of `entity_type` per table.
+  On a warm cache the O(N) BQ jobs-API round-trips that previously ran inside
+  every rebuild are eliminated entirely; live `_detect_table_type` detection is
+  only called on a cache miss, missing `id` key, or when the cache repo is
+  unavailable (standalone context). The cache stores `MATERIALIZED VIEW` (BQ
+  canonical, with a space); the extractor normalizes it to `MATERIALIZED_VIEW`
+  (underscore) before branching so existing view-path logic is unaffected.
 
 ## [0.71.38] — 2026-06-15
 

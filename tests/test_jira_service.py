@@ -1,7 +1,7 @@
 """Tests for Jira extract_init — init and update_meta."""
+
 import duckdb
 import pytest
-from pathlib import Path
 from connectors.jira.extract_init import init_extract, update_meta
 
 
@@ -24,9 +24,10 @@ class TestJiraExtractInit:
 
     def test_update_meta_creates_view(self, jira_env):
         init_extract(jira_env)
-        issues_dir = jira_env / "data" / "issues"
+        # Hive layout: data/<table>/month=<YYYY-MM>/data.parquet
+        issues_dir = jira_env / "data" / "issues" / "month=2026-04"
         issues_dir.mkdir(parents=True, exist_ok=True)
-        pq_path = str(issues_dir / "2026-04.parquet")
+        pq_path = str(issues_dir / "data.parquet")
         tmp = duckdb.connect()
         tmp.execute(f"COPY (SELECT 'PROJ-1' AS issue_key, 'Bug' AS type) TO '{pq_path}' (FORMAT PARQUET)")
         tmp.close()
