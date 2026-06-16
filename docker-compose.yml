@@ -151,6 +151,7 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./static:/caddy-static:ro
       - /data/state/certs:/certs:ro
       - caddy_data:/data
       - caddy_config:/config
@@ -158,6 +159,9 @@ services:
       # serve parquets directly (sendfile/zero-copy) and bypass the app's
       # uvicorn workers — see Caddyfile's @download handler. Mounted at
       # /srv (not /data) because /data is already the caddy_data volume.
+      # Note: ./static is mounted at /srv/static (above) in parallel —
+      # Docker layers the two mounts so /srv/extracts and /srv/static
+      # are both accessible.
       - data:/srv:ro
     environment:
       - DOMAIN=${DOMAIN:-localhost}
