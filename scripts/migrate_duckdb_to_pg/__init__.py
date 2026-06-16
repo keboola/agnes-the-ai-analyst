@@ -34,6 +34,7 @@ After cutover, the DuckDB ``system.duckdb`` file becomes a one-time
 snapshot — never written to again. Analytics keep using their own
 ``analytics.duckdb`` and ``extract.duckdb`` files, unaffected.
 """
+
 from __future__ import annotations
 
 import logging
@@ -107,12 +108,15 @@ _PK_COLUMNS: Dict[str, List[str]] = {
     "data_package_tools": ["package_id", "tool_id"],
     # v68 cloud-chat tables (chat_sessions / chat_messages use id PK)
     "user_workdirs": ["user_email"],
+    # v78 memory-mining consent — PK is the user's email, not an id.
+    "memory_mining_consent": ["user_email"],
 }
 
 
 # ---------------------------------------------------------------------------
 # Task builder
 # ---------------------------------------------------------------------------
+
 
 def build_task_list() -> List[GenericCopyTask]:
     """Return migration tasks for every PG table, ordered by FK depth.
@@ -138,6 +142,7 @@ def build_task_list() -> List[GenericCopyTask]:
 # ---------------------------------------------------------------------------
 # Public interface: all_table_names_handled
 # ---------------------------------------------------------------------------
+
 
 def all_table_names_handled() -> set[str]:
     """Names of PG tables this script can migrate.
@@ -168,6 +173,7 @@ TASKS: List[GenericCopyTask] = build_task_list()
 # ---------------------------------------------------------------------------
 # Backwards-compatible shim functions (run_task / validate_task / run_all)
 # ---------------------------------------------------------------------------
+
 
 def run_task(
     task: GenericCopyTask,
