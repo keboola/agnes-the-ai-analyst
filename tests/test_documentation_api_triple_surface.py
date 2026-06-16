@@ -121,7 +121,15 @@ _AUTHORING_SUGGESTIONS_REASON = (
     "CLI/MCP analogue (mirrors the grandfathered /api/memory-domain-suggestions "
     "moderation queue); the real domain create endpoints carry the contract."
 )
+_MEMORY_MINING_REASON = (
+    "Corporate-memory mining (v78) — privacy-gated web/admin flow. Users manage "
+    "their own opt-in consent from a web toggle; an admin triggers a mining run "
+    "from the moderation UI. Candidates route through the authoring-suggestions "
+    "queue (itself exempt). No analyst CLI/MCP analogue."
+)
 _EXEMPT: dict[str, str] = {
+    "/api/studio/memory-mining/consent": _MEMORY_MINING_REASON,
+    "/api/admin/memory-mining/run": _MEMORY_MINING_REASON,
     "/api/studio/suggestions": _AUTHORING_SUGGESTIONS_REASON,
     "/api/studio/suggestions/mine": _AUTHORING_SUGGESTIONS_REASON,
     "/api/admin/authoring-suggestions": _AUTHORING_SUGGESTIONS_REASON,

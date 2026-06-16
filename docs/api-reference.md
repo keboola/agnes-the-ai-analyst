@@ -714,6 +714,16 @@ follow-up that must re-validate through the domain endpoint, never replay).
 - /api/admin/authoring-suggestions/{sid}/approve
 - /api/admin/authoring-suggestions/{sid}/reject
 
+### `/api/studio/memory-mining` — Corporate-memory mining (privacy-gated)
+
+Opt-in (per design spec §4.4): a user consents to having their session
+transcripts mined into shared corporate memory; an admin triggers a run that
+PII-scans candidates, tags provenance, and routes them through the
+authoring-suggestions queue (never an admin-direct write).
+
+- /api/studio/memory-mining/consent
+- /api/admin/memory-mining/run
+
 ### `/api/admin/metrics` — Metric definitions (admin)
 
 - /api/admin/metrics
