@@ -1809,22 +1809,32 @@ def _collect_covered_routes() -> set:
 def test_every_route_is_covered_or_excluded():
     """Route-coverage guard: fails CI when a new endpoint has no test or exclusion.
 
-    Intentionally has NO fixture dependencies and uses the module-level app
-    object (created once at import time in a clean module state) rather than
-    calling create_app() fresh. Calling create_app() in a long-running xdist
-    worker can produce an empty route set after importlib.reload(src.repositories)
-    has been called many times by the state_backend fixture — using the
-    already-imported module-level app is immune to that interference because its
-    routes are registered before any fixture runs.
+    Uses a subprocess to inspect routes so xdist worker state (importlib.reload
+    calls from state_backend fixture) cannot corrupt the route set. The subprocess
+    imports app.main in a clean Python process and emits JSON to stdout.
     """
-    import importlib  # noqa: PLC0415
+    import json  # noqa: PLC0415
+    import os  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import sys  # noqa: PLC0415
 
-    _inspection_app = importlib.import_module("app.main").app
-    all_routes = {
-        f"{m} {r.path}"
-        for r in _inspection_app.routes
-        for m in (getattr(r, "methods", None) or set()) - {"HEAD", "OPTIONS"}
-    }
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    script = (
+        "import json, warnings; warnings.filterwarnings('ignore'); "
+        "from app.main import app; "
+        "print(json.dumps([{'path': r.path, 'methods': list(getattr(r, 'methods', None) or [])} "
+        "for r in app.routes]))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-W", "ignore", "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
+        env={**os.environ, "PYTHONPATH": repo_root},
+    )
+    assert result.returncode == 0, f"Route inspection subprocess failed (exit {result.returncode}):\n{result.stderr}"
+    routes_data = json.loads(result.stdout)
+    all_routes = {f"{m} {r['path']}" for r in routes_data for m in r["methods"] if m not in ("HEAD", "OPTIONS")}
     covered = _collect_covered_routes() | KNOWN_UNTESTED
     missing = sorted(all_routes - covered)
     assert not missing, (
