@@ -114,6 +114,9 @@ __all__ = [
     "system_secrets_repo",
     "tool_registry_repo",
     "setup_tokens_repo",
+    # Source connections
+    "source_connections_repo",
+    "connection_secrets_repo",
     # Cloud chat
     "chat_session_repo",
     "chat_message_repo",
@@ -377,6 +380,15 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.setup_tokens", "SetupTokenRepository"),
         PG: ("src.repositories.setup_tokens_pg", "SetupTokenPgRepository"),
     },
+    # source connections
+    "source_connections": {
+        DUCKDB: ("src.repositories.source_connections", "SourceConnectionsRepository"),
+        PG: ("src.repositories.source_connections_pg", "SourceConnectionsPgRepository"),
+    },
+    "connection_secrets": {
+        DUCKDB: ("app.secrets_vault", "ConnectionSecretsRepository"),
+        PG: ("src.repositories.secrets_vault_pg", "ConnectionSecretsPgRepository"),
+    },
     # cloud chat — the DuckDB side is a single ChatRepository covering all
     # chat tables; the PG side is split per table.
     "chat_session": {
@@ -588,6 +600,14 @@ def per_user_secrets_repo() -> Any:
 
 def shared_secrets_repo() -> Any:
     return _build("shared_secrets")
+
+
+def source_connections_repo() -> Any:
+    return _build("source_connections")
+
+
+def connection_secrets_repo() -> Any:
+    return _build("connection_secrets")
 
 
 def system_secrets_repo() -> Any:

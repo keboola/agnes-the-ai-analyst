@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 78
+SCHEMA_VERSION = 81
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -89,7 +89,13 @@ CREATE TABLE IF NOT EXISTS users (
     -- lazy ALTER in services/slack_bot/binding.py) so it lives in the active
     -- state backend — the binding broke on Postgres when it only existed in
     -- the DuckDB system file.
-    slack_user_id VARCHAR
+    slack_user_id VARCHAR,
+    -- v77: forces a password change on first sign-in for accounts whose
+    -- password was set BY SOMEONE ELSE — the seed admin created from
+    -- SEED_ADMIN_PASSWORD (emailed in plaintext) and admin-set passwords.
+    -- Cleared when the user sets their own password via reset/setup confirm.
+    -- Irrelevant to SSO/magic-link accounts (they have no password).
+    must_change_password BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS sync_state (
@@ -379,7 +385,27 @@ CREATE TABLE IF NOT EXISTS table_registry (
     -- lists it for catalog discovery + RBAC). Only meaningful for
     -- query_mode IN ('local', 'materialized'); ignored for 'remote'
     -- (which has no server-stored parquet to suppress). Issue #607.
-    server_only   BOOLEAN DEFAULT false
+    server_only   BOOLEAN DEFAULT false,
+    -- v79: nullable FK to source_connections.id. NULL = use the default
+    -- connection for the row's source_type (backwards-compatible).
+    connection_id VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS source_connections (
+    id          VARCHAR PRIMARY KEY,
+    name        VARCHAR NOT NULL UNIQUE,
+    source_type VARCHAR NOT NULL,
+    config      TEXT NOT NULL,
+    token_env   VARCHAR,
+    is_default  BOOLEAN DEFAULT FALSE,
+    created_by  VARCHAR,
+    created_at  TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS connection_secrets (
+    connection_id VARCHAR PRIMARY KEY,
+    ciphertext    TEXT NOT NULL,
+    updated_at    TIMESTAMP DEFAULT current_timestamp
 );
 
 CREATE TABLE IF NOT EXISTS table_profiles (
@@ -474,7 +500,11 @@ CREATE TABLE IF NOT EXISTS marketplace_registry (
     -- rows from pre-v37 instances survive migration; admin must fill via the
     -- /admin/marketplaces edit modal before the placeholder disappears.
     curator_name    VARCHAR,
-    curator_email   VARCHAR
+    curator_email   VARCHAR,
+    -- v78: built-in marketplace shipped with the wheel (not a git clone).
+    -- TRUE for the single system-seeded row; FALSE for all admin-registered rows.
+    -- The nightly git-sync path skips is_builtin=TRUE rows (nothing to fetch).
+    is_builtin      BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS marketplace_plugins (
@@ -508,6 +538,11 @@ CREATE TABLE IF NOT EXISTS marketplace_plugins (
     -- resolver itself is unchanged — system semantics are emergent from
     -- the materialized rows, not a new filter layer.
     is_system       BOOLEAN DEFAULT FALSE,
+    -- v78: per-plugin admin disable flag for built-in plugins. When TRUE,
+    -- the plugin is excluded from the served feed for all callers even
+    -- when they hold a resource_grant for it. Distinct from the per-user
+    -- user_plugin_optouts — this is an instance-wide admin decision.
+    admin_disabled  BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (marketplace_id, name)
 );
 
@@ -1240,7 +1275,7 @@ CREATE TABLE IF NOT EXISTS user_workdirs (
 """
 
 
-import threading
+import threading  # noqa: E402
 
 _system_db_lock = threading.Lock()
 _system_db_conn: duckdb.DuckDBPyConnection | None = None
@@ -5007,14 +5042,81 @@ def _v75_to_v76(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def _v76_to_v77(conn: duckdb.DuckDBPyConnection) -> None:
-    """v77: ``authoring_suggestions`` — generic non-admin suggestion queue for
+    """v77: ``users.must_change_password`` — force a password change on first
+    sign-in for accounts whose password was set by someone else (seed admin
+    from SEED_ADMIN_PASSWORD, admin-set passwords). Additive-only; cleared when
+    the user sets their own password. Idempotent ADD COLUMN IF NOT EXISTS, so
+    safe on fresh and upgrade paths; ``_SYSTEM_SCHEMA`` already creates the
+    column on fresh installs. Issue: emailed-credential rotation.
+    """
+    conn.execute(
+        # DuckDB ALTER can't add a NOT NULL column ("constraints not yet
+        # supported"); DEFAULT FALSE backfills existing rows. Fresh installs
+        # get NOT NULL from _SYSTEM_SCHEMA. New rows always set it via the repo.
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE"
+    )
+    conn.execute("UPDATE schema_version SET version = 77")
+
+
+def _v77_to_v78(conn: duckdb.DuckDBPyConnection) -> None:
+    """v78: built-in marketplace columns.
+
+    Adds ``marketplace_registry.is_builtin`` (BOOLEAN NOT NULL DEFAULT FALSE) so
+    the system-seeded built-in marketplace row is distinguishable from
+    admin-registered rows. The nightly git-sync path skips is_builtin=TRUE rows.
+
+    Adds ``marketplace_plugins.admin_disabled`` (BOOLEAN NOT NULL DEFAULT FALSE)
+    so an admin can disable an individual built-in plugin instance-wide without
+    revoking its RBAC grant. Disabled plugins are filtered from the served feed
+    for all callers.
+
+    Both columns default to FALSE so pre-existing rows are unaffected. Additive
+    ADD COLUMN IF NOT EXISTS — idempotent on fresh and upgrade paths.
+    """
+    # DuckDB ALTER TABLE ADD COLUMN does NOT support inline constraints
+    # (NOT NULL) — "Adding columns with constraints not yet supported". The
+    # fresh-create path in CREATE TABLE keeps NOT NULL; the upgrade path adds a
+    # nullable column with DEFAULT FALSE (every writer supplies a value, so the
+    # nullable-vs-not-null divergence on upgraded DuckDB DBs is cosmetic). This
+    # matches the established additive ADD COLUMN pattern elsewhere in this file.
+    conn.execute("ALTER TABLE marketplace_registry ADD COLUMN IF NOT EXISTS is_builtin BOOLEAN DEFAULT FALSE")
+    conn.execute("ALTER TABLE marketplace_plugins ADD COLUMN IF NOT EXISTS admin_disabled BOOLEAN DEFAULT FALSE")
+    conn.execute("UPDATE schema_version SET version = 78")
+
+
+def _v78_to_v79(conn: duckdb.DuckDBPyConnection) -> None:
+    """Named source connections (spec 2026-06-12): generic connection
+    registry + vault-backed secrets + table_registry.connection_id."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS source_connections (
+            id          VARCHAR PRIMARY KEY,
+            name        VARCHAR NOT NULL UNIQUE,
+            source_type VARCHAR NOT NULL,
+            config      TEXT NOT NULL,
+            token_env   VARCHAR,
+            is_default  BOOLEAN DEFAULT FALSE,
+            created_by  VARCHAR,
+            created_at  TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS connection_secrets (
+            connection_id VARCHAR PRIMARY KEY,
+            ciphertext    TEXT NOT NULL,
+            updated_at    TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS connection_id VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 79")
+
+
+def _v79_to_v80(conn: duckdb.DuckDBPyConnection) -> None:
+    """v80: ``authoring_suggestions`` — generic non-admin suggestion queue for
     the authoring studio (data-package / mcp / marketplace / corporate-memory).
 
-    A non-admin who lacks the admin mutation right submits a proposed create
-    payload here (``status='pending'``); an admin approves (replays the payload
-    through the real endpoint, stamps ``status='approved'`` + the created
-    resource id) or rejects. Generalizes the v55 ``memory_domain_suggestions``
-    pattern across all studio domains. Additive-only; ``_SYSTEM_SCHEMA`` creates
+    A non-admin submits a proposed create payload (``status='pending'``); an
+    admin approves (re-validates + creates the resource, stamps
+    ``created_resource_id``) or rejects. Additive-only; ``_SYSTEM_SCHEMA`` creates
     it on fresh installs (no-op CREATE IF NOT EXISTS here).
     """
     conn.execute(
@@ -5034,18 +5136,13 @@ def _v76_to_v77(conn: duckdb.DuckDBPyConnection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_authoring_suggestions_status ON authoring_suggestions(status)")
-    conn.execute("UPDATE schema_version SET version = 77")
+    conn.execute("UPDATE schema_version SET version = 80")
 
 
-def _v77_to_v78(conn: duckdb.DuckDBPyConnection) -> None:
-    """v78: ``memory_mining_consent`` — per-user opt-IN to having their session
-    transcripts mined into shared corporate memory.
-
-    Privacy gate (design spec §4.4): session privacy today is whole-session
-    opt-OUT with no in-pipeline redaction, so mining the not-marked-private long
-    tail into a shared, group-distributed memory domain would promote per-user
-    data to a broadcast tier. The miner therefore consults this table and only
-    mines transcripts whose author positively opted in. Additive-only;
+def _v80_to_v81(conn: duckdb.DuckDBPyConnection) -> None:
+    """v81: ``memory_mining_consent`` — per-user opt-IN to having their session
+    transcripts mined into shared corporate memory (design spec §4.4). The miner
+    only mines transcripts whose author positively opted in. Additive-only;
     ``_SYSTEM_SCHEMA`` creates it on fresh installs (no-op CREATE here).
     """
     conn.execute(
@@ -5058,7 +5155,7 @@ def _v77_to_v78(conn: duckdb.DuckDBPyConnection) -> None:
         )
         """
     )
-    conn.execute("UPDATE schema_version SET version = 78")
+    conn.execute("UPDATE schema_version SET version = 81")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -5374,12 +5471,20 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # entities). _SYSTEM_SCHEMA already creates the table on fresh
             # installs (no-op CREATE here). Issue #398.
             _v75_to_v76(conn)
-            # v76→v77: authoring_suggestions (generic non-admin suggestion
-            # queue for the authoring studio). _SYSTEM_SCHEMA already creates
-            # the table on fresh installs (no-op CREATE here).
+            # v76→v77: users.must_change_password — forced rotation flag for
+            # seeded/admin-set passwords. _SYSTEM_SCHEMA already creates the
+            # column on fresh installs (no-op ALTER here).
             _v76_to_v77(conn)
-            # v77→v78: memory_mining_consent (per-user opt-in to session mining).
+            # v77→v78: built-in marketplace columns. is_builtin on
+            # marketplace_registry; admin_disabled on marketplace_plugins.
             _v77_to_v78(conn)
+            # v78→v79: named source_connections + vault-backed connection_secrets
+            # + table_registry.connection_id (spec 2026-06-12).
+            _v78_to_v79(conn)
+            # v79→v80: authoring_suggestions (authoring-studio suggestion queue).
+            _v79_to_v80(conn)
+            # v80→v81: memory_mining_consent (per-user opt-in to session mining).
+            _v80_to_v81(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5589,6 +5694,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v76_to_v77(conn)
             if current < 78:
                 _v77_to_v78(conn)
+            if current < 79:
+                _v78_to_v79(conn)
+            if current < 80:
+                _v79_to_v80(conn)
+            if current < 81:
+                _v80_to_v81(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

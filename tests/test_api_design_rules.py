@@ -100,7 +100,7 @@ _VERB_PATH_ALLOWLIST = frozenset(
         # state-machine (approve also replays the payload into the real resource).
         "/api/admin/authoring-suggestions/{sid}/approve",
         "/api/admin/authoring-suggestions/{sid}/reject",
-        # Corporate-memory mining — fire-and-forget admin batch trigger (v78).
+        # Corporate-memory mining — fire-and-forget admin batch trigger (v81).
         "/api/admin/memory-mining/run",
         # User lifecycle — activate/deactivate map to a boolean field (acceptable PATCH candidate)
         "/api/users/{user_id}/activate",
@@ -134,6 +134,10 @@ _VERB_PATH_ALLOWLIST = frozenset(
         "/api/sync/manifest",
         "/api/sync/settings",
         "/api/sync/table-subscriptions",
+        # Built-in plugin admin disable/enable toggles — RPC state-machine actions
+        # on a sub-resource (mirrors the allowlisted marketplace /sync action).
+        "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/disable",
+        "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/enable",
     }
 )
 

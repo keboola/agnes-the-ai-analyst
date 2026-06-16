@@ -31,6 +31,7 @@ Deploying, configuring, and running an Agnes instance.
 - [`DEPLOYMENT.md`](DEPLOYMENT.md) — picks between the Terraform and Docker Compose paths
 - [`CONFIGURATION.md`](CONFIGURATION.md) — `instance.yaml`, env vars, per-instance options
 - [`state-dir.md`](state-dir.md) — persistent data layout (`data` + `state` tiers, mount layouts, migration)
+- [`runbooks/wal-recovery.md`](runbooks/wal-recovery.md) — incident runbook: recovering `system.duckdb` from a WAL-replay failure
 - [`RBAC.md`](RBAC.md) — access control: groups, members, resource grants
 - [`auth-google-oauth.md`](auth-google-oauth.md) — Google OAuth setup + operator gotchas
 - [`auth-groups.md`](auth-groups.md) — Google Workspace group sync

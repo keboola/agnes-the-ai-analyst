@@ -21,6 +21,7 @@ Implementation differences vs. DuckDB:
   explicit junction wipe in ``hard_delete`` for parity but it's
   belt-and-braces — the FK would handle it.
 """
+
 from __future__ import annotations
 
 import json
@@ -149,26 +150,23 @@ class DataPackagesPgRepository:
                     row[k] = []
         return row
 
-    def get(
-        self, pkg_id: str, *, include_deleted: bool = False
-    ) -> Optional[Dict[str, Any]]:
+    def get(self, pkg_id: str, *, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
         guard = "" if include_deleted else " AND deleted_at IS NULL"
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text(
-                    f"SELECT * FROM data_packages WHERE id = :id{guard}"
-                ),
-                {"id": pkg_id},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text(f"SELECT * FROM data_packages WHERE id = :id{guard}"),
+                    {"id": pkg_id},
+                )
+                .mappings()
+                .first()
+            )
         return self._normalize_row(dict(row)) if row else None
 
     def get_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
             row = conn.execute(
-                sa.text(
-                    "SELECT id FROM data_packages "
-                    "WHERE slug = :slug AND deleted_at IS NULL"
-                ),
+                sa.text("SELECT id FROM data_packages WHERE slug = :slug AND deleted_at IS NULL"),
                 {"slug": slug},
             ).first()
         return self.get(row[0]) if row else None
@@ -268,10 +266,7 @@ class DataPackagesPgRepository:
         params["pkg_id"] = pkg_id
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    f"UPDATE data_packages SET {', '.join(fields)} "
-                    f"WHERE id = :pkg_id"
-                ),
+                sa.text(f"UPDATE data_packages SET {', '.join(fields)} WHERE id = :pkg_id"),
                 params,
             )
 
@@ -281,10 +276,7 @@ class DataPackagesPgRepository:
         undo flow can restore the package whole."""
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "UPDATE data_packages SET deleted_at = CURRENT_TIMESTAMP "
-                    "WHERE id = :id"
-                ),
+                sa.text("UPDATE data_packages SET deleted_at = CURRENT_TIMESTAMP WHERE id = :id"),
                 {"id": pkg_id},
             )
 
@@ -293,10 +285,7 @@ class DataPackagesPgRepository:
         currently soft-deleted (guards against double-undo)."""
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "UPDATE data_packages SET deleted_at = NULL "
-                    "WHERE id = :id"
-                ),
+                sa.text("UPDATE data_packages SET deleted_at = NULL WHERE id = :id"),
                 {"id": pkg_id},
             )
 
@@ -307,9 +296,7 @@ class DataPackagesPgRepository:
         DuckDB sibling (whose constraint surface can't cascade)."""
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "DELETE FROM data_package_tables WHERE package_id = :id"
-                ),
+                sa.text("DELETE FROM data_package_tables WHERE package_id = :id"),
                 {"id": pkg_id},
             )
             conn.execute(
@@ -345,10 +332,7 @@ class DataPackagesPgRepository:
         """Drop a junction row. Returns True iff a row was deleted."""
         with self._engine.begin() as conn:
             result = conn.execute(
-                sa.text(
-                    "DELETE FROM data_package_tables "
-                    "WHERE package_id = :pkg_id AND table_id = :table_id"
-                ),
+                sa.text("DELETE FROM data_package_tables WHERE package_id = :pkg_id AND table_id = :table_id"),
                 {"pkg_id": pkg_id, "table_id": table_id},
             )
             return (result.rowcount or 0) > 0
@@ -360,18 +344,22 @@ class DataPackagesPgRepository:
         ``table_registry`` and returns ``{id, name}`` pairs.
         """
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    """
+            rows = (
+                conn.execute(
+                    sa.text(
+                        """
                     SELECT tr.id AS id, tr.name AS name
                     FROM data_package_tables dpt
                     JOIN table_registry tr ON tr.id = dpt.table_id
                     WHERE dpt.package_id = :pkg_id
                     ORDER BY tr.name
                     """
-                ),
-                {"pkg_id": pkg_id},
-            ).mappings().all()
+                    ),
+                    {"pkg_id": pkg_id},
+                )
+                .mappings()
+                .all()
+            )
         return [dict(r) for r in rows]
 
     def add_tool(self, pkg_id: str, tool_id: str) -> bool:
@@ -390,10 +378,7 @@ class DataPackagesPgRepository:
         """Detach an MCP tool from a package. Returns True iff a row was deleted."""
         with self._engine.begin() as conn:
             result = conn.execute(
-                sa.text(
-                    "DELETE FROM data_package_tools "
-                    "WHERE package_id = :pkg_id AND tool_id = :tool_id"
-                ),
+                sa.text("DELETE FROM data_package_tools WHERE package_id = :pkg_id AND tool_id = :tool_id"),
                 {"pkg_id": pkg_id, "tool_id": tool_id},
             )
         return (result.rowcount or 0) > 0
@@ -404,9 +389,10 @@ class DataPackagesPgRepository:
         Mirrors the DuckDB sibling: joins tool_registry + mcp_sources.
         """
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    """
+            rows = (
+                conn.execute(
+                    sa.text(
+                        """
                     SELECT t.tool_id, t.exposed_name, t.description, t.mode,
                            s.name AS source_name
                     FROM data_package_tools dpt
@@ -415,9 +401,12 @@ class DataPackagesPgRepository:
                     WHERE dpt.package_id = :pkg_id
                     ORDER BY t.exposed_name
                     """
-                ),
-                {"pkg_id": pkg_id},
-            ).mappings().all()
+                    ),
+                    {"pkg_id": pkg_id},
+                )
+                .mappings()
+                .all()
+            )
         return [
             {
                 "tool_id": r["tool_id"],
@@ -428,6 +417,25 @@ class DataPackagesPgRepository:
             }
             for r in rows
         ]
+
+    def list_member_table_ids(self, package_ids: set) -> List[str]:
+        """Distinct table IDs across the given live packages. Targeted query
+        for per-user access-check paths (avoids a full-table scan).
+        Returns ``[]`` when *package_ids* is empty.
+        """
+        if not package_ids:
+            return []
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT DISTINCT dpt.table_id "
+                    "FROM data_package_tables dpt "
+                    "JOIN data_packages dp ON dp.id = dpt.package_id "
+                    "WHERE dp.deleted_at IS NULL AND dpt.package_id = ANY(:pkg_ids)"
+                ),
+                {"pkg_ids": list(package_ids)},
+            ).all()
+        return [r[0] for r in rows]
 
     def list_member_ids_bulk(self) -> Dict[str, List[str]]:
         """Bulk fetch of the ``{package_id → [table_id, ...]}`` mapping
@@ -454,9 +462,10 @@ class DataPackagesPgRepository:
     def list_packages_of_table(self, table_id: str) -> List[Dict[str, Any]]:
         """Packages a given table belongs to (name-ordered)."""
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    """
+            rows = (
+                conn.execute(
+                    sa.text(
+                        """
                     SELECT dp.id, dp.slug, dp.name, dp.description,
                            dp.icon, dp.color, dp.cover_image_url
                     FROM data_package_tables dpt
@@ -464,7 +473,10 @@ class DataPackagesPgRepository:
                     WHERE dpt.table_id = :table_id
                     ORDER BY dp.name
                     """
-                ),
-                {"table_id": table_id},
-            ).mappings().all()
+                    ),
+                    {"table_id": table_id},
+                )
+                .mappings()
+                .all()
+            )
         return [dict(r) for r in rows]

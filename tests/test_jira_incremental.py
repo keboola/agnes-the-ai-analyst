@@ -114,27 +114,27 @@ class TestParquetMonthlyPartitioning:
         assert result is None
 
     def test_save_empty_df_removes_file(self, parquet_dir):
-        """save_parquet_month with empty df removes existing parquet file."""
+        """save_parquet_month with empty df removes the hive dir for that month."""
         # First write a file
         df = _make_df([{"issue_key": "PROJ-1", "summary": "Test"}])
         save_parquet_month(df, _SIMPLE_SCHEMA, parquet_dir, "2026-01")
-        assert (parquet_dir / "2026-01.parquet").exists()
+        assert (parquet_dir / "month=2026-01" / "data.parquet").exists()
 
-        # Save empty df — file should be removed
+        # Save empty df — hive dir should be removed
         empty = pd.DataFrame()
         save_parquet_month(empty, _SIMPLE_SCHEMA, parquet_dir, "2026-01")
-        assert not (parquet_dir / "2026-01.parquet").exists()
+        assert not (parquet_dir / "month=2026-01").exists()
 
     def test_separate_months_independent_files(self, parquet_dir):
-        """Different month_keys write to separate parquet files."""
+        """Different month_keys write to separate hive partition directories."""
         df_april = _make_df([{"issue_key": "PROJ-A", "summary": "April issue"}])
         df_may = _make_df([{"issue_key": "PROJ-B", "summary": "May issue"}])
 
         save_parquet_month(df_april, _SIMPLE_SCHEMA, parquet_dir, "2026-04")
         save_parquet_month(df_may, _SIMPLE_SCHEMA, parquet_dir, "2026-05")
 
-        assert (parquet_dir / "2026-04.parquet").exists()
-        assert (parquet_dir / "2026-05.parquet").exists()
+        assert (parquet_dir / "month=2026-04" / "data.parquet").exists()
+        assert (parquet_dir / "month=2026-05" / "data.parquet").exists()
 
         april_loaded = load_parquet_month(parquet_dir, "2026-04")
         may_loaded = load_parquet_month(parquet_dir, "2026-05")
@@ -150,7 +150,7 @@ class TestParquetMonthlyPartitioning:
         ])
         save_parquet_month(df, _SIMPLE_SCHEMA, parquet_dir, "2026-04")
 
-        pq_file = str(parquet_dir / "2026-04.parquet")
+        pq_file = str(parquet_dir / "month=2026-04" / "data.parquet")
         conn = duckdb.connect()
         rows = conn.execute(f"SELECT count(*) FROM read_parquet('{pq_file}')").fetchone()
         conn.close()

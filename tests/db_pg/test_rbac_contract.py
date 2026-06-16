@@ -6,6 +6,7 @@ produce identical outputs from both engines.
 
 Follows the pattern established in test_audit_contract.py.
 """
+
 from __future__ import annotations
 
 import duckdb
@@ -15,6 +16,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # repo construction helpers — one per backend
 # ---------------------------------------------------------------------------
+
 
 def _make_duckdb_repos(tmp_path):
     from src.db import _ensure_schema
@@ -51,6 +53,7 @@ def _make_pg_repos(pg_engine, monkeypatch):
     # the DuckDB side (which does auto-seed) and PG side start with the
     # same baseline.
     import uuid as _uuid
+
     with pg_engine.begin() as conn_:
         for name, description in (
             ("Admin", "System: full access"),
@@ -67,6 +70,7 @@ def _make_pg_repos(pg_engine, monkeypatch):
 
     monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
     import src.db_pg as db_pg
+
     db_pg.dispose()
     engine = db_pg.get_engine()
 
@@ -100,6 +104,7 @@ def rbac_repos(request, tmp_path, pg_engine, monkeypatch):
 # ---------------------------------------------------------------------------
 # contract tests
 # ---------------------------------------------------------------------------
+
 
 def test_create_group_then_get_returns_it(rbac_repos):
     repos, _, _ = rbac_repos
@@ -190,6 +195,25 @@ def test_resource_grant_delete_then_has_grant_false(rbac_repos):
     assert grants.has_grant([grp["id"]], "marketplace_plugin", "my-marketplace/orders") is True
     grants.delete(grant_id)
     assert grants.has_grant([grp["id"]], "marketplace_plugin", "my-marketplace/orders") is False
+
+
+def test_ensure_grant_creates_then_idempotent(rbac_repos):
+    """ensure_grant (used by the built-in marketplace seeder on every boot)
+    must create the grant on first call and be a no-op on repeat — same
+    contract on both backends. Returns True iff the grant exists after the
+    call (newly inserted OR already present), never raising on a duplicate."""
+    repos, _, _ = rbac_repos
+    groups = repos["groups"]
+    grants = repos["grants"]
+
+    grp = groups.create(name="seeded", created_by="admin@x.com")
+    # First call inserts the grant.
+    assert grants.ensure_grant(grp["id"], "marketplace_plugin", "agnes-builtin/agnes-analyst", "system") is True
+    assert grants.has_grant([grp["id"]], "marketplace_plugin", "agnes-builtin/agnes-analyst") is True
+    # Second call is the INSERT-OR-IGNORE / ON-CONFLICT-DO-NOTHING idempotency
+    # path — no error, no duplicate, still reports the grant present.
+    assert grants.ensure_grant(grp["id"], "marketplace_plugin", "agnes-builtin/agnes-analyst", "system") is True
+    assert grants.has_grant([grp["id"]], "marketplace_plugin", "agnes-builtin/agnes-analyst") is True
 
 
 def test_list_groups_for_user_returns_joined_groups(rbac_repos):

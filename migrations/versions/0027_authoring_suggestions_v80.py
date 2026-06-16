@@ -7,7 +7,7 @@ endpoint) or rejects. Generalizes ``memory_domain_suggestions`` across domains.
 
 Mirrors DuckDB ``_v76_to_v77``. Additive-only — a brand-new table.
 
-Revision ID: 0024_authoring_suggestions_v77
+Revision ID: 0027_authoring_suggestions_v80
 Revises: 0023_store_entity_votes_v76
 Create Date: 2026-06-15
 """
@@ -20,8 +20,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql  # noqa: F401  (used in upgrade())
 
-revision: str = "0024_authoring_suggestions_v77"
-down_revision: Union[str, None] = "0023_store_entity_votes_v76"
+revision: str = "0027_authoring_suggestions_v80"
+down_revision: Union[str, None] = "0026_source_connections_v79"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
