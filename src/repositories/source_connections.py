@@ -1,4 +1,4 @@
-"""Repository for `source_connections` (v74) — named data-source connections.
+"""Repository for `source_connections` (v79) — named data-source connections.
 
 Spec: docs/superpowers/specs/2026-06-12-named-source-connections-design.md.
 `config` is stored as a JSON string and returned as a dict. `is_default`
