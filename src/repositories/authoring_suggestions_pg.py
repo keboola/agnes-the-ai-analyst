@@ -107,15 +107,13 @@ class AuthoringSuggestionsPgRepository:
     ) -> bool:
         if status not in ("approved", "rejected"):
             raise ValueError("status must be 'approved' or 'rejected'")
+        # Return the UPDATE's rowcount, NOT a prior SELECT: under PG READ
+        # COMMITTED two concurrent approves could both SELECT status='pending'
+        # and both return True, double-running the side-effecting replay. The
+        # guarded UPDATE (WHERE status='pending') is atomic — exactly one
+        # transaction flips the row, so only the winner gets rowcount=1.
         with self._engine.begin() as conn:
-            was_pending = (
-                conn.execute(
-                    sa.text("SELECT 1 FROM authoring_suggestions WHERE id = :id AND status = 'pending'"),
-                    {"id": sid},
-                ).fetchone()
-                is not None
-            )
-            conn.execute(
+            result = conn.execute(
                 sa.text(
                     "UPDATE authoring_suggestions "
                     "SET status = :status, resolved_at = CURRENT_TIMESTAMP, "
@@ -131,7 +129,7 @@ class AuthoringSuggestionsPgRepository:
                     "id": sid,
                 },
             )
-        return was_pending
+        return (result.rowcount or 0) > 0
 
     def reopen(self, sid: str) -> None:
         """Revert a resolved suggestion back to ``pending`` — roll back an

@@ -5,7 +5,7 @@ Generic non-admin suggestion queue for the authoring studio
 proposed create payload; an admin approves (replays it through the real
 endpoint) or rejects. Generalizes ``memory_domain_suggestions`` across domains.
 
-Mirrors DuckDB ``_v76_to_v77``. Additive-only — a brand-new table.
+Mirrors DuckDB ``_v79_to_v80``. Additive-only — a brand-new table.
 
 Revision ID: 0027_authoring_suggestions_v80
 Revises: 0023_store_entity_votes_v76

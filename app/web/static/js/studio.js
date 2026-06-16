@@ -104,7 +104,7 @@ async function openAssistant() {
     const send = () => {
       const v = msg.value.trim();
       if (v && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "user_msg", content: v }));
+        ws.send(JSON.stringify({ type: "user_msg", text: v }));
         appendStream(`\n> ${v}\n`);
         msg.value = "";
       }

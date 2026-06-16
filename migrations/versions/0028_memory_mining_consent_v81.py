@@ -4,7 +4,7 @@ Per-user opt-IN to having their session transcripts mined into shared corporate
 memory. Privacy gate (design spec §4.4) — the miner only reads transcripts whose
 author positively opted in.
 
-Mirrors DuckDB ``_v77_to_v78``. Additive-only — a brand-new table.
+Mirrors DuckDB ``_v80_to_v81``. Additive-only — a brand-new table.
 
 Revision ID: 0028_memory_mining_consent_v81
 Revises: 0027_authoring_suggestions_v80
