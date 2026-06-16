@@ -30,6 +30,41 @@ def _ext_of(filename: str, file_type: Optional[str]) -> str:
     return ""
 
 
+def _chunk_embed_store(corpus_id: str, file_id: str, source) -> tuple[int, bool]:
+    """Chunk ``source`` (ExtractResult or str), embed best-effort, store.
+
+    Returns ``(chunk_count, embedded)``. Idempotent: clears the file's prior
+    chunks first. Embedding is best-effort (optional extra); failure → vectors
+    NULL and lexical-only retrieval, never an ingest failure.
+    """
+    chunks = chunk_text(source)
+    chunks_repo = corpus_chunks_repo()
+    chunks_repo.delete_for_file(file_id)
+    rows = [
+        {
+            "corpus_id": corpus_id,
+            "file_id": file_id,
+            "ordinal": c.ordinal,
+            "text": c.text,
+            "section_path": c.section_path,
+        }
+        for c in chunks
+    ]
+    embedded = False
+    try:
+        from src.ingest.embeddings import embed_texts
+
+        vectors = embed_texts([r["text"] for r in rows]) if rows else None
+        if vectors is not None and len(vectors) == len(rows):
+            for r, v in zip(rows, vectors):
+                r["embedding"] = v
+            embedded = True
+    except Exception:  # pragma: no cover - model runtime issues
+        logger.warning("embedding failed for file_id=%s — storing without vectors", file_id)
+    n = chunks_repo.add_many(rows)
+    return n, embedded
+
+
 def ingest_file(file_id: str) -> str:
     """Ingest one uploaded file. Returns the final ``processing_status``."""
     cf_repo = corpus_files_repo()
@@ -62,45 +97,30 @@ def ingest_file(file_id: str) -> str:
             return "indexed"
 
         if ext in IMAGE_EXTS:
-            # Tier-2 — vision/OCR ingestion is Slice 5. Leave pending so the
-            # vision slice can pick it up; not an error.
+            # Tier-2 — try the gated vision fallback (multimodal OCR). Without a
+            # configured model/key it returns None and we leave the file pending
+            # so a later, configured run can pick it up (not an error).
+            from src.ingest.vision import extract_image_text
+
+            text = extract_image_text(storage_path, ext=ext)
+            if not text:
+                cf_repo.set_status(
+                    file_id,
+                    status="pending",
+                    detail={"tier": 2, "kind": "image", "note": "awaiting vision (no model/key)"},
+                )
+                return "pending"
+            n, embedded = _chunk_embed_store(corpus_id, file_id, text)
             cf_repo.set_status(
                 file_id,
-                status="pending",
-                detail={"tier": 2, "kind": "image", "note": "vision ingestion deferred (Slice 5)"},
+                status="indexed",
+                detail={"tier": 2, "kind": "image", "chunk_count": n, "vision_used": True, "embedded": embedded},
             )
-            return "pending"
+            return "indexed"
 
         # Prose document → extract + chunk → corpus_chunks.
         result = extract_text(storage_path, file_type)
-        chunks = chunk_text(result)
-        chunks_repo = corpus_chunks_repo()
-        chunks_repo.delete_for_file(file_id)  # idempotent re-ingest
-        rows = [
-            {
-                "corpus_id": corpus_id,
-                "file_id": file_id,
-                "ordinal": c.ordinal,
-                "text": c.text,
-                "section_path": c.section_path,
-            }
-            for c in chunks
-        ]
-        # Embed when the (optional) model is installed; otherwise leave NULL and
-        # retrieval runs lexical-only. Embedding failures must not fail ingest.
-        embedded = False
-        try:
-            from src.ingest.embeddings import embed_texts
-
-            vectors = embed_texts([r["text"] for r in rows]) if rows else None
-            if vectors is not None and len(vectors) == len(rows):
-                for r, v in zip(rows, vectors):
-                    r["embedding"] = v
-                embedded = True
-        except Exception:  # pragma: no cover - model runtime issues
-            logger.warning("embedding failed for file_id=%s — storing chunks without vectors", file_id)
-
-        n = chunks_repo.add_many(rows)
+        n, embedded = _chunk_embed_store(corpus_id, file_id, result)
         cf_repo.set_status(
             file_id,
             status="indexed",

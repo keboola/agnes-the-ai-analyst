@@ -76,7 +76,12 @@ def test_ingest_txt_creates_chunks(e2e_env, tmp_path):
     assert row["processing_detail"]["chunk_count"] == len(chunks)
 
 
-def test_ingest_image_stays_pending_for_vision_slice(e2e_env, tmp_path):
+def test_ingest_image_stays_pending_for_vision_slice(e2e_env, tmp_path, monkeypatch):
+    import src.ingest.vision as vision
+
+    # Force vision off for determinism (a dev with ANTHROPIC_API_KEY set would
+    # otherwise make a real API call here).
+    monkeypatch.setattr(vision, "extract_image_text", lambda path, *, ext: None)
     from src.ingest.runner import ingest_file
     from src.repositories import corpus_files_repo
 

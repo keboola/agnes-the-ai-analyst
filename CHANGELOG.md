@@ -11,6 +11,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- Collections Tier-2 vision fallback: uploaded images are transcribed via a
+  multimodal model (gated on `ANTHROPIC_API_KEY` + the `anthropic` SDK) and
+  indexed like documents; without a configured model they stay `pending` for a
+  later run (never an error). Best-effort and confidence-gated — vision is a
+  fallback, not the default path.
 - Collections hybrid search: `GET /api/collections/search` (+ `agnes collections
   search` CLI + `collections_search` MCP tool) runs lexical + (optional) vector
   retrieval across the caller's accessible collections, fail-closed and RBAC-
