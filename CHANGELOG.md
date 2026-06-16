@@ -15,6 +15,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.43] - 2026-06-16
+
+### Added
+
+### Changed
+
+### Fixed
 - Data-package table access now resolves correctly on Postgres-backed instances.
   `can_access_table` / `get_accessible_tables` (`src/rbac.py`) read the
   `data_package_tables` membership via raw SQL on the DuckDB system connection,
