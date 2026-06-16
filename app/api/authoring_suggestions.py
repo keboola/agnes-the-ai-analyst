@@ -14,12 +14,13 @@ A non-admin who lacks the admin mutation right submits a proposed create
 are guarded state transitions (only flip a ``pending`` row) and write an
 ``audit_log`` row so the Activity Center surfaces them.
 
-NOTE (deferred, see the design spec §5): turning an *approved* suggestion into
-the real resource automatically ("approval replay") is intentionally NOT done
-here — it must be full re-validation through the domain endpoint (re-running
-guardrails + re-checking the proposer could target the grant), never a trusted
-replay of attacker-shaped payload. Until that lands, approve records the
-disposition and the admin creates the resource from the (now-visible) payload.
+Approval auto-creates the real resource for the SAFE domains only
+(``data-package`` + ``corporate-memory``) — their payload is plain descriptive
+scalars (name/slug/description) with no privilege vector. ``mcp`` + ``marketplace``
+are deliberately EXCLUDED from auto-replay (design spec §5): their payloads carry
+a stdio ``command`` / git ``url`` that an admin approving on a proposer's behalf
+would unwittingly arm (confused-deputy), so those stay manual-create until a
+per-domain re-validation path exists. See ``_SAFE_REPLAY``.
 """
 
 from __future__ import annotations
@@ -33,9 +34,48 @@ from pydantic import BaseModel
 from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user
 from app.web.studio import get_domain
-from src.repositories import audit_repo, authoring_suggestions_repo
+from src.repositories import (
+    audit_repo,
+    authoring_suggestions_repo,
+    data_packages_repo,
+    memory_domains_repo,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# Domains whose approval can auto-create the resource safely: the payload is
+# plain descriptive scalars (name/slug/description) with no privilege vector.
+# mcp + marketplace are deliberately EXCLUDED — their payloads carry a stdio
+# ``command`` / git ``url`` that an admin approving on a proposer's behalf would
+# unwittingly arm (confused-deputy). Those stay manual-create until a per-domain
+# re-validation path exists (design spec §5).
+def _replay_data_package(payload: dict, by: str) -> str:
+    return data_packages_repo().create(
+        name=payload["name"],
+        slug=payload["slug"],
+        description=payload.get("description"),
+        icon=None,
+        color=None,
+        created_by=by,
+    )
+
+
+def _replay_corporate_memory(payload: dict, by: str) -> str:
+    return memory_domains_repo().create(
+        name=payload["name"],
+        slug=payload["slug"],
+        description=payload.get("description"),
+        icon=None,
+        color=None,
+        created_by=by,
+    )
+
+
+_SAFE_REPLAY = {
+    "data-package": _replay_data_package,
+    "corporate-memory": _replay_corporate_memory,
+}
 
 public_router = APIRouter(prefix="/api/studio", tags=["authoring-suggestions"])
 admin_router = APIRouter(prefix="/api/admin", tags=["authoring-suggestions"])
@@ -91,7 +131,21 @@ async def approve_suggestion(
     body: ResolveBody,
     admin: dict = Depends(require_admin),
 ):
-    return _resolve(sid, "approved", body.note, admin)
+    sug = authoring_suggestions_repo().get(sid)
+    if sug is None:
+        raise HTTPException(status_code=404, detail={"kind": "not_found"})
+    if sug.get("status") != "pending":
+        raise HTTPException(status_code=409, detail={"kind": "already_resolved"})
+    created_resource_id = None
+    replay = _SAFE_REPLAY.get(sug["domain"])
+    if replay is not None:
+        try:
+            created_resource_id = replay(sug.get("payload") or {}, admin["email"])
+        except KeyError as exc:
+            raise HTTPException(status_code=400, detail={"kind": "invalid_payload", "hint": str(exc)})
+        except Exception as exc:  # most likely a slug UNIQUE collision
+            raise HTTPException(status_code=409, detail={"kind": "create_failed", "hint": str(exc)})
+    return _resolve(sid, "approved", body.note, admin, created_resource_id=created_resource_id)
 
 
 @admin_router.post("/authoring-suggestions/{sid}/reject")
@@ -103,17 +157,29 @@ async def reject_suggestion(
     return _resolve(sid, "rejected", body.note, admin)
 
 
-def _resolve(sid: str, status: str, note: Optional[str], admin: dict) -> dict:
+def _resolve(
+    sid: str,
+    status: str,
+    note: Optional[str],
+    admin: dict,
+    created_resource_id: Optional[str] = None,
+) -> dict:
     repo = authoring_suggestions_repo()
     if repo.get(sid) is None:
         raise HTTPException(status_code=404, detail={"kind": "not_found"})
-    flipped = repo.resolve(sid, status=status, resolved_by=admin["email"], resolution_note=note)
+    flipped = repo.resolve(
+        sid,
+        status=status,
+        resolved_by=admin["email"],
+        resolution_note=note,
+        created_resource_id=created_resource_id,
+    )
     if not flipped:
         raise HTTPException(status_code=409, detail={"kind": "already_resolved"})
     audit_repo().log(
         user_id=admin["email"],
         action=f"authoring_suggestion.{status}",
         resource=sid,
-        params={"note": note},
+        params={"note": note, "created_resource_id": created_resource_id},
     )
-    return {"id": sid, "status": status}
+    return {"id": sid, "status": status, "created_resource_id": created_resource_id}

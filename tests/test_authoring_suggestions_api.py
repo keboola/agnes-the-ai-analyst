@@ -73,3 +73,42 @@ def test_admin_endpoints_require_admin(seeded_app):
     c = seeded_app["client"]
     r = c.get("/api/admin/authoring-suggestions", headers=_auth(seeded_app["analyst_token"]))
     assert r.status_code in (401, 403)
+
+
+def test_approve_data_package_auto_creates_resource(seeded_app):
+    c = seeded_app["client"]
+    sid = _submit(
+        c,
+        seeded_app["analyst_token"],
+        domain="data-package",
+        payload={"name": "Auto", "slug": "auto-dp", "description": "x"},
+    ).json()["id"]
+    a = c.post(
+        f"/api/admin/authoring-suggestions/{sid}/approve",
+        headers=_auth(seeded_app["admin_token"]),
+        json={},
+    )
+    assert a.status_code == 200
+    rid = a.json()["created_resource_id"]
+    assert rid and rid.startswith("pkg_")
+    pkgs = c.get("/api/admin/data-packages", headers=_auth(seeded_app["admin_token"])).json()
+    assert any(p.get("slug") == "auto-dp" for p in pkgs)
+
+
+def test_approve_mcp_does_not_auto_create(seeded_app):
+    """mcp/marketplace are excluded from auto-replay (command/url privilege
+    vector); approve records the disposition without creating the resource."""
+    c = seeded_app["client"]
+    sid = _submit(
+        c,
+        seeded_app["analyst_token"],
+        domain="mcp",
+        payload={"name": "e2e_x", "transport": "http", "url": "https://x"},
+    ).json()["id"]
+    a = c.post(
+        f"/api/admin/authoring-suggestions/{sid}/approve",
+        headers=_auth(seeded_app["admin_token"]),
+        json={},
+    )
+    assert a.status_code == 200
+    assert a.json()["created_resource_id"] is None
