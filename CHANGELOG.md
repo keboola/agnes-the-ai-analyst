@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.46] - 2026-06-16
+
+### Added
 - Collections web UI: a **Library** nav section — `/library` lists your
   accessible collections; `/library/{slug}` shows files with per-file status
   pills, an upload drop, and an "Ask this collection" search box (wired to the
