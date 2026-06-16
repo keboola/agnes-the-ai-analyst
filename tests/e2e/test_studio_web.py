@@ -97,6 +97,38 @@ def test_builder_creates_entity(video_ctx, domain, texts, selects):
         ctx.close()  # finalizes the .webm
 
 
+@pytest.mark.real_llm
+@pytest.mark.timeout(300)
+def test_live_agent_assists_in_data_package_builder(video_ctx):
+    """LIVE: a real Claude agent (E2B sandbox, data-package-builder profile)
+    answers in the builder's assistant panel. Needs AGNES_E2E_ANTHROPIC=1 +
+    AGNES_E2E_E2B=1 + real ANTHROPIC_API_KEY/E2B_API_KEY (no fake agent)."""
+    browser, base = video_ctx
+    ctx = browser.new_context(
+        record_video_dir=str(_VIDEO_DIR),
+        record_video_size={"width": 1280, "height": 800},
+        viewport={"width": 1280, "height": 800},
+    )
+    page = ctx.new_page()
+    try:
+        page.goto(f"{base}/admin/studio/data-package", wait_until="domcontentloaded")
+        page.wait_for_selector("#studio-msg", timeout=15_000)
+        # The assistant panel opens a profiled chat session on load; the E2B
+        # sandbox spawn takes a few seconds before it can receive a message.
+        page.wait_for_timeout(6_000)
+        page.fill("#studio-msg", "Suggest a data package for finance reporting and which tables it should include.")
+        page.press("#studio-msg", "Enter")
+        # Wait for the real agent to stream a substantive answer into the panel.
+        page.wait_for_function(
+            "document.getElementById('studio-stream').textContent.replace(/\\s/g,'').length > 60",
+            timeout=240_000,
+        )
+        text = page.inner_text("#studio-stream")
+        assert len(text.strip()) > 60, text
+    finally:
+        ctx.close()  # finalizes the .webm
+
+
 def test_admin_review_approves_a_suggestion(video_ctx):
     """Seed a suggestion via the API, then approve it from the moderation UI."""
     browser, base = video_ctx
