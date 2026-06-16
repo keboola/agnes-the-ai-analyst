@@ -40,11 +40,11 @@ class CorpusChunksRepository:
     # ------------------------------------------------------------------
 
     def add_many(self, chunks: List[Dict[str, Any]]) -> int:
-        """Bulk-insert chunk rows; embedding left NULL (Slice 4).
+        """Bulk-insert chunk rows.
 
         Each dict must contain ``corpus_id``, ``file_id``, ``ordinal``,
-        ``text``.  Optional keys: ``section_path``, ``page``, ``bbox``,
-        ``metadata``.
+        ``text``.  Optional keys: ``embedding`` (list of 384 floats, else NULL),
+        ``section_path``, ``page``, ``bbox``, ``metadata``.
 
         Returns the number of rows inserted.
         """
@@ -54,15 +54,16 @@ class CorpusChunksRepository:
             chunk_id = "ck_" + secrets.token_hex(8)
             self.conn.execute(
                 "INSERT INTO corpus_chunks "
-                "(id, corpus_id, file_id, ordinal, text, "
+                "(id, corpus_id, file_id, ordinal, text, embedding, "
                 " section_path, page, bbox, metadata) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     chunk_id,
                     chunk["corpus_id"],
                     chunk["file_id"],
                     chunk.get("ordinal"),
                     chunk.get("text"),
+                    chunk.get("embedding"),
                     chunk.get("section_path"),
                     chunk.get("page"),
                     chunk.get("bbox"),
@@ -92,5 +93,16 @@ class CorpusChunksRepository:
         rows = self.conn.execute(
             f"SELECT {_SELECT} FROM corpus_chunks WHERE corpus_id = ? ORDER BY file_id, ordinal",
             [corpus_id],
+        ).fetchall()
+        return [dict(zip(_COLS, r)) for r in rows]
+
+    def list_for_corpora(self, corpus_ids: List[str]) -> List[Dict[str, Any]]:
+        """All chunks across several corpora (for retrieval). Empty list → []."""
+        if not corpus_ids:
+            return []
+        placeholders = ", ".join("?" for _ in corpus_ids)
+        rows = self.conn.execute(
+            f"SELECT {_SELECT} FROM corpus_chunks WHERE corpus_id IN ({placeholders}) ORDER BY file_id, ordinal",
+            list(corpus_ids),
         ).fetchall()
         return [dict(zip(_COLS, r)) for r in rows]

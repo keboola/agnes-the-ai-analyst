@@ -13,6 +13,8 @@ from typing import Any, Dict, List
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
+_EMBED_DIM = 384
+
 
 class CorpusChunksPgRepository:
     """Postgres twin of ``CorpusChunksRepository``."""
@@ -25,11 +27,15 @@ class CorpusChunksPgRepository:
     # ------------------------------------------------------------------
 
     def add_many(self, chunks: List[Dict[str, Any]]) -> int:
-        """Bulk-insert chunk rows; embedding left NULL (Slice 4).
+        """Bulk-insert chunk rows.
 
         Each dict must contain ``corpus_id``, ``file_id``, ``ordinal``,
-        ``text``.  Optional keys: ``section_path``, ``page``, ``bbox``,
-        ``metadata``.
+        ``text``.  Optional keys: ``embedding`` (list of 384 floats, else NULL),
+        ``section_path``, ``page``, ``bbox``, ``metadata``.
+
+        The PG ``embedding`` column is an unbounded ``float8[]`` (pgvector is a
+        later option), so we enforce the 384 dimension here — the DuckDB side
+        gets it for free from its ``FLOAT[384]`` column type.
 
         Returns the number of rows inserted.
         """
@@ -38,12 +44,15 @@ class CorpusChunksPgRepository:
         with self._engine.begin() as conn:
             for chunk in chunks:
                 chunk_id = "ck_" + secrets.token_hex(8)
+                embedding = chunk.get("embedding")
+                if embedding is not None and len(embedding) != _EMBED_DIM:
+                    raise ValueError(f"embedding must be {_EMBED_DIM}-dim, got {len(embedding)}")
                 conn.execute(
                     sa.text(
                         "INSERT INTO corpus_chunks "
-                        "(id, corpus_id, file_id, ordinal, text, "
+                        "(id, corpus_id, file_id, ordinal, text, embedding, "
                         " section_path, page, bbox, metadata) "
-                        "VALUES (:id, :corpus_id, :file_id, :ordinal, :text, "
+                        "VALUES (:id, :corpus_id, :file_id, :ordinal, :text, :embedding, "
                         "        :section_path, :page, :bbox, :metadata)"
                     ),
                     {
@@ -52,6 +61,7 @@ class CorpusChunksPgRepository:
                         "file_id": chunk["file_id"],
                         "ordinal": chunk.get("ordinal"),
                         "text": chunk.get("text"),
+                        "embedding": embedding,
                         "section_path": chunk.get("section_path"),
                         "page": chunk.get("page"),
                         "bbox": chunk.get("bbox"),
@@ -101,6 +111,26 @@ class CorpusChunksPgRepository:
                         "ORDER BY file_id, ordinal"
                     ),
                     {"corpus_id": corpus_id},
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
+
+    def list_for_corpora(self, corpus_ids: List[str]) -> List[Dict[str, Any]]:
+        """All chunks across several corpora (for retrieval). Empty list → []."""
+        if not corpus_ids:
+            return []
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    sa.text(
+                        "SELECT id, corpus_id, file_id, ordinal, text, embedding, "
+                        "       section_path, page, bbox, metadata, created_at "
+                        "FROM corpus_chunks WHERE corpus_id IN :corpus_ids "
+                        "ORDER BY file_id, ordinal"
+                    ).bindparams(sa.bindparam("corpus_ids", expanding=True)),
+                    {"corpus_ids": list(corpus_ids)},
                 )
                 .mappings()
                 .all()

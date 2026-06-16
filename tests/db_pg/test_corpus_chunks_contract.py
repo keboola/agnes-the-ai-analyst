@@ -200,3 +200,31 @@ def test_delete_for_file_missing_is_noop(repo):
 def test_add_many_empty_list_returns_zero(repo):
     n = repo.add_many([])
     assert n == 0
+
+
+def test_embedding_round_trips(repo):
+    vec = [0.01 * i for i in range(384)]
+    repo.add_many([{"corpus_id": CORPUS_ID, "file_id": FILE_ID, "ordinal": 0, "text": "v", "embedding": vec}])
+    row = repo.list_for_file(FILE_ID)[0]
+    stored = row["embedding"]
+    assert stored is not None
+    assert len(stored) == 384
+    assert abs(stored[1] - 0.01) < 1e-6
+
+
+def test_wrong_dim_embedding_rejected(repo):
+    import pytest
+
+    with pytest.raises(Exception):
+        repo.add_many(
+            [{"corpus_id": CORPUS_ID, "file_id": FILE_ID, "ordinal": 0, "text": "v", "embedding": [0.1, 0.2]}]
+        )
+
+
+def test_list_for_corpora_spans_multiple(repo):
+    repo.add_many([{"corpus_id": "col_a", "file_id": "cf_a", "ordinal": 0, "text": "aa"}])
+    repo.add_many([{"corpus_id": "col_b", "file_id": "cf_b", "ordinal": 0, "text": "bb"}])
+    rows = repo.list_for_corpora(["col_a", "col_b"])
+    corpora = {r["corpus_id"] for r in rows}
+    assert {"col_a", "col_b"} <= corpora
+    assert repo.list_for_corpora([]) == []
