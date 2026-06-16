@@ -182,8 +182,15 @@ A disk space alert fires when `/data` exceeds 85% for 5 minutes.
 
 On GCE deployments the container stdout/stderr (app INFO + uncaught-exception
 tracebacks, scheduler, etc.) ships to **GCP Cloud Logging** via Docker's
-`gcplogs` driver — engaged by the `docker-compose.gcp-logging.yml` overlay that
-the Terraform startup-script appends to `COMPOSE_FILE`. Entries land under
+`gcplogs` driver, engaged by the `docker-compose.gcp-logging.yml` overlay.
+Activation is **placement-driven**: the overlay is not baked into the image and
+not in any default `COMPOSE_FILE` — `agnes-auto-upgrade.sh` /
+`agnes-state-applier.sh` append it only when the file is present on disk
+(`[ -f ]`), and the file is placed solely by the GCE deploy layer (the customer
+infra Terraform `startup.sh` fetches it into `/opt/agnes/`). Non-GCP hosts never
+get the file and keep the default `json-file` driver. To enable it on a GCE host
+manually, drop the overlay into `/opt/agnes/docker-compose.gcp-logging.yml` and
+run `docker compose up -d` (or wait for the next image upgrade to recreate the containers). Entries land under
 resource `gce_instance` (next to the VM/system logs), logName
 `gcplogs-docker-driver`, tagged with `jsonPayload.instance.name` /
 `jsonPayload.container.name`. The app's own JSON log line (with its `lvl`,

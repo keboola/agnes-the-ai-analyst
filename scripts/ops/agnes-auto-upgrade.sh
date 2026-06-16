@@ -102,7 +102,7 @@ IMAGE="ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}"
 # The conditional TLS overlay (further down) APPENDS via the same
 # colon-separator so docker compose sees a unified list — interleaving
 # ``-f`` args and a COMPOSE_FILE env var is unspecified behaviour.
-export COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml:docker-compose.gcp-logging.yml}"
+export COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml}"
 PROFILE_ARGS=()
 
 # Re-fetch the bind-mounted config files (compose overlays + Caddyfile)
@@ -125,7 +125,7 @@ RAW_BASE="https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main"
 CONFIG_FILES=(
   docker-compose.yml docker-compose.prod.yml docker-compose.host-mount.yml
   docker-compose.postgres.yml docker-compose.postgres-host-mount.yml
-  docker-compose.gcp-logging.yml docker-compose.tls.yml Caddyfile
+  docker-compose.tls.yml Caddyfile
 )
 hash_config_files() {
   # Sort to keep hash stable across operator add/remove, missing files
@@ -169,6 +169,20 @@ if [ -s "$STATE_DIR/certs/fullchain.pem" ] && [ -s "$STATE_DIR/certs/privkey.pem
     PROFILE_ARGS=( --profile tls )
 elif [ -s "$STATE_DIR/certs/fullchain.pem" ] && [ -s "$STATE_DIR/certs/privkey.pem" ]; then
     logger -t agnes-auto-upgrade "WARN: certs present but Caddyfile missing/empty — skipping tls overlay"
+fi
+
+# gcplogs overlay — ships container stdout/stderr to GCP Cloud Logging. Gated
+# purely on file presence (mirrors the tls append above): the file is NOT baked
+# into the image and is NOT in CONFIG_FILES, so it lands ONLY when the GCE deploy
+# layer (Terraform startup-script / infra startup.sh) placed it. On non-GCP hosts
+# the file is absent → the overlay is never appended → containers stay on the
+# default json-file driver (gcplogs would otherwise fail without a GCE metadata
+# server). Idempotent case-check guards against re-appending across ticks.
+if [ -f docker-compose.gcp-logging.yml ]; then
+    case ":$COMPOSE_FILE:" in
+      *:docker-compose.gcp-logging.yml:*) : ;;
+      *) export COMPOSE_FILE="$COMPOSE_FILE:docker-compose.gcp-logging.yml" ;;
+    esac
 fi
 
 # COMPOSE_FILE is exported above; docker compose picks it up automatically.
