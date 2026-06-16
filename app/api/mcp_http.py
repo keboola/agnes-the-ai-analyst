@@ -18,6 +18,7 @@ stack_browse, stack_subscribe, stack_unsubscribe, store_rate, documentation_api.
 (query_local and pull require a local analyst filesystem — not available
  in the server context.)
 """
+
 from __future__ import annotations
 
 import contextvars
@@ -33,9 +34,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 logger = logging.getLogger(__name__)
 
 # Per-request token — set by _AuthMiddleware, read by tool handlers.
-_current_token: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "_mcp_token", default=""
-)
+_current_token: contextvars.ContextVar[str] = contextvars.ContextVar("_mcp_token", default="")
 
 # Internal base URL for self-calls. Stays on HTTP/localhost since the MCP
 # server runs inside the same process/container as Agnes.
@@ -50,9 +49,7 @@ _current_token: contextvars.ContextVar[str] = contextvars.ContextVar(
 # ``http://localhost:8000`` — the right shape for self-calls in the
 # single-container deploy. Operators running Agnes split across
 # multiple pods can point this at the in-cluster service URL.
-_BASE = os.environ.get(
-    "AGNES_MCP_INTERNAL_URL", "http://localhost:8000"
-).rstrip("/")
+_BASE = os.environ.get("AGNES_MCP_INTERNAL_URL", "http://localhost:8000").rstrip("/")
 
 mcp = FastMCP(
     "Agnes",
@@ -76,6 +73,7 @@ def _headers() -> dict[str, str]:
 
 
 # ── tools ──────────────────────────────────────────────────────────────────────
+
 
 @mcp.tool()
 async def server_info() -> dict:
@@ -130,9 +128,7 @@ async def schema(table_id: str) -> dict:
     sql_flavor and where_dialect_hints where relevant.
     """
     async with httpx.AsyncClient() as c:
-        r = await c.get(
-            f"{_BASE}/api/v2/schema/{table_id}", headers=_headers(), timeout=30
-        )
+        r = await c.get(f"{_BASE}/api/v2/schema/{table_id}", headers=_headers(), timeout=30)
         r.raise_for_status()
         return r.json()
 
@@ -149,9 +145,7 @@ async def describe(table_id: str, rows: int = 5) -> dict:
     """
     rows = min(max(1, rows), 50)
     async with httpx.AsyncClient() as c:
-        rs = await c.get(
-            f"{_BASE}/api/v2/schema/{table_id}", headers=_headers(), timeout=30
-        )
+        rs = await c.get(f"{_BASE}/api/v2/schema/{table_id}", headers=_headers(), timeout=30)
         rs.raise_for_status()
         rm = await c.get(
             f"{_BASE}/api/v2/sample/{table_id}",
@@ -338,20 +332,41 @@ async def documentation_api() -> str:
     """
     from pathlib import Path
 
-    md_path = (
-        Path(__file__).resolve().parent.parent.parent
-        / "docs" / "api-reference.md"
-    )
+    md_path = Path(__file__).resolve().parent.parent.parent / "docs" / "api-reference.md"
     try:
         return md_path.read_text(encoding="utf-8")
     except OSError:
-        return (
-            "# API reference unavailable\n\n"
-            "The source markdown file is missing from this deployment."
+        return "# API reference unavailable\n\nThe source markdown file is missing from this deployment."
+
+
+@mcp.tool()
+async def admin_config_surface() -> dict:
+    """Return the complete per-instance configuration surface (admin only).
+
+    Reads every ``get_*`` resolver in ``app/instance_config.py`` and returns
+    their current values alongside which tier supplied each one (env/yaml/default),
+    the registered Initial Workspace Template (if any), every registered
+    marketplace, and the ``infra_repo_url`` knob.
+
+    Useful for an operator's Claude that needs instance-accurate pointers
+    (IWT URL, marketplace URLs, knob values, infra repo) without hardcoding
+    anything. Mirrors ``GET /api/admin/config-surface`` and
+    ``agnes admin config-surface``.
+
+    Requires an admin PAT.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.get(
+            f"{_BASE}/api/admin/config-surface",
+            headers=_headers(),
+            timeout=30,
         )
+        r.raise_for_status()
+        return r.json()
 
 
 # ── auth middleware ─────────────────────────────────────────────────────────────
+
 
 class _AuthMiddleware:
     """Pure ASGI middleware: validates Bearer token, sets _current_token."""
@@ -370,6 +385,7 @@ class _AuthMiddleware:
         # Fallback: ?token= query param for clients that can't set headers on SSE GET
         if not auth.lower().startswith("bearer "):
             from urllib.parse import parse_qs
+
             qs = parse_qs(scope.get("query_string", b"").decode())
             t = qs.get("token", [""])[0]
             if t:
@@ -383,6 +399,7 @@ class _AuthMiddleware:
         try:
             from app.auth.pat_resolver import resolve_token_to_user
             from src.db import get_system_db
+
             conn = get_system_db()
             try:
                 user, reason = resolve_token_to_user(conn, raw_token)
@@ -405,19 +422,24 @@ class _AuthMiddleware:
 
 
 async def _send_401(scope: Scope, send: Send) -> None:
-    await send({
-        "type": "http.response.start",
-        "status": 401,
-        "headers": [[b"content-type", b"application/json"]],
-    })
-    await send({
-        "type": "http.response.body",
-        "body": b'{"detail":"Not authenticated"}',
-        "more_body": False,
-    })
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [[b"content-type", b"application/json"]],
+        }
+    )
+    await send(
+        {
+            "type": "http.response.body",
+            "body": b'{"detail":"Not authenticated"}',
+            "more_body": False,
+        }
+    )
 
 
 # ── dynamic tool registration (Universal MCP — RFC #461 §7) ───────────────────
+
 
 def _register_dynamic_tools() -> None:
     """Add passthrough tools from ``tool_registry`` to the module-level ``mcp``.
@@ -448,6 +470,7 @@ def _register_dynamic_tools() -> None:
 
 
 # ── factory ────────────────────────────────────────────────────────────────────
+
 
 def make_sse_app() -> ASGIApp:
     """Return the Agnes SSE MCP app wrapped with PAT authentication."""

@@ -2,7 +2,6 @@
 
 import logging
 import os
-from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -26,6 +25,7 @@ def reset_cache() -> None:
     _instance_config = None
     try:
         from connectors.bigquery.access import get_bq_access
+
         get_bq_access.cache_clear()
     except Exception:
         # Connectors module not loaded yet, or BQ deps missing — both fine.
@@ -40,6 +40,7 @@ def get_database_config() -> dict:
     /api/admin/db/migrate success.
     """
     from src.db_state_machine import read_backend_state
+
     state, url = read_backend_state()
     return {"backend": state.value, "url": url}
 
@@ -103,6 +104,7 @@ def load_instance_config() -> dict:
     base: dict = {}
     try:
         from config.loader import load_instance_config as _load
+
         base = _load() or {}
         logger.info("Loaded instance.yaml base from config/")
     except Exception as e:
@@ -130,11 +132,13 @@ def load_instance_config() -> dict:
     # ``/data-state/instance.yaml``; reading from ``/data/state/...`` here
     # would silently load stale config from the regenerable data disk.
     from app.secrets import _state_dir
+
     overlay_path = _state_dir() / "instance.yaml"
     if overlay_path.exists():
         try:
             overlay = yaml.safe_load(overlay_path.read_text()) or {}
             from config.loader import _resolve_env_refs
+
             overlay = _resolve_env_refs(overlay)
             base = _deep_merge(base, overlay)
             logger.info("Merged overlay from %s", overlay_path)
@@ -142,7 +146,8 @@ def load_instance_config() -> dict:
             logger.exception(
                 "instance.yaml overlay at %s is corrupt — falling back to "
                 "static base config; saves through the editor will refuse "
-                "until the file is repaired", overlay_path,
+                "until the file is repaired",
+                overlay_path,
             )
 
     _instance_config = base
@@ -175,9 +180,7 @@ def get_slack_transport() -> str:
     ``"http"``. Unknown values fall back to ``"http"`` so a typo never
     starts a dead Socket Mode WS. Mirrors :func:`get_data_source_type`.
     """
-    raw = os.environ.get("SLACK_TRANSPORT") or get_value(
-        "chat", "slack", "transport", default="http"
-    )
+    raw = os.environ.get("SLACK_TRANSPORT") or get_value("chat", "slack", "transport", default="http")
     value = (raw or "http").strip().lower()
     if value not in ("http", "socket"):
         return "http"
@@ -197,9 +200,7 @@ def get_home_route() -> str:
     Validated to start with ``/`` and not ``//`` so a misconfigured
     value can't pivot the root redirect to an external host.
     """
-    raw = os.environ.get("AGNES_HOME_ROUTE") or get_value(
-        "instance", "home_route", default="/dashboard"
-    )
+    raw = os.environ.get("AGNES_HOME_ROUTE") or get_value("instance", "home_route", default="/dashboard")
     route = (raw or "").strip()
     if not route.startswith("/") or route.startswith("//"):
         return "/dashboard"
@@ -219,9 +220,7 @@ def get_public_url() -> str:
     fall back to a root-relative path when this is empty, so an unset value
     degrades gracefully rather than crashing.
     """
-    raw = os.environ.get("PUBLIC_URL") or get_value(
-        "server", "public_url", default=""
-    )
+    raw = os.environ.get("PUBLIC_URL") or get_value("server", "public_url", default="")
     return (raw or "").strip().rstrip("/")
 
 
@@ -254,18 +253,12 @@ def get_gws_oauth_credentials() -> dict:
     Both id and secret must be set for the configured branch to engage;
     a half-configured instance falls back to manual setup with a warning.
     """
-    cid = os.environ.get("AGNES_GWS_CLIENT_ID") or get_value(
-        "instance", "gws", "client_id", default=""
-    )
-    secret = os.environ.get("AGNES_GWS_CLIENT_SECRET") or get_value(
-        "instance", "gws", "client_secret", default=""
-    )
+    cid = os.environ.get("AGNES_GWS_CLIENT_ID") or get_value("instance", "gws", "client_id", default="")
+    secret = os.environ.get("AGNES_GWS_CLIENT_SECRET") or get_value("instance", "gws", "client_secret", default="")
     insecure = os.environ.get("AGNES_GWS_OAUTHLIB_INSECURE_TRANSPORT") or get_value(
         "instance", "gws", "oauthlib_insecure_transport", default="1"
     )
-    project_id = os.environ.get("AGNES_GWS_PROJECT_ID") or get_value(
-        "instance", "gws", "project_id", default=""
-    )
+    project_id = os.environ.get("AGNES_GWS_PROJECT_ID") or get_value("instance", "gws", "project_id", default="")
     cid = (cid or "").strip()
     secret = (secret or "").strip()
     project_id = (project_id or "").strip()
@@ -528,7 +521,8 @@ def get_custom_scripts() -> list[dict]:
         if not isinstance(entry, dict):
             logger.warning(
                 "instance.custom_scripts[%d] must be a dict, got %s — skipping",
-                idx, type(entry).__name__,
+                idx,
+                type(entry).__name__,
             )
             continue
         if not _custom_script_enabled(entry.get("enabled")):
@@ -539,18 +533,21 @@ def get_custom_scripts() -> list[dict]:
         placement = (entry.get("placement") or "head_end").strip()
         if placement not in _CUSTOM_SCRIPT_PLACEMENTS:
             logger.warning(
-                "instance.custom_scripts[%d] (name=%r) has unknown placement "
-                "%r — must be one of %s — skipping",
-                idx, entry.get("name", ""), placement,
+                "instance.custom_scripts[%d] (name=%r) has unknown placement %r — must be one of %s — skipping",
+                idx,
+                entry.get("name", ""),
+                placement,
                 ", ".join(_CUSTOM_SCRIPT_PLACEMENTS),
             )
             continue
-        out.append({
-            "name": str(entry.get("name") or ""),
-            "enabled": True,
-            "placement": placement,
-            "html": html,
-        })
+        out.append(
+            {
+                "name": str(entry.get("name") or ""),
+                "enabled": True,
+                "placement": placement,
+                "html": html,
+            }
+        )
     return out
 
 
@@ -573,6 +570,7 @@ def get_workspace_dir_name() -> str:
     if explicit:
         return explicit
     import re
+
     derived = re.sub(r"[^A-Za-z0-9]", "", get_instance_brand())
     return derived or "Agnes"
 
@@ -591,6 +589,25 @@ def get_instance_admin_email() -> str:
     raw = os.environ.get("AGNES_INSTANCE_ADMIN_EMAIL")
     if raw is None:
         raw = get_value("instance", "admin_email", default="")
+    return (raw or "").strip()
+
+
+def get_infra_repo_url() -> str:
+    """Optional URL of the infrastructure/provisioning repository for this
+    instance (e.g. the Terraform repo that deployed the VM). Used by the
+    built-in ``agnes-operator`` marketplace plugin to give the operator's
+    Claude a concrete pointer to where they manage infra for this instance.
+
+    Empty string by default — the OSS distribution ships vendor-neutral;
+    an operator sets this so the operator plugin can name the real infra
+    repo without hardcoding anything in shipped content.
+
+    Resolution: ``AGNES_INFRA_REPO_URL`` env > ``instance.infra_repo_url``
+    YAML > ``""`` (unset). Mirrors :func:`get_instance_admin_email` shape.
+    """
+    raw = os.environ.get("AGNES_INFRA_REPO_URL")
+    if raw is None:
+        raw = get_value("instance", "infra_repo_url", default="")
     return (raw or "").strip()
 
 

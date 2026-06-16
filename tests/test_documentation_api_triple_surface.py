@@ -19,6 +19,9 @@ extend ``_COHORT`` below and the test fails until the CLI/MCP entries land.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 
 # Endpoints that must have all three surfaces. Forward-only — add new
 # entries when they land, do NOT retroactively backfill old endpoints
@@ -30,6 +33,8 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/stack/browse": ("stack browse", "stack_browse"),
     # Store thumbs up/down ratings (issue #398).
     "/api/store/entities/{entity_id}/rate": ("store rate", "store_rate"),
+    # Config-surface introspection (built-in marketplace spec Phase 1).
+    "/api/admin/config-surface": ("admin config-surface", "admin_config_surface"),
 }
 
 
@@ -86,9 +91,6 @@ def test_mcp_tools_registered():
         )
 
 
-import os
-from pathlib import Path
-
 _BASELINE_PATH = Path(__file__).resolve().parent / "api_triple_surface_grandfathered.txt"
 
 # Endpoints consciously REST-only (admin mutations, internal, webhooks). Reason
@@ -114,6 +116,11 @@ _STORE_DRYRUN_REASON = (
     "grandfathered /api/store/entities/preview wizard step); the real "
     "create endpoint carries the triple-surface contract."
 )
+_BUILTIN_DISABLE_REASON = (
+    "admin-only per-plugin disable toggle for built-in marketplace plugins — "
+    "web UI only at /admin/marketplaces, no analyst CLI/MCP analogue (mirrors "
+    "the grandfathered admin marketplace register/sync/delete mutations)"
+)
 _EXEMPT: dict[str, str] = {
     "/api/admin/initial-workspace/sync-if-configured": _IW_SYNC_IF_CONFIGURED_REASON,
     "/api/store/entities/dryrun": _STORE_DRYRUN_REASON,
@@ -130,6 +137,8 @@ _EXEMPT: dict[str, str] = {
     "/api/admin/adoption/users/{user_id}/series": _ADOPTION_REASON,
     "/api/admin/adoption/users/{user_id}/top-skills": _ADOPTION_REASON,
     "/api/admin/adoption/users/{user_id}/top-tools": _ADOPTION_REASON,
+    "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/disable": _BUILTIN_DISABLE_REASON,
+    "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/enable": _BUILTIN_DISABLE_REASON,
 }
 
 

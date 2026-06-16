@@ -1,0 +1,192 @@
+"""Tests for the built-in marketplace seeding mechanism (v77).
+
+Covers:
+- seed_builtin_marketplace() is idempotent (safe to call on every boot).
+- The registry row has is_builtin=TRUE.
+- The plugin cache is populated after seeding.
+- is_builtin rows are skipped by sync_marketplaces().
+- admin_disabled filter works end-to-end through list_granted_for_groups.
+- The bundled content directory exists and has the expected structure.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# Bundled content structure
+# ---------------------------------------------------------------------------
+
+
+def test_builtin_content_dir_exists():
+    """The bundled _builtin_marketplace/ tree ships in the package."""
+    from src.marketplace import _BUILTIN_CONTENT_DIR
+
+    assert _BUILTIN_CONTENT_DIR.is_dir(), f"Bundled content missing at {_BUILTIN_CONTENT_DIR}"
+
+
+def test_builtin_marketplace_json_present():
+    """The root marketplace.json manifest is present and parsable."""
+    import json
+
+    from src.marketplace import _BUILTIN_CONTENT_DIR, PLUGIN_MANIFEST_REL
+
+    manifest = _BUILTIN_CONTENT_DIR / PLUGIN_MANIFEST_REL
+    assert manifest.is_file(), f"marketplace.json missing at {manifest}"
+    data = json.loads(manifest.read_text())
+    assert isinstance(data, dict)
+    plugins = data.get("plugins")
+    assert isinstance(plugins, list) and len(plugins) >= 2, (
+        "marketplace.json must list at least agnes-analyst and agnes-operator"
+    )
+    names = {p["name"] for p in plugins}
+    assert "agnes-analyst" in names
+    assert "agnes-operator" in names
+
+
+def test_builtin_plugin_dirs_exist():
+    """Both plugin directories are present under plugins/."""
+    from src.marketplace import _BUILTIN_CONTENT_DIR
+
+    for slug in ("agnes-analyst", "agnes-operator"):
+        plugin_dir = _BUILTIN_CONTENT_DIR / "plugins" / slug
+        assert plugin_dir.is_dir(), f"Plugin dir missing: {plugin_dir}"
+        plugin_json = plugin_dir / ".claude-plugin" / "plugin.json"
+        assert plugin_json.is_file(), f"plugin.json missing: {plugin_json}"
+        skill_md = plugin_dir / "SKILL.md"
+        assert skill_md.is_file(), f"SKILL.md missing: {skill_md}"
+
+
+# ---------------------------------------------------------------------------
+# Seeding (DuckDB, isolated in-memory)
+# ---------------------------------------------------------------------------
+
+
+def _setup_duckdb_repos(tmp_path: Path):
+    """Bootstrap a fresh DuckDB system DB and return repo factories."""
+    from src.db import _ensure_schema
+    from src.duckdb_conn import _open_duckdb
+
+    db_path = str(tmp_path / "system.duckdb")
+    conn = _open_duckdb(db_path)
+    _ensure_schema(conn)
+    return conn
+
+
+def test_seed_builtin_marketplace_idempotent(tmp_path, monkeypatch):
+    """seed_builtin_marketplace() is safe to call multiple times — the registry
+    row, plugin cache, and RBAC grants are all upsert/idempotent."""
+    conn = _setup_duckdb_repos(tmp_path)
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    # Route all repos to this single DuckDB connection.
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: conn)
+
+    from src.marketplace import seed_builtin_marketplace, BUILTIN_MARKETPLACE_SLUG
+
+    seed_builtin_marketplace()
+    seed_builtin_marketplace()  # second call must not raise or duplicate
+
+    reg_rows = conn.execute(
+        "SELECT id, is_builtin FROM marketplace_registry WHERE id = ?",
+        [BUILTIN_MARKETPLACE_SLUG],
+    ).fetchall()
+    assert len(reg_rows) == 1, "Registry row must be exactly one after two seed calls"
+    assert reg_rows[0][1] is True, "is_builtin must be TRUE"
+
+    conn.close()
+
+
+def test_seed_builtin_marketplace_populates_plugin_cache(tmp_path, monkeypatch):
+    """After seeding, marketplace_plugins has rows for the built-in plugins."""
+    conn = _setup_duckdb_repos(tmp_path)
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: conn)
+
+    from src.marketplace import seed_builtin_marketplace, BUILTIN_MARKETPLACE_SLUG
+
+    seed_builtin_marketplace()
+
+    rows = conn.execute(
+        "SELECT name FROM marketplace_plugins WHERE marketplace_id = ? ORDER BY name",
+        [BUILTIN_MARKETPLACE_SLUG],
+    ).fetchall()
+    names = {r[0] for r in rows}
+    assert "agnes-analyst" in names
+    assert "agnes-operator" in names
+
+    conn.close()
+
+
+def test_seed_builtin_marketplace_seeds_rbac_grants(tmp_path, monkeypatch):
+    """After seeding, resource_grants exist for Everyone→analyst and Admin→operator."""
+    conn = _setup_duckdb_repos(tmp_path)
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: conn)
+
+    from src.marketplace import seed_builtin_marketplace, BUILTIN_MARKETPLACE_SLUG
+
+    seed_builtin_marketplace()
+
+    slug = BUILTIN_MARKETPLACE_SLUG
+    expected = {
+        f"{slug}/agnes-analyst": "Everyone",
+        f"{slug}/agnes-operator": "Admin",
+    }
+    for resource_id, group_name in expected.items():
+        row = conn.execute(
+            """SELECT rg.id FROM resource_grants rg
+               JOIN user_groups ug ON ug.id = rg.group_id
+               WHERE rg.resource_type = 'marketplace_plugin'
+                 AND rg.resource_id = ?
+                 AND ug.name = ?""",
+            [resource_id, group_name],
+        ).fetchone()
+        assert row is not None, f"Missing grant: {group_name} -> {resource_id}"
+
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# sync_marketplaces skips is_builtin rows
+# ---------------------------------------------------------------------------
+
+
+def test_sync_marketplaces_skips_builtin(tmp_path, monkeypatch):
+    """sync_marketplaces() must not attempt to git-clone is_builtin rows."""
+    conn = _setup_duckdb_repos(tmp_path)
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: conn)
+
+    # Insert a built-in row directly.
+    conn.execute(
+        "INSERT INTO marketplace_registry (id, name, url, is_builtin) "
+        "VALUES ('agnes-builtin', 'Built-in', 'builtin://agnes-builtin', TRUE)"
+    )
+    # Insert a normal (admin-registered) row.
+    conn.execute(
+        "INSERT INTO marketplace_registry (id, name, url, is_builtin) "
+        "VALUES ('normal-mkt', 'Normal', 'https://example.test/normal.git', FALSE)"
+    )
+
+    synced_ids: list[str] = []
+
+    def fake_sync_spec(spec):
+        synced_ids.append(spec["id"])
+        raise ValueError("fake-abort")  # prevent actual git ops
+
+    monkeypatch.setattr("src.marketplace._sync_spec", fake_sync_spec)
+
+    from src.marketplace import sync_marketplaces
+
+    sync_marketplaces()
+
+    assert "agnes-builtin" not in synced_ids, "sync_marketplaces must skip is_builtin rows"
+    # The normal row was attempted (and failed with our fake abort).
+    assert "normal-mkt" in synced_ids
+
+    conn.close()

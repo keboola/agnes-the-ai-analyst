@@ -1089,3 +1089,9 @@ synced IWT clone for the bind-git file picker.
 
 - /api/version
 - /api/welcome
+
+### Config surface & built-in marketplace controls (admin)
+
+- /api/admin/config-surface — read this instance's complete configurable surface: every config knob with its resolved value + source (env/yaml/default), the registered Initial Workspace Template, the registered marketplaces, and `infra_repo_url`. Also exposed as `agnes admin config-surface` and an MCP tool.
+- /api/marketplaces/{marketplace_id}/plugins/{plugin_name}/disable — admin-only: disable a built-in plugin instance-wide (filtered from the served feed for all callers).
+- /api/marketplaces/{marketplace_id}/plugins/{plugin_name}/enable — admin-only: re-enable a previously disabled built-in plugin.

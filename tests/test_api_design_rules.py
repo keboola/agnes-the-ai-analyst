@@ -47,66 +47,93 @@ def _ops(spec):
 # These are explicitly listed below so the allowlist is self-documenting.
 # ---------------------------------------------------------------------------
 
-_VERBS = frozenset({
-    "trigger", "run", "activate", "deactivate", "approve", "reject", "revoke",
-    "register", "discover", "refresh", "reset", "send", "import", "export",
-    "push", "pull", "enable", "disable", "rebuild", "reload", "bulk", "precheck",
-    "rescan",
-})
+_VERBS = frozenset(
+    {
+        "trigger",
+        "run",
+        "activate",
+        "deactivate",
+        "approve",
+        "reject",
+        "revoke",
+        "register",
+        "discover",
+        "refresh",
+        "reset",
+        "send",
+        "import",
+        "export",
+        "push",
+        "pull",
+        "enable",
+        "disable",
+        "rebuild",
+        "reload",
+        "bulk",
+        "precheck",
+        "rescan",
+    }
+)
 
 # Existing violations — grandfathered. Do not extend this list.
 # Each entry should include a brief note on why it is intentional RPC.
-_VERB_PATH_ALLOWLIST = frozenset({
-    # Command-bus triggers — fire-and-forget, no idiomatic REST resource
-    "/api/sync/trigger",
-    "/api/scripts/run",
-    "/api/scripts/run-due",
-    "/api/scripts/{script_id}/run",
-    "/api/marketplaces/{marketplace_id}/sync",
-    "/api/marketplaces/sync-all",
-    # State transitions on governance resources
-    "/api/memory/admin/approve",
-    "/api/memory/admin/reject",
-    "/api/memory/admin/revoke",
-    "/api/memory/admin/bulk-update",
-    # Memory-domain suggestion lifecycle — pending → approved/rejected
-    # state-machine. Approve also creates the real memory_domains row as
-    # a side effect, so it's not a clean PATCH on a single field.
-    "/api/admin/memory-domain-suggestions/{sid}/approve",
-    "/api/admin/memory-domain-suggestions/{sid}/reject",
-    # User lifecycle — activate/deactivate map to a boolean field (acceptable PATCH candidate)
-    "/api/users/{user_id}/activate",
-    "/api/users/{user_id}/deactivate",
-    "/api/users/{user_id}/reset-password",
-    # Admin operations — discovery + registration (complex multi-step, no single resource)
-    "/api/admin/discover-and-register",
-    "/api/admin/discover-tables",
-    "/api/admin/register-table",
-    "/api/admin/register-table/precheck",
-    "/api/admin/metadata/{table_id}/push",
-    "/api/admin/metrics/import",
-    # Profile refresh — triggers async re-profiling of table metadata
-    "/api/catalog/profile/{table_name}/refresh",
-    # BQ metadata cache refresh — on-demand operator trigger for a single registry row
-    "/api/v2/metadata-cache/refresh",
-    # Cache warmup — manual trigger (idempotent fire-and-forget)
-    "/api/admin/cache-warmup/run",
-    # Store submission rescan — re-runs guardrail scan on an existing submission
-    "/api/admin/store/submissions/{submission_id}/rescan",
-    # Telemetry export — GET because it streams a report, not a resource collection
-    "/api/admin/telemetry/export",
-    # Auth flows — /auth/* uses verb-style paths by convention across the industry
-    "/auth/email/send-link",
-    "/auth/password/reset",
-    "/auth/password/reset/confirm",
-    "/auth/password/setup",
-    "/auth/password/setup/confirm",
-    "/auth/password/setup/request",
-    # Sync sub-resources — "sync" is the resource namespace here, not the verb
-    "/api/sync/manifest",
-    "/api/sync/settings",
-    "/api/sync/table-subscriptions",
-})
+_VERB_PATH_ALLOWLIST = frozenset(
+    {
+        # Command-bus triggers — fire-and-forget, no idiomatic REST resource
+        "/api/sync/trigger",
+        "/api/scripts/run",
+        "/api/scripts/run-due",
+        "/api/scripts/{script_id}/run",
+        "/api/marketplaces/{marketplace_id}/sync",
+        "/api/marketplaces/sync-all",
+        # State transitions on governance resources
+        "/api/memory/admin/approve",
+        "/api/memory/admin/reject",
+        "/api/memory/admin/revoke",
+        "/api/memory/admin/bulk-update",
+        # Memory-domain suggestion lifecycle — pending → approved/rejected
+        # state-machine. Approve also creates the real memory_domains row as
+        # a side effect, so it's not a clean PATCH on a single field.
+        "/api/admin/memory-domain-suggestions/{sid}/approve",
+        "/api/admin/memory-domain-suggestions/{sid}/reject",
+        # User lifecycle — activate/deactivate map to a boolean field (acceptable PATCH candidate)
+        "/api/users/{user_id}/activate",
+        "/api/users/{user_id}/deactivate",
+        "/api/users/{user_id}/reset-password",
+        # Admin operations — discovery + registration (complex multi-step, no single resource)
+        "/api/admin/discover-and-register",
+        "/api/admin/discover-tables",
+        "/api/admin/register-table",
+        "/api/admin/register-table/precheck",
+        "/api/admin/metadata/{table_id}/push",
+        "/api/admin/metrics/import",
+        # Profile refresh — triggers async re-profiling of table metadata
+        "/api/catalog/profile/{table_name}/refresh",
+        # BQ metadata cache refresh — on-demand operator trigger for a single registry row
+        "/api/v2/metadata-cache/refresh",
+        # Cache warmup — manual trigger (idempotent fire-and-forget)
+        "/api/admin/cache-warmup/run",
+        # Store submission rescan — re-runs guardrail scan on an existing submission
+        "/api/admin/store/submissions/{submission_id}/rescan",
+        # Telemetry export — GET because it streams a report, not a resource collection
+        "/api/admin/telemetry/export",
+        # Auth flows — /auth/* uses verb-style paths by convention across the industry
+        "/auth/email/send-link",
+        "/auth/password/reset",
+        "/auth/password/reset/confirm",
+        "/auth/password/setup",
+        "/auth/password/setup/confirm",
+        "/auth/password/setup/request",
+        # Sync sub-resources — "sync" is the resource namespace here, not the verb
+        "/api/sync/manifest",
+        "/api/sync/settings",
+        "/api/sync/table-subscriptions",
+        # Built-in plugin admin disable/enable toggles — RPC state-machine actions
+        # on a sub-resource (mirrors the allowlisted marketplace /sync action).
+        "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/disable",
+        "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/enable",
+    }
+)
 
 
 def test_no_new_verbs_in_path(spec):
@@ -168,25 +195,27 @@ def test_delete_returns_204(spec):
 # auth flows that respond with 200 by design).
 # ---------------------------------------------------------------------------
 
-_CREATOR_POST_ALLOWLIST = frozenset({
-    # Config upserts — update existing config, not create a new resource
-    "/api/admin/server-config",
-    "/api/sync/settings",
-    # Subscription upsert — sets per-table enabled flags, not a pure create
-    "/api/sync/table-subscriptions",
-    # Auth flows — 200 is conventional for token/session responses
-    "/auth/email/verify",
-    "/auth/password/reset",
-    "/auth/password/setup",
-    # CLI browser-loopback auth — POST confirms authorization and 303-
-    # redirects the freshly-minted exchange code to the CLI's localhost
-    # loopback. Not a JSON resource create; conventional auth-flow shape.
-    "/cli/auth/start",
-    # Register/update upsert — saves config, not a pure create
-    "/api/admin/initial-workspace",
-    # Saved-view upsert — ON CONFLICT updates existing name rather than creating
-    "/api/admin/observability/views",
-})
+_CREATOR_POST_ALLOWLIST = frozenset(
+    {
+        # Config upserts — update existing config, not create a new resource
+        "/api/admin/server-config",
+        "/api/sync/settings",
+        # Subscription upsert — sets per-table enabled flags, not a pure create
+        "/api/sync/table-subscriptions",
+        # Auth flows — 200 is conventional for token/session responses
+        "/auth/email/verify",
+        "/auth/password/reset",
+        "/auth/password/setup",
+        # CLI browser-loopback auth — POST confirms authorization and 303-
+        # redirects the freshly-minted exchange code to the CLI's localhost
+        # loopback. Not a JSON resource create; conventional auth-flow shape.
+        "/cli/auth/start",
+        # Register/update upsert — saves config, not a pure create
+        "/api/admin/initial-workspace",
+        # Saved-view upsert — ON CONFLICT updates existing name rather than creating
+        "/api/admin/observability/views",
+    }
+)
 
 
 def test_creator_post_declares_201(spec):
@@ -226,11 +255,13 @@ def test_creator_post_declares_201(spec):
 # Public paths: intentionally unauthenticated (health probes, auth entry points).
 # ---------------------------------------------------------------------------
 
-_PUBLIC_API_PATHS = frozenset({
-    "/api/health",
-    "/api/health/detailed",
-    "/api/version",
-})
+_PUBLIC_API_PATHS = frozenset(
+    {
+        "/api/health",
+        "/api/health/detailed",
+        "/api/version",
+    }
+)
 
 
 def test_protected_endpoints_declare_auth_errors(spec):
@@ -244,9 +275,7 @@ def test_protected_endpoints_declare_auth_errors(spec):
         codes = set(op.get("responses", {}).keys())
         missing = [c for c in ("401", "403") if c not in codes]
         if missing:
-            violations.append(
-                f"  {method.upper():6} {path}  (missing: {', '.join(missing)})"
-            )
+            violations.append(f"  {method.upper():6} {path}  (missing: {', '.join(missing)})")
 
     assert not violations, (
         f"{len(violations)} protected endpoint(s) missing auth error declarations:\n"

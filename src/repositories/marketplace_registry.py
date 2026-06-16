@@ -29,6 +29,7 @@ class MarketplaceRegistryRepository:
         registered_by: Optional[str] = None,
         curator_name: Optional[str] = None,
         curator_email: Optional[str] = None,
+        is_builtin: bool = False,
     ) -> None:
         # ON CONFLICT updates curator fields too — but ONLY when the caller
         # supplied a non-None value. Passing curator_name=None on an UPDATE
@@ -37,12 +38,16 @@ class MarketplaceRegistryRepository:
         # COALESCE(excluded.curator_name, marketplace_registry.curator_name)
         # gives that semantics: when excluded is non-null it wins, otherwise
         # the prior value survives.
+        #
+        # is_builtin is NOT included in the ON CONFLICT SET — the built-in
+        # flag is immutable after the initial seed so re-seeding on upgrade
+        # cannot accidentally flip admin-registered rows.
         now = datetime.now(timezone.utc)
         self.conn.execute(
             """INSERT INTO marketplace_registry
                 (id, name, url, branch, token_env, description, registered_by,
-                 registered_at, curator_name, curator_email)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 registered_at, curator_name, curator_email, is_builtin)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name,
                 url = excluded.url,
@@ -52,28 +57,55 @@ class MarketplaceRegistryRepository:
                 curator_name = COALESCE(excluded.curator_name, marketplace_registry.curator_name),
                 curator_email = COALESCE(excluded.curator_email, marketplace_registry.curator_email)""",
             [
-                id, name, url, branch, token_env, description, registered_by,
-                now, curator_name, curator_email,
+                id,
+                name,
+                url,
+                branch,
+                token_env,
+                description,
+                registered_by,
+                now,
+                curator_name,
+                curator_email,
+                is_builtin,
             ],
         )
 
     def unregister(self, marketplace_id: str) -> None:
-        self.conn.execute(
-            "DELETE FROM marketplace_registry WHERE id = ?", [marketplace_id]
-        )
+        self.conn.execute("DELETE FROM marketplace_registry WHERE id = ?", [marketplace_id])
 
     def get(self, marketplace_id: str) -> Optional[Dict[str, Any]]:
-        result = self.conn.execute(
-            "SELECT * FROM marketplace_registry WHERE id = ?", [marketplace_id]
-        ).fetchone()
+        result = self.conn.execute("SELECT * FROM marketplace_registry WHERE id = ?", [marketplace_id]).fetchone()
         if not result:
             return None
         columns = [desc[0] for desc in self.conn.description]
         return dict(zip(columns, result))
 
     def list_all(self) -> List[Dict[str, Any]]:
+        results = self.conn.execute("SELECT * FROM marketplace_registry ORDER BY name").fetchall()
+        if not results:
+            return []
+        columns = [desc[0] for desc in self.conn.description]
+        return [dict(zip(columns, row)) for row in results]
+
+    def list_builtin(self) -> List[Dict[str, Any]]:
+        """Return only rows where is_builtin=TRUE, ordered by name."""
         results = self.conn.execute(
-            "SELECT * FROM marketplace_registry ORDER BY name"
+            "SELECT * FROM marketplace_registry WHERE is_builtin = TRUE ORDER BY name"
+        ).fetchall()
+        if not results:
+            return []
+        columns = [desc[0] for desc in self.conn.description]
+        return [dict(zip(columns, row)) for row in results]
+
+    def list_non_builtin(self) -> List[Dict[str, Any]]:
+        """Return only admin-registered (non-built-in) rows, ordered by name.
+
+        Used by the nightly git-sync path so it never tries to git-clone the
+        built-in marketplace (which has no remote URL).
+        """
+        results = self.conn.execute(
+            "SELECT * FROM marketplace_registry WHERE is_builtin = FALSE ORDER BY name"
         ).fetchall()
         if not results:
             return []

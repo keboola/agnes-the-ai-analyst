@@ -57,18 +57,14 @@ def _authenticated_url(repo_url: str, token: str) -> str:
     netloc = f"x-access-token:{token}@{parts.hostname}"
     if parts.port:
         netloc = f"{netloc}:{parts.port}"
-    return urlunparse(
-        (parts.scheme, netloc, parts.path, parts.params, parts.query, parts.fragment)
-    )
+    return urlunparse((parts.scheme, netloc, parts.path, parts.params, parts.query, parts.fragment))
 
 
 def _redact(s: str, token: str) -> str:
     return s.replace(token, "***") if token and s else s
 
 
-def _run_git(
-    args: List[str], cwd: Optional[Path] = None
-) -> subprocess.CompletedProcess:
+def _run_git(args: List[str], cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     return subprocess.run(
         ["git", *args],
@@ -95,9 +91,7 @@ def _sync_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
     token = os.environ.get(token_env, "") if token_env else ""
 
     if not is_valid_slug(slug):
-        raise ValueError(
-            f"marketplace id {slug!r} invalid (must match [a-z0-9][a-z0-9_-]{{0,63}})"
-        )
+        raise ValueError(f"marketplace id {slug!r} invalid (must match [a-z0-9][a-z0-9_-]{{0,63}})")
     if not url:
         raise ValueError(f"marketplace {slug!r}: url is required")
 
@@ -241,22 +235,33 @@ def _refresh_plugin_cache(slug: str, commit_sha: str | None = None) -> int:
                 if entry.status == "ok" and entry.local:
                     # /mirrored/{key} where key encodes plugin + kind + filename.
                     # The local relpath is already in the right shape.
-                    served_url_for[(plugin_name, url)] = mirrored_url(
-                        slug, entry.plugin_name, entry.local.split("/", 1)[1],
-                        version=asset_version,
-                    ) if "/" in entry.local else mirrored_url(
-                        slug, entry.plugin_name, entry.local,
-                        version=asset_version,
+                    served_url_for[(plugin_name, url)] = (
+                        mirrored_url(
+                            slug,
+                            entry.plugin_name,
+                            entry.local.split("/", 1)[1],
+                            version=asset_version,
+                        )
+                        if "/" in entry.local
+                        else mirrored_url(
+                            slug,
+                            entry.plugin_name,
+                            entry.local,
+                            version=asset_version,
+                        )
                     )
                 else:
                     # Failed / rejected → fall back to the original URL so the
                     # frontend can still link out (b1).
                     served_url_for[(plugin_name, url)] = url
             logger.info(
-                "marketplace %s: mirror summary fetched=%d not_modified=%d "
-                "failed=%d rejected=%d removed=%d",
-                slug, report.fetched, report.not_modified, report.failed,
-                report.rejected, report.removed,
+                "marketplace %s: mirror summary fetched=%d not_modified=%d failed=%d rejected=%d removed=%d",
+                slug,
+                report.fetched,
+                report.not_modified,
+                report.failed,
+                report.rejected,
+                report.removed,
             )
         except Exception as e:  # noqa: BLE001 — never abort the sync
             logger.warning("marketplace %s: asset mirror crashed: %s", slug, e)
@@ -292,30 +297,37 @@ def _refresh_plugin_cache(slug: str, commit_sha: str | None = None) -> int:
                 local_path = repo_root / link.path
                 if not local_path.is_file():
                     logger.info(
-                        "marketplace %s plugin=%s: dropping internal doc_link "
-                        "%r (file not found in working tree)",
-                        slug, name, link.path,
+                        "marketplace %s plugin=%s: dropping internal doc_link %r (file not found in working tree)",
+                        slug,
+                        name,
+                        link.path,
                     )
                     continue
-                serialized_links.append({
-                    "name": link.name,
-                    "url": internal_doc_url(slug, name, link.path),
-                })
+                serialized_links.append(
+                    {
+                        "name": link.name,
+                        "url": internal_doc_url(slug, name, link.path),
+                    }
+                )
                 continue
             # external — keep ONLY when the mirror succeeded for THIS plugin.
             status = mirror_status.get((name, link.url), "")
             served = served_url_for.get((name, link.url))
             if status != "ok" or not served or served == link.url:
                 logger.info(
-                    "marketplace %s plugin=%s: dropping external doc_link "
-                    "%r (mirror status=%s)",
-                    slug, name, link.url, status or "no_attempt",
+                    "marketplace %s plugin=%s: dropping external doc_link %r (mirror status=%s)",
+                    slug,
+                    name,
+                    link.url,
+                    status or "no_attempt",
                 )
                 continue
-            serialized_links.append({
-                "name": link.name,
-                "url": served,
-            })
+            serialized_links.append(
+                {
+                    "name": link.name,
+                    "url": served,
+                }
+            )
 
         # Build the column-shape payload inline — strict-drop semantics
         # need access to mirror status + on-disk existence per reference,
@@ -331,13 +343,17 @@ def _refresh_plugin_cache(slug: str, commit_sha: str | None = None) -> int:
                 local_path = repo_root / target
                 if local_path.is_file():
                     merged["cover_photo_url"] = internal_asset_url(
-                        slug, name, target, version=asset_version,
+                        slug,
+                        name,
+                        target,
+                        version=asset_version,
                     )
                 else:
                     logger.info(
-                        "marketplace %s plugin=%s: dropping internal "
-                        "cover_photo %r (file not found in working tree)",
-                        slug, name, target,
+                        "marketplace %s plugin=%s: dropping internal cover_photo %r (file not found in working tree)",
+                        slug,
+                        name,
+                        target,
                     )
             elif kind == "external":
                 status = mirror_status.get((name, target), "")
@@ -346,9 +362,11 @@ def _refresh_plugin_cache(slug: str, commit_sha: str | None = None) -> int:
                     merged["cover_photo_url"] = served
                 else:
                     logger.info(
-                        "marketplace %s plugin=%s: dropping external "
-                        "cover_photo %r (mirror status=%s)",
-                        slug, name, target, status or "no_attempt",
+                        "marketplace %s plugin=%s: dropping external cover_photo %r (mirror status=%s)",
+                        slug,
+                        name,
+                        target,
+                        status or "no_attempt",
                     )
         if "video_url" in resolved:
             merged["video_url"] = resolved["video_url"]
@@ -402,7 +420,8 @@ def sync_one(marketplace_id: str) -> Dict[str, Any]:
                 synced_at=datetime.now(timezone.utc),
             )
             result["plugin_count"] = _refresh_plugin_cache(
-                marketplace_id, commit_sha=result["commit"],
+                marketplace_id,
+                commit_sha=result["commit"],
             )
             return result
         except (RuntimeError, ValueError) as e:
@@ -417,6 +436,10 @@ def sync_one(marketplace_id: str) -> Dict[str, Any]:
 def sync_marketplaces() -> Dict[str, Any]:
     """Sync every registered marketplace. Empty registry = no-op.
 
+    Built-in rows (is_builtin=TRUE) are always skipped — they have no remote
+    URL to clone; their content is bundled in the wheel and re-baked on boot
+    by ``seed_builtin_marketplace()``.
+
     One failure does not abort the rest; errors are collected per entry.
     """
     from src.repositories import marketplace_registry_repo
@@ -424,8 +447,9 @@ def sync_marketplaces() -> Dict[str, Any]:
     # Backend-aware: on a PG instance the registry lives in Postgres. Reading it
     # through a raw DuckDB conn returned an empty list → "nothing to sync" → the
     # nightly sync silently never ran on Postgres-backed instances.
+    # list_non_builtin() already filters out is_builtin=TRUE rows.
     repo = marketplace_registry_repo()
-    specs = repo.list_all()
+    specs = repo.list_non_builtin()
 
     if not specs:
         logger.info("No marketplaces registered; nothing to sync.")
@@ -445,7 +469,8 @@ def sync_marketplaces() -> Dict[str, Any]:
                     synced_at=datetime.now(timezone.utc),
                 )
                 result["plugin_count"] = _refresh_plugin_cache(
-                    slug, commit_sha=result["commit"],
+                    slug,
+                    commit_sha=result["commit"],
                 )
                 synced.append(result)
             except (RuntimeError, ValueError) as e:
@@ -464,13 +489,113 @@ def sync_marketplaces() -> Dict[str, Any]:
     if synced:
         try:
             from app.marketplace_server import packager as _packager
+
             _packager.invalidate_etag_cache()
             from app.marketplace_server import cowork_packager as _cowork
+
             _cowork.invalidate_cache()
         except ImportError:
             pass
 
     return {"synced": synced, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# Built-in marketplace seeding
+# ---------------------------------------------------------------------------
+
+#: Slug reserved for the built-in marketplace. Matches the registry row
+#: seeded by seed_builtin_marketplace() and is therefore excluded from the
+#: nightly git-sync path.
+BUILTIN_MARKETPLACE_SLUG = "agnes-builtin"
+
+#: Path to the bundled content tree inside the wheel.
+_BUILTIN_CONTENT_DIR = Path(__file__).parent / "_builtin_marketplace"
+
+#: Sentinel URL stored in the registry for the built-in row. Never used for
+#: git operations; exists only to satisfy the NOT NULL constraint on `url`.
+_BUILTIN_SENTINEL_URL = "builtin://agnes-builtin"
+
+#: RBAC seed: (group_name, plugin_name) pairs that must always exist.
+_BUILTIN_RBAC_SEEDS = [
+    ("Everyone", "agnes-analyst"),
+    ("Admin", "agnes-operator"),
+]
+
+
+def seed_builtin_marketplace() -> None:
+    """Idempotently seed the built-in marketplace on boot or upgrade.
+
+    1. Upserts a ``marketplace_registry`` row with ``is_builtin=TRUE``
+       whose ``url`` is the sentinel (never git-cloned).
+    2. Copies the bundled ``_builtin_marketplace/`` tree into the
+       marketplaces data directory so the regular plugin-cache reader
+       (``_refresh_plugin_cache`` / ``read_plugins``) can find it.
+    3. Refreshes the ``marketplace_plugins`` cache from the bundled content.
+    4. Seeds ``resource_grants``: Everyone → agnes-analyst, Admin → agnes-operator.
+
+    Safe to call on every startup — all writes are idempotent.
+    """
+    from src.repositories import (
+        marketplace_registry_repo,
+        resource_grants_repo,
+        user_groups_repo,
+    )
+
+    slug = BUILTIN_MARKETPLACE_SLUG
+    reg_repo = marketplace_registry_repo()
+
+    # 1. Upsert registry row.
+    reg_repo.register(
+        id=slug,
+        name="Agnes Built-in",
+        url=_BUILTIN_SENTINEL_URL,
+        description="Built-in guidance plugins shipped with every Agnes instance.",
+        registered_by="system:seed",
+        is_builtin=True,
+    )
+    logger.info("built-in marketplace: registry row seeded (slug=%s)", slug)
+
+    # 2. Copy bundled content to the data directory so read_plugins() finds it.
+    if _BUILTIN_CONTENT_DIR.is_dir():
+        target = get_marketplaces_dir() / slug
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(_BUILTIN_CONTENT_DIR, target)
+        logger.info("built-in marketplace: content baked to %s", target)
+    else:
+        logger.warning(
+            "built-in marketplace: content directory not found at %s; plugin cache will be empty",
+            _BUILTIN_CONTENT_DIR,
+        )
+
+    # 3. Refresh plugin cache from the bundled copy (no git SHA available).
+    count = _refresh_plugin_cache(slug)
+    logger.info("built-in marketplace: %d plugin(s) cached", count)
+
+    # 4. Seed RBAC grants.
+    groups_repo = user_groups_repo()
+    grants_repo = resource_grants_repo()
+    for group_name, plugin_name in _BUILTIN_RBAC_SEEDS:
+        group = groups_repo.get_by_name(group_name)
+        if not group:
+            logger.warning(
+                "built-in marketplace: group %r not found; skipping grant for %r",
+                group_name,
+                plugin_name,
+            )
+            continue
+        resource_id = f"{slug}/{plugin_name}"
+        grants_repo.ensure_grant(
+            group_id=group["id"],
+            resource_type="marketplace_plugin",
+            resource_id=resource_id,
+        )
+        logger.info(
+            "built-in marketplace: RBAC grant seeded: %s -> %s",
+            group_name,
+            resource_id,
+        )
 
 
 def delete_marketplace_dir(slug: str) -> bool:
