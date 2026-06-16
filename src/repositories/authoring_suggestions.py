@@ -85,21 +85,19 @@ class AuthoringSuggestionsRepository:
     ) -> bool:
         if status not in ("approved", "rejected"):
             raise ValueError("status must be 'approved' or 'rejected'")
-        was_pending = (
-            self.conn.execute(
-                "SELECT 1 FROM authoring_suggestions WHERE id = ? AND status = 'pending'",
-                [sid],
-            ).fetchone()
-            is not None
-        )
-        self.conn.execute(
+        # Atomic guarded flip via UPDATE ... RETURNING — no separate SELECT
+        # precheck (which would be a TOCTOU race). DuckDB's Python API returns
+        # -1 from cursor.rowcount on UPDATE, so unlike the PG sibling we can't
+        # use rowcount; RETURNING gives the same all-or-nothing signal (a row
+        # comes back only when this call won the pending->resolved flip).
+        row = self.conn.execute(
             "UPDATE authoring_suggestions "
             "SET status = ?, resolved_at = CURRENT_TIMESTAMP, "
             "    resolved_by = ?, resolution_note = ?, created_resource_id = ? "
-            "WHERE id = ? AND status = 'pending'",
+            "WHERE id = ? AND status = 'pending' RETURNING id",
             [status, resolved_by, resolution_note, created_resource_id, sid],
-        )
-        return was_pending
+        ).fetchone()
+        return row is not None
 
     def reopen(self, sid: str) -> None:
         """Revert a resolved suggestion back to ``pending`` — used to roll back
