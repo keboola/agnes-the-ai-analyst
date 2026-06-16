@@ -1,12 +1,18 @@
 # GCP Cloud Logging overlay — ships container stdout/stderr to Google Cloud
 # Logging via Docker's built-in `gcplogs` driver.
 #
-# Engaged ONLY on GCE VMs, by the Terraform startup-script appending this file
-# to COMPOSE_FILE (infra/modules/customer-instance/startup-script.sh.tpl). It is
-# deliberately NOT part of the generic OSS prod stack (docker-compose.prod.yml):
-# the gcplogs driver requires Google ADC from the GCE metadata server, so on a
-# non-GCP host the containers would fail to start. Keeping it in a separate,
-# infra-engaged overlay preserves the vendor-agnostic OSS deployment.
+# Activation is PLACEMENT-DRIVEN: this file is deliberately NOT baked into the
+# image and NOT in any default COMPOSE_FILE / CONFIG_FILES list. The runtime
+# drivers (agnes-auto-upgrade.sh, agnes-state-applier.sh) append it ONLY when the
+# file physically exists on disk (`[ -f docker-compose.gcp-logging.yml ]`). The
+# only thing that places the file on a VM is the GCE deploy layer (the customer
+# infra Terraform startup script), which runs exclusively on GCE — so file
+# presence is a reliable "I'm on GCE" signal.
+#
+# Why not default-on: the gcplogs driver requires Google ADC from the GCE
+# metadata server, so on a non-GCP host the containers would fail to start.
+# Placement-driven activation keeps non-GCP deployments on the default
+# json-file driver untouched, preserving the vendor-agnostic OSS deployment.
 #
 # The driver auto-detects the GCP project and the instance name/id/zone from the
 # metadata server, writes under resource `gce_instance` (next to the VM/system
