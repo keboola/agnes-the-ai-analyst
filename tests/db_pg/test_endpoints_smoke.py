@@ -1640,7 +1640,7 @@ KNOWN_UNTESTED = {
     "GET /api/admin/users/{user_id}/memberships",
     "GET /api/admin/users/{user_id}/sessions",
     "GET /api/admin/users/{user_id}/sessions/download-all",
-    "GET /api/admin/users/{user_id}/sessions/{session_file:path}/download",
+    "GET /api/admin/users/{user_id}/sessions/{session_file}/download",
     "POST /api/admin/users/{user_id}/memberships",
     # Admin welcome/workspace templates
     "DELETE /api/admin/welcome-template",
@@ -1652,7 +1652,7 @@ KNOWN_UNTESTED = {
     "PUT /api/admin/welcome-template",
     "PUT /api/admin/workspace-prompt-template",
     # Admin misc operations
-    "DELETE /api/admin/metrics/{metric_id:path}",
+    "DELETE /api/admin/metrics/{metric_id}",
     "PATCH /api/admin/registry/{table_id}/docs",
     "POST /api/admin/bigquery/test-connection",
     "POST /api/admin/discover-and-register",
@@ -1668,7 +1668,7 @@ KNOWN_UNTESTED = {
     "POST /api/admin/run-session-processor",
     "POST /api/admin/uploads/cover-image",
     # Catalog detail views
-    "GET /api/catalog/metrics/{metric_path:path}",
+    "GET /api/catalog/metrics/{metric_path}",
     "GET /api/catalog/profile/{table_name}",
     "POST /api/catalog/profile/{table_name}/refresh",
     # Chat (beyond live SSE)
@@ -1695,9 +1695,9 @@ KNOWN_UNTESTED = {
     "POST /api/marketplaces/{marketplace_id}/plugins/{plugin_name}/enable",
     "GET /api/marketplace/curated/{marketplace_id}/{plugin_name}",
     "GET /api/marketplace/curated/{marketplace_id}/{plugin_name}/agent/{agent_name}",
-    "GET /api/marketplace/curated/{marketplace_id}/{plugin_name}/asset/{path:path}",
-    "GET /api/marketplace/curated/{marketplace_id}/{plugin_name}/doc/{path:path}",
-    "GET /api/marketplace/curated/{marketplace_id}/{plugin_name}/mirrored/{key:path}",
+    "GET /api/marketplace/curated/{marketplace_id}/{plugin_name}/asset/{path}",
+    "GET /api/marketplace/curated/{marketplace_id}/{plugin_name}/doc/{path}",
+    "GET /api/marketplace/curated/{marketplace_id}/{plugin_name}/mirrored/{key}",
     "GET /api/marketplace/curated/{marketplace_id}/{plugin_name}/skill/{skill_name}",
     "GET /api/marketplace/flea/{entity_id}/agent/{agent_name}",
     "GET /api/marketplace/flea/{entity_id}/skill/{skill_name}",
@@ -1743,7 +1743,7 @@ KNOWN_UNTESTED = {
     "POST /api/memory/{item_id}/dismiss",
     "POST /api/memory/{item_id}/personal",
     # Metrics (user-facing)
-    "GET /api/metrics/{metric_id:path}",
+    "GET /api/metrics/{metric_id}",
     # Recipes (user-facing)
     "GET /api/recipes/{slug}",
     # Scripts (run/deploy actions beyond list)
@@ -1812,6 +1812,14 @@ def test_every_route_is_covered_or_excluded():
     Uses a subprocess to inspect routes so xdist worker state (importlib.reload
     calls from state_backend fixture) cannot corrupt the route set. The subprocess
     imports app.main in a clean Python process and emits JSON to stdout.
+
+    Uses app.openapi()["paths"] rather than iterating app.routes directly.
+    Starlette 1.3.x wraps included routers in _IncludedRouter objects that lack
+    .path/.methods attributes, so direct iteration raises AttributeError. The
+    OpenAPI schema is the authoritative flat route list regardless of Starlette
+    version. Note: OpenAPI strips the :path convertor suffix from path parameters
+    ({metric_id:path} -> {metric_id}), so KNOWN_UNTESTED entries must use the
+    plain {param} form.
     """
     import json  # noqa: PLC0415
     import os  # noqa: PLC0415
@@ -1822,8 +1830,10 @@ def test_every_route_is_covered_or_excluded():
     script = (
         "import json, warnings; warnings.filterwarnings('ignore'); "
         "from app.main import app; "
-        "print(json.dumps([{'path': r.path, 'methods': list(getattr(r, 'methods', None) or [])} "
-        "for r in app.routes]))"
+        "schema = app.openapi(); "
+        "rows = [{'path': p, 'methods': list(ms.keys())} "
+        "for p, ms in schema.get('paths', {}).items()]; "
+        "print(json.dumps(rows))"
     )
     result = subprocess.run(
         [sys.executable, "-W", "ignore", "-c", script],
@@ -1834,7 +1844,9 @@ def test_every_route_is_covered_or_excluded():
     )
     assert result.returncode == 0, f"Route inspection subprocess failed (exit {result.returncode}):\n{result.stderr}"
     routes_data = json.loads(result.stdout)
-    all_routes = {f"{m} {r['path']}" for r in routes_data for m in r["methods"] if m not in ("HEAD", "OPTIONS")}
+    all_routes = {
+        f"{m.upper()} {r['path']}" for r in routes_data for m in r["methods"] if m.upper() not in ("HEAD", "OPTIONS")
+    }
     covered = _collect_covered_routes() | KNOWN_UNTESTED
     missing = sorted(all_routes - covered)
     assert not missing, (
