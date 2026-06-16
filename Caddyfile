@@ -85,6 +85,8 @@
 		reverse_proxy app:8000 {
 			header_up X-Forwarded-Proto https
 			header_up X-Forwarded-Host {host}
+			lb_try_duration 90s
+			lb_try_interval 2s
 		}
 	}
 
@@ -96,5 +98,10 @@
 		# against future default changes.
 		header_up X-Forwarded-Proto https
 		header_up X-Forwarded-Host {host}
+		# Hold connections during app restart (auto-upgrade) instead of
+		# immediately returning 502. Caddy retries every 2s for up to 90s;
+		# app typically passes its health check within 30–60s.
+		lb_try_duration 90s
+		lb_try_interval 2s
 	}
 }
