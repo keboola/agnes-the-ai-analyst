@@ -54,7 +54,14 @@ def seed_default_connections() -> None:
 
     # --- bigquery ---
     project = os.environ.get("BIGQUERY_PROJECT", "") or _yaml_value("data_source", "bigquery", "project")
-    if project and not repo.list(source_type="bigquery"):
+    existing_bq = repo.list(source_type="bigquery")
+    if existing_bq:
+        if project and all(r["config"].get("project") != project.strip() for r in existing_bq):
+            logger.warning(
+                "BIGQUERY_PROJECT is set but connections are managed in the "
+                "registry (/admin/connections); the env value is ignored."
+            )
+    elif project:
         cfg = validate_connection_config(
             "bigquery",
             {

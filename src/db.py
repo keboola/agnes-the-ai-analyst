@@ -386,7 +386,7 @@ CREATE TABLE IF NOT EXISTS table_registry (
     -- query_mode IN ('local', 'materialized'); ignored for 'remote'
     -- (which has no server-stored parquet to suppress). Issue #607.
     server_only   BOOLEAN DEFAULT false,
-    -- v77: nullable FK to source_connections.id. NULL = use the default
+    -- v79: nullable FK to source_connections.id. NULL = use the default
     -- connection for the row's source_type (backwards-compatible).
     connection_id VARCHAR
 );

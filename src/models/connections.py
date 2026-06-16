@@ -1,8 +1,8 @@
 """SQLAlchemy models for named source connections (spec 2026-06-12).
 
 Mirrors:
-  - source_connections (src/db.py v74)
-  - connection_secrets (src/db.py v74)
+  - source_connections (src/db.py v79)
+  - connection_secrets (src/db.py v79)
 """
 
 from __future__ import annotations

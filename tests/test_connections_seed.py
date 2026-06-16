@@ -42,3 +42,20 @@ def test_existing_registry_not_overwritten(fresh_registry, monkeypatch):
     monkeypatch.setenv("KEBOOLA_STACK_URL", "https://env-says.example.com")
     seed_default_connections()  # must be a no-op + warn
     assert fresh_registry.get_by_name("keboola")["config"]["stack_url"] == "https://admin-set.example.com"
+
+
+def test_bigquery_env_set_but_registry_exists_warns_no_create(fresh_registry, monkeypatch, caplog):
+    fresh_registry.create(
+        id="bq9",
+        name="bigquery",
+        source_type="bigquery",
+        config={"project": "admin-proj"},
+        is_default=True,
+    )
+    monkeypatch.delenv("KEBOOLA_STACK_URL", raising=False)
+    monkeypatch.setenv("BIGQUERY_PROJECT", "env-proj")
+    with caplog.at_level("WARNING"):
+        seed_default_connections()  # must be a no-op + warn
+    assert len(fresh_registry.list(source_type="bigquery")) == 1
+    assert fresh_registry.get_by_name("bigquery")["config"]["project"] == "admin-proj"
+    assert any("BIGQUERY_PROJECT is set" in r.message for r in caplog.records)
