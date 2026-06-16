@@ -11,6 +11,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- Collections web UI: a **Library** nav section — `/library` lists your
+  accessible collections; `/library/{slug}` shows files with per-file status
+  pills, an upload drop, and an "Ask this collection" search box (wired to the
+  search API). Design-system page shell (`base_page.html`), RBAC-gated
+  (404/403), admins can create collections inline.
 - Collections Tier-2 vision fallback: uploaded images are transcribed via a
   multimodal model (gated on `ANTHROPIC_API_KEY` + the `anthropic` SDK) and
   indexed like documents; without a configured model they stay `pending` for a

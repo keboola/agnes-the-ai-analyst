@@ -1,0 +1,111 @@
+{% extends "base_page.html" %}
+
+{% set page_hero_eyebrow  = "Files" %}
+{% set page_hero_title    = collection.name %}
+{% set page_hero_subtitle = (collection.description or "Files in this collection, with their indexing status.") %}
+
+{% block head_extra %}
+<style>
+  .lib-section { margin-bottom: var(--space-5); }
+  .lib-row { display: flex; gap: var(--space-2); align-items: center; margin-bottom: var(--space-4); flex-wrap: wrap; }
+  .lib-row input[type="search"], .lib-row input[type="text"] { min-width: 240px; }
+  .file-list { display: flex; flex-direction: column; gap: var(--space-2); }
+  .file-item { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4);
+               border: 1px solid var(--ds-border); border-radius: var(--radius-lg); background: var(--ds-surface); }
+  .file-item__name { flex: 1; min-width: 0; color: var(--ds-text-primary); }
+  .file-item__meta { font-size: 0.8rem; color: var(--ds-text-secondary); }
+  .lib-results { margin-top: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); }
+  .lib-result { padding: var(--space-2) var(--space-4); border: 1px solid var(--ds-border);
+                border-radius: var(--radius-lg); background: var(--ds-surface); }
+  .lib-result__cite { font-size: 0.8rem; color: var(--ds-text-secondary); }
+  .lib-empty { color: var(--ds-text-secondary); }
+</style>
+{% endblock %}
+
+{% block toolbar %}
+  {{ ds.button("← Library", variant="ghost", attrs='onclick="window.location=\'/library\'" type="button"') }}
+{% endblock %}
+
+{% block page %}
+  <div class="lib-section">
+    <h2>Ask this collection</h2>
+    <div class="lib-row">
+      <input id="lib-q" type="search" placeholder="Search across files in this collection…" aria-label="Search">
+      {{ ds.button("Search", variant="primary", attrs='id="lib-search-btn" type="button"') }}
+    </div>
+    <div class="lib-results" id="lib-results"></div>
+  </div>
+
+  <div class="lib-section">
+    <h2>Upload files</h2>
+    <div class="lib-row">
+      <input id="lib-files" type="file" multiple aria-label="Files to upload">
+      {{ ds.button("Upload", variant="secondary", attrs='id="lib-upload-btn" type="button"') }}
+    </div>
+  </div>
+
+  <div class="lib-section">
+    <h2>Files</h2>
+    {% if not files %}
+      <p class="lib-empty">No files yet — upload some above.</p>
+    {% else %}
+    <div class="file-list">
+      {% for f in files %}
+        {% set pill = {"indexed": "ok", "processing": "pending", "pending": "pending", "rejected": "blocked"}.get(f.processing_status, "pending") %}
+        <div class="file-item">
+          <span class="file-item__name">{{ f.filename }}</span>
+          <span class="file-item__meta">{{ f.file_type or "" }}</span>
+          <span class="status-pill {{ pill }}">{{ f.processing_status }}</span>
+        </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <script>
+    (function () {
+      var slug = {{ collection.slug | tojson }};
+      var cid = {{ collection.id | tojson }};
+
+      var up = document.getElementById("lib-upload-btn");
+      if (up) up.addEventListener("click", async function () {
+        var input = document.getElementById("lib-files");
+        if (!input.files.length) return;
+        var fd = new FormData();
+        for (var i = 0; i < input.files.length; i++) fd.append("files", input.files[i]);
+        var r = await fetch("/api/collections/" + cid + "/files", {
+          method: "POST", credentials: "same-origin", body: fd,
+        });
+        if (r.ok || r.status === 422) { window.location.reload(); }
+        else { alert("Upload failed: " + r.status); }
+      });
+
+      async function runSearch() {
+        var q = (document.getElementById("lib-q").value || "").trim();
+        var box = document.getElementById("lib-results");
+        if (!q) { box.textContent = ""; return; }
+        var r = await fetch("/api/collections/search?corpus_id=" + encodeURIComponent(cid) +
+                            "&q=" + encodeURIComponent(q));
+        if (!r.ok) { box.textContent = "Search failed."; return; }
+        var data = await r.json();
+        var results = data.results || [];
+        box.innerHTML = "";
+        if (!results.length) { box.textContent = "No matches."; return; }
+        results.forEach(function (res) {
+          var el = document.createElement("div");
+          el.className = "lib-result";
+          var cite = document.createElement("div");
+          cite.className = "lib-result__cite";
+          cite.textContent = (res.filename || res.file_id || "") + " · #" + res.ordinal + " · score " + res.score;
+          var txt = document.createElement("div");
+          txt.textContent = (res.text || "").slice(0, 400);
+          el.appendChild(cite); el.appendChild(txt); box.appendChild(el);
+        });
+      }
+      var sb = document.getElementById("lib-search-btn");
+      if (sb) sb.addEventListener("click", runSearch);
+      var qi = document.getElementById("lib-q");
+      if (qi) qi.addEventListener("keydown", function (e) { if (e.key === "Enter") runSearch(); });
+    })();
+  </script>
+{% endblock %}

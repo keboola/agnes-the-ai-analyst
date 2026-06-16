@@ -1,0 +1,73 @@
+{% extends "base_page.html" %}
+
+{% set page_hero_eyebrow  = "Files" %}
+{% set page_hero_title    = "Your collections" %}
+{% set page_hero_subtitle = "Upload files and let agents search them. Each collection is a set of documents and data files Agnes has indexed." %}
+
+{% block head_extra %}
+<style>
+  .collections-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: var(--space-4);
+  }
+  .collection-card__name { font-weight: 600; color: var(--ds-text-primary); margin-bottom: var(--space-1); }
+  .collection-card__meta { font-size: 0.85rem; color: var(--ds-text-secondary); }
+  .collection-card__desc { font-size: 0.9rem; color: var(--ds-text-secondary); margin-top: var(--space-2); }
+  .library-empty { color: var(--ds-text-secondary); padding: var(--space-5) 0; }
+  .new-collection-row { display: flex; gap: var(--space-2); margin-bottom: var(--space-4); align-items: center; }
+  .new-collection-row input { min-width: 220px; }
+</style>
+{% endblock %}
+
+{% block toolbar %}
+  {% if is_admin %}
+    {{ ds.button("+ New collection", variant="secondary", attrs='id="new-collection-btn" type="button"') }}
+  {% endif %}
+{% endblock %}
+
+{% block page %}
+  {% if is_admin %}
+  <div class="new-collection-row" id="new-collection-form" hidden>
+    <input id="nc-name" type="text" placeholder="Collection name" aria-label="Collection name">
+    <input id="nc-desc" type="text" placeholder="Description (optional)" aria-label="Description">
+    {{ ds.button("Create", variant="primary", attrs='id="nc-create" type="button"') }}
+  </div>
+  {% endif %}
+
+  {% if not collections %}
+    <p class="library-empty">No collections yet{% if is_admin %} — create one to start uploading files{% endif %}.</p>
+  {% else %}
+  <div class="collections-grid">
+    {% for col in collections %}
+      {% call ds.panel(clickable=true, href="/library/" ~ col.slug, klass="collection-card") %}
+        <div class="collection-card__name">{{ col.name }}</div>
+        <div class="collection-card__meta">{{ col.file_count }} file{{ "" if col.file_count == 1 else "s" }}</div>
+        {% if col.description %}<div class="collection-card__desc">{{ col.description }}</div>{% endif %}
+      {% endcall %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <script>
+    (function () {
+      var btn = document.getElementById("new-collection-btn");
+      var form = document.getElementById("new-collection-form");
+      if (btn && form) btn.addEventListener("click", function () { form.hidden = !form.hidden; });
+      var create = document.getElementById("nc-create");
+      if (create) create.addEventListener("click", async function () {
+        var name = (document.getElementById("nc-name").value || "").trim();
+        if (!name) return;
+        var desc = document.getElementById("nc-desc").value || "";
+        var r = await fetch("/api/collections", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ name: name, description: desc }),
+        });
+        if (r.ok) { window.location.reload(); }
+        else { alert("Create failed: " + r.status); }
+      });
+    })();
+  </script>
+{% endblock %}

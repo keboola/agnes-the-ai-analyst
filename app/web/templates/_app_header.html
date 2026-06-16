@@ -33,6 +33,7 @@
         {% endif %}
         <a class="app-nav-link {% if _path == '/marketplace' or _path.startswith('/marketplace/') %}is-active{% endif %}" href="/marketplace" data-tour="nav-marketplace">Marketplace</a>
         <a class="app-nav-link {% if _path.startswith('/catalog') %}is-active{% endif %}" href="/catalog" data-tour="nav-catalog">Data Packages</a>
+        <a class="app-nav-link {% if _path.startswith('/library') %}is-active{% endif %}" href="/library" data-tour="nav-library">Library</a>
         {# Curated Memory is the analyst-facing read surface for shared
            organizational knowledge — not admin-gated (the route runs on
            get_current_user, same as the /api/memory/* endpoints), so it

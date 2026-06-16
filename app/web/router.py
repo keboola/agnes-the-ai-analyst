@@ -37,7 +37,9 @@ from app.instance_config import (
 )
 from src.repositories import (
     audit_repo,
+    corpus_files_repo,
     data_packages_repo,
+    file_corpora_repo,
     knowledge_repo,
     memory_domains_repo,
     news_template_repo,
@@ -1344,6 +1346,50 @@ async def catalog_package_detail(
         badges=badges,
     )
     return templates.TemplateResponse(request, "catalog_package_detail.html", ctx)
+
+
+@router.get("/library", response_class=HTMLResponse)
+async def library(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Library — the caller's accessible file Collections (bring-your-files)."""
+    from app.auth.access import can_access
+    from app.resource_types import ResourceType
+
+    is_admin = is_user_admin(user["id"], conn)
+    cf_repo = corpus_files_repo()
+    cards = []
+    for col in file_corpora_repo().list():
+        if not is_admin and not can_access(user["id"], ResourceType.COLLECTION.value, col["id"], conn):
+            continue
+        files = cf_repo.list_for_corpus(col["id"])
+        cards.append({**col, "file_count": len(files)})
+    ctx = _build_context(request, user=user, conn=conn, is_admin=is_admin, collections=cards)
+    return templates.TemplateResponse(request, "library.html", ctx)
+
+
+@router.get("/library/{slug}", response_class=HTMLResponse)
+async def library_detail(
+    slug: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Collection detail — files + per-file processing status + search box."""
+    from app.auth.access import can_access
+    from app.resource_types import ResourceType
+
+    col = file_corpora_repo().get_by_slug(slug)
+    if not col:
+        raise HTTPException(status_code=404, detail="collection_not_found")
+    is_admin = is_user_admin(user["id"], conn)
+    if not is_admin and not can_access(user["id"], ResourceType.COLLECTION.value, col["id"], conn):
+        raise HTTPException(status_code=403, detail="access_denied")
+    files = corpus_files_repo().list_for_corpus(col["id"])
+    ctx = _build_context(request, user=user, conn=conn, is_admin=is_admin, collection=col, files=files)
+    return templates.TemplateResponse(request, "library_detail.html", ctx)
 
 
 @router.get("/catalog/t/{table_id}", response_class=HTMLResponse)
