@@ -230,7 +230,7 @@ class KeboolaClient:
         """
         Resolve Keboola data type from column metadata using provider cascade.
 
-        Provider priority: user > ai-metadata-enrichment > snowflake-transformation
+        Provider priority: user > ai-metadata-enrichment > snowflake-transformation > storage
         Falls back to STRING if no type found.
 
         Args:
@@ -239,8 +239,8 @@ class KeboolaClient:
         Returns:
             Keboola type (STRING, INTEGER, DATE, etc.)
         """
-        # Provider priority: user > ai-metadata-enrichment > snowflake-transformation
-        PROVIDER_PRIORITY = ["user", "ai-metadata-enrichment", "keboola.snowflake-transformation"]
+        # Provider priority: user > ai-metadata-enrichment > snowflake-transformation > storage
+        PROVIDER_PRIORITY = ["user", "ai-metadata-enrichment", "keboola.snowflake-transformation", "storage"]
 
         kbc_type = "STRING"  # default
 

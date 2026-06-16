@@ -840,7 +840,7 @@ def _extract_via_legacy(
 
     The CSV → parquet conversion uses `connectors/keboola/parquet_io.csv_to_parquet`
     with the PyArrow schema + pandas dtypes pulled from Keboola column metadata
-    (provider cascade `user > ai-metadata-enrichment > keboola.snowflake-transformation`).
+    (provider cascade `user > ai-metadata-enrichment > keboola.snowflake-transformation > storage`).
     Falls back to string-typed parquet only when the metadata API is unreachable.
     Pre-v27 this path used `read_csv(all_varchar=true)` which flattened every
     column to VARCHAR.
