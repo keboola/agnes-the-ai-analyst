@@ -16,6 +16,7 @@ function gets a freshly DROP/CREATE'd ``public`` schema so a previous
 test's tables can't leak. ~100x faster than recreating the container/
 process per test, with equivalent observable behavior.
 """
+
 from __future__ import annotations
 
 import os
@@ -49,9 +50,7 @@ def _resolve_backend() -> str:
     explicit = os.environ.get("AGNES_TEST_PG_BACKEND")
     if explicit:
         if explicit not in _VALID_BACKENDS:
-            raise ValueError(
-                f"AGNES_TEST_PG_BACKEND={explicit!r} not in {_VALID_BACKENDS}"
-            )
+            raise ValueError(f"AGNES_TEST_PG_BACKEND={explicit!r} not in {_VALID_BACKENDS}")
         return explicit
     return "pgserver"
 
@@ -98,9 +97,7 @@ def _start_embedded() -> Iterator[str]:
         )
         executor.start()
         try:
-            url = (
-                f"postgresql+psycopg://postgres@{executor.host}:{executor.port}/postgres"
-            )
+            url = f"postgresql+psycopg://postgres@{executor.host}:{executor.port}/postgres"
             yield url
         finally:
             executor.stop()
@@ -180,6 +177,7 @@ def pg_engine(_pg_engine_session) -> Iterator[Engine]:
 # rather than DROP/recreate the whole schema.
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def pg_engine_with_schema(_pg_engine_session) -> Engine:
     """Module-scoped: fresh schema + alembic head applied once per module.
@@ -220,10 +218,9 @@ def _truncate_pg_user_tables(request) -> Iterator[None]:
         return
     engine: Engine = request.getfixturevalue("pg_engine_with_schema")
     with engine.begin() as conn:
-        rows = conn.execute(sa.text(
-            "SELECT tablename FROM pg_tables "
-            "WHERE schemaname = 'public' AND tablename != 'alembic_version'"
-        )).fetchall()
+        rows = conn.execute(
+            sa.text("SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename != 'alembic_version'")
+        ).fetchall()
         for (table,) in rows:
             conn.execute(sa.text(f'TRUNCATE TABLE "{table}" CASCADE'))
 
@@ -239,6 +236,7 @@ def pg_session(pg_engine) -> Iterator[Session]:
 # parametrized backend harness — runs the same endpoint test twice, once
 # against DuckDB and once against Postgres.
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(params=["duckdb", "pg"], ids=["duck", "pg"])
 def state_backend(request, monkeypatch, tmp_path, _pg_url, pg_engine):
@@ -276,6 +274,7 @@ def state_backend(request, monkeypatch, tmp_path, _pg_url, pg_engine):
         # on every connect; PG needs an explicit seed). Idempotent.
         with pg_engine.begin() as conn_:
             import uuid as _uuid
+
             for name, description in (
                 ("Admin", "System: full access to all data and admin actions"),
                 ("Everyone", "System: default group every user is implicitly a member of"),
@@ -293,6 +292,7 @@ def state_backend(request, monkeypatch, tmp_path, _pg_url, pg_engine):
 
         # Force a fresh PG engine inside the app process
         import src.db_pg as db_pg
+
         db_pg.dispose()
     else:
         monkeypatch.delenv("AGNES_DB_URL", raising=False)
@@ -301,6 +301,7 @@ def state_backend(request, monkeypatch, tmp_path, _pg_url, pg_engine):
     # Reset the factory module to pick up the env change on next import
     import importlib
     import src.repositories
+
     importlib.reload(src.repositories)
 
     yield request.param
@@ -328,6 +329,7 @@ def seeded_app_both(state_backend, tmp_path, monkeypatch):
     if state_backend == "duckdb":
         # DuckDB side: ensure system DB is created + system groups seeded
         from src.db import close_system_db, get_system_db
+
         close_system_db()
         get_system_db()  # triggers _ensure_schema + _seed_system_groups
 
@@ -339,16 +341,14 @@ def seeded_app_both(state_backend, tmp_path, monkeypatch):
     # PG fixture above)
     if state_backend == "duckdb":
         from src.db import get_system_db
-        admin_gid = get_system_db().execute(
-            "SELECT id FROM user_groups WHERE name = 'Admin'"
-        ).fetchone()[0]
+
+        admin_gid = get_system_db().execute("SELECT id FROM user_groups WHERE name = 'Admin'").fetchone()[0]
     else:
         import sqlalchemy as sa
         from src.db_pg import get_engine
+
         with get_engine().connect() as conn_:
-            admin_gid = conn_.execute(
-                sa.text("SELECT id FROM user_groups WHERE name = 'Admin'")
-            ).scalar()
+            admin_gid = conn_.execute(sa.text("SELECT id FROM user_groups WHERE name = 'Admin'")).scalar()
 
     user_group_members_repo().add_member("admin1", admin_gid, source="system_seed")
 
@@ -368,6 +368,7 @@ def seeded_app_both(state_backend, tmp_path, monkeypatch):
 # CLI fixture — CliRunner wired through the same in-process FastAPI app
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def cli_client_both(seeded_app_both, monkeypatch):
     """CliRunner whose HTTP calls go to the in-process TestClient app.
@@ -377,7 +378,6 @@ def cli_client_both(seeded_app_both, monkeypatch):
     no real ports, full API surface, both backends.
     """
     import contextlib
-    import httpx
     from typer.testing import CliRunner
 
     tc = seeded_app_both["client"]
@@ -385,6 +385,7 @@ def cli_client_both(seeded_app_both, monkeypatch):
 
     def _make_client(timeout=30.0):
         from starlette.testclient import TestClient as _TC
+
         return _TC(
             app=tc.app,
             base_url="http://testserver",
@@ -400,6 +401,7 @@ def cli_client_both(seeded_app_both, monkeypatch):
             client.close()
 
     import cli.client as _cli_client
+
     monkeypatch.setattr(_cli_client, "get_client", _patched_get_client)
     monkeypatch.setattr(_cli_client, "_get_shared_client", lambda: _make_client())
     _cli_client._SHARED_CLIENT = None
@@ -444,10 +446,29 @@ def cli_client_both(seeded_app_both, monkeypatch):
     monkeypatch.setattr(_v2_client, "api_delete", _v2_delete)
     monkeypatch.setattr(_v2_client, "api_put_json", _v2_put)
 
+    # cli.commands.* modules do `from cli.v2_client import api_get_json` which
+    # creates a local binding that is NOT updated by setattr on _v2_client above.
+    # Under xdist, command modules are imported early in the process (before this
+    # fixture runs), so we must also patch their local references directly.
+    import sys as _sys
+
+    _cmd_patches = {
+        "api_get_json": _v2_get,
+        "api_post_json": _v2_post,
+        "api_delete": _v2_delete,
+        "api_put_json": _v2_put,
+    }
+    for _mod_name, _mod in list(_sys.modules.items()):
+        if _mod_name.startswith("cli.commands.") and _mod is not None:
+            for _attr, _replacement in _cmd_patches.items():
+                if hasattr(_mod, _attr):
+                    monkeypatch.setattr(_mod, _attr, _replacement)
+
     runner = CliRunner()
 
     def invoke(args):
         from cli.main import app as cli_app
+
         return runner.invoke(cli_app, args, catch_exceptions=False)
 
     yield {
@@ -464,6 +485,7 @@ def cli_client_both(seeded_app_both, monkeypatch):
 # ---------------------------------------------------------------------------
 # registered_table_both — a queryable table registered in the active backend
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def registered_table_both(seeded_app_both):

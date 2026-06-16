@@ -591,6 +591,7 @@ class TestUploadSmoke:
 
 class TestAdminRegistrySmoke:
     COVERED_ROUTES = {
+        "GET /api/admin/config-surface",
         "GET /api/admin/registry",
         "GET /api/admin/server-config",
         "POST /api/admin/server-config",
@@ -613,6 +614,10 @@ class TestAdminRegistrySmoke:
 
     def test_server_config(self, seeded_app_both):
         r = seeded_app_both["client"].get("/api/admin/server-config", headers=_admin_headers(seeded_app_both))
+        assert r.status_code == 200
+
+    def test_config_surface(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/admin/config-surface", headers=_admin_headers(seeded_app_both))
         assert r.status_code == 200
 
     def test_register_precheck(self, seeded_app_both):
@@ -1686,6 +1691,8 @@ KNOWN_UNTESTED = {
     "DELETE /api/marketplace/curated/{marketplace_id}/{plugin_name}/install",
     "DELETE /api/marketplaces/{marketplace_id}",
     "DELETE /api/marketplaces/{marketplace_id}/plugins/{plugin_name}/system",
+    "POST /api/marketplaces/{marketplace_id}/plugins/{plugin_name}/disable",
+    "POST /api/marketplaces/{marketplace_id}/plugins/{plugin_name}/enable",
     "GET /api/marketplace/curated/{marketplace_id}/{plugin_name}",
     "GET /api/marketplace/curated/{marketplace_id}/{plugin_name}/agent/{agent_name}",
     "GET /api/marketplace/curated/{marketplace_id}/{plugin_name}/asset/{path:path}",
