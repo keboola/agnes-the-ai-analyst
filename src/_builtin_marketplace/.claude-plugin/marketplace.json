@@ -1,16 +1,16 @@
 {
   "name": "Agnes Built-in",
-  "description": "Built-in guidance plugins shipped with every Agnes instance.",
+  "description": "First-party guidance that ships with every Agnes instance — how to use Agnes as an analyst and how to configure it as an operator. Maintained by Agnes; served to all users, RBAC-scoped per plugin.",
   "plugins": [
     {
       "name": "agnes-analyst",
-      "description": "Guides analysts on how to use Agnes: discovery, querying, snapshots, and metrics.",
+      "description": "Analyst rails for working with Agnes data. Covers: discovering tables (catalog / schema / describe), choosing the right query path for local vs remote (BigQuery) data, taking estimate-first filtered snapshots of large remote tables, the per-source SQL flavour (DuckDB vs BigQuery), and looking up canonical business-metric definitions before computing them. Served to everyone.",
       "version": "1.0.0",
       "source": "./plugins/agnes-analyst"
     },
     {
       "name": "agnes-operator",
-      "description": "Guides operators on how to configure this Agnes instance: init prompt, workspace, branding, and connectors.",
+      "description": "Operator guide for configuring this Agnes instance. Covers the three customization layers — the init prompt + analyst workspace (Initial Workspace Template), branding / instance.yaml (with the env > yaml > default resolution and its footgun), and connectors — and reads the instance's live config surface so the guidance names this deployment's real pointers instead of hardcoding them. Served to admins.",
       "version": "1.0.0",
       "source": "./plugins/agnes-operator"
     }

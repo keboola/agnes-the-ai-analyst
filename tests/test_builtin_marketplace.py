@@ -89,11 +89,14 @@ def test_seed_builtin_marketplace_idempotent(tmp_path, monkeypatch):
     seed_builtin_marketplace()  # second call must not raise or duplicate
 
     reg_rows = conn.execute(
-        "SELECT id, is_builtin FROM marketplace_registry WHERE id = ?",
+        "SELECT id, is_builtin, curator_name FROM marketplace_registry WHERE id = ?",
         [BUILTIN_MARKETPLACE_SLUG],
     ).fetchall()
     assert len(reg_rows) == 1, "Registry row must be exactly one after two seed calls"
     assert reg_rows[0][1] is True, "is_builtin must be TRUE"
+    # Owner/attribution: the built-in marketplace is curated by the platform
+    # itself, surfaced as "Agnes" in the admin/browse UI.
+    assert reg_rows[0][2] == "Agnes", "built-in marketplace must be owned/curated by 'Agnes'"
 
     conn.close()
 
