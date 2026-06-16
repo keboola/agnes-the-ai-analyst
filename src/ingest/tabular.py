@@ -12,7 +12,6 @@ table is answered with SQL, not embedding similarity.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,8 +40,12 @@ class UnsupportedTabular(Exception):
 
 
 def _extracts_dir() -> Path:
-    root = os.environ.get("DATA_DIR") or os.environ.get("AGNES_DATA_DIR") or "data"
-    return Path(root) / "extracts"
+    # Use the canonical data-root helper so tabular extracts land under the same
+    # root as uploaded blobs (src/file_storage.py) and the orchestrator's
+    # rebuild scan — a divergent env-var fallback would split them.
+    from src.db import _get_data_dir
+
+    return _get_data_dir() / "extracts"
 
 
 def _sanitize(filename: str) -> str:

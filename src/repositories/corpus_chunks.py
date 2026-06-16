@@ -47,12 +47,17 @@ class CorpusChunksRepository:
         ``text``.  Optional keys: ``embedding`` (list of 384 floats, else NULL),
         ``section_path``, ``page``, ``bbox``, ``metadata``.
 
-        Embeddings are validated to ``_EMBED_DIM`` (matching the PG sibling's
-        app-layer check, so both backends raise the same ``ValueError`` on a
-        wrong-dimension vector rather than relying only on the DuckDB
-        ``FLOAT[384]`` column constraint). The inserts run in one transaction so
-        a mid-batch failure rolls back fully — parity with the PG sibling's
-        single ``engine.begin()`` block.
+        Embeddings are validated to ``_EMBED_DIM`` up front (matching the PG
+        sibling) so both backends raise the same ``ValueError`` on a
+        wrong-dimension vector before any insert. Inserts run in DuckDB's default
+        autocommit mode — like every other repo here. We deliberately do NOT
+        wrap them in an explicit transaction: the system DB connection is a
+        shared singleton, so a long-held ``BEGIN`` would serialize concurrent
+        background-ingest writers and could wrongly fail one. Re-ingest is
+        idempotent (the runner clears a file's chunks before re-adding), so a
+        partial batch after a mid-loop failure is cleaned up on retry. (The PG
+        sibling's ``engine.begin()`` is safe there because it runs on a fresh
+        per-call connection, not a shared one.)
 
         Returns the number of rows inserted.
         """
@@ -62,32 +67,26 @@ class CorpusChunksRepository:
             emb = chunk.get("embedding")
             if emb is not None and len(emb) != _EMBED_DIM:
                 raise ValueError(f"embedding must be {_EMBED_DIM}-dim, got {len(emb)}")
-        self.conn.execute("BEGIN TRANSACTION")
-        try:
-            for chunk in chunks:
-                chunk_id = "ck_" + secrets.token_hex(8)
-                self.conn.execute(
-                    "INSERT INTO corpus_chunks "
-                    "(id, corpus_id, file_id, ordinal, text, embedding, "
-                    " section_path, page, bbox, metadata) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    [
-                        chunk_id,
-                        chunk["corpus_id"],
-                        chunk["file_id"],
-                        chunk.get("ordinal"),
-                        chunk.get("text"),
-                        chunk.get("embedding"),
-                        chunk.get("section_path"),
-                        chunk.get("page"),
-                        chunk.get("bbox"),
-                        chunk.get("metadata"),
-                    ],
-                )
-            self.conn.execute("COMMIT")
-        except Exception:
-            self.conn.execute("ROLLBACK")
-            raise
+        for chunk in chunks:
+            chunk_id = "ck_" + secrets.token_hex(8)
+            self.conn.execute(
+                "INSERT INTO corpus_chunks "
+                "(id, corpus_id, file_id, ordinal, text, embedding, "
+                " section_path, page, bbox, metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    chunk_id,
+                    chunk["corpus_id"],
+                    chunk["file_id"],
+                    chunk.get("ordinal"),
+                    chunk.get("text"),
+                    chunk.get("embedding"),
+                    chunk.get("section_path"),
+                    chunk.get("page"),
+                    chunk.get("bbox"),
+                    chunk.get("metadata"),
+                ],
+            )
         return len(chunks)
 
     def delete_for_file(self, file_id: str) -> None:
