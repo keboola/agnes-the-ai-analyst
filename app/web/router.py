@@ -1783,6 +1783,19 @@ async def memory_domain_detail(
     return templates.TemplateResponse(request, "memory_domain_detail.html", ctx)
 
 
+@router.get("/admin/studio/suggestions", response_class=HTMLResponse)
+async def studio_suggestions_admin(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Admin moderation queue for authoring-studio suggestions.
+
+    Registered BEFORE ``/admin/studio/{domain}`` so the static ``suggestions``
+    path wins over the dynamic domain matcher.
+    """
+    return templates.TemplateResponse(request, "admin_studio_suggestions.html", {})
+
+
 @router.get("/admin/studio/{domain}", response_class=HTMLResponse)
 async def studio(
     domain: str,

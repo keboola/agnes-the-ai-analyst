@@ -95,3 +95,35 @@ def test_builder_creates_entity(video_ctx, domain, texts, selects):
         assert "Created:" in page.inner_text("#studio-result")
     finally:
         ctx.close()  # finalizes the .webm
+
+
+def test_admin_review_approves_a_suggestion(video_ctx):
+    """Seed a suggestion via the API, then approve it from the moderation UI."""
+    browser, base = video_ctx
+    ctx = browser.new_context(
+        record_video_dir=str(_VIDEO_DIR),
+        record_video_size={"width": 1280, "height": 800},
+        viewport={"width": 1280, "height": 800},
+    )
+    page = ctx.new_page()
+    try:
+        # Seed a pending suggestion through the real submit endpoint.
+        seed = page.request.post(
+            f"{base}/api/studio/suggestions",
+            data={"domain": "data-package", "payload": {"name": "Reviewed", "slug": "reviewed"}},
+        )
+        assert seed.ok, seed.status
+        sid = seed.json()["id"]
+
+        page.goto(f"{base}/admin/studio/suggestions", wait_until="domcontentloaded")
+        page.wait_for_selector(f'button[data-id="{sid}"][data-act="approve"]', timeout=15_000)
+        page.click(f'button[data-id="{sid}"][data-act="approve"]')
+        # After approval the pending list no longer shows the card.
+        page.wait_for_selector(f'button[data-id="{sid}"]', state="detached", timeout=15_000)
+
+        # Verify via the API that it is now approved.
+        resp = page.request.get(f"{base}/api/admin/authoring-suggestions?status=approved")
+        assert resp.ok
+        assert any(s["id"] == sid for s in resp.json())
+    finally:
+        ctx.close()  # finalizes the .webm

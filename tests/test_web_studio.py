@@ -45,3 +45,21 @@ def test_studio_unknown_domain_404s(seeded_app):
     c = seeded_app["client"]
     resp = c.get("/admin/studio/nope", headers=_auth(seeded_app["admin_token"]))
     assert resp.status_code == 404
+
+
+def test_suggestions_review_page_renders_for_admin(seeded_app):
+    c = seeded_app["client"]
+    resp = c.get("/admin/studio/suggestions", headers=_auth(seeded_app["admin_token"]))
+    assert resp.status_code == 200
+    assert "/static/js/studio_suggestions.js" in resp.text
+    assert 'id="sug-list"' in resp.text
+
+
+def test_suggestions_review_page_requires_admin(seeded_app):
+    c = seeded_app["client"]
+    resp = c.get(
+        "/admin/studio/suggestions",
+        headers=_auth(seeded_app["analyst_token"]),
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 307, 401, 403)
