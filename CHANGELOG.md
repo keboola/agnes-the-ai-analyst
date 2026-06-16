@@ -20,6 +20,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.43] - 2026-06-16
+
+### Added
+
+### Changed
+
+### Fixed
+- Data-package table access now resolves correctly on Postgres-backed instances.
+  `can_access_table` / `get_accessible_tables` (`src/rbac.py`) read the
+  `data_package_tables` membership via raw SQL on the DuckDB system connection,
+  which is empty on a PG-backed instance — so analysts whose table access came
+  through a data-package grant were silently denied every such table. Both paths
+  now go through the backend-aware `data_packages_repo()` factory
+  (`list_packages_of_table` / `list_member_ids_bulk`), so the check reads the
+  active backend.
+
+### Removed
+
+### Internal
+- Dual-backend endpoint smoke tests (`tests/db_pg/test_endpoints_smoke.py`):
+  covers every registered route against both DuckDB and Postgres backends with
+  parametrized auth scenarios (anonymous, non-admin, admin). Includes a route-
+  coverage guard that fails CI when a new endpoint has no test or exclusion entry.
+
 ## [0.71.42] - 2026-06-16
 
 ### Added
