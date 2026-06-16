@@ -11,6 +11,39 @@
 
 ---
 
+## 0. Implementation status (shipped 2026-06-15/16, branch `ZS/romantic-stonebraker-…`)
+
+**Shipped & tested (DuckDB↔PG parity, all convention/ratchet gates green):**
+- **Profile mechanism** — `profile` on `POST /api/chat/sessions`, materialized into the
+  session workdir (`app/chat/profiles.py`, `workdir.py`); no migration. Backend reuse of the
+  E2B chat runtime as designed (§3.1).
+- **Generic authoring studio** — one `/admin/studio/{domain}` builder (`app/web/studio.py`,
+  `admin_studio.html`, `studio.js`) covering all four domains. **Role-aware:** admin creates
+  directly; non-admin submits to a moderation queue (§5).
+- **Suggestion queue** — `authoring_suggestions` (DuckDB v77 + Alembic, dual-backend repo +
+  contract test), endpoints (`app/api/authoring_suggestions.py`), admin review UI
+  (`/admin/studio/suggestions`), nav links. **Approval auto-replays** the payload through each
+  domain's own pydantic validation + repo create for all four domains (informed consent: the
+  review UI renders the complete payload).
+- **Corporate-memory mining** — `memory_mining_consent` (v78, dual-backend), opt-in **privacy
+  gate** (§4.4), PII scan + provenance + dedup, admin `POST /api/admin/memory-mining/run`
+  routing candidates through the suggestion queue, user consent toggle (`/me/memory-mining`).
+  Candidate *extraction* is a deterministic placeholder; LLM distillation plugs in on top.
+- **5 deterministic E2E videos** (4 builders + admin review→approve), Playwright + docker,
+  fake-agent (no keys).
+
+**Deferred / blocked (not shipped):**
+- **Live-agent E2E video** (real Claude driving the builder) — needs `ANTHROPIC_API_KEY` +
+  `E2B_API_KEY`; the deterministic videos ship today.
+- **LLM-backed candidate distillation** for mining — needs a key; the consent/PII/provenance/
+  approval gate is built and ready for it to plug into.
+- **MCP introspect/classify in the builder** — the introspect endpoint exists; wiring it into
+  the generic studio + a deterministic fake-server test is a follow-up slice.
+- **Marketplace bundle authoring** (author a skill folder → store ZIP) — the marketplace agent
+  ships as *register a curated marketplace*; bundle authoring is a separate slice.
+
+---
+
 ## 1. Context & problem
 
 Agnes distributes "harnesses" to analysts' AI chats: marketplace skills/agents/plugins,
