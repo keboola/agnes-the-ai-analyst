@@ -28,13 +28,13 @@ def upgrade() -> None:
     op.create_table(
         "memory_mining_consent",
         sa.Column("user_email", sa.String(), nullable=False),
-        sa.Column("opted_in_at", sa.TIMESTAMP(), nullable=True),
-        sa.Column("opted_out_at", sa.TIMESTAMP(), nullable=True),
+        sa.Column("opted_in_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("opted_out_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "updated_at",
-            sa.TIMESTAMP(),
+            sa.DateTime(timezone=True),
             server_default=sa.text("CURRENT_TIMESTAMP"),
-            nullable=True,
+            nullable=False,
         ),
         sa.PrimaryKeyConstraint("user_email"),
     )

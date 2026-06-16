@@ -18,6 +18,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql  # noqa: F401  (used in upgrade())
 
 revision: str = "0024_authoring_suggestions_v77"
 down_revision: Union[str, None] = "0023_store_entity_votes_v76"
@@ -30,16 +31,16 @@ def upgrade() -> None:
         "authoring_suggestions",
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("domain", sa.String(), nullable=False),
-        sa.Column("payload", sa.JSON(), nullable=True),
-        sa.Column("status", sa.String(), server_default="pending", nullable=True),
+        sa.Column("payload", postgresql.JSONB(), nullable=True),
+        sa.Column("status", sa.String(), server_default=sa.text("'pending'"), nullable=False),
         sa.Column("created_by", sa.String(), nullable=True),
         sa.Column(
             "created_at",
-            sa.TIMESTAMP(),
+            sa.DateTime(timezone=True),
             server_default=sa.text("CURRENT_TIMESTAMP"),
-            nullable=True,
+            nullable=False,
         ),
-        sa.Column("resolved_at", sa.TIMESTAMP(), nullable=True),
+        sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("resolved_by", sa.String(), nullable=True),
         sa.Column("resolution_note", sa.Text(), nullable=True),
         sa.Column("created_resource_id", sa.String(), nullable=True),
