@@ -95,20 +95,37 @@ def test_approve_data_package_auto_creates_resource(seeded_app):
     assert any(p.get("slug") == "auto-dp" for p in pkgs)
 
 
-def test_approve_mcp_does_not_auto_create(seeded_app):
-    """mcp/marketplace are excluded from auto-replay (command/url privilege
-    vector); approve records the disposition without creating the resource."""
+def test_approve_mcp_auto_creates_via_revalidation(seeded_app):
+    """mcp approval replays through CreateMCPSourceRequest re-validation; the
+    admin saw the full payload (command/url) in the queue before approving."""
     c = seeded_app["client"]
     sid = _submit(
         c,
         seeded_app["analyst_token"],
         domain="mcp",
-        payload={"name": "e2e_x", "transport": "http", "url": "https://x"},
+        payload={"name": "auto_mcp", "transport": "http", "url": "https://x"},
     ).json()["id"]
     a = c.post(
         f"/api/admin/authoring-suggestions/{sid}/approve",
         headers=_auth(seeded_app["admin_token"]),
         json={},
     )
-    assert a.status_code == 200
-    assert a.json()["created_resource_id"] is None
+    assert a.status_code == 200, a.text
+    assert a.json()["created_resource_id"]  # an mcp source id
+
+
+def test_approve_mcp_unsafe_name_is_rejected(seeded_app):
+    """Re-validation still enforces the safe-identifier rule on approve."""
+    c = seeded_app["client"]
+    sid = _submit(
+        c,
+        seeded_app["analyst_token"],
+        domain="mcp",
+        payload={"name": "bad-name", "transport": "http", "url": "https://x"},
+    ).json()["id"]
+    a = c.post(
+        f"/api/admin/authoring-suggestions/{sid}/approve",
+        headers=_auth(seeded_app["admin_token"]),
+        json={},
+    )
+    assert a.status_code == 409  # create_failed — unsafe SQL identifier

@@ -14,18 +14,19 @@ A non-admin who lacks the admin mutation right submits a proposed create
 are guarded state transitions (only flip a ``pending`` row) and write an
 ``audit_log`` row so the Activity Center surfaces them.
 
-Approval auto-creates the real resource for the SAFE domains only
-(``data-package`` + ``corporate-memory``) — their payload is plain descriptive
-scalars (name/slug/description) with no privilege vector. ``mcp`` + ``marketplace``
-are deliberately EXCLUDED from auto-replay (design spec §5): their payloads carry
-a stdio ``command`` / git ``url`` that an admin approving on a proposer's behalf
-would unwittingly arm (confused-deputy), so those stay manual-create until a
-per-domain re-validation path exists. See ``_SAFE_REPLAY``.
+Approval auto-creates the real resource for all four domains by REPLAYING the
+payload through each domain's own validation + repo create path (the pydantic
+request models are the re-validation, design spec §5 — the stored payload is
+never trusted blindly). The confused-deputy risk for ``mcp``/``marketplace``
+(a stdio ``command`` / git ``url`` in the payload) is mitigated because the
+moderation UI renders the COMPLETE payload before the admin clicks approve:
+approval is informed consent. See ``_SAFE_REPLAY``.
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -44,12 +45,13 @@ from src.repositories import (
 logger = logging.getLogger(__name__)
 
 
-# Domains whose approval can auto-create the resource safely: the payload is
-# plain descriptive scalars (name/slug/description) with no privilege vector.
-# mcp + marketplace are deliberately EXCLUDED — their payloads carry a stdio
-# ``command`` / git ``url`` that an admin approving on a proposer's behalf would
-# unwittingly arm (confused-deputy). Those stay manual-create until a per-domain
-# re-validation path exists (design spec §5).
+# Approval auto-creates the real resource by REPLAYING the payload through the
+# same validation + repo create path the domain's own endpoint uses. The
+# pydantic models below ARE the re-validation (design spec §5) — the stored
+# payload is never trusted blindly. The confused-deputy risk (a proposer slipping
+# a stdio ``command`` / git ``url`` past the admin) is mitigated because the
+# moderation UI renders the COMPLETE payload before the admin clicks approve:
+# approval is informed consent, not a silent replay.
 def _replay_data_package(payload: dict, by: str) -> str:
     return data_packages_repo().create(
         name=payload["name"],
@@ -72,9 +74,60 @@ def _replay_corporate_memory(payload: dict, by: str) -> str:
     )
 
 
+def _replay_mcp(payload: dict, by: str) -> str:
+    # Re-validate transport/shape via the endpoint's own request model.
+    from app.api.admin_mcp import CreateMCPSourceRequest, _require_safe_source_name
+    from src.repositories import mcp_sources_repo
+
+    req = CreateMCPSourceRequest(**payload)
+    name = (req.name or "").strip()
+    _require_safe_source_name(name)
+    repo = mcp_sources_repo()
+    if repo.get_by_name(name) is not None:
+        raise ValueError("name_exists")
+    source_id = str(uuid.uuid4())
+    repo.upsert(
+        id=source_id,
+        name=name,
+        transport=req.transport,
+        command=req.command,
+        args=req.args,
+        env=req.env,
+        url=req.url,
+        auth_method=req.auth_method,
+        auth_secret_env=req.auth_secret_env,
+        enabled=req.enabled,
+        scope=req.scope or "shared",
+    )
+    return source_id
+
+
+def _replay_marketplace(payload: dict, by: str) -> str:
+    from app.api.marketplaces import CreateMarketplaceRequest
+    from src.repositories import marketplace_registry_repo
+
+    req = CreateMarketplaceRequest(**payload)
+    repo = marketplace_registry_repo()
+    if repo.get(req.slug) is not None:
+        raise ValueError("slug_exists")
+    repo.register(
+        id=req.slug,
+        name=req.name,
+        url=req.url,
+        branch=req.branch,
+        description=req.description,
+        registered_by=by,
+        curator_name=req.curator_name,
+        curator_email=req.curator_email,
+    )
+    return req.slug
+
+
 _SAFE_REPLAY = {
     "data-package": _replay_data_package,
     "corporate-memory": _replay_corporate_memory,
+    "mcp": _replay_mcp,
+    "marketplace": _replay_marketplace,
 }
 
 public_router = APIRouter(prefix="/api/studio", tags=["authoring-suggestions"])
