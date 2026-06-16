@@ -6,11 +6,13 @@ Alembic's autogenerate reads that metadata to detect drift.
 Add a new model by creating ``src/models/<name>.py`` that imports ``Base``
 from ``src.db_pg`` and adds it to the ``__all__`` re-export below.
 """
+
 from __future__ import annotations
 
 from src.models.audit import AuditLog
 from src.models.chat import ChatMessage, ChatSession, UserWorkdir
 from src.models.config import InstanceTemplate, MetricDefinition, PersonalAccessToken
+from src.models.connections import ConnectionSecret, SourceConnection
 from src.models.data_packages import DataPackage, DataPackageTable, DataPackageTool
 from src.models.knowledge import (
     KnowledgeContradiction,
@@ -80,6 +82,7 @@ __all__ = [
     "ChatMessage",
     "ChatSession",
     "ColumnMetadata",
+    "ConnectionSecret",
     "DataPackage",
     "DataPackageTable",
     "DataPackageTool",
@@ -106,6 +109,7 @@ __all__ = [
     "SetupToken",
     "ScriptRegistry",
     "SessionProcessorState",
+    "SourceConnection",
     "StoreEntity",
     "StoreEntityVote",
     "StoreSubmission",

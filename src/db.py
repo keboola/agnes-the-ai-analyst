@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 78
+SCHEMA_VERSION = 79
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -385,7 +385,27 @@ CREATE TABLE IF NOT EXISTS table_registry (
     -- lists it for catalog discovery + RBAC). Only meaningful for
     -- query_mode IN ('local', 'materialized'); ignored for 'remote'
     -- (which has no server-stored parquet to suppress). Issue #607.
-    server_only   BOOLEAN DEFAULT false
+    server_only   BOOLEAN DEFAULT false,
+    -- v79: nullable FK to source_connections.id. NULL = use the default
+    -- connection for the row's source_type (backwards-compatible).
+    connection_id VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS source_connections (
+    id          VARCHAR PRIMARY KEY,
+    name        VARCHAR NOT NULL UNIQUE,
+    source_type VARCHAR NOT NULL,
+    config      TEXT NOT NULL,
+    token_env   VARCHAR,
+    is_default  BOOLEAN DEFAULT FALSE,
+    created_by  VARCHAR,
+    created_at  TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS connection_secrets (
+    connection_id VARCHAR PRIMARY KEY,
+    ciphertext    TEXT NOT NULL,
+    updated_at    TIMESTAMP DEFAULT current_timestamp
 );
 
 CREATE TABLE IF NOT EXISTS table_profiles (
@@ -1227,7 +1247,7 @@ CREATE TABLE IF NOT EXISTS user_workdirs (
 """
 
 
-import threading
+import threading  # noqa: E402
 
 _system_db_lock = threading.Lock()
 _system_db_conn: duckdb.DuckDBPyConnection | None = None
@@ -5036,6 +5056,32 @@ def _v77_to_v78(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 78")
 
 
+def _v78_to_v79(conn: duckdb.DuckDBPyConnection) -> None:
+    """Named source connections (spec 2026-06-12): generic connection
+    registry + vault-backed secrets + table_registry.connection_id."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS source_connections (
+            id          VARCHAR PRIMARY KEY,
+            name        VARCHAR NOT NULL UNIQUE,
+            source_type VARCHAR NOT NULL,
+            config      TEXT NOT NULL,
+            token_env   VARCHAR,
+            is_default  BOOLEAN DEFAULT FALSE,
+            created_by  VARCHAR,
+            created_at  TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS connection_secrets (
+            connection_id VARCHAR PRIMARY KEY,
+            ciphertext    TEXT NOT NULL,
+            updated_at    TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS connection_id VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 79")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -5358,6 +5404,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # ADD COLUMN IF NOT EXISTS — no-op on fresh installs where
             # _SYSTEM_SCHEMA already declares both columns.
             _v77_to_v78(conn)
+            # v78→v79: named source_connections + vault-backed connection_secrets
+            # + table_registry.connection_id (spec 2026-06-12). IF NOT EXISTS
+            # guards make this a no-op on fresh installs.
+            _v78_to_v79(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5567,6 +5617,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v76_to_v77(conn)
             if current < 78:
                 _v77_to_v78(conn)
+            if current < 79:
+                _v78_to_v79(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

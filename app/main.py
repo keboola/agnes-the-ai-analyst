@@ -496,6 +496,20 @@ async def lifespan(app):
 
         ensure_pg_at_head()
 
+    # Seed default source connections from env/yaml on first boot
+    # (spec 2026-06-12 §3.4). MUST run after ensure_pg_at_head(): on a
+    # Postgres backend the source_connections table is created by Alembic
+    # 0026, which ensure_pg_at_head() applies — seeding earlier hits a
+    # missing table, gets swallowed by the try/except, and silently no-ops
+    # until the next restart (Devin Review on #671). DuckDB is unaffected
+    # (get_system_db lazily runs _ensure_schema). One-time; registry rules after.
+    try:
+        from app.connections_seed import seed_default_connections
+
+        seed_default_connections()
+    except Exception:
+        logger.exception("source-connection seed failed; continuing")
+
     # Seed the Admin/Everyone system groups into the ACTIVE state backend.
     # On DuckDB this duplicates src.db._seed_system_groups (idempotent), but
     # that runs ONLY on a DuckDB connect — nothing seeds these groups on a
