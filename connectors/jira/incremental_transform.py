@@ -172,20 +172,34 @@ def migrate_flat_to_hive(table_dir: Path) -> list[str]:
 
     for flat_file in sorted(table_dir.glob("*.parquet")):
         month_key = flat_file.stem  # e.g. "2026-01"
-        hive_dir = _hive_dir(table_dir, month_key)
+        # Per-file fault isolation: a single file that can't be migrated must
+        # not abort the whole pass (otherwise the months after it stay flat and
+        # invisible to the hive-only view). Hold parquet_month_lock so a
+        # concurrent incremental transform for the same month can't race the
+        # rename.
+        try:
+            with parquet_month_lock(table_dir, month_key):
+                hive_dir = _hive_dir(table_dir, month_key)
+                if hive_dir.exists():
+                    # Already migrated to hive — remove the redundant flat file
+                    # so the recursive readers don't double-count this month.
+                    flat_file.unlink()
+                    logger.info("Removed redundant flat parquet %s (hive already present)", flat_file)
+                    continue
 
-        if hive_dir.exists():
-            # Already migrated to hive — remove the redundant flat file so the
-            # recursive readers don't double-count this month (flat + hive).
-            flat_file.unlink()
-            logger.info("Removed redundant flat parquet %s (hive already present)", flat_file)
+                hive_dir.mkdir(parents=True, exist_ok=True)
+                dest = hive_dir / "data.parquet"
+                flat_file.rename(dest)
+                logger.info("Migrated flat parquet %s -> %s", flat_file, dest)
+                migrated.append(month_key)
+        except Exception as exc:
+            logger.error(
+                "Failed to migrate flat parquet %s to hive: %s — leaving the flat "
+                "file in place; it will be retried on the next init_extract",
+                flat_file,
+                exc,
+            )
             continue
-
-        hive_dir.mkdir(parents=True, exist_ok=True)
-        dest = hive_dir / "data.parquet"
-        flat_file.rename(dest)
-        logger.info("Migrated flat parquet %s -> %s", flat_file, dest)
-        migrated.append(month_key)
 
     return migrated
 
