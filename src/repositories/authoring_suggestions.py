@@ -101,6 +101,24 @@ class AuthoringSuggestionsRepository:
         )
         return was_pending
 
+    def reopen(self, sid: str) -> None:
+        """Revert a resolved suggestion back to ``pending`` — used to roll back
+        an approve whose resource-creation replay failed, so no orphaned claim
+        is left behind and the admin can retry."""
+        self.conn.execute(
+            "UPDATE authoring_suggestions SET status = 'pending', resolved_at = NULL, "
+            "resolved_by = NULL, resolution_note = NULL, created_resource_id = NULL "
+            "WHERE id = ?",
+            [sid],
+        )
+
+    def set_created_resource_id(self, sid: str, created_resource_id: str) -> None:
+        """Stamp the created resource id after a successful approve+replay."""
+        self.conn.execute(
+            "UPDATE authoring_suggestions SET created_resource_id = ? WHERE id = ?",
+            [created_resource_id, sid],
+        )
+
     @staticmethod
     def _row_to_dict(row) -> Dict[str, Any]:
         keys = (

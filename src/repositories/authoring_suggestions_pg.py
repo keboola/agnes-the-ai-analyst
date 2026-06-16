@@ -133,6 +133,27 @@ class AuthoringSuggestionsPgRepository:
             )
         return was_pending
 
+    def reopen(self, sid: str) -> None:
+        """Revert a resolved suggestion back to ``pending`` — roll back an
+        approve whose resource-creation replay failed."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "UPDATE authoring_suggestions SET status = 'pending', "
+                    "resolved_at = NULL, resolved_by = NULL, resolution_note = NULL, "
+                    "created_resource_id = NULL WHERE id = :id"
+                ),
+                {"id": sid},
+            )
+
+    def set_created_resource_id(self, sid: str, created_resource_id: str) -> None:
+        """Stamp the created resource id after a successful approve+replay."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("UPDATE authoring_suggestions SET created_resource_id = :rid WHERE id = :id"),
+                {"rid": created_resource_id, "id": sid},
+            )
+
     @staticmethod
     def _row_to_dict(row) -> Dict[str, Any]:
         keys = (

@@ -116,3 +116,24 @@ def test_resolve_rejects_invalid_status(repo):
     sid = repo.create(domain="corporate-memory", payload={"name": "c"}, created_by="u@x")
     with pytest.raises(ValueError):
         repo.resolve(sid, status="bogus", resolved_by="admin")
+
+
+def test_reopen_reverts_claim_and_set_resource_id_stamps(repo):
+    """reopen() rolls a claimed suggestion back to pending (used when an
+    approve's replay fails); set_created_resource_id() stamps after success.
+    Both must behave identically on DuckDB and Postgres."""
+    sid = repo.create(domain="data-package", payload={"name": "R", "slug": "r"}, created_by="u@x")
+
+    # claim, then roll back
+    assert repo.resolve(sid, status="approved", resolved_by="admin", resolution_note="n") is True
+    repo.reopen(sid)
+    row = repo.get(sid)
+    assert row["status"] == "pending"
+    assert row["resolved_by"] is None
+    assert row["resolved_at"] is None
+    assert row["created_resource_id"] is None
+
+    # re-claim (now pending again), then stamp the created resource id
+    assert repo.resolve(sid, status="approved", resolved_by="admin") is True
+    repo.set_created_resource_id(sid, "pkg_xyz")
+    assert repo.get(sid)["created_resource_id"] == "pkg_xyz"

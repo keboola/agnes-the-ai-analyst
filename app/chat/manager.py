@@ -1109,6 +1109,9 @@ class ChatManager:
         await self._broadcast(live, {"type": "cancelled"})
 
     async def kill(self, chat_id: str, *, reason: str) -> None:
+        # Spawn-time profile is no longer needed once the session is torn down;
+        # drop it so the map doesn't grow unboundedly with studio usage.
+        self._session_profiles.pop(chat_id, None)
         live = self._live.pop(chat_id, None)
         if live is None:
             return

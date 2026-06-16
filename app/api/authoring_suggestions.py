@@ -184,10 +184,16 @@ async def approve_suggestion(
     body: ResolveBody,
     admin: dict = Depends(require_admin),
 ):
-    sug = authoring_suggestions_repo().get(sid)
+    repo = authoring_suggestions_repo()
+    sug = repo.get(sid)
     if sug is None:
         raise HTTPException(status_code=404, detail={"kind": "not_found"})
-    if sug.get("status") != "pending":
+    # Atomically CLAIM the suggestion (pending -> approved) BEFORE the
+    # side-effecting replay. On a concurrent approve (e.g. PG multi-worker) only
+    # the admin who wins the flip runs replay(); the loser gets 409 and never
+    # creates a duplicate/orphan resource. If replay then fails, reopen() rolls
+    # the claim back to pending so the admin can retry.
+    if not repo.resolve(sid, status="approved", resolved_by=admin["email"], resolution_note=body.note):
         raise HTTPException(status_code=409, detail={"kind": "already_resolved"})
     created_resource_id = None
     replay = _SAFE_REPLAY.get(sug["domain"])
@@ -195,10 +201,19 @@ async def approve_suggestion(
         try:
             created_resource_id = replay(sug.get("payload") or {}, admin["email"])
         except KeyError as exc:
+            repo.reopen(sid)
             raise HTTPException(status_code=400, detail={"kind": "invalid_payload", "hint": str(exc)})
-        except Exception as exc:  # most likely a slug UNIQUE collision
+        except Exception as exc:  # validation / UNIQUE collision — roll the claim back
+            repo.reopen(sid)
             raise HTTPException(status_code=409, detail={"kind": "create_failed", "hint": str(exc)})
-    return _resolve(sid, "approved", body.note, admin, created_resource_id=created_resource_id)
+        repo.set_created_resource_id(sid, created_resource_id)
+    audit_repo().log(
+        user_id=admin["email"],
+        action="authoring_suggestion.approved",
+        resource=sid,
+        params={"note": body.note, "created_resource_id": created_resource_id},
+    )
+    return {"id": sid, "status": "approved", "created_resource_id": created_resource_id}
 
 
 @admin_router.post("/authoring-suggestions/{sid}/reject")
