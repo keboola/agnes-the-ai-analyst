@@ -190,7 +190,7 @@ not in any default `COMPOSE_FILE` — `agnes-auto-upgrade.sh` /
 infra Terraform `startup.sh` fetches it into `/opt/agnes/`). Non-GCP hosts never
 get the file and keep the default `json-file` driver. To enable it on a GCE host
 manually, drop the overlay into `/opt/agnes/docker-compose.gcp-logging.yml` and
-let the next auto-upgrade tick recreate the containers. Entries land under
+run `docker compose up -d` (or wait for the next image upgrade to recreate the containers). Entries land under
 resource `gce_instance` (next to the VM/system logs), logName
 `gcplogs-docker-driver`, tagged with `jsonPayload.instance.name` /
 `jsonPayload.container.name`. The app's own JSON log line (with its `lvl`,
