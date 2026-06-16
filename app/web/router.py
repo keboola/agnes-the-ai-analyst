@@ -1787,6 +1787,32 @@ async def memory_domain_detail(
     return templates.TemplateResponse(request, "memory_domain_detail.html", ctx)
 
 
+def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
+    """Base context every base_ds page needs for the shared nav + footer chrome.
+
+    Routes that render ``base_ds.html`` MUST spread this in — otherwise the
+    navbar, theme, branding, and url helpers render empty (the studio pages
+    regressed on exactly this: no top menu, no styling). Mirrors the canonical
+    context the home/setup routes build.
+    """
+    return {
+        "request": request,
+        "user": _flex(user) if user else _FlexDict(),
+        "is_admin": bool(user) and is_user_admin(user.get("id")),
+        "now": datetime.now,
+        "get_flashed_messages": lambda **kw: [],
+        "url_for": lambda endpoint, **kw: _url_for_shim(endpoint, **kw),
+        "session": _FlexDict({"user": user}) if user else _FlexDict(),
+        "home_route": _resolved_home_route(),
+        "instance_name": get_instance_name(),
+        "instance_brand": get_instance_brand(),
+        "workspace_dir": get_workspace_dir_name(),
+        "instance_theme": get_instance_theme(),
+        "home_automode": {"show": get_home_automode_visibility()},
+        "custom_scripts": get_custom_scripts(),
+    }
+
+
 @router.get("/me/memory-mining", response_class=HTMLResponse)
 async def me_memory_mining(
     request: Request,
@@ -1794,7 +1820,7 @@ async def me_memory_mining(
 ):
     """User-facing privacy control: opt in/out of having one's own session
     transcripts mined into shared corporate memory (design spec §4.4)."""
-    return templates.TemplateResponse(request, "me_memory_mining.html", {})
+    return templates.TemplateResponse(request, "me_memory_mining.html", _chrome_ctx(request, user))
 
 
 @router.get("/admin/studio/suggestions", response_class=HTMLResponse)
@@ -1807,7 +1833,7 @@ async def studio_suggestions_admin(
     Registered BEFORE ``/admin/studio/{domain}`` so the static ``suggestions``
     path wins over the dynamic domain matcher.
     """
-    return templates.TemplateResponse(request, "admin_studio_suggestions.html", {})
+    return templates.TemplateResponse(request, "admin_studio_suggestions.html", _chrome_ctx(request, user))
 
 
 @router.get("/admin/studio/{domain}", response_class=HTMLResponse)
@@ -1830,11 +1856,7 @@ async def studio(
     return templates.TemplateResponse(
         request,
         "admin_studio.html",
-        {
-            "domain": spec,
-            "profile_slug": spec.profile,
-            "is_admin": is_user_admin(user["id"]),
-        },
+        {**_chrome_ctx(request, user), "domain": spec, "profile_slug": spec.profile},
     )
 
 
