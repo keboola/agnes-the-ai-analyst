@@ -145,3 +145,23 @@ def test_tabular_same_base_name_distinct_tables(e2e_env, tmp_path):
     t1 = corpus_files_repo().get(fid1)["processing_detail"]["derived_table_id"]
     t2 = corpus_files_repo().get(fid2)["processing_detail"]["derived_table_id"]
     assert t1 != t2, f"same-base files collided on table_id: {t1}"
+
+
+def test_tabular_reingest_is_idempotent(e2e_env, tmp_path):
+    """Re-ingesting the same tabular file must not raise — table_registry.register()
+    upserts on id (ON CONFLICT DO UPDATE), and parquet/_meta/view are overwrite-safe."""
+    from src.ingest.runner import ingest_file
+    from src.repositories import corpus_files_repo, table_registry_repo
+
+    corpus_id = _new_corpus("ing-tab-idem")
+    csv = tmp_path / "data.csv"
+    csv.write_text("region,revenue\nEU,100\n", encoding="utf-8")
+    fid = _add_file(corpus_id, "data.csv", "csv", str(csv))
+
+    assert ingest_file(fid) == "indexed"
+    t1 = corpus_files_repo().get(fid)["processing_detail"]["derived_table_id"]
+    # Second pass (e.g. retry) must succeed, not raise a unique-constraint error.
+    assert ingest_file(fid) == "indexed"
+    t2 = corpus_files_repo().get(fid)["processing_detail"]["derived_table_id"]
+    assert t1 == t2
+    assert table_registry_repo().get(t1) is not None
