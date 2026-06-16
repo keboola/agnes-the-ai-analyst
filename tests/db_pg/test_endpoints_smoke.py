@@ -1809,16 +1809,17 @@ def _collect_covered_routes() -> set:
 def test_every_route_is_covered_or_excluded():
     """Route-coverage guard: fails CI when a new endpoint has no test or exclusion.
 
-    Intentionally has NO fixture dependencies: create_app() does not need the
-    database to be set up to register routes, and keeping this test out of the
-    state_backend / seeded_app_both ecosystem avoids the xdist worker-state
-    interference that caused all_routes to appear empty in CI (importlib.reload
-    of src.repositories in the state_backend fixture corrupts module-level app
-    state when the worker has run many other tests before reaching this one).
+    Intentionally has NO fixture dependencies and uses the module-level app
+    object (created once at import time in a clean module state) rather than
+    calling create_app() fresh. Calling create_app() in a long-running xdist
+    worker can produce an empty route set after importlib.reload(src.repositories)
+    has been called many times by the state_backend fixture — using the
+    already-imported module-level app is immune to that interference because its
+    routes are registered before any fixture runs.
     """
-    from app.main import create_app as _create_app  # noqa: PLC0415
+    import importlib  # noqa: PLC0415
 
-    _inspection_app = _create_app()
+    _inspection_app = importlib.import_module("app.main").app
     all_routes = {
         f"{m} {r.path}"
         for r in _inspection_app.routes
