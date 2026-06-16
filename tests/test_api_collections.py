@@ -561,3 +561,11 @@ def test_delete_file_removes_its_chunks(seeded_app):
     )
     assert r.status_code == 204, r.text
     assert corpus_chunks_repo().list_for_file(fid) == []
+
+
+def test_create_collection_non_alphanumeric_name_gets_fallback_slug(seeded_app):
+    """A name with no alphanumerics must not yield an empty slug."""
+    c = seeded_app["client"]
+    r = c.post("/api/collections", json={"name": "!!!"}, headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 201, r.text
+    assert r.json()["slug"]  # non-empty (falls back to "collection")

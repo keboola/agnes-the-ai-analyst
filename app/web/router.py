@@ -1382,11 +1382,14 @@ async def library_detail(
     from app.resource_types import ResourceType
 
     col = file_corpora_repo().get_by_slug(slug)
+    # Return 404 for both "missing" and "access denied" so an unprivileged
+    # caller can't distinguish the two and probe for collection existence
+    # (matches the GET /api/collections/{id} contract).
     if not col:
         raise HTTPException(status_code=404, detail="collection_not_found")
     is_admin = is_user_admin(user["id"], conn)
     if not is_admin and not can_access(user["id"], ResourceType.COLLECTION.value, col["id"], conn):
-        raise HTTPException(status_code=403, detail="access_denied")
+        raise HTTPException(status_code=404, detail="collection_not_found")
     files = corpus_files_repo().list_for_corpus(col["id"])
     ctx = _build_context(request, user=user, conn=conn, is_admin=is_admin, collection=col, files=files)
     return templates.TemplateResponse(request, "library_detail.html", ctx)

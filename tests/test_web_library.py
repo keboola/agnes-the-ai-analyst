@@ -37,12 +37,12 @@ def test_library_detail_404_for_missing(seeded_app):
     assert r.status_code == 404
 
 
-def test_library_detail_403_for_non_member(seeded_app):
+def test_library_detail_404_for_non_member(seeded_app):
     c = seeded_app["client"]
     col = _create(seeded_app, "Private UI")
-    # analyst1 has no grant on this collection
+    # analyst1 has no grant — returns 404 (not 403) so existence isn't leaked.
     r = c.get(f"/library/{col['slug']}", headers=_auth(seeded_app["analyst_token"]))
-    assert r.status_code == 403
+    assert r.status_code == 404
 
 
 def test_library_lists_only_accessible(seeded_app):

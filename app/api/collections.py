@@ -71,8 +71,13 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
 def _auto_slug(name: str) -> str:
-    """Generate a URL-safe slug from a collection name."""
-    return _SLUG_RE.sub("-", name.lower()).strip("-")[:100]
+    """Generate a URL-safe slug from a collection name.
+
+    Falls back to ``"collection"`` for names with no alphanumerics (e.g. "!!!"),
+    which would otherwise yield an empty slug (degenerate ``/library/`` URL +
+    spurious 409 collisions on the second such name).
+    """
+    return _SLUG_RE.sub("-", name.lower()).strip("-")[:100] or "collection"
 
 
 # ---------------------------------------------------------------------------
