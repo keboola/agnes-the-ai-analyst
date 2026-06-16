@@ -9,6 +9,7 @@ not declare ``ON DELETE CASCADE`` (DuckDB constraint surface is narrower than
 Postgres). ``delete()`` clears the junction explicitly so callers don't have
 to remember the order.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -27,16 +28,29 @@ class DataPackagesRepository:
     # method stays in sync after future schema additions. Touch this when
     # adding columns.
     _COLS = [
-        "id", "slug", "name", "description", "icon", "color",
-        "cover_image_url", "status", "category",
+        "id",
+        "slug",
+        "name",
+        "description",
+        "icon",
+        "color",
+        "cover_image_url",
+        "status",
+        "category",
         # v56: extended content surface for /catalog/p/<slug> rewrite.
         # JSON columns ("tags", "when_to_use", "when_not_to_use",
         # "example_questions") are stored as VARCHAR and decoded on read
         # by ``_decode_row`` below; long_description stays as TEXT.
-        "owner_name", "owner_team",
-        "tags", "long_description",
-        "when_to_use", "when_not_to_use", "example_questions",
-        "created_by", "created_at", "updated_at",
+        "owner_name",
+        "owner_team",
+        "tags",
+        "long_description",
+        "when_to_use",
+        "when_not_to_use",
+        "example_questions",
+        "created_by",
+        "created_at",
+        "updated_at",
     ]
     _SELECT = ", ".join(_COLS)
     # Subset of _COLS that carry a JSON list. Decoded on read; NULL → [].
@@ -70,6 +84,7 @@ class DataPackagesRepository:
         (no pre-check race window).
         """
         import json as _json
+
         pkg_id = "pkg_" + uuid4().hex[:12]
         self.conn.execute(
             "INSERT INTO data_packages"
@@ -78,15 +93,25 @@ class DataPackagesRepository:
             " long_description, when_to_use, when_not_to_use, "
             " example_questions, created_by) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [pkg_id, slug, name, description, icon, color, cover_image_url,
-             status or "prod", category,
-             owner_name, owner_team,
-             _json.dumps(tags) if tags is not None else None,
-             long_description,
-             _json.dumps(when_to_use) if when_to_use is not None else None,
-             _json.dumps(when_not_to_use) if when_not_to_use is not None else None,
-             _json.dumps(example_questions) if example_questions is not None else None,
-             created_by],
+            [
+                pkg_id,
+                slug,
+                name,
+                description,
+                icon,
+                color,
+                cover_image_url,
+                status or "prod",
+                category,
+                owner_name,
+                owner_team,
+                _json.dumps(tags) if tags is not None else None,
+                long_description,
+                _json.dumps(when_to_use) if when_to_use is not None else None,
+                _json.dumps(when_not_to_use) if when_not_to_use is not None else None,
+                _json.dumps(example_questions) if example_questions is not None else None,
+                created_by,
+            ],
         )
         return pkg_id
 
@@ -94,6 +119,7 @@ class DataPackagesRepository:
     def _decode_row(cls, row_dict: Dict[str, Any]) -> Dict[str, Any]:
         """v56: decode JSON-list columns to Python lists. NULL → []."""
         import json as _json
+
         for k in cls._JSON_LIST_COLS:
             v = row_dict.get(k)
             if v is None or v == "":
@@ -121,9 +147,7 @@ class DataPackagesRepository:
         return self._decode_row(dict(zip(self._COLS, row)))
 
     def get_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
-        row = self.conn.execute(
-            "SELECT id FROM data_packages WHERE slug = ?", [slug]
-        ).fetchone()
+        row = self.conn.execute("SELECT id FROM data_packages WHERE slug = ?", [slug]).fetchone()
         return self.get(row[0]) if row else None
 
     def list(
@@ -177,6 +201,7 @@ class DataPackagesRepository:
         ``"[]"``, decodes back to ``[]``). Pass ``None`` to skip.
         """
         import json as _json
+
         fields: List[str] = []
         params: List[Any] = []
         if name is not None:
@@ -264,9 +289,7 @@ class DataPackagesRepository:
         """Permanent delete — wipes the row + junction. Use when an admin
         wants the resource gone for good. Not currently wired into any
         endpoint; kept for completeness."""
-        self.conn.execute(
-            "DELETE FROM data_package_tables WHERE package_id = ?", [pkg_id]
-        )
+        self.conn.execute("DELETE FROM data_package_tables WHERE package_id = ?", [pkg_id])
         self.conn.execute("DELETE FROM data_packages WHERE id = ?", [pkg_id])
 
     # -- Junction (package ↔ tables) ---------------------------------------
@@ -280,8 +303,7 @@ class DataPackagesRepository:
         if before:
             return False
         self.conn.execute(
-            "INSERT INTO data_package_tables(package_id, table_id, added_by) "
-            "VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+            "INSERT INTO data_package_tables(package_id, table_id, added_by) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
             [pkg_id, table_id, added_by],
         )
         return True
@@ -328,8 +350,7 @@ class DataPackagesRepository:
         if before:
             return False
         self.conn.execute(
-            "INSERT INTO data_package_tools(package_id, tool_id) VALUES (?, ?) "
-            "ON CONFLICT DO NOTHING",
+            "INSERT INTO data_package_tools(package_id, tool_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
             [pkg_id, tool_id],
         )
         return True
@@ -376,6 +397,22 @@ class DataPackagesRepository:
             for r in rows
         ]
 
+    def list_member_table_ids(self, package_ids: set) -> List[str]:
+        """Distinct table IDs across the given live packages. Targeted query
+        for per-user access-check paths (avoids a full-table scan).
+        Returns ``[]`` when *package_ids* is empty.
+        """
+        if not package_ids:
+            return []
+        rows = self.conn.execute(
+            "SELECT DISTINCT dpt.table_id "
+            "FROM data_package_tables dpt "
+            "JOIN data_packages dp ON dp.id = dpt.package_id "
+            "WHERE dp.deleted_at IS NULL AND dpt.package_id = ANY(?)",
+            [list(package_ids)],
+        ).fetchall()
+        return [r[0] for r in rows]
+
     def list_member_ids_bulk(self) -> Dict[str, List[str]]:
         """v54: single-query bulk fetch of the {package_id → [table_id, …]}
         mapping for every live (non-soft-deleted) package. Used by the
@@ -408,8 +445,12 @@ class DataPackagesRepository:
         ).fetchall()
         return [
             {
-                "id": r[0], "slug": r[1], "name": r[2],
-                "description": r[3], "icon": r[4], "color": r[5],
+                "id": r[0],
+                "slug": r[1],
+                "name": r[2],
+                "description": r[3],
+                "icon": r[4],
+                "color": r[5],
                 "cover_image_url": r[6],
             }
             for r in rows
