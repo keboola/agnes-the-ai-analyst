@@ -56,6 +56,14 @@ def test_suggestions_review_page_renders_for_admin(seeded_app):
     assert 'id="sug-run-mining"' in resp.text  # admin can trigger a mining run
 
 
+def test_memory_mining_consent_page_renders_for_user(seeded_app):
+    c = seeded_app["client"]
+    resp = c.get("/me/memory-mining", headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    assert 'id="mm-toggle"' in resp.text
+    assert "/static/js/me_memory_mining.js" in resp.text
+
+
 def test_suggestions_review_page_requires_admin(seeded_app):
     c = seeded_app["client"]
     resp = c.get(

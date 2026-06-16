@@ -1783,6 +1783,16 @@ async def memory_domain_detail(
     return templates.TemplateResponse(request, "memory_domain_detail.html", ctx)
 
 
+@router.get("/me/memory-mining", response_class=HTMLResponse)
+async def me_memory_mining(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """User-facing privacy control: opt in/out of having one's own session
+    transcripts mined into shared corporate memory (design spec §4.4)."""
+    return templates.TemplateResponse(request, "me_memory_mining.html", {})
+
+
 @router.get("/admin/studio/suggestions", response_class=HTMLResponse)
 async def studio_suggestions_admin(
     request: Request,
