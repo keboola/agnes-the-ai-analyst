@@ -63,3 +63,52 @@ def test_runner_leaves_image_pending_without_vision(e2e_env, tmp_path, monkeypat
     _cid, fid = _img_file("v-off", tmp_path)
     assert ingest_file(fid) == "pending"
     assert corpus_files_repo().get(fid)["processing_status"] == "pending"
+
+
+def test_vision_builds_correct_request_and_parses(monkeypatch, tmp_path):
+    """With a key + SDK present, extract_image_text sends a proper multimodal
+    request (base64 image block + media_type + model) and parses the reply.
+
+    Real Claude-vision output quality needs a live key (not exercised here);
+    this locks the request/response WIRING."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    from PIL import Image
+
+    img = tmp_path / "scan.png"
+    Image.new("RGB", (80, 40), (255, 255, 255)).save(img)
+
+    captured = {}
+
+    class _Block:
+        type = "text"
+        text = "Revenue grew strongly in the EU region."
+
+    class _Resp:
+        content = [_Block()]
+
+    class _Messages:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _Resp()
+
+    class _Client:
+        def __init__(self, api_key=None):
+            self.messages = _Messages()
+
+    import anthropic
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda api_key=None: _Client())
+
+    from src.ingest.vision import extract_image_text
+
+    text = extract_image_text(str(img), ext="png")
+    assert text == "Revenue grew strongly in the EU region."
+    assert captured.get("model")
+    content = captured["messages"][0]["content"]
+    img_blocks = [b for b in content if b.get("type") == "image"]
+    assert img_blocks, "no image block in the request"
+    src = img_blocks[0]["source"]
+    assert src["type"] == "base64"
+    assert src["media_type"] == "image/png"
+    assert src["data"]  # non-empty base64
+    assert any(b.get("type") == "text" for b in content)
