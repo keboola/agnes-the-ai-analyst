@@ -122,3 +122,26 @@ def test_ingest_idempotent_rechunk(e2e_env, tmp_path):
     ingest_file(file_id)  # re-ingest must not duplicate
     second = len(corpus_chunks_repo().list_for_file(file_id))
     assert first == second
+
+
+def test_tabular_same_base_name_distinct_tables(e2e_env, tmp_path):
+    """Two files whose names sanitize to the same base must NOT collide on the
+    derived DuckDB table (regression: silent overwrite)."""
+    from src.ingest.runner import ingest_file
+    from src.repositories import corpus_files_repo
+
+    corpus_id = _new_corpus("ing-collide")
+    d1 = tmp_path / "one"
+    d2 = tmp_path / "two"
+    d1.mkdir()
+    d2.mkdir()
+    (d1 / "data.csv").write_text("region,revenue\nEU,100\n", encoding="utf-8")
+    (d2 / "data.csv").write_text("region,revenue\nUS,250\n", encoding="utf-8")
+    fid1 = _add_file(corpus_id, "data.csv", "csv", str(d1 / "data.csv"))
+    fid2 = _add_file(corpus_id, "data.csv", "csv", str(d2 / "data.csv"))
+
+    assert ingest_file(fid1) == "indexed"
+    assert ingest_file(fid2) == "indexed"
+    t1 = corpus_files_repo().get(fid1)["processing_detail"]["derived_table_id"]
+    t2 = corpus_files_repo().get(fid2)["processing_detail"]["derived_table_id"]
+    assert t1 != t2, f"same-base files collided on table_id: {t1}"

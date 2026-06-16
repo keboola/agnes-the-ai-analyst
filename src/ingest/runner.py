@@ -19,7 +19,11 @@ from src.repositories import corpus_chunks_repo, corpus_files_repo
 logger = logging.getLogger(__name__)
 
 TABULAR_EXTS = {"csv", "tsv", "parquet", "json", "jsonl", "xlsx", "xls"}
-IMAGE_EXTS = {"png", "jpg", "jpeg", "tif", "tiff", "gif", "webp", "bmp"}
+# Only formats the vision API (src/ingest/vision._EXT_MEDIA) can actually read.
+# tif/tiff/bmp would route to vision but always return None → stuck 'pending'
+# with a misleading reason, so they fall through to the text path and get an
+# honest "no extractor" rejection instead (conversion is a future slice).
+IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "webp"}
 
 
 def _ext_of(filename: str, file_type: Optional[str]) -> str:

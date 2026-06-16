@@ -41,7 +41,11 @@ from app.auth.session_principal import SessionPrincipal
 from app.resource_types import ResourceType
 from src.corpus_allowlist import classify
 from src.file_storage import delete_corpus_file, store_corpus_file
-from src.repositories import corpus_files_repo, file_corpora_repo
+from src.repositories import (
+    corpus_chunks_repo,
+    corpus_files_repo,
+    file_corpora_repo,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -395,6 +399,9 @@ async def delete_file(
         raise HTTPException(status_code=404, detail="file_not_found")
     if row.get("storage_path"):
         delete_corpus_file(row["storage_path"])
+    # Delete the file's chunks first — otherwise they linger and still surface
+    # in search results (with a null filename once the file row is gone).
+    corpus_chunks_repo().delete_for_file(file_id)
     # Hard-delete the corpus_files row — no soft-delete on individual files.
     cf_repo.delete(file_id)
     logger.info(

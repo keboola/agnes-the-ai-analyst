@@ -536,3 +536,28 @@ class TestSearch:
         )
         assert resp.status_code == 200
         assert any("magic" in (r.get("text") or "") for r in resp.json()["results"])
+
+
+def test_delete_file_removes_its_chunks(seeded_app):
+    """Regression: deleting a file must also remove its corpus_chunks, so they
+    don't linger in search results with a null filename."""
+    from src.repositories import corpus_chunks_repo, corpus_files_repo
+
+    c = seeded_app["client"]
+    cid = c.post(
+        "/api/collections", json={"name": "Del Chunks"}, headers=_auth(seeded_app["admin_token"])
+    ).json()["id"]
+    fid = corpus_files_repo().add(
+        corpus_id=cid, filename="d.txt", sha256="s", file_type="txt",
+        size_bytes=1, storage_path=None,
+    )
+    corpus_chunks_repo().add_many(
+        [{"corpus_id": cid, "file_id": fid, "ordinal": 0, "text": "hello world"}]
+    )
+    assert len(corpus_chunks_repo().list_for_file(fid)) == 1
+
+    r = c.delete(
+        f"/api/collections/{cid}/files/{fid}", headers=_auth(seeded_app["admin_token"])
+    )
+    assert r.status_code == 204, r.text
+    assert corpus_chunks_repo().list_for_file(fid) == []

@@ -84,8 +84,13 @@ def ingest_tabular(
     data_dir = out_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    base = _sanitize(filename or storage_path)
-    table_id = f"{source_name}_{base}"
+    base = _sanitize(filename or storage_path)[:24]
+    # Append a slice of the unique file_id so two files whose names sanitize to
+    # the same base (e.g. sales.csv + sales.xlsx, or two data.csv) don't collide
+    # on the derived table — parquet path, _meta row, view, and table_registry id
+    # all key off table_id, so a collision would silently overwrite the first.
+    fid_suffix = (file_id or "").replace("cf_", "")[:8]
+    table_id = f"{source_name}_{base}_{fid_suffix}" if fid_suffix else f"{source_name}_{base}"
     parquet_path = data_dir / f"{table_id}.parquet"
 
     con = _open_duckdb(":memory:")

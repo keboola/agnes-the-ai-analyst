@@ -201,12 +201,19 @@ def upload_files(
         try:
             results = api_post_multipart(f"/api/collections/{collection_id}/files", files=files)
         except V2ClientError as exc:
-            typer.echo(f"  {fname}: ERROR — {exc}", err=True)
-            any_error = True
-            continue
+            # api_post_multipart raises on ALL 4xx, INCLUDING 422. The upload
+            # endpoint returns 422 with the full per-file result list when some
+            # files are rejected — recover it from the error body so the user
+            # still sees which files succeeded vs were rejected.
+            if exc.status_code == 422 and isinstance(exc.body, list):
+                results = exc.body
+                any_error = True
+            else:
+                typer.echo(f"  {fname}: ERROR — {exc}", err=True)
+                any_error = True
+                continue
 
-        # results may be a list (200) or a list via 422 — api_post_multipart
-        # raises on 4xx (non-422). Handle both list and dict shapes.
+        # results is the per-file list (200, or 422 recovered above).
         if isinstance(results, list):
             for row in results:
                 status = row.get("processing_status", "?")
