@@ -100,6 +100,26 @@ function init() {
     const btn = e.target.closest("button[data-act]");
     if (btn) resolve(btn.dataset.id, btn.dataset.act);
   });
+  const runBtn = $("sug-run-mining");
+  if (runBtn) {
+    runBtn.addEventListener("click", async () => {
+      runBtn.disabled = true;
+      try {
+        const r = await api("/api/admin/memory-mining/run", { method: "POST", body: JSON.stringify({}) });
+        if (window.appToast) {
+          window.appToast(`Mining run: ${r.created.length} candidate(s), ${r.skipped_pii} skipped (PII)`);
+        }
+        currentStatus = "pending";
+        document.querySelectorAll(".sug-tab").forEach((t) =>
+          t.setAttribute("aria-selected", t.dataset.status === "pending" ? "true" : "false"));
+        load();
+      } catch (e) {
+        if (window.appToast) window.appToast(`Mining failed: ${e.message}`);
+      } finally {
+        runBtn.disabled = false;
+      }
+    });
+  }
   load();
 }
 

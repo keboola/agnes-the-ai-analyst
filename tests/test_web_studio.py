@@ -53,6 +53,7 @@ def test_suggestions_review_page_renders_for_admin(seeded_app):
     assert resp.status_code == 200
     assert "/static/js/studio_suggestions.js" in resp.text
     assert 'id="sug-list"' in resp.text
+    assert 'id="sug-run-mining"' in resp.text  # admin can trigger a mining run
 
 
 def test_suggestions_review_page_requires_admin(seeded_app):
