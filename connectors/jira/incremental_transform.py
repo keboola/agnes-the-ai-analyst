@@ -134,6 +134,7 @@ def save_parquet_month(
         # Don't write empty files; remove hive dir and legacy flat file if present.
         if hive_dir.exists():
             import shutil
+
             shutil.rmtree(hive_dir)
             logger.info(f"Removed empty hive dir {hive_dir}")
         flat = _flat_path(output_dir, month_key)
@@ -174,7 +175,10 @@ def migrate_flat_to_hive(table_dir: Path) -> list[str]:
         hive_dir = _hive_dir(table_dir, month_key)
 
         if hive_dir.exists():
-            # Already migrated; leave flat file for caller to clean up if needed.
+            # Already migrated to hive — remove the redundant flat file so the
+            # recursive readers don't double-count this month (flat + hive).
+            flat_file.unlink()
+            logger.info("Removed redundant flat parquet %s (hive already present)", flat_file)
             continue
 
         hive_dir.mkdir(parents=True, exist_ok=True)
@@ -296,8 +300,12 @@ def transform_single_issue(
             # Remote links
             if remote_links_records is not None:
                 existing_remote_links = load_parquet_month(output_dir / "remote_links", month_key)
-                updated_remote_links = upsert_dataframe(existing_remote_links, remote_links_records, "issue_key", issue_key)
-                path = save_parquet_month(updated_remote_links, REMOTE_LINKS_SCHEMA, output_dir / "remote_links", month_key)
+                updated_remote_links = upsert_dataframe(
+                    existing_remote_links, remote_links_records, "issue_key", issue_key
+                )
+                path = save_parquet_month(
+                    updated_remote_links, REMOTE_LINKS_SCHEMA, output_dir / "remote_links", month_key
+                )
                 updated_paths.append(path)
             else:
                 # The writer (save_issue / backfill / backfill_remote_links) skipped

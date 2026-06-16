@@ -778,9 +778,12 @@ def profile_table(
     con.execute("SET threads = 2")
     con.execute("SET preserve_insertion_order=false")
 
-    # Determine read expression
+    # Determine read expression. Use a recursive ``**`` glob so a directory of
+    # parquets is read whether they are flat (``<dir>/*.parquet``) or nested in
+    # a hive layout (``<dir>/month=*/data.parquet``, e.g. Jira). ``**`` matches
+    # zero or more directories, so the flat case still works.
     if parquet_path.is_dir():
-        read_expr = f"read_parquet('{parquet_path}/*.parquet', union_by_name=true)"
+        read_expr = f"read_parquet('{parquet_path}/**/*.parquet', union_by_name=true)"
     else:
         read_expr = f"read_parquet('{parquet_path}', union_by_name=true)"
 
@@ -1403,7 +1406,9 @@ def main() -> None:
                 logger.warning("Skipping %s: directory %s not found", jira_table.name, jira_path)
                 skip_count += 1
                 continue
-            parquet_files = list(jira_path.glob("*.parquet"))
+            # Recursive: matches both the flat (<table>/<YYYY-MM>.parquet) and
+            # hive (<table>/month=<YYYY-MM>/data.parquet) Jira layouts.
+            parquet_files = list(jira_path.rglob("*.parquet"))
             if not parquet_files:
                 logger.warning("Skipping %s: no parquet files in %s", jira_table.name, jira_path)
                 skip_count += 1

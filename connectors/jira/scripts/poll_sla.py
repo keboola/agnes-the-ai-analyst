@@ -117,7 +117,9 @@ def find_open_issues_with_sla(parquet_dir: Path) -> list[str]:
         logger.error(f"Issues Parquet directory not found: {issues_dir}")
         return []
 
-    parquet_files = sorted(issues_dir.glob("*.parquet"))
+    # Recursive: matches both flat (<table>/<YYYY-MM>.parquet) and hive
+    # (<table>/month=<YYYY-MM>/data.parquet) Jira parquet layouts.
+    parquet_files = sorted(issues_dir.rglob("*.parquet"))
     if not parquet_files:
         logger.error(f"No Parquet files found in {issues_dir}")
         return []
@@ -289,16 +291,24 @@ def run(dry_run: bool = False, verbose: bool = False) -> dict:
     if not open_issues:
         logger.info("No open issues with SLA data found")
         return {
-            "open_issues": 0, "updated": 0, "healed": 0,
-            "skipped": 0, "failed": 0, "elapsed_sec": 0.0,
+            "open_issues": 0,
+            "updated": 0,
+            "healed": 0,
+            "skipped": 0,
+            "failed": 0,
+            "elapsed_sec": 0.0,
             "dry_run": dry_run,
         }
 
     if dry_run:
         logger.info(f"Dry run: would poll {len(open_issues)} open issues")
         return {
-            "open_issues": len(open_issues), "updated": 0, "healed": 0,
-            "skipped": 0, "failed": 0, "elapsed_sec": 0.0,
+            "open_issues": len(open_issues),
+            "updated": 0,
+            "healed": 0,
+            "skipped": 0,
+            "failed": 0,
+            "elapsed_sec": 0.0,
             "dry_run": True,
         }
 

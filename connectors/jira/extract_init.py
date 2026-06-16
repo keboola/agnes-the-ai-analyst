@@ -9,7 +9,6 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-import duckdb
 
 from src.duckdb_conn import _open_duckdb
 
@@ -52,6 +51,7 @@ def init_extract(output_dir: str | Path) -> None:
             # before building the view so the glob always points at hive dirs.
             try:
                 from .incremental_transform import migrate_flat_to_hive
+
                 migrated = migrate_flat_to_hive(table_dir)
                 if migrated:
                     logger.info(
