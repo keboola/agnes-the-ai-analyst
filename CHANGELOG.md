@@ -11,8 +11,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
-- Corporate-memory mining (privacy-gated, v78): per-user **opt-in consent** (`memory_mining_consent`, dual-backend) before any session transcript is mined; an admin `POST /api/admin/memory-mining/run` PII-scans candidates, tags provenance, and routes them through the authoring-suggestions queue (never an admin-direct write). Candidate extraction is a deterministic placeholder; LLM distillation plugs in on top of the same consent/PII/provenance/approval gate.
-- Authoring agents — non-admin suggestion queue (`authoring_suggestions`, DuckDB v77 + Alembic, dual-backend): `POST /api/studio/suggestions` lets a non-admin submit a proposed create payload per studio domain; admins review via a moderation queue at `/admin/studio/suggestions` + `GET/POST /api/admin/authoring-suggestions[/{id}/approve|reject]`. Approving a suggestion auto-creates the real resource for all four domains by replaying the payload through each domain's own validation + repo create path (pydantic re-validation; the moderation UI shows the complete `command`/`url` payload so admin approval is informed consent).
+- Corporate-memory mining (privacy-gated, v81): per-user **opt-in consent** (`memory_mining_consent`, dual-backend) before any session transcript is mined; an admin `POST /api/admin/memory-mining/run` PII-scans candidates, tags provenance, and routes them through the authoring-suggestions queue (never an admin-direct write). Candidate extraction is a deterministic placeholder; LLM distillation plugs in on top of the same consent/PII/provenance/approval gate.
+- Authoring agents — non-admin suggestion queue (`authoring_suggestions`, DuckDB v80 + Alembic, dual-backend): `POST /api/studio/suggestions` lets a non-admin submit a proposed create payload per studio domain; admins review via a moderation queue at `/admin/studio/suggestions` + `GET/POST /api/admin/authoring-suggestions[/{id}/approve|reject]`. Approving a suggestion auto-creates the real resource for all four domains by replaying the payload through each domain's own validation + repo create path (pydantic re-validation; the moderation UI shows the complete `command`/`url` payload so admin approval is informed consent).
 - Authoring agents: profiled chat sessions (`profile` on `POST /api/chat/sessions`, materialized into the session workdir, no migration) + a generic admin-only **authoring studio** at `/admin/studio/{domain}` with an embedded assistant panel, covering four domains — **data-package**, **mcp**, **marketplace**, and **corporate-memory** — each wiring its Create action to the existing admin endpoint.
 
 ### Changed
@@ -22,6 +22,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- Schema v80 (DuckDB `_v79_to_v80` + Alembic `0027_authoring_suggestions_v80`): `authoring_suggestions` table — non-admin suggestion queue and moderation flow, dual-backend.
+- Schema v81 (DuckDB `_v80_to_v81` + Alembic `0028_memory_mining_consent_v81`): `memory_mining_consent` table — opt-in privacy gate for memory mining, dual-backend.
 
 ## [0.71.43] - 2026-06-16
 
