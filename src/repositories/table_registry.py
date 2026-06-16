@@ -87,6 +87,7 @@ def _decode_primary_key(stored: Any) -> Optional[List[str]]:
             # Python repr legacy: `"['a', 'b']"` (single-quoted)
             try:
                 import ast
+
                 v = ast.literal_eval(s)
                 if isinstance(v, list):
                     return [str(x) for x in v if x]
@@ -102,15 +103,21 @@ class TableRegistryRepository:
         self.conn = conn
 
     def register(
-        self, id: str, name: str, folder: Optional[str] = None,
+        self,
+        id: str,
+        name: str,
+        folder: Optional[str] = None,
         sync_strategy: Optional[str] = None,
         primary_key: Union[None, str, List[str]] = None,
-        description: Optional[str] = None, registered_by: Optional[str] = None,
-        source_type: Optional[str] = None, bucket: Optional[str] = None,
+        description: Optional[str] = None,
+        registered_by: Optional[str] = None,
+        source_type: Optional[str] = None,
+        bucket: Optional[str] = None,
         source_table: Optional[str] = None,
         source_query: Optional[str] = None,
         query_mode: str = "local",
-        sync_schedule: Optional[str] = None, profile_after_sync: bool = True,
+        sync_schedule: Optional[str] = None,
+        profile_after_sync: bool = True,
         registered_at: Optional[datetime] = None,
         # v26 — Keboola sync-strategy support fields. All optional; meaningful
         # only when paired with the matching sync_strategy. API-layer
@@ -134,6 +141,9 @@ class TableRegistryRepository:
         # but `agnes pull` skips its parquet. API-layer validator rejects
         # True paired with query_mode='remote'.
         server_only: bool = False,
+        # v79 — nullable FK to source_connections.id. NULL = use the default
+        # connection for the row's source_type (spec 2026-06-12).
+        connection_id: Optional[str] = None,
     ) -> None:
         # `registered_at` defaults to "now" for fresh inserts. Updaters that
         # want to preserve the original registration time across edits pass
@@ -153,8 +163,8 @@ class TableRegistryRepository:
                 sync_schedule, profile_after_sync,
                 incremental_window_days, max_history_days, incremental_column,
                 where_filters, partition_by, partition_granularity,
-                initial_load_chunk_days, bq_fqn, server_only)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                initial_load_chunk_days, bq_fqn, server_only, connection_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name, folder = excluded.folder,
                 sync_strategy = excluded.sync_strategy, primary_key = excluded.primary_key,
@@ -172,13 +182,35 @@ class TableRegistryRepository:
                 partition_granularity = excluded.partition_granularity,
                 initial_load_chunk_days = excluded.initial_load_chunk_days,
                 bq_fqn = excluded.bq_fqn,
-                server_only = excluded.server_only""",
-            [id, name, folder, effective_strategy, encoded_pk, description, registered_by, ts,
-             source_type, bucket, source_table, source_query, query_mode,
-             sync_schedule, profile_after_sync,
-             incremental_window_days, max_history_days, incremental_column,
-             encoded_filters, partition_by, partition_granularity,
-             initial_load_chunk_days, bq_fqn, bool(server_only)],
+                server_only = excluded.server_only,
+                connection_id = excluded.connection_id""",
+            [
+                id,
+                name,
+                folder,
+                effective_strategy,
+                encoded_pk,
+                description,
+                registered_by,
+                ts,
+                source_type,
+                bucket,
+                source_table,
+                source_query,
+                query_mode,
+                sync_schedule,
+                profile_after_sync,
+                incremental_window_days,
+                max_history_days,
+                incremental_column,
+                encoded_filters,
+                partition_by,
+                partition_granularity,
+                initial_load_chunk_days,
+                bq_fqn,
+                bool(server_only),
+                connection_id,
+            ],
         )
 
     @staticmethod
@@ -293,9 +325,7 @@ class TableRegistryRepository:
         )
 
     def get(self, table_id: str) -> Optional[Dict[str, Any]]:
-        result = self.conn.execute(
-            "SELECT * FROM table_registry WHERE id = ?", [table_id]
-        ).fetchone()
+        result = self.conn.execute("SELECT * FROM table_registry WHERE id = ?", [table_id]).fetchone()
         if not result:
             return None
         columns = [desc[0] for desc in self.conn.description]
@@ -320,7 +350,9 @@ class TableRegistryRepository:
         return [self._decode_row(dict(zip(columns, row))) for row in results]
 
     def find_by_bq_path(
-        self, bucket: str, source_table: str,
+        self,
+        bucket: str,
+        source_table: str,
     ) -> Optional[Dict[str, Any]]:
         """Look up a BigQuery row by `(bucket, source_table)`.
 
