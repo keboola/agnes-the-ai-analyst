@@ -11,7 +11,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
-- Named source connections (phase 1/5): `source_connections` + vault-backed `connection_secrets` registry (DuckDB v77 + Alembic `0024`), per-type config validation with URL normalization, a connection/token resolver (vault → `token_env`), and first-boot seeding of `keboola`/`bigquery` defaults from env/yaml. Invisible in this phase — extraction switches over to per-connection `extracts/<name>/` in phase 2. Lays the groundwork for N connections per source type (multiple Keboola stacks/projects, multiple BigQuery projects) without changing single-connection deployments.
 
 ### Changed
 
@@ -20,6 +19,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+## [0.71.41] — 2026-06-15
+
+### Added
+- Named source connections (phase 1/5): `source_connections` + vault-backed `connection_secrets` registry (DuckDB v79 + Alembic `0026`), per-type config validation with URL normalization, a connection/token resolver (vault → `token_env`), and first-boot seeding of `keboola`/`bigquery` defaults from env/yaml. Invisible in this phase — extraction switches over to per-connection `extracts/<name>/` in phase 2. Lays the groundwork for N connections per source type (multiple Keboola stacks/projects, multiple BigQuery projects) without changing single-connection deployments.
 
 ## [0.71.40] — 2026-06-15
 
