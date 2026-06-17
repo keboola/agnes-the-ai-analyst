@@ -1302,6 +1302,20 @@ class TestMarketplacesSmoke:
 # ---------------------------------------------------------------------------
 
 KNOWN_UNTESTED = {
+    # Authoring studio + suggestion queue + memory-mining consent — covered by
+    # dedicated suites (tests/test_authoring_suggestions_api.py, tests/test_web_studio.py);
+    # web-form / admin-moderation flows, not part of the parameter-free smoke sweep.
+    "GET /admin/studio/suggestions",
+    "GET /admin/studio/{domain}",
+    "GET /api/admin/authoring-suggestions",
+    "GET /api/studio/suggestions/mine",
+    "POST /api/studio/suggestions",
+    "POST /api/admin/authoring-suggestions/{sid}/approve",
+    "POST /api/admin/authoring-suggestions/{sid}/reject",
+    "GET /api/studio/memory-mining/consent",
+    "POST /api/studio/memory-mining/consent",
+    "POST /api/admin/memory-mining/run",
+    "GET /me/memory-mining",
     # dulwich smart-HTTP git bridge — requires git repo on disk, explicit non-goal
     "GET /marketplace.git/{path}",
     "POST /marketplace.git/{path}",
