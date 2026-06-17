@@ -25,6 +25,7 @@ import pytest
 # real_llm marker (Task E.3)
 # ---------------------------------------------------------------------------
 
+
 def pytest_configure(config: pytest.Config) -> None:
     """Register custom markers used by the E2E suite.
 
@@ -40,9 +41,7 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Skip `real_llm` tests when AGNES_E2E_ANTHROPIC isn't set.
 
     Lets the rest of the E2E suite run against the fake-agent runner
@@ -71,7 +70,12 @@ def pytest_collection_modifyitems(
 # ---------------------------------------------------------------------------
 
 _COMPOSE_FILE = Path(__file__).parent / "docker-compose.e2e.yml"
-_BASE_URL = "http://localhost:8000"
+# Host port is overridable (AGNES_E2E_PORT) so the suite can run when the
+# default 8000 is already taken by another local container. The compose file
+# maps ${AGNES_E2E_PORT:-8000}:8000; the in-container app + healthcheck always
+# listen on 8000.
+_E2E_PORT = os.environ.get("AGNES_E2E_PORT", "8000")
+_BASE_URL = f"http://localhost:{_E2E_PORT}"
 _HEALTH_PATH = "/api/health"
 _HEALTH_TIMEOUT_SECONDS = 120
 
@@ -103,9 +107,7 @@ def _wait_for_health(base_url: str, timeout: float) -> None:
         except (urllib.error.URLError, OSError) as exc:
             last_err = exc
         time.sleep(1.5)
-    raise RuntimeError(
-        f"agnes container did not become healthy within {timeout}s: {last_err!r}"
-    )
+    raise RuntimeError(f"agnes container did not become healthy within {timeout}s: {last_err!r}")
 
 
 @pytest.fixture(scope="session")

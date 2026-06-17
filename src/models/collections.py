@@ -1,7 +1,7 @@
-"""SQLAlchemy models for the Collections cluster (v80):
+"""SQLAlchemy models for the Collections cluster (v82):
 file_corpora, corpus_files, corpus_chunks.
 
-Mirrors DuckDB DDL in src/db.py (_v79_to_v80 / _SYSTEM_SCHEMA).
+Mirrors DuckDB DDL in src/db.py (_v81_to_v82 / _SYSTEM_SCHEMA).
 
 PG notes:
 - corpus_chunks.embedding uses real[] (sa.ARRAY(sa.REAL), float4 — matches the

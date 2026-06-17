@@ -1,4 +1,4 @@
-"""Postgres-backed repository for ``file_corpora`` (v80).
+"""Postgres-backed repository for ``file_corpora`` (v82).
 
 Mirrors ``src/repositories/file_corpora.py`` (the DuckDB impl) on the
 ``FileCorporaRepository`` public surface. Cross-engine parity is covered

@@ -1,4 +1,4 @@
-"""Postgres-backed repository for ``corpus_chunks`` (v80).
+"""Postgres-backed repository for ``corpus_chunks`` (v82).
 
 Mirrors ``src/repositories/corpus_chunks.py`` (the DuckDB impl) on the
 ``CorpusChunksRepository`` public surface. Cross-engine parity is covered

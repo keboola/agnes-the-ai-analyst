@@ -1,4 +1,4 @@
-"""DuckDB-backed repository for ``file_corpora`` (v80).
+"""DuckDB-backed repository for ``file_corpora`` (v82).
 
 A file corpus is a self-service Collection container — an admin or user
 creates one, uploads files into it, and the ingestion pipeline turns those

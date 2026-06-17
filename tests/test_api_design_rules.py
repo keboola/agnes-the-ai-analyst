@@ -96,6 +96,12 @@ _VERB_PATH_ALLOWLIST = frozenset(
         # a side effect, so it's not a clean PATCH on a single field.
         "/api/admin/memory-domain-suggestions/{sid}/approve",
         "/api/admin/memory-domain-suggestions/{sid}/reject",
+        # Authoring-studio suggestion lifecycle — same pending → approved/rejected
+        # state-machine (approve also replays the payload into the real resource).
+        "/api/admin/authoring-suggestions/{sid}/approve",
+        "/api/admin/authoring-suggestions/{sid}/reject",
+        # Corporate-memory mining — fire-and-forget admin batch trigger (v81).
+        "/api/admin/memory-mining/run",
         # User lifecycle — activate/deactivate map to a boolean field (acceptable PATCH candidate)
         "/api/users/{user_id}/activate",
         "/api/users/{user_id}/deactivate",
@@ -200,6 +206,9 @@ _CREATOR_POST_ALLOWLIST = frozenset(
         # Config upserts — update existing config, not create a new resource
         "/api/admin/server-config",
         "/api/sync/settings",
+        # Consent toggle upsert — sets the caller's own opt-in flag (200), not
+        # a resource create. GET on the same path returns the current state.
+        "/api/studio/memory-mining/consent",
         # Subscription upsert — sets per-table enabled flags, not a pure create
         "/api/sync/table-subscriptions",
         # Auth flows — 200 is conventional for token/session responses

@@ -129,6 +129,19 @@ _COLLECTIONS_FILES_REASON = (
     "show`; file deletion is a maintenance mutation with no analyst CLI/MCP "
     "analogue. The collection read surfaces carry the triple-surface contract."
 )
+_AUTHORING_SUGGESTIONS_REASON = (
+    "Authoring-studio suggestion queue (v80) — web-form/admin-moderation flow. "
+    "Non-admins submit a proposed create payload from the /admin/studio/{domain} "
+    "builder and admins approve/reject from the moderation UI. No analyst "
+    "CLI/MCP analogue (mirrors the grandfathered /api/memory-domain-suggestions "
+    "moderation queue); the real domain create endpoints carry the contract."
+)
+_MEMORY_MINING_REASON = (
+    "Corporate-memory mining (v81) — privacy-gated web/admin flow. Users manage "
+    "their own opt-in consent from a web toggle; an admin triggers a mining run "
+    "from the moderation UI. Candidates route through the authoring-suggestions "
+    "queue (itself exempt). No analyst CLI/MCP analogue."
+)
 _BUILTIN_DISABLE_REASON = (
     "admin-only per-plugin disable toggle for built-in marketplace plugins — "
     "web UI only at /admin/marketplaces, no analyst CLI/MCP analogue (mirrors "
@@ -137,6 +150,13 @@ _BUILTIN_DISABLE_REASON = (
 _EXEMPT: dict[str, str] = {
     "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
+    "/api/studio/memory-mining/consent": _MEMORY_MINING_REASON,
+    "/api/admin/memory-mining/run": _MEMORY_MINING_REASON,
+    "/api/studio/suggestions": _AUTHORING_SUGGESTIONS_REASON,
+    "/api/studio/suggestions/mine": _AUTHORING_SUGGESTIONS_REASON,
+    "/api/admin/authoring-suggestions": _AUTHORING_SUGGESTIONS_REASON,
+    "/api/admin/authoring-suggestions/{sid}/approve": _AUTHORING_SUGGESTIONS_REASON,
+    "/api/admin/authoring-suggestions/{sid}/reject": _AUTHORING_SUGGESTIONS_REASON,
     "/api/admin/initial-workspace/sync-if-configured": _IW_SYNC_IF_CONFIGURED_REASON,
     "/api/store/entities/dryrun": _STORE_DRYRUN_REASON,
     "/api/admin/prompts/{kind}": _PROMPTS_REASON,

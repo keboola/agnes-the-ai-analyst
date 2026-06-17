@@ -700,6 +700,30 @@ checks against.
 - /api/admin/memory-domain-suggestions/{sid}/approve
 - /api/admin/memory-domain-suggestions/{sid}/reject
 
+### `/api/admin/authoring-suggestions` — Authoring studio suggestion review (admin)
+
+Generic non-admin suggestion queue for the authoring studio (data-package / mcp /
+marketplace / corporate-memory). Non-admins submit a proposed create payload from
+the `/admin/studio/{domain}` builder; admins approve/reject (guarded state
+transitions — turning an approved suggestion into the real resource is a deferred
+follow-up that must re-validate through the domain endpoint, never replay).
+
+- /api/studio/suggestions
+- /api/studio/suggestions/mine
+- /api/admin/authoring-suggestions
+- /api/admin/authoring-suggestions/{sid}/approve
+- /api/admin/authoring-suggestions/{sid}/reject
+
+### `/api/studio/memory-mining` — Corporate-memory mining (privacy-gated)
+
+Opt-in (per design spec §4.4): a user consents to having their session
+transcripts mined into shared corporate memory; an admin triggers a run that
+PII-scans candidates, tags provenance, and routes them through the
+authoring-suggestions queue (never an admin-direct write).
+
+- /api/studio/memory-mining/consent
+- /api/admin/memory-mining/run
+
 ### `/api/admin/metrics` — Metric definitions (admin)
 
 - /api/admin/metrics

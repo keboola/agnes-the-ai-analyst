@@ -1,4 +1,4 @@
-"""DuckDB-backed repository for ``corpus_chunks`` (v80).
+"""DuckDB-backed repository for ``corpus_chunks`` (v82).
 
 One row per text chunk extracted from a ``corpus_files`` document.
 ``embedding`` is left NULL by this repo (populated in Retrieval slice 4).

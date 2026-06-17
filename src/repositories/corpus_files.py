@@ -1,4 +1,4 @@
-"""DuckDB-backed repository for ``corpus_files`` (v80).
+"""DuckDB-backed repository for ``corpus_files`` (v82).
 
 One row per uploaded file associated with a ``file_corpora`` corpus.
 Tracks the processing lifecycle: pending → processing → indexed | rejected.

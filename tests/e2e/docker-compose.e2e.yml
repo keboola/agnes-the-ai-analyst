@@ -34,9 +34,14 @@ services:
       # Optional: set AGNES_E2E_FAKE_AGENT=1 on the host to flip the
       # runner into deterministic-echo mode (no Anthropic dependency).
       AGNES_RUNNER_FAKE_AGENT: "${AGNES_E2E_FAKE_AGENT:-}"
+      # Optional: set AGNES_E2E_DEV_MODE=1 on the host to bypass auth and
+      # auto-seed an admin dev user (dev@localhost). Used by admin-page E2E
+      # (e.g. the studio builder) so Playwright lands as an admin without a
+      # login flow. Off by default.
+      LOCAL_DEV_MODE: "${AGNES_E2E_DEV_MODE:-}"
       DATA_DIR: "/data"
     ports:
-      - "8000:8000"
+      - "${AGNES_E2E_PORT:-8000}:8000"
     volumes:
       - agnes_data:/data
     healthcheck:

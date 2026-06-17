@@ -192,7 +192,7 @@ def test_schema_version_is_62():
     #            is_co_session/ephemeral/sender_email.
     # v77 → v78: built-in marketplace — is_builtin on marketplace_registry,
     #            admin_disabled on marketplace_plugins.
-    # v79 → v80: collections (file_corpora / corpus_files / corpus_chunks).
+    # v81 → v82: collections (file_corpora / corpus_files / corpus_chunks).
     assert SCHEMA_VERSION >= 80
 
 

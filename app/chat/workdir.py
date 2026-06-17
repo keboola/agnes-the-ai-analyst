@@ -1,9 +1,13 @@
 """Per-user workspace and per-session working-directory lifecycle."""
+
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
+
+if TYPE_CHECKING:
+    from app.chat.profiles import ChatProfile
 
 from src.initial_workspace import (
     TemplateStatus,
@@ -80,11 +84,9 @@ class WorkdirManager:
         if self._sha_debounce_seconds <= 0:
             return self._get_marketplace_sha()
         import time as _time
+
         now_mono = _time.monotonic()
-        if (
-            self._cached_sha is not None
-            and (now_mono - self._cached_sha_at) < self._sha_debounce_seconds
-        ):
+        if self._cached_sha is not None and (now_mono - self._cached_sha_at) < self._sha_debounce_seconds:
             return self._cached_sha
         self._cached_sha = self._get_marketplace_sha()
         self._cached_sha_at = now_mono
@@ -124,7 +126,8 @@ class WorkdirManager:
             # docs/initial-workspace-override.md.)
             zip_bytes = self._fetch_template_zip()
             initialize_workspace_from_template(
-                ws, zip_bytes,
+                ws,
+                zip_bytes,
                 agnes_version=self._agnes_version,
                 server_url=self._server_url,
                 template_source=status.template_source,
@@ -165,8 +168,12 @@ class WorkdirManager:
         logger.info("workdir initialized: user=%s template_sha=%s", user_email, template_sha)
 
     def prepare_session_dir(
-        self, user_email: str, chat_id: str,
-        *, include_personal_override: bool = True,
+        self,
+        user_email: str,
+        chat_id: str,
+        *,
+        include_personal_override: bool = True,
+        profile: "ChatProfile | None" = None,
     ) -> Path:
         """Prepare a regular per-user session directory.
 
@@ -176,6 +183,14 @@ class WorkdirManager:
         analyst's personal overrides. Co-drive sessions never call this
         method — they use :meth:`prepare_ephemeral_session_dir`, which
         deliberately excludes ``CLAUDE.local.md`` (SR-6 protection).
+
+        When ``profile`` is set (authoring-agent sessions), the session is
+        specialized: the workspace ``CLAUDE.md`` is replaced by the profile
+        persona and a read-only knowledge skill is injected. To avoid writing
+        through the ``.claude`` symlink into the *shared* workspace, ``.claude``
+        is **copied** (not symlinked) for profiled sessions and ``CLAUDE.md`` is
+        written as a real file. The profile is materialized into the workdir
+        only — it is never persisted, so no schema migration is involved.
         """
         sessions_root = self.user_sessions_root(user_email)
         sessions_root.mkdir(parents=True, exist_ok=True)
@@ -188,15 +203,43 @@ class WorkdirManager:
         entries = [".claude", "CLAUDE.md", "snapshots", "scripts"]
         if include_personal_override:
             entries.append("CLAUDE.local.md")
+        # A profile owns .claude (copied, see below) and CLAUDE.md (persona) —
+        # skip symlinking those two so we don't link-through to the workspace.
+        profile_owned = {".claude", "CLAUDE.md"} if profile is not None else set()
         for entry in entries:
+            if entry in profile_owned:
+                continue
             link = sdir / entry
             target = ws / entry
             if not target.exists():
                 continue
             if not link.exists():
                 link.symlink_to(target)
+        if profile is not None:
+            self._materialize_profile(sdir, ws, profile)
         (sdir / "work").mkdir(exist_ok=True)
         return sdir
+
+    @staticmethod
+    def _materialize_profile(sdir: Path, ws: Path, profile: "ChatProfile") -> None:
+        """Copy the workspace ``.claude`` into ``sdir`` and overlay the profile
+        persona + knowledge skill, without mutating the shared workspace."""
+        import shutil
+
+        claude_dst = sdir / ".claude"
+        if claude_dst.is_symlink():
+            claude_dst.unlink()
+        elif claude_dst.is_dir():
+            shutil.rmtree(claude_dst)
+        claude_src = ws / ".claude"
+        if claude_src.exists():
+            shutil.copytree(claude_src, claude_dst)
+        else:
+            claude_dst.mkdir(parents=True, exist_ok=True)
+        (sdir / "CLAUDE.md").write_text(profile.claude_md, encoding="utf-8")
+        skill_dir = claude_dst / "skills" / profile.skill_name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(profile.skill_body, encoding="utf-8")
 
     def prepare_ephemeral_session_dir(
         self,
@@ -208,6 +251,7 @@ class WorkdirManager:
         NO CLAUDE.local.md in any form, fresh empty memory/, shared work/.
         Only intersection-filtered .claude/skills entries are copied in."""
         import shutil
+
         root = self._data_dir / "ephemeral_sessions" / chat_id
         if root.exists():
             shutil.rmtree(root)
@@ -230,13 +274,13 @@ class WorkdirManager:
             for plug in allowed:
                 src = src_root / plug
                 if src.exists():
-                    shutil.copytree(src, root / ".claude" / "skills" / plug,
-                                    dirs_exist_ok=True)
+                    shutil.copytree(src, root / ".claude" / "skills" / plug, dirs_exist_ok=True)
         return root
 
     def purge_user(self, user_email: str) -> int:
         """GDPR hard-delete. Returns file count removed."""
         import shutil
+
         root = self._user_root(user_email)
         if not root.exists():
             return 0

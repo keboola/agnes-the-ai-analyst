@@ -1,4 +1,4 @@
-"""Postgres-backed repository for ``corpus_files`` (v80).
+"""Postgres-backed repository for ``corpus_files`` (v82).
 
 Mirrors ``src/repositories/corpus_files.py`` (the DuckDB impl) on the
 ``CorpusFilesRepository`` public surface. Cross-engine parity is covered

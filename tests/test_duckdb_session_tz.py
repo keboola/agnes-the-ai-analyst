@@ -114,6 +114,8 @@ def test_no_bare_duckdb_connect_in_production_code():
         "tests/db_pg/test_audit_contract.py",
         "tests/db_pg/test_data_migration.py",
         "tests/db_pg/test_data_packages_contract.py",
+        "tests/db_pg/test_authoring_suggestions_contract.py",
+        "tests/db_pg/test_memory_mining_consent_contract.py",
         "tests/db_pg/test_db_state_e2e.py",
         "tests/db_pg/test_db_state_migrator.py",
         "tests/db_pg/test_memory_domain_suggestions_contract.py",
