@@ -85,7 +85,7 @@ class TestPrefixFilter:
         )
 
         resp = env["client"].get("/auth/google/callback?code=x&state=y")
-        assert resp.status_code in (302, 307)
+        assert resp.status_code == 302
         assert resp.headers["location"] == "/dashboard"
 
         conn = _system_db()
@@ -160,7 +160,7 @@ class TestPrefixFilter:
         )
 
         resp = env["client"].get("/auth/google/callback?code=x&state=y")
-        assert resp.status_code in (302, 307)
+        assert resp.status_code == 302
         assert resp.headers["location"] == "/dashboard"
 
         conn = _system_db()
