@@ -152,6 +152,31 @@ def materialize_query(
             ) from e
     export_filter = ExportFilter.from_dict(payload)
 
+    # Resolve date placeholders ({{last_6_months}}, {{today}}, …) in the
+    # where_filters values, mirroring the local/legacy extract path
+    # (`run()` calls `resolve_placeholders(parse_filters(...))`). The Storage
+    # API receives literal dates; an unresolved `{{last_6_months}}` would be
+    # compared verbatim and silently return 0 rows. Materialized rows
+    # previously skipped this step, so placeholders only worked on
+    # `query_mode='local'` rows — this aligns the materialized path.
+    if export_filter.where_filters:
+        from connectors.keboola.where_filters import (
+            InvalidFilterError,
+            parse_filters,
+            resolve_placeholders,
+        )
+
+        try:
+            export_filter.where_filters = resolve_placeholders(
+                parse_filters(export_filter.where_filters),
+                datetime.now(timezone.utc),
+            )
+        except InvalidFilterError as e:
+            raise ValueError(
+                f"source_query for {table_id} has an invalid where_filters "
+                f"placeholder: {e}"
+            ) from e
+
     # Default the materialized path to parquet — Storage API serves it
     # via native Snowflake UNLOAD, the extractor renames it into place,
     # no CSV intermediate, no DuckDB COPY, no peak-memory load. Admin
