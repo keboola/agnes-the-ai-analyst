@@ -171,6 +171,20 @@ elif [ -s "$STATE_DIR/certs/fullchain.pem" ] && [ -s "$STATE_DIR/certs/privkey.p
     logger -t agnes-auto-upgrade "WARN: certs present but Caddyfile missing/empty — skipping tls overlay"
 fi
 
+# gcplogs overlay — ships container stdout/stderr to GCP Cloud Logging. Gated
+# purely on file presence (mirrors the tls append above): the file is NOT baked
+# into the image and is NOT in CONFIG_FILES, so it lands ONLY when the GCE deploy
+# layer (Terraform startup-script / infra startup.sh) placed it. On non-GCP hosts
+# the file is absent → the overlay is never appended → containers stay on the
+# default json-file driver (gcplogs would otherwise fail without a GCE metadata
+# server). Idempotent case-check guards against re-appending across ticks.
+if [ -f docker-compose.gcp-logging.yml ]; then
+    case ":$COMPOSE_FILE:" in
+      *:docker-compose.gcp-logging.yml:*) : ;;
+      *) export COMPOSE_FILE="$COMPOSE_FILE:docker-compose.gcp-logging.yml" ;;
+    esac
+fi
+
 # COMPOSE_FILE is exported above; docker compose picks it up automatically.
 # `|| …` so a pull failure (registry outage, transient network/auth blip)
 # doesn't abort the script under `set -e` BEFORE drift detection runs —

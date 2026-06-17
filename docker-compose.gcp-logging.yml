@@ -1,0 +1,44 @@
+# GCP Cloud Logging overlay — ships container stdout/stderr to Google Cloud
+# Logging via Docker's built-in `gcplogs` driver.
+#
+# Activation is PLACEMENT-DRIVEN: this file is deliberately NOT baked into the
+# image and NOT in any default COMPOSE_FILE / CONFIG_FILES list. The runtime
+# drivers (agnes-auto-upgrade.sh, agnes-state-applier.sh) append it ONLY when the
+# file physically exists on disk (`[ -f docker-compose.gcp-logging.yml ]`). The
+# only thing that places the file on a VM is the GCE deploy layer (the customer
+# infra Terraform startup script), which runs exclusively on GCE — so file
+# presence is a reliable "I'm on GCE" signal.
+#
+# Why not default-on: the gcplogs driver requires Google ADC from the GCE
+# metadata server, so on a non-GCP host the containers would fail to start.
+# Placement-driven activation keeps non-GCP deployments on the default
+# json-file driver untouched, preserving the vendor-agnostic OSS deployment.
+#
+# The driver auto-detects the GCP project and the instance name/id/zone from the
+# metadata server, writes under resource `gce_instance` (next to the VM/system
+# logs) to logName `gcplogs-docker-driver`, and tags each entry with
+# `jsonPayload.container.name` (e.g. "/agnes-app-1") so services stay
+# distinguishable in the Logs Explorer. The VM service account already carries
+# roles/logging.logWriter, so no IAM change is required.
+#
+# `docker logs` / `docker compose logs` keep working via Docker's dual-logging
+# local cache (Docker >= 20.10).
+services:
+  app:
+    logging:
+      driver: gcplogs
+  scheduler:
+    logging:
+      driver: gcplogs
+  caddy:
+    logging:
+      driver: gcplogs
+  telegram-bot:
+    logging:
+      driver: gcplogs
+  ws-gateway:
+    logging:
+      driver: gcplogs
+  extract:
+    logging:
+      driver: gcplogs

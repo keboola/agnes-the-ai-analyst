@@ -178,6 +178,47 @@ Key metrics in GCP Console > Monitoring > Metrics Explorer:
 
 A disk space alert fires when `/data` exceeds 85% for 5 minutes.
 
+### Container logs (GCP Cloud Logging)
+
+On GCE deployments the container stdout/stderr (app INFO + uncaught-exception
+tracebacks, scheduler, etc.) ships to **GCP Cloud Logging** via Docker's
+`gcplogs` driver, engaged by the `docker-compose.gcp-logging.yml` overlay.
+Activation is **placement-driven**: the overlay is not baked into the image and
+not in any default `COMPOSE_FILE` — `agnes-auto-upgrade.sh` /
+`agnes-state-applier.sh` append it only when the file is present on disk
+(`[ -f ]`), and the file is placed solely by the GCE deploy layer (the customer
+infra Terraform `startup.sh` fetches it into `/opt/agnes/`). Non-GCP hosts never
+get the file and keep the default `json-file` driver. To enable it on a GCE host
+manually, drop the overlay into `/opt/agnes/docker-compose.gcp-logging.yml` and
+run `docker compose up -d` (or wait for the next image upgrade to recreate the containers). Entries land under
+resource `gce_instance` (next to the VM/system logs), logName
+`gcplogs-docker-driver`, tagged with `jsonPayload.instance.name` /
+`jsonPayload.container.name`. The app's own JSON log line (with its `lvl`,
+`logger`, `request_id`, …) is preserved verbatim as a string in
+`jsonPayload.message`.
+
+```bash
+# Tail app logs from the laptop (last 10 min)
+gcloud logging read \
+  'logName:"gcplogs-docker-driver" AND jsonPayload.container.name="/agnes-app-1"' \
+  --project=<gcp-project> --limit=50 --freshness=10m \
+  --format='value(timestamp, jsonPayload.message)'
+
+# Only error-level app lines (the level lives inside jsonPayload.message)
+gcloud logging read \
+  'logName:"gcplogs-docker-driver" AND jsonPayload.container.name="/agnes-app-1" AND jsonPayload.message:"\"lvl\": \"ERROR\""' \
+  --project=<gcp-project> --limit=50 --freshness=1h
+
+# Confirm a container is actually on the gcplogs driver
+docker inspect agnes-app-1 --format '{{.HostConfig.LogConfig.Type}}'   # → gcplogs
+```
+
+`docker logs` / `docker compose logs` keep working locally via Docker's
+dual-logging cache (Docker ≥ 20.10). Note: `gcplogs` does not parse the app's
+JSON line, so Cloud Logging assigns no native `severity` — filter on the `lvl`
+field inside `jsonPayload.message` as shown above. Non-GCP deployments omit the
+overlay and keep the default `json-file` driver.
+
 ### Local checks
 
 ```bash
