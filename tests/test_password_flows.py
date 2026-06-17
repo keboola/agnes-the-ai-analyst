@@ -15,6 +15,7 @@ def fresh_db(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         monkeypatch.setenv("DATA_DIR", tmp)
         from src.db import close_system_db
+
         close_system_db()
         yield tmp
         close_system_db()
@@ -25,21 +26,29 @@ def app_client(fresh_db, monkeypatch):
     monkeypatch.setenv("TESTING", "1")
     monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
     from app.main import app
+
     return TestClient(app, follow_redirects=False)
 
 
-def _seed_user(email: str, *, password_hash: str | None = None, setup_token: str | None = None,
-               setup_token_created: datetime | None = None, reset_token: str | None = None,
-               reset_token_created: datetime | None = None, role: str = "analyst") -> str:
+def _seed_user(
+    email: str,
+    *,
+    password_hash: str | None = None,
+    setup_token: str | None = None,
+    setup_token_created: datetime | None = None,
+    reset_token: str | None = None,
+    reset_token_created: datetime | None = None,
+    role: str = "analyst",
+) -> str:
     """Create a user, return its id."""
     from src.db import get_system_db
     from src.repositories.users import UserRepository
+
     uid = str(uuid.uuid4())
     conn = get_system_db()
     try:
         repo = UserRepository(conn)
-        repo.create(id=uid, email=email, name=email.split("@")[0],
-                    password_hash=password_hash)
+        repo.create(id=uid, email=email, name=email.split("@")[0], password_hash=password_hash)
         updates: dict = {}
         if setup_token is not None:
             updates["setup_token"] = setup_token
@@ -59,6 +68,7 @@ def _seed_user(email: str, *, password_hash: str | None = None, setup_token: str
 def _get_user(email: str) -> dict:
     from src.db import get_system_db
     from src.repositories.users import UserRepository
+
     conn = get_system_db()
     try:
         return UserRepository(conn).get_by_email(email)
@@ -71,6 +81,7 @@ def _seed_admin() -> str:
     from src.repositories.users import UserRepository
     from app.auth.jwt import create_access_token
     from tests.helpers.auth import grant_admin
+
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
@@ -82,6 +93,7 @@ def _seed_admin() -> str:
 
 
 # ---- GET pages ----
+
 
 class TestResetGet:
     def test_renders_form_with_params(self, app_client, fresh_db):
@@ -113,10 +125,8 @@ class TestSetupGet:
         """GET /setup must render the same form whether the email exists or not,
         so an attacker can't enumerate users by watching the name field."""
         _seed_user("alice@test.com")  # seeded with name="alice" (derived from email)
-        r_known = app_client.get("/auth/password/setup",
-                                 params={"email": "alice@test.com", "token": "anything"})
-        r_unknown = app_client.get("/auth/password/setup",
-                                   params={"email": "ghost@test.com", "token": "anything"})
+        r_known = app_client.get("/auth/password/setup", params={"email": "alice@test.com", "token": "anything"})
+        r_unknown = app_client.get("/auth/password/setup", params={"email": "ghost@test.com", "token": "anything"})
         assert r_known.status_code == 200 and r_unknown.status_code == 200
         # Seeded user's display name must NOT be pre-filled in the name input.
         assert 'value="alice"' not in r_known.text
@@ -130,6 +140,7 @@ class TestSetupGet:
 
 
 # ---- POST /auth/password/reset (request) ----
+
 
 class TestResetRequest:
     def test_issues_token_for_existing_user(self, app_client, fresh_db):
@@ -153,19 +164,26 @@ class TestResetRequest:
 
 # ---- POST /auth/password/reset/confirm ----
 
+
 class TestResetConfirm:
     def test_valid_token_sets_password_and_redirects(self, app_client, fresh_db):
         from argon2 import PasswordHasher
-        uid = _seed_user(
+
+        _seed_user(
             "r1@test.com",
             password_hash=PasswordHasher().hash("oldpass123"),
             reset_token="tok-valid",
             reset_token_created=datetime.now(timezone.utc),
         )
-        resp = app_client.post("/auth/password/reset/confirm", data={
-            "email": "r1@test.com", "token": "tok-valid",
-            "password": "brand-new-pwd", "confirm_password": "brand-new-pwd",
-        })
+        resp = app_client.post(
+            "/auth/password/reset/confirm",
+            data={
+                "email": "r1@test.com",
+                "token": "tok-valid",
+                "password": "brand-new-pwd",
+                "confirm_password": "brand-new-pwd",
+            },
+        )
         assert resp.status_code == 302
         assert "password_reset" in resp.headers["location"]
         u = _get_user("r1@test.com")
@@ -174,46 +192,58 @@ class TestResetConfirm:
         PasswordHasher().verify(u["password_hash"], "brand-new-pwd")
 
     def test_wrong_token_renders_error(self, app_client, fresh_db):
-        _seed_user("r2@test.com",
-                   reset_token="tok-correct",
-                   reset_token_created=datetime.now(timezone.utc))
-        resp = app_client.post("/auth/password/reset/confirm", data={
-            "email": "r2@test.com", "token": "tok-WRONG",
-            "password": "abcdefgh", "confirm_password": "abcdefgh",
-        })
+        _seed_user("r2@test.com", reset_token="tok-correct", reset_token_created=datetime.now(timezone.utc))
+        resp = app_client.post(
+            "/auth/password/reset/confirm",
+            data={
+                "email": "r2@test.com",
+                "token": "tok-WRONG",
+                "password": "abcdefgh",
+                "confirm_password": "abcdefgh",
+            },
+        )
         assert resp.status_code == 200
         assert "Invalid or expired" in resp.text
 
     def test_expired_token_rejected(self, app_client, fresh_db):
-        _seed_user("r3@test.com",
-                   reset_token="old",
-                   reset_token_created=datetime.now(timezone.utc) - timedelta(days=2))
-        resp = app_client.post("/auth/password/reset/confirm", data={
-            "email": "r3@test.com", "token": "old",
-            "password": "abcdefgh", "confirm_password": "abcdefgh",
-        })
+        _seed_user("r3@test.com", reset_token="old", reset_token_created=datetime.now(timezone.utc) - timedelta(days=2))
+        resp = app_client.post(
+            "/auth/password/reset/confirm",
+            data={
+                "email": "r3@test.com",
+                "token": "old",
+                "password": "abcdefgh",
+                "confirm_password": "abcdefgh",
+            },
+        )
         assert resp.status_code == 200
         assert "expired" in resp.text.lower()
 
     def test_password_mismatch(self, app_client, fresh_db):
-        _seed_user("r4@test.com",
-                   reset_token="t",
-                   reset_token_created=datetime.now(timezone.utc))
-        resp = app_client.post("/auth/password/reset/confirm", data={
-            "email": "r4@test.com", "token": "t",
-            "password": "onething", "confirm_password": "another1",
-        })
+        _seed_user("r4@test.com", reset_token="t", reset_token_created=datetime.now(timezone.utc))
+        resp = app_client.post(
+            "/auth/password/reset/confirm",
+            data={
+                "email": "r4@test.com",
+                "token": "t",
+                "password": "onething",
+                "confirm_password": "another1",
+            },
+        )
         assert resp.status_code == 200
         assert "do not match" in resp.text
 
     def test_password_too_short(self, app_client, fresh_db):
-        _seed_user("r5@test.com",
-                   reset_token="t",
-                   reset_token_created=datetime.now(timezone.utc))
-        resp = app_client.post("/auth/password/reset/confirm", data={
-            "email": "r5@test.com", "token": "t",
-            "password": "short", "confirm_password": "short",
-        })
+        _seed_user("r5@test.com", reset_token="t", reset_token_created=datetime.now(timezone.utc))
+        resp = app_client.post(
+            "/auth/password/reset/confirm",
+            data={
+                "email": "r5@test.com",
+                "token": "t",
+                "password": "short",
+                "confirm_password": "short",
+            },
+        )
         assert resp.status_code == 200
         assert "at least 8" in resp.text
 
@@ -264,16 +294,13 @@ class TestResetConfirm:
         # (loser — got the reset form back with the standard error).
         redirects = [r for r in results if r[0] == 302]
         rejects = [r for r in results if r[0] == 200]
-        assert len(redirects) == 1, (
-            f"Expected exactly 1 winner, got {len(redirects)} (results: {results})"
-        )
-        assert len(rejects) == 1, (
-            f"Expected exactly 1 loser, got {len(rejects)} (results: {results})"
-        )
+        assert len(redirects) == 1, f"Expected exactly 1 winner, got {len(redirects)} (results: {results})"
+        assert len(rejects) == 1, f"Expected exactly 1 loser, got {len(rejects)} (results: {results})"
         assert "Invalid or expired" in rejects[0][1]
 
 
 # ---- POST /auth/password/setup/request ----
+
 
 class TestSetupRequest:
     def test_issues_token_for_pre_approved_user(self, app_client, fresh_db):
@@ -286,6 +313,7 @@ class TestSetupRequest:
 
     def test_no_token_for_user_with_password(self, app_client, fresh_db):
         from argon2 import PasswordHasher
+
         _seed_user("already@test.com", password_hash=PasswordHasher().hash("x" * 10))
         resp = app_client.post("/auth/password/setup/request", data={"email": "already@test.com"})
         assert resp.status_code == 200  # anti-enumeration — same response
@@ -300,6 +328,7 @@ class TestSetupRequest:
 
 # ---- POST /auth/password/setup/confirm ----
 
+
 class TestSetupConfirm:
     def test_valid_token_sets_password_and_logs_in(self, app_client, fresh_db):
         _seed_user(
@@ -307,11 +336,16 @@ class TestSetupConfirm:
             setup_token="stok",
             setup_token_created=datetime.now(timezone.utc),
         )
-        resp = app_client.post("/auth/password/setup/confirm", data={
-            "email": "s1@test.com", "token": "stok",
-            "password": "new-password-x", "confirm_password": "new-password-x",
-            "name": "Seth One",
-        })
+        resp = app_client.post(
+            "/auth/password/setup/confirm",
+            data={
+                "email": "s1@test.com",
+                "token": "stok",
+                "password": "new-password-x",
+                "confirm_password": "new-password-x",
+                "name": "Seth One",
+            },
+        )
         assert resp.status_code == 302
         assert resp.headers["location"] == "/dashboard"
         assert "access_token" in resp.cookies or "access_token" in resp.headers.get("set-cookie", "")
@@ -319,32 +353,42 @@ class TestSetupConfirm:
         assert u["setup_token"] is None
         assert u["name"] == "Seth One"
         from argon2 import PasswordHasher
+
         PasswordHasher().verify(u["password_hash"], "new-password-x")
 
     def test_expired_setup_token(self, app_client, fresh_db):
-        _seed_user("s2@test.com",
-                   setup_token="stok",
-                   setup_token_created=datetime.now(timezone.utc) - timedelta(days=10))
-        resp = app_client.post("/auth/password/setup/confirm", data={
-            "email": "s2@test.com", "token": "stok",
-            "password": "abcdefgh", "confirm_password": "abcdefgh",
-        })
+        _seed_user(
+            "s2@test.com", setup_token="stok", setup_token_created=datetime.now(timezone.utc) - timedelta(days=10)
+        )
+        resp = app_client.post(
+            "/auth/password/setup/confirm",
+            data={
+                "email": "s2@test.com",
+                "token": "stok",
+                "password": "abcdefgh",
+                "confirm_password": "abcdefgh",
+            },
+        )
         assert resp.status_code == 200
         assert "expired" in resp.text.lower()
 
     def test_wrong_token(self, app_client, fresh_db):
-        _seed_user("s3@test.com",
-                   setup_token="right",
-                   setup_token_created=datetime.now(timezone.utc))
-        resp = app_client.post("/auth/password/setup/confirm", data={
-            "email": "s3@test.com", "token": "wrong",
-            "password": "abcdefgh", "confirm_password": "abcdefgh",
-        })
+        _seed_user("s3@test.com", setup_token="right", setup_token_created=datetime.now(timezone.utc))
+        resp = app_client.post(
+            "/auth/password/setup/confirm",
+            data={
+                "email": "s3@test.com",
+                "token": "wrong",
+                "password": "abcdefgh",
+                "confirm_password": "abcdefgh",
+            },
+        )
         assert resp.status_code == 200
         assert "Invalid" in resp.text
 
 
 # ---- Admin API: /api/users/{id}/reset-password, send_invite on create ----
+
 
 class TestAdminInviteFlow:
     def test_reset_password_returns_reset_url(self, app_client, fresh_db):
@@ -404,9 +448,9 @@ class TestJsonSetupHardening:
             setup_token="tok",
             setup_token_created=datetime.now(timezone.utc) - timedelta(days=10),
         )
-        resp = app_client.post("/auth/password/setup",
-                               json={"email": "j1@test.com", "token": "tok",
-                                     "password": "long-enough-1"})
+        resp = app_client.post(
+            "/auth/password/setup", json={"email": "j1@test.com", "token": "tok", "password": "long-enough-1"}
+        )
         assert resp.status_code == 400
         assert "expired" in resp.json()["detail"].lower()
 
@@ -414,9 +458,9 @@ class TestJsonSetupHardening:
         """A token row without setup_token_created is treated as invalid — we
         cannot verify its age, so it must fail closed."""
         _seed_user("j2@test.com", setup_token="tok")
-        resp = app_client.post("/auth/password/setup",
-                               json={"email": "j2@test.com", "token": "tok",
-                                     "password": "long-enough-1"})
+        resp = app_client.post(
+            "/auth/password/setup", json={"email": "j2@test.com", "token": "tok", "password": "long-enough-1"}
+        )
         assert resp.status_code == 400
 
     def test_deactivated_user_rejected(self, app_client, fresh_db):
@@ -428,15 +472,16 @@ class TestJsonSetupHardening:
         # Flip user to inactive
         from src.db import get_system_db
         from src.repositories.users import UserRepository
+
         conn = get_system_db()
         try:
             UserRepository(conn).update(id=uid, active=False)
         finally:
             conn.close()
 
-        resp = app_client.post("/auth/password/setup",
-                               json={"email": "j3@test.com", "token": "tok",
-                                     "password": "long-enough-1"})
+        resp = app_client.post(
+            "/auth/password/setup", json={"email": "j3@test.com", "token": "tok", "password": "long-enough-1"}
+        )
         assert resp.status_code == 403
 
 
@@ -448,8 +493,7 @@ class TestCaseSensitiveEmailLookup:
         # User stored as-is with mixed-case local-part
         _seed_user("User.Mixed@Example.com", password_hash="x")
         # Caller submits the same exact case → token must be issued
-        resp = app_client.post("/auth/password/reset",
-                               data={"email": "User.Mixed@Example.com"})
+        resp = app_client.post("/auth/password/reset", data={"email": "User.Mixed@Example.com"})
         assert resp.status_code == 200
         u = _get_user("User.Mixed@Example.com")
         assert u["reset_token"]
@@ -457,9 +501,88 @@ class TestCaseSensitiveEmailLookup:
     def test_reset_request_case_mismatch_still_anti_enumerates(self, app_client, fresh_db):
         _seed_user("User.Mixed@Example.com", password_hash="x")
         # Wrong case: response is the same (anti-enumeration) and no token is issued
-        resp = app_client.post("/auth/password/reset",
-                               data={"email": "user.mixed@example.com"})
+        resp = app_client.post("/auth/password/reset", data={"email": "user.mixed@example.com"})
         assert resp.status_code == 200
         assert "Check your email" in resp.text
         u = _get_user("User.Mixed@Example.com")
         assert u["reset_token"] is None
+
+
+# ---- Issue #681: invite email delivery + copy button ----
+
+
+class TestInviteEmailDelivery:
+    """Invitation email must be sent when an email transport is configured (#681)."""
+
+    def test_send_invite_calls_send_mail_when_smtp_configured(self, app_client, fresh_db, monkeypatch):
+        """When SMTP_HOST is set, send_invite=True must call _send_mail and
+        return invite_email_sent=True."""
+        import app.auth.providers.password as pw_mod
+
+        sent: list[tuple] = []
+
+        def fake_send(to_email, subject, body):
+            sent.append((to_email, subject, body))
+            return True
+
+        monkeypatch.setattr(pw_mod, "_send_mail", fake_send)
+        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+
+        token = _seed_admin()
+        resp = app_client.post(
+            "/api/users",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"email": "invited@test.com", "name": "Invited", "send_invite": True},
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["invite_url"]
+        assert "/auth/password/setup" in data["invite_url"]
+        assert data["invite_email_sent"] is True
+        assert len(sent) == 1
+        to, subject, body = sent[0]
+        assert to == "invited@test.com"
+        assert data["invite_url"] in body
+
+    def test_send_invite_returns_false_when_no_smtp(self, app_client, fresh_db):
+        """Without SMTP or SendGrid configured, invite_email_sent must be False
+        and the link is still returned so the admin can share it manually."""
+        token = _seed_admin()
+        resp = app_client.post(
+            "/api/users",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"email": "noemail@test.com", "name": "NoEmail", "send_invite": True},
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["invite_url"]
+        assert data["invite_email_sent"] is False
+
+    def test_admin_users_page_has_clipboard_fallback(self, app_client, fresh_db):
+        """The copy button JS must include a fallback for non-secure contexts
+        (plain HTTP) where navigator.clipboard may be undefined (#681)."""
+        token = _seed_admin()
+        resp = app_client.get(
+            "/admin/users",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        body = resp.text
+        # Clipboard API used with fallback for non-secure contexts
+        assert "navigator.clipboard" in body
+        assert "execCommand" in body
+
+    def test_invite_modal_shows_no_smtp_warning(self, app_client, fresh_db):
+        """The invite modal must display a prominent note when email transport
+        is not configured (#681)."""
+        token = _seed_admin()
+        resp = app_client.get(
+            "/admin/users",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        body = resp.text
+        # The invite modal must have the transport-note element
+        assert "invite-transport-note" in body
+        # And the JS that populates it for the no-SMTP case
+        assert "Email transport" in body
