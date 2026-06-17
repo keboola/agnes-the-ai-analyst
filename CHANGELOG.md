@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.71.55] - 2026-06-17
+
+### Fixed
+- **Keboola materialized `where_filters` now resolve date placeholders (`{{last_6_months}}`, `{{today}}`, …) — a rolling window in a materialized `source_query` no longer needs a hand-maintained literal date.** `materialize_query` parsed the `source_query` filter spec but never ran `resolve_placeholders`, so a placeholder like `{{last_6_months}}` was sent to the Storage API verbatim and silently matched 0 rows — placeholders only worked on `query_mode='local'` rows. The materialized path now resolves them (via `parse_filters` + `resolve_placeholders`) exactly like the local/legacy path, and an unknown placeholder (`{{typo}}`) now fails loudly with a clear error instead of silently returning 0 rows.
+
 ## [0.71.54] - 2026-06-17
 
 ### Internal
