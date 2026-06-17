@@ -63,6 +63,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- Collections: explicit slugs are now normalised to `[a-z0-9-]` form (same path as auto-slugs), so e.g. `my/collection` becomes `my-collection` — always reachable as `/library/<slug>`.
+- Collections: whitespace-only explicit slugs fall back to the auto-slug instead of being stored as an empty string (avoids degenerate `/library/` URLs).
+- Collections: embedding columns use `float4` precision (matching `bge-small` 384-dim output); stale v80 migration labels corrected in code and tests.
+- Collections: `collections_list` / `collection_get` MCP tool docstrings now document the `items` key in the response so LLM consumers parse the correct key.
 
 ### Removed
 
