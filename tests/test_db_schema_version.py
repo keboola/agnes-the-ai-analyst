@@ -193,7 +193,7 @@ def test_schema_version_is_62():
     # v77 → v78: built-in marketplace — is_builtin on marketplace_registry,
     #            admin_disabled on marketplace_plugins.
     # v81 → v82: collections (file_corpora / corpus_files / corpus_chunks).
-    assert SCHEMA_VERSION >= 80
+    assert SCHEMA_VERSION >= 82
 
 
 def test_v37_marketplace_curator_columns(tmp_path):

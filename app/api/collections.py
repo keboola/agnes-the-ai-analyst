@@ -420,6 +420,11 @@ async def delete_file(
     corpus_chunks_repo().delete_for_file(file_id)
     # Hard-delete the corpus_files row — no soft-delete on individual files.
     cf_repo.delete(file_id)
+    # TODO(#692): tabular files also produce a derived table_registry
+    # row + parquet + extract.duckdb view (see src/ingest/tabular.py). Those are
+    # NOT purged here (nor on collection soft-delete), so a deleted tabular file
+    # stays queryable via the catalog. Tracked as a follow-up (purge-on-delete
+    # vs background orphan GC is an open design question).
     logger.info(
         "corpus_file deleted file_id=%s collection=%s by=%s",
         file_id,
