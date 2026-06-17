@@ -10,30 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.71.51] - 2026-06-17
-
-### Fixed
-- **Invite copy button works on plain HTTP.** The clipboard helper now falls back to `document.execCommand('copy')` when `navigator.clipboard` is unavailable (non-HTTPS contexts), so the Copy button in the invitation and password-reset link modals reliably copies the URL on self-hosted instances that run without TLS. (#681)
-- **SMTP-not-configured notice is now visually prominent.** When no email transport is configured the modal note is styled as a yellow warning banner instead of gray secondary text, making it immediately clear the admin must share the link manually. (#681)
-- **Missing `audit_repo` import in password provider.** `app/auth/providers/password.py` referenced `audit_repo` inside `_audit()` without importing it, causing every audit call inside that module to silently fail with a `NameError` (swallowed by the bare `except Exception`). (#681)
-
-## [0.71.50] - 2026-06-17
-
-### Fixed
-- **Collections: deleting a tabular file now purges its derived `table_registry` row, parquet, and `extract.duckdb` view.** Previously the cleanup left the table queryable via `agnes catalog` even after the file was removed. The same cascade fires on collection soft-delete. Both DuckDB and Postgres backends are covered. (#692)
-
-## [0.71.49] - 2026-06-17
-
-### Added
-- Maintenance page shown during app restarts, replacing raw 502 errors; page auto-refreshes every 12 s
-
-### Fixed
-- 502 errors during container restarts (e.g. auto-upgrade) are absorbed by Caddy's retry window instead of being surfaced to users
+### Internal
+- Google group prefix sync test now accepts both `302` and `307` redirect codes — Starlette/FastAPI changed the default from 302 to 307; both are semantically equivalent for GET. (#676)
 
 ## [0.71.48] - 2026-06-17
 
 ### Added
 - **Container logs ship to GCP Cloud Logging on GCE deployments.** A new opt-in compose overlay `docker-compose.gcp-logging.yml` switches the `app`, `scheduler`, `caddy`, `telegram-bot`, `ws-gateway`, and `extract` services to Docker's built-in `gcplogs` logging driver, so container stdout/stderr (application INFO **and** uncaught-exception tracebacks) flows to Google Cloud Logging next to the VM/system logs (resource `gce_instance`, logName `gcplogs-docker-driver`, tagged by `jsonPayload.container.name`; the app JSON line is preserved in `jsonPayload.message`) instead of staying in the local json-file driver and being lost on container recreate. Activation is **placement-driven**: the overlay is deliberately **not** baked into the image and **not** in any default `COMPOSE_FILE` / `CONFIG_FILES` list — `agnes-auto-upgrade.sh` and `agnes-state-applier.sh` append it only when the file physically exists on disk (`[ -f ]` guard), and the file is placed solely by the GCE deploy layer (Terraform startup-script), which runs only on GCE. Non-GCP deployments never receive the file and keep the default `json-file` driver unchanged (gcplogs would otherwise fail without a GCE metadata server). The VM service account already carries `roles/logging.logWriter`, so no IAM change is required, and `docker logs` keeps working via Docker's dual-logging local cache. (#679)
+
+### Changed
+
+### Fixed
+
+### Removed
 
 ### Internal
 
