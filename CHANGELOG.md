@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.52] - 2026-06-17
+
 ### Internal
 - Ruff-formatted `test_google_group_prefix_sync.py`; documented why success-path assertions use strict `== 302` (the callback explicitly sets `status_code=302`) rather than `in (302, 307)`. (#676)
 
