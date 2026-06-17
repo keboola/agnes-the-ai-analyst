@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.71.53] - 2026-06-17
+
 ### Fixed
 
 - Google group membership changes now propagate to PAT/CLI callers without requiring a browser re-login. When `require_resource_access` denies a request, it re-fetches the caller's Workspace groups via the existing DWD path and retries the access check once (self-heal-on-miss, #504). A 60-second per-user cooldown prevents Admin SDK call storms on repeated denials.
