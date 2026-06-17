@@ -10,14 +10,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.71.50] - 2026-06-17
+## [0.71.51] - 2026-06-17
 
-### Fixed
-- **Collections: deleting a tabular file now purges its derived `table_registry` row, parquet, and `extract.duckdb` view.** Previously the cleanup left the table queryable via `agnes catalog` even after the file was removed. The same cascade fires on collection soft-delete. Both DuckDB and Postgres backends are covered. (#692)
 ### Fixed
 - **Invite copy button works on plain HTTP.** The clipboard helper now falls back to `document.execCommand('copy')` when `navigator.clipboard` is unavailable (non-HTTPS contexts), so the Copy button in the invitation and password-reset link modals reliably copies the URL on self-hosted instances that run without TLS. (#681)
 - **SMTP-not-configured notice is now visually prominent.** When no email transport is configured the modal note is styled as a yellow warning banner instead of gray secondary text, making it immediately clear the admin must share the link manually. (#681)
 - **Missing `audit_repo` import in password provider.** `app/auth/providers/password.py` referenced `audit_repo` inside `_audit()` without importing it, causing every audit call inside that module to silently fail with a `NameError` (swallowed by the bare `except Exception`). (#681)
+
+## [0.71.50] - 2026-06-17
+
+### Fixed
+- **Collections: deleting a tabular file now purges its derived `table_registry` row, parquet, and `extract.duckdb` view.** Previously the cleanup left the table queryable via `agnes catalog` even after the file was removed. The same cascade fires on collection soft-delete. Both DuckDB and Postgres backends are covered. (#692)
 
 ## [0.71.49] - 2026-06-17
 
