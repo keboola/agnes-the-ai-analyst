@@ -171,6 +171,21 @@ observability = [
     # be explicit can `pip install -e ".[observability]"` and signal intent.
     "posthog>=3.7.0",
 ]
+embeddings = [
+    # Self-hosted semantic embeddings for Collections retrieval (bge-small).
+    # HEAVY — pulls torch — so opt-in only; imported lazily in
+    # src/ingest/embeddings.py. Without it, retrieval runs lexical-only.
+    "sentence-transformers>=3.0",
+]
+docling = [
+    # Rich document parsing for Collections ingestion (PDF layout/tables,
+    # DOCX, PPTX, scans). HEAVY — pulls torch and ML models — so it is an
+    # opt-in extra, never a core/server dependency. Imported lazily inside
+    # src/ingest/text_extract.py (guarded); without it, ingestion falls back
+    # to the lightweight per-format extractors (txt/md/html; pdf via pypdf if
+    # present) and rejects formats it cannot read rather than crashing.
+    "docling>=2.0",
+]
 slack-socket = [
     # Socket Mode (optional inbound transport). Imported lazily inside
     # SocketModeDispatcher.start() — never at module top — so HTTP-only

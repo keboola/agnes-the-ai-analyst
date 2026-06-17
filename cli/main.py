@@ -55,6 +55,7 @@ from cli.commands.marketplace import marketplace_app
 from cli.commands.stack import stack_app
 from cli.commands.mcp import mcp_app
 from cli.commands.docs import docs_app
+from cli.commands.collections import collections_app
 
 
 def _cli_version() -> str:
@@ -115,6 +116,7 @@ def _maybe_warn_outdated() -> None:
         from cli.config import get_server_url
         from cli.update_check import check, format_outdated_notice
         from cli.upgrade_prompt import maybe_prompt_and_upgrade
+
         info = check(get_server_url())
         if info and info.is_outdated():
             # The interactive prompt re-execs on accept (never returns) or
@@ -152,6 +154,7 @@ def _maybe_warn_upgrade_failures() -> None:
     Best-effort: never raises."""
     try:
         import os
+
         if os.environ.get("AGNES_SELF_UPGRADE_IN_PROGRESS") == "1":
             return
         if _command_is_quiet():
@@ -161,11 +164,13 @@ def _maybe_warn_upgrade_failures() -> None:
             mark_warned,
             should_warn,
         )
+
         if should_warn():
             typer.echo(format_failure_notice(), err=True)
             mark_warned()  # warn once per failure level — don't spam
     except Exception:
         pass  # best-effort: never fail a command on the status probe
+
 
 # Register subcommands
 app.add_typer(auth_app, name="auth")
@@ -208,12 +213,14 @@ app.add_typer(marketplace_app, name="marketplace")
 app.add_typer(stack_app, name="stack")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(docs_app, name="docs")
+app.add_typer(collections_app, name="collections")
 
 
 def _capture_cli_exception(exc: BaseException, kind: str) -> None:
     """Best-effort PostHog forward for CLI-level errors. No-op when off."""
     try:
         from src.observability import get_posthog
+
         argv = sys.argv[1:]
         command = argv[0] if argv else "<no-command>"
         get_posthog().capture_exception(
@@ -250,7 +257,8 @@ def main() -> None:
     traceback to the analyst's terminal. Now: one clean line + a hint,
     return code 1.
     """
-    from cli.client import AgnesTransportError, _log_traceback, _LOG_FILE
+    from cli.client import AgnesTransportError, _log_traceback
+
     try:
         app()
     except AgnesTransportError as exc:
@@ -267,8 +275,7 @@ def main() -> None:
         _capture_cli_exception(exc, kind="unhandled")
         log = _log_traceback(exc, context="unhandled at CLI top-level")
         typer.echo(
-            f"Error: internal CLI error ({type(exc).__name__}). "
-            f"Full traceback logged to {log}.",
+            f"Error: internal CLI error ({type(exc).__name__}). Full traceback logged to {log}.",
             err=True,
         )
         sys.exit(1)

@@ -105,7 +105,16 @@ class TestAuthMiddleware:
 
 class TestToolRegistration:
     def test_exact_server_side_tool_set(self):
-        mod = _import_mod()
+        # Reload to a pristine module: the static @mcp.tool() set only. Dynamic
+        # passthrough tools are registered onto the module-level ``mcp`` singleton
+        # by ``create_app()`` (via register_passthrough_tools), so a prior test
+        # that built the app would otherwise pollute this set. Reloading re-runs
+        # the module body (fresh FastMCP + static decorators, no passthrough).
+        import importlib
+
+        import app.api.mcp_http as mod
+
+        mod = importlib.reload(mod)
         tools = {t.name for t in mod.mcp._tool_manager.list_tools()}
         assert tools == {
             "server_info",
@@ -128,6 +137,12 @@ class TestToolRegistration:
             # can rate a store entity without leaving the chat. See
             # tests/test_documentation_api_triple_surface.py for the policy.
             "store_rate",
+            # Collections read surfaces (Slice 2) — list collections and read
+            # one collection's files. Upload/delete are CLI-only (multipart /
+            # mutation). See tests/test_documentation_api_triple_surface.py.
+            "collections_list",
+            "collection_get",
+            "collections_search",
             # Config-surface introspection — an operator's Claude reads this
             # instance's live configurable surface (knobs + sources, registered
             # IWT, marketplaces, infra_repo_url). Triple-surface with

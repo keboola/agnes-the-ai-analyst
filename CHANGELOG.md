@@ -33,6 +33,57 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+## [0.71.46] - 2026-06-16
+
+### Added
+- Collections web UI: a **Library** nav section — `/library` lists your
+  accessible collections; `/library/{slug}` shows files with per-file status
+  pills, an upload drop, and an "Ask this collection" search box (wired to the
+  search API). Design-system page shell (`base_page.html`), RBAC-gated
+  (404/403), admins can create collections inline.
+- Collections Tier-2 vision fallback: uploaded images are transcribed via a
+  multimodal model (gated on `ANTHROPIC_API_KEY` + the `anthropic` SDK) and
+  indexed like documents; without a configured model they stay `pending` for a
+  later run (never an error). Best-effort and confidence-gated — vision is a
+  fallback, not the default path.
+- Collections hybrid search: `GET /api/collections/search` (+ `agnes collections
+  search` CLI + `collections_search` MCP tool) runs lexical + (optional) vector
+  retrieval across the caller's accessible collections, fail-closed and RBAC-
+  scoped, returning ranked chunks with citations. Embeddings are an optional
+  extra (`agnes[embeddings]`, bge-small, 384-dim); without it retrieval is
+  lexical-only. Documents are embedded at ingest when the extra is installed.
+- Collections Tier-1 ingestion: uploaded files are indexed in the background —
+  tabular files (CSV/TSV/Parquet/JSON/XLSX) become queryable DuckDB tables
+  registered in `table_registry` (answered with SQL, not embeddings); prose
+  documents (txt/md/html, PDF/DOCX/etc. when extractable) become `corpus_chunks`
+  rows (text only; embeddings are a later slice). Docling is an optional extra
+  (`agnes[docling]`) — without it a lightweight per-format fallback handles the
+  common text formats and unreadable files are marked `rejected`, never crash.
+- Collections foundation: new `file_corpora` (collection containers) and
+  `corpus_files` (per-file processing lifecycle) tables with DuckDB and
+  Postgres repositories (`file_corpora_repo()`, `corpus_files_repo()`).
+  Both backends covered by cross-engine contract tests.
+- `ResourceType.COLLECTION` ("collection") grantable via `/admin/access`;
+  the projection lists non-deleted `file_corpora` rows in a single
+  "Collections" block.
+- Collections upload: `/api/collections` (create/list/read/delete) +
+  `/api/collections/{id}/files` multipart upload, RBAC-gated (admin creates,
+  granted-group members upload/read), with an extension→tier allowlist that
+  rejects unsupported types at the door. Reachable via `agnes collections`
+  CLI (create/list/show/upload/rm) and `collections_list`/`collection_get`
+  MCP tools (triple-surface for the read paths; upload is CLI-only).
+
+### Fixed
+- Collections: explicit slugs are now normalised to `[a-z0-9-]` form (same path as auto-slugs), so e.g. `my/collection` becomes `my-collection` — always reachable as `/library/<slug>`.
+- Collections: whitespace-only explicit slugs fall back to the auto-slug instead of being stored as an empty string (avoids degenerate `/library/` URLs).
+- Collections: auto-slugs no longer keep a trailing hyphen when a long name is truncated at the 100-character cap.
+- Collections: embedding columns use `float4` precision (matching `bge-small` 384-dim output); stale v80 migration labels corrected in code and tests.
+- Collections: `collections_list` / `collection_get` MCP tool docstrings now document the `items` key in the response so LLM consumers parse the correct key.
+
+### Internal
+- Schema v82: adds `file_corpora`, `corpus_files`, and `corpus_chunks`
+  (384-dim `float4` embedding column; chunk repo deferred to Retrieval slice).
+  DuckDB `_v81_to_v82` migration + Alembic `0029_collections_v82`.
 
 ## [0.71.45] - 2026-06-16
 

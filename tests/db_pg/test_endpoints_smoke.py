@@ -1302,6 +1302,20 @@ class TestMarketplacesSmoke:
 # ---------------------------------------------------------------------------
 
 KNOWN_UNTESTED = {
+    # Collections (bring-your-files) — behaviorally covered in the dedicated
+    # suites tests/test_api_collections.py (CRUD/upload/search, RBAC fail-closed,
+    # SessionPrincipal) and tests/test_web_library.py (/library pages), plus the
+    # ingestion/retrieval unit suites; not duplicated in this PG smoke harness.
+    "POST /api/collections",
+    "GET /api/collections",
+    "GET /api/collections/search",
+    "GET /api/collections/{collection_id}",
+    "DELETE /api/collections/{collection_id}",
+    "POST /api/collections/{collection_id}/files",
+    "GET /api/collections/{collection_id}/files",
+    "DELETE /api/collections/{collection_id}/files/{file_id}",
+    "GET /library",
+    "GET /library/{slug}",
     # Authoring studio + suggestion queue + memory-mining consent — covered by
     # dedicated suites (tests/test_authoring_suggestions_api.py, tests/test_web_studio.py);
     # web-form / admin-moderation flows, not part of the parameter-free smoke sweep.
