@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.71.49] - 2026-06-17
+
 ### Added
 - Maintenance page shown during app restarts, replacing raw 502 errors; page auto-refreshes every 12 s
 
