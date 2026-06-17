@@ -236,6 +236,27 @@ class TableRegistryPgRepository:
                 {"id": table_id},
             )
 
+    def delete_for_corpus(self, corpus_id: str) -> List[str]:
+        """Delete all table_registry rows belonging to a file-corpus collection.
+
+        Rows are identified by ``source_type='collection'`` and
+        ``bucket=corpus_id``.  Returns the list of deleted table ids so the
+        caller can clean up derived artefacts (parquet files, extract.duckdb
+        views) before calling ``orchestrator.rebuild_source``.
+        """
+        with self._engine.begin() as conn:
+            rows = conn.execute(
+                sa.text("SELECT id FROM table_registry WHERE source_type = 'collection' AND bucket = :corpus_id"),
+                {"corpus_id": corpus_id},
+            ).fetchall()
+            ids = [r[0] for r in rows]
+            if ids:
+                conn.execute(
+                    sa.text("DELETE FROM table_registry WHERE source_type = 'collection' AND bucket = :corpus_id"),
+                    {"corpus_id": corpus_id},
+                )
+        return ids
+
     def set_description(self, table_id: str, description: str) -> None:
         """Set only the ``description`` column, leaving every other field
         untouched (unlike ``register()``'s full upsert). Used by the LLM
