@@ -132,6 +132,8 @@ def test_no_bare_duckdb_connect_in_production_code():
         "tests/db_pg/test_file_corpora_contract.py",
         "tests/db_pg/test_corpus_files_contract.py",
         "tests/db_pg/test_corpus_chunks_contract.py",
+        # v77.x table_registry delete_for_corpus contract — fixture isolation, intentional bare connect.
+        "tests/db_pg/test_table_registry_delete_corpus_contract.py",
     )
 
     pat = re.compile(r"duckdb\.connect\(")
