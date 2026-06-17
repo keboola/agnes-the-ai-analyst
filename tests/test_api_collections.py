@@ -599,3 +599,83 @@ def test_create_collection_non_alphanumeric_name_gets_fallback_slug(seeded_app):
     r = c.post("/api/collections", json={"name": "!!!"}, headers=_auth(seeded_app["admin_token"]))
     assert r.status_code == 201, r.text
     assert r.json()["slug"]  # non-empty (falls back to "collection")
+
+
+def test_delete_tabular_file_purges_table_registry_row(seeded_app):
+    """Deleting a tabular file must remove its derived table_registry row so
+    it no longer appears in agnes catalog."""
+    import io
+
+    from src.repositories import table_registry_repo
+
+    c = seeded_app["client"]
+    cr = c.post(
+        "/api/collections",
+        json={"name": "Tabular Purge"},
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    corpus_id = cr.json()["id"]
+    _seed_collection_grant(corpus_id, "analyst1")
+
+    up = c.post(
+        f"/api/collections/{corpus_id}/files",
+        files={"files": ("data.csv", io.BytesIO(b"x,y\n1,2\n3,4\n"), "text/csv")},
+        headers=_auth(seeded_app["analyst_token"]),
+    )
+    assert up.status_code == 201, up.text
+    file_id = up.json()[0]["file_id"]
+
+    # After ingestion the table_registry must contain a derived row for this corpus.
+    rows_before = table_registry_repo().list_by_source("collection")
+    corpus_rows_before = [r for r in rows_before if r.get("bucket") == corpus_id]
+    assert len(corpus_rows_before) == 1, "Expected one derived table_registry row after tabular ingest"
+
+    # Delete the file — must cascade to the derived table_registry row.
+    del_resp = c.delete(
+        f"/api/collections/{corpus_id}/files/{file_id}",
+        headers=_auth(seeded_app["analyst_token"]),
+    )
+    assert del_resp.status_code == 204, del_resp.text
+
+    rows_after = table_registry_repo().list_by_source("collection")
+    corpus_rows_after = [r for r in rows_after if r.get("bucket") == corpus_id]
+    assert corpus_rows_after == [], "Derived table_registry row must be purged on file delete"
+
+
+def test_delete_collection_purges_all_derived_table_registry_rows(seeded_app):
+    """Soft-deleting a collection must also purge all derived table_registry
+    rows so the tables no longer appear in agnes catalog."""
+    import io
+
+    from src.repositories import table_registry_repo
+
+    c = seeded_app["client"]
+    cr = c.post(
+        "/api/collections",
+        json={"name": "Collection Cascade Purge"},
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    corpus_id = cr.json()["id"]
+    _seed_collection_grant(corpus_id, "analyst1")
+
+    # Upload two tabular files so we get two derived registry rows.
+    for name, content in [("a.csv", b"a,b\n1,2"), ("b.csv", b"c,d\n3,4")]:
+        up = c.post(
+            f"/api/collections/{corpus_id}/files",
+            files={"files": (name, io.BytesIO(content), "text/csv")},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert up.status_code == 201, up.text
+
+    rows_before = [r for r in table_registry_repo().list_by_source("collection") if r.get("bucket") == corpus_id]
+    assert len(rows_before) == 2, f"Expected 2 derived rows, got {len(rows_before)}"
+
+    # Delete the collection — cascade must purge all derived rows.
+    del_resp = c.delete(
+        f"/api/collections/{corpus_id}",
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert del_resp.status_code == 204, del_resp.text
+
+    rows_after = [r for r in table_registry_repo().list_by_source("collection") if r.get("bucket") == corpus_id]
+    assert rows_after == [], "All derived table_registry rows must be purged on collection delete"

@@ -45,6 +45,7 @@ from src.repositories import (
     corpus_chunks_repo,
     corpus_files_repo,
     file_corpora_repo,
+    table_registry_repo,
 )
 
 logger = logging.getLogger(__name__)
@@ -229,6 +230,119 @@ async def get_collection(
     return {**_collection_out(row), "files": [_file_out(f) for f in files]}
 
 
+def _purge_derived_tabular_rows(corpus_id: str) -> None:
+    """Remove derived table_registry rows + parquet files for a corpus.
+
+    Called synchronously from both ``delete_file`` (single-file variant, by
+    table_id) and ``delete_collection`` (corpus-wide variant). After removing
+    registry rows we call ``orchestrator.rebuild_source`` so the master views
+    in ``analytics.duckdb`` no longer expose the deleted table(s). Best-effort:
+    a rebuild failure is logged but not raised — the durable artefacts (registry
+    + parquet) are already gone.
+    """
+
+    from src.db import _get_data_dir
+    from src.orchestrator import SyncOrchestrator
+
+    deleted_ids = table_registry_repo().delete_for_corpus(corpus_id)
+    if not deleted_ids:
+        return
+
+    source_name = f"collection_{corpus_id}"
+    data_dir = _get_data_dir() / "extracts" / source_name / "data"
+    ext_db = _get_data_dir() / "extracts" / source_name / "extract.duckdb"
+
+    # Remove parquet files and drop views from extract.duckdb.
+    for table_id in deleted_ids:
+        parquet = data_dir / f"{table_id}.parquet"
+        if parquet.exists():
+            try:
+                parquet.unlink()
+            except OSError as exc:
+                logger.warning("could not remove parquet %s: %s", parquet, exc)
+
+    # Drop the views from extract.duckdb (best-effort — DB may not exist yet
+    # if the file was never ingested, e.g. processing_status='rejected').
+    if ext_db.exists():
+        try:
+            from src.duckdb_conn import _open_duckdb
+
+            ec = _open_duckdb(str(ext_db))
+            try:
+                for table_id in deleted_ids:
+                    safe_name = table_id.replace('"', '""')
+                    ec.execute(f'DROP VIEW IF EXISTS "{safe_name}"')
+                    ec.execute("DELETE FROM _meta WHERE table_name = ?", [table_id])
+            finally:
+                ec.close()
+        except Exception as exc:
+            logger.warning("could not clean extract.duckdb for %s: %s", source_name, exc)
+
+    # Rebuild master views so the deleted tables are no longer queryable.
+    try:
+        SyncOrchestrator().rebuild_source(source_name)
+    except Exception as exc:
+        logger.warning("rebuild_source(%s) after derived-table purge failed: %s", source_name, exc)
+
+
+def _purge_derived_tabular_row_for_file(corpus_id: str, file_id: str) -> None:
+    """Variant of ``_purge_derived_tabular_rows`` for a single file deletion.
+
+    The table_id encoding is defined in ``src/ingest/tabular.py``::
+
+        fid_suffix = file_id.replace("cf_", "")[:8]
+        table_id = f"collection_{corpus_id}_{base}_{fid_suffix}"
+
+    Rather than re-derive the base from the filename (fragile), we query the
+    registry directly for the row whose ``source_table`` ends with the
+    fid_suffix, which is a unique-enough discriminator for a given corpus.
+    """
+    fid_suffix = file_id.replace("cf_", "")[:8]
+    source_name = f"collection_{corpus_id}"
+    rows = table_registry_repo().list_by_source("collection")
+    matching = [r for r in rows if r.get("bucket") == corpus_id and r.get("id", "").endswith(fid_suffix)]
+    if not matching:
+        return  # non-tabular file or not yet indexed — nothing to purge
+    for row in matching:
+        table_registry_repo().unregister(row["id"])
+
+    from src.db import _get_data_dir
+    from src.orchestrator import SyncOrchestrator
+
+    data_dir = _get_data_dir() / "extracts" / source_name / "data"
+    ext_db = _get_data_dir() / "extracts" / source_name / "extract.duckdb"
+
+    for row in matching:
+        table_id = row["id"]
+        parquet = data_dir / f"{table_id}.parquet"
+        if parquet.exists():
+            try:
+                parquet.unlink()
+            except OSError as exc:
+                logger.warning("could not remove parquet %s: %s", parquet, exc)
+
+    if ext_db.exists():
+        try:
+            from src.duckdb_conn import _open_duckdb
+
+            ec = _open_duckdb(str(ext_db))
+            try:
+                for row in matching:
+                    table_id = row["id"]
+                    safe_name = table_id.replace('"', '""')
+                    ec.execute(f'DROP VIEW IF EXISTS "{safe_name}"')
+                    ec.execute("DELETE FROM _meta WHERE table_name = ?", [table_id])
+            finally:
+                ec.close()
+        except Exception as exc:
+            logger.warning("could not clean extract.duckdb for %s: %s", source_name, exc)
+
+    try:
+        SyncOrchestrator().rebuild_source(source_name)
+    except Exception as exc:
+        logger.warning("rebuild_source(%s) after single-file purge failed: %s", source_name, exc)
+
+
 @router.delete("/{collection_id}", status_code=204)
 async def delete_collection(
     collection_id: str,
@@ -237,12 +351,15 @@ async def delete_collection(
     """Soft-delete a collection (admin only).
 
     Sets ``deleted_at``; the collection becomes invisible on GET list and
-    returns 404 on entity-scoped reads. Files are NOT purged from disk here
-    (that is a later maintenance task).
+    returns 404 on entity-scoped reads. Derived table_registry rows, parquets,
+    and extract.duckdb views are purged synchronously (they are regenerable from
+    the uploaded files; soft-delete of the collection is treated as hard-delete
+    for the derived rows).
     """
     row = file_corpora_repo().get(collection_id)
     if not row:
         raise HTTPException(status_code=404, detail="collection_not_found")
+    _purge_derived_tabular_rows(collection_id)
     file_corpora_repo().soft_delete(collection_id)
     logger.info("collection deleted id=%s by=%s", collection_id, user.get("email"))
 
@@ -420,6 +537,8 @@ async def delete_file(
     corpus_chunks_repo().delete_for_file(file_id)
     # Hard-delete the corpus_files row — no soft-delete on individual files.
     cf_repo.delete(file_id)
+    # Remove derived table_registry row + parquet if this was a tabular file.
+    _purge_derived_tabular_row_for_file(collection_id, file_id)
     logger.info(
         "corpus_file deleted file_id=%s collection=%s by=%s",
         file_id,

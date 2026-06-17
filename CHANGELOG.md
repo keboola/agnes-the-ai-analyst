@@ -17,6 +17,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 - 502 errors during container restarts (e.g. auto-upgrade) are absorbed by Caddy's retry window instead of being surfaced to users
+### Fixed
+- **Collections: deleting a tabular file now purges its derived `table_registry` row, parquet, and `extract.duckdb` view.** Previously the cleanup left the table queryable via `agnes catalog` even after the file was removed. The same cascade fires on collection soft-delete. Both DuckDB and Postgres backends are covered. (#692)
 
 ## [0.71.48] - 2026-06-17
 
