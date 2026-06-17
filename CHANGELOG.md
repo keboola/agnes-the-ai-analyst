@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Invite copy button works on plain HTTP.** The clipboard helper now falls back to `document.execCommand('copy')` when `navigator.clipboard` is unavailable (non-HTTPS contexts), so the Copy button in the invitation and password-reset link modals reliably copies the URL on self-hosted instances that run without TLS. (#681)
+- **SMTP-not-configured notice is now visually prominent.** When no email transport is configured the modal note is styled as a yellow warning banner instead of gray secondary text, making it immediately clear the admin must share the link manually. (#681)
+- **Missing `audit_repo` import in password provider.** `app/auth/providers/password.py` referenced `audit_repo` inside `_audit()` without importing it, causing every audit call inside that module to silently fail with a `NameError` (swallowed by the bare `except Exception`). (#681)
+
 ## [0.71.49] - 2026-06-17
 
 ### Added
@@ -17,10 +22,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 - 502 errors during container restarts (e.g. auto-upgrade) are absorbed by Caddy's retry window instead of being surfaced to users
-### Fixed
-- **Invite copy button works on plain HTTP.** The clipboard helper now falls back to `document.execCommand('copy')` when `navigator.clipboard` is unavailable (non-HTTPS contexts), so the Copy button in the invitation and password-reset link modals reliably copies the URL on self-hosted instances that run without TLS. (#681)
-- **SMTP-not-configured notice is now visually prominent.** When no email transport is configured the modal note is styled as a yellow warning banner instead of gray secondary text, making it immediately clear the admin must share the link manually. (#681)
-- **Missing `audit_repo` import in password provider.** `app/auth/providers/password.py` referenced `audit_repo` inside `_audit()` without importing it, causing every audit call inside that module to silently fail with a `NameError` (swallowed by the bare `except Exception`). (#681)
 
 ## [0.71.48] - 2026-06-17
 
