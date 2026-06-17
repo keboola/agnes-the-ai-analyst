@@ -18,8 +18,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
-### Fixed
-
 ### Removed
 
 ### Internal
