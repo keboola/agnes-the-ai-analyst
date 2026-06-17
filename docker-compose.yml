@@ -159,9 +159,8 @@ services:
       # serve parquets directly (sendfile/zero-copy) and bypass the app's
       # uvicorn workers — see Caddyfile's @download handler. Mounted at
       # /srv (not /data) because /data is already the caddy_data volume.
-      # Note: ./static is mounted at /srv/static (above) in parallel —
-      # Docker layers the two mounts so /srv/extracts and /srv/static
-      # are both accessible.
+      # Note: ./static is separately mounted at /caddy-static (above) so
+      # Caddy's file_server can serve it directly via the static_file matcher.
       - data:/srv:ro
     environment:
       - DOMAIN=${DOMAIN:-localhost}
