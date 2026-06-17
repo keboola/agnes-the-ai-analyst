@@ -59,6 +59,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   rejects unsupported types at the door. Reachable via `agnes collections`
   CLI (create/list/show/upload/rm) and `collections_list`/`collection_get`
   MCP tools (triple-surface for the read paths; upload is CLI-only).
+## [0.71.44] - 2026-06-16
+
+### Added
 
 ### Changed
 
@@ -67,6 +70,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Collections: whitespace-only explicit slugs fall back to the auto-slug instead of being stored as an empty string (avoids degenerate `/library/` URLs).
 - Collections: embedding columns use `float4` precision (matching `bge-small` 384-dim output); stale v80 migration labels corrected in code and tests.
 - Collections: `collections_list` / `collection_get` MCP tool docstrings now document the `items` key in the response so LLM consumers parse the correct key.
+- Nav label clarity: the primary nav link now shows "Dashboard" when `AGNES_HOME_ROUTE=/dashboard` (the OSS default), instead of the misleading hardcoded "Home".
 
 ### Removed
 

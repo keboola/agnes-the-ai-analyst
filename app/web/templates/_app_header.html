@@ -21,7 +21,7 @@
            Setup local agent + My Stack used to live in the nav too;
            Setup is reached from /home's install flow and My Stack
            lives inside /marketplace as a tab. #}
-        <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}" data-tour="nav-home">Home</a>
+        <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}" data-tour="nav-home">{% if _home == '/dashboard' %}Dashboard{% else %}Home{% endif %}</a>
         {# Cloud chat entry — shown only when chat is enabled AND one of the
            viewer's groups holds an explicit chat grant (``can_chat`` from
            _build_context, via has_explicit_grant). Default-deny: with no grant
