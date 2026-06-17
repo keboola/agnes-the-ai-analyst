@@ -96,6 +96,7 @@ services:
     # the same caveat that lives in flat-mount.yml.
     volumes: !override
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./static:/caddy-static:ro
       - /data/state/certs:/certs:ro
       - caddy_data:/data
       - caddy_config:/config
