@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 79
+SCHEMA_VERSION = 81
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -732,6 +732,34 @@ CREATE TABLE IF NOT EXISTS memory_domain_suggestions (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_domain_suggestions_status
     ON memory_domain_suggestions(status);
+
+-- v77: ``authoring_suggestions`` — generic non-admin suggestion queue for the
+-- authoring studio. A non-admin submits a proposed create payload (per studio
+-- domain); an admin approves (replays the payload through the real endpoint)
+-- or rejects. Generalizes ``memory_domain_suggestions`` across all domains.
+CREATE TABLE IF NOT EXISTS authoring_suggestions (
+    id                  VARCHAR PRIMARY KEY,
+    domain              VARCHAR NOT NULL,
+    payload             JSON,
+    status              VARCHAR DEFAULT 'pending',  -- 'pending' / 'approved' / 'rejected'
+    created_by          VARCHAR,
+    created_at          TIMESTAMP DEFAULT current_timestamp,
+    resolved_at         TIMESTAMP,
+    resolved_by         VARCHAR,
+    resolution_note     TEXT,
+    created_resource_id VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_authoring_suggestions_status
+    ON authoring_suggestions(status);
+
+-- v78: ``memory_mining_consent`` — per-user opt-IN to having their session
+-- transcripts mined into shared corporate memory (privacy gate, spec §4.4).
+CREATE TABLE IF NOT EXISTS memory_mining_consent (
+    user_email   VARCHAR PRIMARY KEY,
+    opted_in_at  TIMESTAMP,
+    opted_out_at TIMESTAMP,
+    updated_at   TIMESTAMP DEFAULT current_timestamp
+);
 
 -- v61: ``cli_auth_codes`` — short-lived, single-use exchange codes for the
 -- browser-loopback `agnes auth login` flow (gh-style). The browser, holding
@@ -5082,6 +5110,54 @@ def _v78_to_v79(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 79")
 
 
+def _v79_to_v80(conn: duckdb.DuckDBPyConnection) -> None:
+    """v80: ``authoring_suggestions`` — generic non-admin suggestion queue for
+    the authoring studio (data-package / mcp / marketplace / corporate-memory).
+
+    A non-admin submits a proposed create payload (``status='pending'``); an
+    admin approves (re-validates + creates the resource, stamps
+    ``created_resource_id``) or rejects. Additive-only; ``_SYSTEM_SCHEMA`` creates
+    it on fresh installs (no-op CREATE IF NOT EXISTS here).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS authoring_suggestions (
+            id                  VARCHAR PRIMARY KEY,
+            domain              VARCHAR NOT NULL,
+            payload             JSON,
+            status              VARCHAR DEFAULT 'pending',
+            created_by          VARCHAR,
+            created_at          TIMESTAMP DEFAULT current_timestamp,
+            resolved_at         TIMESTAMP,
+            resolved_by         VARCHAR,
+            resolution_note     TEXT,
+            created_resource_id VARCHAR
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_authoring_suggestions_status ON authoring_suggestions(status)")
+    conn.execute("UPDATE schema_version SET version = 80")
+
+
+def _v80_to_v81(conn: duckdb.DuckDBPyConnection) -> None:
+    """v81: ``memory_mining_consent`` — per-user opt-IN to having their session
+    transcripts mined into shared corporate memory (design spec §4.4). The miner
+    only mines transcripts whose author positively opted in. Additive-only;
+    ``_SYSTEM_SCHEMA`` creates it on fresh installs (no-op CREATE here).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_mining_consent (
+            user_email   VARCHAR PRIMARY KEY,
+            opted_in_at  TIMESTAMP,
+            opted_out_at TIMESTAMP,
+            updated_at   TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 81")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -5401,13 +5477,14 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v76_to_v77(conn)
             # v77→v78: built-in marketplace columns. is_builtin on
             # marketplace_registry; admin_disabled on marketplace_plugins.
-            # ADD COLUMN IF NOT EXISTS — no-op on fresh installs where
-            # _SYSTEM_SCHEMA already declares both columns.
             _v77_to_v78(conn)
             # v78→v79: named source_connections + vault-backed connection_secrets
-            # + table_registry.connection_id (spec 2026-06-12). IF NOT EXISTS
-            # guards make this a no-op on fresh installs.
+            # + table_registry.connection_id (spec 2026-06-12).
             _v78_to_v79(conn)
+            # v79→v80: authoring_suggestions (authoring-studio suggestion queue).
+            _v79_to_v80(conn)
+            # v80→v81: memory_mining_consent (per-user opt-in to session mining).
+            _v80_to_v81(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5619,6 +5696,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v77_to_v78(conn)
             if current < 79:
                 _v78_to_v79(conn)
+            if current < 80:
+                _v79_to_v80(conn)
+            if current < 81:
+                _v80_to_v81(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
