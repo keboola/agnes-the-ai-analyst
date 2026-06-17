@@ -16,6 +16,7 @@ Plus Playwright + Chromium (pip install -e '.[dev]'; playwright install chromium
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -142,7 +143,8 @@ def test_admin_review_approves_a_suggestion(video_ctx):
         # Seed a pending suggestion through the real submit endpoint.
         seed = page.request.post(
             f"{base}/api/studio/suggestions",
-            data={"domain": "data-package", "payload": {"name": "Reviewed", "slug": "reviewed"}},
+            data=json.dumps({"domain": "data-package", "payload": {"name": "Reviewed", "slug": "reviewed"}}),
+            headers={"Content-Type": "application/json"},
         )
         assert seed.ok, seed.status
         sid = seed.json()["id"]
