@@ -76,8 +76,12 @@ def _auto_slug(name: str) -> str:
     Falls back to ``"collection"`` for names with no alphanumerics (e.g. "!!!"),
     which would otherwise yield an empty slug (degenerate ``/library/`` URL +
     spurious 409 collisions on the second such name).
+
+    The trailing ``strip("-")`` runs *after* the ``[:100]`` cap: truncation can
+    re-expose a hyphen at the boundary (a long name whose 100th char lands on a
+    word separator), so we strip once more to keep the stored slug clean.
     """
-    return _SLUG_RE.sub("-", name.lower()).strip("-")[:100] or "collection"
+    return _SLUG_RE.sub("-", name.lower()).strip("-")[:100].strip("-") or "collection"
 
 
 # ---------------------------------------------------------------------------

@@ -59,6 +59,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   rejects unsupported types at the door. Reachable via `agnes collections`
   CLI (create/list/show/upload/rm) and `collections_list`/`collection_get`
   MCP tools (triple-surface for the read paths; upload is CLI-only).
+
+### Fixed
+- Collections: explicit slugs are now normalised to `[a-z0-9-]` form (same path as auto-slugs), so e.g. `my/collection` becomes `my-collection` — always reachable as `/library/<slug>`.
+- Collections: whitespace-only explicit slugs fall back to the auto-slug instead of being stored as an empty string (avoids degenerate `/library/` URLs).
+- Collections: auto-slugs no longer keep a trailing hyphen when a long name is truncated at the 100-character cap.
+- Collections: embedding columns use `float4` precision (matching `bge-small` 384-dim output); stale v80 migration labels corrected in code and tests.
+- Collections: `collections_list` / `collection_get` MCP tool docstrings now document the `items` key in the response so LLM consumers parse the correct key.
+
+### Internal
+- Schema v80: adds `file_corpora`, `corpus_files`, and `corpus_chunks`
+  (384-dim embedding column; chunk repo deferred to Retrieval slice).
+  DuckDB `_v79_to_v80` migration + Alembic `0027_collections_v80`.
+
 ## [0.71.44] - 2026-06-16
 
 ### Added
@@ -66,18 +79,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
-- Collections: explicit slugs are now normalised to `[a-z0-9-]` form (same path as auto-slugs), so e.g. `my/collection` becomes `my-collection` — always reachable as `/library/<slug>`.
-- Collections: whitespace-only explicit slugs fall back to the auto-slug instead of being stored as an empty string (avoids degenerate `/library/` URLs).
-- Collections: embedding columns use `float4` precision (matching `bge-small` 384-dim output); stale v80 migration labels corrected in code and tests.
-- Collections: `collections_list` / `collection_get` MCP tool docstrings now document the `items` key in the response so LLM consumers parse the correct key.
 - Nav label clarity: the primary nav link now shows "Dashboard" when `AGNES_HOME_ROUTE=/dashboard` (the OSS default), instead of the misleading hardcoded "Home".
 
 ### Removed
 
 ### Internal
-- Schema v80: adds `file_corpora`, `corpus_files`, and `corpus_chunks`
-  (384-dim embedding column; chunk repo deferred to Retrieval slice).
-  DuckDB `_v79_to_v80` migration + Alembic `0027_collections_v80`.
 
 ## [0.71.43] - 2026-06-16
 

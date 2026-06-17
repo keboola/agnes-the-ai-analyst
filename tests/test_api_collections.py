@@ -136,6 +136,16 @@ class TestCreateCollection:
         assert resp.status_code == 201, resp.text
         assert resp.json()["slug"] == "my-collection-path"
 
+    def test_auto_slug_no_trailing_hyphen_after_truncation(self):
+        # The [:100] cap runs after strip("-"); a name whose 100th char lands on
+        # a word boundary would otherwise leave a trailing hyphen.
+        from app.api.collections import _auto_slug
+
+        slug = _auto_slug("a" * 99 + " " + "b" * 50)
+        assert len(slug) <= 100
+        assert not slug.endswith("-")
+        assert slug == "a" * 99
+
 
 class TestListCollections:
     def test_admin_sees_all_collections(self, seeded_app):
