@@ -532,13 +532,16 @@ async def delete_file(
         raise HTTPException(status_code=404, detail="file_not_found")
     if row.get("storage_path"):
         delete_corpus_file(row["storage_path"])
+    # Remove derived table_registry row + parquet if this was a tabular file.
+    # Do this BEFORE the corpus_files row is deleted: if the purge raises, the
+    # file row is still intact and the user can retry (mirrors delete_collection
+    # ordering which purges derived data before the soft-delete).
+    _purge_derived_tabular_row_for_file(collection_id, file_id)
     # Delete the file's chunks first — otherwise they linger and still surface
     # in search results (with a null filename once the file row is gone).
     corpus_chunks_repo().delete_for_file(file_id)
     # Hard-delete the corpus_files row — no soft-delete on individual files.
     cf_repo.delete(file_id)
-    # Remove derived table_registry row + parquet if this was a tabular file.
-    _purge_derived_tabular_row_for_file(collection_id, file_id)
     logger.info(
         "corpus_file deleted file_id=%s collection=%s by=%s",
         file_id,
