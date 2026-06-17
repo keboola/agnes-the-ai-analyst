@@ -39,7 +39,10 @@ def test_configured_plugin_admin_router_is_mounted(monkeypatch):
         from app.main import create_app
 
         app = create_app()
-        paths = {r.path for r in app.routes if hasattr(r, "path")}
+        # Use the OpenAPI schema instead of walking app.routes directly — the
+        # latter may return _IncludedRouter wrappers (version-dependent Starlette
+        # internal) that don't expose .path, causing false negatives.
+        paths = set(app.openapi().get("paths", {}).keys())
         assert "/api/admin/_catalog_import_probe" in paths
     finally:
         from app.instance_config import reset_cache
@@ -53,7 +56,7 @@ def test_no_plugins_config_still_builds_app(monkeypatch):
         from app.main import create_app
 
         app = create_app()
-        paths = {r.path for r in app.routes if hasattr(r, "path")}
+        paths = set(app.openapi().get("paths", {}).keys())
         assert "/api/health" in paths  # core app intact; default=[] path is a no-op
     finally:
         from app.instance_config import reset_cache
