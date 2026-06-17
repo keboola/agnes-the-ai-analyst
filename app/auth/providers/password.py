@@ -44,16 +44,12 @@ MIN_PASSWORD_LEN = 8
 def _audit(user_id: str, action: str, result: str | None = None) -> None:
     """Fire-and-forget audit log entry. Swallows all errors."""
     try:
-        from src.db import get_system_db
-
-        audit_conn = get_system_db()
         audit_repo().log(
             user_id=user_id,
             action=action,
             resource="auth",
             result=result,
         )
-        audit_conn.close()
     except Exception:
         pass  # Audit failure must not block auth
 
