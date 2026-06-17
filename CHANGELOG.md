@@ -20,6 +20,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.44] - 2026-06-16
+
+### Added
+
+### Changed
+
+### Fixed
+- Nav label clarity: the primary nav link now shows "Dashboard" when `AGNES_HOME_ROUTE=/dashboard` (the OSS default), instead of the misleading hardcoded "Home".
+
+### Removed
+
+### Internal
+
 ## [0.71.43] - 2026-06-16
 
 ### Added
