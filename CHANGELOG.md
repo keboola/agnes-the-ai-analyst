@@ -23,6 +23,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.47] - 2026-06-17
+
+### Added
+
+### Changed
+
+### Fixed
+- **Keboola materialized `where_filters` are now sent to the Storage API in the correct shape — column filters (e.g. `job_created_at >= {{last_6_months}}`) no longer silently return 0 rows / `400 whereFilters should be an array`.** `ExportFilter.to_export_params()` emitted `whereFilters` as a nested list-of-dicts; the export-async request is form-encoded (`data=`), so `requests` stringified it into a single `whereFilters={'column': ...}` scalar Keboola couldn't parse. The filter spec is now flattened into Keboola's PHP/Symfony indexed form fields (`whereFilters[i][column]`, `whereFilters[i][operator]`, `whereFilters[i][values][j]`) — the wire shape the `kbcstorage` SDK and `connectors/keboola/client.py` already send. `changedSince`/`columns`/`fileType` scalar params are unchanged (they form-encoded correctly all along, which is why a `{"changed_since": "<unix>"}` source_query worked while `where_filters` did not).
+- **Keboola column type resolution now also consults the `storage` metadata provider.** `KeboolaClient`'s data-type provider cascade gained `storage` as a final fallback (`user > ai-metadata-enrichment > keboola.snowflake-transformation > storage`), so columns whose basetype is only published by Keboola's storage layer (e.g. a `TIMESTAMP` exposed natively as `VARCHAR`) resolve to their real type instead of defaulting to STRING.
+
+### Removed
+
+### Internal
+
 ## [0.71.46] - 2026-06-16
 
 ### Added

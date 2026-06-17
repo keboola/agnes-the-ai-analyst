@@ -49,13 +49,53 @@ class TestExportFilter:
             "changed_since": "2026-04-01",
         })
         params = f.to_export_params()
-        assert params["whereFilters"] == [
-            {"column": "status", "operator": "eq", "values": ["open"]}
-        ]
+        # whereFilters must be emitted as Keboola's indexed form fields, not
+        # a nested list — `requests` form-encodes the latter into a single
+        # stringified-dict scalar that Keboola rejects ("should be an array").
+        assert params["whereFilters[0][column]"] == "status"
+        assert params["whereFilters[0][operator]"] == "eq"
+        assert params["whereFilters[0][values][0]"] == "open"
+        assert "whereFilters" not in params  # never the raw nested form
         # Storage API takes columns as comma-joined string, not array — the
         # `kbcstorage` SDK does the same join, so match its wire format.
         assert params["columns"] == "id,status"
         assert params["changedSince"] == "2026-04-01"
+
+    def test_where_filters_multiple_filters_and_values_indexed(self):
+        # Multi-filter, multi-value spec must index each filter and each value
+        # so Keboola's PHP-array form parser reconstructs the full structure.
+        f = ExportFilter.from_dict({
+            "where_filters": [
+                {"column": "job_created_at", "operator": "ge", "values": ["2025-12-18"]},
+                {"column": "status", "operator": "in", "values": ["open", "done"]},
+            ],
+        })
+        params = f.to_export_params()
+        assert params["whereFilters[0][column]"] == "job_created_at"
+        assert params["whereFilters[0][operator]"] == "ge"
+        assert params["whereFilters[0][values][0]"] == "2025-12-18"
+        assert params["whereFilters[1][column]"] == "status"
+        assert params["whereFilters[1][operator]"] == "in"
+        assert params["whereFilters[1][values][0]"] == "open"
+        assert params["whereFilters[1][values][1]"] == "done"
+
+    def test_where_filters_form_encode_roundtrip(self):
+        # The actual wire body must carry the indexed keys, not a stringified
+        # Python dict — this is the regression that made job_created_at
+        # filtering silently return 0 rows / 400 on the materialized path.
+        f = ExportFilter.from_dict({
+            "where_filters": [
+                {"column": "job_created_at", "operator": "ge", "values": ["2025-12-18"]},
+            ],
+        })
+        body = requests.models.RequestEncodingMixin._encode_params(
+            f.to_export_params()
+        )
+        assert "whereFilters%5B0%5D%5Bcolumn%5D=job_created_at" in body
+        assert "whereFilters%5B0%5D%5Boperator%5D=ge" in body
+        assert "whereFilters%5B0%5D%5Bvalues%5D%5B0%5D=2025-12-18" in body
+        # The broken form stringified the dict — make sure that never recurs.
+        assert "%27column%27" not in body  # no url-encoded "'column'"
 
     def test_where_filter_missing_keys_raises_with_context(self):
         f = ExportFilter.from_dict({
