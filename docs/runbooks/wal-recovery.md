@@ -62,7 +62,7 @@ Only reached when the DB file itself will not open after the WAL is discarded.
    (chmod `0o600`).
 2. `<STATE_DIR>/system.duckdb.pre-migrate` is inspected read-only via
    `_peek_schema_version` to confirm its `schema_version.version` matches the
-   running binary's `SCHEMA_VERSION` (currently `78`, in `src/db.py`).
+   running binary's `SCHEMA_VERSION` (currently `80`, in `src/db.py`).
 3. If the versions match, the snapshot is copied in as the new
    `system.duckdb` and the migration ladder re-runs (idempotent). App starts.
 4. If the versions do **not** match, auto-recovery is refused with:
@@ -96,7 +96,7 @@ docker logs agnes-app-1 2>&1 | grep "WAL replay failed"
 docker exec agnes-app-1 /usr/local/bin/python3 -c \
   "from src.db import get_system_db, get_schema_version; \
    conn = get_system_db(); print('schema_version:', get_schema_version(conn))"
-# Expected: schema_version: 78
+# Expected: schema_version: 82
 ```
 
 Verify row counts are reasonable (see §6).
@@ -212,7 +212,7 @@ cp "${STATE_DIR}/system.duckdb.pre-migrate" "${STATE_DIR}/system.duckdb"
 ```
 
 The app will re-run the migration ladder on the next start (idempotent) and
-land at `SCHEMA_VERSION=78`.
+land at `SCHEMA_VERSION=80`.
 
 #### Option C — restore from a VM or volume snapshot
 

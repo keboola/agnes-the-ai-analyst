@@ -33,6 +33,12 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/stack/browse": ("stack browse", "stack_browse"),
     # Store thumbs up/down ratings (issue #398).
     "/api/store/entities/{entity_id}/rate": ("store rate", "store_rate"),
+    # Collections — bring-your-files (Slice 2). The read surfaces are
+    # triple-surface; the multipart-upload + file-mutation paths are _EXEMPT
+    # below (binary upload has no MCP analogue).
+    "/api/collections": ("collections list", "collections_list"),
+    "/api/collections/{collection_id}": ("collections show", "collection_get"),
+    "/api/collections/search": ("collections search", "collections_search"),
     # Config-surface introspection (built-in marketplace spec Phase 1).
     "/api/admin/config-surface": ("admin config-surface", "admin_config_surface"),
 }
@@ -116,12 +122,41 @@ _STORE_DRYRUN_REASON = (
     "grandfathered /api/store/entities/preview wizard step); the real "
     "create endpoint carries the triple-surface contract."
 )
+_COLLECTIONS_FILES_REASON = (
+    "Collections file endpoints (Slice 2) — multipart upload has no MCP/JSON "
+    "analogue (binary body), reachable via `agnes collections upload`; file "
+    "listing is folded into the collection_get MCP tool + `agnes collections "
+    "show`; file deletion is a maintenance mutation with no analyst CLI/MCP "
+    "analogue. The collection read surfaces carry the triple-surface contract."
+)
+_AUTHORING_SUGGESTIONS_REASON = (
+    "Authoring-studio suggestion queue (v80) — web-form/admin-moderation flow. "
+    "Non-admins submit a proposed create payload from the /admin/studio/{domain} "
+    "builder and admins approve/reject from the moderation UI. No analyst "
+    "CLI/MCP analogue (mirrors the grandfathered /api/memory-domain-suggestions "
+    "moderation queue); the real domain create endpoints carry the contract."
+)
+_MEMORY_MINING_REASON = (
+    "Corporate-memory mining (v81) — privacy-gated web/admin flow. Users manage "
+    "their own opt-in consent from a web toggle; an admin triggers a mining run "
+    "from the moderation UI. Candidates route through the authoring-suggestions "
+    "queue (itself exempt). No analyst CLI/MCP analogue."
+)
 _BUILTIN_DISABLE_REASON = (
     "admin-only per-plugin disable toggle for built-in marketplace plugins — "
     "web UI only at /admin/marketplaces, no analyst CLI/MCP analogue (mirrors "
     "the grandfathered admin marketplace register/sync/delete mutations)"
 )
 _EXEMPT: dict[str, str] = {
+    "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
+    "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
+    "/api/studio/memory-mining/consent": _MEMORY_MINING_REASON,
+    "/api/admin/memory-mining/run": _MEMORY_MINING_REASON,
+    "/api/studio/suggestions": _AUTHORING_SUGGESTIONS_REASON,
+    "/api/studio/suggestions/mine": _AUTHORING_SUGGESTIONS_REASON,
+    "/api/admin/authoring-suggestions": _AUTHORING_SUGGESTIONS_REASON,
+    "/api/admin/authoring-suggestions/{sid}/approve": _AUTHORING_SUGGESTIONS_REASON,
+    "/api/admin/authoring-suggestions/{sid}/reject": _AUTHORING_SUGGESTIONS_REASON,
     "/api/admin/initial-workspace/sync-if-configured": _IW_SYNC_IF_CONFIGURED_REASON,
     "/api/store/entities/dryrun": _STORE_DRYRUN_REASON,
     "/api/admin/prompts/{kind}": _PROMPTS_REASON,

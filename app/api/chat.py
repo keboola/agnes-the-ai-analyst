@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from app.auth.access import require_resource_access
 from app.chat.manager import ChatManager, ConcurrencyCapHit, SessionNotFound
 from app.chat.persistence import ChatRepository
+from app.chat.profiles import get_profile
 from app.chat.types import Surface
 from app.resource_types import ResourceType
 
@@ -53,6 +54,9 @@ def _consume_ticket(ticket: str) -> Optional[tuple[str, str]]:
 class CreateSessionBody(BaseModel):
     surface: str = "web"
     title: Optional[str] = None
+    # Optional authoring-agent profile (see app/chat/profiles.py). Spawn-time
+    # only — shapes the session persona + knowledge skill; not persisted.
+    profile: Optional[str] = None
 
 
 def _get_manager(request: Request) -> ChatManager:
@@ -76,11 +80,17 @@ async def create_session(
     user: dict = Depends(require_chat_access),
 ):
     mgr = _get_manager(request)
+    if body.profile is not None and get_profile(body.profile) is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"kind": "unknown_profile", "hint": body.profile},
+        )
     try:
         s = await mgr.create_session(
             user_email=user["email"],
             surface=Surface(body.surface),
             title=body.title,
+            profile=body.profile,
         )
     except ConcurrencyCapHit as exc:
         raise HTTPException(status_code=429, detail={"kind": "concurrency_cap", "hint": str(exc)})

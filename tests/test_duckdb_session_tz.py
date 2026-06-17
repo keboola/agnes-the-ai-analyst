@@ -3,7 +3,6 @@
 See `docs/superpowers/specs/2026-05-26-frontend-timezone-fix-design.md`.
 """
 
-import os
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -115,6 +114,8 @@ def test_no_bare_duckdb_connect_in_production_code():
         "tests/db_pg/test_audit_contract.py",
         "tests/db_pg/test_data_migration.py",
         "tests/db_pg/test_data_packages_contract.py",
+        "tests/db_pg/test_authoring_suggestions_contract.py",
+        "tests/db_pg/test_memory_mining_consent_contract.py",
         "tests/db_pg/test_db_state_e2e.py",
         "tests/db_pg/test_db_state_migrator.py",
         "tests/db_pg/test_memory_domain_suggestions_contract.py",
@@ -127,6 +128,10 @@ def test_no_bare_duckdb_connect_in_production_code():
         "tests/db_pg/test_store_contract.py",
         "tests/db_pg/test_user_stack_subscriptions_contract.py",
         "tests/db_pg/test_users_contract.py",
+        # v77 Collections contract tests — fixture isolation, intentional bare connect.
+        "tests/db_pg/test_file_corpora_contract.py",
+        "tests/db_pg/test_corpus_files_contract.py",
+        "tests/db_pg/test_corpus_chunks_contract.py",
     )
 
     pat = re.compile(r"duckdb\.connect\(")
@@ -140,9 +145,11 @@ def test_no_bare_duckdb_connect_in_production_code():
         # impossible to grep-guard reliably.
         result = subprocess.run(
             [
-                "grep", "-rn",
+                "grep",
+                "-rn",
                 "--include=*.py",
-                "duckdb.connect(", str(root),
+                "duckdb.connect(",
+                str(root),
             ],
             capture_output=True,
             text=True,
@@ -169,6 +176,5 @@ def test_no_bare_duckdb_connect_in_production_code():
         "Route them through `src.duckdb_conn._open_duckdb` so the session "
         "timezone is pinned to UTC, OR add an inline `SET GLOBAL "
         "TimeZone='UTC'` immediately after open and add the file to the "
-        "allow_substrings in this test. Offenders:\n  "
-        + "\n  ".join(offenders)
+        "allow_substrings in this test. Offenders:\n  " + "\n  ".join(offenders)
     )

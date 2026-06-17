@@ -170,3 +170,5 @@ docker-compose.local-port8001.yml
 # Dev-helper sed scripts used during one-shot mass refactors —
 # these belong on a personal dev branch, not in the production tree.
 scripts/_*.py
+tests/e2e/_videos/
+.agnes-e2e.env
