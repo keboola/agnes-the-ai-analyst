@@ -1,0 +1,147 @@
+{% extends "base_page.html" %}
+
+{% set page_hero_eyebrow  = "Files" %}
+{% set page_hero_title    = "Your collections" %}
+{% set page_hero_subtitle = "Bring your files. Agnes indexes them and your agents search across them — documents and data, all in one place." %}
+
+{% block head_extra %}
+<style>
+  .lib-toolbar-row { display: flex; justify-content: flex-end; margin-bottom: var(--space-4); }
+
+  .nc-form {
+    display: none; gap: var(--space-2); align-items: center; flex-wrap: wrap;
+    margin-bottom: var(--space-5); padding: var(--space-4);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
+  }
+  .nc-form.is-open { display: flex; }
+  .nc-form input { flex: 1 1 200px; min-width: 180px; }
+
+  .col-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--space-4);
+  }
+
+  .col-card {
+    display: block; text-decoration: none; position: relative;
+    padding: var(--space-5); background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-card);
+    transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+    opacity: 0; animation: lib-rise .42s ease forwards;
+  }
+  .col-card::before {
+    content: ""; position: absolute; left: 0; top: var(--space-5); bottom: var(--space-5);
+    width: 3px; border-radius: var(--radius-full);
+    background: var(--ds-primary); opacity: 0; transition: opacity .16s ease;
+  }
+  .col-card:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-elevated);
+    border-color: color-mix(in srgb, var(--ds-primary) 45%, var(--border));
+  }
+  .col-card:hover::before { opacity: 1; }
+
+  .col-card__head { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3); }
+  .col-card__icon {
+    flex: none; width: 42px; height: 42px; border-radius: var(--radius-lg);
+    display: grid; place-items: center;
+    background: color-mix(in srgb, var(--ds-primary) 12%, var(--surface));
+    color: var(--ds-primary);
+  }
+  .col-card__icon svg { width: 22px; height: 22px; }
+  .col-card__name { font-weight: var(--font-semibold); color: var(--ds-text-primary); font-size: 1.02rem; line-height: 1.2; }
+
+  .col-card__meta { display: flex; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-3); }
+  .col-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 0.78rem; font-weight: var(--font-medium); color: var(--ds-text-secondary);
+    background: color-mix(in srgb, var(--ds-primary) 7%, var(--surface));
+    border: 1px solid var(--border-light);
+    padding: 2px 9px; border-radius: var(--radius-full);
+  }
+  .col-chip svg { width: 13px; height: 13px; opacity: .8; }
+  .col-card__desc { font-size: 0.9rem; color: var(--ds-text-secondary); line-height: 1.5; margin: 0; }
+
+  /* staggered reveal */
+  .col-card:nth-child(1){animation-delay:.02s}.col-card:nth-child(2){animation-delay:.06s}
+  .col-card:nth-child(3){animation-delay:.10s}.col-card:nth-child(4){animation-delay:.14s}
+  .col-card:nth-child(5){animation-delay:.18s}.col-card:nth-child(6){animation-delay:.22s}
+  .col-card:nth-child(7){animation-delay:.26s}.col-card:nth-child(8){animation-delay:.30s}
+  .col-card:nth-child(n+9){animation-delay:.34s}
+  @keyframes lib-rise { from { opacity:0; transform: translateY(10px); } to { opacity:1; transform: translateY(0); } }
+  @media (prefers-reduced-motion: reduce) { .col-card { animation: none; opacity: 1; } }
+
+  .lib-empty {
+    text-align: center; padding: var(--space-9) var(--space-4); color: var(--ds-text-secondary);
+    border: 1px dashed var(--border); border-radius: var(--radius-xl); background: var(--surface);
+  }
+  .lib-empty svg { width: 40px; height: 40px; color: var(--ds-text-muted); margin-bottom: var(--space-3); }
+  .lib-empty p { margin: 0; }
+</style>
+{% endblock %}
+
+{% block toolbar %}
+  {% if is_admin %}
+    {{ ds.button("+ New collection", variant="secondary", attrs='id="new-collection-btn" type="button"') }}
+  {% endif %}
+{% endblock %}
+
+{% block page %}
+  {% if is_admin %}
+  <div class="nc-form" id="new-collection-form">
+    <input id="nc-name" type="text" placeholder="Collection name" aria-label="Collection name">
+    <input id="nc-desc" type="text" placeholder="Description (optional)" aria-label="Description">
+    {{ ds.button("Create", variant="primary", attrs='id="nc-create" type="button"') }}
+  </div>
+  {% endif %}
+
+  {% if not collections %}
+    <div class="lib-empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5M9.5 13.5h5"/></svg>
+      <p>No collections yet{% if is_admin %} — create one to start uploading files{% endif %}.</p>
+    </div>
+  {% else %}
+  <div class="col-grid">
+    {% for col in collections %}
+      <a class="col-card" href="/library/{{ col.slug }}">
+        <div class="col-card__head">
+          <span class="col-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          </span>
+          <span class="col-card__name">{{ col.name }}</span>
+        </div>
+        <div class="col-card__meta">
+          <span class="col-chip">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>
+            {{ col.file_count }} file{{ "" if col.file_count == 1 else "s" }}
+          </span>
+        </div>
+        {% if col.description %}<p class="col-card__desc">{{ col.description }}</p>{% endif %}
+      </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <script>
+    (function () {
+      var btn = document.getElementById("new-collection-btn");
+      var form = document.getElementById("new-collection-form");
+      if (btn && form) btn.addEventListener("click", function () { form.classList.toggle("is-open"); });
+      var create = document.getElementById("nc-create");
+      if (create) create.addEventListener("click", async function () {
+        var name = (document.getElementById("nc-name").value || "").trim();
+        if (!name) return;
+        var desc = document.getElementById("nc-desc").value || "";
+        var r = await fetch("/api/collections", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ name: name, description: desc }),
+        });
+        if (r.ok) { window.location.reload(); }
+        else { alert("Create failed: " + r.status); }
+      });
+    })();
+  </script>
+{% endblock %}

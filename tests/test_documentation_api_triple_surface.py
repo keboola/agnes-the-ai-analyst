@@ -33,6 +33,12 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/stack/browse": ("stack browse", "stack_browse"),
     # Store thumbs up/down ratings (issue #398).
     "/api/store/entities/{entity_id}/rate": ("store rate", "store_rate"),
+    # Collections — bring-your-files (Slice 2). The read surfaces are
+    # triple-surface; the multipart-upload + file-mutation paths are _EXEMPT
+    # below (binary upload has no MCP analogue).
+    "/api/collections": ("collections list", "collections_list"),
+    "/api/collections/{collection_id}": ("collections show", "collection_get"),
+    "/api/collections/search": ("collections search", "collections_search"),
     # Config-surface introspection (built-in marketplace spec Phase 1).
     "/api/admin/config-surface": ("admin config-surface", "admin_config_surface"),
 }
@@ -116,6 +122,13 @@ _STORE_DRYRUN_REASON = (
     "grandfathered /api/store/entities/preview wizard step); the real "
     "create endpoint carries the triple-surface contract."
 )
+_COLLECTIONS_FILES_REASON = (
+    "Collections file endpoints (Slice 2) — multipart upload has no MCP/JSON "
+    "analogue (binary body), reachable via `agnes collections upload`; file "
+    "listing is folded into the collection_get MCP tool + `agnes collections "
+    "show`; file deletion is a maintenance mutation with no analyst CLI/MCP "
+    "analogue. The collection read surfaces carry the triple-surface contract."
+)
 _AUTHORING_SUGGESTIONS_REASON = (
     "Authoring-studio suggestion queue (v80) — web-form/admin-moderation flow. "
     "Non-admins submit a proposed create payload from the /admin/studio/{domain} "
@@ -135,6 +148,8 @@ _BUILTIN_DISABLE_REASON = (
     "the grandfathered admin marketplace register/sync/delete mutations)"
 )
 _EXEMPT: dict[str, str] = {
+    "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
+    "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
     "/api/studio/memory-mining/consent": _MEMORY_MINING_REASON,
     "/api/admin/memory-mining/run": _MEMORY_MINING_REASON,
     "/api/studio/suggestions": _AUTHORING_SUGGESTIONS_REASON,

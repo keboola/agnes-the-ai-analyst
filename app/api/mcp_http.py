@@ -118,6 +118,64 @@ async def catalog() -> dict:
 
 
 @mcp.tool()
+async def collections_list() -> dict:
+    """List the file Collections you can access (RBAC-filtered).
+
+    A Collection is a user-uploaded set of files Agnes has indexed. Returns a
+    dict with an ``items`` list; each entry has ``id``, ``name``,
+    ``slug``, and file/table counts. Use ``collection_get`` for the files in
+    one collection.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.get(f"{_BASE}/api/collections", headers=_headers(), timeout=30)
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
+async def collection_get(collection_id: str) -> dict:
+    """Show one Collection's detail plus its files and per-file status.
+
+    Args:
+        collection_id: Collection id from ``collections_list`` (``col_...``).
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.get(
+            f"{_BASE}/api/collections/{collection_id}",
+            headers=_headers(),
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
+async def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict:
+    """Hybrid search across your accessible file Collections (RBAC-filtered).
+
+    Returns ranked chunks with citations (``filename``, ``ordinal``, ``text``,
+    ``score``). Optionally restrict to one collection via ``collection_id``.
+
+    Args:
+        query: Natural-language or keyword query.
+        k: Max results (default 10).
+        collection_id: Optional ``col_...`` id to restrict the search.
+    """
+    params: dict = {"q": query, "k": k}
+    if collection_id:
+        params["corpus_id"] = collection_id
+    async with httpx.AsyncClient() as c:
+        r = await c.get(
+            f"{_BASE}/api/collections/search",
+            headers=_headers(),
+            params=params,
+            timeout=60,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
 async def schema(table_id: str) -> dict:
     """Show column names, types, and SQL dialect hints for a table.
 

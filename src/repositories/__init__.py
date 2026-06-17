@@ -122,6 +122,10 @@ __all__ = [
     "chat_message_repo",
     "user_workdirs_repo",
     "chat_session_participants_repo",
+    # Collections
+    "file_corpora_repo",
+    "corpus_files_repo",
+    "corpus_chunks_repo",
 ]
 
 
@@ -407,6 +411,19 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("app.chat.persistence", "ChatRepository"),
         PG: ("src.repositories.chat_session_participants_pg", "ChatSessionParticipantPgRepository"),
     },
+    # collections
+    "file_corpora": {
+        DUCKDB: ("src.repositories.file_corpora", "FileCorporaRepository"),
+        PG: ("src.repositories.file_corpora_pg", "FileCorporaPgRepository"),
+    },
+    "corpus_files": {
+        DUCKDB: ("src.repositories.corpus_files", "CorpusFilesRepository"),
+        PG: ("src.repositories.corpus_files_pg", "CorpusFilesPgRepository"),
+    },
+    "corpus_chunks": {
+        DUCKDB: ("src.repositories.corpus_chunks", "CorpusChunksRepository"),
+        PG: ("src.repositories.corpus_chunks_pg", "CorpusChunksPgRepository"),
+    },
 }
 
 
@@ -637,3 +654,16 @@ def user_workdirs_repo() -> Any:
 
 def chat_session_participants_repo() -> Any:
     return _build("chat_session_participants")
+
+
+# collections
+def file_corpora_repo() -> Any:
+    return _build("file_corpora")
+
+
+def corpus_files_repo() -> Any:
+    return _build("corpus_files")
+
+
+def corpus_chunks_repo() -> Any:
+    return _build("corpus_chunks")
