@@ -9,10 +9,11 @@ value as ``resource_type`` and a module-defined path string as ``resource_id``.
 Adding a new type — single place, no separate wiring step:
 
   1. Add a member to :class:`ResourceType`.
-  2. Write a ``list_blocks(conn) -> list[Block]`` delegate that projects the
-     domain tables into the (block → items) tree the admin /access page
-     consumes. Each item must include ``resource_id`` matching the path
-     string used in ``resource_grants.resource_id``.
+  2. Write a ``list_blocks() -> list[Block]`` delegate that reads through the
+     ``src.repositories`` factory and projects the domain tables into the
+     (block → items) tree the admin /access page consumes. Each item must
+     include ``resource_id`` matching the path string used in
+     ``resource_grants.resource_id``.
   3. Register a :class:`ResourceTypeSpec` in :data:`RESOURCE_TYPES`. The
      dataclass requires ``list_blocks`` — the type checker forces step 2.
   4. Wire endpoints with
@@ -57,6 +58,13 @@ Block = dict[str, Any]
 # DuckDB connection here was the backend-split bug (#518) — on a Postgres
 # instance it read the stale, frozen DuckDB system file.
 ListBlocksFn = Callable[[], List[Block]]
+
+# The /admin/access projection must list EVERY grantable resource — an admin
+# can't grant access to something the page doesn't render. The repo ``list()``
+# helpers default to a paginated 200; for these admin-curated, low-cardinality
+# entity types we pass an effectively-unbounded cap so nothing is silently
+# hidden (table_registry / marketplace use their unbounded ``list_all()``).
+_GRANT_PROJECTION_LIMIT = 100_000
 
 
 @dataclass(frozen=True)
@@ -212,7 +220,7 @@ def _data_package_blocks() -> List[Block]:
     """
     from src.repositories import data_packages_repo
 
-    rows = data_packages_repo().list(limit=200)  # already filters deleted_at
+    rows = data_packages_repo().list(limit=_GRANT_PROJECTION_LIMIT)  # all live rows; see _GRANT_PROJECTION_LIMIT
     if not rows:
         return []
     return [
@@ -252,7 +260,7 @@ def _memory_domain_blocks() -> List[Block]:
     """
     from src.repositories import memory_domains_repo
 
-    rows = memory_domains_repo().list(limit=200)  # already filters deleted_at
+    rows = memory_domains_repo().list(limit=_GRANT_PROJECTION_LIMIT)
     if not rows:
         return []
     return [
@@ -336,7 +344,7 @@ def _recipe_blocks() -> List[Block]:
     """
     from src.repositories import recipes_repo
 
-    rows = recipes_repo().list(limit=200)  # already filters deleted_at
+    rows = recipes_repo().list(limit=_GRANT_PROJECTION_LIMIT)
     if not rows:
         return []
     return [
@@ -449,7 +457,7 @@ def _collection_blocks() -> List[Block]:
     """
     from src.repositories import file_corpora_repo
 
-    rows = file_corpora_repo().list(limit=200)  # already filters deleted_at
+    rows = file_corpora_repo().list(limit=_GRANT_PROJECTION_LIMIT)
     if not rows:
         return []
     return [
