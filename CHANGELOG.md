@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.56] - 2026-06-18
+
 ### Changed
 - **BREAKING** License changed from MIT to PolyForm Small Business License 1.0.0. Use of the software is now restricted to organizations with fewer than 100 total individuals and less than 1,000,000 USD (2019) in total revenue in the prior tax year. See [LICENSE](LICENSE) for full terms.
 
