@@ -203,4 +203,4 @@ For bugs and feature requests, open a GitHub issue.
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [PolyForm Small Business License 1.0.0](LICENSE).
