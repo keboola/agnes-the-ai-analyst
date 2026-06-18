@@ -74,6 +74,7 @@ from src.models.rbac import (
     UserGroup,
     UserGroupMember,
 )
+from src.models.oauth import OAuthAccessToken, OAuthAuthCode, OAuthClient, OAuthRefreshToken
 from src.models.vault import SystemSecret
 
 
@@ -141,4 +142,8 @@ __all__ = [
     "UserSyncSettings",
     "UserWorkdir",
     "ViewOwnership",
+    "OAuthAccessToken",
+    "OAuthAuthCode",
+    "OAuthClient",
+    "OAuthRefreshToken",
 ]

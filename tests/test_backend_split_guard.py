@@ -225,6 +225,11 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     "app/api/cache_warmup.py",
     "app/api/health.py",
     "app/api/mcp_http.py",
+    # app/api/mcp_streamable.py — startup-only get_system_db() in
+    # _register_dynamic_tools() to read tool_registry for passthrough tools,
+    # identical to mcp_http.py. Not a per-request handler, so not the
+    # backend-split bug class this ratchet guards.
+    "app/api/mcp_streamable.py",
     # app/api/query.py — the bq-metadata VIEW-hint lookup (_view_targets_in)
     # now routes through the factory; no remaining get_system_db caller.
     "app/api/scripts.py",
