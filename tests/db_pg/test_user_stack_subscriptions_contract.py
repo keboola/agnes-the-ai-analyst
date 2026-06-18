@@ -129,3 +129,56 @@ def test_list_users_subscribed_to(repo):
 
     assert repo.list_users_subscribed_to("data_package", "pkg_2") == ["alice"]
     assert repo.list_users_subscribed_to("data_package", "missing") == []
+
+
+# ---------------------------------------------------------------------------
+# subscribe_group_members — soft-downgrade fan-out parity (#518)
+# ---------------------------------------------------------------------------
+
+
+def _seed_group_with_members(repo, group_id, member_ids):
+    """Seed a user_groups row (FK target) + its members on whichever backend
+    the repo is bound to."""
+    if hasattr(repo, "conn"):  # DuckDB
+        repo.conn.execute(
+            "INSERT INTO user_groups(id, name) VALUES (?, ?)", [group_id, group_id]
+        )
+        for uid in member_ids:
+            repo.conn.execute(
+                "INSERT INTO user_group_members(user_id, group_id, source) "
+                "VALUES (?, ?, 'manual')",
+                [uid, group_id],
+            )
+    else:  # PG
+        import sqlalchemy as sa
+
+        with repo._engine.begin() as conn:
+            conn.execute(
+                sa.text("INSERT INTO user_groups(id, name) VALUES (:g, :g)"),
+                {"g": group_id},
+            )
+            for uid in member_ids:
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO user_group_members(user_id, group_id, source) "
+                        "VALUES (:u, :g, 'manual')"
+                    ),
+                    {"u": uid, "g": group_id},
+                )
+
+
+def test_subscribe_group_members_subscribes_all_and_is_idempotent(repo):
+    _seed_group_with_members(repo, "grp_1", ["alice", "bob"])
+
+    n = repo.subscribe_group_members("grp_1", "data_package", "pkg_1")
+    assert n == 2
+    assert repo.is_subscribed("alice", "data_package", "pkg_1") is True
+    assert repo.is_subscribed("bob", "data_package", "pkg_1") is True
+
+    # Idempotent: re-running creates no new rows.
+    assert repo.subscribe_group_members("grp_1", "data_package", "pkg_1") == 0
+
+
+def test_subscribe_group_members_empty_group_is_noop(repo):
+    _seed_group_with_members(repo, "grp_empty", [])
+    assert repo.subscribe_group_members("grp_empty", "data_package", "pkg_1") == 0

@@ -20,6 +20,21 @@ class UserRepository:
         result = self.conn.execute("SELECT * FROM users WHERE id = ?", [user_id]).fetchone()
         return self._row_to_dict(result)
 
+    def get_by_ids(self, user_ids: List[str]) -> Dict[str, Optional[str]]:
+        """Bulk map ``user_id → email`` for the given ids. Missing rows are
+        absent from the dict; an empty input returns ``{}``. Used by callers
+        that previously ran a raw ``SELECT id, email ... WHERE id IN (...)`` on
+        a system connection (#518) — routing through the factory keeps the read
+        on the active backend."""
+        ids = list(user_ids)
+        if not ids:
+            return {}
+        placeholders = ",".join(["?"] * len(ids))
+        rows = self.conn.execute(
+            f"SELECT id, email FROM users WHERE id IN ({placeholders})", ids
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
     def get_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         result = self.conn.execute("SELECT * FROM users WHERE email = ?", [email]).fetchone()
         return self._row_to_dict(result)

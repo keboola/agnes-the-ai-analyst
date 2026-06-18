@@ -362,3 +362,22 @@ def test_consume_reset_token_single_use(users_repo):
     assert repo.consume_reset_token(email="u@example.com", token="rtok", cutoff=cutoff, consume_id="CONSUMED:1") is True
     # second attempt with the same original token loses (already consumed)
     assert repo.consume_reset_token(email="u@example.com", token="rtok", cutoff=cutoff, consume_id="CONSUMED:2") is False
+
+
+# ---------------------------------------------------------------------------
+# get_by_ids — bulk id → email map parity
+# ---------------------------------------------------------------------------
+
+
+def test_get_by_ids_maps_present_ids(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-1", email="a@example.com")
+    _make_user(repo, id="user-2", email="b@example.com")
+    got = repo.get_by_ids(["user-1", "user-2", "missing"])
+    assert got == {"user-1": "a@example.com", "user-2": "b@example.com"}
+
+
+def test_get_by_ids_empty_input_returns_empty(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo)
+    assert repo.get_by_ids([]) == {}

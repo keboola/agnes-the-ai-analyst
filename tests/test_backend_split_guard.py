@@ -145,7 +145,6 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
         "ResourceGrantsRepository",
         "UserGroupMembersRepository",
         "UserGroupsRepository",
-        "UserRepository",
     },
     # Sanctioned `if not use_pg(): XRepository(conn) else: x_repo()` escape hatch
     # (test-isolation / DuckDB-mode), same pattern as app/auth/access.py — NOT a
@@ -167,10 +166,9 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
         "UserWorkdirPgRepository",
         "ChatSessionParticipantPgRepository",
     },
-    # main.py lifespan seed-admin: group membership now routes through
-    # user_group_members_repo() (factory); only the UserRepository read at the
-    # cowork-bundle path remains a direct DuckDB instantiation.
-    "app/main.py": {"UserRepository"},
+    # main.py lifespan seed-admin: group membership routes through
+    # user_group_members_repo() (factory); the cowork-bundle workspace-prompt
+    # read was migrated to users_repo() too (#518) — entry removed.
     # Sanctioned `if conn is not None and not use_pg(): UserRepository(conn) else:
     # users_repo()` escape hatch (same pattern as app/auth/access.py). On Postgres
     # the read routes through the factory.
@@ -237,7 +235,8 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     "app/api/upload.py",
     # app/api/v2_sample.py — internal-table sampling now routes through
     # connectors.internal.access.sample_internal_rows (use_pg() dispatch).
-    "app/auth/access.py",
+    # app/auth/access.py — mint_session_jwt migrated off get_system_db() onto
+    # users_repo() (#518); entry removed.
     "app/auth/dependencies.py",
     # app/auth/pat_resolver.py — co-session resolution now routes through
     # chat_session_participants_repo()/chat_session_repo() (factory); entry
@@ -253,6 +252,134 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     "services/verification_detector/__main__.py",
     "src/catalog_export.py",
     "src/rbac.py",
+}
+
+
+# ---------------------------------------------------------------------------
+# detector #3 (#518 follow-up): a request handler that takes
+# ``conn = Depends(_get_db)`` (always DuckDB) and then runs raw
+# ``conn.execute("... <state table> ...")`` bypasses the factory exactly like a
+# direct ``get_system_db()`` call — but the static get_system_db scan can't see
+# it (the connection arrives via FastAPI DI, not a literal call). This AST scan
+# closes that blind spot: it flags any ``<conn>.execute(<sql literal>)`` where
+# ``<conn>`` is a ``Depends(_get_db)`` parameter and the SQL names a state table.
+# ---------------------------------------------------------------------------
+
+# State tables that have a Postgres backend — reading/writing them off the
+# always-DuckDB ``_get_db`` connection is the backend-split bug. (Analytics /
+# telemetry tables that live in DuckDB regardless of backend are included too;
+# they are pinned in the allow-list as "DuckDB-only by design", same policy as
+# the get_system_db residual.)
+_DEPENDS_GET_DB_STATE_TABLES = (
+    "users", "user_groups", "user_group_members", "resource_grants",
+    "user_stack_subscriptions", "marketplace_registry", "marketplace_plugins",
+    "store_entities", "store_submissions", "store_entity_votes", "data_packages",
+    "data_package_tables", "memory_domains", "memory_domain_suggestions",
+    "knowledge_items", "recipes", "file_corpora", "corpus_files", "corpus_chunks",
+    "usage_events", "usage_session_summary", "usage_tool_daily",
+    "usage_marketplace_item_daily", "usage_marketplace_item_window",
+    "sync_state", "sync_history", "table_registry", "audit_log",
+    "personal_access_tokens", "oauth_clients", "mcp_sources", "tool_registry",
+)
+
+
+def _is_depends_get_db(default) -> bool:
+    return (
+        isinstance(default, ast.Call)
+        and isinstance(default.func, ast.Name)
+        and default.func.id == "Depends"
+        and any(isinstance(a, ast.Name) and a.id == "_get_db" for a in default.args)
+    )
+
+
+def _conn_param_names(fn) -> set[str]:
+    """Names of parameters defaulted to ``Depends(_get_db)`` in ``fn``."""
+    names: set[str] = set()
+    a = fn.args
+    posargs = a.posonlyargs + a.args
+    for arg, default in zip(posargs[len(posargs) - len(a.defaults):], a.defaults):
+        if _is_depends_get_db(default):
+            names.add(arg.arg)
+    for arg, default in zip(a.kwonlyargs, a.kw_defaults):
+        if default is not None and _is_depends_get_db(default):
+            names.add(arg.arg)
+    return names
+
+
+def _extract_sql_literal(node) -> str:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):  # f-string — keep the literal parts
+        return "".join(
+            v.value for v in node.values
+            if isinstance(v, ast.Constant) and isinstance(v.value, str)
+        )
+    return ""
+
+
+def _sql_hits_state(sql: str) -> bool:
+    low = sql.lower()
+    return any(
+        f" {t}" in low or f"\n{t}" in low or f"\t{t}" in low
+        for t in _DEPENDS_GET_DB_STATE_TABLES
+    )
+
+
+def scan_depends_get_db_raw_sql(files) -> dict[str, set[str]]:
+    """``{relpath: {function_name, ...}}`` for handlers that run raw
+    ``<conn>.execute(<sql touching a state table>)`` on a ``Depends(_get_db)``
+    connection."""
+    found: dict[str, set[str]] = {}
+    for p in files:
+        p = Path(p)
+        try:
+            tree = ast.parse(p.read_text(encoding="utf-8"))
+        except (SyntaxError, OSError, UnicodeDecodeError):
+            continue
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            conn_names = _conn_param_names(fn)
+            if not conn_names:
+                continue
+            for call in ast.walk(fn):
+                if (
+                    isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Attribute)
+                    and call.func.attr == "execute"
+                    and isinstance(call.func.value, ast.Name)
+                    and call.func.value.id in conn_names
+                    and call.args
+                    and _sql_hits_state(_extract_sql_literal(call.args[0]))
+                ):
+                    found.setdefault(_rel(p), set()).add(fn.name)
+                    break
+    return found
+
+
+# Residual handlers that still run raw state SQL on the ``_get_db`` connection.
+# Out of scope for the #518 RBAC-page fix; pinned here so the class cannot grow.
+# Shrink (never grow): when a handler is routed through the factory, delete its
+# entry. Some are analytics/telemetry reads that are DuckDB-only by design.
+_GRANDFATHERED_DEPENDS_GET_DB_RAW_SQL: dict[str, set[str]] = {
+    "app/api/activity.py": {"activity_timeline"},
+    "app/api/admin.py": {"admin_delete_store_submission", "list_registry", "unregister_table"},
+    "app/api/admin_usage.py": {"prune_usage", "reprocess_usage"},
+    "app/api/admin_user_sessions.py": {"list_user_activity", "list_user_sessions"},
+    "app/api/chat_copresence.py": {"invite"},
+    "app/api/health.py": {"health_check_detailed"},
+    "app/api/marketplace.py": {"list_categories"},
+    "app/api/marketplaces.py": {"delete_marketplace", "mark_plugin_system", "unmark_plugin_system"},
+    "app/api/me_stats.py": {"get_tokens", "list_self_sessions", "list_self_sync_activity"},
+    "app/api/memory.py": {"admin_audit", "admin_patch_item"},
+    "app/api/my_stack.py": {"get_my_stack", "toggle_curated"},
+    "app/api/observability.py": {"facets", "kpis"},
+    "app/api/sync.py": {"sync_manifest"},
+    "app/web/router.py": {
+        "admin_store_submission_detail_page", "catalog", "catalog_package_detail",
+        "corporate_memory", "dashboard", "me_profile_refetch_groups",
+        "memory_domain_detail", "profile_page",
+    },
 }
 
 
@@ -313,6 +440,42 @@ def test_get_system_db_allowlist_has_no_stale_entries():
     stale = sorted(_GRANDFATHERED_GET_SYSTEM_DB - callers)
     assert not stale, "Stale get_system_db allow-list entries — delete them to keep the residual honest:\n" + "\n".join(
         f"  {f}" for f in stale
+    )
+
+
+def test_no_new_depends_get_db_raw_sql():
+    """No NEW handler may run raw state SQL on a ``Depends(_get_db)`` (always
+    DuckDB) connection. Read/write system state through the backend-aware
+    factory instead — on Postgres a raw conn.execute here hits the stale
+    DuckDB system file (#518)."""
+    found = scan_depends_get_db_raw_sql(_production_files())
+    new = {
+        f: sorted(fns - _GRANDFATHERED_DEPENDS_GET_DB_RAW_SQL.get(f, set()))
+        for f, fns in found.items()
+        if fns - _GRANDFATHERED_DEPENDS_GET_DB_RAW_SQL.get(f, set())
+    }
+    assert not new, (
+        "New Depends(_get_db) + raw state-SQL handler(s) detected — route system "
+        "state through the src.repositories factory (e.g. users_repo()), not a "
+        "raw conn.execute on the always-DuckDB connection:\n"
+        + "\n".join(f"  {f}: {fns}" for f, fns in sorted(new.items()))
+    )
+
+
+def test_depends_get_db_raw_sql_allowlist_has_no_stale_entries():
+    """Every grandfathered (file, function) must still exist — when a handler is
+    routed through the factory its entry must be deleted so the residual stays
+    honest (the list shrinking to empty is 'this class fully migrated')."""
+    found = scan_depends_get_db_raw_sql(_production_files())
+    stale = {
+        f: sorted(fns - found.get(f, set()))
+        for f, fns in _GRANDFATHERED_DEPENDS_GET_DB_RAW_SQL.items()
+        if fns - found.get(f, set())
+    }
+    assert not stale, (
+        "Stale Depends(_get_db) raw-SQL allow-list entries — these were "
+        "migrated/removed; delete them from _GRANDFATHERED_DEPENDS_GET_DB_RAW_SQL:\n"
+        + "\n".join(f"  {f}: {fns}" for f, fns in sorted(stale.items()))
     )
 
 

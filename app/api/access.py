@@ -158,7 +158,6 @@ async def get_resource_types(
 @router.get("/access-overview", response_model=dict)
 async def access_overview(
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """One-shot snapshot for the /admin/access page.
 
@@ -215,7 +214,7 @@ async def access_overview(
         {
             "type_key": spec.key.value,
             "type_display": spec.display_name,
-            "blocks": spec.list_blocks(conn),
+            "blocks": spec.list_blocks(),
         }
         for spec in enabled_resource_types()
     ]
@@ -737,8 +736,14 @@ async def update_grant_requirement(
     transitioning ``required → available`` we eagerly materialize a
     ``user_stack_subscriptions`` row for every user currently in the
     granted group, so the resource stays in their stack instead of
-    silently disappearing on the next refresh. The two writes happen
-    inside a single DuckDB transaction.
+    silently disappearing on the next refresh.
+
+    Both writes route through the ``src.repositories`` factory so they hit
+    the active backend (Postgres when configured) — the old raw
+    ``INSERT ... SELECT`` on a DuckDB ``_get_db`` connection wrote the
+    frozen DuckDB system file on PG instances (#518), so the subscriptions
+    never materialized and the "single transaction" guarantee was already
+    void across backends.
 
     Going the other direction (``available → required``) is a no-op for
     subscriptions — required is the always-in-stack tier and the
@@ -755,30 +760,17 @@ async def update_grant_requirement(
     if not existing:
         raise HTTPException(status_code=404, detail="Grant not found")
 
-    # All-or-nothing transition under one transaction so a fan-out failure
-    # doesn't leave the requirement flipped without the materialized
-    # subscriptions in place.
-    conn.execute("BEGIN")
-    try:
-        prior = grants.update_requirement(grant_id, payload.requirement)
-        # Soft-downgrade: required → available eagerly subscribes every
-        # group member to preserve continuity. ON CONFLICT DO NOTHING
-        # makes this idempotent if any subscription already exists.
-        if prior == "required" and payload.requirement == "available":
-            conn.execute(
-                """INSERT INTO user_stack_subscriptions
-                   (user_id, resource_type, resource_id)
-                   SELECT m.user_id, ?, ?
-                     FROM user_group_members m
-                    WHERE m.group_id = ?
-                   ON CONFLICT DO NOTHING""",
-                [existing["resource_type"], existing["resource_id"],
-                 existing["group_id"]],
-            )
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
+    prior = grants.update_requirement(grant_id, payload.requirement)
+    # Soft-downgrade: required → available eagerly subscribes every current
+    # group member to preserve continuity. Idempotent (ON CONFLICT DO NOTHING).
+    if prior == "required" and payload.requirement == "available":
+        from src.repositories import user_stack_subscriptions_repo
+
+        user_stack_subscriptions_repo().subscribe_group_members(
+            existing["group_id"],
+            existing["resource_type"],
+            existing["resource_id"],
+        )
 
     _audit(
         conn, user["id"], "resource_grant.requirement_updated",

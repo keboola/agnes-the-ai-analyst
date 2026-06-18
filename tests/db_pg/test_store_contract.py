@@ -161,6 +161,23 @@ def test_store_entity_set_visibility_approved(store_repos):
     assert row["visibility_status"] == "approved"
 
 
+def test_synthetic_name_taken(store_repos):
+    repos, _, _ = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    se = repos["entities"]
+    # Nothing registered yet.
+    assert se.synthetic_name_taken("my-skill-by-alice") is False
+    # _make_entity defaults synthetic_name to "<name>-by-<owner_username>".
+    _make_entity(se)
+    assert se.synthetic_name_taken("my-skill-by-alice") is True
+    # Excluding the row itself frees the slot (used by the rename path).
+    assert se.synthetic_name_taken("my-skill-by-alice", exclude_entity_id="entity-1") is False
+    # Archived rows are skipped when exclude_archived=True (re-upload after archive).
+    se.set_visibility("entity-1", "archived")
+    assert se.synthetic_name_taken("my-skill-by-alice", exclude_archived=True) is False
+    assert se.synthetic_name_taken("my-skill-by-alice") is True  # still present without the flag
+
+
 def test_install_plugin_creates_row(store_repos):
     repos, _, _ = store_repos
     repos["users"].create(id="user-1", email="alice@x.com", name="Alice")

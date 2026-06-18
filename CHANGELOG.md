@@ -15,10 +15,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- **The `/admin/access` (RBAC) page now reflects the active backend on Postgres instances.** Its resource projections (`app/resource_types.py` `_*_blocks`) and the `access_overview` endpoint read through a raw `Depends(_get_db)` DuckDB connection, so on a Postgres deployment they projected the frozen DuckDB system file instead of live PG state — admin-registered marketplaces, tables, data packages, recipes, collections, memory domains/items and Slack-channel grants created after the DuckDB→PG migration were missing from the page. All projections now read through the `src.repositories` factory (which honors `use_pg()`).
+- **Magic-link email login works on Postgres instances.** `_consume_token` ran a raw compare-and-swap on a DuckDB `_get_db` connection while `send_magic_link` wrote the token through the factory (PG), so verification never matched and login 401'd. It now consumes the token via `users_repo().consume_reset_token`.
+- **Grant requirement downgrade (`required → available`) materializes subscriptions on the active backend.** The fan-out `INSERT INTO user_stack_subscriptions` ran raw on a DuckDB connection; it now routes through `user_stack_subscriptions_repo().subscribe_group_members`.
+- **Store entity duplicate-name check, archive-revert, and bundle owner-email enrichment read/write the active backend.** Raw `store_entities` / `users` queries on a DuckDB connection in `app/api/store.py` now route through `store_entities_repo().synthetic_name_taken` / `set_visibility` and `users_repo().get_by_ids`.
+- **Cloud-chat session JWT mint and workspace-prompt render read users from the active backend** (`app/auth/access.py` `mint_session_jwt`, `app/main.py` workspace-prompt callback) — direct `UserRepository(conn)` reads replaced with `users_repo()`.
 
 ### Removed
 
 ### Internal
+- **Backend-split guard now also catches `Depends(_get_db)` + raw `conn.execute` on state tables** (`tests/test_backend_split_guard.py`), and the cross-engine parity sweep compares `/api/admin/access-overview` response bodies, not just HTTP status (`tests/db_pg/`). New repo methods `users.get_by_ids`, `store_entities.synthetic_name_taken`, and `user_stack_subscriptions.subscribe_group_members` added to both DuckDB and Postgres backends with contract-test coverage.
 
 ## [0.71.56] - 2026-06-18
 
