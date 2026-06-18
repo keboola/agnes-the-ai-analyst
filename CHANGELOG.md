@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.56] - 2026-06-18
+
+### Changed
+- **BREAKING** License changed from MIT to PolyForm Small Business License 1.0.0. Use of the software is now restricted to organizations with fewer than 100 total individuals and less than 1,000,000 USD (2019) in total revenue in the prior tax year. See [LICENSE](LICENSE) for full terms.
 ### Fixed
 - **MCP OAuth consent page now reads the correct session cookie — no more infinite login redirect.** `_get_session_user` in `app/auth/mcp_oauth.py` read a cookie named `agnes_session`, but every auth provider sets the session cookie as `access_token`. The consent page therefore never recovered the user's session after the login redirect, looping login → consent → login. It now reads `access_token`, matching the providers and `app/auth/dependencies.py`.
 - **Refreshed OAuth access tokens keep their `resource` binding (RFC 8707).** `exchange_refresh_token` minted the new access token without a `resource`, so a resource-bound token lost its binding (`resource=None`) on every refresh while the auth-code path set it correctly. The `resource` is now persisted on the refresh-token row (new `oauth_refresh_tokens.resource` column, DuckDB schema v84 + Alembic `0031`) and carried through token rotation into both the new access token and the rotated refresh token.
