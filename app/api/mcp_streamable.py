@@ -179,6 +179,13 @@ def _make_streamable_app() -> ASGIApp:
             "understand columns, `describe` for sample rows, and `query` to run SQL. "
             "Run `server_info` to check connectivity at the start of a session."
         ),
+        # DNS-rebinding/Host-header protection is disabled deliberately: this is
+        # a REMOTE connector reached through a TLS-terminating reverse proxy on a
+        # fixed FQDN (operators set AGNES_BASE_URL to that host), and the proxy
+        # rewrites Host. The SDK's allowed-hosts check would otherwise reject the
+        # legitimate proxied Host. Every request is still OAuth-bearer-gated
+        # before reaching a tool, so a rebound origin gains nothing without a
+        # valid token. Mirrors the SSE server's stance in mcp_http.py.
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
         auth=auth,
         auth_server_provider=provider,

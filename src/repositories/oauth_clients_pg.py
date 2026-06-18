@@ -88,6 +88,7 @@ class OAuthClientsPgRepository:
         expires_at: float,
         subject: str | None = None,
         resource: str | None = None,
+        state: str | None = None,
     ) -> None:
         with self._engine.begin() as conn:
             conn.execute(
@@ -95,9 +96,9 @@ class OAuthClientsPgRepository:
                     """
                     INSERT INTO oauth_auth_codes
                         (code, client_id, scopes, code_challenge, redirect_uri,
-                         redirect_uri_provided_explicitly, expires_at, subject, resource)
+                         redirect_uri_provided_explicitly, expires_at, subject, resource, state)
                     VALUES (:code, :client_id, :scopes, :code_challenge, :redirect_uri,
-                            :redirect_uri_provided_explicitly, :expires_at, :subject, :resource)
+                            :redirect_uri_provided_explicitly, :expires_at, :subject, :resource, :state)
                     ON CONFLICT (code) DO UPDATE SET
                         client_id   = EXCLUDED.client_id,
                         scopes      = EXCLUDED.scopes,
@@ -106,7 +107,8 @@ class OAuthClientsPgRepository:
                         redirect_uri_provided_explicitly = EXCLUDED.redirect_uri_provided_explicitly,
                         expires_at  = EXCLUDED.expires_at,
                         subject     = EXCLUDED.subject,
-                        resource    = EXCLUDED.resource
+                        resource    = EXCLUDED.resource,
+                        state       = EXCLUDED.state
                     """
                 ),
                 {
@@ -119,6 +121,7 @@ class OAuthClientsPgRepository:
                     "expires_at": expires_at,
                     "subject": subject,
                     "resource": resource,
+                    "state": state,
                 },
             )
 

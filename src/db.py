@@ -1256,7 +1256,7 @@ CREATE TABLE IF NOT EXISTS oauth_clients (
     redirect_uris    TEXT NOT NULL DEFAULT '[]',
     client_name      VARCHAR,
     client_metadata  TEXT NOT NULL DEFAULT '{}',
-    created_at       TIMESTAMP DEFAULT current_timestamp
+    created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
 );
 
 CREATE TABLE IF NOT EXISTS oauth_auth_codes (
@@ -1268,7 +1268,8 @@ CREATE TABLE IF NOT EXISTS oauth_auth_codes (
     redirect_uri_provided_explicitly BOOLEAN NOT NULL DEFAULT FALSE,
     expires_at                       DOUBLE NOT NULL,
     subject                          VARCHAR,
-    resource                         VARCHAR
+    resource                         VARCHAR,
+    state                            VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS oauth_access_tokens (
@@ -1279,7 +1280,7 @@ CREATE TABLE IF NOT EXISTS oauth_access_tokens (
     subject    VARCHAR,
     resource   VARCHAR,
     revoked_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT current_timestamp
+    created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
 );
 
 CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
@@ -1289,7 +1290,7 @@ CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
     expires_at BIGINT,
     subject    VARCHAR,
     revoked_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT current_timestamp
+    created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
 );
 """
 
@@ -5143,7 +5144,7 @@ def _v79_to_v80(conn: duckdb.DuckDBPyConnection) -> None:
             redirect_uris    TEXT NOT NULL DEFAULT '[]',
             client_name      VARCHAR,
             client_metadata  TEXT NOT NULL DEFAULT '{}',
-            created_at       TIMESTAMP DEFAULT current_timestamp
+            created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
         )
     """)
     conn.execute("""
@@ -5156,7 +5157,8 @@ def _v79_to_v80(conn: duckdb.DuckDBPyConnection) -> None:
             redirect_uri_provided_explicitly BOOLEAN NOT NULL DEFAULT FALSE,
             expires_at                       DOUBLE NOT NULL,
             subject                          VARCHAR,
-            resource                         VARCHAR
+            resource                         VARCHAR,
+            state                            VARCHAR
         )
     """)
     conn.execute("""
@@ -5168,7 +5170,7 @@ def _v79_to_v80(conn: duckdb.DuckDBPyConnection) -> None:
             subject    VARCHAR,
             resource   VARCHAR,
             revoked_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT current_timestamp
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
         )
     """)
     conn.execute("""
@@ -5179,7 +5181,7 @@ def _v79_to_v80(conn: duckdb.DuckDBPyConnection) -> None:
             expires_at BIGINT,
             subject    VARCHAR,
             revoked_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT current_timestamp
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
         )
     """)
     conn.execute("UPDATE schema_version SET version = 80")

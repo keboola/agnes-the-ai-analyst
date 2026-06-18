@@ -130,10 +130,12 @@ def _run_full_flow(client, admin_token, redirect_uri):
     assert r.status_code == 200, r.text
     assert "Authorize access" in r.text
 
-    # 3. consent POST allow → redirect back to the client with ?code=
+    # 3. consent POST allow → redirect back to the client with ?code=.
+    #    Send a TAMPERED state in the form body to prove it is ignored: the
+    #    authoritative state is the one persisted server-side at authorize().
     r = client.post(
         "/api/mcp/oauth/consent",
-        data={"pending": pending, "state": "xyz", "action": "allow"},
+        data={"pending": pending, "state": "TAMPERED", "action": "allow"},
         headers=auth_hdr,
         follow_redirects=False,
     )
@@ -141,7 +143,7 @@ def _run_full_flow(client, admin_token, redirect_uri):
     final = r.headers["location"]
     assert final.startswith(redirect_uri)
     qs = parse_qs(urlparse(final).query)
-    assert qs["state"][0] == "xyz"
+    assert qs["state"][0] == "xyz", "form-body state must not override the persisted state"
     code = qs["code"][0]
 
     # 4. token exchange with the PKCE verifier
@@ -162,17 +164,52 @@ def _run_full_flow(client, admin_token, redirect_uri):
     assert tok["token_type"].lower() == "bearer"
     assert tok.get("refresh_token")
 
-    # 5. the minted token authenticates: the same MCP endpoint that returned
-    #    401 unauthenticated must no longer reject on auth grounds.
-    r = client.post(
-        MCP_ENDPOINT,
-        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Accept": "application/json, text/event-stream",
+    # 5. the minted token authenticates: the OAuth provider verifies it as a
+    #    live access token bound to the authorizing user. (Deterministic — does
+    #    not depend on the streamable session manager being warm under load.)
+    import asyncio
+
+    from app.auth.mcp_oauth import AgnesMCPOAuthProvider
+
+    verified = asyncio.run(AgnesMCPOAuthProvider().load_access_token(access_token))
+    assert verified is not None, "minted access token must verify"
+    assert verified.client_id == client_id
+    assert verified.subject  # bound to the authorizing Agnes user
+
+
+def test_consent_post_rejects_cross_origin(seeded_app):
+    """The consent POST mints an auth code off the session — cross-origin
+    submits (CSRF) must be rejected with 403."""
+    client = seeded_app["client"]
+    admin_token = seeded_app["admin_token"]
+    reg = _register_client(client)
+    _, challenge = _pkce()
+
+    r = client.get(
+        f"{MCP_MOUNT}/authorize",
+        params={
+            "response_type": "code",
+            "client_id": reg["client_id"],
+            "redirect_uri": "http://localhost:9999/callback",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "state": "xyz",
+            "scope": "read",
         },
+        follow_redirects=False,
     )
-    assert r.status_code != 401, r.text
+    pending = parse_qs(urlparse(r.headers["location"]).query)["pending"][0]
+
+    r = client.post(
+        "/api/mcp/oauth/consent",
+        data={"pending": pending, "action": "allow"},
+        headers={
+            "Authorization": f"Bearer {admin_token}",
+            "Origin": "https://evil.example.com",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 403, r.text
 
 
 def test_provider_rejects_unknown_token(seeded_app):

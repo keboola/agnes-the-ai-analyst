@@ -147,13 +147,15 @@ class AgnesMCPOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, 
             expires_at=time.time() + _AUTH_CODE_TTL,
             subject=None,  # not yet resolved — filled in at consent
             resource=params.resource,
+            # Persist the client's CSRF state server-side. It is read back from
+            # this row when minting the code — NEVER from the (forgeable) consent
+            # form body — so a tampered form can't swap the state the client uses
+            # to validate the authorization response.
+            state=params.state,
         )
 
         base = _base_url()
-        consent_url = f"{base}/api/mcp/oauth/consent?pending={pending_token}"
-        if params.state:
-            consent_url += f"&state={params.state}"
-        return consent_url
+        return f"{base}/api/mcp/oauth/consent?pending={pending_token}"
 
     # ------------------------------------------------------------------
     # Authorization code exchange (step 3)
@@ -376,7 +378,6 @@ async def _consent_page(request: Request) -> Response:
     from src.repositories import oauth_clients_repo
 
     pending = request.query_params.get("pending", "")
-    state = request.query_params.get("state", "")
 
     # Validate that the pending code exists and hasn't expired.
     pending_row = oauth_clients_repo().get_auth_code(pending)
@@ -387,7 +388,7 @@ async def _consent_page(request: Request) -> Response:
     user = _get_session_user(request)
     if user is None:
         # Not logged in — redirect to Google/email login then come back.
-        login_url = _login_url(request, pending, state)
+        login_url = _login_url(request, pending)
         return RedirectResponse(url=login_url, status_code=302)
 
     client_row = oauth_clients_repo().get_client(pending_row["client_id"])
@@ -398,7 +399,6 @@ async def _consent_page(request: Request) -> Response:
         client_name=client_name,
         scopes=scopes,
         pending=pending,
-        state=state,
     )
     return HTMLResponse(html)
 
@@ -407,9 +407,15 @@ async def _consent_submit(request: Request) -> Response:
     """POST handler: user clicked Allow/Deny — mint the code and redirect."""
     from src.repositories import oauth_clients_repo
 
+    # CSRF defense: this POST mints an OAuth authorization code off the user's
+    # active session, so reject cross-origin submits. The consent form is always
+    # served from this same origin, so a missing/foreign Origin (or Referer, for
+    # clients that omit Origin) is not a legitimate request.
+    if not _same_origin(request):
+        return HTMLResponse("<h2>Cross-origin request rejected.</h2>", status_code=403)
+
     form = await request.form()
     pending = str(form.get("pending", ""))
-    state = str(form.get("state", ""))
     action = str(form.get("action", "allow"))
 
     pending_row = oauth_clients_repo().get_auth_code(pending)
@@ -417,6 +423,9 @@ async def _consent_submit(request: Request) -> Response:
         return HTMLResponse("<h2>Authorization request expired.</h2>", status_code=400)
 
     redirect_uri = pending_row["redirect_uri"]
+    # Authoritative state is the value persisted at authorize() time, never the
+    # form body — so a forged/tampered form cannot swap the client's CSRF state.
+    state = pending_row.get("state") or ""
 
     if action != "allow":
         # User denied — redirect with error.
@@ -502,12 +511,36 @@ def _get_session_user(request: Request) -> dict | None:
     return user
 
 
-def _login_url(request: Request, pending: str, state: str) -> str:
-    """Build the login redirect URL that returns to the consent page."""
+def _same_origin(request: Request) -> bool:
+    """Return True if the request originates from this Agnes instance.
+
+    Checks the Origin header (sent on cross-site form POSTs by modern browsers)
+    against AGNES_BASE_URL, falling back to Referer for clients that omit Origin.
+    A request with neither header set is treated as same-origin only when no
+    public base URL is configured (dev/localhost), since browsers always send
+    one of them on a genuine cross-origin POST.
+    """
+    from urllib.parse import urlparse
+
+    base = _base_url()
+    base_host = urlparse(base).netloc
+    origin = request.headers.get("origin") or ""
+    referer = request.headers.get("referer") or ""
+    candidate = origin or referer
+    if not candidate:
+        # No Origin/Referer — only trust when no public host is pinned.
+        return base_host in ("", "localhost:8000")
+    return urlparse(candidate).netloc == base_host
+
+
+def _login_url(request: Request, pending: str) -> str:
+    """Build the login redirect URL that returns to the consent page.
+
+    The OAuth ``state`` is persisted server-side in the pending auth-code row,
+    so it is intentionally NOT threaded through the login round-trip URL.
+    """
     base = _base_url()
     consent_path = f"/api/mcp/oauth/consent?pending={pending}"
-    if state:
-        consent_path += f"&state={state}"
     # Prefer Google OAuth if available, fall back to email magic-link.
     from app.auth.providers.google import is_available as google_available
 
@@ -538,7 +571,6 @@ def _render_consent_page(
     client_name: str,
     scopes: list[str],
     pending: str,
-    state: str,
 ) -> str:
     """Return the HTML consent page (extends base_ds.html via Jinja in production)."""
     scope_list = "".join(f"<li>{s}</li>" for s in scopes) if scopes else "<li>read access</li>"
@@ -623,7 +655,6 @@ def _render_consent_page(
     </ul>
     <form method="post" action="/api/mcp/oauth/consent">
       <input type="hidden" name="pending" value="{pending}">
-      <input type="hidden" name="state" value="{state}">
       <div class="actions">
         <button type="submit" name="action" value="deny" class="btn-deny">Deny</button>
         <button type="submit" name="action" value="allow" class="btn-allow">Allow</button>

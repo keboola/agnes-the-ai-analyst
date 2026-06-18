@@ -83,13 +83,14 @@ class OAuthClientsRepository:
         expires_at: float,
         subject: str | None = None,
         resource: str | None = None,
+        state: str | None = None,
     ) -> None:
         self.conn.execute(
             """
             INSERT INTO oauth_auth_codes
                 (code, client_id, scopes, code_challenge, redirect_uri,
-                 redirect_uri_provided_explicitly, expires_at, subject, resource)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 redirect_uri_provided_explicitly, expires_at, subject, resource, state)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (code) DO UPDATE SET
                 client_id   = excluded.client_id,
                 scopes      = excluded.scopes,
@@ -98,7 +99,8 @@ class OAuthClientsRepository:
                 redirect_uri_provided_explicitly = excluded.redirect_uri_provided_explicitly,
                 expires_at  = excluded.expires_at,
                 subject     = excluded.subject,
-                resource    = excluded.resource
+                resource    = excluded.resource,
+                state       = excluded.state
             """,
             [
                 code,
@@ -110,6 +112,7 @@ class OAuthClientsRepository:
                 expires_at,
                 subject,
                 resource,
+                state,
             ],
         )
 

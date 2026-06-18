@@ -44,6 +44,7 @@ def upgrade() -> None:
         sa.Column("expires_at", sa.Float(), nullable=False),
         sa.Column("subject", sa.String(), nullable=True),
         sa.Column("resource", sa.String(), nullable=True),
+        sa.Column("state", sa.String(), nullable=True),
     )
     op.create_table(
         "oauth_access_tokens",
