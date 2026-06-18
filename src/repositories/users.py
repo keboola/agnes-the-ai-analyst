@@ -184,13 +184,25 @@ class UserRepository:
         iff it is the valid, unexpired token for an active ``email``. Returns True
         iff THIS call won the race (mirrors the magic-link CAS). Goes through the
         repo (not a raw connection) so it runs on the ACTIVE backend — a raw
-        DuckDB cursor here silently failed on Postgres instances."""
-        self.conn.execute(
-            "UPDATE users SET reset_token = ?, reset_token_created = NULL "
-            "WHERE email = ? AND reset_token = ? AND reset_token_created IS NOT NULL "
-            "AND reset_token_created >= ? AND active = TRUE",
-            [consume_id, email, token, cutoff],
-        )
+        DuckDB cursor here silently failed on Postgres instances.
+
+        On a concurrent verify, DuckDB raises a TransactionContext conflict on
+        the losing UPDATE; that means another caller won the CAS, so we report
+        a loss (``False``) rather than letting the conflict surface as a 500.
+        Postgres serializes the two UPDATEs instead (the loser matches zero
+        rows), so it reaches the same ``False`` without raising."""
+        try:
+            self.conn.execute(
+                "UPDATE users SET reset_token = ?, reset_token_created = NULL "
+                "WHERE email = ? AND reset_token = ? AND reset_token_created IS NOT NULL "
+                "AND reset_token_created >= ? AND active = TRUE",
+                [consume_id, email, token, cutoff],
+            )
+        except Exception as exc:  # noqa: BLE001 — DuckDB optimistic-concurrency conflict
+            err = str(exc).lower()
+            if "conflict" in err or "transaction" in err:
+                return False
+            raise
         row = self.conn.execute(
             "SELECT reset_token FROM users WHERE email = ?", [email]
         ).fetchone()
