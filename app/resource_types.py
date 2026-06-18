@@ -297,7 +297,8 @@ def _memory_item_blocks() -> List[Block]:
     exists for the per-group override: a group can be granted MEMORY_ITEM
     on a specific item with ``requirement='required'`` (force-include) or
     ``'available'`` (force-exclude — counter-acts the global flag for that
-    group). Surfaced as a flat list of approved items so admins can pick.
+    group). Surfaced as a flat list of approved or pending non-personal
+    items so admins can pick.
     """
     from src.repositories import knowledge_repo
 

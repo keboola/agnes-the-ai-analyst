@@ -59,20 +59,20 @@ Everything lives in `app/resource_types.py`. Three edits, one file:
        DATASET = "dataset"  # new
    ```
 
-2. Write a `list_blocks` delegate that projects the domain tables into the `(block → items)` shape the admin /access page consumes. Each item must include `resource_id` matching the path string written into `resource_grants`:
+2. Write a `list_blocks` delegate (no arguments) that reads through the `src.repositories` factory and projects the domain tables into the `(block → items)` shape the admin /access page consumes. Each item must include `resource_id` matching the path string written into `resource_grants`. Read through the factory — never a raw system-DB connection — so the projection hits the active backend (Postgres when configured) instead of the frozen DuckDB system file:
 
    ```python
-   def _dataset_blocks(conn) -> list[Block]:
-       rows = conn.execute(
-           "SELECT bucket, name, description FROM table_registry ORDER BY bucket, name"
-       ).fetchall()
+   def _dataset_blocks() -> list[Block]:
+       from src.repositories import table_registry_repo
+
        blocks: dict[str, Block] = {}
-       for bucket, name, desc in rows:
+       for row in table_registry_repo().list_all():
+           bucket = row.get("bucket") or "(no bucket)"
            block = blocks.setdefault(bucket, {"id": bucket, "name": bucket, "items": []})
            block["items"].append({
-               "resource_id": f"{bucket}.{name}",
-               "name": name,
-               "description": desc,
+               "resource_id": f"{bucket}.{row['name']}",
+               "name": row["name"],
+               "description": row.get("description"),
            })
        return list(blocks.values())
    ```
