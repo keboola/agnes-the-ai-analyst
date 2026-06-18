@@ -237,6 +237,7 @@ class AgnesMCPOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, 
             scopes=list(authorization_code.scopes),
             subject=subject,
             expires_at=int(time.time()) + _REFRESH_TOKEN_TTL,
+            resource=authorization_code.resource,
         )
 
         return OAuthToken(
@@ -292,6 +293,12 @@ class AgnesMCPOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, 
         if not user:
             raise TokenError(error="invalid_grant", error_description="User not found")
 
+        # Preserve the resource binding (RFC 8707) across rotation: read it
+        # off the stored refresh-token row before revoking. The SDK's
+        # RefreshToken type doesn't carry `resource`, so go back to the repo.
+        old_row = oauth_clients_repo().get_refresh_token(refresh_token.token)
+        resource = old_row.get("resource") if old_row else None
+
         # Revoke old refresh token (rotation).
         oauth_clients_repo().revoke_refresh_token(refresh_token.token)
 
@@ -310,6 +317,7 @@ class AgnesMCPOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, 
             scopes=effective_scopes,
             expires_at=int(time.time()) + _ACCESS_TOKEN_TTL,
             subject=subject,
+            resource=resource,
         )
 
         new_refresh = secrets.token_urlsafe(48)
@@ -319,6 +327,7 @@ class AgnesMCPOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, 
             scopes=effective_scopes,
             subject=subject,
             expires_at=int(time.time()) + _REFRESH_TOKEN_TTL,
+            resource=resource,
         )
 
         return OAuthToken(
@@ -499,7 +508,7 @@ def _get_session_user(request: Request) -> dict | None:
         token = auth[7:]
     # Try session cookie set by Google/email login.
     if not token:
-        token = request.cookies.get("agnes_session", "")
+        token = request.cookies.get("access_token", "")
     if not token:
         return None
     user, _ = resolve_token_to_user(None, token, request)

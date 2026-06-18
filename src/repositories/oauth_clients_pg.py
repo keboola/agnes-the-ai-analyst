@@ -224,6 +224,7 @@ class OAuthClientsPgRepository:
         scopes: list[str],
         subject: str | None = None,
         expires_at: int | None = None,
+        resource: str | None = None,
     ) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
@@ -231,13 +232,14 @@ class OAuthClientsPgRepository:
                 sa.text(
                     """
                     INSERT INTO oauth_refresh_tokens
-                        (token, client_id, scopes, expires_at, subject, created_at)
-                    VALUES (:token, :client_id, :scopes, :expires_at, :subject, :created_at)
+                        (token, client_id, scopes, expires_at, subject, resource, created_at)
+                    VALUES (:token, :client_id, :scopes, :expires_at, :subject, :resource, :created_at)
                     ON CONFLICT (token) DO UPDATE SET
                         client_id  = EXCLUDED.client_id,
                         scopes     = EXCLUDED.scopes,
                         expires_at = EXCLUDED.expires_at,
-                        subject    = EXCLUDED.subject
+                        subject    = EXCLUDED.subject,
+                        resource   = EXCLUDED.resource
                     """
                 ),
                 {
@@ -246,6 +248,7 @@ class OAuthClientsPgRepository:
                     "scopes": json.dumps(scopes),
                     "expires_at": expires_at,
                     "subject": subject,
+                    "resource": resource,
                     "created_at": now,
                 },
             )

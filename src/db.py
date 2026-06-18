@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 83
+SCHEMA_VERSION = 84
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1317,6 +1317,7 @@ CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
     scopes     TEXT NOT NULL DEFAULT '[]',
     expires_at BIGINT,
     subject    VARCHAR,
+    resource   VARCHAR,
     revoked_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
 );
@@ -5363,11 +5364,27 @@ def _v82_to_v83(conn: duckdb.DuckDBPyConnection) -> None:
             scopes     TEXT NOT NULL DEFAULT '[]',
             expires_at BIGINT,
             subject    VARCHAR,
+            resource   VARCHAR,
             revoked_at TIMESTAMP,
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
         )
     """)
     conn.execute("UPDATE schema_version SET version = 83")
+
+
+def _v83_to_v84(conn: duckdb.DuckDBPyConnection) -> None:
+    """v84: add resource column to oauth_refresh_tokens.
+
+    Refreshed access tokens must preserve the original token's `resource`
+    binding (RFC 8707). The auth-code exchange already persists `resource`
+    on the access token; the refresh path needs the same value carried on
+    the refresh-token row so token rotation doesn't drop it. IF NOT EXISTS
+    keeps this a no-op on fresh installs.
+    """
+    conn.execute(
+        "ALTER TABLE oauth_refresh_tokens ADD COLUMN IF NOT EXISTS resource VARCHAR"
+    )
+    conn.execute("UPDATE schema_version SET version = 84")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -5705,6 +5722,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # (oauth_clients, oauth_auth_codes, oauth_access_tokens,
             # oauth_refresh_tokens). IF NOT EXISTS — no-op on fresh installs.
             _v82_to_v83(conn)
+            # v83→v84: resource column on oauth_refresh_tokens so refreshed
+            # access tokens keep their RFC 8707 resource binding.
+            _v83_to_v84(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5924,6 +5944,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v81_to_v82(conn)
             if current < 83:
                 _v82_to_v83(conn)
+            if current < 84:
+                _v83_to_v84(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
