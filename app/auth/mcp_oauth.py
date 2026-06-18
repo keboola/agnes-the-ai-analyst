@@ -5,16 +5,21 @@ MCP-compatible AI agent (Claude Desktop, Claude.ai, Cursor, Cline, …) can
 connect to Agnes using the standard browser-based OAuth 2.1 + PKCE flow
 without needing a manually-issued PAT.
 
+The SDK serves the standard OAuth endpoints (``/register``, ``/authorize``,
+``/token``) relative to the streamable sub-app mounted at ``/api/mcp/http``
+(see ``app/main.py``); only the login/consent bridge below lives under
+``/api/mcp/oauth/*``.
+
 Flow summary
 ------------
-1. MCP client POSTs to ``/api/mcp/oauth/register`` (RFC 7591 dynamic
-   client registration) — client metadata is persisted in
-   ``oauth_clients`` via the factory repo.
-2. MCP client redirects user browser to ``/api/mcp/oauth/authorize``.
+1. MCP client POSTs to the SDK's ``register`` endpoint (under
+   ``/api/mcp/http``, RFC 7591 dynamic client registration) — client
+   metadata is persisted in ``oauth_clients`` via the factory repo.
+2. MCP client redirects user browser to the SDK's ``authorize`` endpoint.
    The SDK's ``AuthorizationHandler`` calls ``provider.authorize()``,
    which:
-   a. Checks for an active Agnes session cookie (``Authorization``
-      header or ``session`` cookie set by the browser login flow).
+   a. Checks for an active Agnes session (``Authorization`` header or
+      the ``access_token`` cookie set by the browser login flow).
    b. If no session: redirects to ``/auth/google/login?next=…`` (or
       the email-magic-link login page) so the user authenticates with
       the identity provider they already use for Agnes.
@@ -24,7 +29,7 @@ Flow summary
       triggers ``_complete_authorize``:  a short-lived authorization
       code is minted and stored, then the browser is redirected to the
       MCP client's ``redirect_uri?code=…&state=…``.
-3. MCP client POSTs to ``/api/mcp/oauth/token`` with the authorization
+3. MCP client POSTs to the SDK's ``token`` endpoint with the authorization
    code + PKCE verifier.  ``exchange_authorization_code`` validates,
    deletes the code, mints a JWT token via ``create_access_token``, and
    persists it in ``oauth_access_tokens``.  The JWT is a standard Agnes
