@@ -110,6 +110,11 @@ _PK_COLUMNS: Dict[str, List[str]] = {
     "user_workdirs": ["user_email"],
     # v79 named source connections (source_connections uses id PK)
     "connection_secrets": ["connection_id"],
+    # v80 OAuth 2.1 MCP connector — non-`id` primary keys.
+    "oauth_clients": ["client_id"],
+    "oauth_auth_codes": ["code"],
+    "oauth_access_tokens": ["token"],
+    "oauth_refresh_tokens": ["token"],
 }
 
 

@@ -120,6 +120,8 @@ __all__ = [
     "chat_message_repo",
     "user_workdirs_repo",
     "chat_session_participants_repo",
+    # OAuth 2.1 MCP connector
+    "oauth_clients_repo",
 ]
 
 
@@ -397,6 +399,10 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("app.chat.persistence", "ChatRepository"),
         PG: ("src.repositories.chat_session_participants_pg", "ChatSessionParticipantPgRepository"),
     },
+    "oauth_clients": {
+        DUCKDB: ("src.repositories.oauth_clients", "OAuthClientsRepository"),
+        PG: ("src.repositories.oauth_clients_pg", "OAuthClientsPgRepository"),
+    },
 }
 
 
@@ -619,3 +625,7 @@ def user_workdirs_repo() -> Any:
 
 def chat_session_participants_repo() -> Any:
     return _build("chat_session_participants")
+
+
+def oauth_clients_repo() -> Any:
+    return _build("oauth_clients")

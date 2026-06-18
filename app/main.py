@@ -271,6 +271,9 @@ from app.api.cowork_bundle import (
     auth_router as cowork_auth_router,
 )
 from app.api.mcp_http import make_sse_app as _make_mcp_sse_app
+from app.api.mcp_streamable import _make_streamable_app as _make_mcp_streamable_app
+from app.api.mcp_streamable import _mcp_oauth_discovery_routes
+from app.auth.mcp_oauth import make_consent_routes as _make_mcp_consent_routes
 from app.api.cache_warmup import router as cache_warmup_router
 from app.api.bq_metadata_refresh import router as bq_metadata_refresh_router
 from app.api.activity import router as activity_router
@@ -895,7 +898,13 @@ async def lifespan(app):
         logger.exception("Slack Socket Mode wiring failed (non-fatal)")
     # --- end SLACK SOCKET MODE -----------------------------------------------
 
-    yield
+    # Run the streamable MCP session manager for the app's lifetime. Starlette
+    # does not run a mounted sub-app's lifespan, so the streamable OAuth MCP
+    # endpoint would otherwise raise "Task group is not initialized".
+    from app.api.mcp_streamable import streamable_session_manager_lifespan
+
+    async with streamable_session_manager_lifespan(app):
+        yield
     _socket_disp = getattr(app.state, "slack_socket_dispatcher", None)
     if _socket_disp is not None:
         try:
@@ -1390,8 +1399,35 @@ def create_app() -> FastAPI:
     app.include_router(cowork_user_router)
     app.include_router(cowork_auth_router)
 
-    # HTTP MCP (SSE transport) for cowork VM access — must be mounted before
-    # web_router's catch-all. GZip excluded below via skip_prefixes.
+    # MCP mounts — registration order matters. Starlette matches mounts in
+    # order and `/api/mcp` is a path-prefix of both `/api/mcp/http/*` and
+    # `/api/mcp/oauth/*`, so the more specific routes MUST be registered first
+    # or the SSE mount shadows them. Order: consent bridge → streamable app →
+    # SSE app (broadest, last). All three precede web_router's catch-all and
+    # are GZip-excluded below via skip_prefixes.
+
+    # Native OAuth 2.1 consent/login bridge (/api/mcp/oauth/*). Plain Starlette
+    # routes (not a FastAPI router) so this browser OAuth flow stays off the
+    # documented JSON-API surface, like the SDK's authorize/token endpoints.
+    for _route in _make_mcp_consent_routes():
+        app.router.routes.append(_route)
+
+    # Root-level OAuth discovery metadata (RFC 8414 + RFC 9728). The SDK
+    # serves these relative to the streamable sub-app (under /api/mcp/http),
+    # but standards-compliant MCP clients probe the ORIGIN ROOT, so we also
+    # publish them there. Content is identical — endpoints are derived from
+    # the issuer URL, not from where the document is served.
+    for _route in _mcp_oauth_discovery_routes():
+        app.router.routes.append(_route)
+
+    # Streamable-HTTP MCP server with native OAuth 2.1 (remote MCP connectors).
+    _streamable_app = _make_mcp_streamable_app()
+    app.mount("/api/mcp/http", _streamable_app)
+    # Lift the FastMCP instance onto the main app so the lifespan can run its
+    # session manager (Starlette doesn't run mounted sub-app lifespans).
+    app.state.mcp_streamable_instance = getattr(_streamable_app.state, "mcp_streamable_instance", None)
+
+    # HTTP MCP (SSE transport) for cowork VM access — broadest prefix, last.
     app.mount("/api/mcp", _make_mcp_sse_app())
 
     app.include_router(cache_warmup_router)

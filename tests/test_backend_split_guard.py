@@ -30,6 +30,7 @@ remaining entry is one of those — verified by deleting entries as their caller
 are routed through the factory (or confirmed DuckDB-only) until only the
 permanent ones remain. Today the lists are the full residual.
 """
+
 from __future__ import annotations
 
 import ast
@@ -46,6 +47,7 @@ _INFRA_EXCLUDE = ("/repositories/", "src/db.py", "src/db_pg.py")
 # ---------------------------------------------------------------------------
 # detectors (parametrised so the meta-tests can run them on a synthetic file)
 # ---------------------------------------------------------------------------
+
 
 def _rel(p: Path) -> str:
     p = p.resolve()
@@ -86,9 +88,7 @@ def scan_direct_instantiations(files, classes) -> dict[str, set[str]]:
         hits = {
             n.func.id
             for n in ast.walk(tree)
-            if isinstance(n, ast.Call)
-            and isinstance(n.func, ast.Name)
-            and n.func.id in classes
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in classes
         }
         if hits:
             found[_rel(p)] = hits
@@ -109,7 +109,9 @@ def _production_files() -> list[Path]:
 def _get_system_db_caller_files() -> set[str]:
     result = subprocess.run(
         ["grep", "-rlE", "--include=*.py", r"get_system_db\(\)", *SCAN_DIRS],
-        cwd=REPO_ROOT, capture_output=True, text=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
     )
     files = set()
     for rp in result.stdout.splitlines():
@@ -139,15 +141,32 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     "app/api/recipes.py": {"AuditRepository"},
     # stack.py — _emit_event migrated to usage_repo(); entry removed.
     "app/api/stack_views.py": {"KnowledgeRepository", "UsageRepository"},
-    "app/auth/access.py": {"ResourceGrantsRepository", "UserGroupMembersRepository", "UserGroupsRepository", "UserRepository"},
+    "app/auth/access.py": {
+        "ResourceGrantsRepository",
+        "UserGroupMembersRepository",
+        "UserGroupsRepository",
+        "UserRepository",
+    },
     # Sanctioned `if not use_pg(): XRepository(conn) else: x_repo()` escape hatch
     # (test-isolation / DuckDB-mode), same pattern as app/auth/access.py — NOT a
     # raw backend-split. On Postgres these route through the factory.
-    "app/services/stack_resolver.py": {"DataPackagesRepository", "MemoryDomainsRepository", "ResourceGrantsRepository", "UserGroupMembersRepository", "UserGroupsRepository", "UserStackSubscriptionsRepository"},
+    "app/services/stack_resolver.py": {
+        "DataPackagesRepository",
+        "MemoryDomainsRepository",
+        "ResourceGrantsRepository",
+        "UserGroupMembersRepository",
+        "UserGroupsRepository",
+        "UserStackSubscriptionsRepository",
+    },
     # cloud-chat PG-only persistence (legit by design, see module docstring):
     # ChatRepository.__init__ instantiates the *Pg repos only under `use_pg()`
     # and dispatches every method through them — not a backend-split.
-    "app/chat/persistence.py": {"ChatMessagePgRepository", "ChatSessionPgRepository", "UserWorkdirPgRepository", "ChatSessionParticipantPgRepository"},
+    "app/chat/persistence.py": {
+        "ChatMessagePgRepository",
+        "ChatSessionPgRepository",
+        "UserWorkdirPgRepository",
+        "ChatSessionParticipantPgRepository",
+    },
     # main.py lifespan seed-admin: group membership now routes through
     # user_group_members_repo() (factory); only the UserRepository read at the
     # cowork-bundle path remains a direct DuckDB instantiation.
@@ -158,7 +177,13 @@ _GRANDFATHERED_DIRECT_INSTANTIATION: dict[str, set[str]] = {
     "src/grant_intersection.py": {"UserRepository"},
     # app/web/router.py — migrated to table_registry_repo()/sync_state_repo()
     # (catalog detail pages); entry removed as the residual shrank.
-    "cli/commands/admin_data_semantics.py": {"BqMetadataCacheRepository", "ColumnMetadataRepository", "DataPackagesRepository", "MetricRepository", "TableRegistryRepository"},
+    "cli/commands/admin_data_semantics.py": {
+        "BqMetadataCacheRepository",
+        "ColumnMetadataRepository",
+        "DataPackagesRepository",
+        "MetricRepository",
+        "TableRegistryRepository",
+    },
     # Slack bot: the whole subsystem reads off `repo._conn` (= the DuckDB system
     # connection that app.state.chat_repo is built on), consistently — user
     # lookup, verification codes, and bindings all live there. Migrating Slack
@@ -200,6 +225,11 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     "app/api/cache_warmup.py",
     "app/api/health.py",
     "app/api/mcp_http.py",
+    # app/api/mcp_streamable.py — startup-only get_system_db() in
+    # _register_dynamic_tools() to read tool_registry for passthrough tools,
+    # identical to mcp_http.py. Not a per-request handler, so not the
+    # backend-split bug class this ratchet guards.
+    "app/api/mcp_streamable.py",
     # app/api/query.py — the bq-metadata VIEW-hint lookup (_view_targets_in)
     # now routes through the factory; no remaining get_system_db caller.
     "app/api/scripts.py",
@@ -231,6 +261,7 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
 # the guards
 # ---------------------------------------------------------------------------
 
+
 def test_no_new_direct_backend_aware_repo_instantiation():
     """No NEW ``XRepository(conn)`` for a factory-backed repo. New backend-aware
     state access must go through ``src.repositories`` factory functions."""
@@ -244,8 +275,7 @@ def test_no_new_direct_backend_aware_repo_instantiation():
     assert not new, (
         "New direct backend-aware repository instantiation(s) detected — route "
         "these through the src.repositories factory (e.g. users_repo()), they "
-        "bypass the DuckDB/Postgres backend switch:\n"
-        + "\n".join(f"  {f}: {cs}" for f, cs in sorted(new.items()))
+        "bypass the DuckDB/Postgres backend switch:\n" + "\n".join(f"  {f}: {cs}" for f, cs in sorted(new.items()))
     )
 
 
@@ -275,23 +305,22 @@ def test_no_new_get_system_db_callers():
     new = sorted(callers - _GRANDFATHERED_GET_SYSTEM_DB)
     assert not new, (
         "New get_system_db() caller(s) — on a Postgres instance this reads/writes "
-        "the wrong backend. Use the src.repositories factory instead:\n"
-        + "\n".join(f"  {f}" for f in new)
+        "the wrong backend. Use the src.repositories factory instead:\n" + "\n".join(f"  {f}" for f in new)
     )
 
 
 def test_get_system_db_allowlist_has_no_stale_entries():
     callers = _get_system_db_caller_files()
     stale = sorted(_GRANDFATHERED_GET_SYSTEM_DB - callers)
-    assert not stale, (
-        "Stale get_system_db allow-list entries — delete them to keep the "
-        "residual honest:\n" + "\n".join(f"  {f}" for f in stale)
+    assert not stale, "Stale get_system_db allow-list entries — delete them to keep the residual honest:\n" + "\n".join(
+        f"  {f}" for f in stale
     )
 
 
 # ---------------------------------------------------------------------------
 # meta-tests: prove the detector actually catches violations
 # ---------------------------------------------------------------------------
+
 
 def test_detector_flags_a_planted_violation(tmp_path):
     """A synthetic module that constructs a backend-aware repo directly must be
@@ -315,9 +344,7 @@ def test_detector_ignores_factory_call(tmp_path):
     classes = backend_aware_repo_classes()
     clean = tmp_path / "clean.py"
     clean.write_text(
-        "from src.repositories import users_repo\n"
-        "def handler():\n"
-        "    return users_repo().get_by_id('x')\n"
+        "from src.repositories import users_repo\ndef handler():\n    return users_repo().get_by_id('x')\n"
     )
     found = scan_direct_instantiations([clean], classes)
     assert not found, f"factory call wrongly flagged: {found}"
