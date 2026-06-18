@@ -46,6 +46,7 @@ class OAuthAuthCode(Base):
     expires_at: Mapped[float] = mapped_column(Float, nullable=False)
     subject: Mapped[str | None] = mapped_column(String, nullable=True)
     resource: Mapped[str | None] = mapped_column(String, nullable=True)
+    state: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class OAuthAccessToken(Base):
