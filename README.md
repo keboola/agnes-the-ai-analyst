@@ -1,6 +1,6 @@
 # Agnes — AI Data Analyst
 
-Agnes is an open-source data distribution platform for AI analytical systems. It extracts data from configured sources into DuckDB, serves it via a FastAPI backend, and distributes Parquet files to analysts who query them locally using Claude Code and DuckDB.
+Agnes is a source-available data distribution platform for AI analytical systems. It extracts data from configured sources into DuckDB, serves it via a FastAPI backend, and distributes Parquet files to analysts who query them locally using Claude Code and DuckDB.
 
 Each data source produces a self-describing `extract.duckdb` file. The `SyncOrchestrator` attaches all extract databases into a master `analytics.duckdb`, making every table available through a unified view layer without copying data unnecessarily.
 
