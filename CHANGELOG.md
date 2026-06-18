@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **MCP OAuth consent page now reads the correct session cookie — no more infinite login redirect.** `_get_session_user` in `app/auth/mcp_oauth.py` read a cookie named `agnes_session`, but every auth provider sets the session cookie as `access_token`. The consent page therefore never recovered the user's session after the login redirect, looping login → consent → login. It now reads `access_token`, matching the providers and `app/auth/dependencies.py`.
+- **Refreshed OAuth access tokens keep their `resource` binding (RFC 8707).** `exchange_refresh_token` minted the new access token without a `resource`, so a resource-bound token lost its binding (`resource=None`) on every refresh while the auth-code path set it correctly. The `resource` is now persisted on the refresh-token row (new `oauth_refresh_tokens.resource` column, DuckDB schema v84 + Alembic `0031`) and carried through token rotation into both the new access token and the rotated refresh token.
+
 ## [0.71.55] - 2026-06-17
 
 ### Fixed
@@ -62,6 +66,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [0.71.47] - 2026-06-17
 
 ### Added
+- **Native OAuth 2.1 remote MCP connector.** Agnes can now be added as a custom connector by any MCP-compatible AI agent — Claude Desktop / Claude.ai, Cursor, Cline, ChatGPT connectors, or a custom MCP SDK client — using the standard browser-based OAuth 2.1 + PKCE handshake, with no manually-issued PAT. A new Streamable-HTTP MCP transport is mounted at `/api/mcp/http` (the existing SSE transport stays at `/api/mcp/sse` for Cowork back-compat) and acts as its own OAuth Authorization Server: RFC 7591 dynamic client registration, `/authorize` + `/token` with PKCE (S256), and RFC 8414 + RFC 9728 discovery metadata published at the origin root (`/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource/api/mcp/http`) so a client given the bare instance URL can discover the connector. The authorize step bridges into the existing Agnes login (Google OAuth, email magic-link fallback) and shows a consent screen before minting a short-lived authorization code; the access token is a standard Agnes session JWT, so `resolve_token_to_user` accepts it and all existing RBAC applies unchanged. The connector URL a user pastes into their agent is `https://<your-host>/api/mcp/http`. New modules `app/api/mcp_streamable.py` + `app/auth/mcp_oauth.py`; OAuth clients/codes/tokens persisted via the dual-backend `oauth_clients` repo (DuckDB + Postgres parity). Schema → v83.
 
 ### Changed
 

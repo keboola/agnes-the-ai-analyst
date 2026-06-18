@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 82
+SCHEMA_VERSION = 84
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1271,6 +1271,55 @@ CREATE TABLE IF NOT EXISTS user_workdirs (
     marketplace_sha        VARCHAR,
     initial_workspace_sha  VARCHAR,
     agnes_version_at_init  VARCHAR
+);
+
+-- v83: OAuth 2.1 tables for the native MCP connector.
+-- oauth_clients        — dynamic client registrations (RFC 7591)
+-- oauth_auth_codes     — short-lived PKCE authorization codes
+-- oauth_access_tokens  — issued access tokens (verify via load_access_token)
+-- oauth_refresh_tokens — refresh tokens for token rotation
+CREATE TABLE IF NOT EXISTS oauth_clients (
+    client_id        VARCHAR PRIMARY KEY,
+    client_secret    VARCHAR,
+    redirect_uris    TEXT NOT NULL DEFAULT '[]',
+    client_name      VARCHAR,
+    client_metadata  TEXT NOT NULL DEFAULT '{}',
+    created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS oauth_auth_codes (
+    code                             VARCHAR PRIMARY KEY,
+    client_id                        VARCHAR NOT NULL,
+    scopes                           TEXT NOT NULL DEFAULT '[]',
+    code_challenge                   VARCHAR NOT NULL,
+    redirect_uri                     VARCHAR NOT NULL,
+    redirect_uri_provided_explicitly BOOLEAN NOT NULL DEFAULT FALSE,
+    expires_at                       DOUBLE NOT NULL,
+    subject                          VARCHAR,
+    resource                         VARCHAR,
+    state                            VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+    token      VARCHAR PRIMARY KEY,
+    client_id  VARCHAR NOT NULL,
+    scopes     TEXT NOT NULL DEFAULT '[]',
+    expires_at BIGINT,
+    subject    VARCHAR,
+    resource   VARCHAR,
+    revoked_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+    token      VARCHAR PRIMARY KEY,
+    client_id  VARCHAR NOT NULL,
+    scopes     TEXT NOT NULL DEFAULT '[]',
+    expires_at BIGINT,
+    subject    VARCHAR,
+    resource   VARCHAR,
+    revoked_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
 );
 
 -- v82: Collections (bring-your-files) foundation.
@@ -5265,6 +5314,79 @@ def _v81_to_v82(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 82")
 
 
+def _v82_to_v83(conn: duckdb.DuckDBPyConnection) -> None:
+    """v83: OAuth 2.1 tables for the native MCP connector (RFC 7591 / RFC 7636).
+
+    Four tables: oauth_clients, oauth_auth_codes, oauth_access_tokens,
+    oauth_refresh_tokens. IF NOT EXISTS guards make this a no-op on fresh
+    installs where _SYSTEM_SCHEMA already creates the tables.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_clients (
+            client_id        VARCHAR PRIMARY KEY,
+            client_secret    VARCHAR,
+            redirect_uris    TEXT NOT NULL DEFAULT '[]',
+            client_name      VARCHAR,
+            client_metadata  TEXT NOT NULL DEFAULT '{}',
+            created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_auth_codes (
+            code                             VARCHAR PRIMARY KEY,
+            client_id                        VARCHAR NOT NULL,
+            scopes                           TEXT NOT NULL DEFAULT '[]',
+            code_challenge                   VARCHAR NOT NULL,
+            redirect_uri                     VARCHAR NOT NULL,
+            redirect_uri_provided_explicitly BOOLEAN NOT NULL DEFAULT FALSE,
+            expires_at                       DOUBLE NOT NULL,
+            subject                          VARCHAR,
+            resource                         VARCHAR,
+            state                            VARCHAR
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+            token      VARCHAR PRIMARY KEY,
+            client_id  VARCHAR NOT NULL,
+            scopes     TEXT NOT NULL DEFAULT '[]',
+            expires_at BIGINT,
+            subject    VARCHAR,
+            resource   VARCHAR,
+            revoked_at TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+            token      VARCHAR PRIMARY KEY,
+            client_id  VARCHAR NOT NULL,
+            scopes     TEXT NOT NULL DEFAULT '[]',
+            expires_at BIGINT,
+            subject    VARCHAR,
+            resource   VARCHAR,
+            revoked_at TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 83")
+
+
+def _v83_to_v84(conn: duckdb.DuckDBPyConnection) -> None:
+    """v84: add resource column to oauth_refresh_tokens.
+
+    Refreshed access tokens must preserve the original token's `resource`
+    binding (RFC 8707). The auth-code exchange already persists `resource`
+    on the access token; the refresh path needs the same value carried on
+    the refresh-token row so token rotation doesn't drop it. IF NOT EXISTS
+    keeps this a no-op on fresh installs.
+    """
+    conn.execute(
+        "ALTER TABLE oauth_refresh_tokens ADD COLUMN IF NOT EXISTS resource VARCHAR"
+    )
+    conn.execute("UPDATE schema_version SET version = 84")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -5596,6 +5718,13 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # corpus_chunks. _SYSTEM_SCHEMA already creates them on fresh
             # installs (no-op CREATE IF NOT EXISTS here).
             _v81_to_v82(conn)
+            # v82→v83: OAuth 2.1 tables for the native MCP connector
+            # (oauth_clients, oauth_auth_codes, oauth_access_tokens,
+            # oauth_refresh_tokens). IF NOT EXISTS — no-op on fresh installs.
+            _v82_to_v83(conn)
+            # v83→v84: resource column on oauth_refresh_tokens so refreshed
+            # access tokens keep their RFC 8707 resource binding.
+            _v83_to_v84(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5813,6 +5942,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v80_to_v81(conn)
             if current < 82:
                 _v81_to_v82(conn)
+            if current < 83:
+                _v82_to_v83(conn)
+            if current < 84:
+                _v83_to_v84(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
