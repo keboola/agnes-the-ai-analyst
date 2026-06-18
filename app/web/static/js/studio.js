@@ -1,0 +1,132 @@
+// Generic authoring-agent studio (data-package / mcp / marketplace / corporate-memory).
+//
+// Driven by window.STUDIO = { profile, endpoint, fields }. The Create action
+// POSTs the form values to the domain's existing admin endpoint (so it works —
+// and is testable — independent of the LLM). The assistant panel opens a chat
+// session bound to the domain profile and streams suggestions; if chat is
+// disabled it degrades gracefully.
+
+const $ = (id) => document.getElementById(id);
+const CFG = window.STUDIO || { profile: "", endpoint: "", fields: [] };
+
+async function api(path, init = {}) {
+  const r = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    ...init,
+  });
+  if (!r.ok) {
+    let detail = `${r.status} ${r.statusText}`;
+    try {
+      const body = await r.json();
+      if (body && body.detail) detail = JSON.stringify(body.detail);
+    } catch (_) { /* non-JSON */ }
+    throw new Error(detail);
+  }
+  if (r.status === 204 || r.headers.get("content-length") === "0") return null;
+  return r.json();
+}
+
+function appendStream(text) {
+  const el = $("studio-stream");
+  if (!el) return;
+  el.textContent += text;
+  el.scrollTop = el.scrollHeight;
+}
+
+function collectPayload() {
+  const payload = {};
+  for (const key of CFG.fields) {
+    const el = $(`studio-f-${key}`);
+    if (el && el.value.trim()) payload[key] = el.value.trim();
+  }
+  return payload;
+}
+
+async function createEntity() {
+  const result = $("studio-result");
+  const payload = collectPayload();
+  if (!payload.name && !payload.slug) {
+    result.textContent = "Fill in the required fields.";
+    return;
+  }
+  // Admins create directly; everyone else submits to the moderation queue.
+  if (!CFG.isAdmin) return submitSuggestion(payload);
+  result.textContent = "Creating…";
+  try {
+    const created = await api(CFG.endpoint, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    const id =
+      created && (created.id || created.slug)
+        ? created.id || created.slug
+        : payload.slug || payload.name;
+    result.textContent = `Created: ${id}`;
+    if (window.appToast) window.appToast(`Created: ${id}`);
+  } catch (e) {
+    result.textContent = `Failed: ${e.message}`;
+  }
+}
+
+async function submitSuggestion(payload) {
+  const result = $("studio-result");
+  result.textContent = "Submitting…";
+  try {
+    const r = await api("/api/studio/suggestions", {
+      method: "POST",
+      body: JSON.stringify({ domain: CFG.domain, payload }),
+    });
+    result.textContent = `Submitted for approval: ${r.id}`;
+    if (window.appToast) window.appToast("Submitted for admin approval");
+  } catch (e) {
+    result.textContent = `Failed: ${e.message}`;
+  }
+}
+
+async function openAssistant() {
+  try {
+    const session = await api("/api/chat/sessions", {
+      method: "POST",
+      body: JSON.stringify({ surface: "web", profile: CFG.profile }),
+    });
+    const ws = new WebSocket(
+      (location.protocol === "https:" ? "wss://" : "ws://") + location.host + session.ws_url,
+    );
+    ws.onmessage = (ev) => {
+      let frame;
+      try { frame = JSON.parse(ev.data); } catch (_) { return; }
+      if (frame.type === "token") appendStream(frame.text || "");
+      else if (frame.type === "assistant_message") appendStream("\n");
+      else if (frame.type === "error") appendStream(`\n[error] ${frame.message || ""}\n`);
+    };
+    const msg = $("studio-msg");
+    const send = () => {
+      const v = msg.value.trim();
+      if (v && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "user_msg", text: v }));
+        appendStream(`\n> ${v}\n`);
+        msg.value = "";
+      }
+    };
+    msg.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") send();
+    });
+    const sendBtn = $("studio-send");
+    if (sendBtn) sendBtn.addEventListener("click", send);
+  } catch (e) {
+    appendStream(`Assistant unavailable: ${e.message}\n`);
+  }
+}
+
+function init() {
+  const createBtn = $("studio-create");
+  if (createBtn) createBtn.addEventListener("click", createEntity);
+  openAssistant();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", init);
+} else {
+  init();
+}

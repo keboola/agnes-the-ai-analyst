@@ -10,16 +10,142 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.71.55] - 2026-06-17
+
+### Fixed
+- **Keboola materialized `where_filters` now resolve date placeholders (`{{last_6_months}}`, `{{today}}`, …) — a rolling window in a materialized `source_query` no longer needs a hand-maintained literal date.** `materialize_query` parsed the `source_query` filter spec but never ran `resolve_placeholders`, so a placeholder like `{{last_6_months}}` was sent to the Storage API verbatim and silently matched 0 rows — placeholders only worked on `query_mode='local'` rows. The materialized path now resolves them (via `parse_filters` + `resolve_placeholders`) exactly like the local/legacy path, and an unknown placeholder (`{{typo}}`) now fails loudly with a clear error instead of silently returning 0 rows.
+
+## [0.71.54] - 2026-06-17
+
+### Internal
+- OpenMetadata connector: added `search_data_products_by_tag` and `search_tables_by_data_product` reverse-search methods (query-filter by `tags.tagFQN` / `dataProducts.fullyQualifiedName`) for catalog-driven data-product onboarding.
+- `app/plugins.py`: generic extension points (`load_routers`, `extra_template_dirs`) to mount deployment-specific admin routers + Jinja template dirs from `instance.yaml` `plugins.*` config, without forking the app. Wired into bootstrap: `app.main.create_app` includes configured `plugins.admin_routers` before the web catch-all, and `app.web.router` adds `plugins.template_dirs` to the Jinja loader (built-in templates first; missing dirs dropped; config-read failure falls back to built-in only).
+
+## [0.71.53] - 2026-06-17
+
+### Fixed
+
+- Google group membership changes now propagate to PAT/CLI callers without requiring a browser re-login. When `require_resource_access` denies a request, it re-fetches the caller's Workspace groups via the existing DWD path and retries the access check once (self-heal-on-miss, #504). A 60-second per-user cooldown prevents Admin SDK call storms on repeated denials.
+
+## [0.71.52] - 2026-06-17
+
+### Internal
+- Ruff-formatted `test_google_group_prefix_sync.py`; documented why success-path assertions use strict `== 302` (the callback explicitly sets `status_code=302`) rather than `in (302, 307)`. (#676)
+
+## [0.71.51] - 2026-06-17
+
+### Fixed
+- **Invite copy button works on plain HTTP.** The clipboard helper now falls back to `document.execCommand('copy')` when `navigator.clipboard` is unavailable (non-HTTPS contexts), so the Copy button in the invitation and password-reset link modals reliably copies the URL on self-hosted instances that run without TLS. (#681)
+- **SMTP-not-configured notice is now visually prominent.** When no email transport is configured the modal note is styled as a yellow warning banner instead of gray secondary text, making it immediately clear the admin must share the link manually. (#681)
+- **Missing `audit_repo` import in password provider.** `app/auth/providers/password.py` referenced `audit_repo` inside `_audit()` without importing it, causing every audit call inside that module to silently fail with a `NameError` (swallowed by the bare `except Exception`). (#681)
+
+## [0.71.50] - 2026-06-17
+
+### Fixed
+- **Collections: deleting a tabular file now purges its derived `table_registry` row, parquet, and `extract.duckdb` view.** Previously the cleanup left the table queryable via `agnes catalog` even after the file was removed. The same cascade fires on collection soft-delete. Both DuckDB and Postgres backends are covered. (#692)
+
+## [0.71.49] - 2026-06-17
+
+### Added
+- Maintenance page shown during app restarts, replacing raw 502 errors; page auto-refreshes every 12 s
+
+### Fixed
+- 502 errors during container restarts (e.g. auto-upgrade) are absorbed by Caddy's retry window instead of being surfaced to users
+
+## [0.71.48] - 2026-06-17
+
+### Added
+- **Container logs ship to GCP Cloud Logging on GCE deployments.** A new opt-in compose overlay `docker-compose.gcp-logging.yml` switches the `app`, `scheduler`, `caddy`, `telegram-bot`, `ws-gateway`, and `extract` services to Docker's built-in `gcplogs` logging driver, so container stdout/stderr (application INFO **and** uncaught-exception tracebacks) flows to Google Cloud Logging next to the VM/system logs (resource `gce_instance`, logName `gcplogs-docker-driver`, tagged by `jsonPayload.container.name`; the app JSON line is preserved in `jsonPayload.message`) instead of staying in the local json-file driver and being lost on container recreate. Activation is **placement-driven**: the overlay is deliberately **not** baked into the image and **not** in any default `COMPOSE_FILE` / `CONFIG_FILES` list — `agnes-auto-upgrade.sh` and `agnes-state-applier.sh` append it only when the file physically exists on disk (`[ -f ]` guard), and the file is placed solely by the GCE deploy layer (Terraform startup-script), which runs only on GCE. Non-GCP deployments never receive the file and keep the default `json-file` driver unchanged (gcplogs would otherwise fail without a GCE metadata server). The VM service account already carries `roles/logging.logWriter`, so no IAM change is required, and `docker logs` keeps working via Docker's dual-logging local cache. (#679)
+
+### Internal
+
+## [0.71.47] - 2026-06-17
+
 ### Added
 - **Native OAuth 2.1 remote MCP connector.** Agnes can now be added as a custom connector by any MCP-compatible AI agent — Claude Desktop / Claude.ai, Cursor, Cline, ChatGPT connectors, or a custom MCP SDK client — using the standard browser-based OAuth 2.1 + PKCE handshake, with no manually-issued PAT. A new Streamable-HTTP MCP transport is mounted at `/api/mcp/http` (the existing SSE transport stays at `/api/mcp/sse` for Cowork back-compat) and acts as its own OAuth Authorization Server: RFC 7591 dynamic client registration, `/authorize` + `/token` with PKCE (S256), and RFC 8414 + RFC 9728 discovery metadata published at the origin root (`/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource/api/mcp/http`) so a client given the bare instance URL can discover the connector. The authorize step bridges into the existing Agnes login (Google OAuth, email magic-link fallback) and shows a consent screen before minting a short-lived authorization code; the access token is a standard Agnes session JWT, so `resolve_token_to_user` accepts it and all existing RBAC applies unchanged. The connector URL a user pastes into their agent is `https://<your-host>/api/mcp/http`. New modules `app/api/mcp_streamable.py` + `app/auth/mcp_oauth.py`; OAuth clients/codes/tokens persisted via the dual-backend `oauth_clients` repo (DuckDB + Postgres parity). Schema → v80.
 
 ### Changed
 
 ### Fixed
+- **Keboola materialized `where_filters` are now sent to the Storage API in the correct shape — column filters (e.g. `job_created_at >= {{last_6_months}}`) no longer silently return 0 rows / `400 whereFilters should be an array`.** `ExportFilter.to_export_params()` emitted `whereFilters` as a nested list-of-dicts; the export-async request is form-encoded (`data=`), so `requests` stringified it into a single `whereFilters={'column': ...}` scalar Keboola couldn't parse. The filter spec is now flattened into Keboola's PHP/Symfony indexed form fields (`whereFilters[i][column]`, `whereFilters[i][operator]`, `whereFilters[i][values][j]`) — the wire shape the `kbcstorage` SDK and `connectors/keboola/client.py` already send. `changedSince`/`columns`/`fileType` scalar params are unchanged (they form-encoded correctly all along, which is why a `{"changed_since": "<unix>"}` source_query worked while `where_filters` did not).
+- **Keboola column type resolution now also consults the `storage` metadata provider.** `KeboolaClient`'s data-type provider cascade gained `storage` as a final fallback (`user > ai-metadata-enrichment > keboola.snowflake-transformation > storage`), so columns whose basetype is only published by Keboola's storage layer (e.g. a `TIMESTAMP` exposed natively as `VARCHAR`) resolve to their real type instead of defaulting to STRING.
 
 ### Removed
 
 ### Internal
+
+## [0.71.46] - 2026-06-16
+
+### Added
+- Collections web UI: a **Library** nav section — `/library` lists your
+  accessible collections; `/library/{slug}` shows files with per-file status
+  pills, an upload drop, and an "Ask this collection" search box (wired to the
+  search API). Design-system page shell (`base_page.html`), RBAC-gated
+  (404/403), admins can create collections inline.
+- Collections Tier-2 vision fallback: uploaded images are transcribed via a
+  multimodal model (gated on `ANTHROPIC_API_KEY` + the `anthropic` SDK) and
+  indexed like documents; without a configured model they stay `pending` for a
+  later run (never an error). Best-effort and confidence-gated — vision is a
+  fallback, not the default path.
+- Collections hybrid search: `GET /api/collections/search` (+ `agnes collections
+  search` CLI + `collections_search` MCP tool) runs lexical + (optional) vector
+  retrieval across the caller's accessible collections, fail-closed and RBAC-
+  scoped, returning ranked chunks with citations. Embeddings are an optional
+  extra (`agnes[embeddings]`, bge-small, 384-dim); without it retrieval is
+  lexical-only. Documents are embedded at ingest when the extra is installed.
+- Collections Tier-1 ingestion: uploaded files are indexed in the background —
+  tabular files (CSV/TSV/Parquet/JSON/XLSX) become queryable DuckDB tables
+  registered in `table_registry` (answered with SQL, not embeddings); prose
+  documents (txt/md/html, PDF/DOCX/etc. when extractable) become `corpus_chunks`
+  rows (text only; embeddings are a later slice). Docling is an optional extra
+  (`agnes[docling]`) — without it a lightweight per-format fallback handles the
+  common text formats and unreadable files are marked `rejected`, never crash.
+- Collections foundation: new `file_corpora` (collection containers) and
+  `corpus_files` (per-file processing lifecycle) tables with DuckDB and
+  Postgres repositories (`file_corpora_repo()`, `corpus_files_repo()`).
+  Both backends covered by cross-engine contract tests.
+- `ResourceType.COLLECTION` ("collection") grantable via `/admin/access`;
+  the projection lists non-deleted `file_corpora` rows in a single
+  "Collections" block.
+- Collections upload: `/api/collections` (create/list/read/delete) +
+  `/api/collections/{id}/files` multipart upload, RBAC-gated (admin creates,
+  granted-group members upload/read), with an extension→tier allowlist that
+  rejects unsupported types at the door. Reachable via `agnes collections`
+  CLI (create/list/show/upload/rm) and `collections_list`/`collection_get`
+  MCP tools (triple-surface for the read paths; upload is CLI-only).
+
+### Fixed
+- Collections: explicit slugs are now normalised to `[a-z0-9-]` form (same path as auto-slugs), so e.g. `my/collection` becomes `my-collection` — always reachable as `/library/<slug>`.
+- Collections: whitespace-only explicit slugs fall back to the auto-slug instead of being stored as an empty string (avoids degenerate `/library/` URLs).
+- Collections: auto-slugs no longer keep a trailing hyphen when a long name is truncated at the 100-character cap.
+- Collections: embedding columns use `float4` precision (matching `bge-small` 384-dim output); stale v80 migration labels corrected in code and tests.
+- Collections: `collections_list` / `collection_get` MCP tool docstrings now document the `items` key in the response so LLM consumers parse the correct key.
+
+### Internal
+- Schema v82: adds `file_corpora`, `corpus_files`, and `corpus_chunks`
+  (384-dim `float4` embedding column; chunk repo deferred to Retrieval slice).
+  DuckDB `_v81_to_v82` migration + Alembic `0029_collections_v82`.
+
+## [0.71.45] - 2026-06-16
+
+### Added
+- Corporate-memory mining (privacy-gated, v81): per-user **opt-in consent** (`memory_mining_consent`, dual-backend) before any session transcript is mined; an admin `POST /api/admin/memory-mining/run` PII-scans candidates, tags provenance, and routes them through the authoring-suggestions queue (never an admin-direct write). Candidate extraction is a deterministic placeholder; LLM distillation plugs in on top of the same consent/PII/provenance/approval gate.
+- Authoring agents — non-admin suggestion queue (`authoring_suggestions`, DuckDB v80 + Alembic, dual-backend): `POST /api/studio/suggestions` lets a non-admin submit a proposed create payload per studio domain; admins review via a moderation queue at `/admin/studio/suggestions` + `GET/POST /api/admin/authoring-suggestions[/{id}/approve|reject]`. Approving a suggestion auto-creates the real resource for all four domains by replaying the payload through each domain's own validation + repo create path (pydantic re-validation; the moderation UI shows the complete `command`/`url` payload so admin approval is informed consent).
+- Authoring agents: profiled chat sessions (`profile` on `POST /api/chat/sessions`, materialized into the session workdir, no migration) + a generic admin-only **authoring studio** at `/admin/studio/{domain}` with an embedded assistant panel, covering four domains — **data-package**, **mcp**, **marketplace**, and **corporate-memory** — each wiring its Create action to the existing admin endpoint.
+## [0.71.44] - 2026-06-16
+
+### Added
+
+### Changed
+
+### Fixed
+- Nav label clarity: the primary nav link now shows "Dashboard" when `AGNES_HOME_ROUTE=/dashboard` (the OSS default), instead of the misleading hardcoded "Home".
+
+### Removed
+
+### Internal
+- Schema v80 (DuckDB `_v79_to_v80` + Alembic `0027_authoring_suggestions_v80`): `authoring_suggestions` table — non-admin suggestion queue and moderation flow, dual-backend.
+- Schema v81 (DuckDB `_v80_to_v81` + Alembic `0028_memory_mining_consent_v81`): `memory_mining_consent` table — opt-in privacy gate for memory mining, dual-backend.
 
 ## [0.71.43] - 2026-06-16
 

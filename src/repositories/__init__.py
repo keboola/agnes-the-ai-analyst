@@ -101,6 +101,8 @@ __all__ = [
     "knowledge_repo",
     # Data packages / memory / recipes / subscriptions
     "data_packages_repo",
+    "authoring_suggestions_repo",
+    "memory_mining_consent_repo",
     "memory_domain_suggestions_repo",
     "memory_domains_repo",
     "recipes_repo",
@@ -122,6 +124,10 @@ __all__ = [
     "chat_session_participants_repo",
     # OAuth 2.1 MCP connector
     "oauth_clients_repo",
+    # Collections
+    "file_corpora_repo",
+    "corpus_files_repo",
+    "corpus_chunks_repo",
 ]
 
 
@@ -339,6 +345,14 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
         DUCKDB: ("src.repositories.memory_domain_suggestions", "MemoryDomainSuggestionsRepository"),
         PG: ("src.repositories.memory_domain_suggestions_pg", "MemoryDomainSuggestionsPgRepository"),
     },
+    "authoring_suggestions": {
+        DUCKDB: ("src.repositories.authoring_suggestions", "AuthoringSuggestionsRepository"),
+        PG: ("src.repositories.authoring_suggestions_pg", "AuthoringSuggestionsPgRepository"),
+    },
+    "memory_mining_consent": {
+        DUCKDB: ("src.repositories.memory_mining_consent", "MemoryMiningConsentRepository"),
+        PG: ("src.repositories.memory_mining_consent_pg", "MemoryMiningConsentPgRepository"),
+    },
     "recipes": {
         DUCKDB: ("src.repositories.recipes", "RecipesRepository"),
         PG: ("src.repositories.recipes_pg", "RecipesPgRepository"),
@@ -402,6 +416,19 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
     "oauth_clients": {
         DUCKDB: ("src.repositories.oauth_clients", "OAuthClientsRepository"),
         PG: ("src.repositories.oauth_clients_pg", "OAuthClientsPgRepository"),
+    },
+    # collections
+    "file_corpora": {
+        DUCKDB: ("src.repositories.file_corpora", "FileCorporaRepository"),
+        PG: ("src.repositories.file_corpora_pg", "FileCorporaPgRepository"),
+    },
+    "corpus_files": {
+        DUCKDB: ("src.repositories.corpus_files", "CorpusFilesRepository"),
+        PG: ("src.repositories.corpus_files_pg", "CorpusFilesPgRepository"),
+    },
+    "corpus_chunks": {
+        DUCKDB: ("src.repositories.corpus_chunks", "CorpusChunksRepository"),
+        PG: ("src.repositories.corpus_chunks_pg", "CorpusChunksPgRepository"),
     },
 }
 
@@ -569,6 +596,14 @@ def memory_domain_suggestions_repo() -> Any:
     return _build("memory_domain_suggestions")
 
 
+def authoring_suggestions_repo() -> Any:
+    return _build("authoring_suggestions")
+
+
+def memory_mining_consent_repo() -> Any:
+    return _build("memory_mining_consent")
+
+
 def recipes_repo() -> Any:
     return _build("recipes")
 
@@ -629,3 +664,16 @@ def chat_session_participants_repo() -> Any:
 
 def oauth_clients_repo() -> Any:
     return _build("oauth_clients")
+
+
+# collections
+def file_corpora_repo() -> Any:
+    return _build("file_corpora")
+
+
+def corpus_files_repo() -> Any:
+    return _build("corpus_files")
+
+
+def corpus_chunks_repo() -> Any:
+    return _build("corpus_chunks")

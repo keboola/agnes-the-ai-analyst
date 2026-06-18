@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from src.models.audit import AuditLog
 from src.models.chat import ChatMessage, ChatSession, UserWorkdir
+from src.models.collections import CorpusChunk, CorpusFile, FileCorpus
 from src.models.config import InstanceTemplate, MetricDefinition, PersonalAccessToken
 from src.models.connections import ConnectionSecret, SourceConnection
 from src.models.data_packages import DataPackage, DataPackageTable, DataPackageTool
@@ -84,6 +85,9 @@ __all__ = [
     "ChatSession",
     "ColumnMetadata",
     "ConnectionSecret",
+    "CorpusChunk",
+    "CorpusFile",
+    "FileCorpus",
     "DataPackage",
     "DataPackageTable",
     "DataPackageTool",

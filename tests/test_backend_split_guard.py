@@ -243,7 +243,6 @@ _GRANDFATHERED_GET_SYSTEM_DB: set[str] = {
     # chat_session_participants_repo()/chat_session_repo() (factory); entry
     # removed as the residual shrank.
     "app/auth/providers/google.py",
-    "app/auth/providers/password.py",
     "app/auth/router.py",
     "app/main.py",
     "app/marketplace_server/git_router.py",

@@ -108,6 +108,8 @@ _PK_COLUMNS: Dict[str, List[str]] = {
     "data_package_tools": ["package_id", "tool_id"],
     # v68 cloud-chat tables (chat_sessions / chat_messages use id PK)
     "user_workdirs": ["user_email"],
+    # v81 memory-mining consent — PK is the user's email, not an id.
+    "memory_mining_consent": ["user_email"],
     # v79 named source connections (source_connections uses id PK)
     "connection_secrets": ["connection_id"],
     # v80 OAuth 2.1 MCP connector — non-`id` primary keys.

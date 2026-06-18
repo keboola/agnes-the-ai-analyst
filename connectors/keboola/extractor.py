@@ -152,6 +152,31 @@ def materialize_query(
             ) from e
     export_filter = ExportFilter.from_dict(payload)
 
+    # Resolve date placeholders ({{last_6_months}}, {{today}}, …) in the
+    # where_filters values, mirroring the local/legacy extract path
+    # (`run()` calls `resolve_placeholders(parse_filters(...))`). The Storage
+    # API receives literal dates; an unresolved `{{last_6_months}}` would be
+    # compared verbatim and silently return 0 rows. Materialized rows
+    # previously skipped this step, so placeholders only worked on
+    # `query_mode='local'` rows — this aligns the materialized path.
+    if export_filter.where_filters:
+        from connectors.keboola.where_filters import (
+            InvalidFilterError,
+            parse_filters,
+            resolve_placeholders,
+        )
+
+        try:
+            export_filter.where_filters = resolve_placeholders(
+                parse_filters(export_filter.where_filters),
+                datetime.now(timezone.utc),
+            )
+        except InvalidFilterError as e:
+            raise ValueError(
+                f"source_query for {table_id} has an invalid where_filters "
+                f"placeholder: {e}"
+            ) from e
+
     # Default the materialized path to parquet — Storage API serves it
     # via native Snowflake UNLOAD, the extractor renames it into place,
     # no CSV intermediate, no DuckDB COPY, no peak-memory load. Admin
@@ -840,7 +865,7 @@ def _extract_via_legacy(
 
     The CSV → parquet conversion uses `connectors/keboola/parquet_io.csv_to_parquet`
     with the PyArrow schema + pandas dtypes pulled from Keboola column metadata
-    (provider cascade `user > ai-metadata-enrichment > keboola.snowflake-transformation`).
+    (provider cascade `user > ai-metadata-enrichment > keboola.snowflake-transformation > storage`).
     Falls back to string-typed parquet only when the metadata API is unreachable.
     Pre-v27 this path used `read_csv(all_varchar=true)` which flattened every
     column to VARCHAR.

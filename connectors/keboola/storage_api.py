@@ -257,7 +257,21 @@ class ExportFilter:
                     )
                 if not isinstance(f["values"], list):
                     raise ValueError(f"where_filters[{i}].values must be a list")
-            params["whereFilters"] = self.where_filters
+            # Flatten into Keboola's indexed form-field convention. The
+            # request is form-encoded (`_post` posts `data=params`), and
+            # `requests` stringifies a nested list-of-dicts into a single
+            # `whereFilters={'column': ...}` scalar — Keboola then rejects it
+            # with "whereFilters should be an array, but parameter contains:
+            # 'values'" (or silently returns the full table). Emitting one
+            # scalar param per leaf (`whereFilters[i][column]`,
+            # `whereFilters[i][operator]`, `whereFilters[i][values][j]`)
+            # matches the PHP/Symfony array form-parsing the Storage API
+            # expects — the same shape the `kbcstorage` SDK sends.
+            for i, f in enumerate(self.where_filters):
+                params[f"whereFilters[{i}][column]"] = f["column"]
+                params[f"whereFilters[{i}][operator]"] = f["operator"]
+                for j, v in enumerate(f["values"]):
+                    params[f"whereFilters[{i}][values][{j}]"] = v
         if self.columns:
             params["columns"] = ",".join(self.columns)
         if self.changed_since:

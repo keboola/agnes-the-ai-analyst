@@ -18,6 +18,7 @@ import duckdb
 import jinja2
 
 from app.auth.access import is_user_admin, require_admin
+from app.web.studio import get_domain as get_studio_domain
 from app.auth.dependencies import get_current_user, get_optional_user, _get_db
 from app.instance_config import (
     get_instance_name,
@@ -37,7 +38,9 @@ from app.instance_config import (
 )
 from src.repositories import (
     audit_repo,
+    corpus_files_repo,
     data_packages_repo,
+    file_corpora_repo,
     knowledge_repo,
     memory_domains_repo,
     news_template_repo,
@@ -91,9 +94,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["web"])
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
+def _template_directories() -> list[str]:
+    """Built-in templates first, then any deployment plugin template dirs (app/plugins.py).
+
+    The configured dirs come from the operator's instance.yaml; missing ones are dropped.
+    Defensive: a config-read failure falls back to the built-in dir only — this runs at
+    import time, so it must never break app bootstrap.
+    """
+    from app.instance_config import get_value
+    from app.plugins import extra_template_dirs
+
+    try:
+        extra = extra_template_dirs(get_value("plugins", "template_dirs", default=[]) or [])
+    except Exception:
+        extra = []
+    return [str(TEMPLATES_DIR), *(str(d) for d in extra)]
+
+
+templates = Jinja2Templates(directory=_template_directories())
 # Make templates tolerant of missing variables (renders empty string instead of error)
 class _SilentUndefined(jinja2.Undefined):
     """Silently handle any access on undefined variables — returns empty/falsy."""
@@ -254,6 +274,10 @@ def _posthog_user_block(request: Optional[Request]) -> Optional[dict]:
 
 templates.env.globals["posthog_config"] = _posthog_config_global()
 templates.env.globals["posthog_user_block"] = _posthog_user_block
+# Stateless asset helper — register as a global so EVERY template resolves CSS/JS
+# URLs even on routes that build a minimal context (e.g. the studio pages).
+# Without this, base_ds.html emits <link href=""> and the page renders unstyled.
+templates.env.globals["static_url"] = _static_url
 
 # Onboarding / guided-tour steps. Exposed as a Jinja global so the global
 # `_tour.html` partial (included by both base layouts) can render the
@@ -1346,6 +1370,53 @@ async def catalog_package_detail(
     return templates.TemplateResponse(request, "catalog_package_detail.html", ctx)
 
 
+@router.get("/library", response_class=HTMLResponse)
+async def library(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Library — the caller's accessible file Collections (bring-your-files)."""
+    from app.auth.access import can_access
+    from app.resource_types import ResourceType
+
+    is_admin = is_user_admin(user["id"], conn)
+    cf_repo = corpus_files_repo()
+    cards = []
+    for col in file_corpora_repo().list():
+        if not is_admin and not can_access(user["id"], ResourceType.COLLECTION.value, col["id"], conn):
+            continue
+        files = cf_repo.list_for_corpus(col["id"])
+        cards.append({**col, "file_count": len(files)})
+    ctx = _build_context(request, user=user, conn=conn, is_admin=is_admin, collections=cards)
+    return templates.TemplateResponse(request, "library.html", ctx)
+
+
+@router.get("/library/{slug}", response_class=HTMLResponse)
+async def library_detail(
+    slug: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Collection detail — files + per-file processing status + search box."""
+    from app.auth.access import can_access
+    from app.resource_types import ResourceType
+
+    col = file_corpora_repo().get_by_slug(slug)
+    # Return 404 for both "missing" and "access denied" so an unprivileged
+    # caller can't distinguish the two and probe for collection existence
+    # (matches the GET /api/collections/{id} contract).
+    if not col:
+        raise HTTPException(status_code=404, detail="collection_not_found")
+    is_admin = is_user_admin(user["id"], conn)
+    if not is_admin and not can_access(user["id"], ResourceType.COLLECTION.value, col["id"], conn):
+        raise HTTPException(status_code=404, detail="collection_not_found")
+    files = corpus_files_repo().list_for_corpus(col["id"])
+    ctx = _build_context(request, user=user, conn=conn, is_admin=is_admin, collection=col, files=files)
+    return templates.TemplateResponse(request, "library_detail.html", ctx)
+
+
 @router.get("/catalog/t/{table_id}", response_class=HTMLResponse)
 async def catalog_table_detail(
     table_id: str,
@@ -1780,6 +1851,79 @@ async def memory_domain_detail(
         in_stack=in_stack,
     )
     return templates.TemplateResponse(request, "memory_domain_detail.html", ctx)
+
+
+def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
+    """Base context every base_ds page needs for the shared nav + footer chrome.
+
+    Routes that render ``base_ds.html`` MUST spread this in — otherwise the
+    navbar, theme, branding, and url helpers render empty (the studio pages
+    regressed on exactly this: no top menu, no styling). Mirrors the canonical
+    context the home/setup routes build.
+    """
+    return {
+        "request": request,
+        "user": _flex(user) if user else _FlexDict(),
+        "is_admin": bool(user) and is_user_admin(user.get("id")),
+        "now": datetime.now,
+        "get_flashed_messages": lambda **kw: [],
+        "url_for": lambda endpoint, **kw: _url_for_shim(endpoint, **kw),
+        "session": _FlexDict({"user": user}) if user else _FlexDict(),
+        "home_route": _resolved_home_route(),
+        "instance_name": get_instance_name(),
+        "instance_brand": get_instance_brand(),
+        "workspace_dir": get_workspace_dir_name(),
+        "instance_theme": get_instance_theme(),
+        "home_automode": {"show": get_home_automode_visibility()},
+        "custom_scripts": get_custom_scripts(),
+    }
+
+
+@router.get("/me/memory-mining", response_class=HTMLResponse)
+async def me_memory_mining(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """User-facing privacy control: opt in/out of having one's own session
+    transcripts mined into shared corporate memory (design spec §4.4)."""
+    return templates.TemplateResponse(request, "me_memory_mining.html", _chrome_ctx(request, user))
+
+
+@router.get("/admin/studio/suggestions", response_class=HTMLResponse)
+async def studio_suggestions_admin(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Admin moderation queue for authoring-studio suggestions.
+
+    Registered BEFORE ``/admin/studio/{domain}`` so the static ``suggestions``
+    path wins over the dynamic domain matcher.
+    """
+    return templates.TemplateResponse(request, "admin_studio_suggestions.html", _chrome_ctx(request, user))
+
+
+@router.get("/admin/studio/{domain}", response_class=HTMLResponse)
+async def studio(
+    domain: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Authoring-agent studio — available to all signed-in users.
+
+    A generic form-based builder with an embedded assistant panel. The domain
+    config (``app/web/studio.py``) drives the fields, the chat profile, and the
+    create endpoint, so all four authoring agents share one surface. Admins
+    create directly; non-admins submit a suggestion to the moderation queue
+    (the page renders the right action via ``is_admin``).
+    """
+    spec = get_studio_domain(domain)
+    if spec is None:
+        raise HTTPException(status_code=404, detail="unknown studio domain")
+    return templates.TemplateResponse(
+        request,
+        "admin_studio.html",
+        {**_chrome_ctx(request, user), "domain": spec, "profile_slug": spec.profile},
+    )
 
 
 @router.get("/admin/corporate-memory", response_class=HTMLResponse)

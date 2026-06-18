@@ -1,14 +1,14 @@
-"""OAuth 2.1 client registrations and token tables (DuckDB v80)
+"""OAuth 2.1 client registrations and token tables (DuckDB v83)
 
-Revision ID: 0027_oauth_clients_v80
-Revises: 0026_source_connections_v79
+Revision ID: 0030_oauth_clients_v83
+Revises: 0029_collections_v82
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0027_oauth_clients_v80"
-down_revision: str = "0026_source_connections_v79"
+revision: str = "0030_oauth_clients_v83"
+down_revision: str = "0029_collections_v82"
 branch_labels = None
 depends_on = None
 

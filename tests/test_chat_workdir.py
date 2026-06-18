@@ -6,6 +6,7 @@ tests/test_chat_persistence.py) are:
   - ``duckdb.connect(":memory:")``   to open an in-memory connection
   - ``_ensure_schema(conn)``         to migrate it to the current version
 """
+
 from pathlib import Path
 
 import duckdb
@@ -34,7 +35,7 @@ def workdir_mgr(tmp_path: Path) -> WorkdirManager:
         server_url="https://agnes.example",
         agnes_version="0.55.0",
         get_marketplace_sha=lambda: "mkt-sha-1",
-        get_template_status=lambda: None,   # no override template
+        get_template_status=lambda: None,  # no override template
     )
 
 
@@ -94,6 +95,34 @@ def test_regular_session_includes_claude_local_md(workdir_mgr: WorkdirManager):
     assert link.resolve() == (ws / "CLAUDE.local.md").resolve()
 
 
+def test_prepare_session_dir_materializes_profile(workdir_mgr: WorkdirManager):
+    """An authoring profile overrides the session CLAUDE.md with its persona
+    and injects a read-only knowledge skill — WITHOUT mutating the shared
+    workspace (.claude is copied, not symlinked-through)."""
+    from app.chat.profiles import get_profile
+
+    workdir_mgr.ensure_user_workdir("admin@x")
+    sdir = workdir_mgr.prepare_session_dir("admin@x", "chat_prof", profile=get_profile("data-package-builder"))
+
+    claude_md = (sdir / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "Data Package Builder" in claude_md  # profile persona, not "default"
+    assert not (sdir / "CLAUDE.md").is_symlink()
+    skill = sdir / ".claude" / "skills" / "agnes-data-package" / "SKILL.md"
+    assert skill.exists()
+    assert "data_packages" in skill.read_text(encoding="utf-8")
+    # the shared workspace must NOT have gained the profile skill
+    ws = workdir_mgr.user_workspace("admin@x")
+    assert not (ws / ".claude" / "skills" / "agnes-data-package").exists()
+
+
+def test_prepare_session_dir_without_profile_symlinks_claude_md(workdir_mgr: WorkdirManager):
+    """Regression: with no profile the session still symlinks the workspace
+    CLAUDE.md (unchanged behaviour)."""
+    workdir_mgr.ensure_user_workdir("u@x")
+    sdir = workdir_mgr.prepare_session_dir("u@x", "chat_noprof")
+    assert (sdir / "CLAUDE.md").is_symlink()
+
+
 def test_purge_user_removes_root(workdir_mgr: WorkdirManager):
     workdir_mgr.ensure_user_workdir("u@x")
     n = workdir_mgr.purge_user("u@x")
@@ -106,6 +135,7 @@ def test_purge_user_removes_root(workdir_mgr: WorkdirManager):
 # render_workspace_prompt hook — sandbox CLAUDE.md == server-rendered analyst
 # prompt (admin Workspace Prompt / default), matching a laptop `agnes init`.
 # ---------------------------------------------------------------------------
+
 
 def _mgr_with_render(tmp_path: Path, render) -> WorkdirManager:
     conn = duckdb.connect(":memory:")
@@ -188,7 +218,10 @@ def test_run_init_git_template_keeps_repo_claude_md_not_rendered(tmp_path: Path)
         agnes_version="0.59.0",
         get_marketplace_sha=lambda: "sha-1",
         get_template_status=lambda: TemplateStatus(
-            configured=True, synced=True, template_source="git", template_sha="abc",
+            configured=True,
+            synced=True,
+            template_source="git",
+            template_sha="abc",
         ),
         fetch_template_zip=lambda: zip_bytes,
         render_workspace_prompt=lambda email: "RENDERED WORKSPACE PROMPT",  # must NOT win

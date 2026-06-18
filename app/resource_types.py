@@ -49,6 +49,7 @@ class ResourceType(StrEnum):
     RECIPE = "recipe"
     CHAT = "chat"
     SLACK_CHANNEL = "slack_channel"
+    COLLECTION = "collection"
 
 
 # Shape returned by ``list_blocks`` delegates. Kept as plain ``dict`` to keep
@@ -111,26 +112,31 @@ def _marketplace_plugin_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]
     ).fetchall()
     blocks: dict[str, Block] = {}
     for mr_id, mr_name, _, p_name, p_ver, p_cat, p_desc, p_src, p_sys in rows:
-        block = blocks.setdefault(mr_id, {
-            "id": mr_id,
-            "name": mr_name,
-            "items": [],
-        })
+        block = blocks.setdefault(
+            mr_id,
+            {
+                "id": mr_id,
+                "name": mr_name,
+                "items": [],
+            },
+        )
         if p_name:
-            block["items"].append({
-                "resource_id": f"{mr_id}/{p_name}",
-                "name": p_name,
-                "version": p_ver,
-                "category": p_cat,
-                "description": p_desc,
-                "source_type": p_src,
-                # v39: drives the SYSTEM pill + disabled checkbox in
-                # /admin/access. The grant row exists for every group on a
-                # system plugin (materialized by mark_system) — we just
-                # prevent admins from revoking it via the UI to keep the
-                # mandatory-tier semantic honest.
-                "is_system": bool(p_sys),
-            })
+            block["items"].append(
+                {
+                    "resource_id": f"{mr_id}/{p_name}",
+                    "name": p_name,
+                    "version": p_ver,
+                    "category": p_cat,
+                    "description": p_desc,
+                    "source_type": p_src,
+                    # v39: drives the SYSTEM pill + disabled checkbox in
+                    # /admin/access. The grant row exists for every group on a
+                    # system plugin (materialized by mark_system) — we just
+                    # prevent admins from revoking it via the UI to keep the
+                    # mandatory-tier semantic honest.
+                    "is_system": bool(p_sys),
+                }
+            )
     return list(blocks.values())
 
 
@@ -167,18 +173,23 @@ def _table_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     blocks: dict[str, Block] = {}
     for tbl_id, name, bucket, source_type, query_mode, description in rows:
         block_key = bucket if bucket else "(no bucket)"
-        block = blocks.setdefault(block_key, {
-            "id": block_key,
-            "name": block_key,
-            "items": [],
-        })
-        block["items"].append({
-            "resource_id": tbl_id,
-            "name": name,
-            "category": query_mode,
-            "source_type": source_type,
-            "description": description,
-        })
+        block = blocks.setdefault(
+            block_key,
+            {
+                "id": block_key,
+                "name": block_key,
+                "items": [],
+            },
+        )
+        block["items"].append(
+            {
+                "resource_id": tbl_id,
+                "name": name,
+                "category": query_mode,
+                "source_type": source_type,
+                "description": description,
+            }
+        )
     return list(blocks.values())
 
 
@@ -204,22 +215,24 @@ def _data_package_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     ).fetchall()
     if not rows:
         return []
-    return [{
-        "id": "data_packages",
-        "name": "Data packages",
-        "items": [
-            {
-                "resource_id": r[0],
-                "name": r[2],
-                "category": "data_package",
-                "description": r[3],
-                "icon": r[4],
-                "color": r[5],
-                "slug": r[1],
-            }
-            for r in rows
-        ],
-    }]
+    return [
+        {
+            "id": "data_packages",
+            "name": "Data packages",
+            "items": [
+                {
+                    "resource_id": r[0],
+                    "name": r[2],
+                    "category": "data_package",
+                    "description": r[3],
+                    "icon": r[4],
+                    "color": r[5],
+                    "slug": r[1],
+                }
+                for r in rows
+            ],
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -245,22 +258,24 @@ def _memory_domain_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     ).fetchall()
     if not rows:
         return []
-    return [{
-        "id": "memory_domains",
-        "name": "Memory domains",
-        "items": [
-            {
-                "resource_id": r[0],
-                "name": r[2],
-                "category": "memory_domain",
-                "description": r[3],
-                "icon": r[4],
-                "color": r[5],
-                "slug": r[1],
-            }
-            for r in rows
-        ],
-    }]
+    return [
+        {
+            "id": "memory_domains",
+            "name": "Memory domains",
+            "items": [
+                {
+                    "resource_id": r[0],
+                    "name": r[2],
+                    "category": "memory_domain",
+                    "description": r[3],
+                    "icon": r[4],
+                    "color": r[5],
+                    "slug": r[1],
+                }
+                for r in rows
+            ],
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -288,19 +303,21 @@ def _memory_item_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     ).fetchall()
     if not rows:
         return []
-    return [{
-        "id": "memory_items",
-        "name": "Memory items",
-        "items": [
-            {
-                "resource_id": r[0],
-                "name": r[1] or r[0],
-                "category": "memory_item",
-                "description": None,
-            }
-            for r in rows
-        ],
-    }]
+    return [
+        {
+            "id": "memory_items",
+            "name": "Memory items",
+            "items": [
+                {
+                    "resource_id": r[0],
+                    "name": r[1] or r[0],
+                    "category": "memory_item",
+                    "description": None,
+                }
+                for r in rows
+            ],
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -327,22 +344,24 @@ def _recipe_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     ).fetchall()
     if not rows:
         return []
-    return [{
-        "id": "recipes",
-        "name": "Recipes",
-        "items": [
-            {
-                "resource_id": r[0],
-                "name": r[2],
-                "category": "recipe",
-                "description": r[3],
-                "icon": r[4],
-                "color": r[5],
-                "slug": r[1],
-            }
-            for r in rows
-        ],
-    }]
+    return [
+        {
+            "id": "recipes",
+            "name": "Recipes",
+            "items": [
+                {
+                    "resource_id": r[0],
+                    "name": r[2],
+                    "category": "recipe",
+                    "description": r[3],
+                    "icon": r[4],
+                    "color": r[5],
+                    "slug": r[1],
+                }
+                for r in rows
+            ],
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -359,18 +378,19 @@ def _chat_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     the ``Admin`` god-mode group; admins grant ``(group, chat, chat)`` on
     /admin/access to turn it on for a group.
     """
-    return [{
-        "id": "cloud_chat",
-        "name": "Cloud chat",
-        "items": [{
-            "resource_id": "chat",
+    return [
+        {
+            "id": "cloud_chat",
             "name": "Cloud chat",
-            "description": (
-                "Access to the cloud-hosted Claude chat (the /chat web UI and "
-                "the Slack DM bot)."
-            ),
-        }],
-    }]
+            "items": [
+                {
+                    "resource_id": "chat",
+                    "name": "Cloud chat",
+                    "description": ("Access to the cloud-hosted Claude chat (the /chat web UI and the Slack DM bot)."),
+                }
+            ],
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -401,19 +421,59 @@ def _slack_channel_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     ).fetchall()
     if not rows:
         return []
-    return [{
-        "id": "slack_channels",
-        "name": "Slack channels",
-        "items": [
-            {
-                "resource_id": r[0],
-                "name": r[0],
-                "category": "slack_channel",
-                "description": "Channel where @agnes mentions are answered.",
-            }
-            for r in rows
-        ],
-    }]
+    return [
+        {
+            "id": "slack_channels",
+            "name": "Slack channels",
+            "items": [
+                {
+                    "resource_id": r[0],
+                    "name": r[0],
+                    "category": "slack_channel",
+                    "description": "Channel where @agnes mentions are answered.",
+                }
+                for r in rows
+            ],
+        }
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Collection projection (v77)
+# ---------------------------------------------------------------------------
+
+
+def _collection_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
+    """Project ``file_corpora`` into the (block → items) shape rendered by
+    the admin /access page.
+
+    Collections are bring-your-files containers (v77). One synthetic block
+    ``"Collections"`` holds all live (non-soft-deleted) corpora; the
+    ``resource_id`` is ``file_corpora.id``.
+    """
+    rows = conn.execute(
+        """SELECT id, slug, name, description
+           FROM file_corpora
+           WHERE deleted_at IS NULL
+           ORDER BY name"""
+    ).fetchall()
+    if not rows:
+        return []
+    return [
+        {
+            "id": "collections",
+            "name": "Collections",
+            "items": [
+                {
+                    "resource_id": r[0],
+                    "name": r[2],
+                    "slug": r[1],
+                    "description": r[3],
+                }
+                for r in rows
+            ],
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -494,6 +554,16 @@ RESOURCE_TYPES: dict[ResourceType, ResourceTypeSpec] = {
         ),
         id_format="<channel_id>",
         list_blocks=_slack_channel_blocks,
+    ),
+    ResourceType.COLLECTION: ResourceTypeSpec(
+        key=ResourceType.COLLECTION,
+        display_name="Collections",
+        description=(
+            "A user-uploaded file collection. Grant a group access to a "
+            "collection so its members can query the ingested documents."
+        ),
+        id_format="<corpus_id>",
+        list_blocks=_collection_blocks,
     ),
 }
 

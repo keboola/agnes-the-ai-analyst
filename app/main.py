@@ -253,7 +253,16 @@ from app.api.memory_domain_suggestions import (
     public_router as memory_domain_suggestions_public_router,
     admin_router as memory_domain_suggestions_admin_router,
 )
+from app.api.authoring_suggestions import (
+    public_router as authoring_suggestions_public_router,
+    admin_router as authoring_suggestions_admin_router,
+)
+from app.api.memory_mining import (
+    public_router as memory_mining_public_router,
+    admin_router as memory_mining_admin_router,
+)
 from app.api.uploads import router as admin_uploads_router
+from app.api.collections import router as collections_router  # Slice 2: file corpus upload
 from app.api.stack import router as stack_router
 from app.api.stack_views import router as stack_views_router
 from app.api.initial_workspace import router as initial_workspace_router
@@ -1383,7 +1392,12 @@ def create_app() -> FastAPI:
     app.include_router(recipes_admin_router)
     app.include_router(memory_domain_suggestions_public_router)
     app.include_router(memory_domain_suggestions_admin_router)
+    app.include_router(authoring_suggestions_public_router)
+    app.include_router(authoring_suggestions_admin_router)
+    app.include_router(memory_mining_public_router)
+    app.include_router(memory_mining_admin_router)
     app.include_router(admin_uploads_router)
+    app.include_router(collections_router)
     app.include_router(stack_router)
     app.include_router(stack_views_router)
     app.include_router(initial_workspace_router)
@@ -1472,6 +1486,17 @@ def create_app() -> FastAPI:
     @app.get("/openapi.json", include_in_schema=False)
     async def openapi_spec(user: dict = Depends(_get_current_user)):
         return app.openapi()
+
+    # Deployment-specific plugin admin routers (generic hook — see app/plugins.py).
+    # Mounted before the web_router catch-all so their API paths win. The configured
+    # specs come from the operator's instance.yaml; nothing deployment-specific lives here.
+    from app.instance_config import get_value as _get_value
+    from app.plugins import load_routers as _load_plugin_routers
+
+    for _plugin_router in _load_plugin_routers(
+        _get_value("plugins", "admin_routers", default=[]) or []
+    ):
+        app.include_router(_plugin_router)
 
     # Web UI router (must be last — has catch-all routes)
     app.include_router(web_router)

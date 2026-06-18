@@ -1,0 +1,175 @@
+"""Authoring-agent chat profiles.
+
+A profile shapes a chat session into a specialized authoring assistant by
+supplying (a) a persona ``CLAUDE.md`` that replaces the generic analyst data
+rails, and (b) a read-only knowledge skill describing how the target domain
+works in Agnes. Profiles are spawn-time only — they materialize into the
+per-session workdir (see ``WorkdirManager.prepare_session_dir``) and are not
+persisted, so adding one needs no schema migration.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ChatProfile:
+    slug: str
+    claude_md: str  # replaces the session CLAUDE.md
+    skill_name: str  # .claude/skills/<skill_name>/SKILL.md
+    skill_body: str  # full SKILL.md (frontmatter + body)
+
+
+_DATA_PACKAGE_BUILDER = ChatProfile(
+    slug="data-package-builder",
+    claude_md=(
+        "# Data Package Builder\n\n"
+        "You help an admin assemble a **data package** — a curated bundle of "
+        "tables (and later metrics) granted to a user group — in Agnes.\n\n"
+        "Rules:\n"
+        "- Ground every suggestion in the instance's real state: run `agnes "
+        "catalog --json` to see available tables before proposing any.\n"
+        "- Check for an existing near-duplicate package before proposing a new "
+        "one; suggest editing it instead if found.\n"
+        "- Propose; never claim a package is created until the admin clicks "
+        "Create in the builder UI.\n"
+        "- Use the `agnes-data-package` skill for the exact model and endpoints.\n"
+    ),
+    skill_name="agnes-data-package",
+    skill_body=(
+        "---\n"
+        "name: agnes-data-package\n"
+        "description: How data packages work in Agnes — model, the catalog, "
+        "and the admin endpoints used to assemble and grant one.\n"
+        "---\n\n"
+        "# Data packages in Agnes\n\n"
+        "A data package = `data_packages` row + `data_package_tables` (M:N to "
+        "`table_registry`) + a `resource_grant` to a user group.\n\n"
+        "## Read the real state first\n"
+        "- `agnes catalog --json` — available tables (id, query_mode, size).\n"
+        "- `agnes schema <table_id>` — columns + types.\n\n"
+        "## Assemble (admin endpoints)\n"
+        "- `POST /api/admin/data-packages` — create `{name, slug, description}`.\n"
+        "- `POST /api/admin/data-packages/{id}/tables` — add a table.\n"
+        "- `POST /api/admin/grants` — grant the package to a group.\n\n"
+        "Local tables (`query_mode` local/materialized) sync to analysts via "
+        "`agnes pull`; `remote` tables stay server-side.\n"
+    ),
+)
+
+_MCP_CONNECT = ChatProfile(
+    slug="mcp-connect",
+    claude_md=(
+        "# MCP Connection Builder\n\n"
+        "You help an admin connect an **external MCP server** to Agnes and grant "
+        "its tools to a user group.\n\n"
+        "Rules:\n"
+        "- Inspect what is already registered (`agnes admin mcp source list`) before "
+        "proposing a new connection; avoid duplicates.\n"
+        "- Explain each discovered tool in plain language and recommend a mode "
+        "(materialize vs passthrough).\n"
+        "- Propose; never claim a source is connected until the admin clicks Create.\n"
+        "- Use the `agnes-mcp` skill for the exact model, transports, and endpoints.\n"
+    ),
+    skill_name="agnes-mcp",
+    skill_body=(
+        "---\n"
+        "name: agnes-mcp\n"
+        "description: How external MCP servers are connected in Agnes — transports, "
+        "introspect/classify, materialize vs passthrough, and the admin endpoints.\n"
+        "---\n\n"
+        "# MCP connections in Agnes\n\n"
+        "An MCP source = `mcp_sources` row (transport stdio/http/sse + auth) whose tools "
+        "become `tool_registry` rows, granted to groups via `tool_grants`.\n\n"
+        "## Connect (admin endpoints)\n"
+        "- `POST /api/admin/mcp-sources` — register `{name, transport, command|url, auth}`.\n"
+        "- `POST /api/admin/mcp-sources/{id}/introspect` — discover the tools live.\n"
+        "- `POST /api/admin/mcp-sources/{id}/classify` — heuristic materialize/passthrough.\n"
+        "- `POST /api/admin/mcp-tools` — register a tool row; grants via `/{tool_id}/grants`.\n\n"
+        "## Modes\n"
+        "- **materialize** — poll the tool on a schedule, result → parquet → catalog table.\n"
+        "- **passthrough** — forward the call live to the AI client at request time.\n"
+    ),
+)
+
+_MARKETPLACE_AUTHOR = ChatProfile(
+    slug="marketplace-author",
+    claude_md=(
+        "# Marketplace Builder\n\n"
+        "You help an admin register a **curated marketplace** (a git repo of Claude "
+        "Code skills/agents/plugins) into Agnes and grant its plugins to groups.\n\n"
+        "Rules:\n"
+        "- List existing marketplaces first; avoid registering a duplicate URL.\n"
+        "- Collect the git URL, a slug, and a curator name; the repo is cloned and its "
+        "`.claude-plugin/marketplace.json` plugins are ingested on sync.\n"
+        "- Propose; never claim it is registered until the admin clicks Create.\n"
+        "- Use the `agnes-marketplace` skill for the contract and endpoints.\n"
+    ),
+    skill_name="agnes-marketplace",
+    skill_body=(
+        "---\n"
+        "name: agnes-marketplace\n"
+        "description: How curated marketplaces are registered in Agnes — the git-repo "
+        "contract and the admin endpoints to register and sync one.\n"
+        "---\n\n"
+        "# Curated marketplaces in Agnes\n\n"
+        "A marketplace = `marketplace_registry` row (git url + branch + curator) whose "
+        "`.claude-plugin/marketplace.json` plugins are ingested into `marketplace_plugins` "
+        "on sync and granted to groups via `resource_grants`.\n\n"
+        "## Register (admin endpoints)\n"
+        "- `POST /api/marketplaces` — register `{name, slug, url, curator_name}`.\n"
+        "- `POST /api/marketplaces/{id}/sync` — clone + ingest plugins.\n\n"
+        "Content authoring (the `marketplace-metadata.json` enrichment) lives in the "
+        "git repo, not in Agnes.\n"
+    ),
+)
+
+_CORPORATE_MEMORY = ChatProfile(
+    slug="corporate-memory",
+    claude_md=(
+        "# Corporate Memory Builder\n\n"
+        "You help an admin distill reusable knowledge into a **corporate memory "
+        "domain** granted to a user group.\n\n"
+        "Rules:\n"
+        "- Only mine session transcripts whose author opted IN to memory mining; never "
+        "mine the not-marked-private long tail by default.\n"
+        "- Every proposed knowledge item carries provenance (which session/author) and a "
+        "PII/secret check before it can become a draft.\n"
+        "- Check existing memory for duplicates and contradictions.\n"
+        "- Propose; admin approval is required — never write memory directly from "
+        "session content.\n"
+        "- Use the `agnes-corporate-memory` skill for the model and endpoints.\n"
+    ),
+    skill_name="agnes-corporate-memory",
+    skill_body=(
+        "---\n"
+        "name: agnes-corporate-memory\n"
+        "description: How corporate memory works in Agnes — domains, knowledge items, "
+        "sensitivity/provenance, and the admin endpoints.\n"
+        "---\n\n"
+        "# Corporate memory in Agnes\n\n"
+        "A memory domain = `memory_domains` row + `knowledge_items` (M:N via "
+        "`knowledge_item_domains`), granted to groups via `resource_grants`.\n\n"
+        "## Build (admin endpoints)\n"
+        "- `POST /api/admin/memory-domains` — create `{name, slug, description}`.\n"
+        "- `POST /api/admin/memory-domains/{id}/items` — add a knowledge item.\n\n"
+        "## Privacy (hard gate)\n"
+        "Session privacy is whole-session opt-out with no in-pipeline redaction. Mining "
+        "into a shared domain promotes private data to a broadcast tier — so mining is "
+        "opt-IN, every item records provenance, and all of it routes through human "
+        "approval. Never admin-direct-write memory derived from sessions.\n"
+    ),
+)
+
+_PROFILES: dict[str, ChatProfile] = {
+    _DATA_PACKAGE_BUILDER.slug: _DATA_PACKAGE_BUILDER,
+    _MCP_CONNECT.slug: _MCP_CONNECT,
+    _MARKETPLACE_AUTHOR.slug: _MARKETPLACE_AUTHOR,
+    _CORPORATE_MEMORY.slug: _CORPORATE_MEMORY,
+}
+
+
+def get_profile(slug: str) -> ChatProfile | None:
+    """Return the profile for ``slug`` or ``None`` if unknown."""
+    return _PROFILES.get(slug)
