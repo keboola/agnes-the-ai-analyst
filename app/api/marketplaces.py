@@ -161,6 +161,9 @@ class PluginResponse(BaseModel):
     # v39: surfaced so the admin Details modal renders the SYSTEM pill
     # + flips the "Mark as system" / "Unmark system" toggle button.
     is_system: bool = False
+    # v78: surfaced so the admin Details modal renders the "Disable plugin"
+    # toggle + greys out the system button for admin-disabled plugins.
+    admin_disabled: bool = False
 
 
 class SystemFlagResponse(BaseModel):
@@ -232,6 +235,7 @@ async def list_plugins(
             source_type=r.get("source_type"),
             source_spec=r.get("source_spec"),
             is_system=bool(r.get("is_system")),
+            admin_disabled=bool(r.get("admin_disabled")),
         )
         for r in rows
     ]

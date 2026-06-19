@@ -165,6 +165,28 @@ def _seed_grant(repos: dict, group_id: str, slug: str, name: str) -> None:
             )
 
 
+def _set_is_system(repos: dict, slug: str, name: str, value: bool) -> None:
+    """Flip ``marketplace_plugins.is_system`` directly. No repo method writes
+    this column in isolation (it rides the mark/unmark_system fan-out
+    endpoints), so the contract test sets it via backend-aware raw SQL to
+    seed the "disabling a system plugin clears its flag" scenario."""
+    if repos["backend"] == "duckdb":
+        repos["conn"].execute(
+            "UPDATE marketplace_plugins SET is_system = ? WHERE marketplace_id = ? AND name = ?",
+            [value, slug, name],
+        )
+    else:
+        import sqlalchemy as sa
+
+        with repos["engine"].begin() as conn:
+            conn.execute(
+                sa.text(
+                    "UPDATE marketplace_plugins SET is_system = :v WHERE marketplace_id = :m AND name = :n"
+                ),
+                {"v": value, "m": slug, "n": name},
+            )
+
+
 # ---------------------------------------------------------------------------
 # list_granted_for_groups — the load-bearing JOIN behind the served marketplace
 # ---------------------------------------------------------------------------
@@ -420,6 +442,65 @@ class TestAdminDisabled:
         counts = repos["plugins"].category_counts(group_ids=[g["id"]])
         assert sum(counts.values()) == 1
 
+    def test_disabling_clears_is_system(self, repos):
+        """set_admin_disabled(..., True) must also clear is_system — a hidden
+        plugin must not keep fanning out as a system default."""
+        _seed_registry(repos, "mp-sys1", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _seed_plugin(repos, "mp-sys1", "sys-plug")
+        _set_is_system(repos, "mp-sys1", "sys-plug", True)
+
+        repos["plugins"].set_admin_disabled("mp-sys1", "sys-plug", True)
+
+        row = repos["plugins"].get("mp-sys1", "sys-plug")
+        assert row is not None
+        assert row.get("admin_disabled") is True
+        assert bool(row.get("is_system")) is False
+
+    def test_re_enable_does_not_restore_is_system(self, repos):
+        """set_admin_disabled(..., False) re-enables the plugin but must NOT
+        restore the system flag — matching unmark_system semantics."""
+        _seed_registry(repos, "mp-sys2", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _seed_plugin(repos, "mp-sys2", "sys-plug2")
+        _set_is_system(repos, "mp-sys2", "sys-plug2", True)
+
+        repos["plugins"].set_admin_disabled("mp-sys2", "sys-plug2", True)
+        repos["plugins"].set_admin_disabled("mp-sys2", "sys-plug2", False)
+
+        row = repos["plugins"].get("mp-sys2", "sys-plug2")
+        assert row is not None
+        assert row.get("admin_disabled") is False
+        # System flag stays cleared — admin must re-mark it explicitly.
+        assert bool(row.get("is_system")) is False
+
+    def test_disabled_system_plugin_excluded_from_all_listing_paths(self, repos):
+        """A plugin marked is_system=TRUE that is then disabled must vanish
+        from every repo listing path: list_granted_for_groups (served feed)
+        and list_with_filters (browse). my_stack + resolve_user_marketplace
+        both funnel through list_granted_for_groups, so this pins the shared
+        choke point on both backends."""
+        g = repos["groups"].create(name="g-sys-hidden", created_by="test")
+        _seed_registry(repos, "mp-sys3", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _seed_plugins(repos, "mp-sys3", ["keep", "sys-off"])
+        _set_is_system(repos, "mp-sys3", "sys-off", True)
+        _seed_grant(repos, g["id"], "mp-sys3", "keep")
+        _seed_grant(repos, g["id"], "mp-sys3", "sys-off")
+
+        # Sanity: before disabling, the system plugin is served.
+        before = [r["name"] for r in repos["plugins"].list_granted_for_groups([g["id"]])]
+        assert "sys-off" in before
+
+        repos["plugins"].set_admin_disabled("mp-sys3", "sys-off", True)
+
+        served = [r["name"] for r in repos["plugins"].list_granted_for_groups([g["id"]])]
+        assert "keep" in served
+        assert "sys-off" not in served
+
+        items, total = repos["plugins"].list_with_filters(group_ids=[g["id"]])
+        names = [r["name"] for r in items]
+        assert "keep" in names
+        assert "sys-off" not in names
+        assert total == 1
+
     def test_set_admin_disabled_nonexistent_returns_false(self, repos):
         found = repos["plugins"].set_admin_disabled("no-market", "no-plug", True)
         assert found is False
@@ -435,27 +516,6 @@ class TestAdminDisabled:
 # ---------------------------------------------------------------------------
 # list_system_keys — backs my-stack toggle-lock (app/api/my_stack.py)
 # ---------------------------------------------------------------------------
-
-
-def _set_is_system(repos: dict, slug: str, name: str, value: bool) -> None:
-    """Flip ``marketplace_plugins.is_system`` via raw SQL — there is no repo
-    writer for it (replace_for_marketplace intentionally excludes the flag;
-    its only production writer is the admin mark/unmark_system endpoint)."""
-    if repos["backend"] == "duckdb":
-        repos["conn"].execute(
-            "UPDATE marketplace_plugins SET is_system = ? WHERE marketplace_id = ? AND name = ?",
-            [value, slug, name],
-        )
-    else:
-        import sqlalchemy as sa
-
-        with repos["engine"].begin() as conn:
-            conn.execute(
-                sa.text(
-                    "UPDATE marketplace_plugins SET is_system = :v WHERE marketplace_id = :m AND name = :n"
-                ),
-                {"v": value, "m": slug, "n": name},
-            )
 
 
 class TestSystemKeys:

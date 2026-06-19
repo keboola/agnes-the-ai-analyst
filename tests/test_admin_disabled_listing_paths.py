@@ -1,0 +1,157 @@
+"""End-to-end coverage for admin-disabling a *system* plugin (v78).
+
+The repo-level filter (``admin_disabled = FALSE``) lives in
+``list_granted_for_groups`` / ``list_with_filters`` and is pinned by the
+cross-engine contract test in ``tests/db_pg``. This module covers the two
+higher-level read paths that compose those repo methods plus the system-flag
+fan-out queries, asserting a plugin that was marked ``is_system=TRUE`` and
+then admin-disabled vanishes from:
+
+- ``resolve_user_marketplace`` (the synthetic served marketplace + my-stack
+  served content), and
+- the ``my_stack`` page's "which plugins are system" probe query.
+
+It also re-confirms that disabling clears ``is_system`` end-to-end through
+the real ``set_admin_disabled`` repo method (not raw SQL).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def _setup_conn(tmp_path: Path):
+    from src.db import _ensure_schema
+    from src.duckdb_conn import _open_duckdb
+
+    conn = _open_duckdb(str(tmp_path / "system.duckdb"))
+    _ensure_schema(conn)
+    return conn
+
+
+def _seed_user_with_system_plugin(conn):
+    """Seed a user in a group, a registered marketplace with one plugin
+    marked is_system=TRUE, an RBAC grant to the group, and an explicit
+    subscription (Model B: grant + subscription => served). Returns the
+    user dict, the group id, and the (slug, plugin) tuple."""
+    from datetime import datetime, timezone
+
+    from src.repositories.marketplace_plugins import MarketplacePluginsRepository
+    from src.repositories.user_curated_subscriptions import (
+        UserCuratedSubscriptionsRepository,
+    )
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.user_groups import UserGroupsRepository
+    from src.repositories.users import UserRepository
+
+    slug, plugin = "mkt-sys", "sys-plug"
+
+    UserRepository(conn).create(id="u1", email="u1@example.com", name="User One")
+    group = UserGroupsRepository(conn).create(name="grp-1", created_by="test")
+    UserGroupMembersRepository(conn).add_member("u1", group["id"], source="admin")
+
+    conn.execute(
+        "INSERT INTO marketplace_registry (id, name, url, registered_at) VALUES (?, ?, ?, ?)",
+        [slug, slug, f"https://example.test/{slug}.git", datetime(2026, 1, 1, tzinfo=timezone.utc)],
+    )
+    plugins = MarketplacePluginsRepository(conn)
+    plugins.replace_for_marketplace(slug, [{"name": plugin, "version": "1.0", "description": "x"}])
+    conn.execute(
+        "UPDATE marketplace_plugins SET is_system = TRUE WHERE marketplace_id = ? AND name = ?",
+        [slug, plugin],
+    )
+    conn.execute(
+        "INSERT INTO resource_grants "
+        "(id, group_id, resource_type, resource_id, assigned_at, assigned_by) "
+        "VALUES (?, ?, 'marketplace_plugin', ?, ?, 'test')",
+        [f"g-{slug}-{plugin}", group["id"], f"{slug}/{plugin}", datetime.now(timezone.utc)],
+    )
+    UserCuratedSubscriptionsRepository(conn).subscribe("u1", slug, plugin)
+
+    return {"id": "u1", "email": "u1@example.com", "name": "User One"}, group["id"], (slug, plugin)
+
+
+def _my_stack_system_set(conn) -> set[tuple[str, str]]:
+    """Replicate the my_stack page's system-plugin probe query verbatim
+    (app/api/my_stack.py) so a regression in the WHERE clause fails here."""
+    rows = conn.execute(
+        "SELECT marketplace_id, name FROM marketplace_plugins "
+        "WHERE is_system = TRUE AND admin_disabled = FALSE",
+    ).fetchall()
+    return {(r[0], r[1]) for r in rows}
+
+
+def test_disabled_system_plugin_drops_from_resolver_and_my_stack(tmp_path, monkeypatch):
+    conn = _setup_conn(tmp_path)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    # Route every factory-resolved repo to this one DuckDB connection.
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: conn)
+
+    from src.marketplace_filter import resolve_user_marketplace
+    from src.repositories.marketplace_plugins import MarketplacePluginsRepository
+
+    user, _group_id, (slug, plugin) = _seed_user_with_system_plugin(conn)
+
+    # Baseline: the system plugin is served and flagged system in my-stack.
+    served = {(p["marketplace_id"], p["original_name"]) for p in resolve_user_marketplace(conn, user)}
+    assert (slug, plugin) in served
+    assert (slug, plugin) in _my_stack_system_set(conn)
+
+    # Disable it through the real repo method (clears is_system as a side-effect).
+    found = MarketplacePluginsRepository(conn).set_admin_disabled(slug, plugin, True)
+    assert found is True
+
+    # Synthetic served marketplace / my-stack served content: gone.
+    served_after = {(p["marketplace_id"], p["original_name"]) for p in resolve_user_marketplace(conn, user)}
+    assert (slug, plugin) not in served_after
+
+    # my_stack system-set probe: gone (filtered by admin_disabled, and is_system cleared).
+    assert (slug, plugin) not in _my_stack_system_set(conn)
+
+    # is_system was cleared by disabling.
+    row = MarketplacePluginsRepository(conn).get(slug, plugin)
+    assert row is not None
+    assert bool(row.get("is_system")) is False
+    assert bool(row.get("admin_disabled")) is True
+
+    conn.close()
+
+
+def test_fanout_system_for_user_skips_disabled(tmp_path, monkeypatch):
+    """A new user's system fan-out must not subscribe them to a plugin that
+    is admin-disabled, even if its is_system flag were still set."""
+    conn = _setup_conn(tmp_path)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: conn)
+
+    from datetime import datetime, timezone
+
+    from src.repositories.marketplace_plugins import MarketplacePluginsRepository
+    from src.repositories.user_curated_subscriptions import (
+        UserCuratedSubscriptionsRepository,
+    )
+    from src.repositories.users import UserRepository
+
+    slug, plugin = "mkt-fan", "fan-plug"
+    conn.execute(
+        "INSERT INTO marketplace_registry (id, name, url, registered_at) VALUES (?, ?, ?, ?)",
+        [slug, slug, f"https://example.test/{slug}.git", datetime(2026, 1, 1, tzinfo=timezone.utc)],
+    )
+    MarketplacePluginsRepository(conn).replace_for_marketplace(
+        slug, [{"name": plugin, "version": "1.0", "description": "x"}]
+    )
+    # Force both flags TRUE to prove the AND admin_disabled = FALSE filter bites
+    # independently of set_admin_disabled's is_system clearing.
+    conn.execute(
+        "UPDATE marketplace_plugins SET is_system = TRUE, admin_disabled = TRUE "
+        "WHERE marketplace_id = ? AND name = ?",
+        [slug, plugin],
+    )
+
+    UserRepository(conn).create(id="u2", email="u2@example.com", name="User Two")
+    subs = UserCuratedSubscriptionsRepository(conn)
+    subs.fanout_system_for_user("u2")
+
+    assert (slug, plugin) not in subs.subscribed_set("u2")
+
+    conn.close()

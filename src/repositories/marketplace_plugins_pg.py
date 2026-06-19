@@ -331,12 +331,18 @@ class MarketplacePluginsPgRepository:
 
         Returns True when the row existed and was updated, False when the
         (marketplace_id, plugin_name) pair is not in the table (no-op).
+
+        Disabling also clears `is_system`: a hidden plugin must not keep
+        fanning out as a system default. Re-enabling does NOT restore the
+        system flag (matching `unmark_system` semantics) — an admin must
+        re-mark it explicitly.
         """
+        if disabled:
+            sql = "UPDATE marketplace_plugins SET admin_disabled = TRUE, is_system = FALSE WHERE marketplace_id = :m AND name = :n"
+        else:
+            sql = "UPDATE marketplace_plugins SET admin_disabled = FALSE WHERE marketplace_id = :m AND name = :n"
         with self._engine.begin() as conn:
-            result = conn.execute(
-                sa.text("UPDATE marketplace_plugins SET admin_disabled = :d WHERE marketplace_id = :m AND name = :n"),
-                {"d": disabled, "m": marketplace_id, "n": plugin_name},
-            )
+            result = conn.execute(sa.text(sql), {"m": marketplace_id, "n": plugin_name})
         return result.rowcount > 0
 
     def list_admin_disabled(self, marketplace_id: str) -> List[str]:
