@@ -10,8 +10,29 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
 ### Fixed
-- **OAuth MCP connector consent page now sees the logged-in user.** The consent bridge (`app/auth/mcp_oauth.py`) read the session from a non-existent `agnes_session` cookie; the canonical Agnes session cookie set by every login provider is `access_token`. In the browser flow (no Bearer header) this meant the consent page never recognised the just-logged-in user and bounced the browser back to login in a loop, so the OAuth 2.1 handshake could not complete. Now reads `access_token`. Added a handshake test that drives consent via the cookie (the Bearer-header happy path masked the bug).
+- **The `/admin/access` (RBAC) page now reflects the active backend on Postgres instances.** Its resource projections (`app/resource_types.py` `_*_blocks`) and the `access_overview` endpoint read through a raw `Depends(_get_db)` DuckDB connection, so on a Postgres deployment they projected the frozen DuckDB system file instead of live PG state — admin-registered marketplaces, tables, data packages, recipes, collections, memory domains/items and Slack-channel grants created after the DuckDB→PG migration were missing from the page. All projections now read through the `src.repositories` factory (which honors `use_pg()`).
+- **Magic-link email login works on Postgres instances.** `_consume_token` ran a raw compare-and-swap on a DuckDB `_get_db` connection while `send_magic_link` wrote the token through the factory (PG), so verification never matched and login 401'd. It now consumes the token via `users_repo().consume_reset_token`.
+- **Grant requirement downgrade (`required → available`) materializes subscriptions on the active backend.** The fan-out `INSERT INTO user_stack_subscriptions` ran raw on a DuckDB connection; it now routes through `user_stack_subscriptions_repo().subscribe_group_members`.
+- **Store entity duplicate-name check, archive-revert, and bundle owner-email enrichment read/write the active backend.** Raw `store_entities` / `users` queries on a DuckDB connection in `app/api/store.py` now route through `store_entities_repo().synthetic_name_taken` / `set_visibility` and `users_repo().get_by_ids`.
+- **Cloud-chat session JWT mint and workspace-prompt render read users from the active backend** (`app/auth/access.py` `mint_session_jwt`, `app/main.py` workspace-prompt callback) — direct `UserRepository(conn)` reads replaced with `users_repo()`.
+
+### Removed
+
+### Internal
+- **Backend-split guard now also catches `Depends(_get_db)` + raw `conn.execute` on state tables** (`tests/test_backend_split_guard.py`), and the cross-engine parity sweep compares `/api/admin/access-overview` response bodies, not just HTTP status (`tests/db_pg/`). New repo methods `users.get_by_ids`, `store_entities.synthetic_name_taken`, and `user_stack_subscriptions.subscribe_group_members` added to both DuckDB and Postgres backends with contract-test coverage.
+
+## [0.71.56] - 2026-06-18
+
+### Changed
+- **BREAKING** License changed from MIT to PolyForm Small Business License 1.0.0. Use of the software is now restricted to organizations with fewer than 100 total individuals and less than 1,000,000 USD (2019) in total revenue in the prior tax year. See [LICENSE](LICENSE) for full terms.
+### Fixed
+- **MCP OAuth consent page now reads the correct session cookie — no more infinite login redirect.** `_get_session_user` in `app/auth/mcp_oauth.py` read a cookie named `agnes_session`, but every auth provider sets the session cookie as `access_token`. The consent page therefore never recovered the user's session after the login redirect, looping login → consent → login. It now reads `access_token`, matching the providers and `app/auth/dependencies.py`.
+- **Refreshed OAuth access tokens keep their `resource` binding (RFC 8707).** `exchange_refresh_token` minted the new access token without a `resource`, so a resource-bound token lost its binding (`resource=None`) on every refresh while the auth-code path set it correctly. The `resource` is now persisted on the refresh-token row (new `oauth_refresh_tokens.resource` column, DuckDB schema v84 + Alembic `0031`) and carried through token rotation into both the new access token and the rotated refresh token.
 
 ## [0.71.55] - 2026-06-17
 
@@ -65,7 +86,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [0.71.47] - 2026-06-17
 
 ### Added
-- **Native OAuth 2.1 remote MCP connector.** Agnes can now be added as a custom connector by any MCP-compatible AI agent — Claude Desktop / Claude.ai, Cursor, Cline, ChatGPT connectors, or a custom MCP SDK client — using the standard browser-based OAuth 2.1 + PKCE handshake, with no manually-issued PAT. A new Streamable-HTTP MCP transport is mounted at `/api/mcp/http` (the existing SSE transport stays at `/api/mcp/sse` for Cowork back-compat) and acts as its own OAuth Authorization Server: RFC 7591 dynamic client registration, `/authorize` + `/token` with PKCE (S256), and RFC 8414 + RFC 9728 discovery metadata published at the origin root (`/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource/api/mcp/http`) so a client given the bare instance URL can discover the connector. The authorize step bridges into the existing Agnes login (Google OAuth, email magic-link fallback) and shows a consent screen before minting a short-lived authorization code; the access token is a standard Agnes session JWT, so `resolve_token_to_user` accepts it and all existing RBAC applies unchanged. The connector URL a user pastes into their agent is `https://<your-host>/api/mcp/http`. New modules `app/api/mcp_streamable.py` + `app/auth/mcp_oauth.py`; OAuth clients/codes/tokens persisted via the dual-backend `oauth_clients` repo (DuckDB + Postgres parity). Schema → v80.
+- **Native OAuth 2.1 remote MCP connector.** Agnes can now be added as a custom connector by any MCP-compatible AI agent — Claude Desktop / Claude.ai, Cursor, Cline, ChatGPT connectors, or a custom MCP SDK client — using the standard browser-based OAuth 2.1 + PKCE handshake, with no manually-issued PAT. A new Streamable-HTTP MCP transport is mounted at `/api/mcp/http` (the existing SSE transport stays at `/api/mcp/sse` for Cowork back-compat) and acts as its own OAuth Authorization Server: RFC 7591 dynamic client registration, `/authorize` + `/token` with PKCE (S256), and RFC 8414 + RFC 9728 discovery metadata published at the origin root (`/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource/api/mcp/http`) so a client given the bare instance URL can discover the connector. The authorize step bridges into the existing Agnes login (Google OAuth, email magic-link fallback) and shows a consent screen before minting a short-lived authorization code; the access token is a standard Agnes session JWT, so `resolve_token_to_user` accepts it and all existing RBAC applies unchanged. The connector URL a user pastes into their agent is `https://<your-host>/api/mcp/http`. New modules `app/api/mcp_streamable.py` + `app/auth/mcp_oauth.py`; OAuth clients/codes/tokens persisted via the dual-backend `oauth_clients` repo (DuckDB + Postgres parity). Schema → v83.
 
 ### Changed
 
