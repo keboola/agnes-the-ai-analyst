@@ -42,6 +42,26 @@ class ObservabilityViewsPgRepository:
             })
         return out
 
+    def count_for_user(self, user_id: str) -> int:
+        """Number of saved views for a user — backs the per-user view cap."""
+        with self._engine.connect() as conn:
+            return int(
+                conn.execute(
+                    sa.text("SELECT COUNT(*) FROM user_observability_views WHERE user_id = :u"),
+                    {"u": user_id},
+                ).scalar()
+                or 0
+            )
+
+    def name_exists(self, user_id: str, name: str) -> bool:
+        """True iff this (user_id, name) view already exists (upsert target)."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text("SELECT 1 FROM user_observability_views WHERE user_id = :u AND name = :n"),
+                {"u": user_id, "n": name},
+            ).first()
+        return row is not None
+
     def create(self, user_id: str, name: str, query: dict[str, Any]) -> dict[str, Any]:
         view_id = str(uuid.uuid4())
         with self._engine.begin() as conn:

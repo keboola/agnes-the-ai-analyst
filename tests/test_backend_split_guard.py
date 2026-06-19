@@ -362,24 +362,9 @@ def scan_depends_get_db_raw_sql(files) -> dict[str, set[str]]:
 # Shrink (never grow): when a handler is routed through the factory, delete its
 # entry. Some are analytics/telemetry reads that are DuckDB-only by design.
 _GRANDFATHERED_DEPENDS_GET_DB_RAW_SQL: dict[str, set[str]] = {
-    "app/api/activity.py": {"activity_timeline"},
-    "app/api/admin.py": {"admin_delete_store_submission", "list_registry", "unregister_table"},
-    "app/api/admin_usage.py": {"prune_usage", "reprocess_usage"},
-    "app/api/admin_user_sessions.py": {"list_user_activity", "list_user_sessions"},
-    "app/api/chat_copresence.py": {"invite"},
-    "app/api/health.py": {"health_check_detailed"},
-    "app/api/marketplace.py": {"list_categories"},
+    # marketplaces.py is fixed on a separate branch (ma/marketplace-disable-plugin-toggle);
+    # on this branch its three handlers still run raw state SQL, so they stay pinned here.
     "app/api/marketplaces.py": {"delete_marketplace", "mark_plugin_system", "unmark_plugin_system"},
-    "app/api/me_stats.py": {"get_tokens", "list_self_sessions", "list_self_sync_activity"},
-    "app/api/memory.py": {"admin_audit", "admin_patch_item"},
-    "app/api/my_stack.py": {"get_my_stack", "toggle_curated"},
-    "app/api/observability.py": {"facets", "kpis"},
-    "app/api/sync.py": {"sync_manifest"},
-    "app/web/router.py": {
-        "admin_store_submission_detail_page", "catalog", "catalog_package_detail",
-        "corporate_memory", "dashboard", "me_profile_refetch_groups",
-        "memory_domain_detail", "profile_page",
-    },
 }
 
 

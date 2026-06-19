@@ -183,3 +183,136 @@ class AuditRepository:
                     pass
             rows.append(d)
         return rows
+
+    # -----------------------------------------------------------------
+    # aggregates — counts, governance feed, observability facets/KPIs
+    # -----------------------------------------------------------------
+    def count_for_user(self, user_id: str) -> int:
+        """Total audit rows recorded for one user."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE user_id = ?", [user_id]
+        ).fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+    def query_governance(
+        self,
+        *,
+        action: Optional[str] = None,
+        prefixes: tuple = ("corporate_memory.", "km_"),
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Governance audit feed: ``corporate_memory.*`` + legacy ``km_*`` rows.
+
+        When ``action`` is given, match it exactly across both prefixes
+        (``prefix0+action``, ``prefix1+action``); otherwise match every row
+        whose action starts with either prefix. Newest first, paged by
+        LIMIT/OFFSET.
+        """
+        p0, p1 = prefixes
+        if action:
+            sql = (
+                "SELECT * FROM audit_log WHERE action IN (?, ?) "
+                "ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?"
+            )
+            params: List[Any] = [f"{p0}{action}", f"{p1}{action}", limit, offset]
+        else:
+            sql = (
+                "SELECT * FROM audit_log "
+                "WHERE action LIKE ? OR action LIKE ? "
+                "ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?"
+            )
+            params = [f"{p0}%", f"{p1}%", limit, offset]
+        results = self.conn.execute(sql, params).fetchall()
+        if not results:
+            return []
+        columns = [desc[0] for desc in self.conn.description]
+        return [dict(zip(columns, row)) for row in results]
+
+    def facets(
+        self,
+        *,
+        since: datetime,
+        scheduler_actions: list[str],
+        limit: int = 50,
+    ) -> "dict[str, list[dict]]":
+        """Distinct facet values present in ``audit_log`` since ``since``.
+
+        Five GROUP BY COUNT(*) buckets (no users JOIN — the caller resolves
+        user emails separately): users, actions, results, resources, sources.
+        Each bucket is largest-first, capped at ``limit``.
+        """
+        users = self.conn.execute(
+            "SELECT user_id AS id, COUNT(*) AS n FROM audit_log "
+            "WHERE timestamp >= ? AND user_id IS NOT NULL "
+            "GROUP BY user_id ORDER BY n DESC LIMIT ?",
+            [since, limit],
+        ).fetchall()
+        actions = self.conn.execute(
+            "SELECT action AS label, COUNT(*) AS n FROM audit_log "
+            "WHERE timestamp >= ? AND action IS NOT NULL "
+            "GROUP BY action ORDER BY n DESC LIMIT ?",
+            [since, limit],
+        ).fetchall()
+        results = self.conn.execute(
+            "SELECT COALESCE(result, '—') AS label, COUNT(*) AS n "
+            "FROM audit_log WHERE timestamp >= ? "
+            "GROUP BY result ORDER BY n DESC LIMIT ?",
+            [since, limit],
+        ).fetchall()
+        resources = self.conn.execute(
+            "SELECT resource AS label, COUNT(*) AS n FROM audit_log "
+            "WHERE timestamp >= ? AND resource IS NOT NULL "
+            "GROUP BY resource ORDER BY n DESC LIMIT ?",
+            [since, limit],
+        ).fetchall()
+        sched_in = ",".join("?" for _ in scheduler_actions)
+        source_rows = self.conn.execute(
+            f"""
+            SELECT
+              CASE
+                WHEN client_kind IS NOT NULL AND client_kind != '' THEN client_kind
+                WHEN action IN ({sched_in}) THEN 'scheduler'
+                WHEN user_id IS NULL THEN 'system'
+                ELSE 'other'
+              END AS src,
+              COUNT(*) AS n
+            FROM audit_log WHERE timestamp >= ?
+            GROUP BY src ORDER BY n DESC LIMIT ?
+            """,
+            list(scheduler_actions) + [since, limit],
+        ).fetchall()
+        return {
+            "users":     [{"id": r[0], "count": r[1]} for r in users],
+            "actions":   [{"value": r[0], "count": r[1]} for r in actions],
+            "results":   [{"value": r[0], "count": r[1]} for r in results],
+            "resources": [{"value": r[0], "count": r[1]} for r in resources],
+            "sources":   [{"value": r[0], "count": r[1]} for r in source_rows],
+        }
+
+    def kpis(self, *, since: datetime) -> "dict[str, Any]":
+        """Headline KPIs over the window: events, active users, errors, p95.
+
+        ``p95`` uses DuckDB's ``approx_quantile`` (the PG sibling uses an
+        exact ``percentile_cont``; results may differ within tolerance). The
+        error-rate ratio is left to the caller.
+        """
+        row = self.conn.execute(
+            """
+            SELECT
+              COUNT(*) AS events_total,
+              COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL) AS active_users,
+              COUNT(*) FILTER (WHERE result IS NOT NULL AND result LIKE 'error%') AS errors,
+              CAST(approx_quantile(duration_ms, 0.95) AS INTEGER) AS p95
+            FROM audit_log WHERE timestamp >= ?
+            """,
+            [since],
+        ).fetchone()
+        if row is None:
+            return {"events_total": 0, "active_users": 0, "errors": 0, "p95": None}
+        return {
+            "events_total": int(row[0] or 0),
+            "active_users": int(row[1] or 0),
+            "errors": int(row[2] or 0),
+            "p95": int(row[3]) if row[3] is not None else None,
+        }

@@ -27,6 +27,7 @@ from src.repositories import (
     audit_repo,
     store_entities_repo,
     store_submissions_repo,
+    sync_state_repo,
     table_registry_repo,
     user_store_installs_repo,
 )
@@ -2376,14 +2377,13 @@ async def list_registry(
     error_by_name: Dict[str, Optional[str]] = {}
     sync_by_name: Dict[str, Optional[str]] = {}
     try:
-        rows = conn.execute(
-            "SELECT table_id, "
-            "  CASE WHEN status = 'error' AND error IS NOT NULL AND error <> '' "
-            "       THEN error ELSE NULL END AS err, "
-            "  last_sync "
-            "FROM sync_state"
-        ).fetchall()
-        for tid, err, ls in rows:
+        rows = sync_state_repo().get_all_states()
+        for row in rows:
+            tid = row.get("table_id")
+            status = row.get("status")
+            error = row.get("error")
+            ls = row.get("last_sync")
+            err = error if (status == "error" and error) else None
             if err:
                 error_by_name[tid] = err
             if ls:
@@ -3334,8 +3334,7 @@ async def unregister_table(
     # advertised the dropped table to `agnes pull` because sync_state was
     # never cleaned up, and analysts kept getting it through the manifest.
     try:
-        conn.execute("DELETE FROM sync_state WHERE table_id = ?", [name])
-        conn.execute("DELETE FROM sync_history WHERE table_id = ?", [name])
+        sync_state_repo().clear_for_table(name)
     except Exception as e:
         logger.warning(
             "Failed to clear sync_state for unregistered table %s: %s — "
@@ -4650,7 +4649,7 @@ async def admin_delete_store_submission(
         user_store_installs_repo().delete_all_for_entity(entity_id)
         store_entities_repo().delete(entity_id)
         _shutil.rmtree(_entity_dir(entity_id), ignore_errors=True)
-    conn.execute("DELETE FROM store_submissions WHERE id = ?", [submission_id])
+    subs.delete(submission_id)
 
     audit_repo().log(
         user_id=user["id"],

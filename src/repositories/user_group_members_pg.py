@@ -151,13 +151,15 @@ class UserGroupMembersPgRepository:
     def list_groups_with_meta_for_user(self, user_id: str) -> List[Dict[str, Any]]:
         """Return groups the user is in joined with the groups table.
 
-        Each row: ``{group_id, name, is_system, created_by, source}``.
-        Mirror of the DuckDB version — same shape, same ordering.
+        Each row: ``{group_id, id, name, description, is_system,
+        created_by, source, added_at}``. Mirror of the DuckDB version —
+        same shape, same ordering.
         """
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
-                    """SELECT g.id, g.name, g.is_system, g.created_by, m.source
+                    """SELECT g.id, g.name, g.description, g.is_system,
+                              g.created_by, m.source, m.added_at
                        FROM user_group_members m
                        JOIN user_groups g ON g.id = m.group_id
                        WHERE m.user_id = :u
@@ -168,13 +170,39 @@ class UserGroupMembersPgRepository:
         return [
             {
                 "group_id": r[0],
+                "id": r[0],
                 "name": r[1],
-                "is_system": bool(r[2]),
-                "created_by": r[3],
-                "source": r[4],
+                "description": r[2],
+                "is_system": bool(r[3]),
+                "created_by": r[4],
+                "source": r[5],
+                "added_at": r[6],
             }
             for r in rows
         ]
+
+    def list_google_sync_groups_for_user(self, user_id: str) -> List[Dict[str, Any]]:
+        """Return the user's ``source='google_sync'`` groups for the
+        refetch-groups dry-run diff.
+
+        Each row: ``{name, external_id}``. ``user_groups`` has no
+        ``external_id`` column on Postgres, so ``external_id`` is always
+        ``None`` here — parity with the DuckDB sibling, which probes
+        ``information_schema`` and falls back to NULL when the column is
+        absent.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """SELECT g.name
+                         FROM user_group_members m
+                         JOIN user_groups g ON g.id = m.group_id
+                        WHERE m.user_id = :u AND m.source = 'google_sync'
+                        ORDER BY g.name"""
+                ),
+                {"u": user_id},
+            ).all()
+        return [{"name": r[0], "external_id": None} for r in rows]
 
     def has_any_google_sync_membership(self, user_id: str) -> bool:
         with self._engine.connect() as conn:

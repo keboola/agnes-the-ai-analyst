@@ -140,3 +140,22 @@ class SyncStateRepository:
             WHERE table_id = ? AND status = 'error'""",
             [table_id],
         )
+
+    def clear_for_table(self, table_id: str) -> int:
+        """Drop all sync_state + sync_history rows for `table_id`, returning
+        the number of sync_state rows removed.
+
+        Called when a table is unregistered: a row synced at any point
+        (local/materialized) leaves a sync_state entry that the manifest keeps
+        serving to `agnes pull` regardless of registry state, so it must be
+        purged alongside the registry row. This repo owns both tables, so both
+        deletes live here (formerly inline in the admin unregister handler).
+        """
+        self.conn.execute(
+            "DELETE FROM sync_history WHERE table_id = ?", [table_id]
+        )
+        removed = self.conn.execute(
+            "DELETE FROM sync_state WHERE table_id = ? RETURNING table_id",
+            [table_id],
+        ).fetchall()
+        return len(removed)

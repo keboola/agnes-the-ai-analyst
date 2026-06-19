@@ -474,6 +474,179 @@ class UsageRepository:
             return None
         return dict(zip(_KEYS, row))
 
+    def list_sessions_for_user_admin(self, *, user_id: str, username: str) -> List[dict]:
+        """Admin per-user session list (9 cols). Matches on user_id OR username
+        so both ingestion paths + pre-v45 rows surface. Source:
+        app/api/admin_user_sessions.py list_user_sessions."""
+        cols = [
+            "session_file", "session_id", "started_at", "ended_at",
+            "active_seconds", "wall_seconds", "tool_calls", "tool_errors",
+            "primary_model",
+        ]
+        rows = self.conn.execute(
+            """
+            SELECT
+                session_file, session_id, started_at, ended_at,
+                active_seconds, wall_seconds,
+                tool_calls, tool_errors, primary_model
+            FROM usage_session_summary
+            WHERE user_id = ? OR username = ?
+            ORDER BY started_at DESC NULLS LAST
+            """,
+            [user_id, username],
+        ).fetchall()
+        return [dict(zip(cols, r)) for r in rows]
+
+    def list_sessions_for_user_self(self, username: str) -> list[dict]:
+        """Self per-user session list (14 cols). Filters on username only.
+        KEPT SEPARATE from the admin variant. Source: app/api/me_stats.py
+        list_self_sessions."""
+        cols = [
+            "session_file", "session_id", "started_at", "ended_at",
+            "active_seconds", "wall_seconds",
+            "user_messages", "tool_calls", "tool_errors",
+            "input_tokens", "output_tokens",
+            "cache_read_tokens", "cache_creation_tokens",
+            "primary_model",
+        ]
+        rows = self.conn.execute(
+            """
+            SELECT
+                session_file, session_id, started_at, ended_at,
+                active_seconds, wall_seconds,
+                user_messages, tool_calls, tool_errors,
+                input_tokens, output_tokens,
+                cache_read_tokens, cache_creation_tokens,
+                primary_model
+            FROM usage_session_summary
+            WHERE username = ?
+            ORDER BY started_at DESC NULLS LAST
+            """,
+            [username],
+        ).fetchall()
+        return [dict(zip(cols, r)) for r in rows]
+
+    # ------------------------------------------------------------------
+    # per-user token breakdown reads (DuckDB).  Source: me_stats.get_tokens.
+    # ------------------------------------------------------------------
+
+    def tokens_daily_series(self, username: str, days: int) -> list[dict]:
+        rows = self.conn.execute(
+            f"""
+            SELECT
+                CAST(started_at AS DATE) AS day,
+                COALESCE(SUM(input_tokens), 0)          AS input_tokens,
+                COALESCE(SUM(output_tokens), 0)         AS output_tokens,
+                COALESCE(SUM(cache_read_tokens), 0)     AS cache_read,
+                COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation,
+                COUNT(*) AS sessions
+            FROM usage_session_summary
+            WHERE username = ?
+              AND started_at >= current_timestamp - INTERVAL (?) DAY
+            GROUP BY 1
+            ORDER BY 1
+            """,
+            [username, days],
+        ).fetchall()
+        return [
+            {
+                "day": d.isoformat() if hasattr(d, "isoformat") else str(d),
+                "input": int(i or 0),
+                "output": int(o or 0),
+                "cache_read": int(cr or 0),
+                "cache_creation": int(cc or 0),
+                "sessions": int(s or 0),
+                "total": int((i or 0) + (o or 0) + (cr or 0) + (cc or 0)),
+            }
+            for (d, i, o, cr, cc, s) in rows
+        ]
+
+    def tokens_by_model(self, username: str) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT
+                COALESCE(primary_model, '(unknown)') AS model,
+                COALESCE(SUM(input_tokens), 0)          AS input_tokens,
+                COALESCE(SUM(output_tokens), 0)         AS output_tokens,
+                COALESCE(SUM(cache_read_tokens), 0)     AS cache_read,
+                COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation,
+                COUNT(*) AS sessions
+            FROM usage_session_summary
+            WHERE username = ?
+            GROUP BY 1
+            ORDER BY (
+                COALESCE(SUM(input_tokens), 0)
+                + COALESCE(SUM(output_tokens), 0)
+                + COALESCE(SUM(cache_read_tokens), 0)
+                + COALESCE(SUM(cache_creation_tokens), 0)
+            ) DESC
+            """,
+            [username],
+        ).fetchall()
+        return [
+            {
+                "model": m, "input": int(i or 0), "output": int(o or 0),
+                "cache_read": int(cr or 0), "cache_creation": int(cc or 0),
+                "sessions": int(s or 0),
+                "total": int((i or 0) + (o or 0) + (cr or 0) + (cc or 0)),
+            }
+            for (m, i, o, cr, cc, s) in rows
+        ]
+
+    def tokens_top_sessions(self, username: str, limit: int = 10) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT
+                session_file, session_id, started_at, primary_model,
+                input_tokens, output_tokens,
+                cache_read_tokens, cache_creation_tokens,
+                (COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
+                 + COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0))
+                AS tokens_total
+            FROM usage_session_summary
+            WHERE username = ?
+            ORDER BY tokens_total DESC
+            LIMIT ?
+            """,
+            [username, limit],
+        ).fetchall()
+        return [
+            {
+                "session_file": sf,
+                "session_id": sid,
+                "started_at": st.isoformat() if hasattr(st, "isoformat") else st,
+                "primary_model": pm,
+                "input": int(i or 0), "output": int(o or 0),
+                "cache_read": int(cr or 0), "cache_creation": int(cc or 0),
+                "total": int(tt or 0),
+            }
+            for (sf, sid, st, pm, i, o, cr, cc, tt) in rows
+        ]
+
+    def tokens_totals(self, username: str) -> dict:
+        row = self.conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(cache_read_tokens), 0),
+                COALESCE(SUM(cache_creation_tokens), 0),
+                COUNT(*)
+            FROM usage_session_summary
+            WHERE username = ?
+            """,
+            [username],
+        ).fetchone()
+        ti, to, tcr, tcc, tses = row or (0, 0, 0, 0, 0)
+        return {
+            "input": int(ti or 0),
+            "output": int(to or 0),
+            "cache_read": int(tcr or 0),
+            "cache_creation": int(tcc or 0),
+            "total": int((ti or 0) + (to or 0) + (tcr or 0) + (tcc or 0)),
+            "sessions": int(tses or 0),
+        }
+
     # ------------------------------------------------------------------
     # adoption dashboard reads (DuckDB).  Mirrored in UsagePgRepository.
     #
@@ -822,14 +995,61 @@ class UsageRepository:
 
     def delete_older_than(self, days: int) -> int:
         """Retention prune — DELETE events older than now - days."""
-        r = self.conn.execute(
+        # DuckDB DELETE without RETURNING reports rowcount = -1, so count the
+        # RETURNING rows instead (matches reset_all / the other delete methods).
+        rows = self.conn.execute(
             """
             DELETE FROM usage_events
             WHERE occurred_at < (CURRENT_TIMESTAMP - INTERVAL (?) DAY)
+            RETURNING 1
             """,
             [days],
-        )
-        return r.rowcount if r.rowcount else 0
+        ).fetchall()
+        return len(rows)
+
+    def count_events(self) -> int:
+        """Total usage_events row count."""
+        return int(self.conn.execute("SELECT COUNT(*) FROM usage_events").fetchone()[0] or 0)
+
+    def reset_all(self, *, clear_processors: "list[str] | None" = None) -> "dict[str, int]":
+        """Wipe all usage fact + rollup tables in ONE transaction, returning
+        per-table deleted counts.
+
+        When ``clear_processors`` is given, the matching
+        ``session_processor_state`` checkpoint rows are deleted in the SAME
+        transaction (reported under ``state_rows``). This keeps the
+        ``reprocess_usage`` admin reset all-or-nothing: clearing the rollups
+        without their processor checkpoints (or vice-versa) would leave the
+        scheduler inconsistent. ``session_processor_state`` isn't a usage table,
+        but it IS the checkpoint for the usage processors, so resetting both
+        together is a cohesive usage-domain operation."""
+        out: dict[str, int] = {}
+        self.conn.execute("BEGIN")
+        try:
+            if clear_processors:
+                placeholders = ",".join("?" for _ in clear_processors)
+                state_deleted = self.conn.execute(
+                    f"DELETE FROM session_processor_state "
+                    f"WHERE processor_name IN ({placeholders}) RETURNING 1",
+                    list(clear_processors),
+                ).fetchall()
+                out["state_rows"] = len(state_deleted)
+            for key, table in (
+                ("events", "usage_events"),
+                ("session_summary", "usage_session_summary"),
+                ("tool_daily", "usage_tool_daily"),
+                ("marketplace_item_daily", "usage_marketplace_item_daily"),
+                ("marketplace_item_window", "usage_marketplace_item_window"),
+            ):
+                deleted = self.conn.execute(
+                    f"DELETE FROM {table} RETURNING 1"
+                ).fetchall()
+                out[key] = len(deleted)
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+        return out
 
 
 def _percentile(values: list[float], p: float) -> float:

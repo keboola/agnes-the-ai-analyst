@@ -950,27 +950,9 @@ async def admin_audit(
     # UI's per-page navigation actually returns subsequent rows. Pre-fix, both
     # SQL paths had LIMIT only and silently returned page 1 for every page.
     offset = (max(page, 1) - 1) * per_page
-    if action:
-        # Match the action across both prefixes so the per-action filter still
-        # surfaces historical rows.
-        rows = conn.execute(
-            """SELECT * FROM audit_log
-                WHERE action IN (?, ?)
-                ORDER BY timestamp DESC LIMIT ? OFFSET ?""",
-            [f"corporate_memory.{action}", f"km_{action}", per_page, offset],
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """SELECT * FROM audit_log
-                WHERE action LIKE 'corporate_memory.%' OR action LIKE 'km_%'
-                ORDER BY timestamp DESC LIMIT ? OFFSET ?""",
-            [per_page, offset],
-        ).fetchall()
-    if rows:
-        columns = [desc[0] for desc in conn.description]
-        entries = [dict(zip(columns, row)) for row in rows]
-    else:
-        entries = []
+    entries = audit_repo().query_governance(
+        action=action, limit=per_page, offset=offset
+    )
     return {"entries": entries, "count": len(entries)}
 
 
@@ -1252,12 +1234,7 @@ async def admin_patch_item(
     if domain_ids is not None:
         dom_repo = memory_domains_repo()
         if domain_ids:
-            placeholders = ",".join(["?"] * len(domain_ids))
-            rows = conn.execute(
-                f"SELECT id, slug FROM memory_domains WHERE id IN ({placeholders})",
-                domain_ids,
-            ).fetchall()
-            id_to_slug = {r[0]: r[1] for r in rows}
+            id_to_slug = dom_repo.resolve_ids_to_slugs(domain_ids)
             missing = [i for i in domain_ids if i not in id_to_slug]
             if missing:
                 raise HTTPException(
