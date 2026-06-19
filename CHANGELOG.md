@@ -11,8 +11,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Admin "Disable plugin" toggle in the `/admin/marketplaces` Details modal.** Each plugin row now has a "Disabled" switch (confirmation modal, same style as "Mark as system") that admin-disables the plugin instance-wide via the existing `POST /{marketplace_id}/plugins/{plugin_name}/{disable,enable}` endpoints. A disabled plugin disappears from every served surface for all users — the RBAC served feed, the marketplace browse page, every user's my-stack, and the synthetic served marketplace. Disabling also clears the `is_system` flag (re-enabling does NOT restore it), and the "Mark as system" button is greyed out while a plugin is disabled. The `admin_disabled` flag is now surfaced on `GET /{marketplace_id}/plugins` (`PluginResponse`) so the modal can render the switch and a DISABLED pill.
 
 ### Changed
+- **`set_admin_disabled(..., True)` now also clears `is_system`** on both backends (DuckDB + Postgres) so a hidden plugin stops fanning out as a system default; re-enabling leaves the system flag cleared. The system-plugin fan-out queries (`my_stack`, `user_curated_subscriptions.fanout_system_for_user`) now filter `AND admin_disabled = FALSE` defensively.
 
 ### Fixed
 - **The `/admin/access` (RBAC) page now reflects the active backend on Postgres instances.** Its resource projections (`app/resource_types.py` `_*_blocks`) and the `access_overview` endpoint read through a raw `Depends(_get_db)` DuckDB connection, so on a Postgres deployment they projected the frozen DuckDB system file instead of live PG state — admin-registered marketplaces, tables, data packages, recipes, collections, memory domains/items and Slack-channel grants created after the DuckDB→PG migration were missing from the page. All projections now read through the `src.repositories` factory (which honors `use_pg()`).

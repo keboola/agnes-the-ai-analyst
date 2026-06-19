@@ -372,14 +372,28 @@ class MarketplacePluginsRepository:
         (marketplace_id, plugin_name) pair is not in the table (no-op).
         Disabled plugins are filtered from the served feed for all callers
         regardless of their RBAC grants — distinct from per-user opt-outs.
+
+        Disabling also clears `is_system`: a hidden plugin must not keep
+        fanning out as a system default. Re-enabling does NOT restore the
+        system flag (matching `unmark_system` semantics) — an admin must
+        re-mark it explicitly.
         """
         # DuckDB does not populate cursor.rowcount for UPDATE (it stays -1/0),
         # so we can't trust it to detect whether a row matched. RETURNING is
         # deterministic on both engines: one row per updated row.
-        updated = self.conn.execute(
-            "UPDATE marketplace_plugins SET admin_disabled = ? WHERE marketplace_id = ? AND name = ? RETURNING name",
-            [disabled, marketplace_id, plugin_name],
-        ).fetchall()
+        if disabled:
+            sql = (
+                "UPDATE marketplace_plugins SET admin_disabled = TRUE, is_system = FALSE "
+                "WHERE marketplace_id = ? AND name = ? RETURNING name"
+            )
+            params = [marketplace_id, plugin_name]
+        else:
+            sql = (
+                "UPDATE marketplace_plugins SET admin_disabled = FALSE "
+                "WHERE marketplace_id = ? AND name = ? RETURNING name"
+            )
+            params = [marketplace_id, plugin_name]
+        updated = self.conn.execute(sql, params).fetchall()
         return len(updated) > 0
 
     def list_admin_disabled(self, marketplace_id: str) -> List[str]:

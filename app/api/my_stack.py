@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from pathlib import Path
 from typing import Any, List, Optional
 
 import duckdb
@@ -31,8 +30,6 @@ from src.repositories import (
     user_curated_subscriptions_repo,
     user_store_installs_repo,
 )
-from src.repositories.user_store_installs import UserStoreInstallsRepository
-from src.store_naming import suffixed_name
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/my-stack", tags=["my-stack"])
@@ -128,7 +125,7 @@ async def get_my_stack(
     # (which is also called from the marketplace_filter / packager hot path).
     sys_rows = conn.execute(
         "SELECT marketplace_id, name FROM marketplace_plugins "
-        "WHERE is_system = TRUE",
+        "WHERE is_system = TRUE AND admin_disabled = FALSE",
     ).fetchall()
     system_plugins: set[tuple[str, str]] = {(r[0], r[1]) for r in sys_rows}
 
