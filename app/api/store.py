@@ -99,7 +99,6 @@ MAX_ZIP_UNCOMPRESSED = 200 * 1024 * 1024  # 200 MB
 
 
 def _suffixed_already_taken(
-    conn: duckdb.DuckDBPyConnection,
     suffixed: str,
     *,
     exclude_entity_id: Optional[str] = None,
@@ -131,14 +130,11 @@ def _suffixed_already_taken(
     but querying the column is indexable and avoids divergence if the
     naming formula ever changes (single source of truth).
     """
-    sql = "SELECT id FROM store_entities WHERE synthetic_name = ?"
-    params: List[Any] = [suffixed]
-    if exclude_entity_id:
-        sql += " AND id != ?"
-        params.append(exclude_entity_id)
-    if exclude_archived:
-        sql += " AND visibility_status != 'archived'"
-    return bool(conn.execute(sql, params).fetchone())
+    return store_entities_repo().synthetic_name_taken(
+        suffixed,
+        exclude_entity_id=exclude_entity_id,
+        exclude_archived=exclude_archived,
+    )
 
 
 def _validate_video_url(value: Optional[str]) -> Optional[str]:
@@ -1648,7 +1644,7 @@ async def create_entity(
         # the bundle on-disk dir and the served plugin.json `name`, so a
         # collision silently last-write-wins. Refuse upfront — but skip
         # archived rows since archive renames their slug.
-        if _suffixed_already_taken(conn, suffixed, exclude_archived=True):
+        if _suffixed_already_taken(suffixed, exclude_archived=True):
             raise HTTPException(status_code=409, detail="conflict_global_suffix")
         plugin_dir = _plugin_dir(entity_id)
         file_size = _bake_plugin_tree(
@@ -1965,7 +1961,6 @@ async def _update_entity_locked(
         # Cross-owner suffix — must be globally unique post-rename.
         new_suffixed = suffixed_name(new_name, entity["owner_username"])
         if _suffixed_already_taken(
-            conn,
             new_suffixed,
             exclude_entity_id=entity_id,
             exclude_archived=True,
@@ -2720,16 +2715,11 @@ async def delete_entity(
                 "archive on-disk rename failed for entity %s — reverting DB",
                 entity_id,
             )
-            conn.execute(
-                """UPDATE store_entities
-                      SET visibility_status = 'approved',
-                          name = ?,
-                          archived_at = NULL,
-                          archived_by = NULL,
-                          updated_at = ?
-                    WHERE id = ?""",
-                [original_name, datetime.now(timezone.utc), entity_id],
-            )
+            # Factory-routed revert so it hits the active backend. set_visibility
+            # already clears archived_at/archived_by and strips the archive-rename
+            # suffix to restore the original display name (#518: the old raw
+            # UPDATE wrote the frozen DuckDB system file on Postgres instances).
+            store_entities_repo().set_visibility(entity_id, "approved")
             raise HTTPException(
                 status_code=500,
                 detail="archive_rename_failed",
@@ -2901,21 +2891,17 @@ class ImportBundleResponse(BaseModel):
     errors: List[dict] = []
 
 
-def _resolve_owner_emails(conn: duckdb.DuckDBPyConnection, owner_ids: List[str]) -> dict:
+def _resolve_owner_emails(owner_ids: List[str]) -> dict:
     """Bulk-fetch user_id → email map for the given owners.
 
     Empty list short-circuits to {} so the caller doesn't need a guard.
     Missing rows are simply absent from the returned dict — the caller
     falls back to the row's stored ``owner_username`` for diagnostics.
+
+    Routed through the factory (#518) — a raw ``SELECT ... WHERE id IN`` on a
+    system connection read the frozen DuckDB file on Postgres instances.
     """
-    if not owner_ids:
-        return {}
-    placeholders = ",".join(["?"] * len(owner_ids))
-    rows = conn.execute(
-        f"SELECT id, email FROM users WHERE id IN ({placeholders})",
-        list(owner_ids),
-    ).fetchall()
-    return {r[0]: r[1] for r in rows}
+    return users_repo().get_by_ids(list(owner_ids))
 
 
 def _walk_entity_files(entity_id: str) -> List[tuple[str, Path]]:
@@ -2951,7 +2937,7 @@ def _build_bundle_zip(
     owner_email in one bulk roundtrip to keep the export path off the
     O(N) per-row query path.
     """
-    owner_emails = _resolve_owner_emails(conn, list({e["owner_user_id"] for e in entries}))
+    owner_emails = _resolve_owner_emails(list({e["owner_user_id"] for e in entries}))
     bundle_entries: List[dict] = []
     for e in sorted(entries, key=lambda r: r["id"]):
         bundle_entries.append(

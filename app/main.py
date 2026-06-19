@@ -822,13 +822,19 @@ async def lifespan(app):
                     try:
                         from src.db import get_system_db
                         from src.claude_md import render_claude_md
-                        from src.repositories.users import UserRepository
+                        from src.repositories import users_repo
 
+                        # User read via the factory so it honors use_pg() — a
+                        # direct UserRepository(conn) read the frozen DuckDB
+                        # system file on Postgres instances (#518). The conn
+                        # below is still handed to render_claude_md, which
+                        # routes its own state reads through the factory (the
+                        # conn is the DuckDB-mode path; vestigial on PG).
+                        u = users_repo().get_by_email(user_email)
+                        if not u:
+                            return None
                         conn = get_system_db()
                         try:
-                            u = UserRepository(conn).get_by_email(user_email)
-                            if not u:
-                                return None
                             return render_claude_md(conn, user=u, server_url=_server_url)
                         finally:
                             conn.close()

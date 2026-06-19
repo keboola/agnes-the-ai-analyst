@@ -22,6 +22,19 @@ class UsersPgRepository:
             row = conn.execute(sa.text("SELECT * FROM users WHERE id = :id"), {"id": user_id}).mappings().first()
         return dict(row) if row else None
 
+    def get_by_ids(self, user_ids: List[str]) -> Dict[str, Optional[str]]:
+        """Bulk map ``user_id → email`` for the given ids (PG sibling of the
+        DuckDB ``get_by_ids``). Missing rows are absent; empty input → ``{}``."""
+        ids = list(user_ids)
+        if not ids:
+            return {}
+        stmt = sa.text("SELECT id, email FROM users WHERE id IN :ids").bindparams(
+            sa.bindparam("ids", expanding=True)
+        )
+        with self._engine.connect() as conn:
+            rows = conn.execute(stmt, {"ids": ids}).all()
+        return {r[0]: r[1] for r in rows}
+
     def get_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
             row = conn.execute(sa.text("SELECT * FROM users WHERE email = :email"), {"email": email}).mappings().first()

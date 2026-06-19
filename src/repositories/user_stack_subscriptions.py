@@ -45,6 +45,37 @@ class UserStackSubscriptionsRepository:
         )
         return True
 
+    def subscribe_group_members(
+        self, group_id: str, resource_type: str, resource_id: str
+    ) -> int:
+        """Subscribe every current member of ``group_id`` to (resource_type,
+        resource_id). Returns the number of newly-created rows.
+
+        Soft-downgrade fan-out (v49): when a grant moves required → available
+        the resource must stay in each member's stack, so we materialize a
+        subscription row per member. Idempotent via ON CONFLICT DO NOTHING.
+        Reproduces the old ``INSERT ... SELECT FROM user_group_members`` that
+        used to run in the request handler on a raw DuckDB connection (#518).
+        """
+        before = self.conn.execute(
+            "SELECT COUNT(*) FROM user_stack_subscriptions "
+            "WHERE resource_type = ? AND resource_id = ?",
+            [resource_type, resource_id],
+        ).fetchone()[0]
+        self.conn.execute(
+            "INSERT INTO user_stack_subscriptions"
+            "(user_id, resource_type, resource_id) "
+            "SELECT m.user_id, ?, ? FROM user_group_members m "
+            "WHERE m.group_id = ? ON CONFLICT DO NOTHING",
+            [resource_type, resource_id, group_id],
+        )
+        after = self.conn.execute(
+            "SELECT COUNT(*) FROM user_stack_subscriptions "
+            "WHERE resource_type = ? AND resource_id = ?",
+            [resource_type, resource_id],
+        ).fetchone()[0]
+        return int(after - before)
+
     def unsubscribe(
         self, user_id: str, resource_type: str, resource_id: str
     ) -> bool:

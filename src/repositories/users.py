@@ -20,6 +20,21 @@ class UserRepository:
         result = self.conn.execute("SELECT * FROM users WHERE id = ?", [user_id]).fetchone()
         return self._row_to_dict(result)
 
+    def get_by_ids(self, user_ids: List[str]) -> Dict[str, Optional[str]]:
+        """Bulk map ``user_id → email`` for the given ids. Missing rows are
+        absent from the dict; an empty input returns ``{}``. Used by callers
+        that previously ran a raw ``SELECT id, email ... WHERE id IN (...)`` on
+        a system connection (#518) — routing through the factory keeps the read
+        on the active backend."""
+        ids = list(user_ids)
+        if not ids:
+            return {}
+        placeholders = ",".join(["?"] * len(ids))
+        rows = self.conn.execute(
+            f"SELECT id, email FROM users WHERE id IN ({placeholders})", ids
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
     def get_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         result = self.conn.execute("SELECT * FROM users WHERE email = ?", [email]).fetchone()
         return self._row_to_dict(result)
@@ -169,13 +184,25 @@ class UserRepository:
         iff it is the valid, unexpired token for an active ``email``. Returns True
         iff THIS call won the race (mirrors the magic-link CAS). Goes through the
         repo (not a raw connection) so it runs on the ACTIVE backend — a raw
-        DuckDB cursor here silently failed on Postgres instances."""
-        self.conn.execute(
-            "UPDATE users SET reset_token = ?, reset_token_created = NULL "
-            "WHERE email = ? AND reset_token = ? AND reset_token_created IS NOT NULL "
-            "AND reset_token_created >= ? AND active = TRUE",
-            [consume_id, email, token, cutoff],
-        )
+        DuckDB cursor here silently failed on Postgres instances.
+
+        On a concurrent verify, DuckDB raises a TransactionContext conflict on
+        the losing UPDATE; that means another caller won the CAS, so we report
+        a loss (``False``) rather than letting the conflict surface as a 500.
+        Postgres serializes the two UPDATEs instead (the loser matches zero
+        rows), so it reaches the same ``False`` without raising."""
+        try:
+            self.conn.execute(
+                "UPDATE users SET reset_token = ?, reset_token_created = NULL "
+                "WHERE email = ? AND reset_token = ? AND reset_token_created IS NOT NULL "
+                "AND reset_token_created >= ? AND active = TRUE",
+                [consume_id, email, token, cutoff],
+            )
+        except Exception as exc:  # noqa: BLE001 — DuckDB optimistic-concurrency conflict
+            err = str(exc).lower()
+            if "conflict" in err or "transaction" in err:
+                return False
+            raise
         row = self.conn.execute(
             "SELECT reset_token FROM users WHERE email = ?", [email]
         ).fetchone()

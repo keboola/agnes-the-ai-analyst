@@ -420,6 +420,25 @@ class StoreEntitiesPgRepository:
             )
         return self.get(id)
 
+    def synthetic_name_taken(
+        self,
+        synthetic_name: str,
+        *,
+        exclude_entity_id: Optional[str] = None,
+        exclude_archived: bool = False,
+    ) -> bool:
+        """PG sibling of the DuckDB ``synthetic_name_taken``."""
+        sql = "SELECT id FROM store_entities WHERE synthetic_name = :sn"
+        params: Dict[str, Any] = {"sn": synthetic_name}
+        if exclude_entity_id:
+            sql += " AND id != :eid"
+            params["eid"] = exclude_entity_id
+        if exclude_archived:
+            sql += " AND visibility_status != 'archived'"
+        with self._engine.connect() as conn:
+            row = conn.execute(sa.text(sql), params).first()
+        return row is not None
+
     def get(self, id: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
             row = conn.execute(
