@@ -57,7 +57,6 @@ def test_me_cowork_accessible_to_non_admin(seeded_app):
     resp = c.get("/me/cowork", headers=_auth(token))
     assert resp.status_code == 200
     assert "AI Cowork" in resp.text
-    assert "Download Setup Bundle" in resp.text
 
 
 def test_me_cowork_has_plugin_package_section(seeded_app):
@@ -72,23 +71,16 @@ def test_me_cowork_has_plugin_package_section(seeded_app):
     body = c.get("/me/cowork", headers=_auth(token)).text
     assert 'id="cowork-plugin-list"' in body
     assert "/marketplace/cowork/" in body
-    # Both flows are described so users can orient: the cross-project package
-    # flow and the folder-scoped bundled-project-with-MCP flow.
     assert "Plugin packages" in body
-    assert "Bundled Project Setup with MCP" in body
 
 
 def test_me_cowork_shows_oauth_connector_url(seeded_app):
     """The Connection section surfaces the OAuth 2.1 connector URL
-    (`/api/mcp/http`) as the recommended endpoint users paste into a remote
-    MCP client, alongside the legacy SSE endpoint kept for Cowork back-compat.
-    Without this the new no-token connector path is undiscoverable in the UI.
+    (`/api/mcp/http`) as the endpoint users paste into a remote MCP client.
+    Without this the no-token connector path is undiscoverable in the UI.
     """
     c = seeded_app["client"]
     token = seeded_app["analyst_token"]
     body = c.get("/me/cowork", headers=_auth(token)).text
-    # The recommended OAuth connector URL is present...
     assert "/api/mcp/http" in body
     assert "Connector URL" in body
-    # ...and the legacy SSE endpoint is still shown for back-compat.
-    assert "/api/mcp/sse" in body

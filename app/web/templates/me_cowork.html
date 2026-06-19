@@ -220,6 +220,66 @@
   color: var(--ds-text-secondary);
 }
 
+/* Connector "sell" panel — the primary call to action */
+.cowork-connect {
+  border: 1px solid var(--ds-border);
+  border-radius: var(--radius-lg);
+  background: var(--ds-surface-raised, var(--ds-surface));
+  padding: var(--space-6);
+  margin-bottom: var(--space-5);
+}
+.cowork-connect h2 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xl);
+  font-weight: 700;
+  color: var(--ds-text-primary);
+}
+.cowork-connect .lede {
+  margin: 0 0 var(--space-5);
+  font-size: var(--text-base);
+  color: var(--ds-text-secondary);
+  max-width: 60ch;
+}
+.cowork-connect-url {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+}
+.cowork-connect-url .url {
+  font-family: var(--ds-font-mono, monospace);
+  font-size: var(--text-sm);
+  color: var(--ds-text-primary);
+  word-break: break-all;
+}
+.cowork-connect-steps {
+  margin: var(--space-5) 0 0;
+  padding-left: var(--space-5);
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.cowork-connect-clients {
+  margin-top: var(--space-5);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.cowork-connect-clients .chip {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--ds-text-secondary);
+  border: 1px solid var(--ds-border);
+  border-radius: 999px;
+  padding: 2px 10px;
+}
+
 /* Empty state */
 .cowork-empty {
   text-align: center;
@@ -264,78 +324,43 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
 {% block content %}
 {% set page_hero_eyebrow = "My account" %}
 {% set page_hero_title = "AI Cowork" %}
-{% set page_hero_subtitle = "Connect Claude Code to your Agnes data — no terminal needed." %}
+{% set page_hero_subtitle = "Drive Agnes from the AI agent you already use — just connect it to your data." %}
 {% include "_page_hero.html" %}
 
 <div class="profile-page">
 
-  {# ── Bundled project setup (bundle + MCP) ───────────────────────────── #}
-  {% call ds.panel(title='Bundled Project Setup with MCP', tag='section',
-                   klass='section-card',
-                   attrs='aria-label="Bundled project setup with MCP"') %}
-    <div class="cowork-skills-note">
-      <strong>What this is:</strong> a ready-made Cowork <em>project folder</em> —
-      your Agnes skills plus a live MCP connection to your data (catalog, schema,
-      query …). Best for working <em>with your data</em> in Cowork.
-      <strong>Scope:</strong> it only works inside this one project — you open the
-      downloaded folder as a Cowork project and Agnes is wired up there. It does
-      <strong>not</strong> follow you into your other Cowork projects. To use your
-      skills everywhere, add them as <em>packages</em> below.
+  {# ── Connector — the primary call to action ─────────────────────────── #}
+  <section class="cowork-connect" aria-label="Connect your AI agent">
+    <h2>Control Agnes from your AI agent</h2>
+    <p class="lede">
+      Point your AI assistant at your data and just ask — in plain language.
+      Your agent runs Agnes for you (browse the catalog, read schemas, query
+      tables) entirely under <strong>your</strong> access. No terminal, no
+      manually-issued token — sign in once in the browser and you're connected.
+    </p>
+
+    <div class="cowork-connect-url">
+      <span class="label" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:var(--tracking-wide);color:var(--ds-text-muted);">Connector URL</span>
+      <span class="url" id="cowork-connector-url">{{ server_url }}/api/mcp/http</span>
+      <button type="button" class="btn btn-secondary btn-sm" id="cowork-connector-copy" style="margin-left:auto;">Copy</button>
     </div>
 
-    <div class="cowork-prereq">
-      Requires <a href="https://claude.ai/download" target="_blank" rel="noopener">Claude Desktop</a>.
-      The bundle expires in 24 hours and is single-use.
-      <a href="/help/cowork" style="margin-left:8px;">Setup guide</a>
-    </div>
-
-    <ol class="cowork-steps">
-      <li>Click <strong>Download Setup Bundle</strong> below</li>
-      <li>Unzip the downloaded file</li>
-      <li>Open <strong>Claude Desktop</strong> → <strong>Cowork</strong> → <strong>New project</strong> → <strong>Use an existing folder</strong> → select the unzipped folder</li>
-      <li>Agnes configures automatically at session start</li>
+    <ol class="cowork-connect-steps">
+      <li>Open your AI client → add a <strong>custom connector</strong> and paste the URL above.</li>
+      <li>Sign in to Agnes when the browser opens, then click <strong>Allow</strong>.</li>
+      <li>Done — ask your agent to explore your data.</li>
     </ol>
 
-    <div class="cowork-skills-note">
-      <strong>About skills:</strong> your Agnes skills load automatically when you
-      open the folder — Claude can use them in chat right away. They will
-      <strong>not</strong> appear in Cowork's <em>Customize&nbsp;→&nbsp;Skills</em>
-      list (a Cowork UI limitation, not a problem). To confirm a skill works,
-      just ask Claude to use it — e.g. <em>“use the develop-component skill”</em>.
+    <div class="cowork-connect-clients" aria-label="Supported clients">
+      <span class="chip">Claude Cowork</span>
+      <span class="chip">Claude (web)</span>
+      <span class="chip">ChatGPT</span>
+      <span class="chip">Gemini</span>
+      <span class="chip">Cursor</span>
+      <span class="chip">Microsoft Copilot</span>
+      <span class="chip">VS Code</span>
     </div>
-
-    <div class="cowork-action-row">
-      <button id="cowork-download-btn" class="btn btn-primary" type="button">
-        <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" style="margin-right:6px;">
-          <path d="M10 2a1 1 0 011 1v9.586l2.293-2.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L9 12.586V3a1 1 0 011-1z"/>
-          <path d="M3 15a1 1 0 011 1h12a1 1 0 110 2H4a1 1 0 01-1-1v-1a1 1 0 011-1z"/>
-        </svg>
-        Download Setup Bundle
-      </button>
-      <span id="cowork-status" class="cowork-status" aria-live="polite"></span>
-    </div>
-
-    <div id="cowork-token-limit-warn" class="cowork-token-limit-warn">
-      You have reached the limit of active setup bundles. Old bundles expire after 24 hours,
-      or you can revoke them below.
-    </div>
-
-    <div class="cowork-prompt-box">
-      <div class="cowork-prompt-label">Your first message in Cowork</div>
-      <div class="cowork-prompt-row">
-        <code id="cowork-first-prompt" class="cowork-prompt-code">Run setup.py and show me what data I have access to</code>
-        <button id="cowork-copy-btn" class="btn btn-secondary btn-sm" type="button">Copy</button>
-      </div>
-      <div class="cowork-prompt-hint">After the first session, restart Claude Desktop once to activate MCP tools.</div>
-    </div>
-
-    <details id="cowork-active-tokens" style="display:none; margin-top:var(--space-4); font-size:var(--text-sm);">
-      <summary style="cursor:pointer; color:var(--ds-text-secondary); list-style:none; user-select:none;">
-        Active setup bundles
-      </summary>
-      <ul id="cowork-token-list" style="list-style:none; padding:0; margin:var(--space-2) 0 0; font-size:var(--text-xs); display:flex; flex-direction:column; gap:var(--space-2);"></ul>
-    </details>
-  {% endcall %}
+  </section>
 
   {# ── Plugin packages — open by default, the cross-project flow ───────── #}
   <details class="ds-card section-card" aria-label="Plugin packages" open>
@@ -353,8 +378,8 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
         Desktop → Cowork open <strong>Customize → Personal plugins → + → Create
         plugin → Upload plugin</strong> and pick the <code>.zip</code> —
         <strong>one package per zip</strong>, repeat for each. (Packages carry
-        skills/agents/commands; for live data access use the bundled project
-        above, which includes the MCP connection.)
+        skills/agents/commands; for live data access connect your AI agent via
+        the connector above.)
       </div>
       {# Populated by JS from /marketplace/info (same RBAC-filtered set the
          analyst's Claude Code marketplace serves). Each link hits
@@ -364,8 +389,8 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
       </div>
     </div>
   </details>
-
-  {# ── Connection — collapsible ─────────────────────────────────────── #}
+  
+      {# ── Connection — collapsible ─────────────────────────────────────── #}
   <details class="ds-card section-card" aria-label="Connection">
     <summary>Connection</summary>
     <div style="margin-top:var(--space-4);">
@@ -474,116 +499,19 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
 {% block scripts %}
 <script>
 (function () {
-  const btn       = document.getElementById('cowork-download-btn');
-  const statusEl  = document.getElementById('cowork-status');
-  const limitWarn = document.getElementById('cowork-token-limit-warn');
-  const activeSection = document.getElementById('cowork-active-tokens');
-  const tokenList = document.getElementById('cowork-token-list');
-  const copyBtn   = document.getElementById('cowork-copy-btn');
-  const firstPrompt = document.getElementById('cowork-first-prompt');
-
-  function setStatus(msg, type) {
-    statusEl.textContent = msg;
-    statusEl.className = 'cowork-status' + (type ? ' is-' + type : '');
-  }
-
-  if (copyBtn && firstPrompt) {
-    copyBtn.addEventListener('click', function () {
-      navigator.clipboard.writeText(firstPrompt.textContent.trim()).then(function () {
-        copyBtn.textContent = 'Copied!';
-        copyBtn.classList.add('copied');
-        setTimeout(function () { copyBtn.textContent = 'Copy'; copyBtn.classList.remove('copied'); }, 1800);
-      });
-    });
-  }
-
-  function renderTokens(tokens) {
-    if (!tokens || tokens.length === 0) {
-      activeSection.style.display = 'none';
-      limitWarn.classList.remove('visible');
-      return;
-    }
-    activeSection.style.display = '';
-    if (tokens.length >= 5) limitWarn.classList.add('visible');
-    else limitWarn.classList.remove('visible');
-
-    tokenList.innerHTML = '';
-    tokens.forEach(function (t) {
-      var li = document.createElement('li');
-      li.style.cssText = 'display:flex;align-items:center;gap:8px;';
-      var exp = new Date(t.expires_at).toLocaleString();
-      li.innerHTML = '<span style="color:var(--ds-text-secondary)">Expires ' + exp + '</span>'
-        + '<button data-id="' + t.id + '" class="btn btn-ghost btn-sm" style="margin-left:auto;color:var(--ds-accent-danger-ink);" type="button">Revoke</button>';
-      li.querySelector('button').addEventListener('click', function () { revokeToken(t.id, li); });
-      tokenList.appendChild(li);
-    });
-  }
-
-  function revokeToken(id, li) {
-    fetch('/api/user/setup-tokens/' + id, { method: 'DELETE', credentials: 'include' })
-      .then(function (r) {
-        if (r.ok || r.status === 204) {
-          li.remove();
-          if (tokenList.children.length === 0) activeSection.style.display = 'none';
-          limitWarn.classList.remove('visible');
-        }
-      }).catch(function () {});
-  }
-
-  function loadTokens() {
-    fetch('/api/user/setup-tokens', { credentials: 'include' })
-      .then(function (r) { return r.ok ? r.json() : []; })
-      .then(renderTokens)
-      .catch(function () {});
-  }
-
-  btn.addEventListener('click', function () {
-    btn.disabled = true;
-    setStatus('Generating bundle…', '');
-
-    fetch('/api/user/cowork-bundle', { method: 'POST', credentials: 'include' })
-      .then(function (resp) {
-        if (!resp.ok) {
-          return resp.json().then(function (d) {
-            throw new Error((d && d.detail && d.detail.hint) || ('Error ' + resp.status));
-          });
-        }
-        var cd = resp.headers.get('Content-Disposition') || '';
-        var m = cd.match(/filename="([^"]+)"/);
-        var filename = m ? m[1] : 'agnes-cowork-setup.zip';
-        return resp.blob().then(function (blob) {
-          return _saveBlob(blob, filename);
-        }).then(function (saved) {
-          setStatus(saved ? 'Bundle saved — expires in 24 h.' : 'Bundle downloaded — expires in 24 h.', 'success');
-          loadTokens();
+  // Copy-to-clipboard for the connector URL (the primary CTA).
+  (function () {
+    var copyBtn = document.getElementById('cowork-connector-copy');
+    var urlEl = document.getElementById('cowork-connector-url');
+    if (copyBtn && urlEl) {
+      copyBtn.addEventListener('click', function () {
+        navigator.clipboard.writeText(urlEl.textContent.trim()).then(function () {
+          copyBtn.textContent = 'Copied!';
+          setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1800);
         });
-      })
-      .catch(function (err) {
-        if (err && err.name === 'AbortError') { setStatus('', ''); }
-        else { setStatus(err.message || 'Failed to generate bundle.', 'error'); }
-      })
-      .finally(function () { btn.disabled = false; });
-
-    function _saveBlob(blob, filename) {
-      if (typeof window.showSaveFilePicker === 'function') {
-        return window.showSaveFilePicker({
-          suggestedName: filename,
-          types: [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }],
-        }).then(function (h) { return h.createWritable(); })
-          .then(function (w) { return w.write(blob).then(function () { return w.close(); }); })
-          .then(function () { return true; });
-      }
-      var url = URL.createObjectURL(blob);
-      var a = document.createElement('a');
-      a.href = url; a.download = filename;
-      document.body.appendChild(a); a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      return Promise.resolve(false);
+      });
     }
-  });
-
-  loadTokens();
+  })();
 
   // ── Plugin packages download list ───────────────────────────────────
   // Pulls the caller's RBAC-filtered plugin set from /marketplace/info and
