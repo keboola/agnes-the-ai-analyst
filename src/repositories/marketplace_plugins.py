@@ -396,6 +396,23 @@ class MarketplacePluginsRepository:
         updated = self.conn.execute(sql, params).fetchall()
         return len(updated) > 0
 
+    def set_system(self, marketplace_id: str, plugin_name: str, system: bool) -> bool:
+        """Toggle the per-plugin ``is_system`` flag.
+
+        Returns True when the row existed and was updated, False when the
+        (marketplace_id, plugin_name) pair is not in the table (no-op) — the
+        handler surfaces the False as a 404. RETURNING makes the match
+        detection deterministic on both engines (DuckDB does not populate
+        ``cursor.rowcount`` for UPDATE). Independent of ``admin_disabled``;
+        the grant/subscription fan-out is owned by the API layer.
+        """
+        updated = self.conn.execute(
+            "UPDATE marketplace_plugins SET is_system = ? "
+            "WHERE marketplace_id = ? AND name = ? RETURNING name",
+            [system, marketplace_id, plugin_name],
+        ).fetchall()
+        return len(updated) > 0
+
     def list_admin_disabled(self, marketplace_id: str) -> List[str]:
         """Return the names of plugins that have admin_disabled=TRUE for a marketplace."""
         rows = self.conn.execute(

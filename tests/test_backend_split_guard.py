@@ -361,9 +361,7 @@ def scan_depends_get_db_raw_sql(files) -> dict[str, set[str]]:
 # Out of scope for the #518 RBAC-page fix; pinned here so the class cannot grow.
 # Shrink (never grow): when a handler is routed through the factory, delete its
 # entry. Some are analytics/telemetry reads that are DuckDB-only by design.
-_GRANDFATHERED_DEPENDS_GET_DB_RAW_SQL: dict[str, set[str]] = {
-    "app/api/marketplaces.py": {"mark_plugin_system", "unmark_plugin_system"},
-}
+_GRANDFATHERED_DEPENDS_GET_DB_RAW_SQL: dict[str, set[str]] = {}
 
 
 # ---------------------------------------------------------------------------
