@@ -432,21 +432,16 @@ async def delete_marketplace(
 
     repo.unregister(marketplace_id)
     # Drop cached plugin rows and any resource grants that reference plugins
-    # from this marketplace. resource_grants stores resource_id as
-    # "<marketplace_slug>/<plugin_name>" — match the slash-prefix via
-    # starts_with(), not LIKE: marketplace slugs may contain '_' (validated
-    # by [a-z0-9][a-z0-9_-]{0,63}) and LIKE would interpret it as a
-    # single-char wildcard, silently dropping grants from sibling
-    # marketplaces whose slug differs by exactly one character.
+    # from this marketplace. Routed through the repo factory so the deletes hit
+    # the ACTIVE backend (PG / DuckDB) — a raw conn.execute on the
+    # Depends(_get_db) connection runs against the always-DuckDB system file and
+    # silently no-ops on a Postgres instance, orphaning the plugins + grants in
+    # PG (#518 backend-split). The repos match the marketplace slug via
+    # split_part(resource_id, '/', 1) rather than a LIKE prefix, so a slug
+    # containing '_' can't drop a sibling marketplace's grants.
     try:
-        conn.execute(
-            "DELETE FROM marketplace_plugins WHERE marketplace_id = ?",
-            [marketplace_id],
-        )
-        conn.execute(
-            "DELETE FROM resource_grants WHERE resource_type = ? AND starts_with(resource_id, ? || '/')",
-            [ResourceType.MARKETPLACE_PLUGIN.value, marketplace_id],
-        )
+        marketplace_plugins_repo().clear_for_marketplace(marketplace_id)
+        resource_grants_repo().delete_for_marketplace_plugins(marketplace_id)
         # Drop user subscriptions to plugins from this marketplace so a
         # re-registered slug doesn't inherit stale subscribe state.
         user_curated_subscriptions_repo().delete_for_marketplace(marketplace_id)
