@@ -155,3 +155,68 @@ def test_fanout_system_for_user_skips_disabled(tmp_path, monkeypatch):
     assert (slug, plugin) not in subs.subscribed_set("u2")
 
     conn.close()
+
+
+def test_disabled_plugin_drops_from_rbac_projection(tmp_path, monkeypatch):
+    """The /admin/access grant UI projects plugins via
+    ``app.resource_types._marketplace_plugin_blocks``. A disabled plugin must
+    vanish from that projection too — it used ``list_all()`` without an
+    ``admin_disabled`` filter, so the disabled plugin stayed listed as a
+    grantable resource on the RBAC page while every served surface hid it.
+    """
+    conn = _setup_conn(tmp_path)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: conn)
+
+    from app.resource_types import _marketplace_plugin_blocks
+    from src.repositories.marketplace_plugins import MarketplacePluginsRepository
+
+    _user, _group_id, (slug, plugin) = _seed_user_with_system_plugin(conn)
+
+    def _projected_ids() -> set[str]:
+        return {
+            item["resource_id"]
+            for block in _marketplace_plugin_blocks()
+            for item in block["items"]
+        }
+
+    # Baseline: the plugin is a grantable resource on /admin/access.
+    assert f"{slug}/{plugin}" in _projected_ids()
+
+    # Disable it through the real repo method → gone from the RBAC projection.
+    MarketplacePluginsRepository(conn).set_admin_disabled(slug, plugin, True)
+    assert f"{slug}/{plugin}" not in _projected_ids()
+
+    conn.close()
+
+
+def test_disabled_plugin_drops_from_v2_skills_admin(tmp_path, monkeypatch):
+    """The v2 ``/skills`` endpoint's admin branch lists plugins via
+    ``list_all()`` (RBAC bypass). Admin-disabled plugins must not surface
+    there either — their skills must not be served into Claude's context."""
+    conn = _setup_conn(tmp_path)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: conn)
+
+    from app.api.v2_marketplace import _accessible_plugins
+    from src.repositories.marketplace_plugins import MarketplacePluginsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.user_groups import UserGroupsRepository
+
+    user, _group_id, (slug, plugin) = _seed_user_with_system_plugin(conn)
+
+    # Make the user an admin (member of the seeded Admin system group) so the
+    # admin branch (the unfiltered list_all path we hardened) is exercised.
+    admin_group = UserGroupsRepository(conn).get_by_name("Admin")
+    assert admin_group is not None
+    UserGroupMembersRepository(conn).add_member(user["id"], admin_group["id"], source="admin")
+
+    def _names() -> set[tuple[str, str]]:
+        return {(p["marketplace_id"], p["name"]) for p in _accessible_plugins(user)}
+
+    assert (slug, plugin) in _names()
+
+    MarketplacePluginsRepository(conn).set_admin_disabled(slug, plugin, True)
+    assert (slug, plugin) not in _names()
+
+    conn.close()

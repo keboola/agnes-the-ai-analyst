@@ -512,6 +512,33 @@ class TestAdminDisabled:
         disabled = repos["plugins"].list_admin_disabled("mp-d5")
         assert disabled == ["pb"]
 
+    def test_replace_for_marketplace_preserves_admin_disabled(self, repos):
+        """Disabling must survive a restart. The built-in marketplace is
+        re-seeded on every boot via ``replace_for_marketplace``; its upsert
+        intentionally omits ``admin_disabled`` from the ``ON CONFLICT`` SET, so
+        an already-disabled plugin keeps the flag instead of springing back to
+        enabled when the app restarts."""
+        _seed_registry(repos, "mp-restart", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _seed_plugins(repos, "mp-restart", ["pa", "pb"])
+        repos["plugins"].set_admin_disabled("mp-restart", "pb", True)
+        assert repos["plugins"].list_admin_disabled("mp-restart") == ["pb"]
+
+        # Simulate the startup re-seed: same plugin set re-written from the
+        # bundled content (no admin_disabled in the payload).
+        repos["plugins"].replace_for_marketplace(
+            "mp-restart",
+            [
+                {"name": "pa", "version": "1.0", "description": "x"},
+                {"name": "pb", "version": "1.0", "description": "x"},
+            ],
+        )
+
+        # The disable survived the re-seed.
+        assert repos["plugins"].list_admin_disabled("mp-restart") == ["pb"]
+        row = repos["plugins"].get("mp-restart", "pb")
+        assert row is not None
+        assert bool(row.get("admin_disabled")) is True
+
 
 # ---------------------------------------------------------------------------
 # list_system_keys — backs my-stack toggle-lock (app/api/my_stack.py)
