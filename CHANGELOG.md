@@ -15,6 +15,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.57] - 2026-06-19
+
+### Added
+
+### Changed
+
+### Fixed
 - **The `/admin/access` (RBAC) page now reflects the active backend on Postgres instances.** Its resource projections (`app/resource_types.py` `_*_blocks`) and the `access_overview` endpoint read through a raw `Depends(_get_db)` DuckDB connection, so on a Postgres deployment they projected the frozen DuckDB system file instead of live PG state — admin-registered marketplaces, tables, data packages, recipes, collections, memory domains/items and Slack-channel grants created after the DuckDB→PG migration were missing from the page. All projections now read through the `src.repositories` factory (which honors `use_pg()`).
 - **Magic-link email login works on Postgres instances.** `_consume_token` ran a raw compare-and-swap on a DuckDB `_get_db` connection while `send_magic_link` wrote the token through the factory (PG), so verification never matched and login 401'd. It now consumes the token via `users_repo().consume_reset_token`.
 - **Grant requirement downgrade (`required → available`) materializes subscriptions on the active backend.** The fan-out `INSERT INTO user_stack_subscriptions` ran raw on a DuckDB connection; it now routes through `user_stack_subscriptions_repo().subscribe_group_members`.
