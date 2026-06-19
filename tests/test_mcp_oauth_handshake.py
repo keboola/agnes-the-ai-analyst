@@ -177,6 +177,48 @@ def _run_full_flow(client, admin_token, redirect_uri):
     assert verified.subject  # bound to the authorizing Agnes user
 
 
+def test_consent_reads_session_from_access_token_cookie(seeded_app):
+    """The browser drives consent with the Agnes session COOKIE, not a Bearer
+    header. The canonical session cookie is ``access_token`` (set by every
+    login provider) — if the consent bridge reads any other cookie name it
+    never sees the logged-in user and bounces back to login forever. This
+    exercises the cookie branch the Bearer-header happy-path test misses.
+    """
+    client = seeded_app["client"]
+    admin_token = seeded_app["admin_token"]
+    reg = _register_client(client)
+    _, challenge = _pkce()
+
+    r = client.get(
+        f"{MCP_MOUNT}/authorize",
+        params={
+            "response_type": "code",
+            "client_id": reg["client_id"],
+            "redirect_uri": "http://localhost:9999/callback",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "state": "xyz",
+            "scope": "read",
+        },
+        follow_redirects=False,
+    )
+    pending = parse_qs(urlparse(r.headers["location"]).query)["pending"][0]
+
+    # Consent GET carrying the session as the access_token cookie (no Bearer
+    # header) must render the consent page, NOT redirect to login.
+    r = client.get(
+        "/api/mcp/oauth/consent",
+        params={"pending": pending, "state": "xyz"},
+        cookies={"access_token": admin_token},
+        follow_redirects=False,
+    )
+    assert r.status_code == 200, (
+        f"consent must read the session from the access_token cookie "
+        f"(got {r.status_code}, location={r.headers.get('location')})"
+    )
+    assert "Authorize access" in r.text
+
+
 def test_consent_post_rejects_cross_origin(seeded_app):
     """The consent POST mints an auth code off the session — cross-origin
     submits (CSRF) must be rejected with 403."""

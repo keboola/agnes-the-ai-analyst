@@ -511,7 +511,11 @@ def _get_session_user(request: Request) -> dict | None:
     token = ""
     if auth.lower().startswith("bearer "):
         token = auth[7:]
-    # Try session cookie set by Google/email login.
+    # Try the session cookie set by the Google/email/password login flows.
+    # The canonical Agnes session cookie is "access_token" (see
+    # app/auth/dependencies.py and every provider's set_cookie call) — reading
+    # any other name here means the consent page never sees the logged-in user
+    # and bounces the browser back to login in an endless loop.
     if not token:
         token = request.cookies.get("access_token", "")
     if not token:
