@@ -11,7 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
-- **Cowork → Connection now surfaces the OAuth 2.1 connector URL (`/api/mcp/http`).** The page previously showed only the legacy SSE endpoint, so the no-token OAuth connector path was undiscoverable in the UI — users had no place to copy the URL they paste into a remote MCP client (Claude Cowork, Claude web, ChatGPT, Gemini, Cursor, Microsoft Copilot, VS Code). The Connection section now shows the OAuth connector URL with a short "add a custom connector" instruction.
+- **Cowork page leads with a "Control Agnes from your AI agent" connector panel.** The OAuth 2.1 connector URL (`/api/mcp/http`) is now the primary call to action — a prominent panel with the copy-able connector URL, a 3-step connect flow, and the supported clients (Claude Cowork, Claude web, ChatGPT, Gemini, Cursor, Microsoft Copilot, VS Code). Previously this no-token connect path was undiscoverable: the page surfaced only the setup-bundle download and the legacy SSE endpoint. The setup-bundle UI and the legacy SSE endpoint display were removed from the page (the bundle and SSE backend endpoints are unchanged).
 
 ### Changed
 
