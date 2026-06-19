@@ -301,6 +301,11 @@ def test_sync_manifest_bumps_last_pull_at(stats_conn, monkeypatch, tmp_path):
     # assets dict will be empty (manifest still returns ok).
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
+    # sync_manifest now stamps last_pull_at through the repo factory
+    # (users_repo().update), not the raw Depends(_get_db) conn — point the
+    # factory's system-db at this test connection so the write + read align.
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: stats_conn)
+
     _seed_user(stats_conn, uid="u_pull", email="puller@example.com")
     # Wipe seeded last_pull_at so we can detect the bump.
     stats_conn.execute("UPDATE users SET last_pull_at = NULL WHERE id = ?", ["u_pull"])

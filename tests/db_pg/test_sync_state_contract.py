@@ -9,15 +9,15 @@ _ensure_schema, Postgres via alembic upgrade -> head.
 
 from __future__ import annotations
 
-import duckdb
 import pytest
 
 
 def _make_duckdb_repo(tmp_path):
     from src.db import _ensure_schema
+    from src.duckdb_conn import _open_duckdb
     from src.repositories.sync_state import SyncStateRepository
 
-    conn = duckdb.connect(str(tmp_path / "duck.duckdb"))
+    conn = _open_duckdb(str(tmp_path / "duck.duckdb"))
     _ensure_schema(conn)
     return SyncStateRepository(conn), conn
 

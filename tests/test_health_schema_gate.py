@@ -73,7 +73,7 @@ def test_info_severity_does_not_promote_overall(seeded_app, monkeypatch):
     """
     import app.api.health as health_mod
 
-    def _fake_session_pipeline(_conn):
+    def _fake_session_pipeline():
         return {"status": "info", "detail": "synthetic info entry"}
 
     monkeypatch.setattr(

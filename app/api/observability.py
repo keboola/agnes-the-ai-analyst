@@ -161,21 +161,18 @@ def save_view(
     # thousands of views. 100 is well above any plausible curation
     # ceiling; ON CONFLICT updates an existing name rather than
     # adding rows, so this only bites genuine fan-out.
-    existing = conn.execute(
-        "SELECT COUNT(*) FROM user_observability_views WHERE user_id = ?",
-        [user_id],
-    ).fetchone()[0]
-    already_exists = conn.execute(
-        "SELECT 1 FROM user_observability_views "
-        "WHERE user_id = ? AND name = ?",
-        [user_id, name],
-    ).fetchone()
+    # Routed through the factory so the cap reads the active backend (PG /
+    # DuckDB) — a raw conn.execute here reads the frozen DuckDB file on a
+    # Postgres instance, so the count would always be 0 and never cap.
+    views_repo = observability_views_repo()
+    existing = views_repo.count_for_user(user_id)
+    already_exists = views_repo.name_exists(user_id, name)
     if existing >= 100 and not already_exists:
         raise HTTPException(
             status_code=400,
             detail="saved-view count for this user has reached 100; delete one before adding another",
         )
-    return observability_views_repo().create(user_id, name, query)
+    return views_repo.create(user_id, name, query)
 
 
 @router.delete("/views/{view_id}", status_code=204)
