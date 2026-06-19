@@ -130,6 +130,11 @@ def test_resource_grants_fanout_uses_marketplace_plugins(store_engine):
     assert n == 1
     assert grants.has_grant([g["id"]], "marketplace_plugin", "m1/p1")
     assert not grants.has_grant([g["id"]], "marketplace_plugin", "m1/p2")
+    # Idempotent re-run grants nothing new — the count must be 0, not 1. The
+    # ON CONFLICT DO NOTHING path must report via rowcount, not unconditionally,
+    # so the PG count stays accurate (parity with DuckDB's ConstraintException
+    # skip).
+    assert grants.fanout_system_for_group(g["id"], assigned_by="admin") == 0
 
 
 # ---------------------------------------------------------------------------

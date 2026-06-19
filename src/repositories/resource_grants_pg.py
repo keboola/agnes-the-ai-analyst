@@ -327,7 +327,7 @@ class ResourceGrantsPgRepository:
             resource_id = f"{marketplace_id}/{plugin_name}"
             try:
                 with self._engine.begin() as conn:
-                    conn.execute(
+                    result = conn.execute(
                         sa.text(
                             """INSERT INTO resource_grants
                                (id, group_id, resource_type, resource_id, assigned_by)
@@ -342,7 +342,14 @@ class ResourceGrantsPgRepository:
                             "ab": assigned_by,
                         },
                     )
-                    inserted += 1
+                    # ON CONFLICT DO NOTHING suppresses the duplicate (no
+                    # exception raised), so a pre-existing grant yields
+                    # rowcount 0. Count only real inserts — otherwise the
+                    # diagnostic return value over-reports newly-granted groups
+                    # on every idempotent re-run. Matches the DuckDB sibling,
+                    # which relies on a ConstraintException to skip the bump.
+                    if result.rowcount:
+                        inserted += 1
             except IntegrityError:
                 continue
         return inserted

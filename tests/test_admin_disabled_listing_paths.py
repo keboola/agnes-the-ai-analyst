@@ -262,3 +262,44 @@ def test_disabled_plugin_drops_from_v2_skills_admin(tmp_path, monkeypatch):
     assert (slug, plugin) not in _names()
 
     conn.close()
+
+
+def test_fanout_system_for_group_count_is_idempotent(tmp_path, monkeypatch):
+    """fanout_system_for_group returns the number of grants NEWLY inserted, so
+    a re-run over an already-granted group returns 0 — not the full system
+    plugin count. Pins the accurate-count contract both backends must share
+    (the PG sibling counts via rowcount under ON CONFLICT DO NOTHING; DuckDB
+    via a ConstraintException skip)."""
+    conn = _setup_conn(tmp_path)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: conn)
+
+    from datetime import datetime, timezone
+
+    from src.repositories.marketplace_plugins import MarketplacePluginsRepository
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.user_groups import UserGroupsRepository
+
+    slug = "mkt-cnt"
+    conn.execute(
+        "INSERT INTO marketplace_registry (id, name, url, registered_at) VALUES (?, ?, ?, ?)",
+        [slug, slug, f"https://example.test/{slug}.git", datetime(2026, 1, 1, tzinfo=timezone.utc)],
+    )
+    MarketplacePluginsRepository(conn).replace_for_marketplace(
+        slug, [{"name": "p1", "version": "1.0", "description": "x"}]
+    )
+    # Create the group BEFORE marking p1 system: UserGroupsRepository.create
+    # fans out the *currently* system plugins to the new group, so creating it
+    # first leaves the explicit fanout below as the sole grantor of p1.
+    group = UserGroupsRepository(conn).create(name="grp-cnt", created_by="test")
+    conn.execute(
+        "UPDATE marketplace_plugins SET is_system = TRUE WHERE marketplace_id = ?",
+        [slug],
+    )
+    grants = ResourceGrantsRepository(conn)
+    assert grants.fanout_system_for_group(group["id"], assigned_by="test") == 1
+    # Re-run: the grant already exists → nothing newly inserted (count is 0,
+    # not the full system-plugin count — the accurate-count contract).
+    assert grants.fanout_system_for_group(group["id"], assigned_by="test") == 0
+
+    conn.close()
