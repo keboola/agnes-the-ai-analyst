@@ -41,6 +41,26 @@ class ObservabilityViewsRepository:
             })
         return out
 
+    def count_for_user(self, user_id: str) -> int:
+        """Number of saved views for a user — backs the per-user view cap."""
+        return int(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM user_observability_views WHERE user_id = ?",
+                [user_id],
+            ).fetchone()[0]
+            or 0
+        )
+
+    def name_exists(self, user_id: str, name: str) -> bool:
+        """True iff this (user_id, name) view already exists (upsert target)."""
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM user_observability_views WHERE user_id = ? AND name = ?",
+                [user_id, name],
+            ).fetchone()
+            is not None
+        )
+
     def create(self, user_id: str, name: str, query: dict[str, Any]) -> dict[str, Any]:
         view_id = str(uuid.uuid4())
         # ON CONFLICT (user_id, name) DO UPDATE so re-saving the same name

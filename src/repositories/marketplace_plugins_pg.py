@@ -347,3 +347,14 @@ class MarketplacePluginsPgRepository:
                 {"m": marketplace_id},
             ).all()
         return [r[0] for r in rows]
+
+    def list_system_keys(self) -> List[Tuple[str, str]]:
+        """PG mirror of ``MarketplacePluginsRepository.list_system_keys``."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT marketplace_id, name FROM marketplace_plugins "
+                    "WHERE is_system = TRUE AND admin_disabled = FALSE"
+                )
+            ).all()
+        return [(r[0], r[1]) for r in rows]

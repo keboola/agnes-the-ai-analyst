@@ -495,6 +495,194 @@ class UsagePgRepository:
             return None
         return dict(zip(_KEYS, row))
 
+    def list_sessions_for_user_admin(self, *, user_id: str, username: str) -> List[dict]:
+        """PG mirror of UsageRepository.list_sessions_for_user_admin (9 cols)."""
+        cols = [
+            "session_file", "session_id", "started_at", "ended_at",
+            "active_seconds", "wall_seconds", "tool_calls", "tool_errors",
+            "primary_model",
+        ]
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """
+                    SELECT
+                        session_file, session_id, started_at, ended_at,
+                        active_seconds, wall_seconds,
+                        tool_calls, tool_errors, primary_model
+                    FROM usage_session_summary
+                    WHERE user_id = :uid OR username = :uname
+                    ORDER BY started_at DESC NULLS LAST
+                    """
+                ),
+                {"uid": user_id, "uname": username},
+            ).fetchall()
+        return [dict(zip(cols, r)) for r in rows]
+
+    def list_sessions_for_user_self(self, username: str) -> list[dict]:
+        """PG mirror of UsageRepository.list_sessions_for_user_self (14 cols)."""
+        cols = [
+            "session_file", "session_id", "started_at", "ended_at",
+            "active_seconds", "wall_seconds",
+            "user_messages", "tool_calls", "tool_errors",
+            "input_tokens", "output_tokens",
+            "cache_read_tokens", "cache_creation_tokens",
+            "primary_model",
+        ]
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """
+                    SELECT
+                        session_file, session_id, started_at, ended_at,
+                        active_seconds, wall_seconds,
+                        user_messages, tool_calls, tool_errors,
+                        input_tokens, output_tokens,
+                        cache_read_tokens, cache_creation_tokens,
+                        primary_model
+                    FROM usage_session_summary
+                    WHERE username = :uname
+                    ORDER BY started_at DESC NULLS LAST
+                    """
+                ),
+                {"uname": username},
+            ).fetchall()
+        return [dict(zip(cols, r)) for r in rows]
+
+    # ------------------------------------------------------------------
+    # per-user token breakdown reads (Postgres).  Mirrors UsageRepository.
+    # ------------------------------------------------------------------
+
+    def tokens_daily_series(self, username: str, days: int) -> list[dict]:
+        # PARITY: PG interval window mirrors delete_older_than's dialect.
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """
+                    SELECT
+                        CAST(started_at AS DATE) AS day,
+                        COALESCE(SUM(input_tokens), 0)          AS input_tokens,
+                        COALESCE(SUM(output_tokens), 0)         AS output_tokens,
+                        COALESCE(SUM(cache_read_tokens), 0)     AS cache_read,
+                        COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation,
+                        COUNT(*) AS sessions
+                    FROM usage_session_summary
+                    WHERE username = :uname
+                      AND started_at >= (CURRENT_TIMESTAMP - (:days * INTERVAL '1 day'))
+                    GROUP BY 1
+                    ORDER BY 1
+                    """
+                ),
+                {"uname": username, "days": days},
+            ).fetchall()
+        return [
+            {
+                "day": d.isoformat() if hasattr(d, "isoformat") else str(d),
+                "input": int(i or 0),
+                "output": int(o or 0),
+                "cache_read": int(cr or 0),
+                "cache_creation": int(cc or 0),
+                "sessions": int(s or 0),
+                "total": int((i or 0) + (o or 0) + (cr or 0) + (cc or 0)),
+            }
+            for (d, i, o, cr, cc, s) in rows
+        ]
+
+    def tokens_by_model(self, username: str) -> list[dict]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """
+                    SELECT
+                        COALESCE(primary_model, '(unknown)') AS model,
+                        COALESCE(SUM(input_tokens), 0)          AS input_tokens,
+                        COALESCE(SUM(output_tokens), 0)         AS output_tokens,
+                        COALESCE(SUM(cache_read_tokens), 0)     AS cache_read,
+                        COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation,
+                        COUNT(*) AS sessions
+                    FROM usage_session_summary
+                    WHERE username = :uname
+                    GROUP BY 1
+                    ORDER BY (
+                        COALESCE(SUM(input_tokens), 0)
+                        + COALESCE(SUM(output_tokens), 0)
+                        + COALESCE(SUM(cache_read_tokens), 0)
+                        + COALESCE(SUM(cache_creation_tokens), 0)
+                    ) DESC
+                    """
+                ),
+                {"uname": username},
+            ).fetchall()
+        return [
+            {
+                "model": m, "input": int(i or 0), "output": int(o or 0),
+                "cache_read": int(cr or 0), "cache_creation": int(cc or 0),
+                "sessions": int(s or 0),
+                "total": int((i or 0) + (o or 0) + (cr or 0) + (cc or 0)),
+            }
+            for (m, i, o, cr, cc, s) in rows
+        ]
+
+    def tokens_top_sessions(self, username: str, limit: int = 10) -> list[dict]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """
+                    SELECT
+                        session_file, session_id, started_at, primary_model,
+                        input_tokens, output_tokens,
+                        cache_read_tokens, cache_creation_tokens,
+                        (COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
+                         + COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0))
+                        AS tokens_total
+                    FROM usage_session_summary
+                    WHERE username = :uname
+                    ORDER BY tokens_total DESC
+                    LIMIT :lim
+                    """
+                ),
+                {"uname": username, "lim": limit},
+            ).fetchall()
+        return [
+            {
+                "session_file": sf,
+                "session_id": sid,
+                "started_at": st.isoformat() if hasattr(st, "isoformat") else st,
+                "primary_model": pm,
+                "input": int(i or 0), "output": int(o or 0),
+                "cache_read": int(cr or 0), "cache_creation": int(cc or 0),
+                "total": int(tt or 0),
+            }
+            for (sf, sid, st, pm, i, o, cr, cc, tt) in rows
+        ]
+
+    def tokens_totals(self, username: str) -> dict:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    """
+                    SELECT
+                        COALESCE(SUM(input_tokens), 0),
+                        COALESCE(SUM(output_tokens), 0),
+                        COALESCE(SUM(cache_read_tokens), 0),
+                        COALESCE(SUM(cache_creation_tokens), 0),
+                        COUNT(*)
+                    FROM usage_session_summary
+                    WHERE username = :uname
+                    """
+                ),
+                {"uname": username},
+            ).fetchone()
+        ti, to, tcr, tcc, tses = row or (0, 0, 0, 0, 0)
+        return {
+            "input": int(ti or 0),
+            "output": int(to or 0),
+            "cache_read": int(tcr or 0),
+            "cache_creation": int(tcc or 0),
+            "total": int((ti or 0) + (to or 0) + (tcr or 0) + (tcc or 0)),
+            "sessions": int(tses or 0),
+        }
+
     # ------------------------------------------------------------------
     # adoption dashboard reads (Postgres).  Mirrors UsageRepository.
     # ------------------------------------------------------------------
@@ -902,9 +1090,45 @@ class UsagePgRepository:
             rows = conn.execute(
                 sa.text(
                     "DELETE FROM usage_events "
-                    "WHERE occurred_at < (CURRENT_TIMESTAMP - (:days::TEXT || ' days')::INTERVAL) "
+                    "WHERE occurred_at < (CURRENT_TIMESTAMP - (:days * INTERVAL '1 day')) "
                     "RETURNING 1"
                 ),
                 {"days": days},
             ).all()
         return len(rows)
+
+    def count_events(self) -> int:
+        """Total usage_events row count."""
+        with self._engine.connect() as conn:
+            v = conn.execute(sa.text("SELECT COUNT(*) FROM usage_events")).scalar()
+        return int(v or 0)
+
+    def reset_all(self, *, clear_processors: "list[str] | None" = None) -> "dict[str, int]":
+        """PG mirror of UsageRepository.reset_all. Owns its own transaction via
+        engine.begin(); returns per-table deleted counts. When
+        ``clear_processors`` is given, the matching ``session_processor_state``
+        rows are deleted in the SAME transaction (reported under ``state_rows``)
+        so the reprocess reset is all-or-nothing — see the DuckDB sibling."""
+        out: dict[str, int] = {}
+        with self._engine.begin() as conn:
+            if clear_processors:
+                state_rows = conn.execute(
+                    sa.text(
+                        "DELETE FROM session_processor_state "
+                        "WHERE processor_name = ANY(:names) RETURNING 1"
+                    ),
+                    {"names": list(clear_processors)},
+                ).all()
+                out["state_rows"] = len(state_rows)
+            for key, table in (
+                ("events", "usage_events"),
+                ("session_summary", "usage_session_summary"),
+                ("tool_daily", "usage_tool_daily"),
+                ("marketplace_item_daily", "usage_marketplace_item_daily"),
+                ("marketplace_item_window", "usage_marketplace_item_window"),
+            ):
+                rows = conn.execute(
+                    sa.text(f"DELETE FROM {table} RETURNING 1")
+                ).all()
+                out[key] = len(rows)
+        return out

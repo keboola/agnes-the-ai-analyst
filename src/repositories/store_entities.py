@@ -712,6 +712,59 @@ class StoreEntitiesRepository:
         items = [self._row_to_dict(columns, r) for r in rows]
         return items, int(total)
 
+    def category_counts(
+        self,
+        *,
+        type: Optional[str] = None,
+        visibility_status: Optional[List[str]] = None,
+        owner_id: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Per-category entity counts for the Flea tab category rail.
+
+        Replicates the GROUP BY behind ``GET /api/marketplace/categories``
+        (``app/api/marketplace.py`` ``list_categories``): NULL / empty
+        ``category`` collapses into the synthetic ``'Other'`` bucket, and
+        the WHERE mirrors the listing endpoint so the counts match what the
+        grid actually shows.
+
+        Filters (all optional, combined with AND):
+        - ``type`` — restrict to one entity type.
+        - ``visibility_status`` — whitelist of visible guardrail states.
+          Admin callers pass ``None`` (count everything); non-admins pass
+          ``["approved"]``.
+        - ``owner_id`` — when set ALONGSIDE ``visibility_status``, the
+          visibility clause becomes ``(visibility_status IN (...) OR
+          (owner_user_id = ? AND visibility_status != 'archived'))`` so the
+          caller's own non-archived under-review uploads are counted too
+          (parity with the handler's non-admin branch + :meth:`list`).
+        """
+        clauses: List[str] = []
+        params: List[Any] = []
+        if type:
+            clauses.append("type = ?"); params.append(type)
+        if visibility_status:
+            placeholders = ",".join("?" for _ in visibility_status)
+            if owner_id:
+                clauses.append(
+                    f"(visibility_status IN ({placeholders}) "
+                    f"OR (owner_user_id = ? AND visibility_status != 'archived'))"
+                )
+                params.extend(visibility_status)
+                params.append(owner_id)
+            else:
+                clauses.append(f"visibility_status IN ({placeholders})")
+                params.extend(visibility_status)
+        elif owner_id:
+            clauses.append("owner_user_id = ?")
+            params.append(owner_id)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self.conn.execute(
+            f"SELECT COALESCE(NULLIF(TRIM(category),''), 'Other') AS cat, "
+            f"COUNT(*) FROM store_entities {where} GROUP BY cat",
+            params,
+        ).fetchall()
+        return {str(r[0]): int(r[1]) for r in rows}
+
     def bump_install_count(self, id: str, delta: int) -> None:
         """Adjust install_count by delta (signed). Floors at 0 — concurrent
         uninstall + delete races shouldn't push the number negative.

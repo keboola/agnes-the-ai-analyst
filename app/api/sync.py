@@ -31,6 +31,7 @@ from src.repositories import (
     sync_state_repo,
     table_registry_repo,
     usage_repo,
+    users_repo,
 )
 
 logger = logging.getLogger(__name__)
@@ -1246,10 +1247,7 @@ async def sync_manifest(
 
     if not isinstance(user, SessionPrincipal):
         try:
-            conn.execute(
-                "UPDATE users SET last_pull_at = current_timestamp WHERE id = ?",
-                [user["id"]],
-            )
+            users_repo().update(user["id"], last_pull_at=datetime.now(timezone.utc))
             # Also emit an audit_log row so /me/stats Sync activity has a
             # timeline of pulls (the column UPDATE only retains the most
             # recent one). Action `manifest.fetch` covers both `agnes pull`
