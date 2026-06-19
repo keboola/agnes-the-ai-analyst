@@ -29,6 +29,7 @@ from app.auth.dependencies import _get_db
 
 from src.repositories import (
     audit_repo,
+    usage_repo,
     users_repo,
 )
 
@@ -127,36 +128,13 @@ def list_user_sessions(
     # Match on both user_id (stable, v45+) and username (legacy) so the
     # admin view shows sessions from both ingestion paths and pre-v45 rows.
     try:
-        rows_db = conn.execute(
-            """
-            SELECT
-                session_file, session_id, started_at, ended_at,
-                active_seconds, wall_seconds,
-                tool_calls, tool_errors, primary_model
-            FROM usage_session_summary
-            WHERE user_id = ? OR username = ?
-            ORDER BY started_at DESC NULLS LAST
-            """,
-            [user_id, username],
-        ).fetchall()
+        rows_db = usage_repo().list_sessions_for_user_admin(user_id=user_id, username=username)
     except Exception:
         rows_db = []
 
     processed_files: dict[str, dict] = {}
     if rows_db:
-        cols = [
-            "session_file",
-            "session_id",
-            "started_at",
-            "ended_at",
-            "active_seconds",
-            "wall_seconds",
-            "tool_calls",
-            "tool_errors",
-            "primary_model",
-        ]
-        for r in rows_db:
-            d = dict(zip(cols, r))
+        for d in rows_db:
             # Normalise timestamps to ISO strings
             for k in ("started_at", "ended_at"):
                 v = d.get(k)
@@ -407,9 +385,7 @@ def list_user_activity(
     on the user_id field, returns paginated rows newest first.
     """
 
-    row = conn.execute("SELECT id, email FROM users WHERE id = ?", [user_id]).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="user not found")
+    _resolve_user(user_id, conn)
 
     audit = audit_repo()
     rows, _ = audit.query(user_id=user_id, limit=limit + offset)
@@ -429,7 +405,7 @@ def list_user_activity(
             except (ValueError, TypeError):
                 pass
 
-    total = conn.execute("SELECT COUNT(*) FROM audit_log WHERE user_id = ?", [user_id]).fetchone()[0]
+    total = audit_repo().count_for_user(user_id)
 
     try:
         audit_repo().log(

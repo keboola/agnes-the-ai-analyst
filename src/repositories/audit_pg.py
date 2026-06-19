@@ -219,6 +219,149 @@ class AuditPgRepository:
             result = conn.execute(sa.text(sql), params)
             return [dict(r._mapping) for r in result]
 
+    # -----------------------------------------------------------------
+    # aggregates — counts, governance feed, observability facets/KPIs
+    # -----------------------------------------------------------------
+    def count_for_user(self, user_id: str) -> int:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text("SELECT COUNT(*) FROM audit_log WHERE user_id = :user_id"),
+                {"user_id": user_id},
+            ).fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+    def query_governance(
+        self,
+        *,
+        action: Optional[str] = None,
+        prefixes: Tuple[str, ...] = ("corporate_memory.", "km_"),
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        p0, p1 = prefixes
+        if action:
+            sql = (
+                "SELECT * FROM audit_log WHERE action IN (:a0, :a1) "
+                "ORDER BY timestamp DESC, id DESC LIMIT :limit OFFSET :offset"
+            )
+            params: Dict[str, Any] = {
+                "a0": f"{p0}{action}",
+                "a1": f"{p1}{action}",
+                "limit": limit,
+                "offset": offset,
+            }
+        else:
+            sql = (
+                "SELECT * FROM audit_log "
+                "WHERE action LIKE :p0 OR action LIKE :p1 "
+                "ORDER BY timestamp DESC, id DESC LIMIT :limit OFFSET :offset"
+            )
+            params = {
+                "p0": f"{p0}%",
+                "p1": f"{p1}%",
+                "limit": limit,
+                "offset": offset,
+            }
+        with self._engine.connect() as conn:
+            result = conn.execute(sa.text(sql), params)
+            return [dict(r._mapping) for r in result]
+
+    def facets(
+        self,
+        *,
+        since: datetime,
+        scheduler_actions: list[str],
+        limit: int = 50,
+    ) -> "dict[str, list[dict]]":
+        with self._engine.connect() as conn:
+            users = conn.execute(
+                sa.text(
+                    "SELECT user_id AS id, COUNT(*) AS n FROM audit_log "
+                    "WHERE timestamp >= :since AND user_id IS NOT NULL "
+                    "GROUP BY user_id ORDER BY n DESC LIMIT :limit"
+                ),
+                {"since": since, "limit": limit},
+            ).fetchall()
+            actions = conn.execute(
+                sa.text(
+                    "SELECT action AS label, COUNT(*) AS n FROM audit_log "
+                    "WHERE timestamp >= :since AND action IS NOT NULL "
+                    "GROUP BY action ORDER BY n DESC LIMIT :limit"
+                ),
+                {"since": since, "limit": limit},
+            ).fetchall()
+            results = conn.execute(
+                sa.text(
+                    "SELECT COALESCE(result, '—') AS label, COUNT(*) AS n "
+                    "FROM audit_log WHERE timestamp >= :since "
+                    "GROUP BY result ORDER BY n DESC LIMIT :limit"
+                ),
+                {"since": since, "limit": limit},
+            ).fetchall()
+            resources = conn.execute(
+                sa.text(
+                    "SELECT resource AS label, COUNT(*) AS n FROM audit_log "
+                    "WHERE timestamp >= :since AND resource IS NOT NULL "
+                    "GROUP BY resource ORDER BY n DESC LIMIT :limit"
+                ),
+                {"since": since, "limit": limit},
+            ).fetchall()
+            source_rows = conn.execute(
+                sa.text(
+                    """
+                    SELECT
+                      CASE
+                        WHEN client_kind IS NOT NULL AND client_kind != '' THEN client_kind
+                        WHEN action IN :sched THEN 'scheduler'
+                        WHEN user_id IS NULL THEN 'system'
+                        ELSE 'other'
+                      END AS src,
+                      COUNT(*) AS n
+                    FROM audit_log WHERE timestamp >= :since
+                    GROUP BY src ORDER BY n DESC LIMIT :limit
+                    """
+                ).bindparams(sa.bindparam("sched", expanding=True)),
+                {"since": since, "limit": limit, "sched": list(scheduler_actions)},
+            ).fetchall()
+        return {
+            "users":     [{"id": r[0], "count": r[1]} for r in users],
+            "actions":   [{"value": r[0], "count": r[1]} for r in actions],
+            "results":   [{"value": r[0], "count": r[1]} for r in results],
+            "resources": [{"value": r[0], "count": r[1]} for r in resources],
+            "sources":   [{"value": r[0], "count": r[1]} for r in source_rows],
+        }
+
+    def kpis(self, *, since: datetime) -> "dict[str, Any]":
+        """Headline KPIs over the window: events, active users, errors, p95.
+
+        ``p95`` uses Postgres' exact ``percentile_cont`` (the DuckDB sibling
+        uses ``approx_quantile`` — ``approx_quantile`` does not exist on PG, so
+        results may differ within tolerance). The error-rate ratio is left to
+        the caller.
+        """
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    """
+                    SELECT
+                      COUNT(*) AS events_total,
+                      COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL) AS active_users,
+                      COUNT(*) FILTER (WHERE result IS NOT NULL AND result LIKE 'error%') AS errors,
+                      CAST(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS INTEGER) AS p95
+                    FROM audit_log WHERE timestamp >= :since
+                    """
+                ),
+                {"since": since},
+            ).fetchone()
+        if row is None:
+            return {"events_total": 0, "active_users": 0, "errors": 0, "p95": None}
+        return {
+            "events_total": int(row[0] or 0),
+            "active_users": int(row[1] or 0),
+            "errors": int(row[2] or 0),
+            "p95": int(row[3]) if row[3] is not None else None,
+        }
+
 
 def _json_param(v: Optional[dict]) -> Optional[str]:
     """Serialize dict to JSON text for the ``CAST(:p AS JSONB)`` bind.

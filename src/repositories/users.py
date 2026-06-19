@@ -35,6 +35,23 @@ class UserRepository:
         ).fetchall()
         return {r[0]: r[1] for r in rows}
 
+    def get_info_by_ids(self, user_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Bulk map ``user_id → {'email', 'name'}`` for the given ids. Missing
+        rows are absent from the dict; an empty input returns ``{}``. Wider
+        sibling of :meth:`get_by_ids` (which returns only ``{id: email}``) used
+        by callers that need a readable label (``name <email>``) — previously a
+        raw ``SELECT id, email, name ... WHERE id IN (...)`` on a system
+        connection (app/api/activity.py); routing through the factory keeps the
+        read on the active backend."""
+        ids = list(user_ids)
+        if not ids:
+            return {}
+        placeholders = ",".join(["?"] * len(ids))
+        rows = self.conn.execute(
+            f"SELECT id, email, name FROM users WHERE id IN ({placeholders})", ids
+        ).fetchall()
+        return {r[0]: {"email": r[1], "name": r[2]} for r in rows}
+
     def get_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         result = self.conn.execute("SELECT * FROM users WHERE email = ?", [email]).fetchone()
         return self._row_to_dict(result)

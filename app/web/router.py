@@ -54,6 +54,7 @@ from src.repositories import (
     usage_repo,
     user_group_members_repo,
     user_groups_repo,
+    user_stack_subscriptions_repo,
     users_repo,
 )
 from src.connectors_manifest import load_manifest
@@ -803,9 +804,7 @@ async def dashboard(
     # /catalog and are excluded from the headline counter. Columns + size
     # come from sync_state, which is the canonical source for "what's
     # actually on disk locally".
-    total_tables = conn.execute(
-        "SELECT COUNT(*) FROM table_registry WHERE COALESCE(source_type, '') != 'internal'"
-    ).fetchone()[0]
+    total_tables = table_registry_repo().count_non_internal()
     total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
     total_columns = sum(s.get("columns", 0) or 0 for s in all_states)
     total_size_bytes = sum(s.get("file_size_bytes", 0) or 0 for s in all_states)
@@ -1222,9 +1221,7 @@ async def catalog(
     # only — the agnes_* internal rows aren't analyst-facing.
     total_registered_tables = 0
     try:
-        total_registered_tables = conn.execute(
-            "SELECT COUNT(*) FROM table_registry WHERE COALESCE(source_type, '') != 'internal'"
-        ).fetchone()[0]
+        total_registered_tables = table_registry_repo().count_non_internal()
     except Exception:
         total_registered_tables = 0
 
@@ -1293,12 +1290,8 @@ async def catalog_package_detail(
     resolver = StackResolver(conn)
     effective_required = resolver.is_required(user["id"], ResourceType.DATA_PACKAGE, pkg["id"])
     # In-stack iff required OR a subscription row exists.
-    in_stack = effective_required or bool(
-        conn.execute(
-            "SELECT 1 FROM user_stack_subscriptions "
-            "WHERE user_id = ? AND resource_type = 'data_package' AND resource_id = ?",
-            [user["id"], pkg["id"]],
-        ).fetchone()
+    in_stack = effective_required or user_stack_subscriptions_repo().is_subscribed(
+        user["id"], ResourceType.DATA_PACKAGE.value, pkg["id"]
     )
 
     # Hydrate tables with query_mode + last_sync + v56 extended docs.
@@ -1670,14 +1663,7 @@ async def corporate_memory(
     try:
         for d in domains_repo.list(limit=10000):
             summaries = domains_repo.list_items_of_domain(d["id"], limit=10000)
-            item_ids = [s["id"] for s in summaries]
-            required = 0
-            if item_ids:
-                placeholders = ",".join(["?"] * len(item_ids))
-                required = conn.execute(
-                    f"SELECT COUNT(*) FROM knowledge_items WHERE id IN ({placeholders}) AND is_required = TRUE",
-                    item_ids,
-                ).fetchone()[0]
+            required = sum(1 for s in summaries if s.get("is_required"))
             dom_meta[d["id"]] = {
                 "items_count": len(summaries),
                 "required_count": required,
@@ -1735,7 +1721,7 @@ async def corporate_memory(
     pending_count = 0
     if is_admin_view:
         try:
-            pending_count = conn.execute("SELECT COUNT(*) FROM knowledge_items WHERE status = 'pending'").fetchone()[0]
+            pending_count = repo.count_items(statuses=["pending"])
         except Exception:
             pending_count = 0
 
@@ -1790,12 +1776,8 @@ async def memory_domain_detail(
 
     resolver = StackResolver(conn)
     effective_required = resolver.is_required(user["id"], ResourceType.MEMORY_DOMAIN, domain["id"])
-    in_stack = effective_required or bool(
-        conn.execute(
-            "SELECT 1 FROM user_stack_subscriptions "
-            "WHERE user_id = ? AND resource_type = 'memory_domain' AND resource_id = ?",
-            [user["id"], domain["id"]],
-        ).fetchone()
+    in_stack = effective_required or user_stack_subscriptions_repo().is_subscribed(
+        user["id"], ResourceType.MEMORY_DOMAIN.value, domain["id"]
     )
 
     # Hydrate items with votes + contributors + dismissed-by-me + tags.
@@ -3164,20 +3146,10 @@ async def admin_store_submission_detail_page(
                         history_by_sub[sid] = int(entry.get("n"))
                     except (TypeError, ValueError):
                         continue
-            # Direct query — list_for_admin doesn't filter by entity_id
-            # and we don't want to add a parameter for this one display
-            # need. Order by created_at DESC so newest is first in the
-            # switcher.
-            ent_sub_rows = [
-                dict(zip(["id", "status", "version", "created_at", "reviewed_by_model"], row))
-                for row in conn.execute(
-                    "SELECT id, status, version, created_at, reviewed_by_model "
-                    "FROM store_submissions "
-                    "WHERE entity_id = ? "
-                    "ORDER BY created_at DESC",
-                    [sub["entity_id"]],
-                ).fetchall()
-            ]
+            # list_for_admin doesn't filter by entity_id and we don't want
+            # to add a parameter for this one display need. list_for_entity
+            # orders by created_at DESC so newest is first in the switcher.
+            ent_sub_rows = store_submissions_repo().list_for_entity(sub["entity_id"])
             for row in ent_sub_rows:
                 sibling_submissions.append(
                     {
@@ -3348,17 +3320,7 @@ async def profile_page(
     against ``user_groups`` (with the source label so users can tell which
     were added by an admin, by Google sync, or seeded at deploy).
     """
-    rows = conn.execute(
-        """SELECT g.id, g.name, g.description, g.is_system, g.created_by,
-                  m.source, m.added_at
-           FROM user_group_members m
-           JOIN user_groups g ON g.id = m.group_id
-           WHERE m.user_id = ?
-           ORDER BY g.is_system DESC, g.name""",
-        [user["id"]],
-    ).fetchall()
-    cols = [d[0] for d in conn.description]
-    memberships = [dict(zip(cols, r)) for r in rows]
+    memberships = user_group_members_repo().list_groups_with_meta_for_user(user["id"])
     # Project the same chip metadata the /admin/users/{id} page derives:
     # origin (single source of truth via app.api.access._derive_origin),
     # plus a display_name that shortens raw Workspace emails for
@@ -3425,20 +3387,18 @@ async def me_profile_refetch_groups(
     else:
         relevant = [g.lower() for g in fetched_list]
 
-    has_ext = conn.execute(
-        "SELECT 1 FROM information_schema.columns WHERE table_name = 'user_groups' AND column_name = 'external_id'"
-    ).fetchone()
-    select_ext = "g.external_id" if has_ext else "NULL"
-    current_rows = conn.execute(
-        f"""SELECT g.name, {select_ext} AS external_id
-              FROM user_group_members m
-              JOIN user_groups g ON g.id = m.group_id
-             WHERE m.user_id = ? AND m.source = 'google_sync'
-             ORDER BY g.name""",
-        [user["id"]],
-    ).fetchall()
-    current_external_ids = {r[1].lower() for r in current_rows if r[1]}
-    current_names = [r[0] for r in current_rows]
+    current_rows = user_group_members_repo().list_google_sync_groups_for_user(user["id"])
+    # The repo abstracts the information_schema external_id probe: rows carry
+    # external_id=None when the column is absent (Postgres, or DuckDB without
+    # the column). `has_ext` mirrors the old probe — when no row carries a
+    # non-NULL external_id we suppress would_remove exactly as the legacy
+    # column-absent branch did (current_external_ids is empty in that case
+    # anyway, so the diff is identical across backends).
+    has_ext = any(r.get("external_id") for r in current_rows)
+    current_external_ids = {
+        r["external_id"].lower() for r in current_rows if r.get("external_id")
+    }
+    current_names = [r["name"] for r in current_rows]
 
     fetched_set = set(relevant)
     would_add = sorted(fetched_set - current_external_ids)

@@ -285,6 +285,20 @@ class TableRegistryPgRepository:
             rows = conn.execute(sa.text("SELECT * FROM table_registry ORDER BY name")).mappings().all()
         return [self._decode_row(dict(r)) for r in rows]
 
+    def count_non_internal(self) -> int:
+        """Count registered business tables, excluding internal source rows.
+
+        ``source_type='internal'`` rows (agnes_* tables) live in their own
+        card on /catalog and are excluded from the headline counter on the
+        dashboard + the catalog empty-state hint. NULL ``source_type`` is
+        treated as non-internal (COALESCE to '').
+        """
+        with self._engine.connect() as conn:
+            result = conn.execute(
+                sa.text("SELECT COUNT(*) FROM table_registry WHERE COALESCE(source_type, '') != 'internal'")
+            ).scalar()
+        return int(result) if result is not None else 0
+
     def list_by_source(self, source_type: str) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
             rows = (

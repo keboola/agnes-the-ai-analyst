@@ -150,3 +150,22 @@ class SyncStatePgRepository:
                 ),
                 {"t": table_id},
             )
+
+    def clear_for_table(self, table_id: str) -> int:
+        """Drop all sync_state + sync_history rows for `table_id`, returning
+        the number of sync_state rows removed.
+
+        Mirrors ``SyncStateRepository.clear_for_table``. Both deletes run in
+        one transaction; the returned count is the sync_state delete's
+        rowcount.
+        """
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("DELETE FROM sync_history WHERE table_id = :t"),
+                {"t": table_id},
+            )
+            result = conn.execute(
+                sa.text("DELETE FROM sync_state WHERE table_id = :t"),
+                {"t": table_id},
+            )
+        return result.rowcount

@@ -63,6 +63,76 @@ class SessionProcessorStatePgRepository:
                 },
             )
 
+    def delete_for_processors(self, processor_names: list[str]) -> int:
+        """DELETE every state row whose processor_name is in *processor_names*.
+        Returns the number of rows deleted. Empty input → 0 (no query).
+
+        Mirrors the DuckDB sibling — count via ``RETURNING 1`` + ``.all()`` for
+        cross-backend parity."""
+        if not processor_names:
+            return 0
+        with self._engine.begin() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """DELETE FROM session_processor_state
+                       WHERE processor_name = ANY(:names)
+                       RETURNING 1"""
+                ),
+                {"names": list(processor_names)},
+            ).all()
+        return len(rows)
+
+    def max_processed_at(self, processor_name: str) -> "datetime | None":
+        """Most recent processed_at across all session rows for *processor_name*,
+        or None if the processor has no state rows."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    "SELECT MAX(processed_at) FROM session_processor_state "
+                    "WHERE processor_name = :p"
+                ),
+                {"p": processor_name},
+            ).first()
+        return row[0] if row else None
+
+    def processed_session_files(self, processor_name: str) -> "set[str]":
+        """The set of session_file values this processor has a state row for."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT session_file FROM session_processor_state "
+                    "WHERE processor_name = :p"
+                ),
+                {"p": processor_name},
+            ).all()
+        return {r[0] for r in rows}
+
+    def get_states_for_session_files(
+        self,
+        processor_name: str,
+        session_files: list[str],
+    ) -> "dict[str, dict]":
+        """For *processor_name*, return ``{session_file: {'processed_at': ...,
+        'items_extracted': ...}}`` for each of *session_files* that has a state
+        row. Empty input → ``{}``."""
+        if not session_files:
+            return {}
+        stmt = sa.text(
+            """SELECT session_file, processed_at, items_extracted
+               FROM session_processor_state
+               WHERE processor_name = :p
+                 AND session_file IN :files"""
+        ).bindparams(sa.bindparam("files", expanding=True))
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                stmt,
+                {"p": processor_name, "files": list(session_files)},
+            ).all()
+        return {
+            r[0]: {"processed_at": r[1], "items_extracted": r[2]}
+            for r in rows
+        }
+
     def scan_unprocessed_for(
         self,
         processor_name: str,

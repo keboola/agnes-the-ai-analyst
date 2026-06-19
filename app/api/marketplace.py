@@ -1265,24 +1265,19 @@ async def list_categories(
         # category counts match what the user actually sees in the
         # grid). Admin counts everything.
         from app.auth.access import is_user_admin
-        clauses: List[str] = []
-        sql_params: List[Any] = []
-        if type:
-            clauses.append("type = ?"); sql_params.append(type)
-        if not is_user_admin(user["id"], conn):
-            clauses.append(
-                "(visibility_status = 'approved' "
-                "OR (owner_user_id = ? AND visibility_status != 'archived'))"
+        if is_user_admin(user["id"], conn):
+            # Admin counts everything — no visibility / owner filter.
+            cat_counts = store_entities_repo().category_counts(type=type)
+        else:
+            # Non-admin: approved for everyone, plus own non-archived
+            # non-approved (mirrors the listing endpoint's visibility).
+            cat_counts = store_entities_repo().category_counts(
+                type=type,
+                visibility_status=["approved"],
+                owner_id=user["id"],
             )
-            sql_params.append(user["id"])
-        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        rows = conn.execute(
-            f"SELECT COALESCE(NULLIF(TRIM(category),''), 'Other') AS cat, COUNT(*) "
-            f"FROM store_entities {where_sql} GROUP BY cat",
-            sql_params,
-        ).fetchall()
-        for r in rows:
-            counts[str(r[0])] = counts.get(str(r[0]), 0) + int(r[1])
+        for cat, n in cat_counts.items():
+            counts[str(cat)] = counts.get(str(cat), 0) + int(n)
 
     items = [
         CategoryEntry(name=name, count=count, icon_key=_icon_key_for(name))
