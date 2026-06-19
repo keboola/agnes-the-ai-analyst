@@ -369,7 +369,6 @@ _GRANDFATHERED_DEPENDS_GET_DB_RAW_SQL: dict[str, set[str]] = {
     "app/api/chat_copresence.py": {"invite"},
     "app/api/health.py": {"health_check_detailed"},
     "app/api/marketplace.py": {"list_categories"},
-    "app/api/marketplaces.py": {"mark_plugin_system", "unmark_plugin_system"},
     "app/api/me_stats.py": {"get_tokens", "list_self_sessions", "list_self_sync_activity"},
     "app/api/memory.py": {"admin_audit", "admin_patch_item"},
     "app/api/my_stack.py": {"get_my_stack", "toggle_curated"},

@@ -33,6 +33,7 @@ from src.repositories import (
     marketplace_registry_repo,
     resource_grants_repo,
     user_curated_subscriptions_repo,
+    user_groups_repo,
 )
 
 logger = logging.getLogger(__name__)
@@ -573,46 +574,42 @@ def mark_plugin_system(
     that slipped past the creation hooks gets caught up.
     """
 
-    plugin_row = conn.execute(
-        "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    ).fetchone()
-    if not plugin_row:
+    # Existence check + is_system flip routed through the factory so they hit
+    # the ACTIVE backend (PG / DuckDB). A raw conn.execute on the
+    # Depends(_get_db) connection runs against the always-DuckDB system file and
+    # silently no-ops on a Postgres instance (#518 backend-split): the SELECT
+    # would 404 a plugin that only exists in PG, and the UPDATE would never
+    # persist is_system. set_system returns False when no row matched.
+    if not marketplace_plugins_repo().set_system(marketplace_id, plugin_name, True):
         raise HTTPException(status_code=404, detail="plugin not found")
 
     resource_id = f"{marketplace_id}/{plugin_name}"
     affected_groups = 0
     affected_users = 0
 
-    conn.execute(
-        "UPDATE marketplace_plugins SET is_system = TRUE WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    )
-
-    # Pivot fanout: this plugin × every group / every user. We
-    # intentionally do NOT wrap the loop in a single BEGIN/COMMIT —
-    # DuckDB aborts the whole transaction on a ConstraintException, so
-    # an idempotent re-run (where most rows are duplicates) would die
-    # on the very first existing grant. Each row stands alone here:
-    # duplicate grants raise ConstraintException which we swallow
-    # (mirrors ``ON CONFLICT DO NOTHING`` semantics without DuckDB
-    # multi-target conflict resolution); duplicate subscriptions go
-    # through DuckDB's ON CONFLICT on the PK, which is well-supported.
-    # Partial-application is safe: a re-run completes the remainder.
-    groups = conn.execute("SELECT id FROM user_groups").fetchall()
+    # Pivot fanout: this plugin × every group / every user, through the repo
+    # factory. user_groups lives in the active backend, so the raw
+    # "SELECT id FROM user_groups" on the DuckDB conn read the wrong (frozen)
+    # group set on Postgres. ensure_grant is INSERT-OR-IGNORE / ON-CONFLICT-DO-
+    # NOTHING on both engines, so an idempotent re-run is cheap and never raises
+    # on a duplicate (the old code caught DuckDB's ConstraintException, which a
+    # Postgres IntegrityError would have slipped past). has_grant before the
+    # ensure keeps affected_groups meaning "newly granted"; user_groups is small.
     grants_repo = resource_grants_repo()
     actor_email = user.get("email") or user.get("id")
-    for (group_id,) in groups:
-        try:
-            grants_repo.create(
-                group_id=group_id,
-                resource_type=ResourceType.MARKETPLACE_PLUGIN.value,
-                resource_id=resource_id,
-                assigned_by=actor_email,
-            )
+    for group in user_groups_repo().list_all():
+        group_id = group["id"]
+        already = grants_repo.has_grant(
+            [group_id], ResourceType.MARKETPLACE_PLUGIN.value, resource_id
+        )
+        grants_repo.ensure_grant(
+            group_id,
+            ResourceType.MARKETPLACE_PLUGIN.value,
+            resource_id,
+            actor_email,
+        )
+        if not already:
             affected_groups += 1
-        except duckdb.ConstraintException:
-            continue
 
     affected_users = user_curated_subscriptions_repo().fanout_system_for_plugin(
         marketplace_id,
@@ -652,17 +649,11 @@ def unmark_plugin_system(
     (which immediately unlocks the checkboxes for this plugin) and
     users can unsubscribe normally on /marketplace?tab=my.
     """
-    plugin_row = conn.execute(
-        "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    ).fetchone()
-    if not plugin_row:
+    # Routed through the factory so the flip lands on the active backend — a
+    # raw UPDATE on the Depends(_get_db) DuckDB conn no-ops on Postgres
+    # (#518 backend-split). set_system returns False when no row matched.
+    if not marketplace_plugins_repo().set_system(marketplace_id, plugin_name, False):
         raise HTTPException(status_code=404, detail="plugin not found")
-
-    conn.execute(
-        "UPDATE marketplace_plugins SET is_system = FALSE WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    )
     _audit(
         conn,
         user["id"],

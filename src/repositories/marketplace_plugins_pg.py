@@ -345,6 +345,20 @@ class MarketplacePluginsPgRepository:
             result = conn.execute(sa.text(sql), {"m": marketplace_id, "n": plugin_name})
         return result.rowcount > 0
 
+    def set_system(self, marketplace_id: str, plugin_name: str, system: bool) -> bool:
+        """PG sibling of the DuckDB ``set_system`` — toggle the per-plugin
+        ``is_system`` flag. Returns True when the row existed and was updated,
+        False when the (marketplace_id, plugin_name) pair is not present."""
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                sa.text(
+                    "UPDATE marketplace_plugins SET is_system = :s "
+                    "WHERE marketplace_id = :m AND name = :n"
+                ),
+                {"s": system, "m": marketplace_id, "n": plugin_name},
+            )
+        return result.rowcount > 0
+
     def list_admin_disabled(self, marketplace_id: str) -> List[str]:
         """Return the names of plugins that have admin_disabled=TRUE for a marketplace."""
         with self._engine.connect() as conn:

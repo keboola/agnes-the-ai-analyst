@@ -511,3 +511,40 @@ class TestAdminDisabled:
         repos["plugins"].set_admin_disabled("mp-d5", "pb", True)
         disabled = repos["plugins"].list_admin_disabled("mp-d5")
         assert disabled == ["pb"]
+
+
+class TestSetSystem:
+    """Contract tests for marketplace_plugins.set_system — the is_system flip
+    behind the mark/unmark_system endpoints. Pins the cross-backend behaviour
+    so a Postgres instance persists the flag (the bug: the endpoints used to
+    UPDATE on the raw DuckDB _get_db conn, a no-op on PG)."""
+
+    def test_set_system_true_then_false(self, repos):
+        _seed_registry(repos, "mp-sys-a", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _seed_plugin(repos, "mp-sys-a", "plug")
+        # default
+        row = repos["plugins"].get("mp-sys-a", "plug")
+        assert bool(row.get("is_system")) is False
+        # mark
+        assert repos["plugins"].set_system("mp-sys-a", "plug", True) is True
+        row = repos["plugins"].get("mp-sys-a", "plug")
+        assert bool(row.get("is_system")) is True
+        # unmark
+        assert repos["plugins"].set_system("mp-sys-a", "plug", False) is True
+        row = repos["plugins"].get("mp-sys-a", "plug")
+        assert bool(row.get("is_system")) is False
+
+    def test_set_system_nonexistent_returns_false(self, repos):
+        assert repos["plugins"].set_system("no-market", "no-plug", True) is False
+
+    def test_set_system_does_not_touch_admin_disabled(self, repos):
+        """Marking/unmarking system is orthogonal to admin_disabled — the flip
+        must not clear or set the disable flag."""
+        _seed_registry(repos, "mp-sys-b", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _seed_plugin(repos, "mp-sys-b", "plug")
+        repos["plugins"].set_admin_disabled("mp-sys-b", "plug", True)
+        repos["plugins"].set_system("mp-sys-b", "plug", True)
+        row = repos["plugins"].get("mp-sys-b", "plug")
+        assert row is not None
+        assert bool(row.get("is_system")) is True
+        assert bool(row.get("admin_disabled")) is True
