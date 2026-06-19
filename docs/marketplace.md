@@ -63,6 +63,14 @@ it), and the disabled state survives nightly sync and the built-in re-seed on
 boot (the `replace_for_marketplace` upsert never resets `admin_disabled`), so a
 disabled plugin stays disabled across restarts.
 
+Because a disabled plugin is also hidden from the `/admin/access` grant UI, its
+existing `resource_grants` rows are preserved but not editable there while it is
+disabled — they are inert (the plugin is filtered out of every served surface
+regardless of grants) and are restored intact on re-enable. To revoke them
+permanently, re-enable the plugin, revoke on `/admin/access`, then disable again
+if still wanted. This is deliberate: "disabled" means invisible everywhere
+except the re-enable control, not "grants deleted".
+
 On-disk layout in the served ZIP / git tree uses a slug-prefixed directory
 (`plugins/<slug>-<plugin>/`) so two marketplaces shipping a same-named plugin
 don't overwrite each other's files. The synth marketplace.json's `name` field,
