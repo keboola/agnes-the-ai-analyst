@@ -1011,15 +1011,29 @@ class UsageRepository:
         """Total usage_events row count."""
         return int(self.conn.execute("SELECT COUNT(*) FROM usage_events").fetchone()[0] or 0)
 
-    def reset_all(self) -> "dict[str, int]":
-        """Wipe all usage fact + rollup tables, returning per-table deleted
-        counts. Owns its own transaction. Source: app/api/admin_usage.py
-        reprocess_usage (the 5 usage-table DELETEs; the
-        session_processor_state DELETE stays in the handler — it is not a
-        usage table)."""
+    def reset_all(self, *, clear_processors: "list[str] | None" = None) -> "dict[str, int]":
+        """Wipe all usage fact + rollup tables in ONE transaction, returning
+        per-table deleted counts.
+
+        When ``clear_processors`` is given, the matching
+        ``session_processor_state`` checkpoint rows are deleted in the SAME
+        transaction (reported under ``state_rows``). This keeps the
+        ``reprocess_usage`` admin reset all-or-nothing: clearing the rollups
+        without their processor checkpoints (or vice-versa) would leave the
+        scheduler inconsistent. ``session_processor_state`` isn't a usage table,
+        but it IS the checkpoint for the usage processors, so resetting both
+        together is a cohesive usage-domain operation."""
         out: dict[str, int] = {}
         self.conn.execute("BEGIN")
         try:
+            if clear_processors:
+                placeholders = ",".join("?" for _ in clear_processors)
+                state_deleted = self.conn.execute(
+                    f"DELETE FROM session_processor_state "
+                    f"WHERE processor_name IN ({placeholders}) RETURNING 1",
+                    list(clear_processors),
+                ).fetchall()
+                out["state_rows"] = len(state_deleted)
             for key, table in (
                 ("events", "usage_events"),
                 ("session_summary", "usage_session_summary"),

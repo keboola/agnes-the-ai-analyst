@@ -36,7 +36,6 @@ from connectors.llm.exceptions import (
 
 from src.repositories import (
     audit_repo,
-    session_processor_state_repo,
     usage_repo,
 )
 from src.usage_ask import (
@@ -367,11 +366,13 @@ def reprocess_usage(
     """
     counts = {}
     try:
-        state_cleared = session_processor_state_repo().delete_for_processors(
-            ["usage", "marketplace_rollup_30d"]
+        # Single atomic reset: the usage rollups AND the matching processor
+        # checkpoints are cleared in one transaction so a failure can't leave
+        # the scheduler half-reset (processor state gone, usage data retained).
+        reset = usage_repo().reset_all(
+            clear_processors=["usage", "marketplace_rollup_30d"]
         )
-        reset = usage_repo().reset_all()
-        counts["state_rows"] = state_cleared
+        counts["state_rows"] = reset["state_rows"]
         counts["events"] = reset["events"]
         counts["summaries"] = reset["session_summary"]
         counts["tool_daily"] = reset["tool_daily"]

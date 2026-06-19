@@ -1103,11 +1103,23 @@ class UsagePgRepository:
             v = conn.execute(sa.text("SELECT COUNT(*) FROM usage_events")).scalar()
         return int(v or 0)
 
-    def reset_all(self) -> "dict[str, int]":
-        """PG mirror of UsageRepository.reset_all. Owns its own transaction
-        via engine.begin(); returns per-table deleted counts."""
+    def reset_all(self, *, clear_processors: "list[str] | None" = None) -> "dict[str, int]":
+        """PG mirror of UsageRepository.reset_all. Owns its own transaction via
+        engine.begin(); returns per-table deleted counts. When
+        ``clear_processors`` is given, the matching ``session_processor_state``
+        rows are deleted in the SAME transaction (reported under ``state_rows``)
+        so the reprocess reset is all-or-nothing — see the DuckDB sibling."""
         out: dict[str, int] = {}
         with self._engine.begin() as conn:
+            if clear_processors:
+                state_rows = conn.execute(
+                    sa.text(
+                        "DELETE FROM session_processor_state "
+                        "WHERE processor_name = ANY(:names) RETURNING 1"
+                    ),
+                    {"names": list(clear_processors)},
+                ).all()
+                out["state_rows"] = len(state_rows)
             for key, table in (
                 ("events", "usage_events"),
                 ("session_summary", "usage_session_summary"),

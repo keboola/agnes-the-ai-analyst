@@ -11,7 +11,7 @@ the repo's own write methods (upsert_summary / upsert_events).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -120,6 +120,32 @@ def _seed_event(repo, *, event_id, username, session_file, occurred_at,
     )
 
 
+def _seed_processor_state(repo, processor_name, session_file="ps/s.jsonl"):
+    """Seed a session_processor_state checkpoint via that repo's own
+    mark_processed UPSERT (it knows the full schema, incl. NOT NULL columns).
+    reset_all's clear_processors path deletes these rows, so the contract test
+    needs a real row to delete."""
+    if hasattr(repo, "conn"):  # DuckDB
+        from src.repositories.session_processor_state import (
+            SessionProcessorStateRepository,
+        )
+
+        sps = SessionProcessorStateRepository(repo.conn)
+    else:  # Postgres
+        from src.repositories.session_processor_state_pg import (
+            SessionProcessorStatePgRepository,
+        )
+
+        sps = SessionProcessorStatePgRepository(repo._engine)
+    sps.mark_processed(
+        processor_name=processor_name,
+        session_file=session_file,
+        username="seed",
+        items_count=0,
+        file_hash="h",
+    )
+
+
 # ---------------------------------------------------------------------------
 # contract tests
 # ---------------------------------------------------------------------------
@@ -156,6 +182,31 @@ def test_reset_all_zeroes_tables_and_returns_counts(usage_repo):
     # Everything is gone.
     assert repo.count_events() == 0
     assert repo.list_sessions_for_user_self("bob") == []
+
+
+def test_reset_all_clear_processors_clears_state_and_usage_together(usage_repo):
+    """clear_processors deletes the matching session_processor_state rows in the
+    SAME transaction as the usage tables (the reprocess_usage atomicity fix),
+    scoped to the named processors only."""
+    repo, _, _ = usage_repo
+    now = datetime.now(timezone.utc)
+    _seed_event(repo, event_id="e1", username="bob", session_file="bob/s1.jsonl", occurred_at=now)
+    _seed_processor_state(repo, "usage", "bob/s1.jsonl")
+    _seed_processor_state(repo, "verification", "bob/s1.jsonl")  # must survive
+
+    counts = repo.reset_all(clear_processors=["usage", "marketplace_rollup_30d"])
+    # Only the 'usage' checkpoint matched (verification untouched, rollup absent).
+    assert counts["state_rows"] == 1
+    assert counts["events"] == 1
+    assert repo.count_events() == 0
+
+
+def test_reset_all_without_clear_processors_omits_state_rows(usage_repo):
+    """Default reset_all (no clear_processors) keeps its original 5-key shape —
+    no state_rows key — so existing callers/tests are unaffected."""
+    repo, _, _ = usage_repo
+    counts = repo.reset_all()
+    assert "state_rows" not in counts
 
 
 def test_list_sessions_for_user_admin_filters_on_user_id_or_username(usage_repo):
@@ -257,7 +308,44 @@ def test_tokens_daily_series_window(usage_repo):
     assert series[0]["sessions"] == 1
 
 
+def test_tokens_daily_series_filters_username_and_days(usage_repo):
+    """Pins the username + days predicates: an old same-user row (outside the
+    window) and a current other-user row must both be excluded, so the series
+    reflects only the requested user's in-window totals."""
+    repo, _, _ = usage_repo
+    now = datetime.now(timezone.utc)
+    _seed_summary(repo, session_file="ds/current.jsonl", username="grace",
+                  started_at=now - timedelta(days=5), input_tokens=5, output_tokens=5)
+    _seed_summary(repo, session_file="ds/old.jsonl", username="grace",
+                  started_at=now - timedelta(days=45), input_tokens=500, output_tokens=500)
+    _seed_summary(repo, session_file="ds/other.jsonl", username="heidi",
+                  started_at=now - timedelta(days=5), input_tokens=50, output_tokens=50)
+
+    series = repo.tokens_daily_series("grace", days=30)
+    assert len(series) == 1
+    assert series[0]["total"] == 10
+    assert series[0]["sessions"] == 1
+
+
 def test_delete_older_than_present_on_both_backends(usage_repo):
     repo, _, _ = usage_repo
     # Sanity: method exists + is callable (parity reused by prune_usage).
     assert repo.delete_older_than(3650) == 0
+
+
+def test_delete_older_than_removes_only_events_before_cutoff(usage_repo):
+    """Pins the retention prune semantics behind POST /api/admin/telemetry/prune:
+    rows older than the cutoff are deleted, recent rows survive, and the
+    returned count is the number actually removed — on both backends (guards the
+    dialect-specific interval arithmetic)."""
+    repo, _, _ = usage_repo
+    now = datetime.now(timezone.utc)
+    _seed_event(repo, event_id="old", username="alice",
+                session_file="retention/old.jsonl", occurred_at=now - timedelta(days=40))
+    _seed_event(repo, event_id="recent", username="alice",
+                session_file="retention/recent.jsonl", occurred_at=now - timedelta(days=5))
+
+    assert repo.delete_older_than(30) == 1
+    assert repo.count_events() == 1
+    # Idempotent: nothing left older than the cutoff.
+    assert repo.delete_older_than(30) == 0
