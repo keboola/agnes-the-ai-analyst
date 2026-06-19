@@ -528,3 +528,103 @@ def test_resync_preserves_is_system(tmp_path, monkeypatch):
     finally:
         conn.close()
         close_system_db()
+
+
+# ---------------------------------------------------------------------------
+# Disabled-plugin invariants at the HTTP boundary
+# ---------------------------------------------------------------------------
+
+
+def test_mark_system_rejected_when_disabled(web_client):
+    """A disabled plugin cannot be marked system (409). Disabling clears
+    is_system and re-enabling does not restore it, so the backend must reject
+    a mark on a disabled plugin — otherwise re-enable would resurrect it as a
+    mandatory default. The UI greys the button out, but this endpoint is the
+    real state boundary (direct API call / stale-modal race)."""
+    _seed_marketplace_with_plugin()
+    _, cookies = _create_user(web_client, "admin@x.com", admin=True)
+
+    dis = web_client.post(
+        "/api/marketplaces/mkt-x/plugins/alpha/disable", cookies=cookies,
+    )
+    assert dis.status_code == 200, dis.text
+
+    r = web_client.post(
+        "/api/marketplaces/mkt-x/plugins/alpha/system", cookies=cookies,
+    )
+    assert r.status_code == 409, r.text
+
+    from src.db import get_system_db
+    conn = get_system_db()
+    try:
+        row = conn.execute(
+            "SELECT is_system FROM marketplace_plugins "
+            "WHERE marketplace_id = 'mkt-x' AND name = 'alpha'"
+        ).fetchone()
+        assert not row[0], "is_system must stay false on a rejected mark"
+    finally:
+        conn.close()
+
+
+def test_get_plugins_exposes_admin_disabled(web_client):
+    """GET /plugins surfaces admin_disabled so the Details modal can render the
+    switch + DISABLED pill. The flag must move False -> True -> False across
+    disable / enable."""
+    _seed_marketplace_with_plugin()
+    _, cookies = _create_user(web_client, "admin@x.com", admin=True)
+
+    def _flag():
+        r = web_client.get("/api/marketplaces/mkt-x/plugins", cookies=cookies)
+        assert r.status_code == 200, r.text
+        row = next(p for p in r.json() if p["name"] == "alpha")
+        return row["admin_disabled"]
+
+    assert _flag() is False
+    web_client.post("/api/marketplaces/mkt-x/plugins/alpha/disable", cookies=cookies)
+    assert _flag() is True
+    web_client.post("/api/marketplaces/mkt-x/plugins/alpha/enable", cookies=cookies)
+    assert _flag() is False
+
+
+def test_delete_marketplace_cascades_through_factory(web_client):
+    """DELETE /api/marketplaces/{id} must remove the registry row AND cascade
+    the plugin rows, plugin grants, and subscriptions through the active
+    backend — the route-wiring layer of the backend-split fix, above the
+    per-repo contract tests."""
+    _seed_marketplace_with_plugin()
+    admin_id, cookies = _create_user(web_client, "admin@x.com", admin=True)
+    gid = _add_group("engineers")
+
+    from src.db import get_system_db
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.user_curated_subscriptions import (
+        UserCuratedSubscriptionsRepository,
+    )
+    conn = get_system_db()
+    try:
+        ResourceGrantsRepository(conn).ensure_grant(
+            gid, "marketplace_plugin", "mkt-x/alpha", "test",
+        )
+        UserCuratedSubscriptionsRepository(conn).subscribe(admin_id, "mkt-x", "alpha")
+    finally:
+        conn.close()
+
+    r = web_client.delete("/api/marketplaces/mkt-x", cookies=cookies)
+    assert r.status_code == 204, r.text
+
+    conn = get_system_db()
+    try:
+        assert conn.execute(
+            "SELECT 1 FROM marketplace_registry WHERE id = 'mkt-x'"
+        ).fetchone() is None, "registry row survived delete"
+        assert conn.execute(
+            "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = 'mkt-x'"
+        ).fetchone() is None, "plugin rows orphaned after delete"
+        assert conn.execute(
+            "SELECT 1 FROM resource_grants WHERE resource_id = 'mkt-x/alpha'"
+        ).fetchone() is None, "plugin grant orphaned after delete"
+        assert conn.execute(
+            "SELECT 1 FROM user_plugin_optouts WHERE marketplace_id = 'mkt-x'"
+        ).fetchone() is None, "subscription orphaned after delete"
+    finally:
+        conn.close()

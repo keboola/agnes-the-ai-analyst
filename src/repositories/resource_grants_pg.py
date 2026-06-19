@@ -262,6 +262,23 @@ class ResourceGrantsPgRepository:
             ).all()
         return len(rows)
 
+    def delete_for_marketplace_plugins(self, marketplace_id: str) -> int:
+        """PG sibling of the DuckDB ``delete_for_marketplace_plugins`` — drop
+        every ``marketplace_plugin`` grant belonging to a marketplace. See the
+        DuckDB docstring for the slug-prefix (``split_part``, not LIKE)
+        rationale. Returns the number of rows removed."""
+        with self._engine.begin() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """DELETE FROM resource_grants
+                       WHERE resource_type = 'marketplace_plugin'
+                         AND split_part(resource_id, '/', 1) = :mid
+                       RETURNING 1"""
+                ),
+                {"mid": marketplace_id},
+            ).all()
+        return len(rows)
+
     def delete_all_for_group(self, group_id: str) -> int:
         """Drop every grant for ``group_id``. Used by the group-delete cascade."""
         with self._engine.begin() as conn:
@@ -284,7 +301,12 @@ class ResourceGrantsPgRepository:
         group_id: str,
         assigned_by: Optional[str] = None,
     ) -> int:
-        """Grant every ``is_system=TRUE`` marketplace_plugin to ``group_id``.
+        """Grant every active system marketplace_plugin to ``group_id``.
+
+        Only plugins with ``is_system=TRUE`` and ``admin_disabled=FALSE`` are
+        granted — a disabled plugin stays hidden instance-wide, so a new group
+        must not inherit a grant that would activate on re-enable. Mirrors the
+        DuckDB sibling and ``fanout_system_for_user``.
 
         Soft-fail if ``marketplace_plugins`` isn't migrated yet (Phase F
         in progress). Once that port lands, drop the try/except.
@@ -292,7 +314,10 @@ class ResourceGrantsPgRepository:
         try:
             with self._engine.connect() as conn:
                 rows = conn.execute(
-                    sa.text("SELECT marketplace_id, name FROM marketplace_plugins WHERE is_system = TRUE"),
+                    sa.text(
+                        "SELECT marketplace_id, name FROM marketplace_plugins "
+                        "WHERE is_system = TRUE AND admin_disabled = FALSE"
+                    ),
                 ).all()
         except Exception:
             return 0
@@ -302,7 +327,7 @@ class ResourceGrantsPgRepository:
             resource_id = f"{marketplace_id}/{plugin_name}"
             try:
                 with self._engine.begin() as conn:
-                    conn.execute(
+                    result = conn.execute(
                         sa.text(
                             """INSERT INTO resource_grants
                                (id, group_id, resource_type, resource_id, assigned_by)
@@ -317,7 +342,14 @@ class ResourceGrantsPgRepository:
                             "ab": assigned_by,
                         },
                     )
-                    inserted += 1
+                    # ON CONFLICT DO NOTHING suppresses the duplicate (no
+                    # exception raised), so a pre-existing grant yields
+                    # rowcount 0. Count only real inserts — otherwise the
+                    # diagnostic return value over-reports newly-granted groups
+                    # on every idempotent re-run. Matches the DuckDB sibling,
+                    # which relies on a ConstraintException to skip the bump.
+                    if result.rowcount:
+                        inserted += 1
             except IntegrityError:
                 continue
         return inserted

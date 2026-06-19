@@ -112,19 +112,34 @@ def test_resource_grants_fanout_uses_marketplace_plugins(store_engine):
     grants = ResourceGrantsPgRepository(store_engine)
     plugins = MarketplacePluginsPgRepository(store_engine)
 
-    # Seed a system plugin manually (replace_for_marketplace doesn't set is_system)
+    # Create the group BEFORE seeding system plugins: UserGroupsPgRepository.create
+    # fans out the *currently* system plugins to the new group, so creating it
+    # first leaves the explicit fanout below as the sole grantor (parity with the
+    # DuckDB group-fanout test). Seeding first would let create() grant p1, and
+    # the explicit fanout would then correctly report 0 newly-inserted.
+    g = groups.create(name="g1")
+
+    # Two system plugins: p1 active, p2 admin-disabled. The fan-out must grant
+    # only the active one — pins the PG-side admin_disabled filter in parity with
+    # the DuckDB group-fanout test (a PG-only drop of the clause would otherwise
+    # grant a disabled plugin that silently activates on re-enable).
     import sqlalchemy as sa
     with store_engine.begin() as conn:
         conn.execute(
             sa.text(
-                "INSERT INTO marketplace_plugins (marketplace_id, name, is_system) "
-                "VALUES ('m1', 'p1', TRUE)"
+                "INSERT INTO marketplace_plugins (marketplace_id, name, is_system, admin_disabled) "
+                "VALUES ('m1', 'p1', TRUE, FALSE), ('m1', 'p2', TRUE, TRUE)"
             )
         )
-    g = groups.create(name="g1")
     n = grants.fanout_system_for_group(g["id"], assigned_by="admin")
     assert n == 1
     assert grants.has_grant([g["id"]], "marketplace_plugin", "m1/p1")
+    assert not grants.has_grant([g["id"]], "marketplace_plugin", "m1/p2")
+    # Idempotent re-run grants nothing new — the count must be 0, not 1. The
+    # ON CONFLICT DO NOTHING path must report via rowcount, not unconditionally,
+    # so the PG count stays accurate (parity with DuckDB's ConstraintException
+    # skip).
+    assert grants.fanout_system_for_group(g["id"], assigned_by="admin") == 0
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +294,10 @@ def test_curated_subscribe_unsubscribe(store_engine):
 
 
 def test_curated_fanout_system_for_user(store_engine):
-    """A new user picks up every is_system=TRUE plugin."""
+    """A new user picks up every active system plugin: is_system=TRUE AND
+    admin_disabled=FALSE. A non-system plugin (p3) and an admin-disabled
+    system plugin (p4) are both excluded — pins the PG disabled-filter edge
+    in parity with the DuckDB test."""
     from src.repositories.user_curated_subscriptions_pg import (
         UserCuratedSubscriptionsPgRepository,
     )
@@ -289,8 +307,9 @@ def test_curated_fanout_system_for_user(store_engine):
     with store_engine.begin() as conn:
         conn.execute(
             sa.text(
-                "INSERT INTO marketplace_plugins (marketplace_id, name, is_system) "
-                "VALUES ('m1', 'p1', TRUE), ('m1', 'p2', TRUE), ('m1', 'p3', FALSE)"
+                "INSERT INTO marketplace_plugins (marketplace_id, name, is_system, admin_disabled) "
+                "VALUES ('m1', 'p1', TRUE, FALSE), ('m1', 'p2', TRUE, FALSE), "
+                "('m1', 'p3', FALSE, FALSE), ('m1', 'p4', TRUE, TRUE)"
             )
         )
     repo.fanout_system_for_user("u1")
