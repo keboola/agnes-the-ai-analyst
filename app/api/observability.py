@@ -23,7 +23,9 @@ from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 
 from src.repositories import (
+    audit_repo,
     observability_views_repo,
+    users_repo,
 )
 router = APIRouter(prefix="/api/admin/observability", tags=["observability"])
 
@@ -66,72 +68,25 @@ def facets(
     """
     since = _window_since(since_minutes)
 
-    # users (joined to users.email so the UI shows a readable label)
-    users = conn.execute(
-        """
-        SELECT a.user_id AS id, COALESCE(u.email, a.user_id) AS label, COUNT(*) AS n
-        FROM audit_log a
-        LEFT JOIN users u ON u.id = a.user_id
-        WHERE a.timestamp >= ? AND a.user_id IS NOT NULL
-        GROUP BY a.user_id, u.email
-        ORDER BY n DESC
-        LIMIT 50
-        """,
-        [since],
-    ).fetchall()
+    data = audit_repo().facets(
+        since=since,
+        scheduler_actions=list(_SCHEDULER_ACTION_FALLBACK),
+    )
 
-    actions = conn.execute(
-        """
-        SELECT action AS label, COUNT(*) AS n
-        FROM audit_log WHERE timestamp >= ? AND action IS NOT NULL
-        GROUP BY action ORDER BY n DESC LIMIT 50
-        """,
-        [since],
-    ).fetchall()
-
-    results = conn.execute(
-        """
-        SELECT COALESCE(result, '—') AS label, COUNT(*) AS n
-        FROM audit_log WHERE timestamp >= ?
-        GROUP BY result ORDER BY n DESC LIMIT 50
-        """,
-        [since],
-    ).fetchall()
-
-    resources = conn.execute(
-        """
-        SELECT resource AS label, COUNT(*) AS n
-        FROM audit_log WHERE timestamp >= ? AND resource IS NOT NULL
-        GROUP BY resource ORDER BY n DESC LIMIT 50
-        """,
-        [since],
-    ).fetchall()
-
-    # Sources — derive client_kind union with the legacy action whitelist.
-    sched_in = ",".join("?" for _ in _SCHEDULER_ACTION_FALLBACK)
-    source_rows = conn.execute(
-        f"""
-        SELECT
-          CASE
-            WHEN client_kind IS NOT NULL AND client_kind != '' THEN client_kind
-            WHEN action IN ({sched_in}) THEN 'scheduler'
-            WHEN user_id IS NULL THEN 'system'
-            ELSE 'other'
-          END AS src,
-          COUNT(*) AS n
-        FROM audit_log WHERE timestamp >= ?
-        GROUP BY src ORDER BY n DESC
-        """,
-        list(_SCHEDULER_ACTION_FALLBACK) + [since],
-    ).fetchall()
+    # The facets 'users' bucket carries ids + counts only; resolve readable
+    # labels here, reproducing the old COALESCE(email, user_id).
+    emails = users_repo().get_by_ids([u["id"] for u in data["users"]])
 
     return {
         "window_minutes": since_minutes,
-        "users":     [{"id": r[0], "label": r[1], "count": r[2]} for r in users],
-        "actions":   [{"value": r[0], "count": r[1]} for r in actions],
-        "results":   [{"value": r[0], "count": r[1]} for r in results],
-        "resources": [{"value": r[0], "count": r[1]} for r in resources],
-        "sources":   [{"value": r[0], "count": r[1]} for r in source_rows],
+        "users":     [
+            {"id": u["id"], "label": emails.get(u["id"]) or u["id"], "count": u["count"]}
+            for u in data["users"]
+        ],
+        "actions":   data["actions"],
+        "results":   data["results"],
+        "resources": data["resources"],
+        "sources":   data["sources"],
     }
 
 
@@ -148,31 +103,16 @@ def kpis(
     """Four KPIs for the top-bar cards: events, active users, error rate, p95."""
     since = _window_since(since_minutes)
 
-    total = conn.execute(
-        "SELECT COUNT(*) FROM audit_log WHERE timestamp >= ?", [since],
-    ).fetchone()[0]
-    active_users = conn.execute(
-        "SELECT COUNT(DISTINCT user_id) FROM audit_log "
-        "WHERE timestamp >= ? AND user_id IS NOT NULL",
-        [since],
-    ).fetchone()[0]
-    errors = conn.execute(
-        "SELECT COUNT(*) FROM audit_log "
-        "WHERE timestamp >= ? AND result IS NOT NULL AND result LIKE 'error%'",
-        [since],
-    ).fetchone()[0]
-    # Latency p95 over rows that recorded duration_ms.
-    p95 = conn.execute(
-        "SELECT CAST(approx_quantile(duration_ms, 0.95) AS INTEGER) "
-        "FROM audit_log WHERE timestamp >= ? AND duration_ms IS NOT NULL",
-        [since],
-    ).fetchone()[0]
+    k = audit_repo().kpis(since=since)
+    total = k["events_total"]
+    errors = k["errors"]
+    p95 = k["p95"]
 
     rate = (errors / total) if total else 0.0
     return {
         "window_minutes": since_minutes,
         "events_total": int(total or 0),
-        "active_users": int(active_users or 0),
+        "active_users": int(k["active_users"] or 0),
         "errors": int(errors or 0),
         "error_rate": round(rate, 4),
         "p95_duration_ms": int(p95) if p95 is not None else None,

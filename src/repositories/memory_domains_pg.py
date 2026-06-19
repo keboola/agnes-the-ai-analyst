@@ -241,6 +241,27 @@ class MemoryDomainsPgRepository:
                 {"id": domain_id},
             )
 
+    def resolve_ids_to_slugs(self, domain_ids: List[str]) -> Dict[str, str]:
+        """Resolve a batch of domain ids to their slugs (live rows only).
+
+        Returns ``{id: slug}`` for every input id that maps to a live
+        (non-soft-deleted) domain. Empty input → ``{}``; unknown and
+        soft-deleted ids are silently omitted. Mirrors the DuckDB sibling;
+        carries the ``deleted_at IS NULL`` guard the original inline SQL
+        in ``app/api/memory.py`` admin_patch_item lacked.
+        """
+        if not domain_ids:
+            return {}
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT id, slug FROM memory_domains "
+                    "WHERE id = ANY(:ids) AND deleted_at IS NULL"
+                ),
+                {"ids": list(domain_ids)},
+            ).all()
+        return {r[0]: r[1] for r in rows}
+
     # ------------------------------------------------------------------
     # Junction (domain ↔ items)
     # ------------------------------------------------------------------

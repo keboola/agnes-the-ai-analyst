@@ -19,6 +19,7 @@ from app.auth.access import can_access
 from app.auth.dependencies import get_current_user, _get_db
 from app.chat.session_principal_guard import deny_principal
 from app.resource_types import ResourceType
+from src.repositories import users_repo
 
 router = APIRouter(prefix="/api/chat", tags=["chat-copresence"])
 
@@ -106,10 +107,10 @@ async def invite(
     s0 = repo.get_session(session_id)
     if s0 is None or s0.user_email != user["email"]:
         raise HTTPException(403, "only the owner can invite")
-    inv_row = conn.execute("SELECT id FROM users WHERE email = ?", [body.invitee_email]).fetchone()
+    inv_row = users_repo().get_by_email(body.invitee_email)
     if inv_row is None:
         raise HTTPException(403, "invitee not found or lacks chat access")
-    inv_user_id = inv_row[0]
+    inv_user_id = inv_row["id"]
     if not can_access(inv_user_id, ResourceType.CHAT.value, "chat", conn):
         raise HTTPException(403, "invitee lacks chat access")
 

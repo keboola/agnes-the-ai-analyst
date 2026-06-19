@@ -381,3 +381,25 @@ def test_get_by_ids_empty_input_returns_empty(users_repo):
     repo, _, _ = users_repo
     _make_user(repo)
     assert repo.get_by_ids([]) == {}
+
+
+# ---------------------------------------------------------------------------
+# get_info_by_ids — bulk id → {email, name} map parity
+# ---------------------------------------------------------------------------
+
+
+def test_get_info_by_ids_maps_email_and_name(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo, id="user-1", email="a@example.com", name="Alice")
+    _make_user(repo, id="user-2", email="b@example.com", name="Bob")
+    got = repo.get_info_by_ids(["user-1", "user-2", "missing"])
+    assert got == {
+        "user-1": {"email": "a@example.com", "name": "Alice"},
+        "user-2": {"email": "b@example.com", "name": "Bob"},
+    }
+
+
+def test_get_info_by_ids_empty_input_returns_empty(users_repo):
+    repo, _, _ = users_repo
+    _make_user(repo)
+    assert repo.get_info_by_ids([]) == {}

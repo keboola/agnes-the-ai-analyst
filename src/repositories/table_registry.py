@@ -358,6 +358,19 @@ class TableRegistryRepository:
         columns = [desc[0] for desc in self.conn.description]
         return [self._decode_row(dict(zip(columns, row))) for row in results]
 
+    def count_non_internal(self) -> int:
+        """Count registered business tables, excluding internal source rows.
+
+        ``source_type='internal'`` rows (agnes_* tables) live in their own
+        card on /catalog and are excluded from the headline counter on the
+        dashboard + the catalog empty-state hint. NULL ``source_type`` is
+        treated as non-internal (COALESCE to '').
+        """
+        result = self.conn.execute(
+            "SELECT COUNT(*) FROM table_registry WHERE COALESCE(source_type, '') != 'internal'"
+        ).fetchone()
+        return int(result[0]) if result else 0
+
     def list_by_source(self, source_type: str) -> List[Dict[str, Any]]:
         """List tables for a given source type (keboola, bigquery, jira, etc.)."""
         results = self.conn.execute(

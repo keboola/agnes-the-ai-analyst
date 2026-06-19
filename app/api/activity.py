@@ -29,6 +29,7 @@ from src.observability.posthog_client import get_posthog
 from src.repositories import (
     audit_repo,
     sync_state_repo,
+    users_repo,
 )
 router = APIRouter(prefix="/api/admin/activity", tags=["activity"])
 
@@ -114,14 +115,9 @@ def activity_timeline(
     # readable label (`name <email>`) instead of an opaque UUID. One small
     # IN(...) query per page; users table is small. Skipped when the page
     # carries no audit rows that reference a user.
-    user_ids = list({r["user_id"] for r in rows if r.get("user_id")})
-    if user_ids:
-        placeholders = ",".join("?" for _ in user_ids)
-        rows_lookup = conn.execute(
-            f"SELECT id, email, name FROM users WHERE id IN ({placeholders})",
-            user_ids,
-        ).fetchall()
-        info = {row[0]: {"email": row[1], "name": row[2]} for row in rows_lookup}
+    ids = list({r["user_id"] for r in rows if r.get("user_id")})
+    if ids:
+        info = users_repo().get_info_by_ids(ids)
         for r in rows:
             extra = info.get(r.get("user_id")) or {}
             r["user_email"] = extra.get("email")

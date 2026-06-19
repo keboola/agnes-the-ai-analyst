@@ -430,3 +430,70 @@ class TestAdminDisabled:
         repos["plugins"].set_admin_disabled("mp-d5", "pb", True)
         disabled = repos["plugins"].list_admin_disabled("mp-d5")
         assert disabled == ["pb"]
+
+
+# ---------------------------------------------------------------------------
+# list_system_keys — backs my-stack toggle-lock (app/api/my_stack.py)
+# ---------------------------------------------------------------------------
+
+
+def _set_is_system(repos: dict, slug: str, name: str, value: bool) -> None:
+    """Flip ``marketplace_plugins.is_system`` via raw SQL — there is no repo
+    writer for it (replace_for_marketplace intentionally excludes the flag;
+    its only production writer is the admin mark/unmark_system endpoint)."""
+    if repos["backend"] == "duckdb":
+        repos["conn"].execute(
+            "UPDATE marketplace_plugins SET is_system = ? WHERE marketplace_id = ? AND name = ?",
+            [value, slug, name],
+        )
+    else:
+        import sqlalchemy as sa
+
+        with repos["engine"].begin() as conn:
+            conn.execute(
+                sa.text(
+                    "UPDATE marketplace_plugins SET is_system = :v WHERE marketplace_id = :m AND name = :n"
+                ),
+                {"v": value, "m": slug, "n": name},
+            )
+
+
+class TestSystemKeys:
+    """Contract tests for marketplace_plugins.list_system_keys."""
+
+    def test_empty_when_no_system_plugins(self, repos):
+        _seed_registry(repos, "mp-s0", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _seed_plugins(repos, "mp-s0", ["pa", "pb"])
+        # No is_system set on anything.
+        assert repos["plugins"].list_system_keys() == []
+
+    def test_returns_only_system_keys(self, repos):
+        _seed_registry(repos, "mp-s1", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _seed_plugins(repos, "mp-s1", ["sys-a", "sys-b", "plain"])
+        _set_is_system(repos, "mp-s1", "sys-a", True)
+        _set_is_system(repos, "mp-s1", "sys-b", True)
+        # "plain" stays is_system=FALSE.
+
+        keys = set(repos["plugins"].list_system_keys())
+        assert keys == {("mp-s1", "sys-a"), ("mp-s1", "sys-b")}
+
+    def test_excludes_admin_disabled_system_plugin(self, repos):
+        _seed_registry(repos, "mp-s2", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _seed_plugins(repos, "mp-s2", ["sys-on", "sys-off"])
+        _set_is_system(repos, "mp-s2", "sys-on", True)
+        _set_is_system(repos, "mp-s2", "sys-off", True)
+        # Admin-disable one of the two system plugins — it must drop out.
+        repos["plugins"].set_admin_disabled("mp-s2", "sys-off", True)
+
+        keys = repos["plugins"].list_system_keys()
+        assert keys == [("mp-s2", "sys-on")]
+
+    def test_returns_tuple_pairs(self, repos):
+        _seed_registry(repos, "mp-s3", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _seed_plugin(repos, "mp-s3", "only")
+        _set_is_system(repos, "mp-s3", "only", True)
+
+        keys = repos["plugins"].list_system_keys()
+        assert len(keys) == 1
+        assert keys[0] == ("mp-s3", "only")
+        assert isinstance(keys[0], tuple)

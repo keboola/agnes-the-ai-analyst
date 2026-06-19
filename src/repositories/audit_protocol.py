@@ -72,3 +72,36 @@ class AuditRepositoryProtocol(Protocol):
     ) -> List[Dict[str, Any]]:
         """Activity timeline for one or more resource refs."""
         ...
+
+    def count_for_user(self, user_id: str) -> int:
+        """Total audit rows recorded for one user."""
+        ...
+
+    def query_governance(
+        self,
+        *,
+        action: Optional[str] = None,
+        prefixes: Tuple[str, ...] = ("corporate_memory.", "km_"),
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Governance audit feed: corporate_memory.* + legacy km_* rows."""
+        ...
+
+    def facets(
+        self,
+        *,
+        since: datetime,
+        scheduler_actions: List[str],
+        limit: int = 50,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Distinct facet buckets (users/actions/results/resources/sources)."""
+        ...
+
+    def kpis(
+        self,
+        *,
+        since: datetime,
+    ) -> Dict[str, Any]:
+        """Headline KPIs: events_total, active_users, errors, p95."""
+        ...
