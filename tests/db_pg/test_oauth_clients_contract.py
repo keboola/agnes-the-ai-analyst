@@ -204,6 +204,20 @@ def test_save_and_get_refresh_token(repo):
     assert row["subject"] == "user-id-3"
 
 
+def test_save_and_get_refresh_token_preserves_resource(repo):
+    repo.upsert_client(client_id="c1", redirect_uris=["https://x.example/cb"])
+    repo.save_refresh_token(
+        token="ref-res",
+        client_id="c1",
+        scopes=["read"],
+        subject="user-id-3",
+        resource="https://mcp.example/",
+    )
+    row = repo.get_refresh_token("ref-res")
+    assert row is not None
+    assert row["resource"] == "https://mcp.example/"
+
+
 def test_get_refresh_token_missing_returns_none(repo):
     assert repo.get_refresh_token("nope") is None
 

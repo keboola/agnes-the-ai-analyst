@@ -1,6 +1,6 @@
 # AI Data Analyst
 
-Open-source data distribution platform for AI analytical systems. Extracts data from sources into DuckDB, serves via FastAPI, and distributes parquets to analysts who use Claude Code for local analysis.
+Source-available data distribution platform for AI analytical systems. Extracts data from sources into DuckDB, serves via FastAPI, and distributes parquets to analysts who use Claude Code for local analysis.
 
 Full documentation index: [`docs/README.md`](docs/README.md).
 
@@ -351,8 +351,8 @@ Design rationale: `docs/superpowers/specs/2026-05-15-agnes-agents-design.md`,
 
 ## Project conventions
 
-### Vendor-agnostic OSS — no customer-specific content
-This repo is the public OSS distribution. **Nothing customer-specific belongs in code, config defaults, comments, docs, commit messages, or PR titles/bodies** — no specific deployments or brands, cloud project IDs, internal hostnames, runbook paths, internal SA emails, or cross-references to private repos. Frame motivations abstractly ("behind a TLS-terminating reverse proxy"); use placeholders in examples (`example.com`, `<your-host>`, `<install-dir>`). Customer-specific automation lives in the private infra repos that *consume* this OSS. Before opening a PR, scan the diff and PR body for customer-specific tokens.
+### Vendor-agnostic public repo — no customer-specific content
+This repo is the public source-available distribution. **Nothing customer-specific belongs in code, config defaults, comments, docs, commit messages, or PR titles/bodies** — no specific deployments or brands, cloud project IDs, internal hostnames, runbook paths, internal SA emails, or cross-references to private repos. Frame motivations abstractly ("behind a TLS-terminating reverse proxy"); use placeholders in examples (`example.com`, `<your-host>`, `<install-dir>`). Customer-specific automation lives in the private infra repos that *consume* this repo. Before opening a PR, scan the diff and PR body for customer-specific tokens.
 
 ### Issue economy — fix or close, don't spawn
 The default reaction to "I noticed something while doing X" is **fix it now**, **close it as moot after audit**, or **leave a `TODO` in the touching diff** — not "file an issue". Before filing any follow-up issue: verify the claim is still true on current `main` (issues routinely cite moved line numbers and deleted call sites — if the premise is gone, close the parent), and check whether it's a ≤30-min, ≤1-file fix you could just do in the current PR. Filing is acceptable only for multi-file refactors with open design questions, production changes needing operator coordination, unclear cross-team ownership, or bugs whose fix would balloon the current PR ≥3×. When investigating an existing issue, reproduce the symptom on current `main` first; if it doesn't fire, close with a comment documenting the audit. When in doubt: fix it, or close it.

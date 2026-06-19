@@ -43,7 +43,7 @@ class TestTableBlocks:
         repo.register(id="t_finance_b", name="finance_b", bucket="in.c-finance", source_type="dummy")
         repo.register(id="t_marketing_a", name="marketing_a", bucket="in.c-marketing", source_type="dummy")
 
-        blocks = _table_blocks(system_conn)
+        blocks = _table_blocks()
         by_name = {b["name"]: b for b in blocks}
 
         assert "in.c-finance" in by_name
@@ -65,7 +65,7 @@ class TestTableBlocks:
             description="hello",
         )
 
-        blocks = _table_blocks(system_conn)
+        blocks = _table_blocks()
         item = blocks[0]["items"][0]
 
         # Fields that admin_access.html renderResources reads:
@@ -80,7 +80,7 @@ class TestTableBlocks:
         repo.register(id="orphan", name="orphan", source_type="dummy")
         # bucket left as None
 
-        blocks = _table_blocks(system_conn)
+        blocks = _table_blocks()
         names = {b["name"] for b in blocks}
         assert "(no bucket)" in names
         orphan_block = next(b for b in blocks if b["name"] == "(no bucket)")
@@ -88,7 +88,7 @@ class TestTableBlocks:
 
     def test_empty_registry_returns_empty_list(self, system_conn):
         # Fresh DB, no tables registered yet.
-        assert _table_blocks(system_conn) == []
+        assert _table_blocks() == []
 
 
 class TestResourceTypeRegistration:
@@ -122,7 +122,7 @@ class TestMemoryItemResourceType:
     def test_memory_item_blocks_empty_when_no_items(self, system_conn):
         from app.resource_types import _memory_item_blocks
 
-        assert _memory_item_blocks(system_conn) == []
+        assert _memory_item_blocks() == []
 
 
 class TestMemoryDomainResourceType:
@@ -136,7 +136,7 @@ class TestMemoryDomainResourceType:
         from app.resource_types import _memory_domain_blocks
 
         system_conn.execute("DELETE FROM memory_domains")
-        assert _memory_domain_blocks(system_conn) == []
+        assert _memory_domain_blocks() == []
 
     def test_memory_domain_blocks_returns_id_not_slug(self, system_conn):
         from app.resource_types import _memory_domain_blocks
@@ -146,7 +146,7 @@ class TestMemoryDomainResourceType:
             "INSERT INTO memory_domains(id, slug, name, icon, color) "
             "VALUES ('md_test', 'test', 'Test domain', '🔬', '#abc')"
         )
-        blocks = _memory_domain_blocks(system_conn)
+        blocks = _memory_domain_blocks()
         assert len(blocks) == 1
         items = blocks[0]["items"]
         assert items[0]["resource_id"] == "md_test"
@@ -169,7 +169,7 @@ class TestDataPackageResourceType:
     def test_data_package_blocks_empty_when_no_packages(self, system_conn):
         from app.resource_types import _data_package_blocks
 
-        assert _data_package_blocks(system_conn) == []
+        assert _data_package_blocks() == []
 
     def test_data_package_blocks_includes_packages(self, system_conn):
         from app.resource_types import _data_package_blocks
@@ -178,7 +178,7 @@ class TestDataPackageResourceType:
             "INSERT INTO data_packages(id, slug, name, description, icon, color) "
             "VALUES ('pkg_sales', 'sales', 'Sales bundle', 'Sales tables', '📦', '#abc')"
         )
-        blocks = _data_package_blocks(system_conn)
+        blocks = _data_package_blocks()
         assert len(blocks) == 1
         block = blocks[0]
         assert block["items"][0]["resource_id"] == "pkg_sales"
@@ -246,7 +246,7 @@ class TestSlackChannelBlocks:
             "VALUES ('rg_sc1', ?, 'slack_channel', 'C123')",
             [gid],
         )
-        blocks = _slack_channel_blocks(system_conn)
+        blocks = _slack_channel_blocks()
         items = [it for b in blocks for it in b["items"]]
         assert any(it["resource_id"] == "C123" for it in items)
 
@@ -254,7 +254,7 @@ class TestSlackChannelBlocks:
         from app.resource_types import _slack_channel_blocks
 
         system_conn.execute("DELETE FROM resource_grants WHERE resource_type = 'slack_channel'")
-        assert _slack_channel_blocks(system_conn) == []
+        assert _slack_channel_blocks() == []
 
     def test_admin_group_grant_not_listed(self, system_conn):
         """A slack_channel grant to a non-Everyone group (Admin) must NOT
@@ -268,7 +268,7 @@ class TestSlackChannelBlocks:
             "VALUES ('rg_sc_adm', ?, 'slack_channel', 'C_ADM')",
             [admin_gid],
         )
-        blocks = _slack_channel_blocks(system_conn)
+        blocks = _slack_channel_blocks()
         items = [it for b in blocks for it in b["items"]]
         assert not any(it["resource_id"] == "C_ADM" for it in items)
 
@@ -342,7 +342,7 @@ class TestCollectionResourceType:
     def test_collection_blocks_empty_when_no_corpora(self, system_conn):
         from app.resource_types import _collection_blocks
 
-        assert _collection_blocks(system_conn) == []
+        assert _collection_blocks() == []
 
     def test_collection_blocks_projects_live_corpora(self, system_conn):
         from app.resource_types import _collection_blocks
@@ -351,7 +351,7 @@ class TestCollectionResourceType:
             "INSERT INTO file_corpora (id, slug, name, description, created_by) "
             "VALUES ('col_abc', 'my-files', 'My Files', 'A collection', 'u1')"
         )
-        blocks = _collection_blocks(system_conn)
+        blocks = _collection_blocks()
         assert len(blocks) == 1
         block = blocks[0]
         assert block["id"] == "collections"
@@ -370,7 +370,7 @@ class TestCollectionResourceType:
             "(id, slug, name, created_by, deleted_at) "
             "VALUES ('col_del', 'deleted', 'Deleted', 'u1', current_timestamp)"
         )
-        blocks = _collection_blocks(system_conn)
+        blocks = _collection_blocks()
         if blocks:
             ids = [it["resource_id"] for b in blocks for it in b["items"]]
             assert "col_del" not in ids

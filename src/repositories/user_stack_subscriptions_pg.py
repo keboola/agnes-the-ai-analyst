@@ -55,6 +55,48 @@ class UserStackSubscriptionsPgRepository:
             )
             return (result.rowcount or 0) > 0
 
+    def subscribe_group_members(
+        self, group_id: str, resource_type: str, resource_id: str
+    ) -> int:
+        """Subscribe every current member of ``group_id`` to (resource_type,
+        resource_id). Returns the number of newly-created rows.
+
+        Postgres twin of the DuckDB ``subscribe_group_members`` — soft-downgrade
+        fan-out (v49). Idempotent via ON CONFLICT DO NOTHING. Before/after count
+        (rather than ``rowcount``) keeps the return value identical to the
+        DuckDB sibling for the contract test.
+        """
+        with self._engine.begin() as conn:
+            before = conn.execute(
+                sa.text(
+                    "SELECT COUNT(*) FROM user_stack_subscriptions "
+                    "WHERE resource_type = :rt AND resource_id = :ri"
+                ),
+                {"rt": resource_type, "ri": resource_id},
+            ).scalar_one()
+            conn.execute(
+                sa.text(
+                    """
+                    INSERT INTO user_stack_subscriptions
+                      (user_id, resource_type, resource_id)
+                    SELECT m.user_id, :rt, :ri
+                      FROM user_group_members m
+                     WHERE m.group_id = :gid
+                    ON CONFLICT (user_id, resource_type, resource_id)
+                    DO NOTHING
+                    """
+                ),
+                {"rt": resource_type, "ri": resource_id, "gid": group_id},
+            )
+            after = conn.execute(
+                sa.text(
+                    "SELECT COUNT(*) FROM user_stack_subscriptions "
+                    "WHERE resource_type = :rt AND resource_id = :ri"
+                ),
+                {"rt": resource_type, "ri": resource_id},
+            ).scalar_one()
+        return int(after - before)
+
     def unsubscribe(
         self, user_id: str, resource_type: str, resource_id: str
     ) -> bool:

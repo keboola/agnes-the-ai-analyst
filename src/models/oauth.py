@@ -74,6 +74,7 @@ class OAuthRefreshToken(Base):
     scopes: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
     expires_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     subject: Mapped[str | None] = mapped_column(String, nullable=True)
+    resource: Mapped[str | None] = mapped_column(String, nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

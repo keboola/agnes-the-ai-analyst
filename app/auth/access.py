@@ -388,17 +388,11 @@ def mint_session_jwt(user_email: str, chat_id: str, *, ttl_seconds: int = 3600) 
     the same key used by the rest of the auth layer (see app/auth/jwt.py).
     """
     import jwt  # PyJWT — already a project dependency
-    from src.db import get_system_db
-    from src.repositories.users import UserRepository
+    from src.repositories import users_repo
 
-    conn = get_system_db()
-    try:
-        row = UserRepository(conn).get_by_email(user_email)
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+    # Factory-routed: honors use_pg() so a Postgres instance reads the live
+    # PG users table, not the frozen DuckDB system file (#518).
+    row = users_repo().get_by_email(user_email)
     if not row:
         raise ValueError(f"mint_session_jwt: user not found: {user_email!r}")
     user_id = row["id"]

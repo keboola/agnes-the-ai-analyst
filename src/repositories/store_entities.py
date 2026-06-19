@@ -516,6 +516,27 @@ class StoreEntitiesRepository:
         )
         return self.get(id)
 
+    def synthetic_name_taken(
+        self,
+        synthetic_name: str,
+        *,
+        exclude_entity_id: Optional[str] = None,
+        exclude_archived: bool = False,
+    ) -> bool:
+        """Whether any row already uses ``synthetic_name`` (the global flat-
+        namespace uniqueness check at upload time). Optionally excludes one
+        entity id and archived rows. Routed through the factory so the read
+        hits the active backend — a raw query here read the frozen DuckDB
+        system file on Postgres instances (#518)."""
+        sql = "SELECT id FROM store_entities WHERE synthetic_name = ?"
+        params: List[Any] = [synthetic_name]
+        if exclude_entity_id:
+            sql += " AND id != ?"
+            params.append(exclude_entity_id)
+        if exclude_archived:
+            sql += " AND visibility_status != 'archived'"
+        return bool(self.conn.execute(sql, params).fetchone())
+
     def get(self, id: str) -> Optional[Dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT * FROM store_entities WHERE id = ?", [id]

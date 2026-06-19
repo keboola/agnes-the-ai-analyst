@@ -194,20 +194,22 @@ class OAuthClientsRepository:
         scopes: list[str],
         subject: str | None = None,
         expires_at: int | None = None,
+        resource: str | None = None,
     ) -> None:
         now = datetime.now(timezone.utc)
         self.conn.execute(
             """
             INSERT INTO oauth_refresh_tokens
-                (token, client_id, scopes, expires_at, subject, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (token, client_id, scopes, expires_at, subject, resource, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (token) DO UPDATE SET
                 client_id  = excluded.client_id,
                 scopes     = excluded.scopes,
                 expires_at = excluded.expires_at,
-                subject    = excluded.subject
+                subject    = excluded.subject,
+                resource   = excluded.resource
             """,
-            [token, client_id, json.dumps(scopes), expires_at, subject, now],
+            [token, client_id, json.dumps(scopes), expires_at, subject, resource, now],
         )
 
     def get_refresh_token(self, token: str) -> Optional[dict[str, Any]]:
