@@ -390,6 +390,21 @@ class MarketplacePluginsRepository:
         ).fetchall()
         return [r[0] for r in rows]
 
+    def list_system_keys(self) -> List[Tuple[str, str]]:
+        """Return ``(marketplace_id, name)`` for every system plugin that is
+        not admin-disabled.
+
+        Backs ``app/api/my_stack.py:get_my_stack`` — the my-stack view
+        intersects this set in Python to lock the subscribe toggle on
+        system plugins. Admin-disabled plugins are excluded because they
+        never surface in the served feed regardless of their system flag.
+        """
+        rows = self.conn.execute(
+            "SELECT marketplace_id, name FROM marketplace_plugins "
+            "WHERE is_system = TRUE AND admin_disabled = FALSE"
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
 
 def _classify_source(source: Optional[Any]) -> Optional[str]:
     """Return a coarse label for the `source` field of a plugin entry.

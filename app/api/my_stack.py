@@ -28,6 +28,7 @@ from app.auth.dependencies import _get_db, get_current_user
 from src.marketplace_filter import resolve_allowed_plugins
 from src.repositories import (
     audit_repo,
+    marketplace_plugins_repo,
     user_curated_subscriptions_repo,
     user_store_installs_repo,
 )
@@ -126,11 +127,9 @@ async def get_my_stack(
     # One round trip — set membership intersection in Python is cheaper
     # than joining marketplace_plugins per-row inside resolve_allowed_plugins
     # (which is also called from the marketplace_filter / packager hot path).
-    sys_rows = conn.execute(
-        "SELECT marketplace_id, name FROM marketplace_plugins "
-        "WHERE is_system = TRUE",
-    ).fetchall()
-    system_plugins: set[tuple[str, str]] = {(r[0], r[1]) for r in sys_rows}
+    system_plugins: set[tuple[str, str]] = set(
+        marketplace_plugins_repo().list_system_keys()
+    )
 
     curated: List[CuratedPlugin] = []
     for p in granted:
@@ -227,12 +226,8 @@ async def toggle_curated(
     # unsubscribe path. Subscribe is still allowed (no-op on the
     # already-materialized row).
     if not body.enabled:
-        sys_row = conn.execute(
-            "SELECT is_system FROM marketplace_plugins "
-            "WHERE marketplace_id = ? AND name = ?",
-            [marketplace_id, plugin_name],
-        ).fetchone()
-        if sys_row and bool(sys_row[0]):
+        row = marketplace_plugins_repo().get(marketplace_id, plugin_name)
+        if row and bool(row.get("is_system")):
             raise HTTPException(
                 status_code=409,
                 detail="cannot_unsubscribe_system_plugin",

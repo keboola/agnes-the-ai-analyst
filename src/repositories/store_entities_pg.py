@@ -575,6 +575,52 @@ class StoreEntitiesPgRepository:
         items = [self._normalize_row(dict(r)) for r in rows]
         return items, int(total)
 
+    def category_counts(
+        self,
+        *,
+        type: Optional[str] = None,
+        visibility_status: Optional[List[str]] = None,
+        owner_id: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """PG sibling of the DuckDB ``category_counts`` — see that docstring.
+
+        Mirrors the WHERE + ``COALESCE(NULLIF(TRIM(category),''),'Other')``
+        GROUP BY of ``GET /api/marketplace/categories`` so per-category
+        counts match the grid on both backends.
+        """
+        clauses: List[str] = []
+        params: Dict[str, Any] = {}
+        if type:
+            clauses.append("type = :type"); params["type"] = type
+        if visibility_status:
+            vs_keys: List[str] = []
+            for i, v in enumerate(visibility_status):
+                k = f"vs_{i}"
+                vs_keys.append(f":{k}")
+                params[k] = v
+            vs_in = f"visibility_status IN ({','.join(vs_keys)})"
+            if owner_id:
+                clauses.append(
+                    f"({vs_in} OR (owner_user_id = :owner_id "
+                    f"AND visibility_status != 'archived'))"
+                )
+                params["owner_id"] = owner_id
+            else:
+                clauses.append(vs_in)
+        elif owner_id:
+            clauses.append("owner_user_id = :owner_id")
+            params["owner_id"] = owner_id
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    f"SELECT COALESCE(NULLIF(TRIM(category),''), 'Other') AS cat, "
+                    f"COUNT(*) FROM store_entities {where} GROUP BY cat"
+                ),
+                params,
+            ).all()
+        return {str(r[0]): int(r[1]) for r in rows}
+
     def bump_install_count(self, id: str, delta: int) -> None:
         with self._engine.begin() as conn:
             conn.execute(

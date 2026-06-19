@@ -181,6 +181,28 @@ class MemoryDomainsRepository:
         )
         self.conn.execute("DELETE FROM memory_domains WHERE id = ?", [domain_id])
 
+    def resolve_ids_to_slugs(self, domain_ids: List[str]) -> Dict[str, str]:
+        """Resolve a batch of domain ids to their slugs (live rows only).
+
+        Returns ``{id: slug}`` for every input id that maps to a live
+        (non-soft-deleted) domain. Empty input → ``{}``; unknown and
+        soft-deleted ids are silently omitted, so callers compare the
+        returned key-set against ``domain_ids`` to detect missing ones.
+
+        Extracted from ``app/api/memory.py`` admin_patch_item, which ran
+        the raw SELECT inline but omitted the ``deleted_at IS NULL`` guard
+        every other read in this repo carries — added here for parity.
+        """
+        if not domain_ids:
+            return {}
+        placeholders = ",".join(["?"] * len(domain_ids))
+        rows = self.conn.execute(
+            f"SELECT id, slug FROM memory_domains "
+            f"WHERE id IN ({placeholders}) AND deleted_at IS NULL",
+            list(domain_ids),
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
     # -- Junction (domain ↔ items) -----------------------------------------
 
     def add_item(self, domain_id: str, item_id: str, *, added_by: str) -> bool:

@@ -33,7 +33,9 @@ from app.auth.dependencies import _get_db, get_current_user
 from app.secrets_vault import vault_key_configured
 from src.db import SCHEMA_VERSION, get_system_db
 from src.repositories import (
+    session_processor_state_repo,
     sync_state_repo,
+    users_repo,
 )
 
 logger = logging.getLogger(__name__)
@@ -140,7 +142,7 @@ def _stuck_file_grace_seconds() -> int:
     return 4 * _verification_detector_grace_seconds()
 
 
-def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
+def _check_session_pipeline() -> dict:
     """Detect a stuck session pipeline: jsonls land but never get processed.
 
     Heuristic (#176):
@@ -180,14 +182,9 @@ def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
 
     # Look up the most recent processed_at for the verification processor.
     try:
-        row = conn.execute(
-            "SELECT MAX(processed_at) FROM session_processor_state WHERE processor_name = ?",
-            ["verification"],
-        ).fetchone()
+        last_processed = session_processor_state_repo().max_processed_at("verification")
     except Exception as e:
         return {"status": "unknown", "detail": f"could not query session_processor_state: {e}"}
-
-    last_processed = row[0] if row else None
 
     grace_seconds = _verification_detector_grace_seconds()
 
@@ -236,13 +233,7 @@ def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
     # (for processor_name='verification') and surfacing it once it's older
     # than _stuck_file_grace_seconds.
     try:
-        processed = {
-            row[0]
-            for row in conn.execute(
-                "SELECT session_file FROM session_processor_state WHERE processor_name = ?",
-                ["verification"],
-            ).fetchall()
-        }
+        processed = session_processor_state_repo().processed_session_files("verification")
     except Exception as e:
         # Don't fail the health check on this enrichment.
         logger.debug("FIFO check: could not read session_processor_state: %s", e)
@@ -445,7 +436,7 @@ async def health_check_detailed(
 
     # User count
     try:
-        user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        user_count = users_repo().count_all()
         checks["users"] = {"status": "ok", "count": user_count}
     except Exception as e:
         checks["users"] = {"status": "error", "detail": str(e)}
@@ -458,7 +449,7 @@ async def health_check_detailed(
     # Session pipeline (#176): warn when uploaded jsonls aren't getting
     # processed by the verification-detector cadence.
     try:
-        checks["session_pipeline"] = _check_session_pipeline(conn)
+        checks["session_pipeline"] = _check_session_pipeline()
     except Exception as e:
         checks["session_pipeline"] = {"status": "unknown", "detail": str(e)}
 

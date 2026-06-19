@@ -170,3 +170,22 @@ def test_list_domains_of_item_joins_correctly(repo):
     repo.add_item(b, "ki_1", added_by="u")
     domains = repo.list_domains_of_item("ki_1")
     assert sorted(d["id"] for d in domains) == sorted([a, b])
+
+
+def test_resolve_ids_to_slugs_consistent(repo):
+    """Empty → {}; live ids resolve; unknown + soft-deleted ids omitted."""
+    # Empty input short-circuits to an empty mapping on both backends.
+    assert repo.resolve_ids_to_slugs([]) == {}
+
+    live = repo.create(
+        name="Live", slug="live", description=None,
+        icon=None, color=None, created_by="u",
+    )
+    gone = repo.create(
+        name="Gone", slug="gone", description=None,
+        icon=None, color=None, created_by="u",
+    )
+    repo.delete(gone)  # soft delete — must be omitted
+
+    result = repo.resolve_ids_to_slugs([live, gone, "md_does_not_exist"])
+    assert result == {live: "live"}

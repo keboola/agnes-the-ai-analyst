@@ -121,9 +121,11 @@ def test_list_groups_with_meta_for_user_returns_rows_for_both_engines(repos):
 
 
 def test_list_groups_with_meta_for_user_shape(repos):
-    """Every row carries the five contract fields with stable shapes —
-    that's the read shape the refresh-groups endpoint depends on (see
-    Devin Review on PR #520)."""
+    """Every row carries the contract fields with stable shapes — that's
+    the read shape the refresh-groups endpoint and the /me/profile page
+    depend on (see Devin Review on PR #520). The widened shape adds
+    ``id`` (alias of ``group_id``), ``description`` and ``added_at`` while
+    keeping the original five keys for back-compat."""
     ug, members, users, _, _ = repos
     _seed_user_and_two_groups(ug, members, users)
 
@@ -132,12 +134,20 @@ def test_list_groups_with_meta_for_user_shape(repos):
 
     for row in rows:
         assert set(row.keys()) == {
-            "group_id", "name", "is_system", "created_by", "source",
+            "group_id", "id", "name", "description", "is_system",
+            "created_by", "source", "added_at",
         }, f"row keys drifted: {row.keys()}"
         assert isinstance(row["group_id"], str) and row["group_id"]
+        # `id` aliases the group's own id — same value as group_id.
+        assert row["id"] == row["group_id"]
         assert isinstance(row["name"], str) and row["name"]
         assert isinstance(row["is_system"], bool)
-        # `created_by` and `source` are nullable text — accept None or str.
+        # `created_by`, `source`, `description` are nullable text — accept
+        # None or str. `added_at` is set on insert (timestamp); just
+        # require the key is present (asserted above) and non-None here.
+        assert row["added_at"] is not None
+        # `ensure` always seeds a description, so it is a non-empty str here.
+        assert isinstance(row["description"], str) and row["description"]
 
 
 def test_list_groups_with_meta_filters_by_source_for_synced_diff(repos):
@@ -230,3 +240,40 @@ def test_replace_google_sync_groups_diff_membership(repos):
     assert synced == {"new@example.com"}, (
         f"old@example.com should have been removed, got: {synced}"
     )
+
+
+def test_list_google_sync_groups_for_user_shape_and_filter(repos):
+    """`list_google_sync_groups_for_user` returns only the user's
+    google_sync groups, ordered by name, each row ``{name, external_id}``.
+
+    Parity gotcha: ``user_groups`` has no ``external_id`` column on
+    Postgres, so the PG impl always returns ``external_id=None``. The
+    DuckDB impl probes ``information_schema`` and falls back to NULL when
+    the column is absent (it is on the contract schema), so both engines
+    return ``external_id=None`` here — the assertion holds for both."""
+    ug, members, users, _, backend = repos
+    _seed_user_and_two_groups(ug, members, users)
+    # u-1 is in `eng-data@example.com` (google_sync) + `custom-admin-group`
+    # (admin). Only the synced one must come back.
+    rows = members.list_google_sync_groups_for_user("u-1")
+
+    assert [r["name"] for r in rows] == ["eng-data@example.com"]
+    for r in rows:
+        assert set(r.keys()) == {"name", "external_id"}, (
+            f"row keys drifted: {r.keys()}"
+        )
+        # external_id is None on PG (no column) and on the DuckDB contract
+        # schema (column absent → NULL fallback).
+        assert r["external_id"] is None
+
+
+def test_list_google_sync_groups_for_user_empty(repos):
+    """A user with no google_sync rows yields an empty list on both
+    engines (admin-only membership is excluded)."""
+    ug, members, users, _, _ = repos
+    users.create(id="u-only-admin", email="adminonly@example.com", name="AO")
+    grp = ug.ensure("admin-only-grp")
+    members.add_member("u-only-admin", grp["id"], source="admin")
+
+    rows = members.list_google_sync_groups_for_user("u-only-admin")
+    assert rows == []

@@ -225,6 +225,95 @@ def test_query_cursor_pagination(audit_repo):
 
 
 # ---------------------------------------------------------------------------
+# aggregates — count_for_user / query_governance / facets / kpis
+# ---------------------------------------------------------------------------
+
+def test_count_for_user(audit_repo):
+    repo, _, _ = audit_repo
+    repo.log(user_id="u1", action="a")
+    repo.log(user_id="u1", action="b")
+    repo.log(user_id="u2", action="c")
+    assert repo.count_for_user("u1") == 2
+    assert repo.count_for_user("u2") == 1
+    assert repo.count_for_user("nobody") == 0
+
+
+def test_query_governance_dual_prefix(audit_repo):
+    repo, _, _ = audit_repo
+    repo.log(action="corporate_memory.write")
+    repo.log(action="km_write")  # legacy prefix
+    repo.log(action="auth.login")  # neither prefix
+    rows = repo.query_governance(limit=50)
+    actions = {r["action"] for r in rows}
+    assert actions == {"corporate_memory.write", "km_write"}
+
+
+def test_query_governance_action_filter(audit_repo):
+    repo, _, _ = audit_repo
+    repo.log(action="corporate_memory.write")
+    repo.log(action="km_write")
+    repo.log(action="corporate_memory.delete")
+    repo.log(action="km_delete")
+    rows = repo.query_governance(action="write", limit=50)
+    actions = {r["action"] for r in rows}
+    assert actions == {"corporate_memory.write", "km_write"}
+
+
+def test_query_governance_offset_paging(audit_repo):
+    repo, _, _ = audit_repo
+    import time
+    for i in range(5):
+        repo.log(action=f"corporate_memory.evt_{i}")
+        time.sleep(0.005)
+    page1 = repo.query_governance(limit=2, offset=0)
+    page2 = repo.query_governance(limit=2, offset=2)
+    page3 = repo.query_governance(limit=2, offset=4)
+    assert len(page1) == 2
+    assert len(page2) == 2
+    assert len(page3) == 1
+    seen = {r["id"] for r in page1 + page2 + page3}
+    assert len(seen) == 5
+
+
+def test_facets_group_buckets(audit_repo):
+    repo, _, _ = audit_repo
+    since = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    repo.log(user_id="u1", action="a", resource="r1", result="success", client_kind="web")
+    repo.log(user_id="u1", action="a", resource="r1", result="success", client_kind="web")
+    repo.log(user_id="u2", action="b", resource="r2", result="error.x", client_kind="cli")
+    repo.log(user_id=None, action="run_corporate_memory")  # scheduler via action fallback
+    sched = ["run_corporate_memory", "marketplace.sync_all"]
+    out = repo.facets(since=since, scheduler_actions=sched, limit=50)
+    assert set(out.keys()) == {"users", "actions", "results", "resources", "sources"}
+    user_counts = {u["id"]: u["count"] for u in out["users"]}
+    assert user_counts["u1"] == 2
+    assert user_counts["u2"] == 1
+    action_counts = {a["value"]: a["count"] for a in out["actions"]}
+    assert action_counts["a"] == 2
+    sources = {s["value"]: s["count"] for s in out["sources"]}
+    assert sources.get("web") == 2
+    assert sources.get("cli") == 1
+    assert sources.get("scheduler") == 1
+
+
+def test_kpis(audit_repo):
+    repo, _, _ = audit_repo
+    since = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    repo.log(user_id="u1", action="a", result="success", duration_ms=100)
+    repo.log(user_id="u1", action="b", result="success", duration_ms=200)
+    repo.log(user_id="u2", action="c", result="error.timeout", duration_ms=300)
+    repo.log(user_id=None, action="sys", result="success", duration_ms=400)
+    out = repo.kpis(since=since)
+    assert out["events_total"] == 4
+    assert out["active_users"] == 2  # u1, u2 (NULL user excluded)
+    assert out["errors"] == 1
+    # p95 differs between approx_quantile (DuckDB) and percentile_cont (PG);
+    # both should land in the upper range of {100,200,300,400}.
+    assert out["p95"] is not None
+    assert 250 <= out["p95"] <= 400
+
+
+# ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 

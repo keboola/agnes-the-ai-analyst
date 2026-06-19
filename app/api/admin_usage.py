@@ -36,6 +36,8 @@ from connectors.llm.exceptions import (
 
 from src.repositories import (
     audit_repo,
+    session_processor_state_repo,
+    usage_repo,
 )
 from src.usage_ask import (
     RESPONSE_SCHEMA,
@@ -365,32 +367,17 @@ def reprocess_usage(
     """
     counts = {}
     try:
-        conn.execute("BEGIN")
-        n_state = conn.execute(
-            "DELETE FROM session_processor_state "
-            "WHERE processor_name IN ('usage', 'marketplace_rollup_30d') RETURNING 1"
-        ).fetchall()
-        counts["state_rows"] = len(n_state)
-        n_events = conn.execute("DELETE FROM usage_events RETURNING 1").fetchall()
-        counts["events"] = len(n_events)
-        n_sum = conn.execute("DELETE FROM usage_session_summary RETURNING 1").fetchall()
-        counts["summaries"] = len(n_sum)
-        n_tool = conn.execute("DELETE FROM usage_tool_daily RETURNING 1").fetchall()
-        counts["tool_daily"] = len(n_tool)
-        n_mp_daily = conn.execute(
-            "DELETE FROM usage_marketplace_item_daily RETURNING 1"
-        ).fetchall()
-        counts["marketplace_item_daily"] = len(n_mp_daily)
-        n_mp_window = conn.execute(
-            "DELETE FROM usage_marketplace_item_window RETURNING 1"
-        ).fetchall()
-        counts["marketplace_item_window"] = len(n_mp_window)
-        conn.execute("COMMIT")
+        state_cleared = session_processor_state_repo().delete_for_processors(
+            ["usage", "marketplace_rollup_30d"]
+        )
+        reset = usage_repo().reset_all()
+        counts["state_rows"] = state_cleared
+        counts["events"] = reset["events"]
+        counts["summaries"] = reset["session_summary"]
+        counts["tool_daily"] = reset["tool_daily"]
+        counts["marketplace_item_daily"] = reset["marketplace_item_daily"]
+        counts["marketplace_item_window"] = reset["marketplace_item_window"]
     except Exception as e:
-        try:
-            conn.execute("ROLLBACK")
-        except Exception:
-            pass
         logger.exception("reprocess failed")
         raise HTTPException(status_code=500, detail=f"reprocess failed: {e}")
 
@@ -426,13 +413,8 @@ def prune_usage(
     if retention <= 0:
         return {"status": "skipped", "reason": "USAGE_EVENTS_RETENTION_DAYS unset or 0"}
     try:
-        before = conn.execute("SELECT COUNT(*) FROM usage_events").fetchone()[0]
-        conn.execute(
-            "DELETE FROM usage_events WHERE occurred_at < CURRENT_DATE - INTERVAL (?) DAY",
-            [retention],
-        )
-        after = conn.execute("SELECT COUNT(*) FROM usage_events").fetchone()[0]
-        deleted = before - after
+        deleted = usage_repo().delete_older_than(retention)
+        after = usage_repo().count_events()
     except Exception as e:
         logger.exception("prune failed")
         raise HTTPException(status_code=500, detail=f"prune failed: {e}")
