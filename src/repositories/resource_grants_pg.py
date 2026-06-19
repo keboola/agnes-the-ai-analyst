@@ -262,6 +262,23 @@ class ResourceGrantsPgRepository:
             ).all()
         return len(rows)
 
+    def delete_for_marketplace_plugins(self, marketplace_id: str) -> int:
+        """PG sibling of the DuckDB ``delete_for_marketplace_plugins`` — drop
+        every ``marketplace_plugin`` grant belonging to a marketplace. See the
+        DuckDB docstring for the slug-prefix (``split_part``, not LIKE)
+        rationale. Returns the number of rows removed."""
+        with self._engine.begin() as conn:
+            rows = conn.execute(
+                sa.text(
+                    """DELETE FROM resource_grants
+                       WHERE resource_type = 'marketplace_plugin'
+                         AND split_part(resource_id, '/', 1) = :mid
+                       RETURNING 1"""
+                ),
+                {"mid": marketplace_id},
+            ).all()
+        return len(rows)
+
     def delete_all_for_group(self, group_id: str) -> int:
         """Drop every grant for ``group_id``. Used by the group-delete cascade."""
         with self._engine.begin() as conn:

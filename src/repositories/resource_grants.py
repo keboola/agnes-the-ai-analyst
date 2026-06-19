@@ -270,6 +270,30 @@ class ResourceGrantsRepository:
         ).fetchall()
         return len(rows)
 
+    def delete_for_marketplace_plugins(self, marketplace_id: str) -> int:
+        """Remove every ``marketplace_plugin`` grant belonging to a marketplace.
+
+        Used by the marketplace-delete cascade so grants don't outlive the
+        plugins they reference. ``resource_id`` is
+        ``"<marketplace_slug>/<plugin_name>"``; match the slug via
+        ``split_part(resource_id, '/', 1)`` rather than a LIKE prefix —
+        marketplace slugs may contain ``_`` (validated by
+        ``[a-z0-9][a-z0-9_-]{0,63}``), which LIKE would treat as a single-char
+        wildcard and silently drop grants from sibling marketplaces whose slug
+        differs by exactly one character. Returns the number of rows removed.
+        ``'marketplace_plugin'`` is the literal value of
+        ``ResourceType.MARKETPLACE_PLUGIN`` (kept inline so the repo layer stays
+        free of the resource_types import).
+        """
+        rows = self.conn.execute(
+            """DELETE FROM resource_grants
+               WHERE resource_type = 'marketplace_plugin'
+                 AND split_part(resource_id, '/', 1) = ?
+               RETURNING 1""",
+            [marketplace_id],
+        ).fetchall()
+        return len(rows)
+
     def delete_all_for_group(self, group_id: str) -> int:
         """Drop every grant for ``group_id``. Used by the group-delete cascade."""
         rows = self.conn.execute(
