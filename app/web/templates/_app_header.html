@@ -165,7 +165,7 @@
                     {% endif %}
                 </div>
                 <a class="app-user-menu-item {% if _path == '/me/profile' %}is-active{% endif %}" role="menuitem" href="/me/profile">Profile</a>
-                <a class="app-user-menu-item {% if _path.startswith('/me/cowork') or _path.startswith('/me/mcp') %}is-active{% endif %}" role="menuitem" href="/me/cowork">AI Cowork</a>
+                <a class="app-user-menu-item {% if _path.startswith('/me/ai-connector') or _path.startswith('/me/cowork') or _path.startswith('/me/mcp') %}is-active{% endif %}" role="menuitem" href="/me/ai-connector">AI Cowork</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
                 <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>
                 {# Appearance — Light / Dark / System. Drives window.__agnesTheme

@@ -389,42 +389,6 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
       </div>
     </div>
   </details>
-  
-      {# ── Connection — collapsible ─────────────────────────────────────── #}
-  <details class="ds-card section-card" aria-label="Connection">
-    <summary>Connection</summary>
-    <div style="margin-top:var(--space-4);">
-      {# Recommended path: paste this one URL into any remote MCP client
-         (Claude Desktop, Claude.ai, Cursor, Cline, VS Code, ChatGPT
-         connectors). The client self-registers and runs the OAuth 2.1
-         browser handshake — no manually-issued token. #}
-      <div class="cowork-conn-grid">
-        <div class="cowork-conn-item">
-          <div class="label">Connector URL <span class="badge badge--info" style="margin-left:4px;">recommended</span></div>
-          <div class="value">{{ server_url }}/api/mcp/http</div>
-        </div>
-        <div class="cowork-conn-item">
-          <div class="label">Auth</div>
-          <div class="value">OAuth 2.1 — browser login, no token</div>
-        </div>
-      </div>
-      <p class="cowork-conn-note">
-        In your AI client add a <strong>custom connector</strong> with the URL
-        above, then sign in to Agnes when the browser opens. Works in Claude
-        Desktop, Claude.ai, Cursor, Cline, VS Code and any MCP SDK client.
-      </p>
-      <div class="cowork-conn-grid" style="margin-top:var(--space-4);">
-        <div class="cowork-conn-item">
-          <div class="label">Legacy MCP endpoint</div>
-          <div class="value">{{ server_url }}/api/mcp/sse</div>
-        </div>
-        <div class="cowork-conn-item">
-          <div class="label">Transport</div>
-          <div class="value">SSE (HTTP) — Cowork back-compat, PAT</div>
-        </div>
-      </div>
-    </div>
-  </details>
 
   {# ── Agnes tools — collapsible ────────────────────────────────────── #}
   <details class="ds-card section-card" aria-label="Agnes tools">
