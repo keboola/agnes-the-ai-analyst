@@ -72,8 +72,9 @@ def _seed_user_with_system_plugin(conn):
 
 
 def _my_stack_system_set(conn) -> set[tuple[str, str]]:
-    """Replicate the my_stack page's system-plugin probe query verbatim
-    (app/api/my_stack.py) so a regression in the WHERE clause fails here."""
+    """Replicate the system-plugin probe SQL behind the my_stack page (now
+    ``marketplace_plugins.list_system_keys``, called from app/api/my_stack.py)
+    so a regression in the WHERE clause fails here too."""
     rows = conn.execute(
         "SELECT marketplace_id, name FROM marketplace_plugins "
         "WHERE is_system = TRUE AND admin_disabled = FALSE",

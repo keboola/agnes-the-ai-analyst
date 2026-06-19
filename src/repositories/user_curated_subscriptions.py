@@ -180,11 +180,12 @@ class UserCuratedSubscriptionsRepository:
         plugin_name)`` plus ``ON CONFLICT … DO NOTHING`` keeps existing
         subscriptions untouched.
 
-        Called from two places:
-        * the admin ``mark_system`` endpoint (one plugin × every existing user)
-        * the user-create hooks (Google OAuth, magic-link, admin-create,
-          scheduler token) so a new user lands in the mandatory tier
-          without an admin reconcile.
+        Called from the user-create hooks (Google OAuth, magic-link,
+        admin-create, scheduler token) so a new user lands in the mandatory
+        tier without an admin reconcile — it subscribes *one* user to *every*
+        active system plugin. (The admin ``mark_system`` endpoint fans a single
+        plugin out to all users via ``fanout_system_for_plugin``, not this
+        helper.)
         """
         self.conn.execute(
             """INSERT INTO user_plugin_optouts

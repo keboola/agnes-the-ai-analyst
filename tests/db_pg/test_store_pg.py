@@ -112,19 +112,24 @@ def test_resource_grants_fanout_uses_marketplace_plugins(store_engine):
     grants = ResourceGrantsPgRepository(store_engine)
     plugins = MarketplacePluginsPgRepository(store_engine)
 
-    # Seed a system plugin manually (replace_for_marketplace doesn't set is_system)
+    # Seed two system plugins manually (replace_for_marketplace doesn't set
+    # is_system): p1 active, p2 admin-disabled. The fan-out must grant only the
+    # active one — pins the PG-side admin_disabled filter in parity with the
+    # DuckDB group-fanout test (a PG-only drop of the clause would otherwise
+    # grant a disabled plugin that silently activates on re-enable).
     import sqlalchemy as sa
     with store_engine.begin() as conn:
         conn.execute(
             sa.text(
-                "INSERT INTO marketplace_plugins (marketplace_id, name, is_system) "
-                "VALUES ('m1', 'p1', TRUE)"
+                "INSERT INTO marketplace_plugins (marketplace_id, name, is_system, admin_disabled) "
+                "VALUES ('m1', 'p1', TRUE, FALSE), ('m1', 'p2', TRUE, TRUE)"
             )
         )
     g = groups.create(name="g1")
     n = grants.fanout_system_for_group(g["id"], assigned_by="admin")
     assert n == 1
     assert grants.has_grant([g["id"]], "marketplace_plugin", "m1/p1")
+    assert not grants.has_grant([g["id"]], "marketplace_plugin", "m1/p2")
 
 
 # ---------------------------------------------------------------------------

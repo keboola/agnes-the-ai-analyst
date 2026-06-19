@@ -326,10 +326,11 @@ class ResourceGrantsRepository:
         ``(group_id, resource_type, resource_id)`` index). Returns the
         number of grant rows newly inserted (diagnostic / audit only).
 
-        Called from two places:
-        * the admin ``mark_system`` endpoint (one plugin × every existing group)
-        * the group-create hooks (admin POST + Google sync) so a new
-          group inherits the mandatory tier without an admin reconcile.
+        Called from the group-create hooks (admin POST + Google sync) so a new
+        group inherits the mandatory tier without an admin reconcile — it grants
+        *every* active system plugin to *one* group. (The admin ``mark_system``
+        endpoint does its own inline per-group ``ensure_grant`` fan-out for the
+        single plugin being marked and does NOT route through this helper.)
         """
         rows = self.conn.execute(
             "SELECT marketplace_id, name FROM marketplace_plugins "
