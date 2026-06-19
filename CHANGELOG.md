@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **Cowork → Connection now surfaces the OAuth 2.1 connector URL (`/api/mcp/http`).** The page previously showed only the legacy SSE endpoint (`/api/mcp/sse`), so the no-token OAuth connector path was undiscoverable in the UI — users had no place to copy the URL they paste into Claude Desktop / Claude.ai / Cursor / Cline / VS Code. The Connection section now shows the OAuth connector URL as the recommended endpoint (with a short "add a custom connector" instruction) and keeps the SSE endpoint below it, labelled as Cowork back-compat (PAT).
 
 ### Changed
 

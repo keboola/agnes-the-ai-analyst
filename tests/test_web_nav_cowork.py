@@ -24,7 +24,7 @@ def test_cowork_link_in_user_dropdown_for_non_admin(seeded_app):
     assert 'href="/me/cowork"' in body
     assert ">AI Cowork<" in body
     # Must carry .app-user-menu-item (user dropdown), not .app-nav-link (primary nav).
-    assert 'app-user-menu-item' in body
+    assert "app-user-menu-item" in body
 
 
 def test_cowork_link_in_user_dropdown_for_admin(seeded_app):
@@ -76,3 +76,19 @@ def test_me_cowork_has_plugin_package_section(seeded_app):
     # flow and the folder-scoped bundled-project-with-MCP flow.
     assert "Plugin packages" in body
     assert "Bundled Project Setup with MCP" in body
+
+
+def test_me_cowork_shows_oauth_connector_url(seeded_app):
+    """The Connection section surfaces the OAuth 2.1 connector URL
+    (`/api/mcp/http`) as the recommended endpoint users paste into a remote
+    MCP client, alongside the legacy SSE endpoint kept for Cowork back-compat.
+    Without this the new no-token connector path is undiscoverable in the UI.
+    """
+    c = seeded_app["client"]
+    token = seeded_app["analyst_token"]
+    body = c.get("/me/cowork", headers=_auth(token)).text
+    # The recommended OAuth connector URL is present...
+    assert "/api/mcp/http" in body
+    assert "Connector URL" in body
+    # ...and the legacy SSE endpoint is still shown for back-compat.
+    assert "/api/mcp/sse" in body
