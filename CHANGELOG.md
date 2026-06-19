@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **OAuth MCP connector consent page now sees the logged-in user.** The consent bridge (`app/auth/mcp_oauth.py`) read the session from a non-existent `agnes_session` cookie; the canonical Agnes session cookie set by every login provider is `access_token`. In the browser flow (no Bearer header) this meant the consent page never recognised the just-logged-in user and bounced the browser back to login in a loop, so the OAuth 2.1 handshake could not complete. Now reads `access_token`. Added a handshake test that drives consent via the cookie (the Bearer-header happy path masked the bug).
+
 ## [0.71.55] - 2026-06-17
 
 ### Fixed
