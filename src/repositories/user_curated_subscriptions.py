@@ -169,16 +169,19 @@ class UserCuratedSubscriptionsRepository:
         return max(0, int(after) - int(before))
 
     def fanout_system_for_user(self, user_id: str) -> None:
-        """Subscribe ``user_id`` to every ``is_system=TRUE`` marketplace_plugin.
+        """Subscribe ``user_id`` to every active system marketplace_plugin.
+
+        Only plugins with ``is_system=TRUE`` and ``admin_disabled=FALSE`` are
+        selected — a disabled plugin stays hidden from new-user fanout even if
+        a row somehow still carries the system flag. Symmetric with
+        ``ResourceGrants.fanout_system_for_group``.
 
         Idempotent — the table's PRIMARY KEY ``(user_id, marketplace_id,
         plugin_name)`` plus ``ON CONFLICT … DO NOTHING`` keeps existing
         subscriptions untouched.
 
         Called from two places:
-        * the admin ``mark_system`` endpoint (one plugin × every existing
-          user, with the SELECT-side filter still walking all system
-          plugins — symmetric with ``fanout_system_for_group``)
+        * the admin ``mark_system`` endpoint (one plugin × every existing user)
         * the user-create hooks (Google OAuth, magic-link, admin-create,
           scheduler token) so a new user lands in the mandatory tier
           without an admin reconcile.

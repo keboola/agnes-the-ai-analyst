@@ -51,6 +51,18 @@ joins `resource_grants ↔ marketplace_plugins` (matching
 shortcut for the marketplace feed, so admins curate their own view by granting
 plugins to the Admin group (or any group they belong to).
 
+**Two filtering layers — `admin_disabled` gates above RBAC.** Before the
+grant/group join runs, a plugin an admin disables via the `/admin/marketplaces`
+Details modal (`marketplace_plugins.admin_disabled = TRUE`) is removed
+instance-wide for everyone, regardless of grants: it disappears from the served
+feed, the browse page, every user's my-stack, the synthetic served marketplace,
+the `/admin/access` grant UI, and the v2 `/skills` endpoint. The only surface
+that still shows a disabled plugin is the Details modal, where it can be
+re-enabled. Disabling also clears `is_system` (re-enabling does **not** restore
+it), and the disabled state survives nightly sync and the built-in re-seed on
+boot (the `replace_for_marketplace` upsert never resets `admin_disabled`), so a
+disabled plugin stays disabled across restarts.
+
 On-disk layout in the served ZIP / git tree uses a slug-prefixed directory
 (`plugins/<slug>-<plugin>/`) so two marketplaces shipping a same-named plugin
 don't overwrite each other's files. The synth marketplace.json's `name` field,

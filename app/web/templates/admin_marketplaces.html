@@ -761,21 +761,18 @@ function toggleSystem(btn, marketplaceId, marketplaceName) {
     okBtn.classList.add("btn-danger");
   }
 
-  // Single-shot handler — re-bind on every open so we don't leak across
-  // toggles and so the closure captures the current btn / ids.
-  const onConfirm = async () => {
-    okBtn.removeEventListener("click", onConfirm);
+  // Single assignment (NOT addEventListener) so re-opening for a different
+  // plugin REPLACES any prior handler instead of stacking. Robust to every
+  // close path — Cancel button, backdrop click, Escape: a dismissed modal
+  // leaves a handler that can't fire until the modal is reopened, and
+  // reopening overwrites it. (addEventListener stacked listeners, and the
+  // backdrop/Escape close paths skipped cleanup, so a cancelled confirm could
+  // later fire on a different plugin.)
+  okBtn.onclick = async () => {
+    okBtn.onclick = null;
     closeModal("system-confirm-modal");
     await performToggleSystem(btn, marketplaceId, marketplaceName, isSystem);
   };
-  okBtn.addEventListener("click", onConfirm);
-  // Cancel cleanup — strip the listener so the next open starts fresh.
-  const onCancel = (e) => {
-    if (e && e.target === okBtn) return;
-    okBtn.removeEventListener("click", onConfirm);
-  };
-  document.querySelectorAll('[data-close-modal="system-confirm-modal"]').forEach(el =>
-    el.addEventListener("click", onCancel, { once: true }));
 
   openModal("system-confirm-modal");
 }
@@ -862,21 +859,18 @@ function toggleDisabled(el, marketplaceId, marketplaceName) {
     okBtn.classList.add("btn-danger");
   }
 
-  // Single-shot handler — re-bind on every open so we don't leak across
-  // toggles and so the closure captures the current el / ids.
-  const onConfirm = async () => {
-    okBtn.removeEventListener("click", onConfirm);
+  // Single assignment (NOT addEventListener) so re-opening for a different
+  // plugin REPLACES any prior handler instead of stacking. Robust to every
+  // close path — Cancel button, backdrop click, Escape: a dismissed modal
+  // leaves a handler that can't fire until the modal is reopened, and
+  // reopening overwrites it. (addEventListener stacked listeners, and the
+  // backdrop/Escape close paths skipped cleanup, so a cancelled toggle could
+  // later fire on a different plugin.)
+  okBtn.onclick = async () => {
+    okBtn.onclick = null;
     closeModal("disable-confirm-modal");
     await performToggleDisabled(el, marketplaceId, marketplaceName, isDisabled);
   };
-  okBtn.addEventListener("click", onConfirm);
-  // Cancel cleanup — strip the listener so the next open starts fresh.
-  const onCancel = (e) => {
-    if (e && e.target === okBtn) return;
-    okBtn.removeEventListener("click", onConfirm);
-  };
-  document.querySelectorAll('[data-close-modal="disable-confirm-modal"]').forEach(el =>
-    el.addEventListener("click", onCancel, { once: true }));
 
   openModal("disable-confirm-modal");
 }

@@ -279,7 +279,10 @@ def test_curated_subscribe_unsubscribe(store_engine):
 
 
 def test_curated_fanout_system_for_user(store_engine):
-    """A new user picks up every is_system=TRUE plugin."""
+    """A new user picks up every active system plugin: is_system=TRUE AND
+    admin_disabled=FALSE. A non-system plugin (p3) and an admin-disabled
+    system plugin (p4) are both excluded — pins the PG disabled-filter edge
+    in parity with the DuckDB test."""
     from src.repositories.user_curated_subscriptions_pg import (
         UserCuratedSubscriptionsPgRepository,
     )
@@ -289,8 +292,9 @@ def test_curated_fanout_system_for_user(store_engine):
     with store_engine.begin() as conn:
         conn.execute(
             sa.text(
-                "INSERT INTO marketplace_plugins (marketplace_id, name, is_system) "
-                "VALUES ('m1', 'p1', TRUE), ('m1', 'p2', TRUE), ('m1', 'p3', FALSE)"
+                "INSERT INTO marketplace_plugins (marketplace_id, name, is_system, admin_disabled) "
+                "VALUES ('m1', 'p1', TRUE, FALSE), ('m1', 'p2', TRUE, FALSE), "
+                "('m1', 'p3', FALSE, FALSE), ('m1', 'p4', TRUE, TRUE)"
             )
         )
     repo.fanout_system_for_user("u1")

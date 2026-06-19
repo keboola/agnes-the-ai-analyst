@@ -301,7 +301,12 @@ class ResourceGrantsPgRepository:
         group_id: str,
         assigned_by: Optional[str] = None,
     ) -> int:
-        """Grant every ``is_system=TRUE`` marketplace_plugin to ``group_id``.
+        """Grant every active system marketplace_plugin to ``group_id``.
+
+        Only plugins with ``is_system=TRUE`` and ``admin_disabled=FALSE`` are
+        granted — a disabled plugin stays hidden instance-wide, so a new group
+        must not inherit a grant that would activate on re-enable. Mirrors the
+        DuckDB sibling and ``fanout_system_for_user``.
 
         Soft-fail if ``marketplace_plugins`` isn't migrated yet (Phase F
         in progress). Once that port lands, drop the try/except.
@@ -309,7 +314,10 @@ class ResourceGrantsPgRepository:
         try:
             with self._engine.connect() as conn:
                 rows = conn.execute(
-                    sa.text("SELECT marketplace_id, name FROM marketplace_plugins WHERE is_system = TRUE"),
+                    sa.text(
+                        "SELECT marketplace_id, name FROM marketplace_plugins "
+                        "WHERE is_system = TRUE AND admin_disabled = FALSE"
+                    ),
                 ).all()
         except Exception:
             return 0

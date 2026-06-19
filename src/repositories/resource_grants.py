@@ -314,7 +314,12 @@ class ResourceGrantsRepository:
         group_id: str,
         assigned_by: Optional[str] = None,
     ) -> int:
-        """Grant every ``is_system=TRUE`` marketplace_plugin to ``group_id``.
+        """Grant every active system marketplace_plugin to ``group_id``.
+
+        Only plugins with ``is_system=TRUE`` and ``admin_disabled=FALSE`` are
+        granted — a disabled plugin stays hidden instance-wide, so a new group
+        must not inherit a grant that would activate the moment it is
+        re-enabled. Symmetric with ``UserCuratedSubscriptions.fanout_system_for_user``.
 
         Idempotent — pre-existing grants for the same plugin survive
         unchanged (ON CONFLICT against the UNIQUE
@@ -322,14 +327,13 @@ class ResourceGrantsRepository:
         number of grant rows newly inserted (diagnostic / audit only).
 
         Called from two places:
-        * the admin ``mark_system`` endpoint (one plugin × every existing
-          group, but the SELECT-side filter still walks all system
-          plugins — harmless and keeps the helper symmetric)
+        * the admin ``mark_system`` endpoint (one plugin × every existing group)
         * the group-create hooks (admin POST + Google sync) so a new
           group inherits the mandatory tier without an admin reconcile.
         """
         rows = self.conn.execute(
-            "SELECT marketplace_id, name FROM marketplace_plugins WHERE is_system = TRUE",
+            "SELECT marketplace_id, name FROM marketplace_plugins "
+            "WHERE is_system = TRUE AND admin_disabled = FALSE",
         ).fetchall()
         inserted = 0
         for marketplace_id, plugin_name in rows:

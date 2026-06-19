@@ -157,6 +157,47 @@ def test_fanout_system_for_user_skips_disabled(tmp_path, monkeypatch):
     conn.close()
 
 
+def test_fanout_system_for_group_skips_disabled(tmp_path, monkeypatch):
+    """A newly-created group's system fan-out must not be granted a plugin that
+    is admin-disabled, even if its is_system flag is still set — symmetric with
+    the user fan-out filter so both paths agree on what a system plugin is."""
+    conn = _setup_conn(tmp_path)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("src.repositories.get_system_db", lambda: conn)
+
+    from datetime import datetime, timezone
+
+    from src.repositories.marketplace_plugins import MarketplacePluginsRepository
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.user_groups import UserGroupsRepository
+
+    slug, plugin = "mkt-gfan", "gfan-plug"
+    conn.execute(
+        "INSERT INTO marketplace_registry (id, name, url, registered_at) VALUES (?, ?, ?, ?)",
+        [slug, slug, f"https://example.test/{slug}.git", datetime(2026, 1, 1, tzinfo=timezone.utc)],
+    )
+    MarketplacePluginsRepository(conn).replace_for_marketplace(
+        slug, [{"name": plugin, "version": "1.0", "description": "x"}]
+    )
+    # Force both flags TRUE so the AND admin_disabled = FALSE filter is what
+    # excludes the row (not set_admin_disabled's is_system clearing).
+    conn.execute(
+        "UPDATE marketplace_plugins SET is_system = TRUE, admin_disabled = TRUE "
+        "WHERE marketplace_id = ? AND name = ?",
+        [slug, plugin],
+    )
+
+    group = UserGroupsRepository(conn).create(name="grp-gfan", created_by="test")
+    grants = ResourceGrantsRepository(conn)
+    grants.fanout_system_for_group(group["id"], assigned_by="test")
+
+    assert not grants.has_grant(
+        [group["id"]], "marketplace_plugin", f"{slug}/{plugin}"
+    )
+
+    conn.close()
+
+
 def test_disabled_plugin_drops_from_rbac_projection(tmp_path, monkeypatch):
     """The /admin/access grant UI projects plugins via
     ``app.resource_types._marketplace_plugin_blocks``. A disabled plugin must

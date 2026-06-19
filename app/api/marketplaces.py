@@ -579,8 +579,21 @@ def mark_plugin_system(
     # Depends(_get_db) connection runs against the always-DuckDB system file and
     # silently no-ops on a Postgres instance (#518 backend-split): the SELECT
     # would 404 a plugin that only exists in PG, and the UPDATE would never
-    # persist is_system. set_system returns False when no row matched.
-    if not marketplace_plugins_repo().set_system(marketplace_id, plugin_name, True):
+    # persist is_system.
+    plugins_repo = marketplace_plugins_repo()
+    plugin = plugins_repo.get(marketplace_id, plugin_name)
+    if not plugin:
+        raise HTTPException(status_code=404, detail="plugin not found")
+    # A disabled plugin must not regain system status. Disabling clears
+    # is_system and re-enabling does NOT restore it; marking a disabled plugin
+    # system here would resurrect it as a mandatory default on re-enable,
+    # breaking that contract. The UI greys the button out, but this endpoint is
+    # the real state boundary (direct API call / stale-modal race).
+    if plugin.get("admin_disabled"):
+        raise HTTPException(status_code=409, detail="plugin is disabled")
+    # set_system returns False only on a concurrent delete between the fetch
+    # above and the flip — surface it as a 404 rather than fanning out a ghost.
+    if not plugins_repo.set_system(marketplace_id, plugin_name, True):
         raise HTTPException(status_code=404, detail="plugin not found")
 
     resource_id = f"{marketplace_id}/{plugin_name}"
