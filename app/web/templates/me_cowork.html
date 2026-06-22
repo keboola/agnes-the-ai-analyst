@@ -1,11 +1,16 @@
 {% extends "base_ds.html" %}
-{% block title %}AI Cowork — {{ instance_brand }}{% endblock %}
+{% block title %}AI Connector — {{ instance_brand }}{% endblock %}
 
 {% import "_components.html" as ds %}
 
 {% block head_extra %}
 <style>
 /* Page-local styles — layout via .profile-page + .section-card from style-custom.css */
+
+/* Subtitle spans the full hero width here (overrides the global 720px cap). */
+.page-header--hero.ai-connector-hero .page-header__subtitle {
+  max-width: none;
+}
 
 .cowork-prereq {
   background: var(--ds-surface-dim);
@@ -238,7 +243,8 @@
   margin: 0 0 var(--space-5);
   font-size: var(--text-base);
   color: var(--ds-text-secondary);
-  max-width: 60ch;
+  /* Span the full content width — no early wrap at 60ch. */
+  max-width: none;
 }
 .cowork-connect-url {
   display: flex;
@@ -323,8 +329,9 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
 
 {% block content %}
 {% set page_hero_eyebrow = "My account" %}
-{% set page_hero_title = "AI Cowork" %}
+{% set page_hero_title = "AI Connector" %}
 {% set page_hero_subtitle = "Drive Agnes from the AI agent you already use — just connect it to your data." %}
+{% set page_hero_class = "ai-connector-hero" %}
 {% include "_page_hero.html" %}
 
 <div class="profile-page">
