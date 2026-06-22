@@ -46,7 +46,7 @@ jobs:
             echo "No changes to .test_durations — skipping PR"
             exit 0
           fi
-          BRANCH="ci/update-test-durations-$(date +%Y%m%d)"
+          BRANCH="ci/update-test-durations-$(date +%Y%m%d-%H%M%S)"
           git checkout -b "$BRANCH"
           git add .test_durations
           git commit -m "chore(ci): regenerate .test_durations"
