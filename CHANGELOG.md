@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.58] - 2026-06-22
+
+### Added
 - **Admin "Disable plugin" toggle in the `/admin/marketplaces` Details modal.** Each plugin row now has a "Disabled" switch (confirmation modal, same style as "Mark as system") that admin-disables the plugin instance-wide via the existing `POST /{marketplace_id}/plugins/{plugin_name}/{disable,enable}` endpoints. A disabled plugin disappears from every surface except the Details modal where it can be re-enabled — the RBAC served feed, the marketplace browse page, every user's my-stack, the synthetic served marketplace, the `/admin/access` grant UI, and the v2 `/skills` endpoint (admin included). The disable also survives restarts: the built-in marketplace re-seed on boot preserves `admin_disabled` (the `replace_for_marketplace` upsert never resets it), so a disabled built-in plugin stays disabled and hidden after a reboot. Disabling also clears the `is_system` flag (re-enabling does NOT restore it), and the "Mark as system" button is greyed out while a plugin is disabled. The `admin_disabled` flag is now surfaced on `GET /{marketplace_id}/plugins` (`PluginResponse`) so the modal can render the switch and a DISABLED pill.
 
 ### Changed
