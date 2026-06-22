@@ -1481,7 +1481,7 @@ KNOWN_UNTESTED = {
     "GET /docs",
     "GET /documentation/api",
     "GET /first-time-setup",
-    "GET /help/cowork",
+
     "GET /home",
     "GET /install",
     "GET /login",
