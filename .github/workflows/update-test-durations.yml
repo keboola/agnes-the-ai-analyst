@@ -2,7 +2,7 @@ name: Update test durations
 
 # Regenerates .test_durations on CI hardware so pytest-split can balance
 # shards accurately. Run weekly (Sunday 02:00 UTC) or on demand.
-# Never runs on PRs — only updates main directly.
+# Opens a PR against main — never pushes directly.
 on:
   schedule:
     - cron: "0 2 * * 0"  # Weekly, Sunday 02:00 UTC
@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -35,14 +36,23 @@ jobs:
         env:
           TESTING: "1"
 
-      - name: Commit updated durations
+      - name: Open PR if durations changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .test_durations
-          if git diff --cached --quiet; then
-            echo "No changes to .test_durations"
-          else
-            git commit -m "chore(ci): regenerate .test_durations [skip ci]"
-            git push
+          if git diff --quiet .test_durations; then
+            echo "No changes to .test_durations — skipping PR"
+            exit 0
           fi
+          BRANCH="ci/update-test-durations-$(date +%Y%m%d)"
+          git checkout -b "$BRANCH"
+          git add .test_durations
+          git commit -m "chore(ci): regenerate .test_durations"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "chore(ci): regenerate .test_durations" \
+            --body "Weekly automated refresh of \`.test_durations\` so pytest-split keeps shards balanced. Generated on CI hardware — merge when checks are green." \
+            --base main \
+            --head "$BRANCH"
+        env:
+          GH_TOKEN: ${{ github.token }}
