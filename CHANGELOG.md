@@ -19,6 +19,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- **CI test suite now runs across 8 shards (up from 4) with uv dependency caching**, reducing the worst-case shard wall-clock time from ~11 min to ~3 min. Regenerated `.test_durations` so pytest-split can balance all 8 900+ tests evenly across shards.
 
 ## [0.71.58] - 2026-06-22
 
