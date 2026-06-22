@@ -1,0 +1,44 @@
+name: Update test durations
+
+# Regenerates .test_durations on CI hardware so pytest-split can balance
+# shards accurately. Run weekly (Sunday 02:00 UTC) or on demand.
+# Never runs on PRs — only updates main directly.
+on:
+  schedule:
+    - cron: "0 2 * * 0"  # Weekly, Sunday 02:00 UTC
+  workflow_dispatch:
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv pip install --system ".[dev,server]"
+
+      - name: Regenerate .test_durations
+        run: pytest tests/ --store-durations -n auto -q --tb=no
+        env:
+          TESTING: "1"
+
+      - name: Commit updated durations
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .test_durations
+          git diff --cached --quiet && echo "No changes" || \
+            git commit -m "chore(ci): regenerate .test_durations [skip ci]" && git push

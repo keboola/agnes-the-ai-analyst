@@ -19,6 +19,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- **CI test suite now runs across 8 shards (up from 4) with uv dependency caching**, reducing the worst-case shard wall-clock time from ~11 min to ~3 min. Regenerated `.test_durations` so pytest-split can balance all 8 900+ tests evenly across shards.
 
 ## [0.71.58] - 2026-06-22
 
@@ -27,9 +28,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 - **`set_admin_disabled(..., True)` now also clears `is_system`** on both backends (DuckDB + Postgres) so a hidden plugin stops fanning out as a system default; re-enabling leaves the system flag cleared. The system-plugin fan-out queries (`my_stack`, `user_curated_subscriptions.fanout_system_for_user`) now filter `AND admin_disabled = FALSE` defensively.
-
-### Internal
-- **CI test suite now runs across 8 shards (up from 4) with uv dependency caching**, reducing the worst-case shard wall-clock time from ~11 min to ~3 min. Regenerated `.test_durations` so pytest-split can balance all 8 900+ tests evenly across shards.
 
 ### Fixed
 - **Data Package icons on `/admin/tables` render as icons again.** Packages whose `icon` field holds a Heroicons-style name (e.g. `user`, `cloud`, `currency-dollar`, `chart-bar`) previously rendered the raw name as text in the header badge — the template only handled emoji. A small name→inline-SVG map (`packageIconHtml`) now renders known names as SVG, with the raw value (emoji/text) kept as the fallback so emoji packages are unaffected.
