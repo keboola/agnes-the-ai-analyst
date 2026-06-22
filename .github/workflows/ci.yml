@@ -55,7 +55,7 @@ jobs:
             echo "::error::test-shard result was '${{ needs.test-shard.result }}' — one or more shards failed"
             exit 1
           fi
-          echo "All 4 test shards passed."
+          echo "All 8 test shards passed."
 
   lint:
     # Advisory only (continue-on-error) — ruff + mypy surface issues but
