@@ -34,18 +34,47 @@ jobs:
       - name: Run tests (shard ${{ matrix.group }}/8)
         # pytest-split shards the suite across 8 parallel jobs, balanced by
         # the committed `.test_durations` file; `-n auto` parallelises
-        # within each shard across the runner's cores. Regenerate durations
-        # with `pytest tests/ --store-durations -n auto -q --tb=no` when the
-        # suite drifts enough that shards become uneven (target: ~3 min/shard).
-        run: pytest tests/ -v --tb=short -n auto --splits 8 --group ${{ matrix.group }}
+        # within each shard across the runner's cores. tests/db_pg/ is
+        # excluded here and runs in the dedicated test-pg job below so that
+        # the pgserver session fixture doesn't inflate shard 1's wall-clock.
+        # Regenerate durations with `pytest tests/ --ignore=tests/db_pg
+        # --store-durations -n auto -q --tb=no` when shards drift
+        # (target: ~3 min/shard).
+        run: pytest tests/ --ignore=tests/db_pg -v --tb=short -n auto --splits 8 --group ${{ matrix.group }}
+        env:
+          TESTING: "1"
+
+  test-pg:
+    # Runs tests/db_pg/ in a single dedicated job. Keeping these separate from
+    # the split shards avoids the pgserver session-fixture startup overhead
+    # (~60 s per worker) from landing in shard 1 and skewing wall-clock times.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv pip install --system ".[dev,server]"
+
+      - name: Run Postgres contract tests
+        run: pytest tests/db_pg/ -v --tb=short -n auto
         env:
           TESTING: "1"
 
   # Single required status check. Branch protection requires `test`, but the
   # matrix above publishes `test-shard (1..8)` — this job aggregates them
-  # into one `test` result so no branch-protection change is needed.
+  # (and the dedicated test-pg job) into one `test` result so no
+  # branch-protection change is needed.
   test:
-    needs: test-shard
+    needs: [test-shard, test-pg]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -55,7 +84,11 @@ jobs:
             echo "::error::test-shard result was '${{ needs.test-shard.result }}' — one or more shards failed"
             exit 1
           fi
-          echo "All 8 test shards passed."
+          if [ "${{ needs.test-pg.result }}" != "success" ]; then
+            echo "::error::test-pg result was '${{ needs.test-pg.result }}' — Postgres contract tests failed"
+            exit 1
+          fi
+          echo "All 8 test shards and Postgres contract tests passed."
 
   lint:
     # Advisory only (continue-on-error) — ruff + mypy surface issues but
