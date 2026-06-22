@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.71.59] - 2026-06-22
+
+### Added
 - **AI Connector page leads with a "Control Agnes from your AI agent" connector panel.** The page moved to `/me/ai-connector` (the old `/me/cowork` and `/me/mcp` now 301-redirect there). The OAuth 2.1 connector URL (`/api/mcp/http`) is now the primary call to action — a prominent panel with the copy-able connector URL, a 3-step connect flow, and the supported clients (Claude Cowork, Claude web, ChatGPT, Gemini, Cursor, Microsoft Copilot, VS Code). Previously this no-token connect path was undiscoverable: the page surfaced only the setup-bundle download and the legacy SSE endpoint. The setup-bundle UI and the legacy SSE endpoint display were removed from the page (the bundle and SSE backend endpoints are unchanged). The "AI Connector" name is now applied consistently across the profile dropdown menu, the onboarding tour, and the help/onboarding docs (previously still labelled "AI Cowork"); references to the third-party Claude Cowork product are unchanged. The hero subtitle and the connector panel's lead paragraph now span the full content width instead of wrapping early.
 
 ### Changed
