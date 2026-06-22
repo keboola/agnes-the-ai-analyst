@@ -1481,7 +1481,7 @@ KNOWN_UNTESTED = {
     "GET /docs",
     "GET /documentation/api",
     "GET /first-time-setup",
-    "GET /help/cowork",
+
     "GET /home",
     "GET /install",
     "GET /login",
@@ -1502,6 +1502,7 @@ KNOWN_UNTESTED = {
     "GET /marketplace/guide/flea",
     "GET /marketplace/info",
     "GET /me/activity",
+    "GET /me/ai-connector",
     "GET /me/cowork",
     "GET /me/mcp",
     "GET /me/profile",

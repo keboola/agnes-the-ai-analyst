@@ -115,6 +115,8 @@ def _template_directories() -> list[str]:
 
 
 templates = Jinja2Templates(directory=_template_directories())
+
+
 # Make templates tolerant of missing variables (renders empty string instead of error)
 class _SilentUndefined(jinja2.Undefined):
     """Silently handle any access on undefined variables — returns empty/falsy."""
@@ -923,13 +925,13 @@ async def home_page(
     return templates.TemplateResponse(request, "home_not_onboarded.html", ctx)
 
 
-@router.get("/me/cowork", response_class=HTMLResponse)
+@router.get("/me/ai-connector", response_class=HTMLResponse)
 async def me_cowork_page(
     request: Request,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """User-facing AI Cowork page: setup bundle, MCP connection info, and available tools."""
+    """User-facing AI Connector page: OAuth connector URL, plugin packages, and available tools."""
     from app.api.mcp_passthrough import _visible_passthrough_tools
     from app.api.v2_marketplace import _accessible_plugins, _skills_for_plugin
     from src.repositories import mcp_sources_repo
@@ -978,11 +980,12 @@ async def me_cowork_page(
 
 
 @router.get("/me/mcp", response_class=HTMLResponse)
+@router.get("/me/cowork", response_class=HTMLResponse)
 async def me_mcp_redirect(request: Request):
-    """Legacy redirect — /me/mcp → /me/cowork."""
+    """Legacy redirects — /me/mcp and /me/cowork → /me/ai-connector."""
     from fastapi.responses import RedirectResponse
 
-    return RedirectResponse("/me/cowork", status_code=301)
+    return RedirectResponse("/me/ai-connector", status_code=301)
 
 
 @router.get("/me/activity", response_class=HTMLResponse)
@@ -3463,14 +3466,6 @@ async def profile_session_download(
     )
 
 
-@router.get("/help/cowork", response_class=HTMLResponse)
-async def cowork_help(
-    request: Request,
-    user: dict = Depends(get_current_user),
-):
-    """Step-by-step guide for the Connect Claude Code (Agnes Cowork) setup flow."""
-    ctx = _build_context(request, user=user)
-    return templates.TemplateResponse(request, "cowork_help.html", ctx)
 
 
 @router.get("/_debug/throw/http/{code:int}", response_class=HTMLResponse, include_in_schema=False)

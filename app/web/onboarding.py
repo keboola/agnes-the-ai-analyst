@@ -82,8 +82,7 @@ ONBOARDING_STEPS: tuple[OnboardingStep, ...] = (
         icon="💬",
         anchor="nav-chat",
         title="Chat with your data",
-        body="Ask questions in plain language and get answers grounded in your "
-        "own datasets — no SQL required.",
+        body="Ask questions in plain language and get answers grounded in your own datasets — no SQL required.",
         tips=(
             "Try “How many active accounts did we have last month?”",
             "Answers cite the tables they used, so you can trust and verify them.",
@@ -149,10 +148,9 @@ ONBOARDING_STEPS: tuple[OnboardingStep, ...] = (
         icon="👤",
         anchor="user-menu",
         title="Your menu",
-        body="Your profile, AI Cowork setup, recent activity, and sign-out live "
-        "here.",
+        body="Your profile, AI Connector setup, recent activity, and sign-out live here.",
         tips=(
-            "Set up AI Cowork to analyze your data locally with Claude Code.",
+            "Set up AI Connector to analyze your data locally with Claude Code.",
             "Review your recent activity and manage access tokens.",
             "Reopen this tour anytime from here or the help icon in the header.",
         ),

@@ -25,7 +25,7 @@ Bundle structure (unzipping creates a ready-to-open Claude Code workspace)::
   └── CLAUDE.md                 ← user-friendly instructions + agent guidance
 
 User flow:
-  1. Download ZIP from /me/cowork.
+  1. Download ZIP from /me/ai-connector.
   2. Unzip the file.
   3. Open Claude Code → File → Open Folder → select the unzipped folder.
   4. The SessionStart hook fires ``agnes init --bundle .`` which exchanges the
