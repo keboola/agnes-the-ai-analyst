@@ -32,7 +32,9 @@ jobs:
         run: uv pip install --system ".[dev,server]"
 
       - name: Regenerate .test_durations
-        run: pytest tests/ --store-durations -n auto -q --tb=no
+        # || true so a flaky/broken test on main doesn't block the duration
+        # update — pytest-split writes .test_durations even on partial failure.
+        run: pytest tests/ --store-durations -n auto -q --tb=no || true
         env:
           TESTING: "1"
 
