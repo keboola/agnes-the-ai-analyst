@@ -1503,6 +1503,7 @@ KNOWN_UNTESTED = {
     "GET /marketplace/info",
     "GET /me/activity",
     "GET /me/ai-connector",
+    "GET /me/cowork",
     "GET /me/mcp",
     "GET /me/profile",
     "GET /me/stats",

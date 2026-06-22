@@ -1,4 +1,4 @@
-"""Primary nav: AI Cowork in primary nav for all authenticated users.
+"""Primary nav: AI Connector in primary nav for all authenticated users.
 
 The /me/ai-connector page is user-facing (bundle setup, tools reference) and must
 be reachable from the primary nav for every authenticated user, not gated
@@ -14,7 +14,7 @@ def _auth(token: str) -> dict:
 
 
 def test_cowork_link_in_user_dropdown_for_non_admin(seeded_app):
-    """Non-admin users see the AI Cowork link in the user dropdown menu."""
+    """Non-admin users see the AI Connector link in the user dropdown menu."""
     c = seeded_app["client"]
     token = seeded_app["analyst_token"]
     resp = c.get("/dashboard", headers=_auth(token))
@@ -22,13 +22,13 @@ def test_cowork_link_in_user_dropdown_for_non_admin(seeded_app):
     body = resp.text
 
     assert 'href="/me/ai-connector"' in body
-    assert ">AI Cowork<" in body
+    assert ">AI Connector<" in body
     # Must carry .app-user-menu-item (user dropdown), not .app-nav-link (primary nav).
     assert "app-user-menu-item" in body
 
 
 def test_cowork_link_in_user_dropdown_for_admin(seeded_app):
-    """Admin users also see the AI Cowork link in the user dropdown menu."""
+    """Admin users also see the AI Connector link in the user dropdown menu."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     resp = c.get("/dashboard", headers=_auth(token))
@@ -36,7 +36,7 @@ def test_cowork_link_in_user_dropdown_for_admin(seeded_app):
     body = resp.text
 
     assert 'href="/me/ai-connector"' in body
-    assert ">AI Cowork<" in body
+    assert ">AI Connector<" in body
     # Cowork must NOT appear in the Admin dropdown or as a primary nav link.
     assert 'href="/me/mcp"' not in body
 
@@ -56,7 +56,7 @@ def test_me_cowork_accessible_to_non_admin(seeded_app):
     token = seeded_app["analyst_token"]
     resp = c.get("/me/ai-connector", headers=_auth(token))
     assert resp.status_code == 200
-    assert "AI Cowork" in resp.text
+    assert "AI Connector" in resp.text
 
 
 def test_me_cowork_has_plugin_package_section(seeded_app):
