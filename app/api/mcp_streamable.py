@@ -32,6 +32,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -41,9 +42,11 @@ from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, Re
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
-from starlette.types import ASGIApp
+from starlette.requests import Request
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.auth.mcp_oauth import AgnesMCPOAuthProvider
+from app.auth.public_url import mcp_issuer_url, pinned_public_base_url, public_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -96,38 +99,29 @@ def _headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {access.token}"}
 
 
-def _mcp_oauth_discovery_routes() -> list:
-    """Return root-level OAuth discovery routes (RFC 8414 + RFC 9728).
+def _oauth_client_registration_options() -> ClientRegistrationOptions:
+    return ClientRegistrationOptions(
+        enabled=True, valid_scopes=["read"], default_scopes=["read"]
+    )
 
-    The streamable sub-app already serves these relative to its mount at
-    ``/api/mcp/http``, but standards-compliant MCP clients probe the origin
-    root — ``GET https://host/.well-known/oauth-authorization-server`` and
-    ``GET https://host/.well-known/oauth-protected-resource/api/mcp/http`` —
-    so we publish identical documents there too. Endpoint URLs inside the
-    documents are derived from the issuer URL, so serving location is
-    irrelevant to correctness.
-    """
+
+def _oauth_revocation_options() -> RevocationOptions:
+    return RevocationOptions(enabled=True)
+
+
+def _oauth_metadata_for_request(request: Request):
+    """Build OAuth AS + protected-resource metadata for the incoming host."""
     from urllib.parse import urlparse
 
-    from mcp.server.auth.handlers.metadata import (
-        MetadataHandler,
-        ProtectedResourceMetadataHandler,
-    )
     from mcp.server.auth.routes import build_metadata, build_resource_metadata_url
-    from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
     from mcp.shared.auth import ProtectedResourceMetadata
-    from starlette.routing import Route
 
-    base_url = os.environ.get("AGNES_BASE_URL", "http://localhost:8000").rstrip("/")
-    issuer = AnyHttpUrl(f"{base_url}/api/mcp/http")
-
+    issuer = AnyHttpUrl(mcp_issuer_url(request=request))
     as_metadata = build_metadata(
         issuer_url=issuer,
         service_documentation_url=None,
-        client_registration_options=ClientRegistrationOptions(
-            enabled=True, valid_scopes=["read"], default_scopes=["read"]
-        ),
-        revocation_options=RevocationOptions(enabled=True),
+        client_registration_options=_oauth_client_registration_options(),
+        revocation_options=_oauth_revocation_options(),
     )
     pr_metadata = ProtectedResourceMetadata(
         resource=issuer,
@@ -136,38 +130,107 @@ def _mcp_oauth_discovery_routes() -> list:
         resource_name="Agnes",
     )
     pr_path = urlparse(str(build_resource_metadata_url(issuer))).path
+    return as_metadata, pr_metadata, pr_path
+
+
+_MCP_OAUTH_PROTECTED_RESOURCE_PATH = "/.well-known/oauth-protected-resource/api/mcp/http"
+
+
+def _mcp_oauth_discovery_routes() -> list:
+    """Return root-level OAuth discovery routes (RFC 8414 + RFC 9728).
+
+    The streamable sub-app already serves these relative to its mount at
+    ``/api/mcp/http``, but standards-compliant MCP clients probe the origin
+    root — ``GET https://host/.well-known/oauth-authorization-server`` and
+    ``GET https://host/.well-known/oauth-protected-resource/api/mcp/http`` —
+    so we publish identical documents there too. Endpoint URLs inside the
+    documents are derived from the request host when ``AGNES_BASE_URL`` /
+    ``SERVER_URL`` are unset, so production behind a TLS proxy advertises the
+    public connector URL without requiring a separate env var.
+    """
+    from mcp.server.auth.handlers.metadata import (
+        MetadataHandler,
+        ProtectedResourceMetadataHandler,
+    )
+    from starlette.routing import Route
+
+    async def oauth_authorization_server(request: Request):
+        as_metadata, _, _ = _oauth_metadata_for_request(request)
+        return await MetadataHandler(as_metadata).handle(request)
+
+    async def oauth_protected_resource(request: Request):
+        _, pr_metadata, _ = _oauth_metadata_for_request(request)
+        return await ProtectedResourceMetadataHandler(pr_metadata).handle(request)
 
     return [
         Route(
             "/.well-known/oauth-authorization-server",
-            endpoint=MetadataHandler(as_metadata).handle,
+            endpoint=oauth_authorization_server,
             methods=["GET", "OPTIONS"],
         ),
         Route(
-            pr_path,
-            endpoint=ProtectedResourceMetadataHandler(pr_metadata).handle,
+            _MCP_OAUTH_PROTECTED_RESOURCE_PATH,
+            endpoint=oauth_protected_resource,
             methods=["GET", "OPTIONS"],
         ),
     ]
 
 
+class _FixMcpOAuthResourceMetadataMiddleware:
+    """Rewrite ``WWW-Authenticate`` resource_metadata for proxied deployments.
+
+    The MCP SDK pins ``resource_metadata`` at app-build time from
+    ``AuthSettings.issuer_url``. When neither ``AGNES_BASE_URL`` nor
+    ``SERVER_URL`` is set, that defaults to ``http://localhost:8000`` even
+    though clients reach us at the public host. Derive the correct URL from
+    the incoming ASGI scope instead.
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or pinned_public_base_url() is not None:
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
+        correct_metadata_url = (
+            f"{public_base_url(request=request)}/.well-known/oauth-protected-resource/api/mcp/http"
+        )
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = []
+                for name, value in message.get("headers", []):
+                    if name.lower() == b"www-authenticate":
+                        text = value.decode("latin-1")
+                        if "resource_metadata=" in text:
+                            text = re.sub(
+                                r'resource_metadata="[^"]*"',
+                                f'resource_metadata="{correct_metadata_url}"',
+                                text,
+                            )
+                        value = text.encode("latin-1")
+                    headers.append((name, value))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
 def _make_streamable_app() -> ASGIApp:
     """Build and return the Streamable-HTTP MCP ASGI app with OAuth 2.1."""
-    base_url = os.environ.get("AGNES_BASE_URL", "http://localhost:8000").rstrip("/")
     # The MCP endpoint URL — clients paste this into their connector config.
-    mcp_url = f"{base_url}/api/mcp/http"
+    mcp_url = mcp_issuer_url()
 
     provider = AgnesMCPOAuthProvider()
 
     auth = AuthSettings(
         issuer_url=AnyHttpUrl(mcp_url),
         resource_server_url=AnyHttpUrl(mcp_url),
-        client_registration_options=ClientRegistrationOptions(
-            enabled=True,
-            valid_scopes=["read"],
-            default_scopes=["read"],
-        ),
-        revocation_options=RevocationOptions(enabled=True),
+        client_registration_options=_oauth_client_registration_options(),
+        revocation_options=_oauth_revocation_options(),
         required_scopes=["read"],
     )
 
@@ -298,9 +361,11 @@ def _make_streamable_app() -> ASGIApp:
 
     # Stash the FastMCP instance on the returned app's state so create_app can
     # lift it onto the main app and run its session manager in the lifespan.
-    streamable = mcp.streamable_http_app()
-    streamable.state.mcp_streamable_instance = mcp
-    return streamable
+    inner = mcp.streamable_http_app()
+    inner.state.mcp_streamable_instance = mcp
+    wrapped = _FixMcpOAuthResourceMetadataMiddleware(inner)
+    wrapped.state = inner.state
+    return wrapped
 
 
 def _register_dynamic_tools(mcp: FastMCP) -> None:

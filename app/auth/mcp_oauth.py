@@ -41,7 +41,6 @@ Flow summary
 from __future__ import annotations
 
 import logging
-import os
 import secrets
 import time
 import uuid
@@ -159,8 +158,10 @@ class AgnesMCPOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, 
             state=params.state,
         )
 
-        base = _base_url()
-        return f"{base}/api/mcp/oauth/consent?pending={pending_token}"
+        # Relative redirect keeps the browser on the host the client used to
+        # reach /authorize (important when AGNES_BASE_URL is unset behind a
+        # TLS proxy).
+        return f"/api/mcp/oauth/consent?pending={pending_token}"
 
     # ------------------------------------------------------------------
     # Authorization code exchange (step 3)
@@ -497,9 +498,11 @@ def make_consent_routes() -> list:
 # ---------------------------------------------------------------------------
 
 
-def _base_url() -> str:
+def _base_url(*, request: Request | None = None) -> str:
     """Public base URL for this Agnes instance (no trailing slash)."""
-    return os.environ.get("AGNES_BASE_URL", "http://localhost:8000").rstrip("/")
+    from app.auth.public_url import public_base_url
+
+    return public_base_url(request=request)
 
 
 def _get_session_user(request: Request) -> dict | None:
@@ -533,20 +536,24 @@ def _same_origin(request: Request) -> bool:
     """Return True if the request originates from this Agnes instance.
 
     Checks the Origin header (sent on cross-site form POSTs by modern browsers)
-    against AGNES_BASE_URL, falling back to Referer for clients that omit Origin.
-    A request with neither header set is treated as same-origin only when no
-    public base URL is configured (dev/localhost), since browsers always send
-    one of them on a genuine cross-origin POST.
+    against the public base URL, falling back to Referer for clients that omit
+    Origin. A request with neither header set is treated as same-origin only on
+    the local-dev host, since browsers always send one of them on a genuine
+    cross-origin POST.
     """
     from urllib.parse import urlparse
 
-    base = _base_url()
-    base_host = urlparse(base).netloc
+    from app.auth.public_url import public_base_url
+
+    base_host = urlparse(public_base_url(request=request)).netloc
     origin = request.headers.get("origin") or ""
     referer = request.headers.get("referer") or ""
     candidate = origin or referer
     if not candidate:
-        # No Origin/Referer — only trust when no public host is pinned.
+        # No Origin/Referer — a genuine cross-origin browser POST always sends
+        # one, so trust only the local-dev host. In production `base_host` is
+        # the request-derived public host (e.g. agnes.example.com), so such a
+        # header-less POST is rejected — do NOT blanket-trust when unpinned.
         return base_host in ("", "localhost:8000")
     return urlparse(candidate).netloc == base_host
 
@@ -557,7 +564,7 @@ def _login_url(request: Request, pending: str) -> str:
     The OAuth ``state`` is persisted server-side in the pending auth-code row,
     so it is intentionally NOT threaded through the login round-trip URL.
     """
-    base = _base_url()
+    base = _base_url(request=request)
     consent_path = f"/api/mcp/oauth/consent?pending={pending}"
     # Prefer Google OAuth if available, fall back to email magic-link.
     from app.auth.providers.google import is_available as google_available
