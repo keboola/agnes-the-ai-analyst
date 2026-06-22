@@ -179,7 +179,11 @@
 
 <div class="pkg-hero">
   <div class="pkg-hero__icon" style="background: {{ pkg.color or 'var(--ds-primary)' }};">
-    {% if pkg.icon %}{{ pkg.icon }}{% else %}{{ _initials }}{% endif %}
+    {# Suppress Heroicons-style names (letter/digit/-/_ start) — show initials instead.
+       Mirrors _stack_card.html glyph guard; emoji/special chars pass through unchanged. #}
+    {% set _icon_str = (pkg.icon or '')|string %}
+    {% set _icon_first = _icon_str[:1] %}
+    {% if _icon_str and _icon_str|length <= 4 and _icon_first not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' %}{{ _icon_str }}{% else %}{{ _initials }}{% endif %}
   </div>
   <div class="pkg-hero__body">
     <div class="pkg-hero__title-row">

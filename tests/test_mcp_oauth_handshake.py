@@ -49,6 +49,46 @@ def test_discovery_metadata_at_origin_root(seeded_app):
     assert any(s.endswith("/api/mcp/http") for s in pr["authorization_servers"])
 
 
+def test_discovery_metadata_uses_request_host_when_env_unset(seeded_app, monkeypatch):
+    """Production behind a TLS proxy must advertise the public host even when
+    AGNES_BASE_URL / SERVER_URL are unset."""
+    monkeypatch.delenv("AGNES_BASE_URL", raising=False)
+    monkeypatch.delenv("SERVER_URL", raising=False)
+
+    from app.main import create_app
+    from starlette.testclient import TestClient
+
+    client = TestClient(create_app(), base_url="https://agnes.keboola.com")
+    r = client.get("/.well-known/oauth-authorization-server")
+    assert r.status_code == 200, r.text
+    meta = r.json()
+    assert meta["issuer"] == "https://agnes.keboola.com/api/mcp/http"
+    assert meta["authorization_endpoint"] == "https://agnes.keboola.com/api/mcp/http/authorize"
+
+    r = client.get("/.well-known/oauth-protected-resource/api/mcp/http")
+    assert r.status_code == 200, r.text
+    pr = r.json()
+    assert pr["resource"] == "https://agnes.keboola.com/api/mcp/http"
+
+
+def test_unauthenticated_mcp_www_authenticate_uses_request_host(seeded_app, monkeypatch):
+    monkeypatch.delenv("AGNES_BASE_URL", raising=False)
+    monkeypatch.delenv("SERVER_URL", raising=False)
+
+    from app.main import create_app
+    from starlette.testclient import TestClient
+
+    client = TestClient(create_app(), base_url="https://agnes.keboola.com")
+    r = client.post(
+        MCP_ENDPOINT,
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+        headers={"Accept": "application/json, text/event-stream"},
+    )
+    assert r.status_code == 401
+    www = r.headers.get("www-authenticate", "")
+    assert 'resource_metadata="https://agnes.keboola.com/.well-known/oauth-protected-resource/api/mcp/http"' in www
+
+
 def test_unauthenticated_mcp_returns_401_challenge(seeded_app):
     client = seeded_app["client"]
     r = client.post(
@@ -133,10 +173,12 @@ def _run_full_flow(client, admin_token, redirect_uri):
     # 3. consent POST allow → redirect back to the client with ?code=.
     #    Send a TAMPERED state in the form body to prove it is ignored: the
     #    authoritative state is the one persisted server-side at authorize().
+    #    A genuine browser same-origin form POST carries an Origin header; send
+    #    one so the consent CSRF gate (_same_origin) sees it as same-origin.
     r = client.post(
         "/api/mcp/oauth/consent",
         data={"pending": pending, "state": "TAMPERED", "action": "allow"},
-        headers=auth_hdr,
+        headers={**auth_hdr, "Origin": "http://testserver"},
         follow_redirects=False,
     )
     assert r.status_code in (302, 307), r.text
@@ -249,6 +291,44 @@ def test_consent_post_rejects_cross_origin(seeded_app):
             "Authorization": f"Bearer {admin_token}",
             "Origin": "https://evil.example.com",
         },
+        follow_redirects=False,
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_consent_post_rejects_missing_origin_when_unpinned(seeded_app, monkeypatch):
+    """A header-less consent POST must be rejected even when no public base URL
+    is pinned (AGNES_BASE_URL/SERVER_URL unset). A genuine browser always sends
+    Origin/Referer on a cross-origin form POST, so a header-less submit is a
+    CSRF signal — the gate must not blanket-trust it just because the host is
+    request-derived rather than env-pinned."""
+    monkeypatch.delenv("AGNES_BASE_URL", raising=False)
+    monkeypatch.delenv("SERVER_URL", raising=False)
+
+    client = seeded_app["client"]
+    admin_token = seeded_app["admin_token"]
+    reg = _register_client(client)
+    _, challenge = _pkce()
+
+    r = client.get(
+        f"{MCP_MOUNT}/authorize",
+        params={
+            "response_type": "code",
+            "client_id": reg["client_id"],
+            "redirect_uri": "http://localhost:9999/callback",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "state": "xyz",
+            "scope": "read",
+        },
+        follow_redirects=False,
+    )
+    pending = parse_qs(urlparse(r.headers["location"]).query)["pending"][0]
+
+    r = client.post(
+        "/api/mcp/oauth/consent",
+        data={"pending": pending, "action": "allow"},
+        headers={"Authorization": f"Bearer {admin_token}"},  # no Origin/Referer
         follow_redirects=False,
     )
     assert r.status_code == 403, r.text
