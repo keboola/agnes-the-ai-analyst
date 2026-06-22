@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "feature/**"]
+    branches: [main, "feature/**", "ci/update-test-durations-*"]
   pull_request:
     branches: [main]
   schedule:
