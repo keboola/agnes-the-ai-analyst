@@ -125,6 +125,12 @@ def _marketplace_plugin_blocks() -> List[Block]:
     for mr in marketplace_registry_repo().list_all():
         blocks[mr["id"]] = {"id": mr["id"], "name": mr["name"], "items": []}
     for p in marketplace_plugins_repo().list_all():
+        # Admin-disabled plugins are hidden from the RBAC grant UI, like every
+        # other served surface (browse / my-stack / synthetic feed). The only
+        # place a disabled plugin stays visible is the /admin/marketplaces
+        # details modal, where an admin can re-enable it.
+        if p.get("admin_disabled"):
+            continue
         block = blocks.get(p.get("marketplace_id"))
         if block is None:
             continue

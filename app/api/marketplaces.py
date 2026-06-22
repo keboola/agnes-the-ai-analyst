@@ -33,6 +33,7 @@ from src.repositories import (
     marketplace_registry_repo,
     resource_grants_repo,
     user_curated_subscriptions_repo,
+    user_groups_repo,
 )
 
 logger = logging.getLogger(__name__)
@@ -161,6 +162,9 @@ class PluginResponse(BaseModel):
     # v39: surfaced so the admin Details modal renders the SYSTEM pill
     # + flips the "Mark as system" / "Unmark system" toggle button.
     is_system: bool = False
+    # v78: surfaced so the admin Details modal renders the "Disable plugin"
+    # toggle + greys out the system button for admin-disabled plugins.
+    admin_disabled: bool = False
 
 
 class SystemFlagResponse(BaseModel):
@@ -232,6 +236,7 @@ async def list_plugins(
             source_type=r.get("source_type"),
             source_spec=r.get("source_spec"),
             is_system=bool(r.get("is_system")),
+            admin_disabled=bool(r.get("admin_disabled")),
         )
         for r in rows
     ]
@@ -428,21 +433,16 @@ async def delete_marketplace(
 
     repo.unregister(marketplace_id)
     # Drop cached plugin rows and any resource grants that reference plugins
-    # from this marketplace. resource_grants stores resource_id as
-    # "<marketplace_slug>/<plugin_name>" — match the slash-prefix via
-    # starts_with(), not LIKE: marketplace slugs may contain '_' (validated
-    # by [a-z0-9][a-z0-9_-]{0,63}) and LIKE would interpret it as a
-    # single-char wildcard, silently dropping grants from sibling
-    # marketplaces whose slug differs by exactly one character.
+    # from this marketplace. Routed through the repo factory so the deletes hit
+    # the ACTIVE backend (PG / DuckDB) — a raw conn.execute on the
+    # Depends(_get_db) connection runs against the always-DuckDB system file and
+    # silently no-ops on a Postgres instance, orphaning the plugins + grants in
+    # PG (#518 backend-split). The repos match the marketplace slug via
+    # split_part(resource_id, '/', 1) rather than a LIKE prefix, so a slug
+    # containing '_' can't drop a sibling marketplace's grants.
     try:
-        conn.execute(
-            "DELETE FROM marketplace_plugins WHERE marketplace_id = ?",
-            [marketplace_id],
-        )
-        conn.execute(
-            "DELETE FROM resource_grants WHERE resource_type = ? AND starts_with(resource_id, ? || '/')",
-            [ResourceType.MARKETPLACE_PLUGIN.value, marketplace_id],
-        )
+        marketplace_plugins_repo().clear_for_marketplace(marketplace_id)
+        resource_grants_repo().delete_for_marketplace_plugins(marketplace_id)
         # Drop user subscriptions to plugins from this marketplace so a
         # re-registered slug doesn't inherit stale subscribe state.
         user_curated_subscriptions_repo().delete_for_marketplace(marketplace_id)
@@ -574,46 +574,55 @@ def mark_plugin_system(
     that slipped past the creation hooks gets caught up.
     """
 
-    plugin_row = conn.execute(
-        "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    ).fetchone()
-    if not plugin_row:
+    # Existence check + is_system flip routed through the factory so they hit
+    # the ACTIVE backend (PG / DuckDB). A raw conn.execute on the
+    # Depends(_get_db) connection runs against the always-DuckDB system file and
+    # silently no-ops on a Postgres instance (#518 backend-split): the SELECT
+    # would 404 a plugin that only exists in PG, and the UPDATE would never
+    # persist is_system.
+    plugins_repo = marketplace_plugins_repo()
+    plugin = plugins_repo.get(marketplace_id, plugin_name)
+    if not plugin:
+        raise HTTPException(status_code=404, detail="plugin not found")
+    # A disabled plugin must not regain system status. Disabling clears
+    # is_system and re-enabling does NOT restore it; marking a disabled plugin
+    # system here would resurrect it as a mandatory default on re-enable,
+    # breaking that contract. The UI greys the button out, but this endpoint is
+    # the real state boundary (direct API call / stale-modal race).
+    if plugin.get("admin_disabled"):
+        raise HTTPException(status_code=409, detail="plugin is disabled")
+    # set_system returns False only on a concurrent delete between the fetch
+    # above and the flip — surface it as a 404 rather than fanning out a ghost.
+    if not plugins_repo.set_system(marketplace_id, plugin_name, True):
         raise HTTPException(status_code=404, detail="plugin not found")
 
     resource_id = f"{marketplace_id}/{plugin_name}"
     affected_groups = 0
     affected_users = 0
 
-    conn.execute(
-        "UPDATE marketplace_plugins SET is_system = TRUE WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    )
-
-    # Pivot fanout: this plugin × every group / every user. We
-    # intentionally do NOT wrap the loop in a single BEGIN/COMMIT —
-    # DuckDB aborts the whole transaction on a ConstraintException, so
-    # an idempotent re-run (where most rows are duplicates) would die
-    # on the very first existing grant. Each row stands alone here:
-    # duplicate grants raise ConstraintException which we swallow
-    # (mirrors ``ON CONFLICT DO NOTHING`` semantics without DuckDB
-    # multi-target conflict resolution); duplicate subscriptions go
-    # through DuckDB's ON CONFLICT on the PK, which is well-supported.
-    # Partial-application is safe: a re-run completes the remainder.
-    groups = conn.execute("SELECT id FROM user_groups").fetchall()
+    # Pivot fanout: this plugin × every group / every user, through the repo
+    # factory. user_groups lives in the active backend, so the raw
+    # "SELECT id FROM user_groups" on the DuckDB conn read the wrong (frozen)
+    # group set on Postgres. ensure_grant is INSERT-OR-IGNORE / ON-CONFLICT-DO-
+    # NOTHING on both engines, so an idempotent re-run is cheap and never raises
+    # on a duplicate (the old code caught DuckDB's ConstraintException, which a
+    # Postgres IntegrityError would have slipped past). has_grant before the
+    # ensure keeps affected_groups meaning "newly granted"; user_groups is small.
     grants_repo = resource_grants_repo()
     actor_email = user.get("email") or user.get("id")
-    for (group_id,) in groups:
-        try:
-            grants_repo.create(
-                group_id=group_id,
-                resource_type=ResourceType.MARKETPLACE_PLUGIN.value,
-                resource_id=resource_id,
-                assigned_by=actor_email,
-            )
+    for group in user_groups_repo().list_all():
+        group_id = group["id"]
+        already = grants_repo.has_grant(
+            [group_id], ResourceType.MARKETPLACE_PLUGIN.value, resource_id
+        )
+        grants_repo.ensure_grant(
+            group_id,
+            ResourceType.MARKETPLACE_PLUGIN.value,
+            resource_id,
+            actor_email,
+        )
+        if not already:
             affected_groups += 1
-        except duckdb.ConstraintException:
-            continue
 
     affected_users = user_curated_subscriptions_repo().fanout_system_for_plugin(
         marketplace_id,
@@ -653,17 +662,11 @@ def unmark_plugin_system(
     (which immediately unlocks the checkboxes for this plugin) and
     users can unsubscribe normally on /marketplace?tab=my.
     """
-    plugin_row = conn.execute(
-        "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    ).fetchone()
-    if not plugin_row:
+    # Routed through the factory so the flip lands on the active backend — a
+    # raw UPDATE on the Depends(_get_db) DuckDB conn no-ops on Postgres
+    # (#518 backend-split). set_system returns False when no row matched.
+    if not marketplace_plugins_repo().set_system(marketplace_id, plugin_name, False):
         raise HTTPException(status_code=404, detail="plugin not found")
-
-    conn.execute(
-        "UPDATE marketplace_plugins SET is_system = FALSE WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    )
     _audit(
         conn,
         user["id"],

@@ -88,7 +88,15 @@ def _accessible_plugins(user: Dict[str, Any]) -> List[Dict[str, Any]]:
     group membership on a Postgres instance.
     """
     if is_user_admin(user["id"]):
-        return marketplace_plugins_repo().list_all()
+        # Admin bypasses RBAC, but admin-disabled plugins are off for everyone —
+        # their skills must not be served into Claude's context. The non-admin
+        # path below already filters them via list_with_filters' admin_disabled
+        # clause.
+        return [
+            p
+            for p in marketplace_plugins_repo().list_all()
+            if not p.get("admin_disabled")
+        ]
     group_ids = _user_group_ids(user["id"]) or set()
     items, _ = marketplace_plugins_repo().list_with_filters(
         group_ids=group_ids,

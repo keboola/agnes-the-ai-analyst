@@ -372,13 +372,44 @@ class MarketplacePluginsRepository:
         (marketplace_id, plugin_name) pair is not in the table (no-op).
         Disabled plugins are filtered from the served feed for all callers
         regardless of their RBAC grants — distinct from per-user opt-outs.
+
+        Disabling also clears `is_system`: a hidden plugin must not keep
+        fanning out as a system default. Re-enabling does NOT restore the
+        system flag (matching `unmark_system` semantics) — an admin must
+        re-mark it explicitly.
         """
         # DuckDB does not populate cursor.rowcount for UPDATE (it stays -1/0),
         # so we can't trust it to detect whether a row matched. RETURNING is
         # deterministic on both engines: one row per updated row.
+        if disabled:
+            sql = (
+                "UPDATE marketplace_plugins SET admin_disabled = TRUE, is_system = FALSE "
+                "WHERE marketplace_id = ? AND name = ? RETURNING name"
+            )
+            params = [marketplace_id, plugin_name]
+        else:
+            sql = (
+                "UPDATE marketplace_plugins SET admin_disabled = FALSE "
+                "WHERE marketplace_id = ? AND name = ? RETURNING name"
+            )
+            params = [marketplace_id, plugin_name]
+        updated = self.conn.execute(sql, params).fetchall()
+        return len(updated) > 0
+
+    def set_system(self, marketplace_id: str, plugin_name: str, system: bool) -> bool:
+        """Toggle the per-plugin ``is_system`` flag.
+
+        Returns True when the row existed and was updated, False when the
+        (marketplace_id, plugin_name) pair is not in the table (no-op) — the
+        handler surfaces the False as a 404. RETURNING makes the match
+        detection deterministic on both engines (DuckDB does not populate
+        ``cursor.rowcount`` for UPDATE). Independent of ``admin_disabled``;
+        the grant/subscription fan-out is owned by the API layer.
+        """
         updated = self.conn.execute(
-            "UPDATE marketplace_plugins SET admin_disabled = ? WHERE marketplace_id = ? AND name = ? RETURNING name",
-            [disabled, marketplace_id, plugin_name],
+            "UPDATE marketplace_plugins SET is_system = ? "
+            "WHERE marketplace_id = ? AND name = ? RETURNING name",
+            [system, marketplace_id, plugin_name],
         ).fetchall()
         return len(updated) > 0
 

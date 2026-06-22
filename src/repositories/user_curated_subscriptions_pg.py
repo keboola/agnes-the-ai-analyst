@@ -148,7 +148,7 @@ class UserCuratedSubscriptionsPgRepository:
                     """INSERT INTO user_plugin_optouts
                        (user_id, marketplace_id, plugin_name)
                        SELECT :u, marketplace_id, name
-                       FROM marketplace_plugins WHERE is_system = TRUE
+                       FROM marketplace_plugins WHERE is_system = TRUE AND admin_disabled = FALSE
                        ON CONFLICT (user_id, marketplace_id, plugin_name) DO NOTHING"""
                 ),
                 {"u": user_id},
