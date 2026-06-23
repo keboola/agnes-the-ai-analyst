@@ -4059,8 +4059,10 @@ def run_knowledge_migration(
     except (json.JSONDecodeError, OSError) as e:
         raise HTTPException(status_code=500, detail=f"Failed to read knowledge.json: {e}")
 
-    if not isinstance(knowledge_data, list):
-        raise HTTPException(status_code=500, detail="knowledge.json is not a list")
+    if isinstance(knowledge_data, dict) and "items" in knowledge_data:
+        knowledge_data = list(knowledge_data["items"].values())
+    elif not isinstance(knowledge_data, list):
+        raise HTTPException(status_code=500, detail="knowledge.json has unexpected format")
 
     count = 0
     repo = knowledge_repo()

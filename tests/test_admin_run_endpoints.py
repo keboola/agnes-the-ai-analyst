@@ -89,19 +89,27 @@ class TestRunSessionProcessor:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         # Reset the lazily-built registry so the new env is picked up.
         from services.session_processors import _build_registry
+
         _build_registry.cache_clear()
 
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         fake_stats = {
             "processor": "verification",
-            "scanned": 3, "processed": 2, "skipped": 1, "errors": 0,
-            "items_extracted": 4, "errors_detail": [],
+            "scanned": 3,
+            "processed": 2,
+            "skipped": 1,
+            "errors": 0,
+            "items_extracted": 4,
+            "errors_detail": [],
         }
-        with patch(
-            "services.session_pipeline.runner.run_processor",
-            return_value=fake_stats,
-        ) as m, patch("connectors.llm.factory.AnthropicExtractor"):
+        with (
+            patch(
+                "services.session_pipeline.runner.run_processor",
+                return_value=fake_stats,
+            ) as m,
+            patch("connectors.llm.factory.AnthropicExtractor"),
+        ):
             resp = c.post(
                 "/api/admin/run-session-processor?processor=verification",
                 headers=_auth(token),
@@ -116,14 +124,19 @@ class TestRunSessionProcessor:
         """The usage processor is registered as a no-op skeleton — endpoint
         should route to it without needing any LLM config."""
         from services.session_processors import _build_registry
+
         _build_registry.cache_clear()
 
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         fake_stats = {
             "processor": "usage",
-            "scanned": 0, "processed": 0, "skipped": 0, "errors": 0,
-            "items_extracted": 0, "errors_detail": [],
+            "scanned": 0,
+            "processed": 0,
+            "skipped": 0,
+            "errors": 0,
+            "items_extracted": 0,
+            "errors_detail": [],
         }
         with patch(
             "services.session_pipeline.runner.run_processor",
@@ -139,6 +152,7 @@ class TestRunSessionProcessor:
 
     def test_unknown_processor_returns_400(self, seeded_app):
         from services.session_processors import _build_registry
+
         _build_registry.cache_clear()
 
         c = seeded_app["client"]
@@ -157,6 +171,7 @@ class TestRunSessionProcessor:
         (PR #232 review)."""
         from app.api.admin import _get_processor_run_lock
         from services.session_processors import _build_registry
+
         _build_registry.cache_clear()
 
         c = seeded_app["client"]
@@ -182,6 +197,7 @@ class TestRunSessionProcessor:
         the processor permanently until process restart."""
         from app.api.admin import _get_processor_run_lock
         from services.session_processors import _build_registry
+
         _build_registry.cache_clear()
 
         c = seeded_app["client"]
@@ -217,15 +233,19 @@ class TestRunSessionProcessor:
         /admin/scheduler-runs sees the failure instead of only docker logs."""
         from src.db import get_system_db
         from services.session_processors import _build_registry
+
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         _build_registry.cache_clear()
 
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
-        with patch(
-            "services.session_pipeline.runner.run_processor",
-            side_effect=RuntimeError("simulated DuckDB lock"),
-        ), patch("connectors.llm.factory.AnthropicExtractor"):
+        with (
+            patch(
+                "services.session_pipeline.runner.run_processor",
+                side_effect=RuntimeError("simulated DuckDB lock"),
+            ),
+            patch("connectors.llm.factory.AnthropicExtractor"),
+        ):
             resp = c.post(
                 "/api/admin/run-session-processor?processor=verification",
                 headers=_auth(token),
@@ -350,9 +370,13 @@ class TestRunKnowledgeMigration:
         memory_dir.mkdir(exist_ok=True)
         items = [
             {
-                "id": "km-mig-001", "title": "Test item", "content": "Test content",
-                "category": "data_analysis", "status": "pending",
-                "source_type": "claude_local_md", "sensitivity": "internal",
+                "id": "km-mig-001",
+                "title": "Test item",
+                "content": "Test content",
+                "category": "data_analysis",
+                "status": "pending",
+                "source_type": "claude_local_md",
+                "sensitivity": "internal",
                 "is_personal": False,
             },
         ]
@@ -371,9 +395,13 @@ class TestRunKnowledgeMigration:
         memory_dir.mkdir(exist_ok=True)
         items = [
             {
-                "id": "km-mig-002", "title": "Dup item", "content": "C",
-                "category": "workflow", "status": "pending",
-                "source_type": "claude_local_md", "sensitivity": "internal",
+                "id": "km-mig-002",
+                "title": "Dup item",
+                "content": "C",
+                "category": "workflow",
+                "status": "pending",
+                "source_type": "claude_local_md",
+                "sensitivity": "internal",
                 "is_personal": False,
             },
         ]
@@ -389,6 +417,31 @@ class TestRunKnowledgeMigration:
         resp = c.post("/api/admin/run-knowledge-migration", headers=_auth(token))
         assert resp.status_code == 200
         assert resp.json()["knowledge_imported"] == 0
+
+    def test_imports_items_from_dict_format(self, seeded_app):
+        """collector.py writes {"items": {id: item_dict}, "metadata": {...}} — the real format."""
+        data_dir = seeded_app["env"]["data_dir"]
+        memory_dir = data_dir / "corporate-memory"
+        memory_dir.mkdir(exist_ok=True)
+        item = {
+            "id": "km-mig-003",
+            "title": "Dict format item",
+            "content": "Content",
+            "category": "data_analysis",
+            "status": "pending",
+            "source_type": "claude_local_md",
+            "sensitivity": "internal",
+            "is_personal": False,
+        }
+        payload = {"items": {"km-mig-003": item}, "metadata": {"collected_at": "2026-01-01T00:00:00"}}
+        (memory_dir / "knowledge.json").write_text(json.dumps(payload))
+
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        resp = c.post("/api/admin/run-knowledge-migration", headers=_auth(token))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["knowledge_imported"] == 1
 
     def test_non_admin_blocked(self, seeded_app):
         c, token = seeded_app["client"], seeded_app["analyst_token"]
@@ -408,6 +461,7 @@ class TestSchedulerJobsWireUp:
         ):
             monkeypatch.delenv(v, raising=False)
         from services.scheduler.__main__ import build_jobs
+
         names = {n for n, *_ in build_jobs()}
         assert "session-collector" in names
 
@@ -422,6 +476,7 @@ class TestSchedulerJobsWireUp:
         ):
             monkeypatch.delenv(v, raising=False)
         from services.scheduler.__main__ import build_jobs
+
         names = {n for n, *_ in build_jobs()}
         assert "session-processor:verification" in names
         assert "session-processor:usage" in names
@@ -435,6 +490,7 @@ class TestSchedulerJobsWireUp:
         ):
             monkeypatch.delenv(v, raising=False)
         from services.scheduler.__main__ import build_jobs
+
         names = {n for n, *_ in build_jobs()}
         assert "corporate-memory" in names
 
@@ -447,6 +503,7 @@ class TestSchedulerJobsWireUp:
         ):
             monkeypatch.delenv(v, raising=False)
         from services.scheduler.__main__ import build_jobs
+
         target = next(j for j in build_jobs() if j[0] == "session-collector")
         _, _, endpoint, method, _t = target
         assert endpoint == "/api/admin/run-session-collector"
@@ -461,12 +518,15 @@ class TestSchedulerJobsWireUp:
         ):
             monkeypatch.delenv(v, raising=False)
         from services.scheduler.__main__ import build_jobs
+
         jobs = {n: (endpoint, method) for n, _, endpoint, method, _ in build_jobs()}
         assert jobs["session-processor:verification"] == (
-            "/api/admin/run-session-processor?processor=verification", "POST",
+            "/api/admin/run-session-processor?processor=verification",
+            "POST",
         )
         assert jobs["session-processor:usage"] == (
-            "/api/admin/run-session-processor?processor=usage", "POST",
+            "/api/admin/run-session-processor?processor=usage",
+            "POST",
         )
 
     def test_corporate_memory_endpoint_is_registered(self, monkeypatch):
@@ -478,6 +538,7 @@ class TestSchedulerJobsWireUp:
         ):
             monkeypatch.delenv(v, raising=False)
         from services.scheduler.__main__ import build_jobs
+
         target = next(j for j in build_jobs() if j[0] == "corporate-memory")
         _, _, endpoint, method, _t = target
         assert endpoint == "/api/admin/run-corporate-memory"
@@ -497,12 +558,17 @@ class TestSchedulerJobsWireUp:
         ):
             monkeypatch.delenv(v, raising=False)
         from services.scheduler.__main__ import build_jobs
-        targets = {n: schedule for n, schedule, *_ in build_jobs()
-                   if n in (
-                       "session-collector",
-                       "session-processor:verification",
-                       "corporate-memory",
-                   )}
+
+        targets = {
+            n: schedule
+            for n, schedule, *_ in build_jobs()
+            if n
+            in (
+                "session-collector",
+                "session-processor:verification",
+                "corporate-memory",
+            )
+        }
         # All three present.
         assert len(targets) == 3
 
@@ -527,8 +593,12 @@ class TestRunJiraSlaPoll:
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         fake_stats = {
-            "open_issues": 12, "updated": 3, "healed": 1,
-            "skipped": 0, "failed": 0, "elapsed_sec": 4.21,
+            "open_issues": 12,
+            "updated": 3,
+            "healed": 1,
+            "skipped": 0,
+            "failed": 0,
+            "elapsed_sec": 4.21,
         }
         with patch(
             "connectors.jira.scripts.poll_sla.run",
@@ -562,8 +632,7 @@ class TestRunJiraSlaPoll:
         conn = get_system_db()
         try:
             rows = conn.execute(
-                "SELECT params FROM audit_log WHERE action = 'run_jira_sla_poll' "
-                "ORDER BY timestamp DESC LIMIT 1"
+                "SELECT params FROM audit_log WHERE action = 'run_jira_sla_poll' ORDER BY timestamp DESC LIMIT 1"
             ).fetchall()
         finally:
             conn.close()
@@ -590,8 +659,7 @@ class TestRunJiraSlaPoll:
         conn = get_system_db()
         try:
             rows = conn.execute(
-                "SELECT params FROM audit_log WHERE action = 'run_jira_sla_poll' "
-                "ORDER BY timestamp DESC LIMIT 1"
+                "SELECT params FROM audit_log WHERE action = 'run_jira_sla_poll' ORDER BY timestamp DESC LIMIT 1"
             ).fetchall()
         finally:
             conn.close()
@@ -620,16 +688,23 @@ class TestRunJiraConsistencyCheck:
         token = seeded_app["admin_token"]
         fake_report = {"status": "success", "alert_level": "INFO", "checked": 42}
 
-        mock_checker = type("MockChecker", (), {
-            "run_check": lambda self, **kw: fake_report,
-        })()
+        mock_checker = type(
+            "MockChecker",
+            (),
+            {
+                "run_check": lambda self, **kw: fake_report,
+            },
+        )()
 
-        with patch(
-            "connectors.jira.scripts.consistency_check.Config.from_env",
-            return_value=object(),
-        ), patch(
-            "connectors.jira.scripts.consistency_check.JiraConsistencyChecker",
-            return_value=mock_checker,
+        with (
+            patch(
+                "connectors.jira.scripts.consistency_check.Config.from_env",
+                return_value=object(),
+            ),
+            patch(
+                "connectors.jira.scripts.consistency_check.JiraConsistencyChecker",
+                return_value=mock_checker,
+            ),
         ):
             resp = c.post("/api/admin/run-jira-consistency-check", headers=_auth(token))
         assert resp.status_code == 200, resp.text
@@ -678,12 +753,15 @@ class TestRunJiraConsistencyCheck:
             def run_check(self, **_):
                 raise RuntimeError("simulated DuckDB lock contention")
 
-        with patch(
-            "connectors.jira.scripts.consistency_check.Config.from_env",
-            return_value=object(),
-        ), patch(
-            "connectors.jira.scripts.consistency_check.JiraConsistencyChecker",
-            _RaisingChecker,
+        with (
+            patch(
+                "connectors.jira.scripts.consistency_check.Config.from_env",
+                return_value=object(),
+            ),
+            patch(
+                "connectors.jira.scripts.consistency_check.JiraConsistencyChecker",
+                _RaisingChecker,
+            ),
         ):
             resp = c.post("/api/admin/run-jira-consistency-check", headers=_auth(token))
         assert resp.status_code == 500
