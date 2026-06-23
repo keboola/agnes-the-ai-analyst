@@ -1976,6 +1976,10 @@ async def corporate_memory_admin(
     edit_categories = sorted({i.get("category") for i in all_items if i.get("category")})
     edit_tags = sorted({t for i in all_items for t in (i.get("tags") or []) if t})
 
+    knowledge_json_exists = (
+        Path(os.environ.get("DATA_DIR", "./data")) / "corporate-memory" / "knowledge.json"
+    ).exists()
+
     ctx = _build_context(
         request,
         user=user,
@@ -2001,6 +2005,7 @@ async def corporate_memory_admin(
         edit_tags=edit_tags,
         contradictions=contradictions,
         audit_entries=[],
+        knowledge_json_exists=knowledge_json_exists,
     )
     return templates.TemplateResponse(request, "admin_corporate_memory.html", ctx)
 

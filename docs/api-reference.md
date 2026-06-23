@@ -870,6 +870,7 @@ synced IWT clone for the bind-git file picker.
 - /api/admin/run-corporate-memory
 - /api/admin/run-jira-consistency-check
 - /api/admin/run-jira-sla-poll
+- /api/admin/run-knowledge-migration
 - /api/admin/run-reap-stuck-reviews
 - /api/admin/run-session-collector
 - /api/admin/run-session-processor
