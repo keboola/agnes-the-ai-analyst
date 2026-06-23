@@ -1481,7 +1481,6 @@ KNOWN_UNTESTED = {
     "GET /docs",
     "GET /documentation/api",
     "GET /first-time-setup",
-
     "GET /home",
     "GET /install",
     "GET /login",
@@ -1693,6 +1692,7 @@ KNOWN_UNTESTED = {
     "POST /api/admin/run-corporate-memory",
     "POST /api/admin/run-jira-consistency-check",
     "POST /api/admin/run-jira-sla-poll",
+    "POST /api/admin/run-knowledge-migration",
     "POST /api/admin/run-session-collector",
     "POST /api/admin/run-session-processor",
     "POST /api/admin/uploads/cover-image",

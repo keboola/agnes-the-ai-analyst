@@ -147,6 +147,11 @@ _BUILTIN_DISABLE_REASON = (
     "web UI only at /admin/marketplaces, no analyst CLI/MCP analogue (mirrors "
     "the grandfathered admin marketplace register/sync/delete mutations)"
 )
+_KNOWLEDGE_MIGRATION_REASON = (
+    "one-time retroactive migration trigger (pre-v0.71.60 knowledge.json → DB) — "
+    "idempotent admin-only POST, no analyst CLI/MCP analogue; endpoint is "
+    "temporary and will be removed once all instances have migrated"
+)
 _EXEMPT: dict[str, str] = {
     "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
@@ -174,6 +179,7 @@ _EXEMPT: dict[str, str] = {
     "/api/admin/adoption/users/{user_id}/top-tools": _ADOPTION_REASON,
     "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/disable": _BUILTIN_DISABLE_REASON,
     "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/enable": _BUILTIN_DISABLE_REASON,
+    "/api/admin/run-knowledge-migration": _KNOWLEDGE_MIGRATION_REASON,
     "/api/admin/datasource-secrets": (
         "Admin-only vault-backed credential store for datasource OAuth keys "
         "(GWS client_id/secret). Write-only, no analyst CLI/MCP analogue — "

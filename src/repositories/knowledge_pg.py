@@ -14,6 +14,7 @@ Mirrors ``src/repositories/knowledge.py``. Key differences:
 
   - ``json_each`` is identical in PG.
 """
+
 from __future__ import annotations
 
 import json
@@ -32,10 +33,23 @@ logger = logging.getLogger(__name__)
 class KnowledgePgRepository:
     _JSON_LIST_COLUMNS = ("tags", "entities")
     _UPDATABLE_FIELDS = {
-        "title", "content", "category", "tags", "domain", "entities",
-        "source_type", "source_ref", "source_user", "audience",
-        "confidence", "status", "sensitivity", "is_personal",
-        "valid_from", "valid_until", "supersedes",
+        "title",
+        "content",
+        "category",
+        "tags",
+        "domain",
+        "entities",
+        "source_type",
+        "source_ref",
+        "source_user",
+        "audience",
+        "confidence",
+        "status",
+        "sensitivity",
+        "is_personal",
+        "valid_from",
+        "valid_until",
+        "supersedes",
     }
     _JSON_BIND_COLUMNS = {"tags", "entities", "contributors"}
 
@@ -67,10 +81,14 @@ class KnowledgePgRepository:
 
     def get_by_id(self, item_id: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT * FROM knowledge_items WHERE id = :id"),
-                {"id": item_id},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text("SELECT * FROM knowledge_items WHERE id = :id"),
+                    {"id": item_id},
+                )
+                .mappings()
+                .first()
+            )
         return self._normalize_row(dict(row)) if row else None
 
     def get_by_ids(self, item_ids: List[str]) -> Dict[str, Any]:
@@ -83,12 +101,14 @@ class KnowledgePgRepository:
             id_keys.append(f":{k}")
             params[k] = iid
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    f"SELECT * FROM knowledge_items WHERE id IN ({','.join(id_keys)})"
-                ),
-                params,
-            ).mappings().all()
+            rows = (
+                conn.execute(
+                    sa.text(f"SELECT * FROM knowledge_items WHERE id IN ({','.join(id_keys)})"),
+                    params,
+                )
+                .mappings()
+                .all()
+            )
         return {r["id"]: self._normalize_row(dict(r)) for r in rows}
 
     def create(
@@ -136,18 +156,33 @@ class KnowledgePgRepository:
                               :ireq, :now, :now)"""
                 ),
                 {
-                    "id": id, "title": title, "content": content,
-                    "category": category, "su": source_user,
+                    "id": id,
+                    "title": title,
+                    "content": content,
+                    "category": category,
+                    "su": source_user,
                     "tags": json.dumps(tags) if tags else None,
-                    "status": status, "confidence": confidence,
+                    "status": status,
+                    "confidence": confidence,
                     "domain": domain,
                     "entities": json.dumps(entities) if entities else None,
-                    "st": source_type, "sr": source_ref,
-                    "vf": valid_from, "vu": valid_until, "sup": supersedes,
-                    "sens": sensitivity, "ip": is_personal,
-                    "ireq": is_required, "now": now,
+                    "st": source_type,
+                    "sr": source_ref,
+                    "vf": valid_from,
+                    "vu": valid_until,
+                    "sup": supersedes,
+                    "sens": sensitivity,
+                    "ip": is_personal,
+                    "ireq": is_required,
+                    "now": now,
                 },
             )
+
+    def _resolve_domain_slug(self, slug: str) -> Optional[str]:
+        """slug → ``memory_domains.id``. Returns None for unknown slug (parity with DuckDB repo)."""
+        with self._engine.begin() as conn:
+            row = conn.execute(sa.text("SELECT id FROM memory_domains WHERE slug = :slug"), {"slug": slug}).fetchone()
+        return row[0] if row else None
 
     def set_is_required(self, item_id: str, value: bool) -> None:
         """Toggle the global ``is_required`` flag without touching ``status``
@@ -157,10 +192,7 @@ class KnowledgePgRepository:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "UPDATE knowledge_items SET is_required = :v, updated_at = :now "
-                    "WHERE id = :id"
-                ),
+                sa.text("UPDATE knowledge_items SET is_required = :v, updated_at = :now WHERE id = :id"),
                 {"v": bool(value), "now": now, "id": item_id},
             )
 
@@ -182,9 +214,7 @@ class KnowledgePgRepository:
         sets.append("updated_at = :updated_at")
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    f"UPDATE knowledge_items SET {', '.join(sets)} WHERE id = :item_id"
-                ),
+                sa.text(f"UPDATE knowledge_items SET {', '.join(sets)} WHERE id = :item_id"),
                 params,
             )
 
@@ -192,9 +222,7 @@ class KnowledgePgRepository:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "UPDATE knowledge_items SET status = :s, updated_at = :now WHERE id = :id"
-                ),
+                sa.text("UPDATE knowledge_items SET status = :s, updated_at = :now WHERE id = :id"),
                 {"s": status, "now": now, "id": item_id},
             )
 
@@ -220,24 +248,27 @@ class KnowledgePgRepository:
         params: Dict[str, Any] = {"limit": limit, "offset": offset}
 
         if is_required is not None:
-            sql_parts.append(" AND is_required = :ireq"); params["ireq"] = bool(is_required)
+            sql_parts.append(" AND is_required = :ireq")
+            params["ireq"] = bool(is_required)
         if statuses:
             keys = []
             for i, s in enumerate(statuses):
-                k = f"st_{i}"; keys.append(f":{k}"); params[k] = s
+                k = f"st_{i}"
+                keys.append(f":{k}")
+                params[k] = s
             sql_parts.append(f" AND status IN ({','.join(keys)})")
         if category:
-            sql_parts.append(" AND category = :category"); params["category"] = category
+            sql_parts.append(" AND category = :category")
+            params["category"] = category
         if upvoted_by_user:
-            sql_parts.append(
-                " AND id IN (SELECT item_id FROM knowledge_votes "
-                "WHERE user_id = :upv AND vote > 0)"
-            )
+            sql_parts.append(" AND id IN (SELECT item_id FROM knowledge_votes WHERE user_id = :upv AND vote > 0)")
             params["upv"] = upvoted_by_user
         if domain:
-            sql_parts.append(" AND domain = :domain"); params["domain"] = domain
+            sql_parts.append(" AND domain = :domain")
+            params["domain"] = domain
         if source_type:
-            sql_parts.append(" AND source_type = :st_param"); params["st_param"] = source_type
+            sql_parts.append(" AND source_type = :st_param")
+            params["st_param"] = source_type
         if exclude_personal:
             sql_parts.append(" AND (is_personal = FALSE OR is_personal IS NULL)")
         if user_groups is not None:
@@ -245,12 +276,16 @@ class KnowledgePgRepository:
             if user_groups:
                 keys = []
                 for i, g in enumerate(user_groups):
-                    k = f"ug_{i}"; keys.append(f":{k}"); params[k] = g
+                    k = f"ug_{i}"
+                    keys.append(f":{k}")
+                    params[k] = g
                 visibility.append(f"audience IN ({','.join(keys)})")
             if granted_domains:
                 keys = []
                 for i, d in enumerate(granted_domains):
-                    k = f"gd_{i}"; keys.append(f":{k}"); params[k] = d
+                    k = f"gd_{i}"
+                    keys.append(f":{k}")
+                    params[k] = d
                 visibility.append(
                     "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
                     "WHERE kid.item_id = knowledge_items.id "
@@ -293,10 +328,15 @@ class KnowledgePgRepository:
         ``ts_rank`` with ILIKE fallback.
         """
         filter_parts, filter_params = self._build_filter_clauses(
-            statuses=statuses, category=category, domain=domain,
-            source_type=source_type, exclude_personal=exclude_personal,
-            user_groups=user_groups, granted_domains=granted_domains,
-            dismissed_by_user=dismissed_by_user, hide_dismissed=hide_dismissed,
+            statuses=statuses,
+            category=category,
+            domain=domain,
+            source_type=source_type,
+            exclude_personal=exclude_personal,
+            user_groups=user_groups,
+            granted_domains=granted_domains,
+            dismissed_by_user=dismissed_by_user,
+            hide_dismissed=hide_dismissed,
             is_required=is_required,
         )
         params: Dict[str, Any] = dict(filter_params)
@@ -313,7 +353,7 @@ class KnowledgePgRepository:
             "  @@ plainto_tsquery('english', :q)"
             + "".join(filter_parts)
             + " ORDER BY bm25_score DESC, updated_at DESC "
-              "LIMIT :limit OFFSET :offset"
+            "LIMIT :limit OFFSET :offset"
         )
         try:
             with self._engine.connect() as conn:
@@ -350,10 +390,15 @@ class KnowledgePgRepository:
         is_required: Optional[bool] = None,
     ) -> int:
         filter_parts, filter_params = self._build_filter_clauses(
-            statuses=statuses, category=category, domain=domain,
-            source_type=source_type, exclude_personal=exclude_personal,
-            user_groups=user_groups, granted_domains=granted_domains,
-            dismissed_by_user=dismissed_by_user, hide_dismissed=hide_dismissed,
+            statuses=statuses,
+            category=category,
+            domain=domain,
+            source_type=source_type,
+            exclude_personal=exclude_personal,
+            user_groups=user_groups,
+            granted_domains=granted_domains,
+            dismissed_by_user=dismissed_by_user,
+            hide_dismissed=hide_dismissed,
             is_required=is_required,
         )
         if not search:
@@ -366,8 +411,7 @@ class KnowledgePgRepository:
         fts_sql = (
             "SELECT COUNT(*) FROM knowledge_items "
             "WHERE to_tsvector('english', coalesce(title,'') || ' ' || coalesce(content,'')) "
-            "  @@ plainto_tsquery('english', :q)"
-            + "".join(filter_parts)
+            "  @@ plainto_tsquery('english', :q)" + "".join(filter_parts)
         )
         try:
             with self._engine.connect() as conn:
@@ -378,8 +422,7 @@ class KnowledgePgRepository:
             ilike_params["pattern"] = f"%{search}%"
             ilike_sql = (
                 "SELECT COUNT(*) FROM knowledge_items "
-                "WHERE (title ILIKE :pattern OR content ILIKE :pattern)"
-                + "".join(filter_parts)
+                "WHERE (title ILIKE :pattern OR content ILIKE :pattern)" + "".join(filter_parts)
             )
             with self._engine.connect() as conn:
                 return int(conn.execute(sa.text(ilike_sql), ilike_params).scalar() or 0)
@@ -401,18 +444,24 @@ class KnowledgePgRepository:
         parts: List[str] = []
         params: Dict[str, Any] = {}
         if is_required is not None:
-            parts.append(" AND is_required = :ireq"); params["ireq"] = bool(is_required)
+            parts.append(" AND is_required = :ireq")
+            params["ireq"] = bool(is_required)
         if statuses:
             keys = []
             for i, s in enumerate(statuses):
-                k = f"st_{i}"; keys.append(f":{k}"); params[k] = s
+                k = f"st_{i}"
+                keys.append(f":{k}")
+                params[k] = s
             parts.append(f" AND status IN ({','.join(keys)})")
         if category:
-            parts.append(" AND category = :category"); params["category"] = category
+            parts.append(" AND category = :category")
+            params["category"] = category
         if domain:
-            parts.append(" AND domain = :domain"); params["domain"] = domain
+            parts.append(" AND domain = :domain")
+            params["domain"] = domain
         if source_type:
-            parts.append(" AND source_type = :st_param"); params["st_param"] = source_type
+            parts.append(" AND source_type = :st_param")
+            params["st_param"] = source_type
         if exclude_personal:
             parts.append(" AND (is_personal = FALSE OR is_personal IS NULL)")
         if user_groups is not None:
@@ -420,12 +469,16 @@ class KnowledgePgRepository:
             if user_groups:
                 keys = []
                 for i, g in enumerate(user_groups):
-                    k = f"ug_{i}"; keys.append(f":{k}"); params[k] = g
+                    k = f"ug_{i}"
+                    keys.append(f":{k}")
+                    params[k] = g
                 vis.append(f"audience IN ({','.join(keys)})")
             if granted_domains:
                 keys = []
                 for i, d in enumerate(granted_domains):
-                    k = f"gd_{i}"; keys.append(f":{k}"); params[k] = d
+                    k = f"gd_{i}"
+                    keys.append(f":{k}")
+                    params[k] = d
                 vis.append(
                     "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
                     "WHERE kid.item_id = knowledge_items.id "
@@ -457,7 +510,9 @@ class KnowledgePgRepository:
         if statuses:
             keys = []
             for i, s in enumerate(statuses):
-                k = f"st_{i}"; keys.append(f":{k}"); params[k] = s
+                k = f"st_{i}"
+                keys.append(f":{k}")
+                params[k] = s
             sql_parts.append(f" AND status IN ({','.join(keys)})")
         sql_parts.append(" ORDER BY updated_at DESC LIMIT :limit")
         with self._engine.connect() as conn:
@@ -466,23 +521,21 @@ class KnowledgePgRepository:
 
     def get_user_contributions(self, source_user: str) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    "SELECT * FROM knowledge_items "
-                    "WHERE source_user = :su ORDER BY updated_at DESC"
-                ),
-                {"su": source_user},
-            ).mappings().all()
+            rows = (
+                conn.execute(
+                    sa.text("SELECT * FROM knowledge_items WHERE source_user = :su ORDER BY updated_at DESC"),
+                    {"su": source_user},
+                )
+                .mappings()
+                .all()
+            )
         return self._rows(rows)
 
     def set_personal(self, item_id: str, is_personal: bool) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "UPDATE knowledge_items SET is_personal = :ip, updated_at = :now "
-                    "WHERE id = :id"
-                ),
+                sa.text("UPDATE knowledge_items SET is_personal = :ip, updated_at = :now WHERE id = :id"),
                 {"ip": is_personal, "now": now, "id": item_id},
             )
 
@@ -504,9 +557,7 @@ class KnowledgePgRepository:
     def unvote(self, item_id: str, user_id: str) -> None:
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "DELETE FROM knowledge_votes WHERE item_id = :i AND user_id = :u"
-                ),
+                sa.text("DELETE FROM knowledge_votes WHERE item_id = :i AND user_id = :u"),
                 {"i": item_id, "u": user_id},
             )
 
@@ -539,19 +590,14 @@ class KnowledgePgRepository:
     def undismiss(self, user_id: str, item_id: str) -> None:
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "DELETE FROM knowledge_item_user_dismissed WHERE user_id = :u AND item_id = :i"
-                ),
+                sa.text("DELETE FROM knowledge_item_user_dismissed WHERE user_id = :u AND item_id = :i"),
                 {"u": user_id, "i": item_id},
             )
 
     def is_dismissed(self, user_id: str, item_id: str) -> bool:
         with self._engine.connect() as conn:
             row = conn.execute(
-                sa.text(
-                    "SELECT 1 FROM knowledge_item_user_dismissed "
-                    "WHERE user_id = :u AND item_id = :i"
-                ),
+                sa.text("SELECT 1 FROM knowledge_item_user_dismissed WHERE user_id = :u AND item_id = :i"),
                 {"u": user_id, "i": item_id},
             ).first()
         return row is not None
@@ -559,9 +605,7 @@ class KnowledgePgRepository:
     def list_dismissed_ids(self, user_id: str) -> List[str]:
         with self._engine.connect() as conn:
             rows = conn.execute(
-                sa.text(
-                    "SELECT item_id FROM knowledge_item_user_dismissed WHERE user_id = :u"
-                ),
+                sa.text("SELECT item_id FROM knowledge_item_user_dismissed WHERE user_id = :u"),
                 {"u": user_id},
             ).all()
         return [r[0] for r in rows]
@@ -589,8 +633,12 @@ class KnowledgePgRepository:
                     ) VALUES (:id, :a, :b, :ex, :sev, :sr)"""
                 ),
                 {
-                    "id": contradiction_id, "a": item_a_id, "b": item_b_id,
-                    "ex": explanation, "sev": severity, "sr": suggested_resolution_db,
+                    "id": contradiction_id,
+                    "a": item_a_id,
+                    "b": item_b_id,
+                    "ex": explanation,
+                    "sev": severity,
+                    "sr": suggested_resolution_db,
                 },
             )
         return contradiction_id
@@ -613,7 +661,8 @@ class KnowledgePgRepository:
         sql_parts = ["SELECT * FROM knowledge_contradictions WHERE 1=1"]
         params: Dict[str, Any] = {"limit": limit}
         if resolved is not None:
-            sql_parts.append(" AND resolved = :r"); params["r"] = resolved
+            sql_parts.append(" AND resolved = :r")
+            params["r"] = resolved
         sql_parts.append(" ORDER BY detected_at DESC LIMIT :limit")
         with self._engine.connect() as conn:
             rows = conn.execute(sa.text("".join(sql_parts)), params).mappings().all()
@@ -639,10 +688,14 @@ class KnowledgePgRepository:
 
     def get_contradiction(self, contradiction_id: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT * FROM knowledge_contradictions WHERE id = :id"),
-                {"id": contradiction_id},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text("SELECT * FROM knowledge_contradictions WHERE id = :id"),
+                    {"id": contradiction_id},
+                )
+                .mappings()
+                .first()
+            )
         if row is None:
             return None
         d = self._normalize_row(dict(row))
@@ -667,21 +720,29 @@ class KnowledgePgRepository:
                     ) VALUES (:id, :i, :su, :sr, :dt, :uq)"""
                 ),
                 {
-                    "id": evidence_id, "i": item_id, "su": source_user,
-                    "sr": source_ref, "dt": detection_type, "uq": user_quote,
+                    "id": evidence_id,
+                    "i": item_id,
+                    "su": source_user,
+                    "sr": source_ref,
+                    "dt": detection_type,
+                    "uq": user_quote,
                 },
             )
         return evidence_id
 
     def list_evidence(self, item_id: str) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    """SELECT * FROM verification_evidence
+            rows = (
+                conn.execute(
+                    sa.text(
+                        """SELECT * FROM verification_evidence
                        WHERE item_id = :i ORDER BY created_at ASC"""
-                ),
-                {"i": item_id},
-            ).mappings().all()
+                    ),
+                    {"i": item_id},
+                )
+                .mappings()
+                .all()
+            )
         return [self._normalize_row(dict(r)) for r in rows]
 
     # ----- item relations -----
@@ -720,9 +781,11 @@ class KnowledgePgRepository:
         sql_parts = ["SELECT * FROM knowledge_item_relations WHERE 1=1"]
         params: Dict[str, Any] = {"limit": limit}
         if relation_type is not None:
-            sql_parts.append(" AND relation_type = :rt"); params["rt"] = relation_type
+            sql_parts.append(" AND relation_type = :rt")
+            params["rt"] = relation_type
         if resolved is not None:
-            sql_parts.append(" AND resolved = :r"); params["r"] = resolved
+            sql_parts.append(" AND resolved = :r")
+            params["r"] = resolved
         sql_parts.append(" ORDER BY created_at DESC LIMIT :limit")
         with self._engine.connect() as conn:
             rows = conn.execute(sa.text("".join(sql_parts)), params).mappings().all()
@@ -747,8 +810,7 @@ class KnowledgePgRepository:
                         WHERE item_a_id = :a AND item_b_id = :b AND relation_type = :rt
                         RETURNING 1"""
                 ),
-                {"rb": resolved_by, "now": now, "res": resolution,
-                 "a": a, "b": b, "rt": relation_type},
+                {"rb": resolved_by, "now": now, "res": resolution, "a": a, "b": b, "rt": relation_type},
             ).first()
         return 1 if row else 0
 
@@ -760,13 +822,17 @@ class KnowledgePgRepository:
     ) -> Optional[Dict[str, Any]]:
         a, b = self._canonical_pair(item_a_id, item_b_id)
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text(
-                    """SELECT * FROM knowledge_item_relations
+            row = (
+                conn.execute(
+                    sa.text(
+                        """SELECT * FROM knowledge_item_relations
                        WHERE item_a_id = :a AND item_b_id = :b AND relation_type = :rt"""
-                ),
-                {"a": a, "b": b, "rt": relation_type},
-            ).mappings().first()
+                    ),
+                    {"a": a, "b": b, "rt": relation_type},
+                )
+                .mappings()
+                .first()
+            )
         return self._normalize_row(dict(row)) if row else None
 
     # ----- duplicate-candidate helpers -----
@@ -783,9 +849,10 @@ class KnowledgePgRepository:
             return []
         new_set = set(entities)
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    """SELECT * FROM knowledge_items
+            rows = (
+                conn.execute(
+                    sa.text(
+                        """SELECT * FROM knowledge_items
                        WHERE status IN ('approved', 'mandatory', 'pending')
                          AND (is_personal = FALSE OR is_personal IS NULL)
                          AND domain = :d
@@ -793,9 +860,12 @@ class KnowledgePgRepository:
                          AND entities IS NOT NULL
                        ORDER BY updated_at DESC
                        LIMIT :limit"""
-                ),
-                {"d": domain, "id": new_item_id, "limit": limit},
-            ).mappings().all()
+                    ),
+                    {"d": domain, "id": new_item_id, "limit": limit},
+                )
+                .mappings()
+                .all()
+            )
         out: List[Dict[str, Any]] = []
         for r in rows:
             row = self._normalize_row(dict(r))
@@ -823,10 +893,7 @@ class KnowledgePgRepository:
         results: Dict[str, str] = {}
         if not item_ids:
             return results
-        plain_fields = {
-            k: v for k, v in updates.items()
-            if k in self._UPDATABLE_FIELDS and k != "tags"
-        }
+        plain_fields = {k: v for k, v in updates.items() if k in self._UPDATABLE_FIELDS and k != "tags"}
         explicit_tags = updates.get("tags") if "tags" in updates else None
         tags_add = updates.get("tags_add") or []
         tags_remove = updates.get("tags_remove") or []
@@ -879,12 +946,16 @@ class KnowledgePgRepository:
             if user_groups:
                 keys = []
                 for i, g in enumerate(user_groups):
-                    k = f"ug_{i}"; keys.append(f":{k}"); params[k] = g
+                    k = f"ug_{i}"
+                    keys.append(f":{k}")
+                    params[k] = g
                 vis.append(f"audience IN ({','.join(keys)})")
             if granted_domains:
                 keys = []
                 for i, d in enumerate(granted_domains):
-                    k = f"gd_{i}"; keys.append(f":{k}"); params[k] = d
+                    k = f"gd_{i}"
+                    keys.append(f":{k}")
+                    params[k] = d
                 vis.append(
                     "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
                     "WHERE kid.item_id = knowledge_items.id "
@@ -918,12 +989,16 @@ class KnowledgePgRepository:
             if user_groups:
                 keys = []
                 for i, g in enumerate(user_groups):
-                    k = f"ug_{i}"; keys.append(f":{k}"); params[k] = g
+                    k = f"ug_{i}"
+                    keys.append(f":{k}")
+                    params[k] = g
                 vis.append(f"audience IN ({','.join(keys)})")
             if granted_domains:
                 keys = []
                 for i, d in enumerate(granted_domains):
-                    k = f"gd_{i}"; keys.append(f":{k}"); params[k] = d
+                    k = f"gd_{i}"
+                    keys.append(f":{k}")
+                    params[k] = d
                 vis.append(
                     "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
                     "WHERE kid.item_id = knowledge_items.id "
@@ -958,12 +1033,16 @@ class KnowledgePgRepository:
             if user_groups:
                 keys = []
                 for i, g in enumerate(user_groups):
-                    k = f"ug_{i}"; keys.append(f":{k}"); params[k] = g
+                    k = f"ug_{i}"
+                    keys.append(f":{k}")
+                    params[k] = g
                 vis.append(f"audience IN ({','.join(keys)})")
             if granted_domains:
                 keys = []
                 for i, d in enumerate(granted_domains):
-                    k = f"gd_{i}"; keys.append(f":{k}"); params[k] = d
+                    k = f"gd_{i}"
+                    keys.append(f":{k}")
+                    params[k] = d
                 vis.append(
                     "EXISTS (SELECT 1 FROM knowledge_item_domains kid "
                     "WHERE kid.item_id = knowledge_items.id "
@@ -974,30 +1053,43 @@ class KnowledgePgRepository:
 
         with self._engine.connect() as conn:
             by_status = {
-                r[0]: int(r[1]) for r in conn.execute(sa.text(
-                    f"SELECT COALESCE(status, 'unknown') AS s, COUNT(*) "
-                    f"FROM knowledge_items{where_sql} GROUP BY s"
-                ), params).all()
+                r[0]: int(r[1])
+                for r in conn.execute(
+                    sa.text(
+                        f"SELECT COALESCE(status, 'unknown') AS s, COUNT(*) FROM knowledge_items{where_sql} GROUP BY s"
+                    ),
+                    params,
+                ).all()
             }
-            cat_rows = conn.execute(sa.text(
-                f"SELECT DISTINCT category FROM knowledge_items{where_sql} "
-                f"{'AND' if where_sql else 'WHERE'} category IS NOT NULL"
-            ), params).all()
+            cat_rows = conn.execute(
+                sa.text(
+                    f"SELECT DISTINCT category FROM knowledge_items{where_sql} "
+                    f"{'AND' if where_sql else 'WHERE'} category IS NOT NULL"
+                ),
+                params,
+            ).all()
             categories = sorted(r[0] for r in cat_rows if r[0])
             by_domain = {
-                r[0]: int(r[1]) for r in conn.execute(sa.text(
-                    "SELECT COALESCE(md.slug, 'unset') AS d, COUNT(*) "
-                    "FROM knowledge_items "
-                    "LEFT JOIN knowledge_item_domains kid ON kid.item_id = knowledge_items.id "
-                    "LEFT JOIN memory_domains md ON md.id = kid.domain_id"
-                    + (where_sql or "") + " GROUP BY d"
-                ), params).all()
+                r[0]: int(r[1])
+                for r in conn.execute(
+                    sa.text(
+                        "SELECT COALESCE(md.slug, 'unset') AS d, COUNT(*) "
+                        "FROM knowledge_items "
+                        "LEFT JOIN knowledge_item_domains kid ON kid.item_id = knowledge_items.id "
+                        "LEFT JOIN memory_domains md ON md.id = kid.domain_id" + (where_sql or "") + " GROUP BY d"
+                    ),
+                    params,
+                ).all()
             }
             by_source_type = {
-                r[0]: int(r[1]) for r in conn.execute(sa.text(
-                    f"SELECT COALESCE(source_type, 'unknown') AS st, COUNT(*) "
-                    f"FROM knowledge_items{where_sql} GROUP BY st"
-                ), params).all()
+                r[0]: int(r[1])
+                for r in conn.execute(
+                    sa.text(
+                        f"SELECT COALESCE(source_type, 'unknown') AS st, COUNT(*) "
+                        f"FROM knowledge_items{where_sql} GROUP BY st"
+                    ),
+                    params,
+                ).all()
             }
         return {
             "by_status": by_status,
@@ -1020,7 +1112,8 @@ class KnowledgePgRepository:
         ]
         params: Dict[str, Any] = {"id": new_item_id, "limit": limit}
         if domain:
-            sql_parts.append(" AND domain = :d"); params["d"] = domain
+            sql_parts.append(" AND domain = :d")
+            params["d"] = domain
         sql_parts.append(" ORDER BY updated_at DESC LIMIT :limit")
         with self._engine.connect() as conn:
             rows = conn.execute(sa.text("".join(sql_parts)), params).mappings().all()

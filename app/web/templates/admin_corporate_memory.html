@@ -982,6 +982,45 @@
     {% set page_hero_subtitle = "Review pending knowledge items from analyst sessions — approve, mandate, or reject — and resolve contradictions and duplicate candidates. Approved items flow to the user-facing <a href=\"/corporate-memory\" style=\"color:inherit;text-decoration:underline;\">Curated Memory</a> page." %}
     {% include "_page_hero.html" %}
 <div class="container-memory">
+        <!-- One-time JSON→DB migration banner. Only rendered when knowledge.json
+             exists on disk (server-side gate). localStorage key prevents
+             re-appearance after a successful import.
+             Remove this block after ~2026-08 once all instances are migrated. -->
+        {% if knowledge_json_exists %}
+        <div id="knowledgeMigrationBanner"
+             style="display:none; background:#fffbeb; border:1px solid #f59e0b;
+                    border-radius:var(--radius-lg); padding:var(--space-4);
+                    margin-bottom:var(--space-4);
+                    align-items:center; gap:var(--space-4);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                 stroke="#b45309" stroke-width="2" style="flex-shrink:0;">
+                <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/>
+                <line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            <div style="flex:1;">
+                <strong style="color:#92400e; font-size:var(--text-sm);">
+                    One-time migration available
+                </strong>
+                <p style="margin:2px 0 0; font-size:var(--text-xs); color:#78350f;">
+                    Sessions collected before v0.71.60 were saved only to
+                    <code>knowledge.json</code> and are missing from the database.
+                    Import them now — safe to run multiple times.
+                </p>
+            </div>
+            <button class="btn btn-primary" id="runMigrationBtn"
+                    onclick="runKnowledgeMigration()"
+                    style="white-space:nowrap; font-size:var(--text-sm);">
+                Import from JSON
+            </button>
+            <button onclick="dismissMigrationBanner()"
+                    style="background:none; border:none; cursor:pointer;
+                           color:#92400e; font-size:18px; line-height:1;
+                           padding:0 4px;"
+                    title="Dismiss">×</button>
+        </div>
+        {% endif %}
+
         <!-- Stats Bar -->
         <div class="stats-bar">
             <div class="stat-item highlight">
@@ -3897,6 +3936,49 @@
             loadReviewQueue(1);
         }
     })();
+
+    // ─────────────────────────────────────────────────────────────
+    // One-time JSON→DB migration banner
+    // ─────────────────────────────────────────────────────────────
+    const MIGRATION_DISMISSED_KEY = 'agnes_knowledge_migration_done';
+
+    (function initMigrationBanner() {
+        const banner = document.getElementById('knowledgeMigrationBanner');
+        if (banner && !localStorage.getItem(MIGRATION_DISMISSED_KEY)) {
+            banner.style.display = 'flex';
+        }
+    })();
+
+    function dismissMigrationBanner() {
+        localStorage.setItem(MIGRATION_DISMISSED_KEY, '1');
+        document.getElementById('knowledgeMigrationBanner').style.display = 'none';
+    }
+
+    async function runKnowledgeMigration() {
+        const btn = document.getElementById('runMigrationBtn');
+        btn.disabled = true;
+        btn.textContent = 'Importing…';
+        try {
+            const r = await fetch('/api/admin/run-knowledge-migration', {
+                method: 'POST', credentials: 'same-origin',
+                headers: {'Content-Type': 'application/json'},
+            });
+            const data = await r.json();
+            if (r.ok && data.ok) {
+                showToast('Imported ' + data.knowledge_imported + ' item(s) from knowledge.json', 'success');
+                dismissMigrationBanner();
+                updateStats();
+            } else {
+                showToast((data && data.detail) || 'Migration failed — check server logs', 'error');
+                btn.disabled = false;
+                btn.textContent = 'Import from JSON';
+            }
+        } catch (e) {
+            showToast('Network error: ' + e.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Import from JSON';
+        }
+    }
     </script>
 {% endblock %}
 
