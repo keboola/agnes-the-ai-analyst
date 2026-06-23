@@ -25,6 +25,7 @@ from src.identifier_validation import (
 
 from src.repositories import (
     audit_repo,
+    knowledge_repo,
     store_entities_repo,
     store_submissions_repo,
     sync_state_repo,
@@ -4036,6 +4037,67 @@ def run_corporate_memory(
         "ok": not stats.get("errors") and stats.get("items_db_errors", 0) == 0,
         "details": stats,
     }
+
+
+@router.post("/run-knowledge-migration")
+def run_knowledge_migration(
+    user: dict = Depends(require_admin),
+):
+    """Retroactively import knowledge items from knowledge.json into the DB.
+
+    One-time migration for instances where collect_all() ran before v0.71.60
+    (which added the DB sync step). Idempotent — items already in the DB are
+    skipped. Remove this endpoint after all instances have been migrated.
+    """
+    data_dir = Path(os.environ.get("DATA_DIR", "./data"))
+    knowledge_file = data_dir / "corporate-memory" / "knowledge.json"
+
+    try:
+        knowledge_data = json.loads(knowledge_file.read_text())
+    except FileNotFoundError:
+        knowledge_data = []
+    except (json.JSONDecodeError, OSError) as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read knowledge.json: {e}")
+
+    if not isinstance(knowledge_data, list):
+        raise HTTPException(status_code=500, detail="knowledge.json is not a list")
+
+    count = 0
+    repo = knowledge_repo()
+    for item in knowledge_data:
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("id", "")
+        if not item_id:
+            continue
+        if repo.get_by_id(item_id):
+            continue
+        repo.create(
+            id=item_id,
+            title=item.get("title", ""),
+            content=item.get("content", ""),
+            category=item.get("category", ""),
+            source_user=item.get("source_user"),
+            tags=item.get("tags"),
+            status=item.get("status", "pending"),
+            confidence=item.get("confidence"),
+            domain=item.get("domain"),
+            entities=item.get("entities"),
+            source_type=item.get("source_type", "claude_local_md"),
+            source_ref=item.get("source_ref"),
+            sensitivity=item.get("sensitivity", "internal"),
+            is_personal=item.get("is_personal", False),
+        )
+        count += 1
+
+    audit_repo().log(
+        user_id=user.get("id"),
+        action="run_knowledge_migration",
+        resource="job:knowledge-migration",
+        params={"knowledge_imported": count},
+    )
+
+    return {"ok": True, "knowledge_imported": count}
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ stats dict.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 
@@ -340,6 +341,59 @@ class TestRunCorporateMemory:
         params_json = rows[0][0]
         assert "unhandled_error" in params_json
         assert "RuntimeError" in params_json
+
+
+class TestRunKnowledgeMigration:
+    def test_imports_items_from_json(self, seeded_app):
+        data_dir = seeded_app["env"]["data_dir"]
+        memory_dir = data_dir / "corporate-memory"
+        memory_dir.mkdir(exist_ok=True)
+        items = [
+            {
+                "id": "km-mig-001", "title": "Test item", "content": "Test content",
+                "category": "data_analysis", "status": "pending",
+                "source_type": "claude_local_md", "sensitivity": "internal",
+                "is_personal": False,
+            },
+        ]
+        (memory_dir / "knowledge.json").write_text(json.dumps(items))
+
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        resp = c.post("/api/admin/run-knowledge-migration", headers=_auth(token))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["knowledge_imported"] == 1
+
+    def test_idempotent_skips_existing(self, seeded_app):
+        data_dir = seeded_app["env"]["data_dir"]
+        memory_dir = data_dir / "corporate-memory"
+        memory_dir.mkdir(exist_ok=True)
+        items = [
+            {
+                "id": "km-mig-002", "title": "Dup item", "content": "C",
+                "category": "workflow", "status": "pending",
+                "source_type": "claude_local_md", "sensitivity": "internal",
+                "is_personal": False,
+            },
+        ]
+        (memory_dir / "knowledge.json").write_text(json.dumps(items))
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        c.post("/api/admin/run-knowledge-migration", headers=_auth(token))
+        resp = c.post("/api/admin/run-knowledge-migration", headers=_auth(token))
+        assert resp.status_code == 200
+        assert resp.json()["knowledge_imported"] == 0
+
+    def test_missing_file_returns_zero(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        resp = c.post("/api/admin/run-knowledge-migration", headers=_auth(token))
+        assert resp.status_code == 200
+        assert resp.json()["knowledge_imported"] == 0
+
+    def test_non_admin_blocked(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["analyst_token"]
+        resp = c.post("/api/admin/run-knowledge-migration", headers=_auth(token))
+        assert resp.status_code == 403
 
 
 class TestSchedulerJobsWireUp:

@@ -12,6 +12,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- `POST /api/admin/run-knowledge-migration` — admin endpoint to retroactively import `knowledge.json` items into the `knowledge_items` DB table for instances that collected corporate memory before v0.71.60. Idempotent; a one-click button on `/admin/corporate-memory` calls it and auto-hides after success.
+
 ### Changed
 
 ### Fixed
