@@ -4074,27 +4074,29 @@ def run_knowledge_migration(
             continue
         if repo.get_by_id(item_id):
             continue
-        try:
-            repo.create(
-                id=item_id,
-                title=item.get("title", ""),
-                content=item.get("content", ""),
-                category=item.get("category", ""),
-                source_user=item.get("source_user"),
-                tags=item.get("tags"),
-                status=item.get("status", "pending"),
-                confidence=item.get("confidence"),
-                domain=item.get("domain"),
-                entities=item.get("entities"),
-                source_type=item.get("source_type", "claude_local_md"),
-                source_ref=item.get("source_ref"),
-                sensitivity=item.get("sensitivity", "internal"),
-                is_personal=item.get("is_personal", False),
-            )
-        except ValueError:
-            # domain slug from pre-v0.71.60 knowledge.json may not exist in
-            # memory_domains — skip the item rather than aborting the whole import.
-            continue
+        # Validate domain slug before INSERT to avoid a partial commit: create()
+        # does the INSERT first, then resolves the slug; if the slug is unknown
+        # it raises ValueError after the row is already committed, leaving an
+        # orphaned item that can never be re-migrated. Resolve upfront instead.
+        domain_slug = item.get("domain")
+        if domain_slug and not repo._resolve_domain_slug(domain_slug):
+            domain_slug = None
+        repo.create(
+            id=item_id,
+            title=item.get("title", ""),
+            content=item.get("content", ""),
+            category=item.get("category", ""),
+            source_user=item.get("source_user"),
+            tags=item.get("tags"),
+            status=item.get("status", "pending"),
+            confidence=item.get("confidence"),
+            domain=domain_slug,
+            entities=item.get("entities"),
+            source_type=item.get("source_type", "claude_local_md"),
+            source_ref=item.get("source_ref"),
+            sensitivity=item.get("sensitivity", "internal"),
+            is_personal=item.get("is_personal", False),
+        )
         count += 1
 
     audit_repo().log(
