@@ -261,6 +261,9 @@ class TestRunCorporateMemory:
             "items_pending": 2,
             "skipped": False,
             "errors": [],
+            "items_db_inserted": 2,
+            "items_db_updated": 0,
+            "items_db_errors": 0,
         }
         with patch(
             "services.corporate_memory.collector.collect_all",
@@ -271,7 +274,36 @@ class TestRunCorporateMemory:
         body = resp.json()
         assert body["ok"] is True
         assert body["details"]["items_new"] == 2
+        assert body["details"]["items_db_inserted"] == 2
+        assert body["details"]["items_db_errors"] == 0
         m.assert_called_once()
+
+    def test_db_errors_set_ok_false(self, seeded_app):
+        """items_db_errors > 0 must flip ok to False even when LLM errors list is empty."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        fake_stats = {
+            "users_scanned": 1,
+            "files_found": 1,
+            "items_extracted": 1,
+            "items_filtered": 0,
+            "items_preserved": 0,
+            "items_new": 1,
+            "items_pending": 0,
+            "skipped": False,
+            "errors": [],
+            "items_db_inserted": 0,
+            "items_db_updated": 0,
+            "items_db_errors": 1,
+        }
+        with patch(
+            "services.corporate_memory.collector.collect_all",
+            return_value=fake_stats,
+        ):
+            resp = c.post("/api/admin/run-corporate-memory", headers=_auth(token))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is False
 
     def test_non_admin_blocked(self, seeded_app):
         c = seeded_app["client"]

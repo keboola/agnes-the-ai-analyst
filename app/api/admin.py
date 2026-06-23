@@ -4013,6 +4013,8 @@ def run_corporate_memory(
     audit_params: dict = {
         "items_new": stats.get("items_new", 0),
         "items_filtered": stats.get("items_filtered", 0),
+        "items_db_inserted": stats.get("items_db_inserted", 0),
+        "items_db_errors": stats.get("items_db_errors", 0),
         "errors": len(stats.get("errors", [])),
         "skipped": stats.get("skipped", False),
     }
@@ -4029,7 +4031,10 @@ def run_corporate_memory(
     if job_error is not None:
         raise HTTPException(status_code=500, detail=audit_params["unhandled_error"])
 
-    return {"ok": not stats.get("errors"), "details": stats}
+    return {
+        "ok": not stats.get("errors") and stats.get("items_db_errors", 0) == 0,
+        "details": stats,
+    }
 
 
 # ---------------------------------------------------------------------------

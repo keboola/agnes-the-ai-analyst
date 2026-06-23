@@ -400,6 +400,9 @@ def collect_all(dry_run: bool = False) -> dict:
         "items_pending": 0,
         "skipped": False,
         "errors": [],
+        "items_db_inserted": 0,
+        "items_db_updated": 0,
+        "items_db_errors": 0,
     }
 
     # Step 1: Check for changes
@@ -558,6 +561,52 @@ def collect_all(dry_run: bool = False) -> dict:
             },
         )
         logger.info("User hashes updated")
+
+        # Step 11: Sync final_items into the DB knowledge_items table.
+        # Lazy import keeps this module importable without a DB connection
+        # (unit tests mock the file I/O layer and never need a real DB).
+        from src.repositories import knowledge_repo as _knowledge_repo
+
+        repo = _knowledge_repo()
+        inserted = updated_count = errors = 0
+        for item_id, item in final_items.items():
+            try:
+                existing = repo.get_by_id(item_id)
+                if existing:
+                    repo.update(
+                        item_id,
+                        title=item["title"],
+                        content=item["content"],
+                        category=item.get("category"),
+                        tags=item.get("tags", []),
+                        source_user=item.get("source_users", [""])[0],
+                        status=item.get("status", "pending"),
+                    )
+                    updated_count += 1
+                else:
+                    repo.create(
+                        id=item_id,
+                        title=item["title"],
+                        content=item["content"],
+                        category=item.get("category"),
+                        source_user=item.get("source_users", [""])[0],
+                        tags=item.get("tags", []),
+                        status=item.get("status", "pending"),
+                        source_type="claude_local_md",
+                        sensitivity=item.get("sensitivity", "internal"),
+                        is_personal=item.get("is_personal", False),
+                    )
+                    inserted += 1
+            except Exception as exc:
+                logger.warning("DB sync error for item %s: %s", item_id, exc)
+                errors += 1
+        logger.info(
+            "DB sync: %d inserted, %d updated, %d errors",
+            inserted, updated_count, errors,
+        )
+        stats["items_db_inserted"] = inserted
+        stats["items_db_updated"] = updated_count
+        stats["items_db_errors"] = errors
     else:
         logger.info(
             f"Dry run - would preserve {stats['items_preserved']}, "
