@@ -4072,22 +4072,27 @@ def run_knowledge_migration(
             continue
         if repo.get_by_id(item_id):
             continue
-        repo.create(
-            id=item_id,
-            title=item.get("title", ""),
-            content=item.get("content", ""),
-            category=item.get("category", ""),
-            source_user=item.get("source_user"),
-            tags=item.get("tags"),
-            status=item.get("status", "pending"),
-            confidence=item.get("confidence"),
-            domain=item.get("domain"),
-            entities=item.get("entities"),
-            source_type=item.get("source_type", "claude_local_md"),
-            source_ref=item.get("source_ref"),
-            sensitivity=item.get("sensitivity", "internal"),
-            is_personal=item.get("is_personal", False),
-        )
+        try:
+            repo.create(
+                id=item_id,
+                title=item.get("title", ""),
+                content=item.get("content", ""),
+                category=item.get("category", ""),
+                source_user=item.get("source_user"),
+                tags=item.get("tags"),
+                status=item.get("status", "pending"),
+                confidence=item.get("confidence"),
+                domain=item.get("domain"),
+                entities=item.get("entities"),
+                source_type=item.get("source_type", "claude_local_md"),
+                source_ref=item.get("source_ref"),
+                sensitivity=item.get("sensitivity", "internal"),
+                is_personal=item.get("is_personal", False),
+            )
+        except ValueError:
+            # domain slug from pre-v0.71.60 knowledge.json may not exist in
+            # memory_domains — skip the item rather than aborting the whole import.
+            continue
         count += 1
 
     audit_repo().log(
@@ -4339,7 +4344,6 @@ async def admin_get_store_submission(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-
     sub = store_submissions_repo().get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
