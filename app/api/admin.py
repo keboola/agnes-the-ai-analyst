@@ -4014,6 +4014,7 @@ def run_corporate_memory(
         "items_new": stats.get("items_new", 0),
         "items_filtered": stats.get("items_filtered", 0),
         "items_db_inserted": stats.get("items_db_inserted", 0),
+        "items_db_updated": stats.get("items_db_updated", 0),
         "items_db_errors": stats.get("items_db_errors", 0),
         "errors": len(stats.get("errors", [])),
         "skipped": stats.get("skipped", False),
