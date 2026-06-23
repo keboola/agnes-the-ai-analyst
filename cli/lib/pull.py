@@ -73,6 +73,16 @@ class PullResult:
 
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
 
+# #596 — hash-mismatch recovery in `_download_one`. A download whose bytes
+# don't match the manifest hash is treated as transient (corrupt mid-flight
+# transfer, a server-side parquet rewrite that raced the manifest read) and
+# re-downloaded up to this many extra times before the table is recorded as
+# a hard error. The prior good `<tid>.parquet` is preserved across the whole
+# loop (download lands in a sidecar; only a verified sidecar is promoted), so
+# even a persistent mismatch never leaves the table missing from disk.
+_DOWNLOAD_RETRIES = 2
+_DOWNLOAD_RETRY_BACKOFFS_S = (0.5, 1.0)
+
 
 def _read_progress_interval_seconds() -> float:
     """Seconds between forced progress emissions per file. Default 5 s.
@@ -194,6 +204,17 @@ class _TextualProgress:
                 self._last_emit_pct[tid] = pct - (pct % 10)
                 self._last_emit_bytes[tid] = current
                 self._emit_line(tid, current, total, now)
+
+    def reset(self, tid: str) -> None:
+        """Zero a file's progress before a retry attempt. Without this the
+        retry's bytes stack on top of the failed attempt's and the display
+        inflates past the file's total (e.g. "200.0 MB / 100.0 MB")."""
+        with self._lock:
+            self._bytes[tid] = 0
+            self._started_at.pop(tid, None)
+            self._last_emit_at.pop(tid, None)
+            self._last_emit_pct.pop(tid, None)
+            self._last_emit_bytes.pop(tid, None)
 
     def finish(self) -> None:
         """Emit a final `done` line for any file we never closed out."""
@@ -432,6 +453,16 @@ def run_pull(
             if authorized_names is not None and tid not in authorized_names:
                 continue
             non_remote_total += 1
+            # #607 — server_only tables are kept fresh server-side and stay
+            # queryable via `agnes query --remote`, but their parquet is NOT
+            # distributed to laptops. Count them as listed (they're part of
+            # parquets_total above, like a hash-unchanged row) but never add
+            # them to the download set. Mirrors the remote-skip's
+            # listed-but-not-downloaded behavior, except remote rows aren't
+            # even counted (no server parquet exists at all); a server_only
+            # row HAS a server parquet, we just don't ship it.
+            if info.get("server_only"):
+                continue
             local_hash = local_tables.get(tid, {}).get("hash", "")
             server_hash = info.get("hash", "")
             target = parquet_dir / f"{tid}.parquet"
@@ -536,38 +567,102 @@ def run_pull(
             One bound thread per call; stream_download is sync I/O so a
             ThreadPoolExecutor (not asyncio) is the right tool. The
             progress callback is thread-safe — Rich's Progress.update
-            and the textual fallback's lock both serialize internally."""
+            and the textual fallback's lock both serialize internally.
+
+            Durability contract (#596): the prior good `<tid>.parquet`
+            (if any) is NEVER unlinked before a fresh download has
+            verified. The download lands in a sidecar
+            `<tid>.parquet.verify.tmp`, the hash (or, on a hash-less
+            legacy manifest, the PAR1 structural check) is checked
+            there, and only on success is the sidecar `os.replace`d into
+            the final target — atomic, so a reader never sees a
+            half-written or mismatched file. A hash mismatch is treated
+            as transient: the download+verify is retried up to
+            ``_DOWNLOAD_RETRIES`` times (small backoff between attempts)
+            before giving up. On persistent failure the sidecar is
+            removed, the OLD good parquet stays in place, and the table
+            is recorded under ``result.errors`` — the table is never
+            left missing from disk."""
             target = parquet_dir / f"{tid}.parquet"
+            sidecar = parquet_dir / f"{tid}.parquet.verify.tmp"
             expected_hash = server_tables[tid].get("hash", "")
             cb = None
+            reset_progress = None
             if progress is not None and tid in progress_tasks:
                 task_id = progress_tasks[tid]
                 def cb(n: int, _tid=tid, _task=task_id):
                     progress.update(_task, advance=n)
+                def reset_progress(_task=task_id):
+                    progress.update(_task, completed=0)
             elif textual is not None:
                 def cb(n: int, _tid=tid):
                     textual.advance(_tid, n)
+                def reset_progress(_tid=tid):
+                    textual.reset(_tid)
+
+            last_err: str | None = None
             try:
-                stream_download(f"/api/data/{tid}/download", str(target),
-                                progress_callback=cb)
-                if expected_hash:
-                    actual_hash = _file_md5(target)
-                    if actual_hash != expected_hash:
-                        target.unlink(missing_ok=True)
-                        raise ValueError(
-                            f"hash mismatch: expected {expected_hash[:12]}, got {actual_hash[:12]}"
+                for attempt in range(_DOWNLOAD_RETRIES + 1):
+                    # A failed attempt already reported its bytes; zero the
+                    # bar so the retry doesn't display 2x/3x the file size.
+                    if attempt and reset_progress is not None:
+                        reset_progress()
+                    try:
+                        # Download into a sidecar — the real target keeps
+                        # the prior good bytes until verification passes.
+                        stream_download(
+                            f"/api/data/{tid}/download", str(sidecar),
+                            progress_callback=cb,
                         )
-                elif not _is_valid_parquet(target):
-                    target.unlink(missing_ok=True)
-                    raise ValueError("not a valid parquet (missing PAR1 magic)")
-                entry = {
-                    "hash": expected_hash,
-                    "rows": server_tables[tid].get("rows", 0),
-                    "size_bytes": server_tables[tid].get("size_bytes", 0),
-                }
-                return tid, entry, None
-            except Exception as exc:
-                return tid, None, str(exc)
+                        if expected_hash:
+                            actual_hash = _file_md5(sidecar)
+                            if actual_hash != expected_hash:
+                                last_err = (
+                                    f"hash mismatch: expected "
+                                    f"{expected_hash[:12]}, got {actual_hash[:12]}"
+                                )
+                                sidecar.unlink(missing_ok=True)
+                                # Re-download on mismatch before giving up.
+                                if attempt < _DOWNLOAD_RETRIES:
+                                    time.sleep(
+                                        _DOWNLOAD_RETRY_BACKOFFS_S[
+                                            min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)
+                                        ]
+                                    )
+                                    continue
+                                # Persistent mismatch: prior good target
+                                # (if any) is untouched; record + bail.
+                                return tid, None, last_err
+                        elif not _is_valid_parquet(sidecar):
+                            # Pre-v49 / no-hash legacy path — unchanged
+                            # semantics, just verified on the sidecar.
+                            sidecar.unlink(missing_ok=True)
+                            raise ValueError(
+                                "not a valid parquet (missing PAR1 magic)"
+                            )
+                        # Verified — promote the sidecar atomically.
+                        os.replace(sidecar, target)
+                        entry = {
+                            "hash": expected_hash,
+                            "rows": server_tables[tid].get("rows", 0),
+                            "size_bytes": server_tables[tid].get("size_bytes", 0),
+                        }
+                        return tid, entry, None
+                    except Exception as exc:
+                        last_err = str(exc)
+                        sidecar.unlink(missing_ok=True)
+                        if attempt < _DOWNLOAD_RETRIES:
+                            time.sleep(
+                                _DOWNLOAD_RETRY_BACKOFFS_S[
+                                    min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)
+                                ]
+                            )
+                            continue
+                        return tid, None, last_err
+                # Loop exhausted without an explicit return (defensive).
+                return tid, None, last_err or "download failed"
+            finally:
+                sidecar.unlink(missing_ok=True)
 
         try:
             if workers <= 1:
@@ -604,10 +699,21 @@ def run_pull(
         # never pruned. Done before
         # save_sync_state so the dropped rows persist, and before
         # _rebuild_duckdb_views so the orphaned views disappear.
-        if authorized_names is not None and parquet_dir.exists():
+        # #607 (#630 review) — also prune parquets the manifest now marks
+        # server_only: the table stays authorized (listed, RBAC intact) but
+        # its parquet must leave the laptop, otherwise a copy downloaded
+        # before the admin flipped the flag keeps a local view alive and the
+        # table stays locally queryable despite server-only distribution.
+        server_only_names = {
+            tid for tid, info in server_tables.items() if info.get("server_only")
+        }
+        if parquet_dir.exists() and (
+            authorized_names is not None or server_only_names
+        ):
             for pq_file in sorted(parquet_dir.glob("*.parquet")):
                 stem = pq_file.stem
-                if stem in authorized_names:
+                authorized = authorized_names is None or stem in authorized_names
+                if authorized and stem not in server_only_names:
                     continue
                 pq_file.unlink(missing_ok=True)
                 local_tables.pop(stem, None)

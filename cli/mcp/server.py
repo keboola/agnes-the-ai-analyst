@@ -24,18 +24,16 @@ install time and writes the mcpServers block with the correct absolute path.
 Credentials are read from ~/.config/agnes/config.yaml (server URL) and
 ~/.config/agnes/token.json (PAT) — the same files written by setup.py.
 """
+
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
-from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
 from cli.client import api_get
 from cli.config import get_server_url, get_token
-from cli.lib.pull import run_pull
 from cli.v2_client import V2ClientError, api_get_json, api_post_json
 from src.duckdb_conn import _open_duckdb
 
@@ -52,12 +50,14 @@ mcp = FastMCP(
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
+
 def _mcp_error(context: str, exc: V2ClientError) -> str:
     """Turn a V2ClientError into a user-readable MCP error string."""
     return f"{context} failed (HTTP {exc.status_code}): {exc}"
 
 
 # ── tools ──────────────────────────────────────────────────────────────────
+
 
 @mcp.tool()
 def server_info() -> dict:
@@ -102,6 +102,49 @@ def catalog() -> dict:
         return api_get_json("/api/v2/catalog")
     except V2ClientError as exc:
         raise ValueError(_mcp_error("catalog", exc)) from exc
+
+
+@mcp.tool()
+def collections_list() -> dict:
+    """List the file Collections you can access (RBAC-filtered).
+
+    A Collection is a user-uploaded set of files Agnes has indexed. Returns a
+    dict with an ``items`` list (``id``, ``name``, ``slug``, counts). Use
+    ``collection_get`` for the files inside one collection.
+    """
+    try:
+        return api_get_json("/api/collections")
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error("collections_list", exc)) from exc
+
+
+@mcp.tool()
+def collection_get(collection_id: str) -> dict:
+    """Show one Collection's detail plus its files and per-file status.
+
+    Args:
+        collection_id: Collection id from ``collections_list`` (``col_...``).
+    """
+    try:
+        return api_get_json(f"/api/collections/{collection_id}")
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error("collection_get", exc)) from exc
+
+
+@mcp.tool()
+def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict:
+    """Hybrid search across your accessible file Collections (RBAC-filtered).
+
+    Returns ranked chunks with citations (``filename``, ``ordinal``, ``text``,
+    ``score``). Optionally restrict to one collection via ``collection_id``.
+    """
+    params: dict = {"q": query, "k": k}
+    if collection_id:
+        params["corpus_id"] = collection_id
+    try:
+        return api_get_json("/api/collections/search", **params)
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error("collections_search", exc)) from exc
 
 
 @mcp.tool()
@@ -188,14 +231,11 @@ def query_local(sql: str, limit: int = 1000) -> dict:
     Returns ``{"columns": [...], "rows": [[...], ...]}`` or raises if
     the local DuckDB file does not exist (run ``pull()`` first).
     """
-    import duckdb
 
     workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
     db_path = workspace / "user" / "duckdb" / "analytics.duckdb"
     if not db_path.exists():
-        raise FileNotFoundError(
-            f"Local DuckDB not found at {db_path}. Run pull() first to sync data."
-        )
+        raise FileNotFoundError(f"Local DuckDB not found at {db_path}. Run pull() first to sync data.")
 
     with _open_duckdb(str(db_path), read_only=True) as conn:
         # Apply LIMIT at the DuckDB level to protect against accidental
@@ -232,19 +272,20 @@ def pull(skip_materialize: bool = False) -> dict:
     Run at the start of a session to make sure local data is fresh.
     Equivalent to ``agnes pull`` on the command line.
     """
+    # Imported inside the function (not at module scope) so tests can patch
+    # ``cli.lib.pull.run_pull`` and have the patch take effect at call time.
     from cli.lib.pull import run_pull
 
     server_url = get_server_url()
     token = get_token()
     if not token:
-        raise ValueError(
-            "No Agnes token configured. "
-            "Run setup.py from Terminal to authenticate."
-        )
+        raise ValueError("No Agnes token configured. Run setup.py from Terminal to authenticate.")
 
     workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
     result = run_pull(
-        server_url, token, workspace,
+        server_url,
+        token,
+        workspace,
         skip_materialize=skip_materialize,
         show_progress=False,
     )
@@ -281,10 +322,12 @@ def run() -> None:
         # for callers that only need the static tools (or import this
         # module for testing).
         from cli.mcp._dynamic_passthrough import register_passthrough_tools
+
         register_passthrough_tools(mcp)
     except Exception as exc:
         # Never let dynamic-registration explode the whole stdio surface.
         import sys as _sys
+
         print(f"[agnes mcp] dynamic passthrough registration skipped: {exc}", file=_sys.stderr)
     mcp.run()
 

@@ -700,6 +700,30 @@ checks against.
 - /api/admin/memory-domain-suggestions/{sid}/approve
 - /api/admin/memory-domain-suggestions/{sid}/reject
 
+### `/api/admin/authoring-suggestions` — Authoring studio suggestion review (admin)
+
+Generic non-admin suggestion queue for the authoring studio (data-package / mcp /
+marketplace / corporate-memory). Non-admins submit a proposed create payload from
+the `/admin/studio/{domain}` builder; admins approve/reject (guarded state
+transitions — turning an approved suggestion into the real resource is a deferred
+follow-up that must re-validate through the domain endpoint, never replay).
+
+- /api/studio/suggestions
+- /api/studio/suggestions/mine
+- /api/admin/authoring-suggestions
+- /api/admin/authoring-suggestions/{sid}/approve
+- /api/admin/authoring-suggestions/{sid}/reject
+
+### `/api/studio/memory-mining` — Corporate-memory mining (privacy-gated)
+
+Opt-in (per design spec §4.4): a user consents to having their session
+transcripts mined into shared corporate memory; an admin triggers a run that
+PII-scans candidates, tags provenance, and routes them through the
+authoring-suggestions queue (never an admin-direct write).
+
+- /api/studio/memory-mining/consent
+- /api/admin/memory-mining/run
+
 ### `/api/admin/metrics` — Metric definitions (admin)
 
 - /api/admin/metrics
@@ -767,8 +791,17 @@ checks against.
 
 ### `/api/admin/initial-workspace` — Initial workspace template
 
+Admin-only (web UI at `/admin/initial-workspace`; no analyst CLI/MCP analogue).
+`/sync` is the manual "Sync now" action (errors loudly when no repo is
+registered). `/sync-if-configured` is the nightly-scheduler wrapper: it always
+returns 200, short-circuiting to `{"skipped": true, "reason": "not_configured"}`
+when no IWT repo is registered, so the nightly job is a no-op on instances
+without one. Cadence is configurable via `SCHEDULER_INITIAL_WORKSPACE_SCHEDULE`
+or `instance.yaml` `initial_workspace.sync_schedule` (default `daily 03:30`).
+
 - /api/admin/initial-workspace
 - /api/admin/initial-workspace/sync
+- /api/admin/initial-workspace/sync-if-configured
 
 ### `/api/admin/welcome-template` — Welcome message template
 
@@ -779,6 +812,21 @@ checks against.
 
 - /api/admin/workspace-prompt-template
 - /api/admin/workspace-prompt-template/preview
+
+### `/api/admin/prompts` — Managed prompts (admin, #622)
+
+Unified admin surface for the install + workspace prompts (`kind ∈
+install|workspace`), each with an explicit Git ⇄ Editor `source_mode` toggle.
+Editor mode keeps the DB override editable; Git mode binds the prompt to a file
+in the Initial Workspace Template clone. Backs the `/admin/prompts` page.
+`iwt-files` (read-only) lists the repo-root-relative bindable files in the
+synced IWT clone for the bind-git file picker.
+
+- /api/admin/prompts/iwt-files
+- /api/admin/prompts/{kind}
+- /api/admin/prompts/{kind}/source
+- /api/admin/prompts/{kind}/bind-git
+- /api/admin/prompts/{kind}/preview
 
 ### `/api/admin/bigquery` — BigQuery diagnostics
 
@@ -848,6 +896,14 @@ checks against.
 - /api/chat/{session_id}/join-ticket
 - /api/chat/{session_id}/leave
 - /api/chat/{session_id}/messages
+
+### `/api/collections` — File collections (bring-your-files)
+
+- /api/collections
+- /api/collections/search
+- /api/collections/{collection_id}
+- /api/collections/{collection_id}/files
+- /api/collections/{collection_id}/files/{file_id}
 
 ### `/api/connectors` — Connector manifest
 
@@ -993,6 +1049,7 @@ checks against.
 ### `/api/stack` — Stack subscriptions
 
 - /api/stack
+- /api/stack/browse
 - /api/stack/subscribe
 - /api/stack/subscription/{resource_type}/{resource_id}
 
@@ -1001,12 +1058,14 @@ checks against.
 - /api/store/bundle.zip
 - /api/store/categories
 - /api/store/entities
+- /api/store/entities/dryrun
 - /api/store/entities/preview
 - /api/store/entities/{entity_id}
 - /api/store/entities/{entity_id}/docs/{filename}
 - /api/store/entities/{entity_id}/files
 - /api/store/entities/{entity_id}/install
 - /api/store/entities/{entity_id}/photo
+- /api/store/entities/{entity_id}/rate
 - /api/store/entities/{entity_id}/versions/{version_no}/restore
 - /api/store/import-bundle
 - /api/store/owners
@@ -1062,3 +1121,10 @@ checks against.
 
 - /api/version
 - /api/welcome
+
+### Config surface & marketplace plugin controls (admin)
+
+- /api/admin/config-surface — read this instance's complete configurable surface: every config knob with its resolved value + source (env/yaml/default), the registered Initial Workspace Template, the registered marketplaces, and `infra_repo_url`. Also exposed as `agnes admin config-surface` and an MCP tool.
+- /api/marketplaces/{marketplace_id}/plugins — admin-only: list a marketplace's plugins. Each row includes `admin_disabled`, which drives the `/admin/marketplaces` Details-modal switch and the DISABLED pill.
+- /api/marketplaces/{marketplace_id}/plugins/{plugin_name}/disable — admin-only: disable any registered plugin (not just built-ins) instance-wide. The plugin is then hidden from every served and admin surface for all callers — served feed, browse page, my-stack, synthetic served marketplace, the `/admin/access` grant UI, and v2 `/skills` — except the Details modal, where it can be re-enabled. Disabling also clears `is_system`.
+- /api/marketplaces/{marketplace_id}/plugins/{plugin_name}/enable — admin-only: re-enable a previously disabled plugin. Does **not** restore a previously-cleared `is_system`. The disabled state persists across restarts / sync re-seed until explicitly re-enabled.

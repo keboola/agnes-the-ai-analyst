@@ -30,6 +30,7 @@ from tests.e2e._helpers import (
     bootstrap_admin,
     docker_exec,
     pump_until,
+    skip_unless_chat_sessions_possible,
 )
 
 
@@ -93,6 +94,7 @@ def installed_agent_slug(docker_e2e_agnes: str, admin_client) -> str:
     Skips the whole module if none are installed.
     """
     # Spin up a throw-away session to force workdir init.
+    skip_unless_chat_sessions_possible()
     sess = admin_client.create_chat_session(surface="web")
     ws_url = admin_client.ws_url_for(sess)
     if not _WS_AVAILABLE:
@@ -121,6 +123,7 @@ def test_f9_task_tool_dispatch_to_named_subagent(
     if not _WS_AVAILABLE:
         pytest.skip("websockets.sync.client unavailable — old python?")
 
+    skip_unless_chat_sessions_possible()
     session = admin_client.create_chat_session(surface="web")
     ws_url = admin_client.ws_url_for(session)
 

@@ -1,0 +1,351 @@
+"""Cross-engine contract tests for the usage repository.
+
+Targets: UsageRepository (DuckDB) / UsagePgRepository (Postgres).
+Parametrises over [DuckDB impl, Postgres impl]; identical inputs must
+produce identical outputs from both engines.
+
+Follows the fixture pattern in test_rbac_contract.py: DuckDB uses
+_ensure_schema; PG runs the alembic ladder to head. Seeding goes through
+the repo's own write methods (upsert_summary / upsert_events).
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# repo construction helpers — one per backend
+# ---------------------------------------------------------------------------
+
+
+def _make_duckdb_repo(tmp_path):
+    from src.db import _ensure_schema
+    from src.duckdb_conn import _open_duckdb
+    from src.repositories.usage import UsageRepository
+
+    conn = _open_duckdb(str(tmp_path / "duck.duckdb"))
+    _ensure_schema(conn)
+    return UsageRepository(conn), conn
+
+
+def _make_pg_repo(pg_engine, monkeypatch):
+    from pathlib import Path
+    from alembic import command
+    from alembic.config import Config
+
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    cfg.attributes["sqlalchemy.url"] = str(pg_engine.url)
+    command.upgrade(cfg, "head")
+
+    monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
+    import src.db_pg as db_pg
+
+    db_pg.dispose()
+    engine = db_pg.get_engine()
+
+    from src.repositories.usage_pg import UsagePgRepository
+
+    return UsagePgRepository(engine), None
+
+
+@pytest.fixture(params=["duckdb", "pg"])
+def usage_repo(request, tmp_path, pg_engine, monkeypatch):
+    """Yields ``(repo, raw_conn_or_None, backend)`` for both backends."""
+    backend = request.param
+    if backend == "duckdb":
+        repo, conn = _make_duckdb_repo(tmp_path)
+        yield repo, conn, backend
+        if conn is not None:
+            conn.close()
+    else:
+        repo, _ = _make_pg_repo(pg_engine, monkeypatch)
+        yield repo, None, backend
+
+
+# ---------------------------------------------------------------------------
+# seeding helpers
+# ---------------------------------------------------------------------------
+
+
+def _seed_summary(repo, *, session_file, username, user_id=None, started_at,
+                  primary_model="claude-x", input_tokens=0, output_tokens=0,
+                  cache_read_tokens=0, cache_creation_tokens=0,
+                  tool_calls=0, tool_errors=0, user_messages=0):
+    repo.upsert_summary(
+        {
+            "session_file": session_file,
+            "session_id": session_file.rsplit("/", 1)[-1],
+            "username": username,
+            "user_id": user_id,
+            "started_at": started_at,
+            "ended_at": started_at,
+            "active_seconds": 10,
+            "wall_seconds": 20,
+            "user_messages": user_messages,
+            "tool_calls": tool_calls,
+            "tool_errors": tool_errors,
+            "primary_model": primary_model,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_creation_tokens": cache_creation_tokens,
+        },
+        processor_version=1,
+    )
+
+
+def _seed_event(repo, *, event_id, username, session_file, occurred_at,
+                tool_name="Read", user_id=None):
+    repo.upsert_events(
+        [
+            {
+                "id": event_id,
+                "session_id": session_file.rsplit("/", 1)[-1],
+                "session_file": session_file,
+                "username": username,
+                "event_type": "tool",
+                "tool_name": tool_name,
+                "is_error": False,
+                "source": "curated",
+                "occurred_at": occurred_at,
+                "user_id": user_id,
+            }
+        ],
+        processor_version=1,
+    )
+
+
+def _seed_processor_state(repo, processor_name, session_file="ps/s.jsonl"):
+    """Seed a session_processor_state checkpoint via that repo's own
+    mark_processed UPSERT (it knows the full schema, incl. NOT NULL columns).
+    reset_all's clear_processors path deletes these rows, so the contract test
+    needs a real row to delete."""
+    if hasattr(repo, "conn"):  # DuckDB
+        from src.repositories.session_processor_state import (
+            SessionProcessorStateRepository,
+        )
+
+        sps = SessionProcessorStateRepository(repo.conn)
+    else:  # Postgres
+        from src.repositories.session_processor_state_pg import (
+            SessionProcessorStatePgRepository,
+        )
+
+        sps = SessionProcessorStatePgRepository(repo._engine)
+    sps.mark_processed(
+        processor_name=processor_name,
+        session_file=session_file,
+        username="seed",
+        items_count=0,
+        file_hash="h",
+    )
+
+
+# ---------------------------------------------------------------------------
+# contract tests
+# ---------------------------------------------------------------------------
+
+
+def test_count_events(usage_repo):
+    repo, _, _ = usage_repo
+    now = datetime.now(timezone.utc)
+    assert repo.count_events() == 0
+    _seed_event(repo, event_id="e1", username="alice", session_file="alice/s1.jsonl", occurred_at=now)
+    _seed_event(repo, event_id="e2", username="alice", session_file="alice/s1.jsonl", occurred_at=now)
+    assert repo.count_events() == 2
+
+
+def test_reset_all_zeroes_tables_and_returns_counts(usage_repo):
+    repo, _, _ = usage_repo
+    now = datetime.now(timezone.utc)
+    _seed_summary(repo, session_file="bob/s1.jsonl", username="bob", started_at=now)
+    _seed_summary(repo, session_file="bob/s2.jsonl", username="bob", started_at=now)
+    _seed_event(repo, event_id="r1", username="bob", session_file="bob/s1.jsonl", occurred_at=now)
+
+    counts = repo.reset_all()
+    # All five usage tables are reported.
+    assert set(counts.keys()) == {
+        "events", "session_summary", "tool_daily",
+        "marketplace_item_daily", "marketplace_item_window",
+    }
+    assert counts["events"] == 1
+    assert counts["session_summary"] == 2
+    assert counts["tool_daily"] == 0
+    assert counts["marketplace_item_daily"] == 0
+    assert counts["marketplace_item_window"] == 0
+
+    # Everything is gone.
+    assert repo.count_events() == 0
+    assert repo.list_sessions_for_user_self("bob") == []
+
+
+def test_reset_all_clear_processors_clears_state_and_usage_together(usage_repo):
+    """clear_processors deletes the matching session_processor_state rows in the
+    SAME transaction as the usage tables (the reprocess_usage atomicity fix),
+    scoped to the named processors only."""
+    repo, _, _ = usage_repo
+    now = datetime.now(timezone.utc)
+    _seed_event(repo, event_id="e1", username="bob", session_file="bob/s1.jsonl", occurred_at=now)
+    _seed_processor_state(repo, "usage", "bob/s1.jsonl")
+    _seed_processor_state(repo, "verification", "bob/s1.jsonl")  # must survive
+
+    counts = repo.reset_all(clear_processors=["usage", "marketplace_rollup_30d"])
+    # Only the 'usage' checkpoint matched (verification untouched, rollup absent).
+    assert counts["state_rows"] == 1
+    assert counts["events"] == 1
+    assert repo.count_events() == 0
+
+
+def test_reset_all_without_clear_processors_omits_state_rows(usage_repo):
+    """Default reset_all (no clear_processors) keeps its original 5-key shape —
+    no state_rows key — so existing callers/tests are unaffected."""
+    repo, _, _ = usage_repo
+    counts = repo.reset_all()
+    assert "state_rows" not in counts
+
+
+def test_list_sessions_for_user_admin_filters_on_user_id_or_username(usage_repo):
+    repo, _, _ = usage_repo
+    now = datetime.now(timezone.utc)
+    # Matches via user_id.
+    _seed_summary(repo, session_file="u/s1.jsonl", username="legacyname", user_id="uid-1", started_at=now)
+    # Matches via username.
+    _seed_summary(repo, session_file="u/s2.jsonl", username="carol", user_id="other", started_at=now)
+    # No match.
+    _seed_summary(repo, session_file="u/s3.jsonl", username="nobody", user_id="zzz", started_at=now)
+
+    rows = repo.list_sessions_for_user_admin(user_id="uid-1", username="carol")
+    files = {r["session_file"] for r in rows}
+    assert files == {"u/s1.jsonl", "u/s2.jsonl"}
+    # 9-column shape.
+    assert set(rows[0].keys()) == {
+        "session_file", "session_id", "started_at", "ended_at",
+        "active_seconds", "wall_seconds", "tool_calls", "tool_errors",
+        "primary_model",
+    }
+
+
+def test_list_sessions_for_user_self_filters_on_username_only(usage_repo):
+    repo, _, _ = usage_repo
+    now = datetime.now(timezone.utc)
+    _seed_summary(repo, session_file="d/s1.jsonl", username="dave", user_id="uid-x", started_at=now)
+    # Same user_id but different username — must NOT appear (self filters on username).
+    _seed_summary(repo, session_file="d/s2.jsonl", username="someone-else", user_id="uid-x", started_at=now)
+
+    rows = repo.list_sessions_for_user_self("dave")
+    files = {r["session_file"] for r in rows}
+    assert files == {"d/s1.jsonl"}
+    # 14-column shape.
+    assert set(rows[0].keys()) == {
+        "session_file", "session_id", "started_at", "ended_at",
+        "active_seconds", "wall_seconds",
+        "user_messages", "tool_calls", "tool_errors",
+        "input_tokens", "output_tokens",
+        "cache_read_tokens", "cache_creation_tokens",
+        "primary_model",
+    }
+
+
+def test_tokens_totals_and_by_model(usage_repo):
+    repo, _, _ = usage_repo
+    now = datetime.now(timezone.utc)
+    _seed_summary(
+        repo, session_file="t/s1.jsonl", username="erin", started_at=now,
+        primary_model="claude-a",
+        input_tokens=10, output_tokens=20, cache_read_tokens=3, cache_creation_tokens=2,
+    )
+    _seed_summary(
+        repo, session_file="t/s2.jsonl", username="erin", started_at=now,
+        primary_model="claude-b",
+        input_tokens=100, output_tokens=200, cache_read_tokens=0, cache_creation_tokens=0,
+    )
+
+    totals = repo.tokens_totals("erin")
+    assert totals["input"] == 110
+    assert totals["output"] == 220
+    assert totals["cache_read"] == 3
+    assert totals["cache_creation"] == 2
+    assert totals["total"] == 335
+    assert totals["sessions"] == 2
+
+    by_model = repo.tokens_by_model("erin")
+    # Ordered by total desc → claude-b (300) first, claude-a (35) second.
+    assert [m["model"] for m in by_model] == ["claude-b", "claude-a"]
+    assert by_model[0]["total"] == 300
+    assert by_model[1]["total"] == 35
+
+
+def test_tokens_top_sessions_orders_by_total(usage_repo):
+    repo, _, _ = usage_repo
+    now = datetime.now(timezone.utc)
+    _seed_summary(repo, session_file="ts/small.jsonl", username="frank", started_at=now,
+                  input_tokens=1, output_tokens=1)
+    _seed_summary(repo, session_file="ts/big.jsonl", username="frank", started_at=now,
+                  input_tokens=1000, output_tokens=1000)
+
+    top = repo.tokens_top_sessions("frank", limit=10)
+    assert top[0]["session_file"] == "ts/big.jsonl"
+    assert top[0]["total"] == 2000
+    assert top[1]["session_file"] == "ts/small.jsonl"
+    # limit is honored.
+    assert len(repo.tokens_top_sessions("frank", limit=1)) == 1
+
+
+def test_tokens_daily_series_window(usage_repo):
+    repo, _, _ = usage_repo
+    now = datetime.now(timezone.utc)
+    _seed_summary(repo, session_file="ds/s1.jsonl", username="grace", started_at=now,
+                  input_tokens=5, output_tokens=5)
+
+    series = repo.tokens_daily_series("grace", days=30)
+    assert len(series) == 1
+    assert series[0]["total"] == 10
+    assert series[0]["sessions"] == 1
+
+
+def test_tokens_daily_series_filters_username_and_days(usage_repo):
+    """Pins the username + days predicates: an old same-user row (outside the
+    window) and a current other-user row must both be excluded, so the series
+    reflects only the requested user's in-window totals."""
+    repo, _, _ = usage_repo
+    now = datetime.now(timezone.utc)
+    _seed_summary(repo, session_file="ds/current.jsonl", username="grace",
+                  started_at=now - timedelta(days=5), input_tokens=5, output_tokens=5)
+    _seed_summary(repo, session_file="ds/old.jsonl", username="grace",
+                  started_at=now - timedelta(days=45), input_tokens=500, output_tokens=500)
+    _seed_summary(repo, session_file="ds/other.jsonl", username="heidi",
+                  started_at=now - timedelta(days=5), input_tokens=50, output_tokens=50)
+
+    series = repo.tokens_daily_series("grace", days=30)
+    assert len(series) == 1
+    assert series[0]["total"] == 10
+    assert series[0]["sessions"] == 1
+
+
+def test_delete_older_than_present_on_both_backends(usage_repo):
+    repo, _, _ = usage_repo
+    # Sanity: method exists + is callable (parity reused by prune_usage).
+    assert repo.delete_older_than(3650) == 0
+
+
+def test_delete_older_than_removes_only_events_before_cutoff(usage_repo):
+    """Pins the retention prune semantics behind POST /api/admin/telemetry/prune:
+    rows older than the cutoff are deleted, recent rows survive, and the
+    returned count is the number actually removed — on both backends (guards the
+    dialect-specific interval arithmetic)."""
+    repo, _, _ = usage_repo
+    now = datetime.now(timezone.utc)
+    _seed_event(repo, event_id="old", username="alice",
+                session_file="retention/old.jsonl", occurred_at=now - timedelta(days=40))
+    _seed_event(repo, event_id="recent", username="alice",
+                session_file="retention/recent.jsonl", occurred_at=now - timedelta(days=5))
+
+    assert repo.delete_older_than(30) == 1
+    assert repo.count_events() == 1
+    # Idempotent: nothing left older than the cutoff.
+    assert repo.delete_older_than(30) == 0

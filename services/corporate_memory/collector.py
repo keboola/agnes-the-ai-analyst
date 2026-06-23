@@ -400,6 +400,9 @@ def collect_all(dry_run: bool = False) -> dict:
         "items_pending": 0,
         "skipped": False,
         "errors": [],
+        "items_db_inserted": 0,
+        "items_db_updated": 0,
+        "items_db_errors": 0,
     }
 
     # Step 1: Check for changes
@@ -540,7 +543,7 @@ def collect_all(dry_run: bool = False) -> dict:
         },
     }
 
-    # Step 10: Save unless dry run
+    # Step 10: Save knowledge.json unless dry run
     if not dry_run:
         _write_json(KNOWLEDGE_FILE, updated)
         logger.info(
@@ -548,16 +551,73 @@ def collect_all(dry_run: bool = False) -> dict:
             f"{stats['items_new']} new, {stats['items_filtered']} filtered"
         )
 
-        # Save user hashes after successful processing
-        current_hashes = {user: h for user, (_, h) in user_files.items()}
-        _write_json(
-            USER_HASHES_FILE,
-            {
-                "hashes": current_hashes,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            },
+        # Step 11: Sync final_items into the DB knowledge_items table.
+        # Lazy import keeps this module importable without a DB connection
+        # (unit tests mock the file I/O layer and never need a real DB).
+        from src.repositories import knowledge_repo as _knowledge_repo
+
+        repo = _knowledge_repo()
+        inserted = updated_count = errors = 0
+        for item_id, item in final_items.items():
+            try:
+                existing = repo.get_by_id(item_id)
+                if existing:
+                    repo.update(
+                        item_id,
+                        title=item["title"],
+                        content=item["content"],
+                        category=item.get("category"),
+                        tags=json.dumps(item.get("tags") or []),
+                        source_user=(item.get("source_users") or [""])[0],
+                        # status intentionally omitted — preserve any admin
+                        # approval/rejection set through the UI or API
+                    )
+                    updated_count += 1
+                else:
+                    repo.create(
+                        id=item_id,
+                        title=item["title"],
+                        content=item["content"],
+                        category=item.get("category"),
+                        source_user=(item.get("source_users") or [""])[0],
+                        tags=item.get("tags") or [],
+                        status=item.get("status", "pending"),
+                        source_type="claude_local_md",
+                        sensitivity=item.get("sensitivity", "internal"),
+                        is_personal=item.get("is_personal", False),
+                    )
+                    inserted += 1
+            except Exception as exc:
+                logger.warning("DB sync error for item %s: %s", item_id, exc)
+                errors += 1
+        logger.info(
+            "DB sync: %d inserted, %d updated, %d errors",
+            inserted, updated_count, errors,
         )
-        logger.info("User hashes updated")
+        stats["items_db_inserted"] = inserted
+        stats["items_db_updated"] = updated_count
+        stats["items_db_errors"] = errors
+
+        # Save user hashes only after DB sync — if every item failed to sync,
+        # skip the hash write so the next scheduled run retries rather than
+        # treating this run as up-to-date and skipping entirely.
+        db_total_failure = len(final_items) > 0 and errors == len(final_items)
+        if db_total_failure:
+            logger.warning(
+                "DB sync total failure (%d/%d errors) — skipping user hash update "
+                "so the next run retries",
+                errors, len(final_items),
+            )
+        else:
+            current_hashes = {user: h for user, (_, h) in user_files.items()}
+            _write_json(
+                USER_HASHES_FILE,
+                {
+                    "hashes": current_hashes,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            logger.info("User hashes updated")
     else:
         logger.info(
             f"Dry run - would preserve {stats['items_preserved']}, "

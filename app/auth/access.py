@@ -43,6 +43,51 @@ from src.db import SYSTEM_ADMIN_GROUP
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Google group self-heal: re-sync on access-miss
+# ---------------------------------------------------------------------------
+# Per-user last-resync timestamp (in-process cache). Guards against repeated
+# Admin SDK calls on every denied request — one resync attempt per user per
+# RESYNC_COOLDOWN_SECONDS window, regardless of outcome.
+_google_resync_last: dict[str, float] = {}
+_RESYNC_COOLDOWN_SECONDS = 60
+
+
+def _maybe_resync_google_groups(user_id: str, email: str) -> bool:
+    """Re-fetch Workspace groups for *user_id* if Google sync is configured
+    and the per-user cooldown has passed.
+
+    Returns True when a resync was attempted (caller should re-read groups),
+    False when skipped (cooldown active, no Google config, or fetch error).
+
+    Fail-soft: any exception is swallowed and logged; the existing membership
+    snapshot is never cleared by this path.
+    """
+    if "GOOGLE_ADMIN_SDK_SUBJECT" not in os.environ and "GOOGLE_ADMIN_SDK_MOCK_GROUPS" not in os.environ:
+        return False
+
+    now = time.monotonic()
+    if now - _google_resync_last.get(user_id, 0) < _RESYNC_COOLDOWN_SECONDS:
+        return False
+
+    _google_resync_last[user_id] = now
+    try:
+        from app.auth.group_sync import apply_user_groups
+
+        # apply_user_groups ignores conn and routes through the repo factory,
+        # so no raw connection is needed here (backend-safe on PG too).
+        result = apply_user_groups(user_id, email, None)
+        logger.info(
+            "google-group self-heal: user=%s applied=%s groups=%s",
+            user_id,
+            result.applied,
+            result.relevant,
+        )
+        return True
+    except Exception:
+        logger.warning("google-group self-heal failed for user %s", user_id, exc_info=True)
+        return False
+
 
 def _get_group_id_by_name(name: str, conn: Optional[duckdb.DuckDBPyConnection] = None) -> Optional[str]:
     """Look up a group's id by its (unique) name. Returns None if absent —
@@ -56,8 +101,10 @@ def _get_group_id_by_name(name: str, conn: Optional[duckdb.DuckDBPyConnection] =
     route through the global factory which reads from PG instead.
     """
     from src.repositories import use_pg, user_groups_repo
+
     if conn is not None and not use_pg():
         from src.repositories.user_groups import UserGroupsRepository
+
         row = UserGroupsRepository(conn).get_by_name(name)
     else:
         row = user_groups_repo().get_by_name(name)
@@ -79,8 +126,10 @@ def _user_group_ids(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = No
     for rationale); routes through the global factory otherwise.
     """
     from src.repositories import use_pg, user_group_members_repo
+
     if conn is not None and not use_pg():
         from src.repositories.user_group_members import UserGroupMembersRepository
+
         return set(UserGroupMembersRepository(conn).list_groups_for_user(user_id))
     return set(user_group_members_repo().list_groups_for_user(user_id))
 
@@ -95,9 +144,7 @@ def is_user_admin(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None
     if admin_id is None:
         # No Admin group seeded — defensively deny. Fail-closed beats the
         # alternative of silently granting elevated access.
-        logger.warning(
-            "is_user_admin: Admin group missing in user_groups; denying access"
-        )
+        logger.warning("is_user_admin: Admin group missing in user_groups; denying access")
         return False
     return admin_id in _user_group_ids(user_id, conn=conn)
 
@@ -122,6 +169,7 @@ def can_access(
     """
     if resource_type == "table":
         from connectors.internal.access import is_internal_table
+
         if is_internal_table(resource_id):
             return True
 
@@ -134,13 +182,19 @@ def can_access(
         return False
 
     from src.repositories import use_pg, resource_grants_repo
+
     if conn is not None and not use_pg():
         from src.repositories.resource_grants import ResourceGrantsRepository
+
         return ResourceGrantsRepository(conn).has_grant(
-            list(group_ids), resource_type, resource_id,
+            list(group_ids),
+            resource_type,
+            resource_id,
         )
     return resource_grants_repo().has_grant(
-        list(group_ids), resource_type, resource_id,
+        list(group_ids),
+        resource_type,
+        resource_id,
     )
 
 
@@ -165,14 +219,18 @@ def _allowed_ids_for_user(
     if not group_ids:
         return frozenset()
     from src.repositories import use_pg, resource_grants_repo
+
     if conn is not None and not use_pg():
         from src.repositories.resource_grants import ResourceGrantsRepository
+
         rows = ResourceGrantsRepository(conn).list_for_groups(
-            list(group_ids), resource_type,
+            list(group_ids),
+            resource_type,
         )
     else:
         rows = resource_grants_repo().list_for_groups(
-            list(group_ids), resource_type,
+            list(group_ids),
+            resource_type,
         )
     return frozenset(r["resource_id"] for r in rows)
 
@@ -206,13 +264,19 @@ def has_explicit_grant(
     if not group_ids:
         return False
     from src.repositories import use_pg, resource_grants_repo
+
     if conn is not None and not use_pg():
         from src.repositories.resource_grants import ResourceGrantsRepository
+
         return ResourceGrantsRepository(conn).has_grant(
-            list(group_ids), resource_type, resource_id,
+            list(group_ids),
+            resource_type,
+            resource_id,
         )
     return resource_grants_repo().has_grant(
-        list(group_ids), resource_type, resource_id,
+        list(group_ids),
+        resource_type,
+        resource_id,
     )
 
 
@@ -293,21 +357,19 @@ def require_resource_access(
             # programmer error, fail loud.
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                    f"require_resource_access: path_template "
-                    f"{path_template!r} references missing path_param {e}"
-                ),
+                detail=(f"require_resource_access: path_template {path_template!r} references missing path_param {e}"),
             )
         if isinstance(user, SessionPrincipal):
             allowed = can_access_session(user, resource_type.value, resource_id)
         else:
             allowed = can_access(user["id"], resource_type.value, resource_id, conn)
+            if not allowed and _maybe_resync_google_groups(user["id"], user.get("email", "")):
+                # Groups were refreshed — re-check with the updated snapshot.
+                allowed = can_access(user["id"], resource_type.value, resource_id, conn)
         if not allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    f"Access denied to {resource_type.value} {resource_id!r}"
-                ),
+                detail=(f"Access denied to {resource_type.value} {resource_id!r}"),
             )
         return user
 
@@ -326,17 +388,11 @@ def mint_session_jwt(user_email: str, chat_id: str, *, ttl_seconds: int = 3600) 
     the same key used by the rest of the auth layer (see app/auth/jwt.py).
     """
     import jwt  # PyJWT — already a project dependency
-    from src.db import get_system_db
-    from src.repositories.users import UserRepository
+    from src.repositories import users_repo
 
-    conn = get_system_db()
-    try:
-        row = UserRepository(conn).get_by_email(user_email)
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+    # Factory-routed: honors use_pg() so a Postgres instance reads the live
+    # PG users table, not the frozen DuckDB system file (#518).
+    row = users_repo().get_by_email(user_email)
     if not row:
         raise ValueError(f"mint_session_jwt: user not found: {user_email!r}")
     user_id = row["id"]
@@ -368,6 +424,7 @@ def mint_co_session_jwt(session_id: str, *, ttl: int = 3600) -> str:
     """
     from datetime import timedelta
     from app.auth.jwt import create_access_token
+
     return create_access_token(
         user_id=f"session:{session_id}",
         email="",  # no real identity; resolver never reads this

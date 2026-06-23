@@ -161,6 +161,23 @@ def test_store_entity_set_visibility_approved(store_repos):
     assert row["visibility_status"] == "approved"
 
 
+def test_synthetic_name_taken(store_repos):
+    repos, _, _ = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    se = repos["entities"]
+    # Nothing registered yet.
+    assert se.synthetic_name_taken("my-skill-by-alice") is False
+    # _make_entity defaults synthetic_name to "<name>-by-<owner_username>".
+    _make_entity(se)
+    assert se.synthetic_name_taken("my-skill-by-alice") is True
+    # Excluding the row itself frees the slot (used by the rename path).
+    assert se.synthetic_name_taken("my-skill-by-alice", exclude_entity_id="entity-1") is False
+    # Archived rows are skipped when exclude_archived=True (re-upload after archive).
+    se.set_visibility("entity-1", "archived")
+    assert se.synthetic_name_taken("my-skill-by-alice", exclude_archived=True) is False
+    assert se.synthetic_name_taken("my-skill-by-alice") is True  # still present without the flag
+
+
 def test_install_plugin_creates_row(store_repos):
     repos, _, _ = store_repos
     repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
@@ -276,6 +293,74 @@ def test_archived_entity_visible_with_list(store_repos):
     assert "entity-1" in ids_all
 
 
+def test_category_counts_groups_and_buckets_other(store_repos):
+    """category_counts must reproduce the /api/marketplace/categories
+    GROUP BY on both backends: NULL/empty category collapses into 'Other',
+    the type filter restricts the count, and (visibility_status + owner_id)
+    counts approved-for-all plus the owner's own non-archived rows."""
+    repos, _, _ = store_repos
+    se = repos["entities"]
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    repos["users"].create(id="user-2", email="bob@x.com", name="Bob")
+
+    # Two approved skills in 'Productivity', one approved skill with empty
+    # category (→ 'Other'), one approved agent, plus a pending skill owned by
+    # user-1 and an archived skill owned by user-1.
+    _make_entity(se, id="e1", name="s1", category="Productivity",
+                 visibility_status="approved")
+    _make_entity(se, id="e2", name="s2", category="Productivity",
+                 visibility_status="approved")
+    _make_entity(se, id="e3", name="s3", category="   ",
+                 visibility_status="approved")
+    _make_entity(se, id="e4", name="a1", type="agent", category="Data",
+                 visibility_status="approved")
+    _make_entity(se, id="e5", name="s5", owner_user_id="user-1",
+                 owner_username="alice", category="Pending",
+                 visibility_status="pending")
+    _make_entity(se, id="e6", name="s6", owner_user_id="user-1",
+                 owner_username="alice", category="Gone",
+                 visibility_status="approved")
+    se.archive("e6", by_user_id="user-1")
+
+    # No filters → counts everything, empty category bucketed as 'Other'.
+    # e6 was renamed by archive but its category 'Gone' is untouched.
+    counts_all = se.category_counts()
+    assert counts_all.get("Productivity") == 2
+    assert counts_all.get("Other") == 1
+    assert counts_all.get("Data") == 1
+    assert counts_all.get("Pending") == 1
+    assert counts_all.get("Gone") == 1
+
+    # type='skill' restricts to skills only (excludes the agent).
+    counts_skill = se.category_counts(type="skill")
+    assert counts_skill.get("Data") is None
+    assert counts_skill.get("Productivity") == 2
+
+    # Non-admin browse: approved-for-all + own non-archived. user-1 sees the
+    # 4 approved (Productivity x2, Other, Data) plus their own pending one,
+    # but NOT their archived e6.
+    counts_user1 = se.category_counts(
+        visibility_status=["approved"], owner_id="user-1",
+    )
+    assert counts_user1.get("Productivity") == 2
+    assert counts_user1.get("Other") == 1
+    assert counts_user1.get("Data") == 1
+    assert counts_user1.get("Pending") == 1
+    assert counts_user1.get("Gone") is None  # archived, owner suppressed
+
+    # A different non-owner (user-2) sees only the approved set.
+    counts_user2 = se.category_counts(
+        visibility_status=["approved"], owner_id="user-2",
+    )
+    assert counts_user2.get("Pending") is None
+    assert counts_user2.get("Productivity") == 2
+
+    # visibility_status only (no owner) → strict whitelist.
+    counts_appr = se.category_counts(visibility_status=["approved"])
+    assert counts_appr.get("Pending") is None
+    assert counts_appr.get("Other") == 1
+
+
 def _backdate_created_at(repos, conn, backend, sub_id, ts):
     """Force a submission's created_at into the past on either backend —
     repo.create() always stamps NOW()."""
@@ -354,6 +439,71 @@ def test_reap_stuck_pending_llm_contract(store_repos):
     )
     assert subs.reap_stuck_pending_llm(grace_seconds=1800, error_payload=err) == []
     assert subs.get(appr_id)["status"] == "approved"
+
+
+def test_submission_delete_removes_row(store_repos):
+    """delete() must drop the submission row and report True; a second
+    delete of the same id reports False. Parity on both backends —
+    DuckDB uses RETURNING+len, PG uses rowcount."""
+    repos, _, _ = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    _make_entity(repos["entities"])
+
+    sub_id = repos["submissions"].create(
+        submitter_id="user-1", submitter_email="alice@x.com",
+        type="skill", name="my-skill", version="abc123",
+        status="pending_llm", entity_id="entity-1",
+    )
+    assert repos["submissions"].get(sub_id) is not None
+
+    removed = repos["submissions"].delete(sub_id)
+    assert removed is True
+    assert repos["submissions"].get(sub_id) is None
+
+    # Idempotent: deleting a gone row reports False on both backends.
+    removed2 = repos["submissions"].delete(sub_id)
+    assert removed2 is False
+
+
+def test_submission_list_for_entity_newest_first(store_repos):
+    """list_for_entity() must return every row linked to the entity, newest
+    created_at first, with the fixed id/status/version/created_at/
+    reviewed_by_model projection — identical ordering on both backends."""
+    repos, conn, backend = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    _make_entity(repos["entities"])
+
+    older_id = repos["submissions"].create(
+        submitter_id="user-1", submitter_email="alice@x.com",
+        type="skill", name="my-skill", version="v-old",
+        status="approved", entity_id="entity-1",
+    )
+    _backdate_created_at(
+        repos, conn, backend, older_id,
+        datetime.now(timezone.utc) - timedelta(hours=2),
+    )
+    newer_id = repos["submissions"].create(
+        submitter_id="user-1", submitter_email="alice@x.com",
+        type="skill", name="my-skill", version="v-new",
+        status="pending_llm", entity_id="entity-1",
+    )
+
+    # An unrelated entity's submission must not leak in.
+    _make_entity(repos["entities"], id="entity-other", name="other-skill")
+    repos["submissions"].create(
+        submitter_id="user-1", submitter_email="alice@x.com",
+        type="skill", name="other-skill", version="v-x",
+        status="approved", entity_id="entity-other",
+    )
+
+    rows = repos["submissions"].list_for_entity("entity-1")
+    assert [r["id"] for r in rows] == [newer_id, older_id]
+    assert rows[0]["version"] == "v-new"
+    assert rows[0]["status"] == "pending_llm"
+    # Fixed projection — exactly these keys, no JSON columns.
+    assert set(rows[0].keys()) == {
+        "id", "status", "version", "created_at", "reviewed_by_model",
+    }
 
 
 def _audit_for_backend(repos, conn, backend):

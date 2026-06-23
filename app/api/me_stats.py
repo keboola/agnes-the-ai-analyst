@@ -38,6 +38,9 @@ from app.auth.dependencies import _get_db, get_current_user
 
 from src.repositories import (
     audit_repo,
+    session_processor_state_repo,
+    usage_repo,
+    users_repo,
 )
 logger = logging.getLogger(__name__)
 
@@ -64,11 +67,15 @@ def _username_for_stats(user: dict) -> str:
 
 
 def _session_data_dir() -> Path:
-    """Match ``app.api.admin_user_sessions._session_data_dir``."""
+    """Like ``app.api.admin_user_sessions._session_data_dir`` but also
+    honoring the legacy ``AGNES_SESSION_DATA_DIR`` env var. The fallback
+    default matches the admin resolver (and the upload API's actual write
+    location, ``${DATA_DIR}/user_sessions``) — the old ``/data/sessions``
+    default pointed at a directory nothing writes to (#640 review)."""
     return Path(
         os.environ.get("SESSION_DATA_DIR")
         or os.environ.get("AGNES_SESSION_DATA_DIR")
-        or "/data/sessions"
+        or "/data/user_sessions"
     )
 
 
@@ -103,38 +110,27 @@ def list_self_sessions(
     """
     username = _username_for_stats(user)
     user_id: str = user["id"]
-    user_dir = _session_data_dir() / username
+    # Both ingestion layouts, same as the admin endpoints (#640): the legacy
+    # collector writes under the email LOCAL-PART, the upload API under
+    # users.id — scanning one of them hid the other's sessions from the
+    # self-service list until the usage processor indexed them. NOTE:
+    # ``_username_for_stats`` returns the user_id (the summary-table key),
+    # so the legacy dir name must be derived from the email — and the base
+    # comes from THIS module's ``_session_data_dir`` (it honors
+    # ``AGNES_SESSION_DATA_DIR`` + this endpoint's historical default).
+    email_local = (user.get("email") or "").split("@")[0]
+    base = _session_data_dir()
+    user_dirs = [
+        base / name for name in dict.fromkeys([email_local, user_id]) if name
+    ]
 
     try:
-        rows_db = conn.execute(
-            """
-            SELECT
-                session_file, session_id, started_at, ended_at,
-                active_seconds, wall_seconds,
-                user_messages, tool_calls, tool_errors,
-                input_tokens, output_tokens,
-                cache_read_tokens, cache_creation_tokens,
-                primary_model
-            FROM usage_session_summary
-            WHERE username = ?
-            ORDER BY started_at DESC NULLS LAST
-            """,
-            [username],
-        ).fetchall()
+        rows_db = usage_repo().list_sessions_for_user_self(username)
     except Exception:
         rows_db = []
 
-    cols = [
-        "session_file", "session_id", "started_at", "ended_at",
-        "active_seconds", "wall_seconds",
-        "user_messages", "tool_calls", "tool_errors",
-        "input_tokens", "output_tokens",
-        "cache_read_tokens", "cache_creation_tokens",
-        "primary_model",
-    ]
     processed: dict[str, dict] = {}
-    for r in rows_db:
-        d = dict(zip(cols, r))
+    for d in rows_db:
         for k in ("started_at", "ended_at"):
             v = d.get(k)
             if v is not None and hasattr(v, "isoformat"):
@@ -154,14 +150,18 @@ def list_self_sessions(
         processed[Path(d["session_file"]).name] = d
 
     all_rows: list[dict] = list(processed.values())
-    if user_dir.is_dir():
+    seen_fs: set[str] = set()
+    for user_dir in user_dirs:
+        if not user_dir.is_dir():
+            continue
         for p in sorted(
             user_dir.glob("*.jsonl"),
             key=lambda x: x.stat().st_mtime,
             reverse=True,
         ):
-            if p.name in processed:
+            if p.name in processed or p.name in seen_fs:
                 continue
+            seen_fs.add(p.name)
             mtime = datetime.fromtimestamp(p.stat().st_mtime).isoformat()
             all_rows.append({
                 "session_file": p.name,
@@ -183,7 +183,22 @@ def list_self_sessions(
             })
 
     # --- Enrich with verification-pipeline status ---
-    _enrich_pipeline_status(all_rows, user_id, conn)
+    # State table keys rows by ``<dir>/<filename>`` (the pipeline runner's
+    # session_key). Build the same keys here, fetch their state rows via the
+    # factory, then enrich.
+    def _state_key(session_file: str) -> str:
+        return session_file if "/" in session_file else f"{user_id}/{session_file}"
+
+    state_keys = [_state_key(r["session_file"]) for r in all_rows]
+    state_map: dict[str, dict] = {}
+    if state_keys:
+        try:
+            state_map = session_processor_state_repo().get_states_for_session_files(
+                "verification", state_keys
+            )
+        except Exception:
+            state_map = {}
+    _enrich_pipeline_status(all_rows, user_id, state_map)
 
     # --- Enrich with download URLs for uploaded JSONL ---
     uploaded_dir = _uploaded_sessions_dir(user_id)
@@ -191,7 +206,9 @@ def list_self_sessions(
     if uploaded_dir.is_dir():
         uploaded_names = {p.name for p in uploaded_dir.glob("*.jsonl")}
     for row in all_rows:
-        fname = row.get("session_file", "")
+        # Basename — processed rows carry the pipeline's dir-prefixed
+        # session_file, which would never match the uploaded-file names.
+        fname = Path(row.get("session_file", "")).name
         if fname in uploaded_names:
             row["download_url"] = f"/profile/sessions/{fname}"
         else:
@@ -214,34 +231,25 @@ def list_self_sessions(
 def _enrich_pipeline_status(
     rows: list[dict],
     user_id: str,
-    conn: duckdb.DuckDBPyConnection,
+    state_map: dict[str, dict],
 ) -> None:
     """Add ``pipeline_status`` and ``items_extracted`` from
     ``session_processor_state`` (verification processor) to each row
-    in-place.  Matches are looked up by ``<user_id>/<session_file>``.
+    in-place.  *state_map* maps the pipeline runner's session_key
+    (``<dir>/<filename>``) to its state row (``{'processed_at': ...,
+    'items_extracted': ...}``); processed rows already carry that
+    prefixed value in ``session_file``, filesystem rows carry a bare
+    name uploaded under the user_id dir — prefixing unconditionally
+    double-prefixed the former and matched nothing (#640 review).
     """
     if not rows:
         return
-    keys = [f"{user_id}/{r['session_file']}" for r in rows]
-    state_map: dict[str, dict] = {}
-    try:
-        placeholders = ",".join("?" for _ in keys)
-        db_rows = conn.execute(
-            f"""SELECT session_file, processed_at, items_extracted
-                FROM session_processor_state
-                WHERE processor_name = 'verification'
-                  AND session_file IN ({placeholders})""",
-            keys,
-        ).fetchall()
-        state_cols = [d[0] for d in conn.description]
-        for row in db_rows:
-            d = dict(zip(state_cols, row))
-            state_map[d["session_file"]] = d
-    except Exception:
-        pass
+
+    def _state_key(session_file: str) -> str:
+        return session_file if "/" in session_file else f"{user_id}/{session_file}"
+
     for row in rows:
-        key = f"{user_id}/{row['session_file']}"
-        state = state_map.get(key)
+        state = state_map.get(_state_key(row["session_file"]))
         if state is None:
             row["pipeline_status"] = "pending"
             row["items_extracted"] = None
@@ -275,119 +283,11 @@ def get_tokens(
     """
     username = _username_for_stats(user)
 
-    # Daily series — interval literal interpolated from validated `days`.
-    daily = conn.execute(
-        f"""
-        SELECT
-            CAST(started_at AS DATE) AS day,
-            COALESCE(SUM(input_tokens), 0)          AS input_tokens,
-            COALESCE(SUM(output_tokens), 0)         AS output_tokens,
-            COALESCE(SUM(cache_read_tokens), 0)     AS cache_read,
-            COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation,
-            COUNT(*) AS sessions
-        FROM usage_session_summary
-        WHERE username = ?
-          AND started_at >= current_timestamp - INTERVAL {int(days)} DAY
-        GROUP BY 1
-        ORDER BY 1
-        """,
-        [username],
-    ).fetchall()
-    daily_series = [
-        {
-            "day": d.isoformat() if hasattr(d, "isoformat") else str(d),
-            "input": int(i or 0),
-            "output": int(o or 0),
-            "cache_read": int(cr or 0),
-            "cache_creation": int(cc or 0),
-            "sessions": int(s or 0),
-            "total": int((i or 0) + (o or 0) + (cr or 0) + (cc or 0)),
-        }
-        for (d, i, o, cr, cc, s) in daily
-    ]
-
-    by_model = conn.execute(
-        """
-        SELECT
-            COALESCE(primary_model, '(unknown)') AS model,
-            COALESCE(SUM(input_tokens), 0)          AS input_tokens,
-            COALESCE(SUM(output_tokens), 0)         AS output_tokens,
-            COALESCE(SUM(cache_read_tokens), 0)     AS cache_read,
-            COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation,
-            COUNT(*) AS sessions
-        FROM usage_session_summary
-        WHERE username = ?
-        GROUP BY 1
-        ORDER BY (
-            COALESCE(SUM(input_tokens), 0)
-            + COALESCE(SUM(output_tokens), 0)
-            + COALESCE(SUM(cache_read_tokens), 0)
-            + COALESCE(SUM(cache_creation_tokens), 0)
-        ) DESC
-        """,
-        [username],
-    ).fetchall()
-    model_breakdown = [
-        {
-            "model": m, "input": int(i or 0), "output": int(o or 0),
-            "cache_read": int(cr or 0), "cache_creation": int(cc or 0),
-            "sessions": int(s or 0),
-            "total": int((i or 0) + (o or 0) + (cr or 0) + (cc or 0)),
-        }
-        for (m, i, o, cr, cc, s) in by_model
-    ]
-
-    top_sessions = conn.execute(
-        """
-        SELECT
-            session_file, session_id, started_at, primary_model,
-            input_tokens, output_tokens,
-            cache_read_tokens, cache_creation_tokens,
-            (COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
-             + COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0))
-            AS tokens_total
-        FROM usage_session_summary
-        WHERE username = ?
-        ORDER BY tokens_total DESC
-        LIMIT 10
-        """,
-        [username],
-    ).fetchall()
-    top = [
-        {
-            "session_file": sf,
-            "session_id": sid,
-            "started_at": st.isoformat() if hasattr(st, "isoformat") else st,
-            "primary_model": pm,
-            "input": int(i or 0), "output": int(o or 0),
-            "cache_read": int(cr or 0), "cache_creation": int(cc or 0),
-            "total": int(tt or 0),
-        }
-        for (sf, sid, st, pm, i, o, cr, cc, tt) in top_sessions
-    ]
-
-    totals_row = conn.execute(
-        """
-        SELECT
-            COALESCE(SUM(input_tokens), 0),
-            COALESCE(SUM(output_tokens), 0),
-            COALESCE(SUM(cache_read_tokens), 0),
-            COALESCE(SUM(cache_creation_tokens), 0),
-            COUNT(*)
-        FROM usage_session_summary
-        WHERE username = ?
-        """,
-        [username],
-    ).fetchone()
-    ti, to, tcr, tcc, tses = totals_row or (0, 0, 0, 0, 0)
-    totals = {
-        "input": int(ti or 0),
-        "output": int(to or 0),
-        "cache_read": int(tcr or 0),
-        "cache_creation": int(tcc or 0),
-        "total": int((ti or 0) + (to or 0) + (tcr or 0) + (tcc or 0)),
-        "sessions": int(tses or 0),
-    }
+    repo = usage_repo()
+    daily_series = repo.tokens_daily_series(username, days)
+    model_breakdown = repo.tokens_by_model(username)
+    top = repo.tokens_top_sessions(username)
+    totals = repo.tokens_totals(username)
 
     return {
         "days": days,
@@ -462,10 +362,8 @@ def list_self_sync_activity(
     # Filter to this user — query_actions doesn't take user_id.
     user_rows = [r for r in actions_seen if r.get("user_id") == user["id"]]
 
-    last_pull_row = conn.execute(
-        "SELECT last_pull_at FROM users WHERE id = ?", [user["id"]]
-    ).fetchone()
-    last_pull_at = last_pull_row[0] if last_pull_row else None
+    row = users_repo().get_by_id(user["id"])
+    last_pull_at = row.get("last_pull_at") if row else None
 
     return {
         "last_pull_at": last_pull_at.isoformat()

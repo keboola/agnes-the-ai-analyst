@@ -214,12 +214,12 @@ Files NOT to modify: `connectors/jira/file_lock.py`, `connectors/jira/transform.
 
 ### system.duckdb — `{DATA_DIR}/state/system.duckdb`
 
-Current schema version: **73** (auto-migrated from any earlier version on startup — see `src/db.py`).
+Current schema version: **84** (auto-migrated from any earlier version on startup — see `src/db.py`).
 
 | Table | Purpose |
 |-------|---------|
 | `schema_version` | Tracks applied migration version |
-| `users` | Registered users: id, email, name, password_hash, setup/reset tokens, active flag |
+| `users` | Registered users: id, email, name, password_hash, setup/reset tokens, active flag, `must_change_password` (forces rotation of seeded/admin-set passwords) |
 | `user_groups` | Named groups (`Admin`, `Everyone` seeded as `is_system=TRUE`; admin-managed and Google-synced groups) |
 | `user_group_members` | `(user_id, group_id, source)` — `source ∈ {admin, google_sync, system_seed}` |
 | `resource_grants` | Generic per-`(group, resource_type, resource_id)` grants (replaces `dataset_permissions` + `plugin_access`) |

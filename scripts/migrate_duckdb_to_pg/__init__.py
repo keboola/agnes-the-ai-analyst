@@ -34,6 +34,7 @@ After cutover, the DuckDB ``system.duckdb`` file becomes a one-time
 snapshot — never written to again. Analytics keep using their own
 ``analytics.duckdb`` and ``extract.duckdb`` files, unaffected.
 """
+
 from __future__ import annotations
 
 import logging
@@ -90,6 +91,7 @@ _PK_COLUMNS: Dict[str, List[str]] = {
     "usage_marketplace_item_window": ["period_label", "source", "type", "parent_plugin", "name"],
     "marketplace_plugins": ["marketplace_id", "name"],
     "user_store_installs": ["user_id", "entity_id"],
+    "store_entity_votes": ["entity_id", "user_id"],
     "user_plugin_optouts": ["user_id", "marketplace_id", "plugin_name"],
     "knowledge_item_relations": ["item_a_id", "item_b_id", "relation_type"],
     "knowledge_votes": ["item_id", "user_id"],
@@ -106,12 +108,22 @@ _PK_COLUMNS: Dict[str, List[str]] = {
     "data_package_tools": ["package_id", "tool_id"],
     # v68 cloud-chat tables (chat_sessions / chat_messages use id PK)
     "user_workdirs": ["user_email"],
+    # v81 memory-mining consent — PK is the user's email, not an id.
+    "memory_mining_consent": ["user_email"],
+    # v79 named source connections (source_connections uses id PK)
+    "connection_secrets": ["connection_id"],
+    # v80 OAuth 2.1 MCP connector — non-`id` primary keys.
+    "oauth_clients": ["client_id"],
+    "oauth_auth_codes": ["code"],
+    "oauth_access_tokens": ["token"],
+    "oauth_refresh_tokens": ["token"],
 }
 
 
 # ---------------------------------------------------------------------------
 # Task builder
 # ---------------------------------------------------------------------------
+
 
 def build_task_list() -> List[GenericCopyTask]:
     """Return migration tasks for every PG table, ordered by FK depth.
@@ -137,6 +149,7 @@ def build_task_list() -> List[GenericCopyTask]:
 # ---------------------------------------------------------------------------
 # Public interface: all_table_names_handled
 # ---------------------------------------------------------------------------
+
 
 def all_table_names_handled() -> set[str]:
     """Names of PG tables this script can migrate.
@@ -167,6 +180,7 @@ TASKS: List[GenericCopyTask] = build_task_list()
 # ---------------------------------------------------------------------------
 # Backwards-compatible shim functions (run_task / validate_task / run_all)
 # ---------------------------------------------------------------------------
+
 
 def run_task(
     task: GenericCopyTask,

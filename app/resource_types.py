@@ -9,10 +9,11 @@ value as ``resource_type`` and a module-defined path string as ``resource_id``.
 Adding a new type — single place, no separate wiring step:
 
   1. Add a member to :class:`ResourceType`.
-  2. Write a ``list_blocks(conn) -> list[Block]`` delegate that projects the
-     domain tables into the (block → items) tree the admin /access page
-     consumes. Each item must include ``resource_id`` matching the path
-     string used in ``resource_grants.resource_id``.
+  2. Write a ``list_blocks() -> list[Block]`` delegate that reads through the
+     ``src.repositories`` factory and projects the domain tables into the
+     (block → items) tree the admin /access page consumes. Each item must
+     include ``resource_id`` matching the path string used in
+     ``resource_grants.resource_id``.
   3. Register a :class:`ResourceTypeSpec` in :data:`RESOURCE_TYPES`. The
      dataclass requires ``list_blocks`` — the type checker forces step 2.
   4. Wire endpoints with
@@ -27,10 +28,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Callable, List
-
-if TYPE_CHECKING:
-    import duckdb
+from typing import Any, Callable, List
 
 
 class ResourceType(StrEnum):
@@ -49,12 +47,24 @@ class ResourceType(StrEnum):
     RECIPE = "recipe"
     CHAT = "chat"
     SLACK_CHANNEL = "slack_channel"
+    COLLECTION = "collection"
 
 
 # Shape returned by ``list_blocks`` delegates. Kept as plain ``dict`` to keep
 # the registry decoupled from any specific ORM/repo type — UI consumes JSON.
 Block = dict[str, Any]
-ListBlocksFn = Callable[["duckdb.DuckDBPyConnection"], List[Block]]
+# Backend-agnostic: delegates read through the ``src.repositories`` factory
+# (which honors ``use_pg()``), NOT a raw system-DB connection. Passing a
+# DuckDB connection here was the backend-split bug (#518) — on a Postgres
+# instance it read the stale, frozen DuckDB system file.
+ListBlocksFn = Callable[[], List[Block]]
+
+# The /admin/access projection must list EVERY grantable resource — an admin
+# can't grant access to something the page doesn't render. The repo ``list()``
+# helpers default to a paginated 200; for these admin-curated, low-cardinality
+# entity types we pass an effectively-unbounded cap so nothing is silently
+# hidden (table_registry / marketplace use their unbounded ``list_all()``).
+_GRANT_PROJECTION_LIMIT = 100_000
 
 
 @dataclass(frozen=True)
@@ -73,7 +83,8 @@ class ResourceTypeSpec:
         id_format: Human-readable hint for ``resource_id`` shape — e.g.
             ``"<marketplace_slug>/<plugin_name>"``. Surfaced as input
             placeholder.
-        list_blocks: Delegate that takes a system DB connection and returns
+        list_blocks: Delegate (no args) that reads through the
+            ``src.repositories`` factory and returns
             ``[{id, name, items: [{resource_id, name, ...}]}]`` — one block
             per parent entity (e.g. marketplace), one item per grantable
             resource (e.g. plugin). Items must carry ``resource_id`` that
@@ -92,45 +103,53 @@ class ResourceTypeSpec:
 # ---------------------------------------------------------------------------
 
 
-def _marketplace_plugin_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
+def _marketplace_plugin_blocks() -> List[Block]:
     """Project marketplace_registry + marketplace_plugins into the
     hierarchical (block → items) shape the admin UI renders.
 
-    One block per marketplace_registry row, ordered by registered_at.
-    Items inside are plugins; ``resource_id`` encodes the canonical path
-    ``<marketplace_slug>/<plugin_name>`` that ``resource_grants.resource_id``
-    matches against.
+    One block per marketplace_registry row. Items inside are plugins;
+    ``resource_id`` encodes the canonical path ``<marketplace_slug>/<plugin_name>``
+    that ``resource_grants.resource_id`` matches against.
+
+    Reads through the repository factory so a Postgres instance projects the
+    live PG registry, not the frozen DuckDB system file (#518). The old raw
+    LEFT JOIN is reproduced by grouping plugins under their marketplace in
+    Python.
     """
-    rows = conn.execute(
-        """SELECT mr.id, mr.name, mr.registered_at,
-                  mp.name AS plugin_name, mp.version, mp.category,
-                  mp.description, mp.source_type, mp.is_system
-           FROM marketplace_registry mr
-           LEFT JOIN marketplace_plugins mp ON mp.marketplace_id = mr.id
-           ORDER BY mr.registered_at, mr.id, mp.name"""
-    ).fetchall()
+    from src.repositories import (
+        marketplace_plugins_repo,
+        marketplace_registry_repo,
+    )
+
     blocks: dict[str, Block] = {}
-    for mr_id, mr_name, _, p_name, p_ver, p_cat, p_desc, p_src, p_sys in rows:
-        block = blocks.setdefault(mr_id, {
-            "id": mr_id,
-            "name": mr_name,
-            "items": [],
-        })
-        if p_name:
-            block["items"].append({
-                "resource_id": f"{mr_id}/{p_name}",
-                "name": p_name,
-                "version": p_ver,
-                "category": p_cat,
-                "description": p_desc,
-                "source_type": p_src,
+    for mr in marketplace_registry_repo().list_all():
+        blocks[mr["id"]] = {"id": mr["id"], "name": mr["name"], "items": []}
+    for p in marketplace_plugins_repo().list_all():
+        # Admin-disabled plugins are hidden from the RBAC grant UI, like every
+        # other served surface (browse / my-stack / synthetic feed). The only
+        # place a disabled plugin stays visible is the /admin/marketplaces
+        # details modal, where an admin can re-enable it.
+        if p.get("admin_disabled"):
+            continue
+        block = blocks.get(p.get("marketplace_id"))
+        if block is None:
+            continue
+        block["items"].append(
+            {
+                "resource_id": f'{p["marketplace_id"]}/{p["name"]}',
+                "name": p["name"],
+                "version": p.get("version"),
+                "category": p.get("category"),
+                "description": p.get("description"),
+                "source_type": p.get("source_type"),
                 # v39: drives the SYSTEM pill + disabled checkbox in
                 # /admin/access. The grant row exists for every group on a
                 # system plugin (materialized by mark_system) — we just
                 # prevent admins from revoking it via the UI to keep the
                 # mandatory-tier semantic honest.
-                "is_system": bool(p_sys),
-            })
+                "is_system": bool(p.get("is_system")),
+            }
+        )
     return list(blocks.values())
 
 
@@ -139,7 +158,7 @@ def _marketplace_plugin_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]
 # ---------------------------------------------------------------------------
 
 
-def _table_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
+def _table_blocks() -> List[Block]:
     """Project table_registry into the (block → items) shape the admin UI
     renders.
 
@@ -152,33 +171,42 @@ def _table_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     Tables with NULL/empty bucket fall into a synthetic ``"(no bucket)"``
     block so they are still grantable.
     """
+    from src.repositories import table_registry_repo
+
     # Filter out source_type='internal' rows (agnes_sessions /
     # agnes_telemetry / agnes_audit). Their RBAC is row-level, enforced
     # in the query path; the table-grain `resource_grants` gate is
     # bypassed for them (see can_access). Surfacing them on
     # /admin/access would let admins assign grants that do nothing,
     # which is exactly the confusion this filter prevents.
-    rows = conn.execute(
-        """SELECT id, name, bucket, source_type, query_mode, description
-           FROM table_registry
-           WHERE source_type IS DISTINCT FROM 'internal'
-           ORDER BY COALESCE(bucket, ''), name"""
-    ).fetchall()
+    # ``!= 'internal'`` keeps NULL source_type rows (matches the old
+    # ``IS DISTINCT FROM 'internal'`` SQL semantics).
+    rows = [
+        r
+        for r in table_registry_repo().list_all()
+        if r.get("source_type") != "internal"
+    ]
+    rows.sort(key=lambda r: ((r.get("bucket") or ""), r.get("name") or ""))
     blocks: dict[str, Block] = {}
-    for tbl_id, name, bucket, source_type, query_mode, description in rows:
-        block_key = bucket if bucket else "(no bucket)"
-        block = blocks.setdefault(block_key, {
-            "id": block_key,
-            "name": block_key,
-            "items": [],
-        })
-        block["items"].append({
-            "resource_id": tbl_id,
-            "name": name,
-            "category": query_mode,
-            "source_type": source_type,
-            "description": description,
-        })
+    for r in rows:
+        block_key = r.get("bucket") or "(no bucket)"
+        block = blocks.setdefault(
+            block_key,
+            {
+                "id": block_key,
+                "name": block_key,
+                "items": [],
+            },
+        )
+        block["items"].append(
+            {
+                "resource_id": r["id"],
+                "name": r.get("name"),
+                "category": r.get("query_mode"),
+                "source_type": r.get("source_type"),
+                "description": r.get("description"),
+            }
+        )
     return list(blocks.values())
 
 
@@ -187,7 +215,7 @@ def _table_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
 # ---------------------------------------------------------------------------
 
 
-def _data_package_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
+def _data_package_blocks() -> List[Block]:
     """Project ``data_packages`` into the (block → items) shape rendered by
     the admin /access page.
 
@@ -196,30 +224,29 @@ def _data_package_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     block ``"Data packages"`` holds them; ``resource_id`` is
     ``data_packages.id``.
     """
-    rows = conn.execute(
-        """SELECT id, slug, name, description, icon, color
-           FROM data_packages
-           WHERE deleted_at IS NULL
-           ORDER BY name"""
-    ).fetchall()
+    from src.repositories import data_packages_repo
+
+    rows = data_packages_repo().list(limit=_GRANT_PROJECTION_LIMIT)  # all live rows; see _GRANT_PROJECTION_LIMIT
     if not rows:
         return []
-    return [{
-        "id": "data_packages",
-        "name": "Data packages",
-        "items": [
-            {
-                "resource_id": r[0],
-                "name": r[2],
-                "category": "data_package",
-                "description": r[3],
-                "icon": r[4],
-                "color": r[5],
-                "slug": r[1],
-            }
-            for r in rows
-        ],
-    }]
+    return [
+        {
+            "id": "data_packages",
+            "name": "Data packages",
+            "items": [
+                {
+                    "resource_id": r["id"],
+                    "name": r["name"],
+                    "category": "data_package",
+                    "description": r.get("description"),
+                    "icon": r.get("icon"),
+                    "color": r.get("color"),
+                    "slug": r.get("slug"),
+                }
+                for r in rows
+            ],
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +254,7 @@ def _data_package_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
 # ---------------------------------------------------------------------------
 
 
-def _memory_domain_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
+def _memory_domain_blocks() -> List[Block]:
     """Project ``memory_domains`` rows into the (block → items) shape the
     admin /access page renders.
 
@@ -237,30 +264,29 @@ def _memory_domain_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     ``memory_domains`` table — admins can now CRUD domains. ``resource_id``
     is the ``memory_domains.id`` (e.g. ``md_finance``), no longer the slug.
     """
-    rows = conn.execute(
-        """SELECT id, slug, name, description, icon, color
-           FROM memory_domains
-           WHERE deleted_at IS NULL
-           ORDER BY name"""
-    ).fetchall()
+    from src.repositories import memory_domains_repo
+
+    rows = memory_domains_repo().list(limit=_GRANT_PROJECTION_LIMIT)
     if not rows:
         return []
-    return [{
-        "id": "memory_domains",
-        "name": "Memory domains",
-        "items": [
-            {
-                "resource_id": r[0],
-                "name": r[2],
-                "category": "memory_domain",
-                "description": r[3],
-                "icon": r[4],
-                "color": r[5],
-                "slug": r[1],
-            }
-            for r in rows
-        ],
-    }]
+    return [
+        {
+            "id": "memory_domains",
+            "name": "Memory domains",
+            "items": [
+                {
+                    "resource_id": r["id"],
+                    "name": r["name"],
+                    "category": "memory_domain",
+                    "description": r.get("description"),
+                    "icon": r.get("icon"),
+                    "color": r.get("color"),
+                    "slug": r.get("slug"),
+                }
+                for r in rows
+            ],
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +294,7 @@ def _memory_domain_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
 # ---------------------------------------------------------------------------
 
 
-def _memory_item_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
+def _memory_item_blocks() -> List[Block]:
     """Project ``knowledge_items`` into the (block → items) shape for the
     rare per-item grant override.
 
@@ -277,30 +303,34 @@ def _memory_item_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     exists for the per-group override: a group can be granted MEMORY_ITEM
     on a specific item with ``requirement='required'`` (force-include) or
     ``'available'`` (force-exclude — counter-acts the global flag for that
-    group). Surfaced as a flat list of approved items so admins can pick.
+    group). Surfaced as a flat list of approved or pending non-personal
+    items so admins can pick.
     """
-    rows = conn.execute(
-        """SELECT id, title FROM knowledge_items
-           WHERE status IN ('approved', 'pending')
-             AND (is_personal = FALSE OR is_personal IS NULL)
-           ORDER BY title
-           LIMIT 1000"""
-    ).fetchall()
+    from src.repositories import knowledge_repo
+
+    rows = knowledge_repo().list_items(
+        statuses=["approved", "pending"],
+        exclude_personal=True,
+        limit=1000,
+    )
     if not rows:
         return []
-    return [{
-        "id": "memory_items",
-        "name": "Memory items",
-        "items": [
-            {
-                "resource_id": r[0],
-                "name": r[1] or r[0],
-                "category": "memory_item",
-                "description": None,
-            }
-            for r in rows
-        ],
-    }]
+    rows = sorted(rows, key=lambda r: (r.get("title") or r["id"]))
+    return [
+        {
+            "id": "memory_items",
+            "name": "Memory items",
+            "items": [
+                {
+                    "resource_id": r["id"],
+                    "name": r.get("title") or r["id"],
+                    "category": "memory_item",
+                    "description": None,
+                }
+                for r in rows
+            ],
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +338,7 @@ def _memory_item_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
 # ---------------------------------------------------------------------------
 
 
-def _recipe_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
+def _recipe_blocks() -> List[Block]:
     """Project ``recipes`` rows into the (block → items) shape rendered by
     the admin /access page.
 
@@ -319,30 +349,29 @@ def _recipe_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     Recipes tab can no longer show. ``resource_id`` is the
     ``recipes.id`` (e.g. ``rec_top_revenue``).
     """
-    rows = conn.execute(
-        """SELECT id, slug, title, description, icon, color
-           FROM recipes
-           WHERE deleted_at IS NULL
-           ORDER BY title"""
-    ).fetchall()
+    from src.repositories import recipes_repo
+
+    rows = recipes_repo().list(limit=_GRANT_PROJECTION_LIMIT)
     if not rows:
         return []
-    return [{
-        "id": "recipes",
-        "name": "Recipes",
-        "items": [
-            {
-                "resource_id": r[0],
-                "name": r[2],
-                "category": "recipe",
-                "description": r[3],
-                "icon": r[4],
-                "color": r[5],
-                "slug": r[1],
-            }
-            for r in rows
-        ],
-    }]
+    return [
+        {
+            "id": "recipes",
+            "name": "Recipes",
+            "items": [
+                {
+                    "resource_id": r["id"],
+                    "name": r["title"],
+                    "category": "recipe",
+                    "description": r.get("description"),
+                    "icon": r.get("icon"),
+                    "color": r.get("color"),
+                    "slug": r.get("slug"),
+                }
+                for r in rows
+            ],
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +379,7 @@ def _recipe_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
 # ---------------------------------------------------------------------------
 
 
-def _chat_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
+def _chat_blocks() -> List[Block]:
     """Singleton feature resource: one grantable item gating the whole
     cloud-chat surface (web ``/chat`` + the Slack DM bot).
 
@@ -359,18 +388,19 @@ def _chat_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     the ``Admin`` god-mode group; admins grant ``(group, chat, chat)`` on
     /admin/access to turn it on for a group.
     """
-    return [{
-        "id": "cloud_chat",
-        "name": "Cloud chat",
-        "items": [{
-            "resource_id": "chat",
+    return [
+        {
+            "id": "cloud_chat",
             "name": "Cloud chat",
-            "description": (
-                "Access to the cloud-hosted Claude chat (the /chat web UI and "
-                "the Slack DM bot)."
-            ),
-        }],
-    }]
+            "items": [
+                {
+                    "resource_id": "chat",
+                    "name": "Cloud chat",
+                    "description": ("Access to the cloud-hosted Claude chat (the /chat web UI and the Slack DM bot)."),
+                }
+            ],
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +408,7 @@ def _chat_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
 # ---------------------------------------------------------------------------
 
 
-def _slack_channel_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
+def _slack_channel_blocks() -> List[Block]:
     """Project the per-channel mention allowlist.
 
     There is **no domain table** — the ``resource_grants`` rows themselves are
@@ -391,29 +421,67 @@ def _slack_channel_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     another group does not falsely show a channel as enabled. Empty allowlist
     → no block (default-deny).
     """
-    rows = conn.execute(
-        """SELECT DISTINCT rg.resource_id
-           FROM resource_grants rg
-           JOIN user_groups ug ON ug.id = rg.group_id
-           WHERE ug.name = 'Everyone'
-             AND rg.resource_type = 'slack_channel'
-           ORDER BY rg.resource_id"""
-    ).fetchall()
+    from src.repositories import resource_grants_repo, user_groups_repo
+
+    everyone = user_groups_repo().get_by_name("Everyone")
+    if not everyone:
+        return []
+    grants = resource_grants_repo().list_all(
+        resource_type="slack_channel", group_id=everyone["id"]
+    )
+    channel_ids = sorted({g["resource_id"] for g in grants})
+    if not channel_ids:
+        return []
+    return [
+        {
+            "id": "slack_channels",
+            "name": "Slack channels",
+            "items": [
+                {
+                    "resource_id": cid,
+                    "name": cid,
+                    "category": "slack_channel",
+                    "description": "Channel where @agnes mentions are answered.",
+                }
+                for cid in channel_ids
+            ],
+        }
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Collection projection (v77)
+# ---------------------------------------------------------------------------
+
+
+def _collection_blocks() -> List[Block]:
+    """Project ``file_corpora`` into the (block → items) shape rendered by
+    the admin /access page.
+
+    Collections are bring-your-files containers (v77). One synthetic block
+    ``"Collections"`` holds all live (non-soft-deleted) corpora; the
+    ``resource_id`` is ``file_corpora.id``.
+    """
+    from src.repositories import file_corpora_repo
+
+    rows = file_corpora_repo().list(limit=_GRANT_PROJECTION_LIMIT)
     if not rows:
         return []
-    return [{
-        "id": "slack_channels",
-        "name": "Slack channels",
-        "items": [
-            {
-                "resource_id": r[0],
-                "name": r[0],
-                "category": "slack_channel",
-                "description": "Channel where @agnes mentions are answered.",
-            }
-            for r in rows
-        ],
-    }]
+    return [
+        {
+            "id": "collections",
+            "name": "Collections",
+            "items": [
+                {
+                    "resource_id": r["id"],
+                    "name": r["name"],
+                    "slug": r.get("slug"),
+                    "description": r.get("description"),
+                }
+                for r in rows
+            ],
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -494,6 +562,16 @@ RESOURCE_TYPES: dict[ResourceType, ResourceTypeSpec] = {
         ),
         id_format="<channel_id>",
         list_blocks=_slack_channel_blocks,
+    ),
+    ResourceType.COLLECTION: ResourceTypeSpec(
+        key=ResourceType.COLLECTION,
+        display_name="Collections",
+        description=(
+            "A user-uploaded file collection. Grant a group access to a "
+            "collection so its members can query the ingested documents."
+        ),
+        id_format="<corpus_id>",
+        list_blocks=_collection_blocks,
     ),
 }
 

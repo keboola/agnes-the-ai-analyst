@@ -70,6 +70,12 @@ class InstanceTemplate(Base):
     previous_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    # v75 (#622): explicit Git⇄Editor source toggle for managed prompts.
+    source_mode: Mapped[str] = mapped_column(
+        String, nullable=False, server_default=text("'editor'")
+    )
+    git_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    base_sha: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class PersonalAccessToken(Base):

@@ -8,6 +8,7 @@ import typer
 
 from cli.client import api_get
 from cli.config import get_sync_state
+from cli.lib.jira_partition_check import detect_jira_partition_layout
 from cli.lib.session_health import capture_session_health
 
 diagnose_app = typer.Typer(help="System diagnostics")
@@ -90,6 +91,20 @@ def diagnose(
         checks.append(cap)
     except Exception as e:
         checks.append({"name": "capture-session", "status": "info", "audience": "analyst", "detail": f"health check failed: {e}"})
+
+    # Issue #394: detect Jira partition layout (flat YYYY-MM vs hive month=*/).
+    # Resolves the Jira data directory from the DATA_DIR env var (mirrors how
+    # the connector itself locates its output); defaults to /data/extracts/jira.
+    # Operator-only audience — analysts can't act on a partition migration.
+    try:
+        import os
+        _data_root = Path(os.environ.get("DATA_DIR", "/data"))
+        _jira_dir = _data_root / "extracts" / "jira"
+        jira_check = detect_jira_partition_layout(_jira_dir)
+        jira_check.setdefault("audience", "operator")
+        checks.append(jira_check)
+    except Exception as e:
+        checks.append({"name": "jira-partition-format", "status": "info", "audience": "operator", "detail": f"partition check failed: {e}"})
 
     # Determine overall — `info` and `unknown` surface in the per-check
     # output but never promote the headline (issue #178).

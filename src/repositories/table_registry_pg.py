@@ -4,6 +4,7 @@ Mirrors ``src/repositories/table_registry.py``. The ``primary_key`` /
 ``where_filters`` encode/decode helpers are re-exported from the original
 module so behaviour stays bit-identical across backends.
 """
+
 from __future__ import annotations
 
 import json
@@ -50,6 +51,10 @@ class TableRegistryPgRepository:
         partition_granularity: Optional[str] = None,
         initial_load_chunk_days: Optional[int] = None,
         bq_fqn: Optional[str] = None,
+        # v74 (#607) — distribution flag decoupled from query_mode.
+        server_only: bool = False,
+        # v79 — nullable FK to source_connections.id (spec 2026-06-12).
+        connection_id: Optional[str] = None,
     ) -> None:
         ts = registered_at or datetime.now(timezone.utc)
         encoded_pk = _encode_primary_key(primary_key)
@@ -64,12 +69,13 @@ class TableRegistryPgRepository:
                           sync_schedule, profile_after_sync,
                           incremental_window_days, max_history_days, incremental_column,
                           where_filters, partition_by, partition_granularity,
-                          initial_load_chunk_days, bq_fqn)
+                          initial_load_chunk_days, bq_fqn, server_only, connection_id)
                        VALUES (:id, :name, :folder, :strategy, :pk, :description,
                                :registered_by, :registered_at,
                                :source_type, :bucket, :source_table, :source_query, :query_mode,
                                :sync_schedule, :profile_after_sync,
-                               :iwd, :mhd, :icol, :wf, :pby, :pgr, :ilcd, :bq_fqn)
+                               :iwd, :mhd, :icol, :wf, :pby, :pgr, :ilcd, :bq_fqn, :server_only,
+                               :connection_id)
                        ON CONFLICT (id) DO UPDATE SET
                          name = EXCLUDED.name,
                          folder = EXCLUDED.folder,
@@ -91,7 +97,9 @@ class TableRegistryPgRepository:
                          partition_by = EXCLUDED.partition_by,
                          partition_granularity = EXCLUDED.partition_granularity,
                          initial_load_chunk_days = EXCLUDED.initial_load_chunk_days,
-                         bq_fqn = EXCLUDED.bq_fqn"""
+                         bq_fqn = EXCLUDED.bq_fqn,
+                         server_only = EXCLUDED.server_only,
+                         connection_id = EXCLUDED.connection_id"""
                 ),
                 {
                     "id": id,
@@ -117,6 +125,8 @@ class TableRegistryPgRepository:
                     "pgr": partition_granularity,
                     "ilcd": initial_load_chunk_days,
                     "bq_fqn": bq_fqn,
+                    "server_only": bool(server_only),
+                    "connection_id": connection_id,
                 },
             )
 
@@ -189,22 +199,28 @@ class TableRegistryPgRepository:
         if clear_things_to_know:
             fields.append("things_to_know = NULL")
         elif things_to_know is not None:
-            fields.append("things_to_know = :ttk"); params["ttk"] = things_to_know
+            fields.append("things_to_know = :ttk")
+            params["ttk"] = things_to_know
         if clear_pairs_well_with:
             fields.append("pairs_well_with = NULL")
         elif pairs_well_with is not None:
             fields.append("pairs_well_with = CAST(:pww AS JSONB)")
             params["pww"] = json.dumps(pairs_well_with)
         if grain is not None:
-            fields.append("grain = :grain"); params["grain"] = grain
+            fields.append("grain = :grain")
+            params["grain"] = grain
         if platforms is not None:
-            fields.append("platforms = :plat"); params["plat"] = json.dumps(platforms)
+            fields.append("platforms = :plat")
+            params["plat"] = json.dumps(platforms)
         if partition_col is not None:
-            fields.append("partition_col = :pcol"); params["pcol"] = partition_col
+            fields.append("partition_col = :pcol")
+            params["pcol"] = partition_col
         if history is not None:
-            fields.append("history = :hist"); params["hist"] = history
+            fields.append("history = :hist")
+            params["hist"] = history
         if gotchas is not None:
-            fields.append("gotchas = :got"); params["got"] = json.dumps(gotchas)
+            fields.append("gotchas = :got")
+            params["got"] = json.dumps(gotchas)
         if not fields:
             return
         with self._engine.begin() as conn:
@@ -220,6 +236,27 @@ class TableRegistryPgRepository:
                 {"id": table_id},
             )
 
+    def delete_for_corpus(self, corpus_id: str) -> List[str]:
+        """Delete all table_registry rows belonging to a file-corpus collection.
+
+        Rows are identified by ``source_type='collection'`` and
+        ``bucket=corpus_id``.  Returns the list of deleted table ids so the
+        caller can clean up derived artefacts (parquet files, extract.duckdb
+        views) before calling ``orchestrator.rebuild_source``.
+        """
+        with self._engine.begin() as conn:
+            rows = conn.execute(
+                sa.text("SELECT id FROM table_registry WHERE source_type = 'collection' AND bucket = :corpus_id"),
+                {"corpus_id": corpus_id},
+            ).fetchall()
+            ids = [r[0] for r in rows]
+            if ids:
+                conn.execute(
+                    sa.text("DELETE FROM table_registry WHERE source_type = 'collection' AND bucket = :corpus_id"),
+                    {"corpus_id": corpus_id},
+                )
+        return ids
+
     def set_description(self, table_id: str, description: str) -> None:
         """Set only the ``description`` column, leaving every other field
         untouched (unlike ``register()``'s full upsert). Used by the LLM
@@ -233,27 +270,45 @@ class TableRegistryPgRepository:
 
     def get(self, table_id: str) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT * FROM table_registry WHERE id = :id"),
-                {"id": table_id},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text("SELECT * FROM table_registry WHERE id = :id"),
+                    {"id": table_id},
+                )
+                .mappings()
+                .first()
+            )
         return self._decode_row(dict(row)) if row else None
 
     def list_all(self) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text("SELECT * FROM table_registry ORDER BY name")
-            ).mappings().all()
+            rows = conn.execute(sa.text("SELECT * FROM table_registry ORDER BY name")).mappings().all()
         return [self._decode_row(dict(r)) for r in rows]
+
+    def count_non_internal(self) -> int:
+        """Count registered business tables, excluding internal source rows.
+
+        ``source_type='internal'`` rows (agnes_* tables) live in their own
+        card on /catalog and are excluded from the headline counter on the
+        dashboard + the catalog empty-state hint. NULL ``source_type`` is
+        treated as non-internal (COALESCE to '').
+        """
+        with self._engine.connect() as conn:
+            result = conn.execute(
+                sa.text("SELECT COUNT(*) FROM table_registry WHERE COALESCE(source_type, '') != 'internal'")
+            ).scalar()
+        return int(result) if result is not None else 0
 
     def list_by_source(self, source_type: str) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    "SELECT * FROM table_registry WHERE source_type = :st ORDER BY name"
-                ),
-                {"st": source_type},
-            ).mappings().all()
+            rows = (
+                conn.execute(
+                    sa.text("SELECT * FROM table_registry WHERE source_type = :st ORDER BY name"),
+                    {"st": source_type},
+                )
+                .mappings()
+                .all()
+            )
         return [self._decode_row(dict(r)) for r in rows]
 
     def find_by_bq_path(
@@ -262,9 +317,10 @@ class TableRegistryPgRepository:
         source_table: str,
     ) -> Optional[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text(
-                    """SELECT * FROM table_registry
+            row = (
+                conn.execute(
+                    sa.text(
+                        """SELECT * FROM table_registry
                        WHERE source_type = 'bigquery'
                          AND bucket IS NOT NULL
                          AND source_table IS NOT NULL
@@ -272,26 +328,35 @@ class TableRegistryPgRepository:
                          AND lower(source_table) = lower(:source_table)
                        ORDER BY registered_at ASC
                        LIMIT 1"""
-                ),
-                {"bucket": bucket, "source_table": source_table},
-            ).mappings().first()
+                    ),
+                    {"bucket": bucket, "source_table": source_table},
+                )
+                .mappings()
+                .first()
+            )
         return self._decode_row(dict(row)) if row else None
 
     def list_local(self, source_type: Optional[str] = None) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
             if source_type:
-                rows = conn.execute(
-                    sa.text(
-                        """SELECT * FROM table_registry
+                rows = (
+                    conn.execute(
+                        sa.text(
+                            """SELECT * FROM table_registry
                            WHERE query_mode = 'local' AND source_type = :st
                            ORDER BY name"""
-                    ),
-                    {"st": source_type},
-                ).mappings().all()
+                        ),
+                        {"st": source_type},
+                    )
+                    .mappings()
+                    .all()
+                )
             else:
-                rows = conn.execute(
-                    sa.text(
-                        "SELECT * FROM table_registry WHERE query_mode = 'local' ORDER BY name"
-                    ),
-                ).mappings().all()
+                rows = (
+                    conn.execute(
+                        sa.text("SELECT * FROM table_registry WHERE query_mode = 'local' ORDER BY name"),
+                    )
+                    .mappings()
+                    .all()
+                )
         return [self._decode_row(dict(r)) for r in rows]

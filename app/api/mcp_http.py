@@ -13,10 +13,12 @@ Cowork bundle settings.json points to:
 
 with header  Authorization: Bearer <PAT>  set by Claude Code.
 
-Tools available: server_info, catalog, schema, describe, query, skills.
+Tools available: server_info, catalog, schema, describe, query, skills,
+stack_browse, stack_subscribe, stack_unsubscribe, store_rate, documentation_api.
 (query_local and pull require a local analyst filesystem — not available
  in the server context.)
 """
+
 from __future__ import annotations
 
 import contextvars
@@ -32,9 +34,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 logger = logging.getLogger(__name__)
 
 # Per-request token — set by _AuthMiddleware, read by tool handlers.
-_current_token: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "_mcp_token", default=""
-)
+_current_token: contextvars.ContextVar[str] = contextvars.ContextVar("_mcp_token", default="")
 
 # Internal base URL for self-calls. Stays on HTTP/localhost since the MCP
 # server runs inside the same process/container as Agnes.
@@ -49,9 +49,7 @@ _current_token: contextvars.ContextVar[str] = contextvars.ContextVar(
 # ``http://localhost:8000`` — the right shape for self-calls in the
 # single-container deploy. Operators running Agnes split across
 # multiple pods can point this at the in-cluster service URL.
-_BASE = os.environ.get(
-    "AGNES_MCP_INTERNAL_URL", "http://localhost:8000"
-).rstrip("/")
+_BASE = os.environ.get("AGNES_MCP_INTERNAL_URL", "http://localhost:8000").rstrip("/")
 
 mcp = FastMCP(
     "Agnes",
@@ -75,6 +73,7 @@ def _headers() -> dict[str, str]:
 
 
 # ── tools ──────────────────────────────────────────────────────────────────────
+
 
 @mcp.tool()
 async def server_info() -> dict:
@@ -119,6 +118,64 @@ async def catalog() -> dict:
 
 
 @mcp.tool()
+async def collections_list() -> dict:
+    """List the file Collections you can access (RBAC-filtered).
+
+    A Collection is a user-uploaded set of files Agnes has indexed. Returns a
+    dict with an ``items`` list; each entry has ``id``, ``name``,
+    ``slug``, and file/table counts. Use ``collection_get`` for the files in
+    one collection.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.get(f"{_BASE}/api/collections", headers=_headers(), timeout=30)
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
+async def collection_get(collection_id: str) -> dict:
+    """Show one Collection's detail plus its files and per-file status.
+
+    Args:
+        collection_id: Collection id from ``collections_list`` (``col_...``).
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.get(
+            f"{_BASE}/api/collections/{collection_id}",
+            headers=_headers(),
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
+async def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict:
+    """Hybrid search across your accessible file Collections (RBAC-filtered).
+
+    Returns ranked chunks with citations (``filename``, ``ordinal``, ``text``,
+    ``score``). Optionally restrict to one collection via ``collection_id``.
+
+    Args:
+        query: Natural-language or keyword query.
+        k: Max results (default 10).
+        collection_id: Optional ``col_...`` id to restrict the search.
+    """
+    params: dict = {"q": query, "k": k}
+    if collection_id:
+        params["corpus_id"] = collection_id
+    async with httpx.AsyncClient() as c:
+        r = await c.get(
+            f"{_BASE}/api/collections/search",
+            headers=_headers(),
+            params=params,
+            timeout=60,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
 async def schema(table_id: str) -> dict:
     """Show column names, types, and SQL dialect hints for a table.
 
@@ -129,9 +186,7 @@ async def schema(table_id: str) -> dict:
     sql_flavor and where_dialect_hints where relevant.
     """
     async with httpx.AsyncClient() as c:
-        r = await c.get(
-            f"{_BASE}/api/v2/schema/{table_id}", headers=_headers(), timeout=30
-        )
+        r = await c.get(f"{_BASE}/api/v2/schema/{table_id}", headers=_headers(), timeout=30)
         r.raise_for_status()
         return r.json()
 
@@ -148,9 +203,7 @@ async def describe(table_id: str, rows: int = 5) -> dict:
     """
     rows = min(max(1, rows), 50)
     async with httpx.AsyncClient() as c:
-        rs = await c.get(
-            f"{_BASE}/api/v2/schema/{table_id}", headers=_headers(), timeout=30
-        )
+        rs = await c.get(f"{_BASE}/api/v2/schema/{table_id}", headers=_headers(), timeout=30)
         rs.raise_for_status()
         rm = await c.get(
             f"{_BASE}/api/v2/sample/{table_id}",
@@ -214,6 +267,117 @@ async def skills() -> dict:
 
 
 @mcp.tool()
+async def stack_browse(resource_type: str) -> dict:
+    """List resources you could add to your stack (RBAC-granted candidates).
+
+    Unlike ``catalog`` (which lists tables already in your stack), this is the
+    discovery surface: every data package or memory domain your groups are
+    granted, each annotated with an ``in_stack`` flag so you can tell what is
+    already subscribed and what is still available to add.
+
+    Args:
+        resource_type: ``data_package`` or ``memory_domain``.
+
+    Returns ``{"items": [{"id", "name", "description", "requirement",
+    "in_stack", ...}]}``. Subscribe to an available item with
+    ``stack_subscribe``.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.get(
+            f"{_BASE}/api/stack/browse",
+            headers=_headers(),
+            params={"type": resource_type},
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
+async def stack_subscribe(resource_type: str, resource_id: str) -> dict:
+    """Subscribe to an available data package or memory domain.
+
+    Adds the resource to your persistent stack — the same effect as clicking
+    "Add to stack" in the web UI; it applies to all future sessions. Use
+    ``stack_browse`` first to find the ``resource_id`` of an available
+    (``in_stack: false``) item.
+
+    Args:
+        resource_type: ``data_package`` or ``memory_domain``.
+        resource_id:   The resource id from ``stack_browse``.
+
+    Returns ``{"subscribed": true, "next_step": "..."}`` — ``next_step`` tells
+    you what to run so the new resource becomes usable in this conversation.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.post(
+            f"{_BASE}/api/stack/subscribe",
+            json={"resource_type": resource_type, "resource_id": resource_id},
+            headers=_headers(),
+            timeout=30,
+        )
+        r.raise_for_status()
+        body = r.json()
+    # Post-subscribe hint — both supported types land as local tables pulled
+    # by ``agnes pull`` (data packages → parquet, memory domains → synced
+    # knowledge). Tell the model what to run so the resource is usable now.
+    if isinstance(body, dict):
+        body["next_step"] = "Run `agnes pull` to download the new tables."
+    return body
+
+
+@mcp.tool()
+async def stack_unsubscribe(resource_type: str, resource_id: str) -> dict:
+    """Unsubscribe from a data package or memory domain in your stack.
+
+    Removes a previously-subscribed resource. Required resources cannot be
+    removed (the server returns an error) — only ``available`` ones you opted
+    into. The local copy persists until the next ``agnes pull`` prunes it.
+
+    Args:
+        resource_type: ``data_package`` or ``memory_domain``.
+        resource_id:   The resource id to unsubscribe from.
+
+    Returns ``{"unsubscribed": true}`` on success.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.delete(
+            f"{_BASE}/api/stack/subscription/{resource_type}/{resource_id}",
+            headers=_headers(),
+            timeout=30,
+        )
+        r.raise_for_status()
+    return {"unsubscribed": True}
+
+
+@mcp.tool()
+async def store_rate(entity_id: str, vote: int) -> dict:
+    """Rate a store / marketplace entity thumbs up/down (#398).
+
+    Casts, changes, or clears your single vote on an entity — the same effect
+    as the thumbs buttons in the marketplace detail view; one vote per entity
+    per user, re-voting replaces the prior value.
+
+    Args:
+        entity_id: The store entity id (from ``catalog`` / marketplace browse).
+        vote:      ``1`` = thumbs up, ``-1`` = thumbs down, ``0`` = clear your vote.
+
+    Returns ``{"up", "down", "my_vote"}`` — the updated tally for the entity.
+    """
+    if vote not in (1, -1, 0):
+        raise ValueError("vote must be 1, -1, or 0")
+    async with httpx.AsyncClient() as c:
+        r = await c.post(
+            f"{_BASE}/api/store/entities/{entity_id}/rate",
+            json={"vote": vote},
+            headers=_headers(),
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
 async def documentation_api() -> str:
     """Return the curated Agnes REST API reference as Markdown.
 
@@ -226,20 +390,41 @@ async def documentation_api() -> str:
     """
     from pathlib import Path
 
-    md_path = (
-        Path(__file__).resolve().parent.parent.parent
-        / "docs" / "api-reference.md"
-    )
+    md_path = Path(__file__).resolve().parent.parent.parent / "docs" / "api-reference.md"
     try:
         return md_path.read_text(encoding="utf-8")
     except OSError:
-        return (
-            "# API reference unavailable\n\n"
-            "The source markdown file is missing from this deployment."
+        return "# API reference unavailable\n\nThe source markdown file is missing from this deployment."
+
+
+@mcp.tool()
+async def admin_config_surface() -> dict:
+    """Return the complete per-instance configuration surface (admin only).
+
+    Reads every ``get_*`` resolver in ``app/instance_config.py`` and returns
+    their current values alongside which tier supplied each one (env/yaml/default),
+    the registered Initial Workspace Template (if any), every registered
+    marketplace, and the ``infra_repo_url`` knob.
+
+    Useful for an operator's Claude that needs instance-accurate pointers
+    (IWT URL, marketplace URLs, knob values, infra repo) without hardcoding
+    anything. Mirrors ``GET /api/admin/config-surface`` and
+    ``agnes admin config-surface``.
+
+    Requires an admin PAT.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.get(
+            f"{_BASE}/api/admin/config-surface",
+            headers=_headers(),
+            timeout=30,
         )
+        r.raise_for_status()
+        return r.json()
 
 
 # ── auth middleware ─────────────────────────────────────────────────────────────
+
 
 class _AuthMiddleware:
     """Pure ASGI middleware: validates Bearer token, sets _current_token."""
@@ -258,6 +443,7 @@ class _AuthMiddleware:
         # Fallback: ?token= query param for clients that can't set headers on SSE GET
         if not auth.lower().startswith("bearer "):
             from urllib.parse import parse_qs
+
             qs = parse_qs(scope.get("query_string", b"").decode())
             t = qs.get("token", [""])[0]
             if t:
@@ -271,6 +457,7 @@ class _AuthMiddleware:
         try:
             from app.auth.pat_resolver import resolve_token_to_user
             from src.db import get_system_db
+
             conn = get_system_db()
             try:
                 user, reason = resolve_token_to_user(conn, raw_token)
@@ -293,19 +480,24 @@ class _AuthMiddleware:
 
 
 async def _send_401(scope: Scope, send: Send) -> None:
-    await send({
-        "type": "http.response.start",
-        "status": 401,
-        "headers": [[b"content-type", b"application/json"]],
-    })
-    await send({
-        "type": "http.response.body",
-        "body": b'{"detail":"Not authenticated"}',
-        "more_body": False,
-    })
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [[b"content-type", b"application/json"]],
+        }
+    )
+    await send(
+        {
+            "type": "http.response.body",
+            "body": b'{"detail":"Not authenticated"}',
+            "more_body": False,
+        }
+    )
 
 
 # ── dynamic tool registration (Universal MCP — RFC #461 §7) ───────────────────
+
 
 def _register_dynamic_tools() -> None:
     """Add passthrough tools from ``tool_registry`` to the module-level ``mcp``.
@@ -336,6 +528,7 @@ def _register_dynamic_tools() -> None:
 
 
 # ── factory ────────────────────────────────────────────────────────────────────
+
 
 def make_sse_app() -> ASGIApp:
     """Return the Agnes SSE MCP app wrapped with PAT authentication."""

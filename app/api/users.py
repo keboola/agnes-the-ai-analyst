@@ -21,11 +21,14 @@ from src.repositories import (
     user_groups_repo,
     users_repo,
 )
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/users", tags=["users"])
 
 
-def _audit(conn: Optional[duckdb.DuckDBPyConnection], actor_id: str, action: str, target_id: str, params: Optional[dict] = None) -> None:
+def _audit(
+    conn: Optional[duckdb.DuckDBPyConnection], actor_id: str, action: str, target_id: str, params: Optional[dict] = None
+) -> None:
     """Audit-log a user-management mutation.
 
     ``conn`` is ignored — kept for backward-compat signature stability;
@@ -106,6 +109,7 @@ def _user_groups(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None)
     stability. Pulls through the repo factory.
     """
     from app.api.access import _derive_origin
+
     rows = user_group_members_repo().list_groups_with_meta_for_user(user_id)
     return [
         GroupBrief(
@@ -222,11 +226,21 @@ def _set_admin_membership(
 
 @router.get("", response_model=List[UserResponse])
 async def list_users(
+    search: Optional[str] = Query(default=None, description="Filter by email or name (case-insensitive)"),
+    group_id: Optional[str] = Query(default=None, description="Filter to members of this group"),
     limit: int = Query(default=1000, ge=1, le=10000),
-    offset: int = Query(default=0, ge=0),
     user: dict = Depends(require_admin),
 ):
-    return [_to_response(u) for u in users_repo().list_paginated(limit=limit, offset=offset)]
+    """The most recently registered users (``created_at`` DESC), bounded by
+    ``limit`` and optionally narrowed by ``search`` / ``group_id``. The
+    /admin/users page requests a 10-row window and pushes search +
+    group filtering here instead of loading every account to the client.
+
+    ``limit`` defaults to 1000 so list-everything callers (the ``agnes admin
+    list-users`` CLI, the setup health check) keep their prior reach; only
+    the ordering changed (recency-first instead of email-sorted)."""
+    rows = users_repo().search_recent(limit=limit, search=search, group_id=group_id)
+    return [_to_response(u) for u in rows]
 
 
 @router.get("/{user_id}", response_model=UserResponse)
@@ -254,6 +268,7 @@ async def create_user(
     if repo.get_by_email(payload.email):
         raise HTTPException(status_code=409, detail="User with this email already exists")
     import secrets
+
     user_id = str(uuid.uuid4())
     repo.create(id=user_id, email=payload.email, name=payload.name)
     # New users start with no group memberships — admin promotion is an
@@ -263,10 +278,12 @@ async def create_user(
     # reaches the new user on first sign-in without admin reconcile.
     try:
         from src.repositories import user_curated_subscriptions_repo
+
         user_curated_subscriptions_repo().fanout_system_for_user(user_id)
     except Exception:
         logger.exception(
-            "system-plugin fanout failed for new user %s", payload.email,
+            "system-plugin fanout failed for new user %s",
+            payload.email,
         )
     _audit(conn, user["id"], "user.create", user_id, {"email": payload.email})
 
@@ -280,6 +297,7 @@ async def create_user(
             setup_token_created=datetime.now(timezone.utc),
         )
         from app.auth.providers.password import build_setup_url, send_setup_email
+
         invite_url = build_setup_url(request, payload.email, token)
         invite_email_sent = send_setup_email(request, payload.email, token)
         _audit(conn, user["id"], "user.invite", user_id, {"email": payload.email, "email_sent": invite_email_sent})
@@ -309,11 +327,7 @@ async def update_user(
     if payload.active is not None:
         if target["id"] == user["id"] and payload.active is False:
             raise HTTPException(status_code=409, detail="Cannot deactivate yourself")
-        if (
-            target_is_admin
-            and payload.active is False
-            and repo.count_admins(active_only=True) <= 1
-        ):
+        if target_is_admin and payload.active is False and repo.count_admins(active_only=True) <= 1:
             raise HTTPException(status_code=409, detail="Cannot deactivate the last active admin")
         updates["active"] = payload.active
         if payload.active is False:
@@ -330,8 +344,7 @@ async def update_user(
 
 
 _SSO_LOCKED_DETAIL = (
-    "User is managed by an external SSO provider; "
-    "this operation must be performed in the upstream system"
+    "User is managed by an external SSO provider; this operation must be performed in the upstream system"
 )
 
 
@@ -354,6 +367,7 @@ def _purge_user_chat_data(
     # 1. Purge chat DB rows (messages first to satisfy FK, then sessions).
     try:
         from app.chat.persistence import ChatRepository
+
         chat_repo = ChatRepository(conn)
         sessions_purged = chat_repo.hard_delete_user_sessions(user_email)
     except Exception:
@@ -455,6 +469,7 @@ async def reset_password(
 ):
     """Generate a reset token and (best-effort) email it to the user."""
     import secrets
+
     repo = users_repo()
     target = repo.get_by_id(user_id)
     if not target:
@@ -471,6 +486,7 @@ async def reset_password(
     # user sets a new password, NOT to the magic-link verify endpoint (which would
     # log them in without prompting for a new password).
     from app.auth.providers.password import build_reset_url, send_reset_email
+
     reset_url = build_reset_url(request, target["email"], token)
     email_sent = send_reset_email(request, target["email"], token)
     return {
@@ -495,7 +511,10 @@ async def set_password(
         raise HTTPException(status_code=404, detail="User not found")
     _reject_if_sso(target["id"], conn)
     ph = PasswordHasher()
-    repo.update(id=user_id, password_hash=ph.hash(payload.password))
+    # An admin-chosen password is communicated out-of-band, so force the
+    # target user to set their own on next sign-in (same policy as seeded
+    # passwords — see app/auth/providers/password.py login enforcement).
+    repo.update(id=user_id, password_hash=ph.hash(payload.password), must_change_password=True)
     _audit(conn, user["id"], "user.set_password", user_id, {"email": target["email"]})
 
 
@@ -509,7 +528,9 @@ async def deactivate_user(
     return await update_user(
         user_id=user_id,
         payload=UpdateUserRequest(active=False),
-        request=request, user=user, conn=conn,
+        request=request,
+        user=user,
+        conn=conn,
     )
 
 
@@ -523,5 +544,7 @@ async def activate_user(
     return await update_user(
         user_id=user_id,
         payload=UpdateUserRequest(active=True),
-        request=request, user=user, conn=conn,
+        request=request,
+        user=user,
+        conn=conn,
     )

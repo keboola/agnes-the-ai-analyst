@@ -20,8 +20,10 @@ from .transform import (
     ATTACHMENTS_SCHEMA,
     CHANGELOG_SCHEMA,
     COMMENTS_SCHEMA,
+    HIVE_PARTITION_PREFIX,
     ISSUES_SCHEMA,
     ISSUELINKS_SCHEMA,
+    PARQUET_WRITE_OPTIONS,
     REMOTE_LINKS_SCHEMA,
     apply_schema,
     get_month_key,
@@ -75,14 +77,38 @@ def upsert_dataframe(
     return pd.concat([filtered, new_df], ignore_index=True)
 
 
+def _hive_dir(parquet_dir: Path, month_key: str) -> Path:
+    """Return the hive partition directory for a given month key."""
+    return parquet_dir / f"{HIVE_PARTITION_PREFIX}={month_key}"
+
+
+def _flat_path(parquet_dir: Path, month_key: str) -> Path:
+    """Return the legacy flat parquet path for a given month key."""
+    return parquet_dir / f"{month_key}.parquet"
+
+
 def load_parquet_month(parquet_dir: Path, month_key: str) -> pd.DataFrame | None:
-    """Load existing Parquet file for a month, or return None."""
-    parquet_path = parquet_dir / f"{month_key}.parquet"
-    if parquet_path.exists():
+    """Load existing Parquet file for a month, or return None.
+
+    Checks hive layout (``month=YYYY-MM/data.parquet``) first, then falls back
+    to the legacy flat layout (``YYYY-MM.parquet``) for backward compatibility
+    during the transition period.
+    """
+    hive_file = _hive_dir(parquet_dir, month_key) / "data.parquet"
+    if hive_file.exists():
         try:
-            return pd.read_parquet(parquet_path)
+            return pd.read_parquet(hive_file)
         except Exception as e:
-            logger.warning(f"Failed to read {parquet_path}: {e}")
+            logger.warning(f"Failed to read {hive_file}: {e}")
+        return None
+
+    # Backward-compat: flat file from before hive migration
+    flat_file = _flat_path(parquet_dir, month_key)
+    if flat_file.exists():
+        try:
+            return pd.read_parquet(flat_file)
+        except Exception as e:
+            logger.warning(f"Failed to read {flat_file}: {e}")
     return None
 
 
@@ -92,21 +118,90 @@ def save_parquet_month(
     output_dir: Path,
     month_key: str,
 ) -> Path:
-    """Save DataFrame to monthly Parquet file with explicit schema."""
+    """Save DataFrame to the hive-partitioned monthly Parquet layout.
+
+    Writes to ``output_dir/month=<month_key>/data.parquet`` with ZSTD
+    compression and column statistics enabled.
+
+    If a legacy flat file (``YYYY-MM.parquet``) exists for the same month it is
+    removed after the hive write succeeds, completing the per-month migration.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{month_key}.parquet"
+    hive_dir = _hive_dir(output_dir, month_key)
+    output_path = hive_dir / "data.parquet"
 
     if df.empty:
-        # Don't write empty files, but delete if exists
-        if output_path.exists():
-            output_path.unlink()
-            logger.info(f"Removed empty {output_path}")
+        # Don't write empty files; remove hive dir and legacy flat file if present.
+        if hive_dir.exists():
+            import shutil
+
+            shutil.rmtree(hive_dir)
+            logger.info(f"Removed empty hive dir {hive_dir}")
+        flat = _flat_path(output_dir, month_key)
+        if flat.exists():
+            flat.unlink()
+            logger.info(f"Removed legacy flat file {flat}")
         return output_path
 
+    hive_dir.mkdir(parents=True, exist_ok=True)
     table = apply_schema(df, schema)
-    pq.write_table(table, output_path)
+    pq.write_table(table, output_path, **PARQUET_WRITE_OPTIONS)
     logger.info(f"Saved {len(df)} records to {output_path}")
+
+    # Remove the legacy flat file now that hive layout is written.
+    flat = _flat_path(output_dir, month_key)
+    if flat.exists():
+        flat.unlink()
+        logger.info(f"Removed legacy flat file {flat} after hive migration")
+
     return output_path
+
+
+def migrate_flat_to_hive(table_dir: Path) -> list[str]:
+    """Migrate any remaining flat YYYY-MM.parquet files to hive layout.
+
+    For each ``YYYY-MM.parquet`` found directly under *table_dir*, moves the
+    file to ``month=YYYY-MM/data.parquet``.  Skips months that already have a
+    hive directory.  Returns the list of month keys that were migrated.
+
+    This is called during ``init_extract`` and after a batch transform run so
+    that existing instances transparently transition to the new layout on the
+    first webhook or scheduled sync after upgrade.
+    """
+    migrated: list[str] = []
+
+    for flat_file in sorted(table_dir.glob("*.parquet")):
+        month_key = flat_file.stem  # e.g. "2026-01"
+        # Per-file fault isolation: a single file that can't be migrated must
+        # not abort the whole pass (otherwise the months after it stay flat and
+        # invisible to the hive-only view). Hold parquet_month_lock so a
+        # concurrent incremental transform for the same month can't race the
+        # rename.
+        try:
+            with parquet_month_lock(table_dir, month_key):
+                hive_dir = _hive_dir(table_dir, month_key)
+                if hive_dir.exists():
+                    # Already migrated to hive — remove the redundant flat file
+                    # so the recursive readers don't double-count this month.
+                    flat_file.unlink()
+                    logger.info("Removed redundant flat parquet %s (hive already present)", flat_file)
+                    continue
+
+                hive_dir.mkdir(parents=True, exist_ok=True)
+                dest = hive_dir / "data.parquet"
+                flat_file.rename(dest)
+                logger.info("Migrated flat parquet %s -> %s", flat_file, dest)
+                migrated.append(month_key)
+        except Exception as exc:
+            logger.error(
+                "Failed to migrate flat parquet %s to hive: %s — leaving the flat "
+                "file in place; it will be retried on the next init_extract",
+                flat_file,
+                exc,
+            )
+            continue
+
+    return migrated
 
 
 def transform_single_issue(
@@ -219,8 +314,12 @@ def transform_single_issue(
             # Remote links
             if remote_links_records is not None:
                 existing_remote_links = load_parquet_month(output_dir / "remote_links", month_key)
-                updated_remote_links = upsert_dataframe(existing_remote_links, remote_links_records, "issue_key", issue_key)
-                path = save_parquet_month(updated_remote_links, REMOTE_LINKS_SCHEMA, output_dir / "remote_links", month_key)
+                updated_remote_links = upsert_dataframe(
+                    existing_remote_links, remote_links_records, "issue_key", issue_key
+                )
+                path = save_parquet_month(
+                    updated_remote_links, REMOTE_LINKS_SCHEMA, output_dir / "remote_links", month_key
+                )
                 updated_paths.append(path)
             else:
                 # The writer (save_issue / backfill / backfill_remote_links) skipped
@@ -268,8 +367,21 @@ def _handle_deletion(
         if not table_dir.exists():
             continue
 
-        for parquet_file in table_dir.glob("*.parquet"):
-            month_key = parquet_file.stem
+        # Collect all month keys from both hive dirs and legacy flat files.
+        month_keys: set[str] = set()
+        for hive_subdir in table_dir.glob(f"{HIVE_PARTITION_PREFIX}=*"):
+            if hive_subdir.is_dir():
+                month_keys.add(hive_subdir.name.split("=", 1)[1])
+        for flat_file in table_dir.glob("*.parquet"):
+            month_keys.add(flat_file.stem)
+
+        for month_key in sorted(month_keys):
+            parquet_file = _hive_dir(table_dir, month_key) / "data.parquet"
+            if not parquet_file.exists():
+                # Fall back to flat layout for backward compat
+                parquet_file = _flat_path(table_dir, month_key)
+            if not parquet_file.exists():
+                continue
             try:
                 with parquet_month_lock(output_dir, month_key):
                     df = pd.read_parquet(parquet_file)

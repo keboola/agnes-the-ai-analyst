@@ -20,9 +20,7 @@ class MarketplacePluginsRepository:
         self.conn = conn
 
     @staticmethod
-    def _row_to_dict(
-        columns: List[str], row: tuple
-    ) -> Dict[str, Any]:
+    def _row_to_dict(columns: List[str], row: tuple) -> Dict[str, Any]:
         d = dict(zip(columns, row))
         # ``doc_links`` joins ``source_spec`` / ``raw`` here — DuckDB stores
         # JSON columns as VARCHAR via our INSERT path, so each fetch returns
@@ -62,9 +60,7 @@ class MarketplacePluginsRepository:
         return self._row_to_dict(columns, row)
 
     def list_all(self) -> List[Dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT * FROM marketplace_plugins ORDER BY marketplace_id, name"
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM marketplace_plugins ORDER BY marketplace_id, name").fetchall()
         if not rows:
             return []
         columns = [d[0] for d in self.conn.description]
@@ -77,7 +73,8 @@ class MarketplacePluginsRepository:
         return {r[0]: int(r[1]) for r in rows}
 
     def list_granted_for_groups(
-        self, group_ids: Iterable[str],
+        self,
+        group_ids: Iterable[str],
     ) -> List[Dict[str, Any]]:
         """Distinct plugins granted to any of ``group_ids`` via
         ``resource_grants``, ordered by parent marketplace registration
@@ -113,6 +110,7 @@ class MarketplacePluginsRepository:
             "JOIN marketplace_registry mr ON mr.id = mp.marketplace_id "
             f"WHERE rg.group_id IN ({placeholders}) "
             "  AND rg.resource_type = 'marketplace_plugin' "
+            "  AND mp.admin_disabled = FALSE "
             "ORDER BY mr.registered_at, mp.name",
             list(gids),
         ).fetchall()
@@ -124,12 +122,14 @@ class MarketplacePluginsRepository:
                     parsed_raw = json.loads(raw)
                 except (ValueError, TypeError):
                     parsed_raw = {}
-            out.append({
-                "marketplace_id": marketplace_id,
-                "name": name,
-                "version": version,
-                "raw": parsed_raw if isinstance(parsed_raw, dict) else {},
-            })
+            out.append(
+                {
+                    "marketplace_id": marketplace_id,
+                    "name": name,
+                    "version": version,
+                    "raw": parsed_raw if isinstance(parsed_raw, dict) else {},
+                }
+            )
         return out
 
     def list_with_filters(
@@ -156,6 +156,9 @@ class MarketplacePluginsRepository:
             f"rg.group_id IN ({placeholders})",
             "rg.resource_type = 'marketplace_plugin'",
             "rg.resource_id = mp.marketplace_id || '/' || mp.name",
+            # Admin-disabled built-in plugins are hidden from the browse listing
+            # too — mirrors the served-feed filter in list_granted_for_groups.
+            "mp.admin_disabled = FALSE",
         ]
         params: List[Any] = list(gids)
         if search:
@@ -171,9 +174,7 @@ class MarketplacePluginsRepository:
                 # The Other bucket also catches plugins whose upstream
                 # marketplace.json explicitly sets category='Other', not
                 # just NULL / empty.
-                where_clauses.append(
-                    "(mp.category IS NULL OR TRIM(mp.category) = '' OR mp.category = ?)"
-                )
+                where_clauses.append("(mp.category IS NULL OR TRIM(mp.category) = '' OR mp.category = ?)")
                 params.append(category)
             else:
                 where_clauses.append("mp.category = ?")
@@ -229,6 +230,7 @@ class MarketplacePluginsRepository:
             f"  ON rg.resource_id = mp.marketplace_id || '/' || mp.name "
             f"WHERE rg.group_id IN ({placeholders}) "
             f"  AND rg.resource_type = 'marketplace_plugin' "
+            f"  AND mp.admin_disabled = FALSE "
             f"GROUP BY cat",
             list(gids),
         ).fetchall()
@@ -263,11 +265,7 @@ class MarketplacePluginsRepository:
         """
         plugins_list = list(plugins)
         now = datetime.now(timezone.utc)
-        valid_names = {
-            (p.get("name") or "").strip()
-            for p in plugins_list
-            if (p.get("name") or "").strip()
-        }
+        valid_names = {(p.get("name") or "").strip() for p in plugins_list if (p.get("name") or "").strip()}
         self.conn.execute("BEGIN")
         try:
             # Drop rows that no longer exist upstream — preserves created_at
@@ -275,8 +273,7 @@ class MarketplacePluginsRepository:
             if valid_names:
                 placeholders = ",".join(["?"] * len(valid_names))
                 self.conn.execute(
-                    f"DELETE FROM marketplace_plugins "
-                    f"WHERE marketplace_id = ? AND name NOT IN ({placeholders})",
+                    f"DELETE FROM marketplace_plugins WHERE marketplace_id = ? AND name NOT IN ({placeholders})",
                     [marketplace_id, *valid_names],
                 )
             else:
@@ -293,21 +290,24 @@ class MarketplacePluginsRepository:
                 source_type = _classify_source(source_spec)
                 author = p.get("author") or {}
                 author_name = author.get("name") if isinstance(author, dict) else None
-                source_spec_json = (
-                    json.dumps(source_spec) if source_spec is not None else None
-                )
+                source_spec_json = json.dumps(source_spec) if source_spec is not None else None
                 # `raw` continues to carry the unmerged upstream marketplace.json
                 # plugin entry — marketplace-metadata enrichment is held in dedicated
                 # columns, never folded into `raw`. Keeps the contract clean for
                 # the synth marketplace flow that re-emits `raw` to Claude Code.
-                raw_payload = {k: v for k, v in p.items() if k not in (
-                    "cover_photo_url", "video_url", "doc_links",
-                )}
+                raw_payload = {
+                    k: v
+                    for k, v in p.items()
+                    if k
+                    not in (
+                        "cover_photo_url",
+                        "video_url",
+                        "doc_links",
+                    )
+                }
                 raw_json = json.dumps(raw_payload)
                 doc_links = p.get("doc_links")
-                doc_links_json = (
-                    json.dumps(doc_links) if isinstance(doc_links, list) else None
-                )
+                doc_links_json = json.dumps(doc_links) if isinstance(doc_links, list) else None
                 # Upsert: ON CONFLICT keeps the existing created_at and
                 # refreshes only the mutable fields. New rows get
                 # CURRENT_TIMESTAMP via the column's DEFAULT.
@@ -364,6 +364,77 @@ class MarketplacePluginsRepository:
             "DELETE FROM marketplace_plugins WHERE marketplace_id = ?",
             [marketplace_id],
         )
+
+    def set_admin_disabled(self, marketplace_id: str, plugin_name: str, disabled: bool) -> bool:
+        """Toggle the per-plugin admin disable flag.
+
+        Returns True when the row existed and was updated, False when the
+        (marketplace_id, plugin_name) pair is not in the table (no-op).
+        Disabled plugins are filtered from the served feed for all callers
+        regardless of their RBAC grants — distinct from per-user opt-outs.
+
+        Disabling also clears `is_system`: a hidden plugin must not keep
+        fanning out as a system default. Re-enabling does NOT restore the
+        system flag (matching `unmark_system` semantics) — an admin must
+        re-mark it explicitly.
+        """
+        # DuckDB does not populate cursor.rowcount for UPDATE (it stays -1/0),
+        # so we can't trust it to detect whether a row matched. RETURNING is
+        # deterministic on both engines: one row per updated row.
+        if disabled:
+            sql = (
+                "UPDATE marketplace_plugins SET admin_disabled = TRUE, is_system = FALSE "
+                "WHERE marketplace_id = ? AND name = ? RETURNING name"
+            )
+            params = [marketplace_id, plugin_name]
+        else:
+            sql = (
+                "UPDATE marketplace_plugins SET admin_disabled = FALSE "
+                "WHERE marketplace_id = ? AND name = ? RETURNING name"
+            )
+            params = [marketplace_id, plugin_name]
+        updated = self.conn.execute(sql, params).fetchall()
+        return len(updated) > 0
+
+    def set_system(self, marketplace_id: str, plugin_name: str, system: bool) -> bool:
+        """Toggle the per-plugin ``is_system`` flag.
+
+        Returns True when the row existed and was updated, False when the
+        (marketplace_id, plugin_name) pair is not in the table (no-op) — the
+        handler surfaces the False as a 404. RETURNING makes the match
+        detection deterministic on both engines (DuckDB does not populate
+        ``cursor.rowcount`` for UPDATE). Independent of ``admin_disabled``;
+        the grant/subscription fan-out is owned by the API layer.
+        """
+        updated = self.conn.execute(
+            "UPDATE marketplace_plugins SET is_system = ? "
+            "WHERE marketplace_id = ? AND name = ? RETURNING name",
+            [system, marketplace_id, plugin_name],
+        ).fetchall()
+        return len(updated) > 0
+
+    def list_admin_disabled(self, marketplace_id: str) -> List[str]:
+        """Return the names of plugins that have admin_disabled=TRUE for a marketplace."""
+        rows = self.conn.execute(
+            "SELECT name FROM marketplace_plugins WHERE marketplace_id = ? AND admin_disabled = TRUE",
+            [marketplace_id],
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def list_system_keys(self) -> List[Tuple[str, str]]:
+        """Return ``(marketplace_id, name)`` for every system plugin that is
+        not admin-disabled.
+
+        Backs ``app/api/my_stack.py:get_my_stack`` — the my-stack view
+        intersects this set in Python to lock the subscribe toggle on
+        system plugins. Admin-disabled plugins are excluded because they
+        never surface in the served feed regardless of their system flag.
+        """
+        rows = self.conn.execute(
+            "SELECT marketplace_id, name FROM marketplace_plugins "
+            "WHERE is_system = TRUE AND admin_disabled = FALSE"
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
 
 
 def _classify_source(source: Optional[Any]) -> Optional[str]:

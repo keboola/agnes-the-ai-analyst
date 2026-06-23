@@ -50,6 +50,10 @@ class User(Base):
     last_pull_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # v71: Slack identity binding (NULL until /agnes verification code redeemed).
     slack_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # v77: force a password change on first sign-in for accounts whose password
+    # was set by someone else (seed admin from SEED_ADMIN_PASSWORD, admin-set
+    # passwords). Cleared when the user sets their own password.
+    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("FALSE"))
 
 
 class UserGroup(Base):

@@ -382,6 +382,40 @@ class StoreSubmissionsRepository:
         columns = [d[0] for d in self.conn.description]
         return self._row_to_dict(columns, rows[0])
 
+    def delete(self, id: str) -> bool:
+        """Hard-delete a submission row by id. Returns ``True`` when a row
+        was actually removed, ``False`` when no row matched.
+
+        Backs the /admin store submission hard-delete route (was a raw
+        ``conn.execute("DELETE …")`` in ``app/api/admin.py`` that broke on
+        PG). The linked bundle + entity cleanup stays in the handler — this
+        only drops the submission row.
+        """
+        rows = self.conn.execute(
+            "DELETE FROM store_submissions WHERE id = ? RETURNING id",
+            [id],
+        ).fetchall()
+        return len(rows) > 0
+
+    def list_for_entity(self, entity_id: str) -> List[Dict[str, Any]]:
+        """Every submission row linked to ``entity_id``, newest first.
+
+        Powers the version-switcher on the admin submission detail page
+        (``app/web/router.py``) — ``list_for_admin`` deliberately doesn't
+        filter by entity_id, so this is the dedicated per-entity read.
+        Returns a fixed projection (no JSON columns) so no decode step is
+        needed.
+        """
+        rows = self.conn.execute(
+            "SELECT id, status, version, created_at, reviewed_by_model "
+            "FROM store_submissions "
+            "WHERE entity_id = ? "
+            "ORDER BY created_at DESC",
+            [entity_id],
+        ).fetchall()
+        columns = [d[0] for d in self.conn.description]
+        return [dict(zip(columns, row)) for row in rows]
+
     # Whitelisted column names for the click-to-sort UI. ``status`` and
     # ``name`` get NULL-safe wrapping so the sort is deterministic across
     # legacy rows; epoch() bypass on ``created_at`` mirrors the bug

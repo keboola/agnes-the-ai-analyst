@@ -116,72 +116,35 @@ async def send_magic_link(
     return {"message": "If this email is registered, you will receive a login link."}
 
 
-def _consume_token(conn: duckdb.DuckDBPyConnection, email: str, token: str) -> dict:
+def _consume_token(email: str, token: str) -> dict:
     """Validate & consume a magic-link token atomically. Returns the user dict or raises 401.
 
-    Uses a "compare-and-swap" pattern: instead of setting reset_token to NULL
-    directly, we first set it to a unique CONSUMED marker that identifies THIS
-    consumption attempt, then verify that OUR marker was written. Two concurrent
-    verifies will both try to write their marker, but only one will succeed
-    (the WHERE clause checks the original token value); the loser's UPDATE is
-    a no-op, and the loser sees the winner's marker and fails.
+    Compare-and-swap routed through the repository factory so the read/write
+    hits the ACTIVE backend (Postgres when configured). The raw CAS that used
+    to run on a DuckDB ``_get_db`` connection here read the frozen DuckDB
+    system file on PG instances — the token written by ``send_magic_link``
+    (factory) lived in PG, so verification never matched and magic-link login
+    401'd (#518). ``users_repo().consume_reset_token`` stamps a unique
+    CONSUMED marker and returns True iff THIS call won the race.
 
-    DuckDB doesn't expose affected-row count, so the marker is the only way
-    to distinguish "I won the race" from "someone else won."
+    The marker is not cleared afterwards: ``reset_token_created`` is NULL'd by
+    the CAS so the stale ``CONSUMED:…`` value can never match a real token, and
+    the next ``send_magic_link`` overwrites it. (The old step-3 cleanup was
+    explicitly best-effort — "not a lockout".)
     """
-    # Compute the TTL cutoff in Python — DuckDB doesn't support
-    # parameterized INTERVAL arithmetic (?, INTERVAL) in all builds.
+    # TTL cutoff computed in Python (parameterized INTERVAL arithmetic isn't
+    # portable across backends).
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=MAGIC_LINK_EXPIRY)
-
-    # Unique marker for this consumption attempt — lets us detect who won
-    # the race without relying on DuckDB rowcount (which returns -1).
+    # Unique marker for this consumption attempt — the CAS stamps it so the
+    # repo can report who won the race without relying on affected-row counts.
     consume_id = f"CONSUMED:{secrets.token_hex(16)}"
 
-    # Step 1: Atomic compare-and-swap. Only succeeds if the token still
-    # matches the original value and hasn't expired. On success, writes
-    # OUR consume_id instead of NULL so we can verify ownership.
-    # DuckDB raises TransactionContext Error on concurrent row conflicts —
-    # catch and treat as "someone else won the race."
-    try:
-        conn.execute(
-            "UPDATE users SET reset_token = ?, reset_token_created = NULL "
-            "WHERE email = ? AND reset_token = ? AND reset_token_created IS NOT NULL "
-            "AND reset_token_created >= ?",
-            [consume_id, email, token, cutoff],
-        )
-    except Exception as exc:
-        err = str(exc).lower()
-        if "conflict" in err or "transaction" in err:
-            raise HTTPException(status_code=401, detail="Invalid or expired link")
-        raise
-
-    # Step 2: Verify that OUR consume_id was written. If a concurrent
-    # request won the race, we'll see THEIR consume_id (or NULL if they
-    # already cleared it in step 3) — either way, we fail.
-    row = conn.execute(
-        "SELECT reset_token FROM users WHERE email = ?",
-        [email],
-    ).fetchone()
-    if not row or row[0] != consume_id:
+    repo = users_repo()
+    if not repo.consume_reset_token(
+        email=email, token=token, cutoff=cutoff, consume_id=consume_id
+    ):
         raise HTTPException(status_code=401, detail="Invalid or expired link")
 
-    # Step 3: Clear the consumed marker. Safe to do unconditionally —
-    # only the winner reaches here, and the marker is transient.
-    # If this UPDATE fails (DB error), the marker persists but the user
-    # can still request a new magic link — not a lockout.
-    try:
-        conn.execute(
-            "UPDATE users SET reset_token = NULL WHERE email = ? AND reset_token = ?",
-            [email, consume_id],
-        )
-    except Exception:
-        logger.warning("Failed to clear CONSUMED marker for %s — marker will persist", email)
-
-    # Fetch the user (token is now cleared, but we need the rest of the fields).
-    # CAS already validated token + expiry atomically, so no further checks
-    # needed — re-running them now would always fail because reset_token was
-    # NULL'd in step 3.
-    repo = users_repo()
     user = repo.get_by_email(email)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid link")
@@ -200,7 +163,7 @@ async def verify_magic_link(
     Rate limited 10/min per IP to slow brute-forcing the 32-byte
     ``reset_token`` (the same column doubles as the magic-link token).
     """
-    user = _consume_token(conn, body.email, body.token)
+    user = _consume_token(body.email, body.token)
     role_label = _role_label(user, conn)
     jwt_token = create_access_token(user["id"], user["email"])
     return {"access_token": jwt_token, "token_type": "bearer", "email": user["email"], "role": role_label}
@@ -212,7 +175,6 @@ async def verify_magic_link_get(
     request: Request,
     email: str,
     token: str,
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Click-through variant — verifies token, sets cookie, redirects to the
     operator-configured home route.
@@ -223,7 +185,7 @@ async def verify_magic_link_get(
     Rate limited 10/min per IP for the same reason as the POST variant —
     don't let the click-through path bypass the brute-force throttle.
     """
-    user = _consume_token(conn, email, token)
+    user = _consume_token(email, token)
     jwt_token = create_access_token(user["id"], user["email"])
     # secure=False when DOMAIN is unset so the cookie is actually sent on plain HTTP (dev).
     use_secure = os.environ.get("DOMAIN", "") != ""

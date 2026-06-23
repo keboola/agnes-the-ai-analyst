@@ -97,6 +97,7 @@ services:
     # diff against the base service before merging.
     volumes: !override
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./static:/caddy-static:ro
       - /data-state/certs:/certs:ro
       - caddy_data:/data
       - caddy_config:/config

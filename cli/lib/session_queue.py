@@ -2,15 +2,25 @@
 
 The push command operates on a queue file
 (``<workspace>/.claude/agnes-sessions.txt``) populated by the
-``agnes capture-session`` SessionStart hook. Each line is a TSV pair:
-``<session_id>\\t<transcript_path>``. session_id is needed so the
-push and slash-command machinery can filter against the private
-list (``cli/lib/private_list.py``).
+``agnes capture-session`` SessionStart + SessionEnd hooks. Each line is
+a TSV row: ``<session_id>\\t<transcript_path>[\\t<first_failed_iso>]``.
+session_id is needed so the push and slash-command machinery can filter
+against the private list (``cli/lib/private_list.py``).
+
+The optional third column is a retry-bookkeeping stamp: the UTC ISO
+timestamp of the FIRST failed upload attempt for this entry. Entries
+whose first failure is older than :data:`RETRY_TTL` get dropped to the
+permanent-failure audit log instead of being requeued — bounding the
+queue without ever silently discarding a session that might still
+appear (the transcript file is created lazily by Claude Code on the
+first prompt, so "file not found" at push time usually means "not
+written YET", not "deleted").
 
 Backward compatibility: legacy lines without a tab (just an absolute
 path) are accepted and treated as having an empty session_id. They
 still upload via push but cannot be marked private retroactively —
 which is fine, since by definition they pre-date the feature.
+Two-column lines (pre-stamp era) parse with an empty stamp.
 
 Race protection: push atomically renames the queue to a snapshot file
 before processing. New SessionStart hooks write to a freshly-created
@@ -30,11 +40,17 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from filelock import FileLock
 
+
+# How long a failing queue entry keeps being retried before push gives up
+# and moves it to the permanent-failure audit log. 30 days matches Claude
+# Code's default transcript retention (cleanupPeriodDays) — past that the
+# jsonl is gone from disk anyway, so further retries can't succeed.
+RETRY_TTL = timedelta(days=30)
 
 _QUEUE_FILENAME = "agnes-sessions.txt"
 _UPLOADED_FILENAME = "agnes-sessions-uploaded.txt"
@@ -122,10 +138,7 @@ def snapshot_queue(workspace: Path) -> Path | None:
     if not queue.exists():
         return None
     unique = uuid.uuid4().hex[:8]
-    snapshot = (
-        _claude_dir(workspace)
-        / f"{_SNAPSHOT_PREFIX}{os.getpid()}.{unique}{_SNAPSHOT_SUFFIX}"
-    )
+    snapshot = _claude_dir(workspace) / f"{_SNAPSHOT_PREFIX}{os.getpid()}.{unique}{_SNAPSHOT_SUFFIX}"
     with FileLock(str(_queue_lock_path(workspace))):
         try:
             os.rename(queue, snapshot)
@@ -134,30 +147,57 @@ def snapshot_queue(workspace: Path) -> Path | None:
     return snapshot
 
 
-def _parse_queue_line(raw: str) -> tuple[str, Path] | None:
-    """Parse one queue line into (session_id, path), or None if blank/invalid."""
+def _parse_queue_line(raw: str) -> tuple[str, Path, str] | None:
+    """Parse one queue line into (session_id, path, first_failed_iso),
+    or None if blank/invalid. ``first_failed_iso`` is "" for lines that
+    never failed (2-column) and for legacy bare-path lines (1-column).
+    """
     s = raw.strip()
     if not s:
         return None
     if "\t" in s:
-        sid, _, p = s.partition("\t")
+        sid, _, rest = s.partition("\t")
         sid = sid.strip()
+        p, _, stamp = rest.partition("\t")
         p = p.strip()
+        stamp = stamp.strip()
     else:
         # Legacy format: bare path, no session_id known.
         sid = ""
         p = s
+        stamp = ""
     if not p:
         return None
-    return sid, Path(p)
+    return sid, Path(p), stamp
 
 
-def read_entries_from_snapshot(snapshot: Path) -> list[tuple[str, Path]]:
-    """Read (session_id, path) entries from a snapshot, deduplicated.
+def retry_expired(first_failed_iso: str, now: datetime | None = None) -> bool:
+    """True iff a failure stamp exists and is older than :data:`RETRY_TTL`.
+
+    An empty or unparsable stamp returns False — the entry keeps being
+    retried (and push re-stamps it), which fails safe: we never drop a
+    session because of a corrupt bookkeeping column.
+    """
+    if not first_failed_iso:
+        return False
+    try:
+        first = datetime.strptime(first_failed_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    if now is None:
+        now = datetime.now(timezone.utc)
+    return now - first > RETRY_TTL
+
+
+def read_entries_from_snapshot(snapshot: Path) -> list[tuple[str, Path, str]]:
+    """Read (session_id, path, first_failed_iso) entries, deduplicated.
 
     Deduplication is by the (session_id, path) pair — preserves first-seen
-    order. Blank lines and lines without a path are skipped. Mixed legacy
-    (1-column) and new (2-column) lines coexist.
+    order (and therefore the first-seen failure stamp, keeping the TTL
+    anchored at the ORIGINAL failure even when an entry got requeued and
+    re-captured). Blank lines and lines without a path are skipped. Mixed
+    legacy (1-column), pre-stamp (2-column) and stamped (3-column) lines
+    coexist.
 
     Repeats from the resume scenario collapse into a single entry: the
     server-side overwrite makes a second upload of the same path redundant
@@ -166,12 +206,12 @@ def read_entries_from_snapshot(snapshot: Path) -> list[tuple[str, Path]]:
     if not snapshot.exists():
         return []
     seen: set[tuple[str, str]] = set()
-    out: list[tuple[str, Path]] = []
+    out: list[tuple[str, Path, str]] = []
     for raw in snapshot.read_text(encoding="utf-8").splitlines():
         parsed = _parse_queue_line(raw)
         if parsed is None:
             continue
-        sid, path = parsed
+        sid, path, _stamp = parsed
         key = (sid, str(path))
         if key in seen:
             continue
@@ -185,7 +225,7 @@ def read_entries_from_snapshot(snapshot: Path) -> list[tuple[str, Path]]:
 # don't care about session_id. Internally used by the dry-run preview
 # path which only displays files.
 def read_paths_from_snapshot(snapshot: Path) -> list[Path]:
-    return [path for _sid, path in read_entries_from_snapshot(snapshot)]
+    return [path for _sid, path, _stamp in read_entries_from_snapshot(snapshot)]
 
 
 def find_recovery_snapshots(workspace: Path) -> list[Path]:
@@ -240,19 +280,23 @@ def mark_failed_permanent(
     workspace: Path,
     session_id: str,
     transcript_path: Path,
-    status_code: int,
+    status_code: int | str,
     when: datetime | None = None,
 ) -> None:
     """Append `<iso_timestamp>\\t<session_id>\\t<status>\\t<path>` to the
     permanent-failure audit log.
 
-    Called by push when the server returns a 4xx (other than 408 / 429)
-    — deterministic failures where retrying never succeeds (401 token
-    expired, 403 RBAC denial, 413 payload too large, 400 server
-    validation, etc.). The transcript path is logged here instead of
-    silently dropped so operators have a forensic trail; the entry is
-    NOT re-queued, breaking the prior infinite-loop bug where every
-    push run would re-bombard the server with the same failing upload.
+    Called by push when the server returns a 4xx other than 401 / 408 /
+    429 — deterministic failures where retrying never succeeds (403 RBAC
+    denial, 413 payload too large, 400 server validation, etc.) — and
+    when a retried entry's first failure is older than :data:`RETRY_TTL`
+    (``status_code`` then carries a reason string such as
+    ``not_found_expired`` instead of an HTTP status). 401 is transient:
+    re-auth makes the same upload succeed, so it requeues until the TTL.
+    The transcript path is logged here instead of silently dropped so
+    operators have a forensic trail; the entry is NOT re-queued,
+    breaking the prior infinite-loop bug where every push run would
+    re-bombard the server with the same failing upload.
 
     No separate lock: piggybacks on `agnes-push.lock` (the
     single-instance push lock), same as `mark_uploaded` and
@@ -268,9 +312,15 @@ def mark_failed_permanent(
 
 def requeue_failed(
     workspace: Path,
-    entries: list[tuple[str, Path]],
+    entries: list[tuple[str, Path, str]],
 ) -> None:
-    """Append failed (session_id, path) entries back to the live queue.
+    """Append failed (session_id, path, first_failed_iso) entries back to
+    the live queue.
+
+    The third column is the retry-bookkeeping stamp (UTC ISO of the FIRST
+    failure); push fills it in before requeueing so :func:`retry_expired`
+    can bound the retry window. An empty stamp writes a 2-column line —
+    identical to a fresh capture.
 
     Failed entries land at the end of the queue alongside any fresh
     appends that hooks wrote during this push run. Relative ordering
@@ -285,5 +335,8 @@ def requeue_failed(
         return
     with FileLock(str(_queue_lock_path(workspace))):
         with open(queue_path(workspace), "a", encoding="utf-8") as f:
-            for sid, p in entries:
-                f.write(f"{sid}\t{p}\n")
+            for sid, p, stamp in entries:
+                if stamp:
+                    f.write(f"{sid}\t{p}\t{stamp}\n")
+                else:
+                    f.write(f"{sid}\t{p}\n")

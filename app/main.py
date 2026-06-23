@@ -15,8 +15,10 @@ from src.repositories import (
     user_groups_repo,
     users_repo,
 )
+
 try:
     from authlib.deprecate import AuthlibDeprecationWarning as _AuthlibDepr
+
     _warnings.filterwarnings("ignore", category=_AuthlibDepr)
 except ImportError:
     # authlib too old / class moved — fall back to message-based match
@@ -89,8 +91,7 @@ def _chat_jwt_secret_ok(chat_config) -> bool:
     if len(secret) < 32:
         logger = logging.getLogger("app.main")
         logger.error(
-            "chat.enabled=true but JWT_SECRET_KEY is only %d bytes — "
-            "refusing to enable chat (minimum 32 bytes).",
+            "chat.enabled=true but JWT_SECRET_KEY is only %d bytes — refusing to enable chat (minimum 32 bytes).",
             len(secret),
         )
         return False
@@ -117,8 +118,7 @@ def _chat_anthropic_key_ok(chat_config) -> bool:
     if os.environ.get("ANTHROPIC_API_KEY", ""):
         return True
     logging.getLogger("app.main").error(
-        "chat.enabled=true requires ANTHROPIC_API_KEY env to be set; "
-        "refusing to spawn ChatManager",
+        "chat.enabled=true requires ANTHROPIC_API_KEY env to be set; refusing to spawn ChatManager",
     )
     return False
 
@@ -143,8 +143,7 @@ def _chat_e2b_api_key_ok(chat_config) -> bool:
     if os.environ.get("E2B_API_KEY", ""):
         return True
     logging.getLogger("app.main").error(
-        "chat.enabled=true with provider=e2b requires E2B_API_KEY env; "
-        "refusing to spawn ChatManager",
+        "chat.enabled=true with provider=e2b requires E2B_API_KEY env; refusing to spawn ChatManager",
     )
     return False
 
@@ -201,6 +200,7 @@ class _SelectiveGZipMiddleware:
                 return
         await self._gzip(scope, receive, send)
 
+
 from app.auth.rate_limit import (
     SlowAPIMiddleware as _AuthRateLimitMiddleware,
     RateLimitExceeded as _AuthRateLimitExceeded,
@@ -253,22 +253,36 @@ from app.api.memory_domain_suggestions import (
     public_router as memory_domain_suggestions_public_router,
     admin_router as memory_domain_suggestions_admin_router,
 )
+from app.api.authoring_suggestions import (
+    public_router as authoring_suggestions_public_router,
+    admin_router as authoring_suggestions_admin_router,
+)
+from app.api.memory_mining import (
+    public_router as memory_mining_public_router,
+    admin_router as memory_mining_admin_router,
+)
 from app.api.uploads import router as admin_uploads_router
+from app.api.collections import router as collections_router  # Slice 2: file corpus upload
 from app.api.stack import router as stack_router
 from app.api.stack_views import router as stack_views_router
 from app.api.initial_workspace import router as initial_workspace_router
+from app.api.config_surface import router as config_surface_router
 from app.api.store import router as store_router
 from app.api.my_stack import router as my_stack_router
 from app.api.marketplace import router as marketplace_router
 from app.api.welcome import router as welcome_router
 from app.api.connectors import router as connectors_router
 from app.api.claude_md import router as claude_md_router
+from app.api.prompts import router as prompts_router
 from app.api.news import router as news_router
 from app.api.cowork_bundle import (
     user_router as cowork_user_router,
     auth_router as cowork_auth_router,
 )
 from app.api.mcp_http import make_sse_app as _make_mcp_sse_app
+from app.api.mcp_streamable import _make_streamable_app as _make_mcp_streamable_app
+from app.api.mcp_streamable import _mcp_oauth_discovery_routes
+from app.auth.mcp_oauth import make_consent_routes as _make_mcp_consent_routes
 from app.api.cache_warmup import router as cache_warmup_router
 from app.api.bq_metadata_refresh import router as bq_metadata_refresh_router
 from app.api.activity import router as activity_router
@@ -308,6 +322,7 @@ def _maybe_rebuild_on_boot() -> bool:
         return False
     try:
         from src.orchestrator import SyncOrchestrator
+
         SyncOrchestrator().rebuild()
         logger.info("AGNES_REBUILD_ON_BOOT: master views rebuilt from baked extracts")
         return True
@@ -324,6 +339,7 @@ async def _start_slack_socket_transport(app) -> None:
     if get_slack_transport() != "socket":
         return
     from services.slack_bot.secrets import slack_secret
+
     app_token = slack_secret("SLACK_APP_TOKEN") or ""
     bot_token = slack_secret("SLACK_BOT_TOKEN") or ""
     try:
@@ -331,14 +347,18 @@ async def _start_slack_socket_transport(app) -> None:
     except ValueError:
         workers = 1
     ok, reason = socket_mode_preflight(
-        workers=workers, app_token=app_token, bot_token=bot_token,
+        workers=workers,
+        app_token=app_token,
+        bot_token=bot_token,
     )
     if not ok:
         logger.error("Slack Socket Mode disabled: %s", reason)
         return
     try:
         dispatcher = SocketModeDispatcher(
-            app=app, app_token=app_token, bot_token=bot_token,
+            app=app,
+            app_token=app_token,
+            bot_token=bot_token,
         )
         await dispatcher.start()
         app.state.slack_socket_dispatcher = dispatcher
@@ -352,6 +372,7 @@ async def lifespan(app):
     # Fail-closed: refuse to serve with a weak/absent JWT signing key in
     # production. Cheap, runs before any request is accepted.
     from app.auth.jwt import validate_jwt_secret_or_raise
+
     validate_jwt_secret_or_raise()
 
     # Resolve the instance's absolute base URL once and stash it on app.state
@@ -362,13 +383,33 @@ async def lifespan(app):
     # the dispatcher's handlers see it. Empty when PUBLIC_URL / server.public_url
     # is unset — callers degrade to a relative path.
     from app.instance_config import get_public_url
+
     app.state.public_url = get_public_url()
+
+    # Install operator-provided stdio-MCP wheels from the persistent data
+    # volume (${DATA_DIR}/mcp/wheels) and put ~/.local/bin on PATH so their
+    # console scripts resolve when the stdio client spawns them. Without
+    # this, a wheel installed by hand into the container is wiped on every
+    # recreate and the source's scheduled materialize silently breaks with
+    # command-not-found. Fail-soft: a bad wheel logs and is retried next
+    # boot; never blocks startup.
+    try:
+        from connectors.mcp.wheel_bootstrap import (
+            ensure_user_bin_on_path,
+            install_operator_wheels,
+        )
+
+        ensure_user_bin_on_path()
+        install_operator_wheels()
+    except Exception:
+        logger.exception("mcp wheel bootstrap failed (non-fatal)")
 
     # Issue #81 Group A — log the effective remote_attach allowlist at
     # startup so an operator's typo in AGNES_REMOTE_ATTACH_EXTENSIONS
     # (which REPLACES, not extends, the default) is visible.
     try:
         from src.orchestrator_security import log_effective_policy
+
         log_effective_policy()
     except Exception:
         pass  # never block startup on a logging convenience
@@ -383,6 +424,7 @@ async def lifespan(app):
     # while leaving headroom for concurrent UI / health probes.
     try:
         import anyio.to_thread
+
         size = int(os.environ.get("AGNES_THREADPOOL_SIZE", "200"))
         anyio.to_thread.current_default_thread_limiter().total_tokens = size
         logger.info("anyio thread pool capacity set to %d", size)
@@ -390,6 +432,7 @@ async def lifespan(app):
         logger.warning("failed to bump anyio thread pool capacity: %s", e)
 
     from app.api.cache_warmup import maybe_schedule_startup_warmup
+
     maybe_schedule_startup_warmup()
 
     # Sweep stale materialize parquet locks left behind by previous runs
@@ -400,6 +443,7 @@ async def lifespan(app):
     try:
         from connectors.bigquery.extractor import sweep_stale_parquet_locks
         from src.db import _get_data_dir as _ddir
+
         sweep_stale_parquet_locks(_ddir() / "extracts")
     except Exception:
         logger.exception("startup parquet-lock sweep failed (non-fatal)")
@@ -412,6 +456,7 @@ async def lifespan(app):
     try:
         from src.db import get_system_db
         from connectors.internal.registry import ensure_internal_tables_registered
+
         ensure_internal_tables_registered(get_system_db())
     except Exception:
         logger.exception("internal data-source seed failed; continuing")
@@ -428,6 +473,7 @@ async def lifespan(app):
     try:
         from src.db import get_system_db
         from src.fts import ensure_knowledge_fts_index
+
         ensure_knowledge_fts_index(get_system_db())
     except Exception:
         logger.exception("startup FTS index rebuild failed; falling back to ILIKE on /api/memory?search=")
@@ -440,10 +486,41 @@ async def lifespan(app):
     # traced. Non-fatal: warnings only, no startup abort.
     try:
         from connectors.bigquery.access import validate_bigquery_startup_config
+
         for warning in validate_bigquery_startup_config():
             logger.warning("BQ config check: %s", warning)
     except Exception:
         logger.exception("BQ startup config validation crashed (non-fatal)")
+
+    # Bring the Postgres schema to the app's expected Alembic head. The
+    # DuckDB ladder self-migrates on every connect (src/db.py); Postgres
+    # now mirrors that at startup — when the DB is behind, the pending
+    # migrations are applied in-process under a Postgres advisory lock
+    # (replica-safe). A DB AHEAD of the image (app rollback) still refuses
+    # to boot, as does a failed upgrade — never serve on a half-migrated
+    # schema (issue #636). AGNES_PG_AUTO_MIGRATE=0 restores the
+    # fail-closed check for pipeline-controlled deployments;
+    # AGNES_SKIP_PG_REVISION_CHECK=1 skips everything (emergency boots).
+    from src.repositories import use_pg
+
+    if use_pg():
+        from src.db_pg import ensure_pg_at_head
+
+        ensure_pg_at_head()
+
+    # Seed default source connections from env/yaml on first boot
+    # (spec 2026-06-12 §3.4). MUST run after ensure_pg_at_head(): on a
+    # Postgres backend the source_connections table is created by Alembic
+    # 0026, which ensure_pg_at_head() applies — seeding earlier hits a
+    # missing table, gets swallowed by the try/except, and silently no-ops
+    # until the next restart (Devin Review on #671). DuckDB is unaffected
+    # (get_system_db lazily runs _ensure_schema). One-time; registry rules after.
+    try:
+        from app.connections_seed import seed_default_connections
+
+        seed_default_connections()
+    except Exception:
+        logger.exception("source-connection seed failed; continuing")
 
     # Seed the Admin/Everyone system groups into the ACTIVE state backend.
     # On DuckDB this duplicates src.db._seed_system_groups (idempotent), but
@@ -455,11 +532,22 @@ async def lifespan(app):
     # backend.
     try:
         from src.db import _SYSTEM_GROUPS_SEED
+
         _ug_repo = user_groups_repo()
         for _grp_name, _grp_desc in _SYSTEM_GROUPS_SEED:
             _ug_repo.ensure_system(_grp_name, _grp_desc)
     except Exception as e:
         logger.warning("Could not seed system groups: %s", e)
+
+    # Seed (or re-bake) the built-in marketplace from the wheel bundle. Runs
+    # after system-groups are ensured so the RBAC seed can look up Admin/Everyone.
+    # Non-fatal: a missing bundle dir only means the plugin cache is empty.
+    try:
+        from src.marketplace import seed_builtin_marketplace
+
+        seed_builtin_marketplace()
+    except Exception as e:
+        logger.warning("Could not seed built-in marketplace: %s", e)
 
     # Seed admin user (SEED_ADMIN_EMAIL) and add them to the Admin user_group.
     # Optional SEED_ADMIN_PASSWORD lets the seeded user sign in immediately
@@ -474,10 +562,12 @@ async def lifespan(app):
     # exclusive per-process file lock on system.duckdb that would then
     # block the worker.
     from app.auth.dependencies import is_local_dev_mode, get_local_dev_email
+
     seed_email = os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None)
     if seed_email:
         try:
             from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
+
             repo = users_repo()
             groups_repo = user_groups_repo()
             members_repo = user_group_members_repo()
@@ -485,22 +575,32 @@ async def lifespan(app):
             password_hash = None
             if seed_password:
                 from argon2 import PasswordHasher
+
                 password_hash = PasswordHasher().hash(seed_password)
             existing = repo.get_by_email(seed_email)
             if not existing:
                 import uuid
+
                 user_id = str(uuid.uuid4())
                 repo.create(
                     id=user_id,
                     email=seed_email,
                     name="Admin",
                     password_hash=password_hash,
+                    # A seeded password is communicated in plaintext (emailed by
+                    # the cloud control-plane, or shared by an operator), so force
+                    # a change on first sign-in. SSO-only seed admins (no
+                    # password) have nothing to rotate and stay unflagged.
+                    must_change_password=bool(password_hash),
                 )
                 logger.info("Seeded admin user: %s (password=%s)", seed_email, "yes" if password_hash else "no")
             else:
                 user_id = existing["id"]
                 if password_hash and not existing.get("password_hash"):
-                    repo.update(id=user_id, password_hash=password_hash)
+                    # Only fires for a still-password-less seed admin, so a user
+                    # who already rotated (has a hash) is never re-flagged on a
+                    # restart. The seeded password must still be changed.
+                    repo.update(id=user_id, password_hash=password_hash, must_change_password=True)
                     logger.info("Set password on existing seed admin: %s", seed_email)
             # Make sure the seed admin is actually in the Admin group — this
             # is what gives them admin access in v12. Idempotent. Look the
@@ -536,6 +636,7 @@ async def lifespan(app):
     # `app.auth.scheduler_token.get_scheduler_user` covers the case where the
     # secret is rotated mid-life, but doing it here keeps startup observable.
     from app.auth.scheduler_token import get_scheduler_secret
+
     if get_scheduler_secret():
         try:
             from app.auth.scheduler_token import (
@@ -543,12 +644,14 @@ async def lifespan(app):
                 ensure_scheduler_user,
             )
             from src.db import get_system_db
+
             secret = get_scheduler_secret()
             if len(secret) < SCHEDULER_TOKEN_MIN_LENGTH:
                 logger.warning(
                     "SCHEDULER_API_TOKEN is set but only %d chars — auth path"
                     " disabled (minimum %d). Generate a longer secret in .env.",
-                    len(secret), SCHEDULER_TOKEN_MIN_LENGTH,
+                    len(secret),
+                    SCHEDULER_TOKEN_MIN_LENGTH,
                 )
             else:
                 conn = get_system_db()
@@ -565,6 +668,7 @@ async def lifespan(app):
     if not is_local_dev_mode():
         try:
             from src.db import get_system_db
+
             conn = get_system_db()
             repo = users_repo()
             all_users = repo.list_all()
@@ -583,10 +687,15 @@ async def lifespan(app):
     # loud at boot rather than on first capture. No-op when disabled.
     try:
         from src.observability import get_posthog
+
         pc = get_posthog()
         if pc.enabled:
-            logger.info("PostHog observability enabled (host=%s, identify=%s, replay=%s)",
-                        pc.host, pc.identify_mode, pc.replay_enabled)
+            logger.info(
+                "PostHog observability enabled (host=%s, identify=%s, replay=%s)",
+                pc.host,
+                pc.identify_mode,
+                pc.replay_enabled,
+            )
     except Exception:
         logger.exception("PostHog init at startup failed")
 
@@ -626,6 +735,7 @@ async def lifespan(app):
             try:
                 from src.initial_workspace import TemplateStatus
                 from app.api.initial_workspace import _read_section
+
                 section = _read_section()
                 if not section.get("url"):
                     return None
@@ -642,10 +752,21 @@ async def lifespan(app):
                 return None
 
         def _fetch_local_template_zip() -> bytes:
-            """Read the cached template zip from disk."""
+            """Read the cached template zip from disk.
+
+            Passes a system-DB conn so the workspace-prompt admin overlay
+            (source_mode='editor') replaces the clone's CLAUDE.md, keeping
+            cloud-chat workdirs byte-compatible with laptop override-mode
+            `agnes init` (#622)."""
             try:
+                from src.db import get_system_db
                 from src.initial_workspace import build_zip
-                return build_zip()
+
+                conn = get_system_db()
+                try:
+                    return build_zip(conn)
+                finally:
+                    conn.close()
             except Exception:
                 logger.exception("_fetch_local_template_zip failed (non-fatal)")
                 return b""
@@ -701,13 +822,19 @@ async def lifespan(app):
                     try:
                         from src.db import get_system_db
                         from src.claude_md import render_claude_md
-                        from src.repositories.users import UserRepository
+                        from src.repositories import users_repo
 
+                        # User read via the factory so it honors use_pg() — a
+                        # direct UserRepository(conn) read the frozen DuckDB
+                        # system file on Postgres instances (#518). The conn
+                        # below is still handed to render_claude_md, which
+                        # routes its own state reads through the factory (the
+                        # conn is the DuckDB-mode path; vestigial on PG).
+                        u = users_repo().get_by_email(user_email)
+                        if not u:
+                            return None
                         conn = get_system_db()
                         try:
-                            u = UserRepository(conn).get_by_email(user_email)
-                            if not u:
-                                return None
                             return render_claude_md(conn, user=u, server_url=_server_url)
                         finally:
                             conn.close()
@@ -768,6 +895,7 @@ async def lifespan(app):
     app.state.slack_bot_user_id = None
     try:
         from services.slack_bot.identity import resolve_bot_user_id
+
         app.state.slack_bot_user_id = await resolve_bot_user_id()
         if app.state.slack_bot_user_id:
             logger.info("slack bot user id resolved: %s", app.state.slack_bot_user_id)
@@ -785,7 +913,13 @@ async def lifespan(app):
         logger.exception("Slack Socket Mode wiring failed (non-fatal)")
     # --- end SLACK SOCKET MODE -----------------------------------------------
 
-    yield
+    # Run the streamable MCP session manager for the app's lifetime. Starlette
+    # does not run a mounted sub-app's lifespan, so the streamable OAuth MCP
+    # endpoint would otherwise raise "Task group is not initialized".
+    from app.api.mcp_streamable import streamable_session_manager_lifespan
+
+    async with streamable_session_manager_lifespan(app):
+        yield
     _socket_disp = getattr(app.state, "slack_socket_dispatcher", None)
     if _socket_disp is not None:
         try:
@@ -794,10 +928,12 @@ async def lifespan(app):
             logger.exception("Slack Socket Mode shutdown failed")
     try:
         from src.observability import get_posthog
+
         get_posthog().shutdown()
     except Exception:
         logger.exception("PostHog shutdown failed")
     from src.db import close_analytics_db, close_system_db
+
     close_system_db()
     close_analytics_db()
 
@@ -841,9 +977,7 @@ _TOOLBAR_SKIP_EXACT = (
     "/api/health",
     "/api/memory/stats",
 )
-_TOOLBAR_SKIP_PREFIXES = (
-    "/api/notifications",
-)
+_TOOLBAR_SKIP_PREFIXES = ("/api/notifications",)
 
 
 def _toolbar_show_callback(request, settings) -> bool:
@@ -877,6 +1011,7 @@ def _toolbar_show_callback(request, settings) -> bool:
 
 def create_app() -> FastAPI:
     from app.serialization import AgnesJSONResponse
+
     app = FastAPI(
         title="AI Data Analyst",
         description="Data distribution platform for AI analytical systems",
@@ -940,6 +1075,7 @@ def create_app() -> FastAPI:
         try:
             from debug_toolbar.middleware import DebugToolbarMiddleware
             from jinja2 import FileSystemLoader
+
             # debug_toolbar.middleware splats **kwargs into DebugToolbarSettings
             # (a pydantic-settings model with case-insensitive UPPERCASE fields).
             # Pass field names as kwargs to add_middleware — `panels` becomes
@@ -1025,6 +1161,7 @@ def create_app() -> FastAPI:
     # a per-template include would miss them; the middleware covers
     # everything in one place. No-op when POSTHOG_API_KEY is unset.
     from app.middleware.posthog_inject import PosthogInjectionMiddleware
+
     app.add_middleware(PosthogInjectionMiddleware)
 
     # Compress JSON / HTML responses on the wire. Parquet downloads are
@@ -1036,7 +1173,7 @@ def create_app() -> FastAPI:
         minimum_size=1024,
         skip_prefixes=(
             "/api/data/",
-            "/api/mcp",          # SSE stream — do not gzip
+            "/api/mcp",  # SSE stream — do not gzip
             "/cli/wheel/",
             "/cli/download",
             "/marketplace.git",  # git smart-HTTP is self-chunked; double-gzip bloats
@@ -1054,6 +1191,7 @@ def create_app() -> FastAPI:
 
     # Session middleware (required for OAuth state)
     from app.secrets import get_session_secret
+
     session_secret = get_session_secret()
     if len(session_secret) < 32:
         # Same gate JWT applies (app/auth/jwt.py:_get_secret_key) — keeps the
@@ -1061,9 +1199,11 @@ def create_app() -> FastAPI:
         # are trusted off the cookie signature; a weak SESSION_SECRET means
         # those gates are weak too.
         import warnings as _warnings
+
         _warnings.warn(
             f"SESSION_SECRET is {len(session_secret)} chars — minimum 32 recommended",
-            UserWarning, stacklevel=2,
+            UserWarning,
+            stacklevel=2,
         )
     app.add_middleware(SessionMiddleware, secret_key=session_secret)
 
@@ -1086,6 +1226,7 @@ def create_app() -> FastAPI:
 
     # Load .env_overlay (persisted by /api/admin/configure)
     from app.secrets import _state_dir
+
     _overlay = _state_dir() / ".env_overlay"
     if _overlay.exists():
         for line in _overlay.read_text().splitlines():
@@ -1096,6 +1237,7 @@ def create_app() -> FastAPI:
     # Load instance config on startup
     try:
         from app.instance_config import load_instance_config
+
         load_instance_config()
         logger.info("Instance config loaded")
     except Exception as e:
@@ -1105,6 +1247,7 @@ def create_app() -> FastAPI:
     try:
         from app.instance_config import get_corporate_memory_config
         from services.corporate_memory.confidence import configure as configure_confidence
+
         cm_config = get_corporate_memory_config()
         if cm_config and "confidence" in cm_config:
             configure_confidence(cm_config["confidence"])
@@ -1114,6 +1257,7 @@ def create_app() -> FastAPI:
 
     # Startup banner
     from src.db import SCHEMA_VERSION
+
     logger.info(
         "Agnes %s | channel: %s | schema v%s",
         os.environ.get("AGNES_VERSION", "dev"),
@@ -1124,8 +1268,11 @@ def create_app() -> FastAPI:
     # LOCAL_DEV_MODE: bypass authentication for local development. DO NOT enable in prod.
     # When on, every protected route auto-logs in as a seeded admin user (default dev@localhost).
     from app.auth.dependencies import (
-        is_local_dev_mode, get_local_dev_email, get_local_dev_groups,
+        is_local_dev_mode,
+        get_local_dev_email,
+        get_local_dev_groups,
     )
+
     if is_local_dev_mode():
         logger.warning("=" * 60)
         logger.warning("LOCAL_DEV_MODE is ON — authentication is bypassed.")
@@ -1137,8 +1284,7 @@ def create_app() -> FastAPI:
         mocked_groups = get_local_dev_groups()
         if raw_groups_env and not mocked_groups:
             logger.warning(
-                "LOCAL_DEV_GROUPS is set but produced no valid groups — "
-                "check the WARNING above for the parse error.",
+                "LOCAL_DEV_GROUPS is set but produced no valid groups — check the WARNING above for the parse error.",
             )
         elif mocked_groups:
             logger.warning(
@@ -1160,14 +1306,14 @@ def create_app() -> FastAPI:
             get_guardrails_enabled,
             get_guardrails_llm_provider_ready,
         )
+
         if get_guardrails_enabled() and not get_guardrails_llm_provider_ready():
             logger.warning("=" * 60)
             logger.warning(
                 "GUARDRAILS ENABLED BUT NO LLM PROVIDER CREDENTIALS FOUND.",
             )
             logger.warning(
-                "Set ANTHROPIC_API_KEY (or LLM_API_KEY) in the environment, "
-                "or disable guardrails in instance.yaml.",
+                "Set ANTHROPIC_API_KEY (or LLM_API_KEY) in the environment, or disable guardrails in instance.yaml.",
             )
             logger.warning(
                 "Until then, every flea-market upload will sit at "
@@ -1190,6 +1336,7 @@ def create_app() -> FastAPI:
     # StaticFiles mount has a real directory on boot even before the first
     # upload (avoids the "directory does not exist" 500 on cold systems).
     from src.db import _get_data_dir as _ddir_uploads
+
     uploads_dir = _ddir_uploads() / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
     app.mount(
@@ -1199,9 +1346,9 @@ def create_app() -> FastAPI:
     )
 
     # Auth providers (conditional registration)
-    from app.auth.providers.google import router as google_auth_router, is_available as google_available
+    from app.auth.providers.google import router as google_auth_router
     from app.auth.providers.password import router as password_auth_router
-    from app.auth.providers.email import router as email_auth_router, is_available as email_available
+    from app.auth.providers.email import router as email_auth_router
 
     # API routers
     app.include_router(auth_router)
@@ -1251,22 +1398,56 @@ def create_app() -> FastAPI:
     app.include_router(recipes_admin_router)
     app.include_router(memory_domain_suggestions_public_router)
     app.include_router(memory_domain_suggestions_admin_router)
+    app.include_router(authoring_suggestions_public_router)
+    app.include_router(authoring_suggestions_admin_router)
+    app.include_router(memory_mining_public_router)
+    app.include_router(memory_mining_admin_router)
     app.include_router(admin_uploads_router)
+    app.include_router(collections_router)
     app.include_router(stack_router)
     app.include_router(stack_views_router)
     app.include_router(initial_workspace_router)
+    app.include_router(config_surface_router)
     app.include_router(store_router)
     app.include_router(my_stack_router)
     app.include_router(marketplace_router)
     app.include_router(welcome_router)
     app.include_router(connectors_router)
     app.include_router(claude_md_router)
+    app.include_router(prompts_router)
     app.include_router(news_router)
     app.include_router(cowork_user_router)
     app.include_router(cowork_auth_router)
 
-    # HTTP MCP (SSE transport) for cowork VM access — must be mounted before
-    # web_router's catch-all. GZip excluded below via skip_prefixes.
+    # MCP mounts — registration order matters. Starlette matches mounts in
+    # order and `/api/mcp` is a path-prefix of both `/api/mcp/http/*` and
+    # `/api/mcp/oauth/*`, so the more specific routes MUST be registered first
+    # or the SSE mount shadows them. Order: consent bridge → streamable app →
+    # SSE app (broadest, last). All three precede web_router's catch-all and
+    # are GZip-excluded below via skip_prefixes.
+
+    # Native OAuth 2.1 consent/login bridge (/api/mcp/oauth/*). Plain Starlette
+    # routes (not a FastAPI router) so this browser OAuth flow stays off the
+    # documented JSON-API surface, like the SDK's authorize/token endpoints.
+    for _route in _make_mcp_consent_routes():
+        app.router.routes.append(_route)
+
+    # Root-level OAuth discovery metadata (RFC 8414 + RFC 9728). The SDK
+    # serves these relative to the streamable sub-app (under /api/mcp/http),
+    # but standards-compliant MCP clients probe the ORIGIN ROOT, so we also
+    # publish them there. Content is identical — endpoints are derived from
+    # the issuer URL, not from where the document is served.
+    for _route in _mcp_oauth_discovery_routes():
+        app.router.routes.append(_route)
+
+    # Streamable-HTTP MCP server with native OAuth 2.1 (remote MCP connectors).
+    _streamable_app = _make_mcp_streamable_app()
+    app.mount("/api/mcp/http", _streamable_app)
+    # Lift the FastMCP instance onto the main app so the lifespan can run its
+    # session manager (Starlette doesn't run mounted sub-app lifespans).
+    app.state.mcp_streamable_instance = getattr(_streamable_app.state, "mcp_streamable_instance", None)
+
+    # HTTP MCP (SSE transport) for cowork VM access — broadest prefix, last.
     app.mount("/api/mcp", _make_mcp_sse_app())
 
     app.include_router(cache_warmup_router)
@@ -1288,6 +1469,7 @@ def create_app() -> FastAPI:
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*
     # WSGI → ASGI bridge (dulwich is WSGI-native; FastAPI is ASGI).
     from a2wsgi import WSGIMiddleware
+
     app.mount("/marketplace.git", WSGIMiddleware(make_git_wsgi_app()))
 
     # Authenticated Swagger / ReDoc / OpenAPI JSON — requires a valid session
@@ -1310,6 +1492,17 @@ def create_app() -> FastAPI:
     @app.get("/openapi.json", include_in_schema=False)
     async def openapi_spec(user: dict = Depends(_get_current_user)):
         return app.openapi()
+
+    # Deployment-specific plugin admin routers (generic hook — see app/plugins.py).
+    # Mounted before the web_router catch-all so their API paths win. The configured
+    # specs come from the operator's instance.yaml; nothing deployment-specific lives here.
+    from app.instance_config import get_value as _get_value
+    from app.plugins import load_routers as _load_plugin_routers
+
+    for _plugin_router in _load_plugin_routers(
+        _get_value("plugins", "admin_routers", default=[]) or []
+    ):
+        app.include_router(_plugin_router)
 
     # Web UI router (must be last — has catch-all routes)
     app.include_router(web_router)
@@ -1376,9 +1569,7 @@ def create_app() -> FastAPI:
             conn = get_system_db()
             try:
                 authorization = request.headers.get("authorization")
-                return await get_current_user(
-                    request=request, authorization=authorization, conn=conn
-                )
+                return await get_current_user(request=request, authorization=authorization, conn=conn)
             finally:
                 try:
                     conn.close()
@@ -1425,11 +1616,7 @@ def create_app() -> FastAPI:
         """
         path_is_api = request.url.path.startswith(_API_PATH_PREFIXES)
 
-        if (
-            exc.status_code == 401
-            and request.method == "GET"
-            and not path_is_api
-        ):
+        if exc.status_code == 401 and request.method == "GET" and not path_is_api:
             next_param = quote(request.url.path, safe="")
             return RedirectResponse(url=f"/login?next={next_param}", status_code=302)
 
@@ -1437,6 +1624,7 @@ def create_app() -> FastAPI:
             return await _render_error(request, exc.status_code, exc.detail or "")
 
         from fastapi.exception_handlers import http_exception_handler
+
         return await http_exception_handler(request, exc)
 
     @app.exception_handler(Exception)
@@ -1444,6 +1632,7 @@ def create_app() -> FastAPI:
         """Catch-all 500 handler — HTML for browsers, JSON for API clients."""
         import os as _os
         import traceback as _tb
+
         logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
 
         # Best-effort: forward the exception to PostHog before rendering the
@@ -1453,6 +1642,7 @@ def create_app() -> FastAPI:
         try:
             from src.observability import get_posthog
             from app.logging_config import request_id_var as _rid_var
+
             get_posthog().capture_exception(
                 exc,
                 request=request,
@@ -1480,6 +1670,7 @@ def create_app() -> FastAPI:
 
         from app.logging_config import request_id_var
         from fastapi.responses import JSONResponse
+
         body: dict[str, str | None] = {
             "detail": "Internal server error",
             "request_id": request_id_var.get(),
@@ -1501,11 +1692,13 @@ def create_app() -> FastAPI:
 #: gets 401 and 403 injected into its declared responses so the spec truthfully
 #: reflects that auth errors are possible. FastAPI cannot derive these from
 #: Depends() chains automatically.
-_PUBLIC_API_PATHS = frozenset({
-    "/api/health",
-    "/api/health/detailed",
-    "/api/version",
-})
+_PUBLIC_API_PATHS = frozenset(
+    {
+        "/api/health",
+        "/api/health/detailed",
+        "/api/version",
+    }
+)
 
 _HTTP_METHODS = frozenset({"get", "post", "put", "delete", "patch"})
 

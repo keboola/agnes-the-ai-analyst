@@ -6,6 +6,7 @@ produce identical outputs from both engines.
 
 Follows the pattern established in test_audit_contract.py.
 """
+
 from __future__ import annotations
 
 import duckdb
@@ -15,6 +16,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # repo construction helpers — one per backend
 # ---------------------------------------------------------------------------
+
 
 def _make_duckdb_repos(tmp_path):
     from src.db import _ensure_schema
@@ -51,6 +53,7 @@ def _make_pg_repos(pg_engine, monkeypatch):
     # the DuckDB side (which does auto-seed) and PG side start with the
     # same baseline.
     import uuid as _uuid
+
     with pg_engine.begin() as conn_:
         for name, description in (
             ("Admin", "System: full access"),
@@ -67,6 +70,7 @@ def _make_pg_repos(pg_engine, monkeypatch):
 
     monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
     import src.db_pg as db_pg
+
     db_pg.dispose()
     engine = db_pg.get_engine()
 
@@ -100,6 +104,7 @@ def rbac_repos(request, tmp_path, pg_engine, monkeypatch):
 # ---------------------------------------------------------------------------
 # contract tests
 # ---------------------------------------------------------------------------
+
 
 def test_create_group_then_get_returns_it(rbac_repos):
     repos, _, _ = rbac_repos
@@ -190,6 +195,54 @@ def test_resource_grant_delete_then_has_grant_false(rbac_repos):
     assert grants.has_grant([grp["id"]], "marketplace_plugin", "my-marketplace/orders") is True
     grants.delete(grant_id)
     assert grants.has_grant([grp["id"]], "marketplace_plugin", "my-marketplace/orders") is False
+
+
+def test_delete_for_marketplace_plugins_drops_only_that_marketplace(rbac_repos):
+    """The marketplace-delete cascade (DELETE /api/marketplaces/{id}) must drop
+    every grant for the target marketplace's plugins and nothing else —
+    including NOT touching a sibling marketplace whose slug differs from the
+    target by exactly one character where the target has '_'. That collision is
+    the reason the repo matches on split_part(resource_id, '/', 1) and not a
+    LIKE '<slug>/%' prefix (LIKE would treat the '_' as a single-char wildcard
+    and bleed into the sibling). Same contract on both backends."""
+    repos, _, _ = rbac_repos
+    groups = repos["groups"]
+    grants = repos["grants"]
+
+    grp = groups.create(name="mp-cascade", created_by="admin@x.com")
+    # Target marketplace slug contains '_'; sibling differs only by '_'→'-'.
+    grants.create(group_id=grp["id"], resource_type="marketplace_plugin",
+                  resource_id="acme_data/grpn", assigned_by="admin@x.com")
+    grants.create(group_id=grp["id"], resource_type="marketplace_plugin",
+                  resource_id="acme_data/grpn-eng", assigned_by="admin@x.com")
+    grants.create(group_id=grp["id"], resource_type="marketplace_plugin",
+                  resource_id="acme-data/other", assigned_by="admin@x.com")
+
+    removed = grants.delete_for_marketplace_plugins("acme_data")
+    assert removed == 2
+    assert grants.has_grant([grp["id"]], "marketplace_plugin", "acme_data/grpn") is False
+    assert grants.has_grant([grp["id"]], "marketplace_plugin", "acme_data/grpn-eng") is False
+    # Sibling marketplace's grant survives — proves no LIKE '_' wildcard bleed.
+    assert grants.has_grant([grp["id"]], "marketplace_plugin", "acme-data/other") is True
+
+
+def test_ensure_grant_creates_then_idempotent(rbac_repos):
+    """ensure_grant (used by the built-in marketplace seeder on every boot)
+    must create the grant on first call and be a no-op on repeat — same
+    contract on both backends. Returns True iff the grant exists after the
+    call (newly inserted OR already present), never raising on a duplicate."""
+    repos, _, _ = rbac_repos
+    groups = repos["groups"]
+    grants = repos["grants"]
+
+    grp = groups.create(name="seeded", created_by="admin@x.com")
+    # First call inserts the grant.
+    assert grants.ensure_grant(grp["id"], "marketplace_plugin", "agnes-builtin/agnes-analyst", "system") is True
+    assert grants.has_grant([grp["id"]], "marketplace_plugin", "agnes-builtin/agnes-analyst") is True
+    # Second call is the INSERT-OR-IGNORE / ON-CONFLICT-DO-NOTHING idempotency
+    # path — no error, no duplicate, still reports the grant present.
+    assert grants.ensure_grant(grp["id"], "marketplace_plugin", "agnes-builtin/agnes-analyst", "system") is True
+    assert grants.has_grant([grp["id"]], "marketplace_plugin", "agnes-builtin/agnes-analyst") is True
 
 
 def test_list_groups_for_user_returns_joined_groups(rbac_repos):

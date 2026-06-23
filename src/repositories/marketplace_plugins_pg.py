@@ -2,6 +2,7 @@
 
 Mirrors ``src/repositories/marketplace_plugins.py``.
 """
+
 from __future__ import annotations
 
 import json
@@ -31,12 +32,14 @@ class MarketplacePluginsPgRepository:
 
     def list_for_marketplace(self, marketplace_id: str) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    "SELECT * FROM marketplace_plugins WHERE marketplace_id = :m ORDER BY name"
-                ),
-                {"m": marketplace_id},
-            ).mappings().all()
+            rows = (
+                conn.execute(
+                    sa.text("SELECT * FROM marketplace_plugins WHERE marketplace_id = :m ORDER BY name"),
+                    {"m": marketplace_id},
+                )
+                .mappings()
+                .all()
+            )
         return [self._normalize_row(dict(r)) for r in rows]
 
     def get(self, marketplace_id: str, name: str) -> Optional[Dict[str, Any]]:
@@ -46,33 +49,35 @@ class MarketplacePluginsPgRepository:
         existence + is_system checks through the factory.
         """
         with self._engine.connect() as conn:
-            row = conn.execute(
-                sa.text(
-                    "SELECT * FROM marketplace_plugins "
-                    "WHERE marketplace_id = :m AND name = :n"
-                ),
-                {"m": marketplace_id, "n": name},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    sa.text("SELECT * FROM marketplace_plugins WHERE marketplace_id = :m AND name = :n"),
+                    {"m": marketplace_id, "n": name},
+                )
+                .mappings()
+                .first()
+            )
         return self._normalize_row(dict(row)) if row else None
 
     def list_all(self) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text("SELECT * FROM marketplace_plugins ORDER BY marketplace_id, name")
-            ).mappings().all()
+            rows = (
+                conn.execute(sa.text("SELECT * FROM marketplace_plugins ORDER BY marketplace_id, name"))
+                .mappings()
+                .all()
+            )
         return [self._normalize_row(dict(r)) for r in rows]
 
     def count_by_marketplace(self) -> Dict[str, int]:
         with self._engine.connect() as conn:
             rows = conn.execute(
-                sa.text(
-                    "SELECT marketplace_id, COUNT(*) FROM marketplace_plugins GROUP BY marketplace_id"
-                )
+                sa.text("SELECT marketplace_id, COUNT(*) FROM marketplace_plugins GROUP BY marketplace_id")
             ).all()
         return {r[0]: int(r[1]) for r in rows}
 
     def list_granted_for_groups(
-        self, group_ids: Iterable[str],
+        self,
+        group_ids: Iterable[str],
     ) -> List[Dict[str, Any]]:
         """PG mirror of ``MarketplacePluginsRepository.list_granted_for_groups``."""
         gids = list(group_ids)
@@ -98,6 +103,7 @@ class MarketplacePluginsPgRepository:
                     "JOIN marketplace_registry mr ON mr.id = mp.marketplace_id "
                     f"WHERE rg.group_id IN ({','.join(gid_keys)}) "
                     "  AND rg.resource_type = 'marketplace_plugin' "
+                    "  AND mp.admin_disabled = FALSE "
                     "ORDER BY mr.registered_at, mp.name"
                 ),
                 params,
@@ -110,12 +116,14 @@ class MarketplacePluginsPgRepository:
                     parsed_raw = json.loads(raw)
                 except (ValueError, TypeError):
                     parsed_raw = {}
-            out.append({
-                "marketplace_id": marketplace_id,
-                "name": name,
-                "version": version,
-                "raw": parsed_raw if isinstance(parsed_raw, dict) else {},
-            })
+            out.append(
+                {
+                    "marketplace_id": marketplace_id,
+                    "name": name,
+                    "version": version,
+                    "raw": parsed_raw if isinstance(parsed_raw, dict) else {},
+                }
+            )
         return out
 
     def list_with_filters(
@@ -142,6 +150,9 @@ class MarketplacePluginsPgRepository:
             f"rg.group_id IN ({','.join(gid_keys)})",
             "rg.resource_type = 'marketplace_plugin'",
             "rg.resource_id = mp.marketplace_id || '/' || mp.name",
+            # Admin-disabled built-in plugins are hidden from the browse listing
+            # too — mirrors the served-feed filter in list_granted_for_groups.
+            "mp.admin_disabled = FALSE",
         ]
         if search:
             where.append(
@@ -152,9 +163,7 @@ class MarketplacePluginsPgRepository:
             params["needle"] = f"%{search.lower()}%"
         if category:
             if category == "Other":
-                where.append(
-                    "(mp.category IS NULL OR TRIM(mp.category) = '' OR mp.category = :cat)"
-                )
+                where.append("(mp.category IS NULL OR TRIM(mp.category) = '' OR mp.category = :cat)")
             else:
                 where.append("mp.category = :cat")
             params["cat"] = category
@@ -176,20 +185,24 @@ class MarketplacePluginsPgRepository:
                 return ([], 0)
 
             list_params = {**params, "limit": int(limit), "offset": int(skip)}
-            rows = conn.execute(
-                sa.text(
-                    f"SELECT DISTINCT mp.marketplace_id, mp.name, mp.description, mp.version, "
-                    f"       mp.author_name, mp.homepage, mp.category, mp.source_type, "
-                    f"       mp.source_spec, mp.raw, mp.cover_photo_url, mp.video_url, "
-                    f"       mp.doc_links, mp.created_at, mp.updated_at, mp.is_system "
-                    f"FROM marketplace_plugins mp "
-                    f"JOIN resource_grants rg ON TRUE "
-                    f"WHERE {where_sql} "
-                    f"ORDER BY mp.created_at DESC NULLS LAST, mp.name "
-                    f"LIMIT :limit OFFSET :offset"
-                ),
-                list_params,
-            ).mappings().all()
+            rows = (
+                conn.execute(
+                    sa.text(
+                        f"SELECT DISTINCT mp.marketplace_id, mp.name, mp.description, mp.version, "
+                        f"       mp.author_name, mp.homepage, mp.category, mp.source_type, "
+                        f"       mp.source_spec, mp.raw, mp.cover_photo_url, mp.video_url, "
+                        f"       mp.doc_links, mp.created_at, mp.updated_at, mp.is_system "
+                        f"FROM marketplace_plugins mp "
+                        f"JOIN resource_grants rg ON TRUE "
+                        f"WHERE {where_sql} "
+                        f"ORDER BY mp.created_at DESC NULLS LAST, mp.name "
+                        f"LIMIT :limit OFFSET :offset"
+                    ),
+                    list_params,
+                )
+                .mappings()
+                .all()
+            )
         return ([self._normalize_row(dict(r)) for r in rows], total)
 
     def category_counts(
@@ -216,6 +229,7 @@ class MarketplacePluginsPgRepository:
                     f"  ON rg.resource_id = mp.marketplace_id || '/' || mp.name "
                     f"WHERE rg.group_id IN ({','.join(gid_keys)}) "
                     f"  AND rg.resource_type = 'marketplace_plugin' "
+                    f"  AND mp.admin_disabled = FALSE "
                     f"GROUP BY cat"
                 ),
                 params,
@@ -229,11 +243,7 @@ class MarketplacePluginsPgRepository:
     ) -> int:
         plugins_list = list(plugins)
         now = datetime.now(timezone.utc)
-        valid_names = {
-            (p.get("name") or "").strip()
-            for p in plugins_list
-            if (p.get("name") or "").strip()
-        }
+        valid_names = {(p.get("name") or "").strip() for p in plugins_list if (p.get("name") or "").strip()}
 
         with self._engine.begin() as conn:
             if valid_names:
@@ -250,9 +260,7 @@ class MarketplacePluginsPgRepository:
                 )
             else:
                 conn.execute(
-                    sa.text(
-                        "DELETE FROM marketplace_plugins WHERE marketplace_id = :mid"
-                    ),
+                    sa.text("DELETE FROM marketplace_plugins WHERE marketplace_id = :mid"),
                     {"mid": marketplace_id},
                 )
 
@@ -264,18 +272,11 @@ class MarketplacePluginsPgRepository:
                 source_type = _classify_source(source_spec)
                 author = p.get("author") or {}
                 author_name = author.get("name") if isinstance(author, dict) else None
-                source_spec_json = (
-                    json.dumps(source_spec) if source_spec is not None else None
-                )
-                raw_payload = {
-                    k: v for k, v in p.items()
-                    if k not in ("cover_photo_url", "video_url", "doc_links")
-                }
+                source_spec_json = json.dumps(source_spec) if source_spec is not None else None
+                raw_payload = {k: v for k, v in p.items() if k not in ("cover_photo_url", "video_url", "doc_links")}
                 raw_json = json.dumps(raw_payload)
                 doc_links = p.get("doc_links")
-                doc_links_json = (
-                    json.dumps(doc_links) if isinstance(doc_links, list) else None
-                )
+                doc_links_json = json.dumps(doc_links) if isinstance(doc_links, list) else None
                 conn.execute(
                     sa.text(
                         """INSERT INTO marketplace_plugins
@@ -300,13 +301,20 @@ class MarketplacePluginsPgRepository:
                             updated_at      = EXCLUDED.updated_at"""
                     ),
                     {
-                        "mid": marketplace_id, "name": name,
-                        "desc": p.get("description"), "ver": p.get("version"),
-                        "an": author_name, "hp": p.get("homepage"),
-                        "cat": p.get("category"), "st": source_type,
-                        "ss": source_spec_json, "raw": raw_json,
-                        "cpu": p.get("cover_photo_url"), "vu": p.get("video_url"),
-                        "dl": doc_links_json, "now": now,
+                        "mid": marketplace_id,
+                        "name": name,
+                        "desc": p.get("description"),
+                        "ver": p.get("version"),
+                        "an": author_name,
+                        "hp": p.get("homepage"),
+                        "cat": p.get("category"),
+                        "st": source_type,
+                        "ss": source_spec_json,
+                        "raw": raw_json,
+                        "cpu": p.get("cover_photo_url"),
+                        "vu": p.get("video_url"),
+                        "dl": doc_links_json,
+                        "now": now,
                     },
                 )
         return sum(1 for p in plugins_list if (p.get("name") or "").strip())
@@ -317,3 +325,56 @@ class MarketplacePluginsPgRepository:
                 sa.text("DELETE FROM marketplace_plugins WHERE marketplace_id = :m"),
                 {"m": marketplace_id},
             )
+
+    def set_admin_disabled(self, marketplace_id: str, plugin_name: str, disabled: bool) -> bool:
+        """Toggle the per-plugin admin disable flag.
+
+        Returns True when the row existed and was updated, False when the
+        (marketplace_id, plugin_name) pair is not in the table (no-op).
+
+        Disabling also clears `is_system`: a hidden plugin must not keep
+        fanning out as a system default. Re-enabling does NOT restore the
+        system flag (matching `unmark_system` semantics) — an admin must
+        re-mark it explicitly.
+        """
+        if disabled:
+            sql = "UPDATE marketplace_plugins SET admin_disabled = TRUE, is_system = FALSE WHERE marketplace_id = :m AND name = :n"
+        else:
+            sql = "UPDATE marketplace_plugins SET admin_disabled = FALSE WHERE marketplace_id = :m AND name = :n"
+        with self._engine.begin() as conn:
+            result = conn.execute(sa.text(sql), {"m": marketplace_id, "n": plugin_name})
+        return result.rowcount > 0
+
+    def set_system(self, marketplace_id: str, plugin_name: str, system: bool) -> bool:
+        """PG sibling of the DuckDB ``set_system`` — toggle the per-plugin
+        ``is_system`` flag. Returns True when the row existed and was updated,
+        False when the (marketplace_id, plugin_name) pair is not present."""
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                sa.text(
+                    "UPDATE marketplace_plugins SET is_system = :s "
+                    "WHERE marketplace_id = :m AND name = :n"
+                ),
+                {"s": system, "m": marketplace_id, "n": plugin_name},
+            )
+        return result.rowcount > 0
+
+    def list_admin_disabled(self, marketplace_id: str) -> List[str]:
+        """Return the names of plugins that have admin_disabled=TRUE for a marketplace."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text("SELECT name FROM marketplace_plugins WHERE marketplace_id = :m AND admin_disabled = TRUE"),
+                {"m": marketplace_id},
+            ).all()
+        return [r[0] for r in rows]
+
+    def list_system_keys(self) -> List[Tuple[str, str]]:
+        """PG mirror of ``MarketplacePluginsRepository.list_system_keys``."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT marketplace_id, name FROM marketplace_plugins "
+                    "WHERE is_system = TRUE AND admin_disabled = FALSE"
+                )
+            ).all()
+        return [(r[0], r[1]) for r in rows]

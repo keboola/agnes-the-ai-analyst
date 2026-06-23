@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "feature/**"]
+    branches: [main, "feature/**", "ci/update-test-durations-*"]
   pull_request:
     branches: [main]
   schedule:
@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4]
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v6
 
@@ -25,25 +25,61 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
 
       - name: Install dependencies
         run: uv pip install --system ".[dev,server]"
 
-      - name: Run tests (shard ${{ matrix.group }}/4)
-        # pytest-split shards the suite across 4 parallel jobs, balanced by
+      - name: Run tests (shard ${{ matrix.group }}/8)
+        # pytest-split shards the suite across 8 parallel jobs, balanced by
         # the committed `.test_durations` file; `-n auto` parallelises
-        # within each shard across the runner's cores. Regenerate durations
-        # with `pytest tests/ --store-durations -n auto` when the suite
-        # drifts enough that shards become uneven.
-        run: pytest tests/ -v --tb=short -n auto --splits 4 --group ${{ matrix.group }}
+        # within each shard across the runner's cores. tests/db_pg/ is
+        # excluded here and runs in the dedicated test-pg job below so that
+        # the pgserver session fixture doesn't inflate shard 1's wall-clock.
+        # Regenerate durations with `pytest tests/ --ignore=tests/db_pg
+        # --store-durations -n auto -q --tb=no` when shards drift
+        # (target: ~3 min/shard).
+        run: pytest tests/ --ignore=tests/db_pg -v --tb=short -n auto --splits 8 --group ${{ matrix.group }}
+        env:
+          TESTING: "1"
+
+  test-pg:
+    # Runs tests/db_pg/ split across 2 parallel jobs to halve wall-clock time.
+    # Keeping these separate from the main split shards avoids the pgserver
+    # session-fixture startup overhead (~60 s per worker) from landing in shard
+    # 1 and skewing the main shards. pytest-split balances the 2 groups; tests
+    # without timing data receive the mean duration so the split is roughly even.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv pip install --system ".[dev,server]"
+
+      - name: Run Postgres contract tests (shard ${{ matrix.group }}/2)
+        run: pytest tests/db_pg/ -v --tb=short -n auto --splits 2 --group ${{ matrix.group }}
         env:
           TESTING: "1"
 
   # Single required status check. Branch protection requires `test`, but the
-  # matrix above publishes `test-shard (1..4)` — this job aggregates them
-  # into one `test` result so no branch-protection change is needed.
+  # matrices above publish `test-shard (1..8)` and `test-pg (1..2)` — this job
+  # aggregates them into one `test` result so no branch-protection change is needed.
   test:
-    needs: test-shard
+    needs: [test-shard, test-pg]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -53,7 +89,11 @@ jobs:
             echo "::error::test-shard result was '${{ needs.test-shard.result }}' — one or more shards failed"
             exit 1
           fi
-          echo "All 4 test shards passed."
+          if [ "${{ needs.test-pg.result }}" != "success" ]; then
+            echo "::error::test-pg result was '${{ needs.test-pg.result }}' — Postgres contract tests failed"
+            exit 1
+          fi
+          echo "All 8 test shards and both Postgres contract shards passed."
 
   lint:
     # Advisory only (continue-on-error) — ruff + mypy surface issues but
@@ -100,6 +140,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
 
       - name: Build wheel
         run: uv build --wheel --out-dir dist
@@ -158,6 +200,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
 
       - name: Install dependencies
         run: uv pip install --system ".[dev,server]"

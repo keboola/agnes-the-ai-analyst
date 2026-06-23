@@ -12,6 +12,7 @@ configparser interpolates ``%`` characters, which breaks Postgres
 connection strings that contain percent-encoded socket paths
 (e.g. pgserver, Cloud SQL Unix-socket connections).
 """
+
 from __future__ import annotations
 
 import os
@@ -23,8 +24,10 @@ from alembic import context
 # Alembic Config object
 config = context.config
 
-# Logging
-if config.config_file_name is not None:
+# Logging — skipped when the caller already owns logging config (the
+# in-process startup auto-migrate in src/db_pg.py passes
+# configure_logger=False); the alembic CLI and tests keep it.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Target metadata = the DeclarativeBase metadata from src/db_pg.py,
@@ -33,6 +36,7 @@ if config.config_file_name is not None:
 try:
     from src.db_pg import Base
     import src.models  # noqa: F401 — side-effect import to register models
+
     target_metadata = Base.metadata
 except ImportError:
     target_metadata = None
@@ -45,10 +49,7 @@ def _resolve_url() -> str:
     env_url = os.environ.get("DATABASE_URL") or os.environ.get("AGNES_DB_URL")
     if env_url:
         return env_url
-    raise RuntimeError(
-        "no database URL: set DATABASE_URL env var or pass "
-        "cfg.attributes['sqlalchemy.url']"
-    )
+    raise RuntimeError("no database URL: set DATABASE_URL env var or pass cfg.attributes['sqlalchemy.url']")
 
 
 def run_migrations_offline() -> None:

@@ -6,11 +6,14 @@ Alembic's autogenerate reads that metadata to detect drift.
 Add a new model by creating ``src/models/<name>.py`` that imports ``Base``
 from ``src.db_pg`` and adds it to the ``__all__`` re-export below.
 """
+
 from __future__ import annotations
 
 from src.models.audit import AuditLog
 from src.models.chat import ChatMessage, ChatSession, UserWorkdir
+from src.models.collections import CorpusChunk, CorpusFile, FileCorpus
 from src.models.config import InstanceTemplate, MetricDefinition, PersonalAccessToken
+from src.models.connections import ConnectionSecret, SourceConnection
 from src.models.data_packages import DataPackage, DataPackageTable, DataPackageTool
 from src.models.knowledge import (
     KnowledgeContradiction,
@@ -42,6 +45,7 @@ from src.models.store import (
     MarketplacePlugin,
     MarketplaceRegistry,
     StoreEntity,
+    StoreEntityVote,
     StoreSubmission,
     UserPluginOptout,
     UserStackSubscription,
@@ -70,6 +74,7 @@ from src.models.rbac import (
     UserGroup,
     UserGroupMember,
 )
+from src.models.oauth import OAuthAccessToken, OAuthAuthCode, OAuthClient, OAuthRefreshToken
 from src.models.vault import SystemSecret
 
 
@@ -79,6 +84,10 @@ __all__ = [
     "ChatMessage",
     "ChatSession",
     "ColumnMetadata",
+    "ConnectionSecret",
+    "CorpusChunk",
+    "CorpusFile",
+    "FileCorpus",
     "DataPackage",
     "DataPackageTable",
     "DataPackageTool",
@@ -105,7 +114,9 @@ __all__ = [
     "SetupToken",
     "ScriptRegistry",
     "SessionProcessorState",
+    "SourceConnection",
     "StoreEntity",
+    "StoreEntityVote",
     "StoreSubmission",
     "SyncHistory",
     "SyncState",
@@ -131,4 +142,8 @@ __all__ = [
     "UserSyncSettings",
     "UserWorkdir",
     "ViewOwnership",
+    "OAuthAccessToken",
+    "OAuthAuthCode",
+    "OAuthClient",
+    "OAuthRefreshToken",
 ]

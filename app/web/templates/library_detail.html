@@ -1,0 +1,227 @@
+{% extends "base_page.html" %}
+
+{% set page_hero_eyebrow  = "Files" %}
+{% set page_hero_title    = collection.name %}
+{% set page_hero_subtitle = (collection.description or "Search across the files in this collection, or add more.") %}
+
+{% block head_extra %}
+<style>
+  .lib-back { margin-bottom: var(--space-4); }
+  .lib-sec { margin-bottom: var(--space-7); }
+  .lib-sec__title {
+    display: flex; align-items: center; gap: var(--space-2);
+    font-size: 0.78rem; font-weight: var(--font-semibold); letter-spacing: .06em;
+    text-transform: uppercase; color: var(--ds-text-secondary); margin: 0 0 var(--space-3);
+  }
+  .lib-sec__title svg { width: 15px; height: 15px; }
+
+  /* Ask bar */
+  .ask {
+    display: flex; gap: var(--space-2); align-items: center;
+    padding: var(--space-2); background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius-full);
+    box-shadow: var(--shadow-card); transition: border-color .16s ease, box-shadow .16s ease;
+  }
+  .ask:focus-within { border-color: var(--ds-primary); box-shadow: var(--focus-ring); }
+  .ask__icon { flex: none; width: 20px; height: 20px; margin-left: var(--space-2); color: var(--ds-text-muted); }
+  .ask input {
+    flex: 1; border: none; background: transparent; outline: none;
+    font-size: 1rem; color: var(--ds-text-primary); padding: var(--space-2);
+  }
+
+  .results { margin-top: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
+  .result {
+    padding: var(--space-4); background: var(--surface);
+    border: 1px solid var(--border); border-left: 3px solid var(--ds-primary);
+    border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
+  }
+  .result__cite {
+    display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
+    font-size: 0.78rem; color: var(--ds-text-secondary); margin-bottom: 6px;
+  }
+  .result__file { font-weight: var(--font-semibold); color: var(--ds-text-primary); }
+  .result__score {
+    margin-left: auto; font-family: var(--font-mono); font-size: 0.72rem;
+    color: var(--ds-primary); background: color-mix(in srgb, var(--ds-primary) 10%, var(--surface));
+    padding: 1px 8px; border-radius: var(--radius-full);
+  }
+  .result__text { font-size: 0.92rem; color: var(--ds-text-primary); line-height: 1.55; margin: 0; }
+  .results__empty { color: var(--ds-text-secondary); font-size: 0.9rem; }
+
+  /* Drop zone */
+  .drop {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2);
+    padding: var(--space-7) var(--space-4); text-align: center; cursor: pointer;
+    background: color-mix(in srgb, var(--ds-primary) 4%, var(--surface));
+    border: 1.5px dashed color-mix(in srgb, var(--ds-primary) 35%, var(--border));
+    border-radius: var(--radius-xl); transition: background .16s ease, border-color .16s ease;
+  }
+  .drop:hover, .drop.is-drag {
+    background: color-mix(in srgb, var(--ds-primary) 10%, var(--surface));
+    border-color: var(--ds-primary);
+  }
+  .drop svg { width: 30px; height: 30px; color: var(--ds-primary); }
+  .drop__hint { font-size: 0.9rem; color: var(--ds-text-secondary); }
+  .drop__hint strong { color: var(--ds-text-primary); font-weight: var(--font-semibold); }
+  .drop__sub { font-size: 0.78rem; color: var(--ds-text-secondary); }
+  .drop input[type="file"] { display: none; }
+  .drop__actions { display: flex; gap: var(--space-2); align-items: center; margin-top: var(--space-2); }
+
+  /* File list */
+  .files { display: flex; flex-direction: column; gap: var(--space-2); }
+  .file {
+    display: flex; align-items: center; gap: var(--space-3);
+    padding: var(--space-3) var(--space-4); background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius-lg);
+    transition: border-color .14s ease, box-shadow .14s ease;
+    opacity: 0; animation: file-rise .34s ease forwards;
+  }
+  .file:hover { border-color: color-mix(in srgb, var(--ds-primary) 35%, var(--border)); box-shadow: var(--shadow-sm); }
+  .file__icon { flex: none; width: 34px; height: 34px; border-radius: var(--radius-md); display: grid; place-items: center;
+                background: color-mix(in srgb, var(--ds-primary) 9%, var(--surface)); color: var(--ds-primary); }
+  .file__icon svg { width: 18px; height: 18px; }
+  .file__body { flex: 1; min-width: 0; }
+  .file__name { color: var(--ds-text-primary); font-weight: var(--font-medium); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file__meta { font-size: 0.76rem; color: var(--ds-text-muted); }
+  .file:nth-child(1){animation-delay:.02s}.file:nth-child(2){animation-delay:.05s}.file:nth-child(3){animation-delay:.08s}
+  .file:nth-child(4){animation-delay:.11s}.file:nth-child(5){animation-delay:.14s}.file:nth-child(n+6){animation-delay:.17s}
+  @keyframes file-rise { from { opacity:0; transform: translateY(6px);} to {opacity:1; transform:none;} }
+  @media (prefers-reduced-motion: reduce){ .file{animation:none;opacity:1;} }
+
+  .files__empty { color: var(--ds-text-secondary); font-size: 0.9rem; padding: var(--space-3) 0; }
+</style>
+{% endblock %}
+
+{% block toolbar %}
+  {{ ds.button("← Library", variant="ghost", attrs='onclick="window.location=\'/library\'" type="button"') }}
+{% endblock %}
+
+{% block page %}
+  <div class="lib-sec">
+    <div class="lib-sec__title">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6z"/><path d="M18 14l.8 2.2 2.2.8-2.2.8L18 20l-.8-2.2-2.2-.8 2.2-.8z"/></svg>
+      Ask this collection
+    </div>
+    <div class="ask">
+      <svg class="ask__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="lib-q" type="search" placeholder="Search across files in this collection…" aria-label="Search">
+      {{ ds.button("Search", variant="primary", attrs='id="lib-search-btn" type="button"') }}
+    </div>
+    <div class="results" id="lib-results"></div>
+  </div>
+
+  <div class="lib-sec">
+    <div class="lib-sec__title">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M8 8l4-4 4 4"/><path d="M20 16v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2"/></svg>
+      Upload files
+    </div>
+    <label class="drop" id="lib-drop">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V6M8 10l4-4 4 4"/><path d="M20 16v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2"/></svg>
+      <div class="drop__hint"><strong>Drop files here</strong> or click to choose</div>
+      <div class="drop__sub">PDF, Office, CSV/Excel, images — indexed automatically</div>
+      <input id="lib-files" type="file" multiple aria-label="Files to upload">
+      <div class="drop__actions">
+        <span class="drop__sub" id="lib-file-count"></span>
+        {{ ds.button("Upload", variant="primary", attrs='id="lib-upload-btn" type="button"') }}
+      </div>
+    </label>
+  </div>
+
+  <div class="lib-sec">
+    <div class="lib-sec__title">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+      Files
+    </div>
+    {% if not files %}
+      <p class="files__empty">No files yet — drop some above.</p>
+    {% else %}
+    <div class="files">
+      {% for f in files %}
+        {% set ft = (f.file_type or "") %}
+        {% set kind = "table" if ft in ["csv","tsv","xlsx","xls","parquet","json","jsonl"] else ("image" if ft in ["png","jpg","jpeg","gif","webp","tif","tiff"] else "doc") %}
+        {% set pill = {"indexed": "ok", "processing": "pending", "pending": "pending", "rejected": "blocked"}.get(f.processing_status, "pending") %}
+        <div class="file">
+          <span class="file__icon">
+            {% if kind == "table" %}
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/></svg>
+            {% elif kind == "image" %}
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+            {% else %}
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>
+            {% endif %}
+          </span>
+          <div class="file__body">
+            <div class="file__name">{{ f.filename }}</div>
+            <div class="file__meta">{{ ft or "file" }}</div>
+          </div>
+          <span class="status-pill {{ pill }}">{{ f.processing_status }}</span>
+        </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <script>
+    (function () {
+      var cid = {{ collection.id | tojson }};
+      var input = document.getElementById("lib-files");
+      var drop = document.getElementById("lib-drop");
+      var count = document.getElementById("lib-file-count");
+
+      function refreshCount() {
+        var n = input.files ? input.files.length : 0;
+        count.textContent = n ? (n + " file" + (n === 1 ? "" : "s") + " ready") : "";
+      }
+      if (input) input.addEventListener("change", refreshCount);
+
+      if (drop) {
+        ["dragover", "dragenter"].forEach(function (e) {
+          drop.addEventListener(e, function (ev) { ev.preventDefault(); drop.classList.add("is-drag"); });
+        });
+        ["dragleave", "drop"].forEach(function (e) {
+          drop.addEventListener(e, function (ev) { ev.preventDefault(); drop.classList.remove("is-drag"); });
+        });
+        drop.addEventListener("drop", function (ev) {
+          if (ev.dataTransfer && ev.dataTransfer.files) { input.files = ev.dataTransfer.files; refreshCount(); }
+        });
+      }
+
+      var up = document.getElementById("lib-upload-btn");
+      if (up) up.addEventListener("click", async function (ev) {
+        ev.preventDefault();
+        if (!input.files.length) return;
+        var fd = new FormData();
+        for (var i = 0; i < input.files.length; i++) fd.append("files", input.files[i]);
+        var r = await fetch("/api/collections/" + cid + "/files", { method: "POST", credentials: "same-origin", body: fd });
+        if (r.ok || r.status === 422) { window.location.reload(); }
+        else { alert("Upload failed: " + r.status); }
+      });
+
+      async function runSearch() {
+        var q = (document.getElementById("lib-q").value || "").trim();
+        var box = document.getElementById("lib-results");
+        if (!q) { box.innerHTML = ""; return; }
+        var r = await fetch("/api/collections/search?corpus_id=" + encodeURIComponent(cid) + "&q=" + encodeURIComponent(q));
+        if (!r.ok) { box.innerHTML = '<p class="results__empty">Search failed.</p>'; return; }
+        var results = (await r.json()).results || [];
+        if (!results.length) { box.innerHTML = '<p class="results__empty">No matches.</p>'; return; }
+        box.innerHTML = "";
+        results.forEach(function (res) {
+          var el = document.createElement("div"); el.className = "result";
+          var cite = document.createElement("div"); cite.className = "result__cite";
+          var fn = document.createElement("span"); fn.className = "result__file";
+          fn.textContent = res.filename || res.file_id || "chunk";
+          var loc = document.createElement("span"); loc.textContent = "#" + res.ordinal;
+          var score = document.createElement("span"); score.className = "result__score"; score.textContent = "score " + res.score;
+          cite.appendChild(fn); cite.appendChild(loc); cite.appendChild(score);
+          var txt = document.createElement("p"); txt.className = "result__text"; txt.textContent = (res.text || "").slice(0, 500);
+          el.appendChild(cite); el.appendChild(txt); box.appendChild(el);
+        });
+      }
+      var sb = document.getElementById("lib-search-btn");
+      if (sb) sb.addEventListener("click", runSearch);
+      var qi = document.getElementById("lib-q");
+      if (qi) qi.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); runSearch(); } });
+    })();
+  </script>
+{% endblock %}

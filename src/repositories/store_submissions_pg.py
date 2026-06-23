@@ -294,6 +294,31 @@ class StoreSubmissionsPgRepository:
             ).mappings().first()
         return self._normalize_row(dict(row)) if row else None
 
+    def delete(self, id: str) -> bool:
+        """Parity with the DuckDB repo — hard-delete a submission row by id.
+        Returns ``True`` when a row was removed, ``False`` otherwise."""
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                sa.text("DELETE FROM store_submissions WHERE id = :id"),
+                {"id": id},
+            )
+        return result.rowcount > 0
+
+    def list_for_entity(self, entity_id: str) -> List[Dict[str, Any]]:
+        """Parity with the DuckDB repo — every submission linked to
+        ``entity_id``, newest first, fixed projection (no JSON columns)."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT id, status, version, created_at, reviewed_by_model "
+                    "FROM store_submissions "
+                    "WHERE entity_id = :eid "
+                    "ORDER BY created_at DESC"
+                ),
+                {"eid": entity_id},
+            ).mappings().all()
+        return [dict(r) for r in rows]
+
     def list_for_admin(
         self,
         *,

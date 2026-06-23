@@ -317,8 +317,8 @@ class TestParquetLockIntegration:
 
         assert not errors, f"Transform errors: {errors}"
 
-        # Verify: all issues must be present in the Parquet file
-        issues_parquet = output_dir / "issues" / "2025-01.parquet"
+        # Verify: all issues must be present in the hive partition
+        issues_parquet = output_dir / "issues" / "month=2025-01" / "data.parquet"
         assert issues_parquet.exists(), "Issues Parquet file should exist"
 
         df = pd.read_parquet(issues_parquet)
@@ -384,9 +384,9 @@ class TestParquetLockIntegration:
         assert not errors, f"Transform errors: {errors}"
 
         # Verify Jan
-        jan_df = pd.read_parquet(output_dir / "issues" / "2025-01.parquet")
+        jan_df = pd.read_parquet(output_dir / "issues" / "month=2025-01" / "data.parquet")
         assert set(jan_df["issue_key"].tolist()) == set(jan_keys)
 
         # Verify Feb
-        feb_df = pd.read_parquet(output_dir / "issues" / "2025-02.parquet")
+        feb_df = pd.read_parquet(output_dir / "issues" / "month=2025-02" / "data.parquet")
         assert set(feb_df["issue_key"].tolist()) == set(feb_keys)

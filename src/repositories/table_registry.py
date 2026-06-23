@@ -87,6 +87,7 @@ def _decode_primary_key(stored: Any) -> Optional[List[str]]:
             # Python repr legacy: `"['a', 'b']"` (single-quoted)
             try:
                 import ast
+
                 v = ast.literal_eval(s)
                 if isinstance(v, list):
                     return [str(x) for x in v if x]
@@ -102,15 +103,21 @@ class TableRegistryRepository:
         self.conn = conn
 
     def register(
-        self, id: str, name: str, folder: Optional[str] = None,
+        self,
+        id: str,
+        name: str,
+        folder: Optional[str] = None,
         sync_strategy: Optional[str] = None,
         primary_key: Union[None, str, List[str]] = None,
-        description: Optional[str] = None, registered_by: Optional[str] = None,
-        source_type: Optional[str] = None, bucket: Optional[str] = None,
+        description: Optional[str] = None,
+        registered_by: Optional[str] = None,
+        source_type: Optional[str] = None,
+        bucket: Optional[str] = None,
         source_table: Optional[str] = None,
         source_query: Optional[str] = None,
         query_mode: str = "local",
-        sync_schedule: Optional[str] = None, profile_after_sync: bool = True,
+        sync_schedule: Optional[str] = None,
+        profile_after_sync: bool = True,
         registered_at: Optional[datetime] = None,
         # v26 — Keboola sync-strategy support fields. All optional; meaningful
         # only when paired with the matching sync_strategy. API-layer
@@ -129,6 +136,14 @@ class TableRegistryRepository:
         # ``source_table`` at rebuild. Decouples the UX/RBAC ``bucket``
         # label from the physical BQ dataset name (issue #343).
         bq_fqn: Optional[str] = None,
+        # v74 (#607) — distribution flag decoupled from query_mode. When True
+        # the row is kept server-side & queryable via `agnes query --remote`,
+        # but `agnes pull` skips its parquet. API-layer validator rejects
+        # True paired with query_mode='remote'.
+        server_only: bool = False,
+        # v79 — nullable FK to source_connections.id. NULL = use the default
+        # connection for the row's source_type (spec 2026-06-12).
+        connection_id: Optional[str] = None,
     ) -> None:
         # `registered_at` defaults to "now" for fresh inserts. Updaters that
         # want to preserve the original registration time across edits pass
@@ -148,8 +163,8 @@ class TableRegistryRepository:
                 sync_schedule, profile_after_sync,
                 incremental_window_days, max_history_days, incremental_column,
                 where_filters, partition_by, partition_granularity,
-                initial_load_chunk_days, bq_fqn)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                initial_load_chunk_days, bq_fqn, server_only, connection_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name, folder = excluded.folder,
                 sync_strategy = excluded.sync_strategy, primary_key = excluded.primary_key,
@@ -166,13 +181,36 @@ class TableRegistryRepository:
                 partition_by = excluded.partition_by,
                 partition_granularity = excluded.partition_granularity,
                 initial_load_chunk_days = excluded.initial_load_chunk_days,
-                bq_fqn = excluded.bq_fqn""",
-            [id, name, folder, effective_strategy, encoded_pk, description, registered_by, ts,
-             source_type, bucket, source_table, source_query, query_mode,
-             sync_schedule, profile_after_sync,
-             incremental_window_days, max_history_days, incremental_column,
-             encoded_filters, partition_by, partition_granularity,
-             initial_load_chunk_days, bq_fqn],
+                bq_fqn = excluded.bq_fqn,
+                server_only = excluded.server_only,
+                connection_id = excluded.connection_id""",
+            [
+                id,
+                name,
+                folder,
+                effective_strategy,
+                encoded_pk,
+                description,
+                registered_by,
+                ts,
+                source_type,
+                bucket,
+                source_table,
+                source_query,
+                query_mode,
+                sync_schedule,
+                profile_after_sync,
+                incremental_window_days,
+                max_history_days,
+                incremental_column,
+                encoded_filters,
+                partition_by,
+                partition_granularity,
+                initial_load_chunk_days,
+                bq_fqn,
+                bool(server_only),
+                connection_id,
+            ],
         )
 
     @staticmethod
@@ -276,6 +314,26 @@ class TableRegistryRepository:
     def unregister(self, table_id: str) -> None:
         self.conn.execute("DELETE FROM table_registry WHERE id = ?", [table_id])
 
+    def delete_for_corpus(self, corpus_id: str) -> List[str]:
+        """Delete all table_registry rows belonging to a file-corpus collection.
+
+        Rows are identified by ``source_type='collection'`` and
+        ``bucket=corpus_id``.  Returns the list of deleted table ids so the
+        caller can clean up derived artefacts (parquet files, extract.duckdb
+        views) before calling ``orchestrator.rebuild_source``.
+        """
+        rows = self.conn.execute(
+            "SELECT id FROM table_registry WHERE source_type = 'collection' AND bucket = ?",
+            [corpus_id],
+        ).fetchall()
+        ids = [r[0] for r in rows]
+        if ids:
+            self.conn.execute(
+                "DELETE FROM table_registry WHERE source_type = 'collection' AND bucket = ?",
+                [corpus_id],
+            )
+        return ids
+
     def set_description(self, table_id: str, description: str) -> None:
         """Set only the ``description`` column, leaving every other field
         untouched (unlike ``register()``'s full upsert). Used by the LLM
@@ -287,9 +345,7 @@ class TableRegistryRepository:
         )
 
     def get(self, table_id: str) -> Optional[Dict[str, Any]]:
-        result = self.conn.execute(
-            "SELECT * FROM table_registry WHERE id = ?", [table_id]
-        ).fetchone()
+        result = self.conn.execute("SELECT * FROM table_registry WHERE id = ?", [table_id]).fetchone()
         if not result:
             return None
         columns = [desc[0] for desc in self.conn.description]
@@ -301,6 +357,19 @@ class TableRegistryRepository:
             return []
         columns = [desc[0] for desc in self.conn.description]
         return [self._decode_row(dict(zip(columns, row))) for row in results]
+
+    def count_non_internal(self) -> int:
+        """Count registered business tables, excluding internal source rows.
+
+        ``source_type='internal'`` rows (agnes_* tables) live in their own
+        card on /catalog and are excluded from the headline counter on the
+        dashboard + the catalog empty-state hint. NULL ``source_type`` is
+        treated as non-internal (COALESCE to '').
+        """
+        result = self.conn.execute(
+            "SELECT COUNT(*) FROM table_registry WHERE COALESCE(source_type, '') != 'internal'"
+        ).fetchone()
+        return int(result[0]) if result else 0
 
     def list_by_source(self, source_type: str) -> List[Dict[str, Any]]:
         """List tables for a given source type (keboola, bigquery, jira, etc.)."""
@@ -314,7 +383,9 @@ class TableRegistryRepository:
         return [self._decode_row(dict(zip(columns, row))) for row in results]
 
     def find_by_bq_path(
-        self, bucket: str, source_table: str,
+        self,
+        bucket: str,
+        source_table: str,
     ) -> Optional[Dict[str, Any]]:
         """Look up a BigQuery row by `(bucket, source_table)`.
 

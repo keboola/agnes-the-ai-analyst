@@ -304,6 +304,15 @@ def create_cmd(
     estimate: bool = typer.Option(False, "--estimate", help="Run dry-run only, do not fetch"),
     no_estimate: bool = typer.Option(False, "--no-estimate", help="Skip the pre-fetch estimate"),
     force: bool = typer.Option(False, "--force", help="Overwrite existing snapshot of the same name"),
+    from_query: str = typer.Option(
+        None, "--from-query",
+        help=(
+            "Materialize a snapshot from a raw SELECT executed remotely "
+            "(BigQuery does the projection in the query — no --select/--where "
+            "parsing). Mutually exclusive with --select/--where/--order-by. "
+            "Backs `agnes query --remote --auto-snapshot`."
+        ),
+    ),
     ttl: str = typer.Option(
         None, "--ttl",
         help=(
@@ -314,7 +323,48 @@ def create_cmd(
     ),
 ):
     """Create a snapshot — fetch a filtered subset of a remote table locally."""
+    # Thin Typer wrapper → plain function so other code (e.g. the
+    # `agnes query --remote --auto-snapshot` fallback in cli/commands/query.py)
+    # can invoke the create logic directly without re-deriving Typer
+    # OptionInfo defaults (#616).
+    _create_snapshot(
+        table_id=table_id, select=select, where=where, limit=limit,
+        order_by=order_by, as_name=as_name, estimate=estimate,
+        no_estimate=no_estimate, force=force, from_query=from_query, ttl=ttl,
+    )
+
+
+def _create_snapshot(
+    *,
+    table_id: str,
+    select: Optional[str] = None,
+    where: Optional[str] = None,
+    limit: Optional[int] = None,
+    order_by: Optional[str] = None,
+    as_name: Optional[str] = None,
+    estimate: bool = False,
+    no_estimate: bool = False,
+    force: bool = False,
+    from_query: Optional[str] = None,
+    ttl: Optional[str] = None,
+    quiet: bool = False,
+) -> None:
+    """Create-snapshot implementation (plain function, no Typer types).
+
+    ``quiet=True`` routes the final ``Fetched … rows`` success line to stderr
+    instead of stdout — used by the ``agnes query --remote --auto-snapshot``
+    fallback so the snapshot chatter doesn't pollute the query's stdout
+    (which may be `--format json`)."""
     name = as_name or table_id
+
+    # --from-query carries its own projection; reject the select/where path.
+    if from_query is not None and any(x is not None for x in (select, where, order_by, limit)):
+        typer.echo(
+            "Error: --from-query is mutually exclusive with "
+            "--select/--where/--order-by/--limit.",
+            err=True,
+        )
+        raise typer.Exit(2)
 
     # Validate --ttl up-front (before any network call) so a typo fails fast.
     if ttl is not None:
@@ -359,14 +409,23 @@ def create_cmd(
 
     # Build request
     req = {"table_id": table_id}
-    if select:
-        req["select"] = [c.strip() for c in select.split(",") if c.strip()]
-    if where:
-        req["where"] = where
-    if limit:
-        req["limit"] = int(limit)
-    if order_by:
-        req["order_by"] = [c.strip() for c in order_by.split(",") if c.strip()]
+    if from_query is not None:
+        # Raw-SQL materialize path (#616): the query carries its own
+        # projection, so the request is just {from_query, as}. The
+        # select/where-based estimate doesn't apply to a raw query, so we
+        # force-skip it below.
+        req["from_query"] = from_query
+        req["as"] = name
+        no_estimate = True
+    else:
+        if select:
+            req["select"] = [c.strip() for c in select.split(",") if c.strip()]
+        if where:
+            req["where"] = where
+        if limit:
+            req["limit"] = int(limit)
+        if order_by:
+            req["order_by"] = [c.strip() for c in order_by.split(",") if c.strip()]
 
     # Estimate (always shown unless --no-estimate). The `--estimate` early
     # exit is OUTSIDE this block — `--estimate` is a cost-safety mechanism
@@ -464,9 +523,9 @@ def create_cmd(
         write_meta(snap_dir, meta)
 
     if ttl:
-        typer.echo(f"Fetched {table.num_rows:,} rows -> {name} (expires {expires_at})")
+        typer.echo(f"Fetched {table.num_rows:,} rows -> {name} (expires {expires_at})", err=quiet)
     else:
-        typer.echo(f"Fetched {table.num_rows:,} rows -> {name}")
+        typer.echo(f"Fetched {table.num_rows:,} rows -> {name}", err=quiet)
 
 
 def _parse_duration(s: str) -> timedelta:

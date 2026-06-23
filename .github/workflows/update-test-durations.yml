@@ -1,0 +1,60 @@
+name: Update test durations
+
+# Regenerates .test_durations on CI hardware so pytest-split can balance
+# shards accurately. Run weekly (Sunday 02:00 UTC) or on demand.
+# Opens a PR against main — never pushes directly.
+on:
+  schedule:
+    - cron: "0 2 * * 0"  # Weekly, Sunday 02:00 UTC
+  workflow_dispatch:
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv pip install --system ".[dev,server]"
+
+      - name: Regenerate .test_durations
+        # || true so a flaky/broken test on main doesn't block the duration
+        # update — pytest-split writes .test_durations even on partial failure.
+        run: pytest tests/ --store-durations -n auto -q --tb=no || true
+        env:
+          TESTING: "1"
+
+      - name: Open PR if durations changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet .test_durations; then
+            echo "No changes to .test_durations — skipping PR"
+            exit 0
+          fi
+          BRANCH="ci/update-test-durations-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+          git add .test_durations
+          git commit -m "chore(ci): regenerate .test_durations"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "chore(ci): regenerate .test_durations" \
+            --body "Weekly automated refresh of \`.test_durations\` so pytest-split keeps shards balanced. Generated on CI hardware — merge when checks are green." \
+            --base main \
+            --head "$BRANCH"
+        env:
+          GH_TOKEN: ${{ github.token }}

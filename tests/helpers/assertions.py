@@ -73,3 +73,29 @@ def assert_duckdb_table_exists(db_path: str | Path, table_name: str) -> None:
         )
     finally:
         conn.close()
+
+
+def assert_only_in_active_backend(repo_read, backend, *, duckdb_probe=None):
+    """Assert a mutation landed in the active backend — and ONLY there.
+
+    repo_read    — zero-arg callable reading via the repo factory
+                   (queries the active backend)
+    backend      — "duckdb" | "pg" (from the seeded_app fixture)
+    duckdb_probe — zero-arg callable running a raw query against the
+                   DuckDB system DB; returns a row or None. Only used
+                   on the pg run. Pass for representative [+neg-duck] tests.
+    """
+    row = repo_read()
+    assert row is not None, (
+        f"write landed in wrong backend or wasn't persisted (backend={backend!r})"
+    )
+    if backend == "pg" and duckdb_probe is not None:
+        try:
+            leaked = duckdb_probe()
+        except Exception:
+            leaked = None  # table absent in DuckDB — not a leak
+        assert leaked is None, (
+            "dual-write leak: row exists in Postgres AND DuckDB — "
+            "code path is writing to both backends"
+        )
+    return row

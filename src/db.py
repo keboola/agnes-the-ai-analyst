@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 73
+SCHEMA_VERSION = 84
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -89,7 +89,13 @@ CREATE TABLE IF NOT EXISTS users (
     -- lazy ALTER in services/slack_bot/binding.py) so it lives in the active
     -- state backend — the binding broke on Postgres when it only existed in
     -- the DuckDB system file.
-    slack_user_id VARCHAR
+    slack_user_id VARCHAR,
+    -- v77: forces a password change on first sign-in for accounts whose
+    -- password was set BY SOMEONE ELSE — the seed admin created from
+    -- SEED_ADMIN_PASSWORD (emailed in plaintext) and admin-set passwords.
+    -- Cleared when the user sets their own password via reset/setup confirm.
+    -- Irrelevant to SSO/magic-link accounts (they have no password).
+    must_change_password BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS sync_state (
@@ -251,6 +257,17 @@ CREATE TABLE IF NOT EXISTS knowledge_votes (
     PRIMARY KEY (item_id, user_id)
 );
 
+-- v76: per-user thumbs up/down ratings on store / marketplace entities.
+-- Mirrors knowledge_votes (one vote per (entity, user); ON CONFLICT upsert
+-- flips the value; a missing row means "no vote"). Issue #398.
+CREATE TABLE IF NOT EXISTS store_entity_votes (
+    entity_id VARCHAR NOT NULL,
+    user_id VARCHAR NOT NULL,
+    vote INTEGER,
+    voted_at TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (entity_id, user_id)
+);
+
 -- v46: per-user opt-out for knowledge items. A row here means the user has
 -- dismissed an item from their personal AI bundle and (optionally) their
 -- listing — but mandatory items can never be dismissed; the governance
@@ -361,7 +378,34 @@ CREATE TABLE IF NOT EXISTS table_registry (
     platforms     VARCHAR,
     partition_col VARCHAR,
     history       VARCHAR,
-    gotchas       VARCHAR
+    gotchas       VARCHAR,
+    -- v74: distribution flag, decoupled from query_mode. When true the
+    -- table is kept server-side & queryable via `agnes query --remote`,
+    -- but `agnes pull` does NOT download its parquet (the manifest still
+    -- lists it for catalog discovery + RBAC). Only meaningful for
+    -- query_mode IN ('local', 'materialized'); ignored for 'remote'
+    -- (which has no server-stored parquet to suppress). Issue #607.
+    server_only   BOOLEAN DEFAULT false,
+    -- v79: nullable FK to source_connections.id. NULL = use the default
+    -- connection for the row's source_type (backwards-compatible).
+    connection_id VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS source_connections (
+    id          VARCHAR PRIMARY KEY,
+    name        VARCHAR NOT NULL UNIQUE,
+    source_type VARCHAR NOT NULL,
+    config      TEXT NOT NULL,
+    token_env   VARCHAR,
+    is_default  BOOLEAN DEFAULT FALSE,
+    created_by  VARCHAR,
+    created_at  TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS connection_secrets (
+    connection_id VARCHAR PRIMARY KEY,
+    ciphertext    TEXT NOT NULL,
+    updated_at    TIMESTAMP DEFAULT current_timestamp
 );
 
 CREATE TABLE IF NOT EXISTS table_profiles (
@@ -456,7 +500,11 @@ CREATE TABLE IF NOT EXISTS marketplace_registry (
     -- rows from pre-v37 instances survive migration; admin must fill via the
     -- /admin/marketplaces edit modal before the placeholder disappears.
     curator_name    VARCHAR,
-    curator_email   VARCHAR
+    curator_email   VARCHAR,
+    -- v78: built-in marketplace shipped with the wheel (not a git clone).
+    -- TRUE for the single system-seeded row; FALSE for all admin-registered rows.
+    -- The nightly git-sync path skips is_builtin=TRUE rows (nothing to fetch).
+    is_builtin      BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS marketplace_plugins (
@@ -490,6 +538,11 @@ CREATE TABLE IF NOT EXISTS marketplace_plugins (
     -- resolver itself is unchanged — system semantics are emergent from
     -- the materialized rows, not a new filter layer.
     is_system       BOOLEAN DEFAULT FALSE,
+    -- v78: per-plugin admin disable flag for built-in plugins. When TRUE,
+    -- the plugin is excluded from the served feed for all callers even
+    -- when they hold a resource_grant for it. Distinct from the per-user
+    -- user_plugin_optouts — this is an instance-wide admin decision.
+    admin_disabled  BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (marketplace_id, name)
 );
 
@@ -680,6 +733,34 @@ CREATE TABLE IF NOT EXISTS memory_domain_suggestions (
 CREATE INDEX IF NOT EXISTS idx_memory_domain_suggestions_status
     ON memory_domain_suggestions(status);
 
+-- v77: ``authoring_suggestions`` — generic non-admin suggestion queue for the
+-- authoring studio. A non-admin submits a proposed create payload (per studio
+-- domain); an admin approves (replays the payload through the real endpoint)
+-- or rejects. Generalizes ``memory_domain_suggestions`` across all domains.
+CREATE TABLE IF NOT EXISTS authoring_suggestions (
+    id                  VARCHAR PRIMARY KEY,
+    domain              VARCHAR NOT NULL,
+    payload             JSON,
+    status              VARCHAR DEFAULT 'pending',  -- 'pending' / 'approved' / 'rejected'
+    created_by          VARCHAR,
+    created_at          TIMESTAMP DEFAULT current_timestamp,
+    resolved_at         TIMESTAMP,
+    resolved_by         VARCHAR,
+    resolution_note     TEXT,
+    created_resource_id VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_authoring_suggestions_status
+    ON authoring_suggestions(status);
+
+-- v78: ``memory_mining_consent`` — per-user opt-IN to having their session
+-- transcripts mined into shared corporate memory (privacy gate, spec §4.4).
+CREATE TABLE IF NOT EXISTS memory_mining_consent (
+    user_email   VARCHAR PRIMARY KEY,
+    opted_in_at  TIMESTAMP,
+    opted_out_at TIMESTAMP,
+    updated_at   TIMESTAMP DEFAULT current_timestamp
+);
+
 -- v61: ``cli_auth_codes`` — short-lived, single-use exchange codes for the
 -- browser-loopback `agnes auth login` flow (gh-style). The browser, holding
 -- an authenticated session, confirms CLI authorization; the server mints a
@@ -755,7 +836,15 @@ CREATE TABLE IF NOT EXISTS instance_templates (
     content TEXT,
     previous_content TEXT,
     updated_at TIMESTAMP,
-    updated_by VARCHAR
+    updated_by VARCHAR,
+    -- v75 (#622): explicit Git⇄Editor source toggle for managed prompts,
+    -- superseding the implicit seed_owns() read-only lock. 'editor' = the DB
+    -- override (content) wins at render time; 'git' = bind to git_path in the
+    -- Initial Workspace Template clone. base_sha is reserved for Slice 2
+    -- divergence detection (written, not read in Slice 1).
+    source_mode VARCHAR NOT NULL DEFAULT 'editor',
+    git_path    VARCHAR,
+    base_sha    VARCHAR
 );
 
 -- v29: news_template — single table holding every saved version of the
@@ -1183,10 +1272,106 @@ CREATE TABLE IF NOT EXISTS user_workdirs (
     initial_workspace_sha  VARCHAR,
     agnes_version_at_init  VARCHAR
 );
+
+-- v83: OAuth 2.1 tables for the native MCP connector.
+-- oauth_clients        — dynamic client registrations (RFC 7591)
+-- oauth_auth_codes     — short-lived PKCE authorization codes
+-- oauth_access_tokens  — issued access tokens (verify via load_access_token)
+-- oauth_refresh_tokens — refresh tokens for token rotation
+CREATE TABLE IF NOT EXISTS oauth_clients (
+    client_id        VARCHAR PRIMARY KEY,
+    client_secret    VARCHAR,
+    redirect_uris    TEXT NOT NULL DEFAULT '[]',
+    client_name      VARCHAR,
+    client_metadata  TEXT NOT NULL DEFAULT '{}',
+    created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS oauth_auth_codes (
+    code                             VARCHAR PRIMARY KEY,
+    client_id                        VARCHAR NOT NULL,
+    scopes                           TEXT NOT NULL DEFAULT '[]',
+    code_challenge                   VARCHAR NOT NULL,
+    redirect_uri                     VARCHAR NOT NULL,
+    redirect_uri_provided_explicitly BOOLEAN NOT NULL DEFAULT FALSE,
+    expires_at                       DOUBLE NOT NULL,
+    subject                          VARCHAR,
+    resource                         VARCHAR,
+    state                            VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+    token      VARCHAR PRIMARY KEY,
+    client_id  VARCHAR NOT NULL,
+    scopes     TEXT NOT NULL DEFAULT '[]',
+    expires_at BIGINT,
+    subject    VARCHAR,
+    resource   VARCHAR,
+    revoked_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+    token      VARCHAR PRIMARY KEY,
+    client_id  VARCHAR NOT NULL,
+    scopes     TEXT NOT NULL DEFAULT '[]',
+    expires_at BIGINT,
+    subject    VARCHAR,
+    resource   VARCHAR,
+    revoked_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+
+-- v82: Collections (bring-your-files) foundation.
+-- file_corpora: a Collection -- self-service container of uploaded files.
+CREATE TABLE IF NOT EXISTS file_corpora (
+    id VARCHAR PRIMARY KEY,
+    slug VARCHAR UNIQUE NOT NULL,
+    name VARCHAR NOT NULL,
+    description VARCHAR,
+    created_by VARCHAR NOT NULL,
+    created_at TIMESTAMP DEFAULT current_timestamp,
+    updated_at TIMESTAMP DEFAULT current_timestamp,
+    deleted_at TIMESTAMP
+);
+
+-- corpus_files: one row per uploaded file + its processing lifecycle.
+-- processing_status: pending | processing | indexed | rejected
+CREATE TABLE IF NOT EXISTS corpus_files (
+    id VARCHAR PRIMARY KEY,
+    corpus_id VARCHAR NOT NULL,
+    filename VARCHAR NOT NULL,
+    sha256 VARCHAR NOT NULL,
+    file_type VARCHAR,
+    size_bytes BIGINT,
+    storage_path VARCHAR,
+    processing_status VARCHAR NOT NULL DEFAULT 'pending',
+    processing_detail VARCHAR,
+    created_at TIMESTAMP DEFAULT current_timestamp,
+    updated_at TIMESTAMP DEFAULT current_timestamp
+);
+
+-- corpus_chunks: prose-document chunks + embedding vector.
+-- embedding FLOAT[384]: fixed-size array for array_cosine_similarity.
+-- Repo deferred to Retrieval slice; table created here so a single
+-- migration covers all Collections schema.
+CREATE TABLE IF NOT EXISTS corpus_chunks (
+    id VARCHAR PRIMARY KEY,
+    corpus_id VARCHAR NOT NULL,
+    file_id VARCHAR NOT NULL,
+    ordinal INTEGER,
+    text VARCHAR,
+    embedding FLOAT[384],
+    section_path VARCHAR,
+    page INTEGER,
+    bbox VARCHAR,
+    metadata VARCHAR,
+    created_at TIMESTAMP DEFAULT current_timestamp
+);
 """
 
 
-import threading
+import threading  # noqa: E402
 
 _system_db_lock = threading.Lock()
 _system_db_conn: duckdb.DuckDBPyConnection | None = None
@@ -4892,6 +5077,316 @@ def _v72_to_v73(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 73")
 
 
+def _v73_to_v74(conn: duckdb.DuckDBPyConnection) -> None:
+    """v74: ``server_only`` distribution flag on ``table_registry``.
+
+    Decoupled from ``query_mode``: a ``server_only=true`` row is kept
+    server-side and stays queryable via ``agnes query --remote``, but
+    ``agnes pull`` does NOT download its parquet (the manifest still lists
+    it for catalog discovery + RBAC). Only meaningful for
+    ``query_mode IN ('local', 'materialized')``; ignored for ``'remote'``
+    rows (no server-stored parquet to suppress). Issue #607.
+
+    Idempotent ADD COLUMN IF NOT EXISTS — safe on fresh and upgrade paths.
+    Default ``false`` leaves every existing row unchanged.
+    """
+    conn.execute("ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS server_only BOOLEAN DEFAULT false")
+    conn.execute("UPDATE schema_version SET version = 74")
+
+
+def _v74_to_v75(conn: duckdb.DuckDBPyConnection) -> None:
+    """v75: source_mode/git_path/base_sha on instance_templates (#622 Slice 1).
+
+    Generalizes the per-key prompt store with an explicit Git⇄Editor source
+    toggle, superseding the implicit seed_owns() read-only lock. Existing
+    keys default to 'editor' (today's behavior: the DB override wins when set;
+    no override → bundled default). base_sha is reserved for Slice 2
+    divergence detection (written, never read in Slice 1).
+
+    Idempotent ADD COLUMN IF NOT EXISTS — safe on fresh and upgrade paths.
+    Note: DuckDB ``ADD COLUMN ... DEFAULT`` does NOT backfill existing rows,
+    so the explicit ``UPDATE ... WHERE source_mode IS NULL`` is required to
+    stamp pre-existing 'welcome'/'claude_md' rows as 'editor'.
+    """
+    conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS source_mode VARCHAR DEFAULT 'editor'")
+    conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS git_path VARCHAR")
+    conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS base_sha VARCHAR")
+    conn.execute("UPDATE instance_templates SET source_mode = 'editor' WHERE source_mode IS NULL")
+    conn.execute("UPDATE schema_version SET version = 75")
+
+
+def _v75_to_v76(conn: duckdb.DuckDBPyConnection) -> None:
+    """v76: ``store_entity_votes`` — per-user thumbs up/down on store entities.
+
+    Mirrors ``knowledge_votes``: one row per (entity, user), the vote value
+    flips on re-vote (ON CONFLICT upsert in the repo), and a clear deletes the
+    row. Additive-only; ``_SYSTEM_SCHEMA`` already creates the table on fresh
+    installs (no-op CREATE IF NOT EXISTS here). Issue #398.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS store_entity_votes (
+            entity_id VARCHAR NOT NULL,
+            user_id VARCHAR NOT NULL,
+            vote INTEGER,
+            voted_at TIMESTAMP DEFAULT current_timestamp,
+            PRIMARY KEY (entity_id, user_id)
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 76")
+
+
+def _v76_to_v77(conn: duckdb.DuckDBPyConnection) -> None:
+    """v77: ``users.must_change_password`` — force a password change on first
+    sign-in for accounts whose password was set by someone else (seed admin
+    from SEED_ADMIN_PASSWORD, admin-set passwords). Additive-only; cleared when
+    the user sets their own password. Idempotent ADD COLUMN IF NOT EXISTS, so
+    safe on fresh and upgrade paths; ``_SYSTEM_SCHEMA`` already creates the
+    column on fresh installs. Issue: emailed-credential rotation.
+    """
+    conn.execute(
+        # DuckDB ALTER can't add a NOT NULL column ("constraints not yet
+        # supported"); DEFAULT FALSE backfills existing rows. Fresh installs
+        # get NOT NULL from _SYSTEM_SCHEMA. New rows always set it via the repo.
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE"
+    )
+    conn.execute("UPDATE schema_version SET version = 77")
+
+
+def _v77_to_v78(conn: duckdb.DuckDBPyConnection) -> None:
+    """v78: built-in marketplace columns.
+
+    Adds ``marketplace_registry.is_builtin`` (BOOLEAN NOT NULL DEFAULT FALSE) so
+    the system-seeded built-in marketplace row is distinguishable from
+    admin-registered rows. The nightly git-sync path skips is_builtin=TRUE rows.
+
+    Adds ``marketplace_plugins.admin_disabled`` (BOOLEAN NOT NULL DEFAULT FALSE)
+    so an admin can disable an individual built-in plugin instance-wide without
+    revoking its RBAC grant. Disabled plugins are filtered from the served feed
+    for all callers.
+
+    Both columns default to FALSE so pre-existing rows are unaffected. Additive
+    ADD COLUMN IF NOT EXISTS — idempotent on fresh and upgrade paths.
+    """
+    # DuckDB ALTER TABLE ADD COLUMN does NOT support inline constraints
+    # (NOT NULL) — "Adding columns with constraints not yet supported". The
+    # fresh-create path in CREATE TABLE keeps NOT NULL; the upgrade path adds a
+    # nullable column with DEFAULT FALSE (every writer supplies a value, so the
+    # nullable-vs-not-null divergence on upgraded DuckDB DBs is cosmetic). This
+    # matches the established additive ADD COLUMN pattern elsewhere in this file.
+    conn.execute("ALTER TABLE marketplace_registry ADD COLUMN IF NOT EXISTS is_builtin BOOLEAN DEFAULT FALSE")
+    conn.execute("ALTER TABLE marketplace_plugins ADD COLUMN IF NOT EXISTS admin_disabled BOOLEAN DEFAULT FALSE")
+    conn.execute("UPDATE schema_version SET version = 78")
+
+
+def _v78_to_v79(conn: duckdb.DuckDBPyConnection) -> None:
+    """Named source connections (spec 2026-06-12): generic connection
+    registry + vault-backed secrets + table_registry.connection_id."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS source_connections (
+            id          VARCHAR PRIMARY KEY,
+            name        VARCHAR NOT NULL UNIQUE,
+            source_type VARCHAR NOT NULL,
+            config      TEXT NOT NULL,
+            token_env   VARCHAR,
+            is_default  BOOLEAN DEFAULT FALSE,
+            created_by  VARCHAR,
+            created_at  TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS connection_secrets (
+            connection_id VARCHAR PRIMARY KEY,
+            ciphertext    TEXT NOT NULL,
+            updated_at    TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS connection_id VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 79")
+
+
+def _v79_to_v80(conn: duckdb.DuckDBPyConnection) -> None:
+    """v80: ``authoring_suggestions`` — generic non-admin suggestion queue for
+    the authoring studio (data-package / mcp / marketplace / corporate-memory).
+
+    A non-admin submits a proposed create payload (``status='pending'``); an
+    admin approves (re-validates + creates the resource, stamps
+    ``created_resource_id``) or rejects. Additive-only; ``_SYSTEM_SCHEMA`` creates
+    it on fresh installs (no-op CREATE IF NOT EXISTS here).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS authoring_suggestions (
+            id                  VARCHAR PRIMARY KEY,
+            domain              VARCHAR NOT NULL,
+            payload             JSON,
+            status              VARCHAR DEFAULT 'pending',
+            created_by          VARCHAR,
+            created_at          TIMESTAMP DEFAULT current_timestamp,
+            resolved_at         TIMESTAMP,
+            resolved_by         VARCHAR,
+            resolution_note     TEXT,
+            created_resource_id VARCHAR
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_authoring_suggestions_status ON authoring_suggestions(status)")
+    conn.execute("UPDATE schema_version SET version = 80")
+
+
+def _v80_to_v81(conn: duckdb.DuckDBPyConnection) -> None:
+    """v81: ``memory_mining_consent`` — per-user opt-IN to having their session
+    transcripts mined into shared corporate memory (design spec §4.4). The miner
+    only mines transcripts whose author positively opted in. Additive-only;
+    ``_SYSTEM_SCHEMA`` creates it on fresh installs (no-op CREATE here).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_mining_consent (
+            user_email   VARCHAR PRIMARY KEY,
+            opted_in_at  TIMESTAMP,
+            opted_out_at TIMESTAMP,
+            updated_at   TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 81")
+
+
+def _v81_to_v82(conn: duckdb.DuckDBPyConnection) -> None:
+    """v82: Collections (bring-your-files) foundation.
+
+    Creates ``file_corpora`` (collection container), ``corpus_files`` (per-file
+    row + processing lifecycle) and ``corpus_chunks`` (prose chunks + 384-dim
+    embedding). Additive; ``_SYSTEM_SCHEMA`` already creates them on fresh
+    installs via IF NOT EXISTS (no-op here). ``corpus_chunks.embedding`` is a
+    DuckDB ``FLOAT[384]`` array, queried with ``array_cosine_similarity``.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS file_corpora (
+            id VARCHAR PRIMARY KEY,
+            slug VARCHAR UNIQUE NOT NULL,
+            name VARCHAR NOT NULL,
+            description VARCHAR,
+            created_by VARCHAR NOT NULL,
+            created_at TIMESTAMP DEFAULT current_timestamp,
+            updated_at TIMESTAMP DEFAULT current_timestamp,
+            deleted_at TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS corpus_files (
+            id VARCHAR PRIMARY KEY,
+            corpus_id VARCHAR NOT NULL,
+            filename VARCHAR NOT NULL,
+            sha256 VARCHAR NOT NULL,
+            file_type VARCHAR,
+            size_bytes BIGINT,
+            storage_path VARCHAR,
+            processing_status VARCHAR NOT NULL DEFAULT 'pending',
+            processing_detail VARCHAR,
+            created_at TIMESTAMP DEFAULT current_timestamp,
+            updated_at TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS corpus_chunks (
+            id VARCHAR PRIMARY KEY,
+            corpus_id VARCHAR NOT NULL,
+            file_id VARCHAR NOT NULL,
+            ordinal INTEGER,
+            text VARCHAR,
+            embedding FLOAT[384],
+            section_path VARCHAR,
+            page INTEGER,
+            bbox VARCHAR,
+            metadata VARCHAR,
+            created_at TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 82")
+
+
+def _v82_to_v83(conn: duckdb.DuckDBPyConnection) -> None:
+    """v83: OAuth 2.1 tables for the native MCP connector (RFC 7591 / RFC 7636).
+
+    Four tables: oauth_clients, oauth_auth_codes, oauth_access_tokens,
+    oauth_refresh_tokens. IF NOT EXISTS guards make this a no-op on fresh
+    installs where _SYSTEM_SCHEMA already creates the tables.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_clients (
+            client_id        VARCHAR PRIMARY KEY,
+            client_secret    VARCHAR,
+            redirect_uris    TEXT NOT NULL DEFAULT '[]',
+            client_name      VARCHAR,
+            client_metadata  TEXT NOT NULL DEFAULT '{}',
+            created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_auth_codes (
+            code                             VARCHAR PRIMARY KEY,
+            client_id                        VARCHAR NOT NULL,
+            scopes                           TEXT NOT NULL DEFAULT '[]',
+            code_challenge                   VARCHAR NOT NULL,
+            redirect_uri                     VARCHAR NOT NULL,
+            redirect_uri_provided_explicitly BOOLEAN NOT NULL DEFAULT FALSE,
+            expires_at                       DOUBLE NOT NULL,
+            subject                          VARCHAR,
+            resource                         VARCHAR,
+            state                            VARCHAR
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+            token      VARCHAR PRIMARY KEY,
+            client_id  VARCHAR NOT NULL,
+            scopes     TEXT NOT NULL DEFAULT '[]',
+            expires_at BIGINT,
+            subject    VARCHAR,
+            resource   VARCHAR,
+            revoked_at TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+            token      VARCHAR PRIMARY KEY,
+            client_id  VARCHAR NOT NULL,
+            scopes     TEXT NOT NULL DEFAULT '[]',
+            expires_at BIGINT,
+            subject    VARCHAR,
+            resource   VARCHAR,
+            revoked_at TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 83")
+
+
+def _v83_to_v84(conn: duckdb.DuckDBPyConnection) -> None:
+    """v84: add resource column to oauth_refresh_tokens.
+
+    Refreshed access tokens must preserve the original token's `resource`
+    binding (RFC 8707). The auth-code exchange already persists `resource`
+    on the access token; the refresh path needs the same value carried on
+    the refresh-token row so token rotation doesn't drop it. IF NOT EXISTS
+    keeps this a no-op on fresh installs.
+    """
+    conn.execute(
+        "ALTER TABLE oauth_refresh_tokens ADD COLUMN IF NOT EXISTS resource VARCHAR"
+    )
+    conn.execute("UPDATE schema_version SET version = 84")
+
+
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
     """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
     domain" affordance + admin moderation queue.
@@ -5193,6 +5688,43 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             _v71_to_v72(conn)
             # v72→v73: sandbox pause/resume refs on chat_sessions (un-indexed).
             _v72_to_v73(conn)
+            # v73→v74: server_only distribution flag on table_registry.
+            # _SYSTEM_SCHEMA already declares the column on fresh installs
+            # (no-op ALTER here). Issue #607.
+            _v73_to_v74(conn)
+            # v74→v75: source_mode/git_path/base_sha on instance_templates.
+            # _SYSTEM_SCHEMA already declares the columns on fresh installs
+            # (no-op ALTER here). Issue #622 Slice 1.
+            _v74_to_v75(conn)
+            # v75→v76: store_entity_votes (per-user thumbs up/down on store
+            # entities). _SYSTEM_SCHEMA already creates the table on fresh
+            # installs (no-op CREATE here). Issue #398.
+            _v75_to_v76(conn)
+            # v76→v77: users.must_change_password — forced rotation flag for
+            # seeded/admin-set passwords. _SYSTEM_SCHEMA already creates the
+            # column on fresh installs (no-op ALTER here).
+            _v76_to_v77(conn)
+            # v77→v78: built-in marketplace columns. is_builtin on
+            # marketplace_registry; admin_disabled on marketplace_plugins.
+            _v77_to_v78(conn)
+            # v78→v79: named source_connections + vault-backed connection_secrets
+            # + table_registry.connection_id (spec 2026-06-12).
+            _v78_to_v79(conn)
+            # v79→v80: authoring_suggestions (authoring-studio suggestion queue).
+            _v79_to_v80(conn)
+            # v80→v81: memory_mining_consent (per-user opt-in to session mining).
+            _v80_to_v81(conn)
+            # v81→v82: Collections foundation — file_corpora, corpus_files,
+            # corpus_chunks. _SYSTEM_SCHEMA already creates them on fresh
+            # installs (no-op CREATE IF NOT EXISTS here).
+            _v81_to_v82(conn)
+            # v82→v83: OAuth 2.1 tables for the native MCP connector
+            # (oauth_clients, oauth_auth_codes, oauth_access_tokens,
+            # oauth_refresh_tokens). IF NOT EXISTS — no-op on fresh installs.
+            _v82_to_v83(conn)
+            # v83→v84: resource column on oauth_refresh_tokens so refreshed
+            # access tokens keep their RFC 8707 resource binding.
+            _v83_to_v84(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5392,6 +5924,28 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v71_to_v72(conn)
             if current < 73:
                 _v72_to_v73(conn)
+            if current < 74:
+                _v73_to_v74(conn)
+            if current < 75:
+                _v74_to_v75(conn)
+            if current < 76:
+                _v75_to_v76(conn)
+            if current < 77:
+                _v76_to_v77(conn)
+            if current < 78:
+                _v77_to_v78(conn)
+            if current < 79:
+                _v78_to_v79(conn)
+            if current < 80:
+                _v79_to_v80(conn)
+            if current < 81:
+                _v80_to_v81(conn)
+            if current < 82:
+                _v81_to_v82(conn)
+            if current < 83:
+                _v82_to_v83(conn)
+            if current < 84:
+                _v83_to_v84(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

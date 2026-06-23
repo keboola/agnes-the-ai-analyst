@@ -91,6 +91,47 @@ class TestListUserSessions:
         assert row["processed"] is False
         assert row["tool_calls"] == 0
 
+    def test_upload_api_dir_file_appears_as_unprocessed(self, seeded_app, admin_user, session_data_dir):
+        """Sessions uploaded via /api/upload/sessions land under
+        SESSION_DATA_DIR/<user_id>/ (a UUID-style id), NOT the email
+        local-part dir the collector uses. The list must scan BOTH —
+        previously these uploads were invisible until the usage
+        processor indexed them."""
+        uid = _get_admin_user_id(seeded_app, admin_user)
+        _seed_jsonl(session_data_dir, uid, "uploaded-via-api.jsonl")
+
+        r = seeded_app["client"].get(
+            f"/api/admin/users/{uid}/sessions", headers=admin_user
+        )
+        assert r.status_code == 200
+        rows = r.json()["rows"]
+        assert [row["session_file"] for row in rows] == ["uploaded-via-api.jsonl"]
+        assert rows[0]["processed"] is False
+
+    def test_same_filename_in_both_dirs_listed_once(self, seeded_app, admin_user, session_data_dir):
+        """A file present under both ingestion layouts is the same session —
+        the list must not show it twice."""
+        uid = _get_admin_user_id(seeded_app, admin_user)
+        username = _get_admin_email(seeded_app, admin_user).split("@")[0]
+        _seed_jsonl(session_data_dir, username, "dup.jsonl")
+        _seed_jsonl(session_data_dir, uid, "dup.jsonl")
+
+        r = seeded_app["client"].get(
+            f"/api/admin/users/{uid}/sessions", headers=admin_user
+        )
+        assert r.status_code == 200
+        rows = r.json()["rows"]
+        assert [row["session_file"] for row in rows] == ["dup.jsonl"]
+
+    def test_empty_username_does_not_scan_data_root(self, seeded_app, admin_user, session_data_dir):
+        """A user whose email is empty yields an empty username — the dir
+        helper must not degrade to scanning the whole SESSION_DATA_DIR
+        root (base / "" == base)."""
+        from app.api.admin_user_sessions import _user_session_dirs
+
+        dirs = _user_session_dirs("some-uuid", "")
+        assert dirs == [session_data_dir / "some-uuid"]
+
     def test_processed_true_for_indexed_session(self, seeded_app, admin_user, session_data_dir):
         """When usage_session_summary has a row for the file, processed=True."""
         uid = _get_admin_user_id(seeded_app, admin_user)
@@ -119,6 +160,46 @@ class TestListUserSessions:
         assert len(match) == 1
         assert match[0]["processed"] is True
         assert match[0]["tool_calls"] == 5
+
+    def test_processed_row_with_dir_prefixed_session_file_not_duplicated(
+        self, seeded_app, admin_user, session_data_dir,
+    ):
+        """#640 review: the session pipeline writes ``session_file`` as
+        "<dir>/<filename>" (runner's session_key). The merge must match it
+        against the on-disk basename — otherwise the same session lists
+        twice (processed under the prefixed key + "unprocessed" from the
+        filesystem scan)."""
+        uid = _get_admin_user_id(seeded_app, admin_user)
+        username = _get_admin_email(seeded_app, admin_user).split("@")[0]
+        _seed_jsonl(session_data_dir, username, "prefixed.jsonl")
+
+        conn = get_system_db()
+        conn.execute(
+            """
+            INSERT INTO usage_session_summary
+              (session_file, session_id, username, started_at, tool_calls,
+               tool_errors, processor_version)
+            VALUES (?, ?, ?, current_timestamp, 7, 0, 1)
+            """,
+            [f"{username}/prefixed.jsonl", "sess-prefixed", username],
+        )
+        conn.close()
+
+        r = seeded_app["client"].get(
+            f"/api/admin/users/{uid}/sessions", headers=admin_user
+        )
+        assert r.status_code == 200
+        rows = r.json()["rows"]
+        match = [
+            row for row in rows
+            if row["session_file"].endswith("prefixed.jsonl")
+        ]
+        assert len(match) == 1, (
+            f"prefixed session_file must dedup against the on-disk file, "
+            f"got {match}"
+        )
+        assert match[0]["processed"] is True
+        assert match[0]["tool_calls"] == 7
 
     def test_pagination_limit_enforced_at_200(self, seeded_app, admin_user):
         """FastAPI should return 422 for limit > 200."""
@@ -204,6 +285,21 @@ class TestDownloadSession:
         params = json.loads(row[0])
         assert params["session_file"] == "audit-check.jsonl"
         assert "bytes" in params
+
+    def test_streams_file_from_upload_api_dir(self, seeded_app, admin_user, session_data_dir):
+        """Single-file download must also resolve files under the
+        upload-API layout (SESSION_DATA_DIR/<user_id>/) — previously a
+        permanent 404 for every API-uploaded session."""
+        uid = _get_admin_user_id(seeded_app, admin_user)
+        content = '{"role":"user","content":"uploaded"}\n'
+        _seed_jsonl(session_data_dir, uid, "api-up.jsonl", content)
+
+        r = seeded_app["client"].get(
+            f"/api/admin/users/{uid}/sessions/api-up.jsonl/download",
+            headers=admin_user,
+        )
+        assert r.status_code == 200
+        assert r.content.decode() == content
 
     def test_rejects_path_traversal_dotdot(self, seeded_app, admin_user, session_data_dir):
         uid = _get_admin_user_id(seeded_app, admin_user)
@@ -490,3 +586,53 @@ class TestListUserActivity:
         conn.close()
 
         assert after == before + 1
+
+
+class TestMeSessionsBothLayouts:
+    """#640 review follow-up: /api/me/stats/sessions shares the dual-layout
+    scan with the admin endpoints — an API-uploaded session (user_id dir)
+    must show in the SELF-service list too, not only in the admin one."""
+
+    def test_me_sessions_sees_upload_api_dir(
+        self, seeded_app, admin_user, session_data_dir,
+    ):
+        uid = _get_admin_user_id(seeded_app, admin_user)
+        _seed_jsonl(session_data_dir, uid, "self-uploaded.jsonl")
+
+        r = seeded_app["client"].get("/api/me/stats/sessions", headers=admin_user)
+        assert r.status_code == 200, r.text
+        files = [row["session_file"] for row in r.json()["rows"]]
+        assert "self-uploaded.jsonl" in files
+
+    def test_me_sessions_dedups_across_layouts(
+        self, seeded_app, admin_user, session_data_dir,
+    ):
+        uid = _get_admin_user_id(seeded_app, admin_user)
+        username = _get_admin_email(seeded_app, admin_user).split("@")[0]
+        _seed_jsonl(session_data_dir, username, "me-dup.jsonl")
+        _seed_jsonl(session_data_dir, uid, "me-dup.jsonl")
+
+        r = seeded_app["client"].get("/api/me/stats/sessions", headers=admin_user)
+        assert r.status_code == 200, r.text
+        matches = [
+            row for row in r.json()["rows"]
+            if row["session_file"] == "me-dup.jsonl"
+        ]
+        assert len(matches) == 1
+
+    def test_me_sessions_sees_legacy_collector_dir(
+        self, seeded_app, admin_user, session_data_dir,
+    ):
+        """#640 review round-2: a file ONLY under the legacy email-local-part
+        dir must appear — the first fix passed both args as user_id, so the
+        legacy dir was silently never scanned (and the dedup test above was
+        green for the wrong reason)."""
+        username = _get_admin_email(seeded_app, admin_user).split("@")[0]
+        _seed_jsonl(session_data_dir, username, "legacy-only.jsonl")
+
+        r = seeded_app["client"].get("/api/me/stats/sessions", headers=admin_user)
+        assert r.status_code == 200, r.text
+        files = [row["session_file"] for row in r.json()["rows"]]
+        assert "legacy-only.jsonl" in files, (
+            f"legacy collector dir must be scanned by /me sessions; got {files}"
+        )

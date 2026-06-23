@@ -1,11 +1,13 @@
 """SQLAlchemy models for the marketplace + store + flea cluster:
 marketplace_registry, marketplace_plugins, store_entities,
-user_store_installs, user_plugin_optouts, store_submissions.
+user_store_installs, user_plugin_optouts, store_submissions,
+store_entity_votes.
 
 Also includes user_curated_subscriptions (from src/repositories/user_curated_subscriptions.py).
 
 Mirrors src/db.py:379-431, 541-597, 634-666.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -49,6 +51,9 @@ class MarketplaceRegistry(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     curator_name: Mapped[str | None] = mapped_column(String, nullable=True)
     curator_email: Mapped[str | None] = mapped_column(String, nullable=True)
+    # System-seeded built-in marketplace (bundled in the wheel). The nightly
+    # git-sync path skips is_builtin=TRUE rows (nothing to fetch).
+    is_builtin: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), nullable=False)
 
 
 class MarketplacePlugin(Base):
@@ -77,13 +82,12 @@ class MarketplacePlugin(Base):
     cover_photo_url: Mapped[str | None] = mapped_column(String, nullable=True)
     video_url: Mapped[str | None] = mapped_column(String, nullable=True)
     doc_links: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    is_system: Mapped[bool] = mapped_column(
-        Boolean, server_default=text("FALSE"), nullable=False
-    )
+    is_system: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), nullable=False)
+    # Admin per-plugin disable for built-in plugins — instance-wide, distinct
+    # from per-user opt-outs. Disabled plugins are filtered from the served feed.
+    admin_disabled: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), nullable=False)
 
-    __table_args__ = (
-        PrimaryKeyConstraint("marketplace_id", "name"),
-    )
+    __table_args__ = (PrimaryKeyConstraint("marketplace_id", "name"),)
 
 
 class StoreEntity(Base):
@@ -101,20 +105,12 @@ class StoreEntity(Base):
     video_url: Mapped[str | None] = mapped_column(String, nullable=True)
     doc_paths: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    install_count: Mapped[int] = mapped_column(
-        BigInteger, server_default=text("0"), nullable=False
-    )
-    visibility_status: Mapped[str] = mapped_column(
-        String, server_default=text("'pending'"), nullable=False
-    )
+    install_count: Mapped[int] = mapped_column(BigInteger, server_default=text("0"), nullable=False)
+    visibility_status: Mapped[str] = mapped_column(String, server_default=text("'pending'"), nullable=False)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     archived_by: Mapped[str | None] = mapped_column(String, nullable=True)
-    version_no: Mapped[int] = mapped_column(
-        Integer, server_default=text("1"), nullable=False
-    )
-    version_history: Mapped[list | None] = mapped_column(
-        JSONB, server_default=text("'[]'::jsonb")
-    )
+    version_no: Mapped[int] = mapped_column(Integer, server_default=text("1"), nullable=False)
+    version_history: Mapped[list | None] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -156,9 +152,7 @@ class UserStoreInstall(Base):
         server_default=text("CURRENT_TIMESTAMP"),
     )
 
-    __table_args__ = (
-        PrimaryKeyConstraint("user_id", "entity_id"),
-    )
+    __table_args__ = (PrimaryKeyConstraint("user_id", "entity_id"),)
 
 
 class UserPluginOptout(Base):
@@ -173,9 +167,7 @@ class UserPluginOptout(Base):
         server_default=text("CURRENT_TIMESTAMP"),
     )
 
-    __table_args__ = (
-        PrimaryKeyConstraint("user_id", "marketplace_id", "plugin_name"),
-    )
+    __table_args__ = (PrimaryKeyConstraint("user_id", "marketplace_id", "plugin_name"),)
 
 
 class StoreSubmission(Base):
@@ -237,3 +229,25 @@ class UserStackSubscription(Base):
         PrimaryKeyConstraint("user_id", "resource_type", "resource_id"),
         Index("idx_user_stack_subscriptions_user", "user_id"),
     )
+
+
+class StoreEntityVote(Base):
+    """Per-user thumbs up/down rating on a store / marketplace entity (#398).
+
+    Mirrors ``KnowledgeVote``: one row per (entity, user). The repo upserts on
+    the PK so a re-vote flips ``vote``; a clear deletes the row. Mirrors DuckDB
+    ``src/db.py`` ``store_entity_votes`` (v76).
+    """
+
+    __tablename__ = "store_entity_votes"
+
+    entity_id: Mapped[str] = mapped_column(String, nullable=False)
+    user_id: Mapped[str] = mapped_column(String, nullable=False)
+    vote: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    voted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+    __table_args__ = (PrimaryKeyConstraint("entity_id", "user_id"),)

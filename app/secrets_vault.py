@@ -30,6 +30,7 @@ tables:
 This module hosts only the cipher helpers + the shared-scope repository
 helpers; the per-user table arrives with its own migration in Phase 4b.
 """
+
 from __future__ import annotations
 
 import logging
@@ -96,7 +97,8 @@ def _get_fernet() -> Fernet:
             "%s is not set — using an ephemeral vault key. Secrets stored "
             "now WILL be unrecoverable after restart. Set %s to a stable "
             "URL-safe-base64 32-byte key for production deployments.",
-            _ENV_KEY_NAME, _ENV_KEY_NAME,
+            _ENV_KEY_NAME,
+            _ENV_KEY_NAME,
         )
     return Fernet(_ephemeral_key)
 
@@ -112,8 +114,7 @@ def encrypt_secret(value: str) -> bytes:
     key_unset = not os.environ.get(_ENV_KEY_NAME, "").strip()
     if key_unset and not _is_local_dev_mode():
         raise VaultKeyNotConfiguredError(
-            f"{_ENV_KEY_NAME} must be set before storing secrets — otherwise "
-            "they are unrecoverable after restart."
+            f"{_ENV_KEY_NAME} must be set before storing secrets — otherwise they are unrecoverable after restart."
         )
     return _get_fernet().encrypt(value.encode("utf-8"))
 
@@ -180,8 +181,7 @@ class SharedSecretsRepository:
             return decrypt_secret(bytes(token))
         except InvalidToken:
             logger.warning(
-                "mcp_secrets row for %s failed to decrypt — vault key rotated? "
-                "Falling back to env-var lookup.",
+                "mcp_secrets row for %s failed to decrypt — vault key rotated? Falling back to env-var lookup.",
                 source_id,
             )
             return None
@@ -238,8 +238,7 @@ class SystemSecretsRepository:
             return decrypt_secret(bytes(token))
         except (InvalidToken, RuntimeError):
             logger.warning(
-                "system_secrets row for %s failed to decrypt — vault key "
-                "rotated or malformed? Treating as unset.",
+                "system_secrets row for %s failed to decrypt — vault key rotated or malformed? Treating as unset.",
                 name,
             )
             return None
@@ -301,7 +300,8 @@ class PerUserSecretsRepository:
             logger.warning(
                 "mcp_user_secrets row (%s, %s) failed to decrypt — vault key rotated? "
                 "Falling back to shared vault / env-var.",
-                source_id, user_id,
+                source_id,
+                user_id,
             )
             return None
 
@@ -329,3 +329,55 @@ class PerUserSecretsRepository:
             [source_id],
         ).fetchall()
         return [r[0] for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Repository — source connection secrets (connection_secrets table)
+# ---------------------------------------------------------------------------
+
+
+class ConnectionSecretsRepository:
+    """Vault scope for source_connections tokens (spec 2026-06-12 §3.1).
+
+    Same write-only contract as ``SharedSecretsRepository``: API layers
+    must only expose ``has()``; ``get()`` is for connector-side resolution.
+    """
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection):
+        self.conn = conn
+
+    def upsert(self, connection_id: str, value: str) -> None:
+        ct = encrypt_secret(value).decode()
+        self.conn.execute(
+            """INSERT INTO connection_secrets (connection_id, ciphertext, updated_at)
+               VALUES (?, ?, current_timestamp)
+               ON CONFLICT (connection_id) DO UPDATE SET
+                   ciphertext = excluded.ciphertext,
+                   updated_at = excluded.updated_at""",
+            [connection_id, ct],
+        )
+
+    def get(self, connection_id: str) -> Optional[str]:
+        row = self.conn.execute(
+            "SELECT ciphertext FROM connection_secrets WHERE connection_id = ?",
+            [connection_id],
+        ).fetchone()
+        if not row:
+            return None
+        token = row[0]
+        # Defensive bytes/str handling, matching the PG sibling and the other
+        # vault repos (SharedSecretsRepository / PerUserSecretsRepository): the
+        # ciphertext column is TEXT so DuckDB returns str, but guard anyway.
+        token = token.encode() if isinstance(token, str) else bytes(token)
+        try:
+            return decrypt_secret(token)
+        except InvalidToken:
+            logger.warning("connection secret for %s unreadable (key rotated?)", connection_id)
+            return None
+
+    def delete(self, connection_id: str) -> None:
+        self.conn.execute("DELETE FROM connection_secrets WHERE connection_id = ?", [connection_id])
+
+    def has(self, connection_id: str) -> bool:
+        row = self.conn.execute("SELECT 1 FROM connection_secrets WHERE connection_id = ?", [connection_id]).fetchone()
+        return row is not None
