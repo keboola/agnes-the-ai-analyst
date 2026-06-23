@@ -2722,6 +2722,25 @@ async def admin_server_config_page(
     return templates.TemplateResponse(request, "admin_server_config.html", ctx)
 
 
+@router.get("/admin/datasource-credentials", response_class=HTMLResponse)
+async def admin_datasource_credentials_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Vault-backed credential cards for each data-source connector.
+
+    Passes ``vault_key_configured`` so the template can render a blocking
+    banner when ``AGNES_VAULT_KEY`` is absent. Secret values are never read
+    here — the JS loads presence/source status from
+    ``GET /api/admin/datasource-secrets`` and writes via PUT/DELETE.
+    """
+    from app.secrets_vault import vault_key_configured
+
+    ctx = _build_context(request, user=user)
+    ctx["vault_key_configured"] = vault_key_configured()
+    return templates.TemplateResponse(request, "admin_datasource_credentials.html", ctx)
+
+
 @router.get("/admin/database", response_class=HTMLResponse)
 async def admin_database_page(
     request: Request,
@@ -3398,9 +3417,7 @@ async def me_profile_refetch_groups(
     # column-absent branch did (current_external_ids is empty in that case
     # anyway, so the diff is identical across backends).
     has_ext = any(r.get("external_id") for r in current_rows)
-    current_external_ids = {
-        r["external_id"].lower() for r in current_rows if r.get("external_id")
-    }
+    current_external_ids = {r["external_id"].lower() for r in current_rows if r.get("external_id")}
     current_names = [r["name"] for r in current_rows]
 
     fetched_set = set(relevant)
@@ -3464,8 +3481,6 @@ async def profile_session_download(
         media_type="application/x-ndjson",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-
-
 
 
 @router.get("/_debug/throw/http/{code:int}", response_class=HTMLResponse, include_in_schema=False)

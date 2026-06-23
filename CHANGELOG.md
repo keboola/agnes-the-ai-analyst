@@ -11,6 +11,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `/admin/datasource-credentials` page — vault-backed credential cards for Google Workspace OAuth (`AGNES_GWS_CLIENT_ID` / `AGNES_GWS_CLIENT_SECRET`) with a collapsible step-by-step GCP setup guide, format validation, and clear/save/test actions. Keboola and BigQuery placeholders link back to instance settings (#718).
+- `GET/PUT/DELETE /api/admin/datasource-secrets` and `POST /api/admin/validate-gws-credentials` — admin-gated, write-only vault endpoints for datasource credentials (env > vault > unset resolution).
+- `app/datasource_secrets.py` — env > vault > None resolver for the GWS credential allow-list; wired into `get_gws_oauth_credentials()` so vault-stored credentials are picked up without `.env` editing.
 
 ### Changed
 
