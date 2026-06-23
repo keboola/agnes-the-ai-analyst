@@ -982,9 +982,11 @@
     {% set page_hero_subtitle = "Review pending knowledge items from analyst sessions — approve, mandate, or reject — and resolve contradictions and duplicate candidates. Approved items flow to the user-facing <a href=\"/corporate-memory\" style=\"color:inherit;text-decoration:underline;\">Curated Memory</a> page." %}
     {% include "_page_hero.html" %}
 <div class="container-memory">
-        <!-- One-time JSON→DB migration banner. Shown until the admin runs it
-             or explicitly dismisses it. localStorage key prevents re-appearance.
+        <!-- One-time JSON→DB migration banner. Only rendered when knowledge.json
+             exists on disk (server-side gate). localStorage key prevents
+             re-appearance after a successful import.
              Remove this block after ~2026-08 once all instances are migrated. -->
+        {% if knowledge_json_exists %}
         <div id="knowledgeMigrationBanner"
              style="display:none; background:#fffbeb; border:1px solid #f59e0b;
                     border-radius:var(--radius-lg); padding:var(--space-4);
@@ -1017,6 +1019,7 @@
                            padding:0 4px;"
                     title="Dismiss">×</button>
         </div>
+        {% endif %}
 
         <!-- Stats Bar -->
         <div class="stats-bar">
@@ -3940,8 +3943,9 @@
     const MIGRATION_DISMISSED_KEY = 'agnes_knowledge_migration_done';
 
     (function initMigrationBanner() {
-        if (!localStorage.getItem(MIGRATION_DISMISSED_KEY)) {
-            document.getElementById('knowledgeMigrationBanner').style.display = 'flex';
+        const banner = document.getElementById('knowledgeMigrationBanner');
+        if (banner && !localStorage.getItem(MIGRATION_DISMISSED_KEY)) {
+            banner.style.display = 'flex';
         }
     })();
 
