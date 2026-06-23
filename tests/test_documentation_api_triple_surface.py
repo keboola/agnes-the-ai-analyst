@@ -174,6 +174,20 @@ _EXEMPT: dict[str, str] = {
     "/api/admin/adoption/users/{user_id}/top-tools": _ADOPTION_REASON,
     "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/disable": _BUILTIN_DISABLE_REASON,
     "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/enable": _BUILTIN_DISABLE_REASON,
+    "/api/admin/datasource-secrets": (
+        "Admin-only vault-backed credential store for datasource OAuth keys "
+        "(GWS client_id/secret). Write-only, no analyst CLI/MCP analogue — "
+        "instance admins set these once via the /admin/datasource-credentials UI."
+    ),
+    "/api/admin/datasource-secrets/{name}": (
+        "Admin-only vault-backed credential store for datasource OAuth keys "
+        "(GWS client_id/secret). Write-only, no analyst CLI/MCP analogue — "
+        "instance admins set these once via the /admin/datasource-credentials UI."
+    ),
+    "/api/admin/validate-gws-credentials": (
+        "Admin-only GWS OAuth credential format validator — web UI only at "
+        "/admin/datasource-credentials. No analyst CLI/MCP analogue."
+    ),
 }
 
 
