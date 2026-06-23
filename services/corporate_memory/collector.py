@@ -569,7 +569,8 @@ def collect_all(dry_run: bool = False) -> dict:
                         category=item.get("category"),
                         tags=json.dumps(item.get("tags") or []),
                         source_user=(item.get("source_users") or [""])[0],
-                        status=item.get("status", "pending"),
+                        # status intentionally omitted — preserve any admin
+                        # approval/rejection set through the UI or API
                     )
                     updated_count += 1
                 else:
