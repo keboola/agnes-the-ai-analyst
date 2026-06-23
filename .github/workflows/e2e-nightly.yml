@@ -32,7 +32,7 @@ jobs:
           - smoke_catalog.sh
           - smoke_admin_activity.sh
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Filter by manual input (skip if mismatch)
         if: github.event_name == 'workflow_dispatch' && inputs.script != '' && inputs.script != matrix.script
