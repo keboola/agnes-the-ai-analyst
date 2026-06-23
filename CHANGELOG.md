@@ -20,6 +20,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.71.60] - 2026-06-23
+
+### Fixed
+- Corporate memory pipeline now persists extracted knowledge items to the DuckDB `knowledge_items` table via `knowledge_repo()`; previously `collect_all()` only wrote `knowledge.json` and `/api/memory` always returned empty (#205).
+- `run_corporate_memory` now returns `ok: false` when DB-level sync errors occur; stats response includes `items_db_inserted`, `items_db_updated`, `items_db_errors`.
+
+### Internal
+- `test-pg` CI job now runs as a 2-shard matrix, halving wall-clock time for the Postgres contract suite.
+
 ## [0.71.59] - 2026-06-22
 
 ### Added
