@@ -1,4 +1,12 @@
-"""Tests for agnes push command (SessionEnd uploader)."""
+"""Tests for `agnes push` — the scan-based SessionEnd uploader.
+
+push reads the workspace root from config (`workspace_root`), scans that
+workspace's Claude Code session folder for ``*.jsonl`` transcripts, and
+uploads new/grown ones (dedup by session_id + byte size against the upload
+ledger). These tests patch `get_workspace_root` + `list_session_files` in the
+push module so the scan is deterministic; the encoder itself is covered by
+`test_session_paths.py`.
+"""
 
 import json
 import re
@@ -8,11 +16,11 @@ from typer.testing import CliRunner
 
 from cli.commands.push import push_app
 from cli.lib.private_list import add_private
-from cli.lib.session_queue import (
-    append_to_queue,
+from cli.lib.upload_log import (
     failed_log_path,
+    mark_uploaded,
     private_skipped_log_path,
-    queue_path,
+    read_uploaded,
     uploaded_log_path,
 )
 
@@ -32,9 +40,16 @@ class _FakeResp:
         self.status_code = status_code
 
 
-def _stub_config(monkeypatch) -> None:
+def _stub_config(monkeypatch, workspace) -> None:
+    """Wire server/token + the workspace_root anchor to *workspace*."""
     monkeypatch.setattr("cli.commands.push.get_server_url", lambda: "http://x")
     monkeypatch.setattr("cli.commands.push.get_token", lambda: "test-pat")
+    monkeypatch.setattr("cli.commands.push.get_workspace_root", lambda: str(workspace))
+
+
+def _stub_sessions(monkeypatch, files) -> None:
+    """Make the folder scan return exactly *files* (list of Paths)."""
+    monkeypatch.setattr("cli.commands.push.list_session_files", lambda _ws: list(files))
 
 
 def _record_uploads(monkeypatch) -> list[tuple[str, dict]]:
@@ -49,35 +64,49 @@ def _record_uploads(monkeypatch) -> list[tuple[str, dict]]:
     return calls
 
 
+def _make_jsonl(workspace, name: str, content: str = '{"event":"x"}\n'):
+    p = workspace / name
+    p.write_text(content, encoding="utf-8")
+    return p
+
+
 # ---------- Smoke + dry-run --------------------------------------------------
 
 
 def test_push_help():
     result = runner.invoke(push_app, ["--help"])
     assert result.exit_code == 0
-    assert "--quiet" in _clean(result.output)
-    assert "--json" in _clean(result.output)
-    assert "--dry-run" in _clean(result.output)
-    assert "--legacy-scan" in _clean(result.output)
+    out = _clean(result.output)
+    assert "--quiet" in out
+    assert "--json" in out
+    assert "--dry-run" in out
+    # The legacy-scan flag is gone — scan IS the mechanism now.
+    assert "--legacy-scan" not in out
 
 
-def test_push_no_sessions_no_mkdir(tmp_path, monkeypatch):
-    """Empty workspace -> push exits 0, doesn't create user/sessions/."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
-    result = runner.invoke(push_app, ["--quiet"])
+def test_push_no_workspace_root_is_noop(tmp_path, monkeypatch):
+    """No workspace_root in config → push uploads nothing and exits 0."""
+    monkeypatch.setattr("cli.commands.push.get_server_url", lambda: "http://x")
+    monkeypatch.setattr("cli.commands.push.get_token", lambda: "test-pat")
+    monkeypatch.setattr("cli.commands.push.get_workspace_root", lambda: None)
+
+    def _raise(*a, **kw):
+        raise AssertionError("api_post must not be called without workspace_root")
+
+    monkeypatch.setattr("cli.commands.push.api_post", _raise)
+
+    result = runner.invoke(push_app, ["--json"])
     assert result.exit_code == 0
-    assert not (tmp_path / "user" / "sessions").exists(), \
-        "lazy mkdir: nothing to upload must not create user/sessions/"
+    payload = json.loads(result.output)
+    assert payload["workspace_root"] is None
+    assert payload["sessions"] == 0
 
 
 def test_push_dry_run_no_writes(tmp_path, monkeypatch):
-    """--dry-run lists what would upload but sends nothing."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
-    transcript = tmp_path / "abc.jsonl"
-    transcript.write_text('{"event":"test"}\n')
-    append_to_queue(tmp_path, "sid-1", str(transcript))
+    """--dry-run lists what would upload but sends nothing and writes no ledger."""
+    _stub_config(monkeypatch, tmp_path)
+    transcript = _make_jsonl(tmp_path, "abc.jsonl")
+    _stub_sessions(monkeypatch, [transcript])
 
     def _raise(*a, **kw):
         raise AssertionError("api_post was called during --dry-run")
@@ -86,55 +115,86 @@ def test_push_dry_run_no_writes(tmp_path, monkeypatch):
 
     result = runner.invoke(push_app, ["--dry-run"])
     assert result.exit_code == 0
-    assert queue_path(tmp_path).exists()  # not consumed
+    assert not uploaded_log_path(tmp_path).exists()
 
 
-# ---------- Queue happy path + dedup + lock + recovery ----------------------
+# ---------- Happy path + dedup by size ---------------------------------------
 
 
-def test_push_uploads_queued_session_and_clears_queue(tmp_path, monkeypatch):
-    """Happy path: queue has one session, push uploads it, queue cleared, log written."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
+def test_push_uploads_new_session_and_writes_ledger(tmp_path, monkeypatch):
+    _stub_config(monkeypatch, tmp_path)
     calls = _record_uploads(monkeypatch)
-
-    transcript = tmp_path / "abc.jsonl"
-    transcript.write_text('{"event":"test"}\n')
-    append_to_queue(tmp_path, "sid-1", str(transcript))
+    transcript = _make_jsonl(tmp_path, "abc.jsonl")
+    _stub_sessions(monkeypatch, [transcript])
 
     result = runner.invoke(push_app, ["--quiet"])
     assert result.exit_code == 0
 
     sessions_calls = [c for c in calls if c[0] == "/api/upload/sessions"]
     assert len(sessions_calls) == 1
-    assert not queue_path(tmp_path).exists()
-    log = uploaded_log_path(tmp_path).read_text(encoding="utf-8")
-    assert str(transcript) in log
-    assert "\t" in log
+    # Ledger row is session_id + size.
+    led = read_uploaded(tmp_path)
+    assert led == {"abc": transcript.stat().st_size}
 
 
-def test_push_dedups_duplicate_paths_in_queue(tmp_path, monkeypatch):
-    """Resume scenario: same (session_id, path) queued twice — push uploads once."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
+def test_push_skips_already_uploaded_same_size(tmp_path, monkeypatch):
+    """Second push of an unchanged transcript uploads nothing (dedup by size)."""
+    _stub_config(monkeypatch, tmp_path)
+    transcript = _make_jsonl(tmp_path, "abc.jsonl")
+    _stub_sessions(monkeypatch, [transcript])
+
+    # Pre-seed the ledger as if already uploaded at the current size.
+    mark_uploaded(tmp_path, "abc", transcript.stat().st_size)
+
+    def _raise(*a, **kw):
+        raise AssertionError("unchanged session must not re-upload")
+
+    monkeypatch.setattr("cli.commands.push.api_post", _raise)
+
+    result = runner.invoke(push_app, ["--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["sessions"] == 0
+    assert payload["skipped_unchanged"] == 1
+
+
+def test_push_reuploads_grown_transcript(tmp_path, monkeypatch):
+    """A transcript that grew since last upload (larger size) re-uploads."""
+    _stub_config(monkeypatch, tmp_path)
     calls = _record_uploads(monkeypatch)
+    transcript = _make_jsonl(tmp_path, "abc.jsonl", content="{}\n")
+    _stub_sessions(monkeypatch, [transcript])
 
-    transcript = tmp_path / "abc.jsonl"
-    transcript.write_text('{"event":"test"}\n')
-    append_to_queue(tmp_path, "sid-1", str(transcript))
-    append_to_queue(tmp_path, "sid-1", str(transcript))
+    # Ledger says we uploaded it at a SMALLER size.
+    mark_uploaded(tmp_path, "abc", 1)
 
     result = runner.invoke(push_app, ["--quiet"])
     assert result.exit_code == 0
+    assert len([c for c in calls if c[0] == "/api/upload/sessions"]) == 1
+    # Ledger now records the new (larger) size.
+    assert read_uploaded(tmp_path)["abc"] == transcript.stat().st_size
 
-    sessions_calls = [c for c in calls if c[0] == "/api/upload/sessions"]
-    assert len(sessions_calls) == 1
+
+def test_push_end_to_end_dedup_across_two_runs(tmp_path, monkeypatch):
+    """First push uploads; second push (file unchanged) uploads nothing."""
+    _stub_config(monkeypatch, tmp_path)
+    calls = _record_uploads(monkeypatch)
+    transcript = _make_jsonl(tmp_path, "abc.jsonl")
+    _stub_sessions(monkeypatch, [transcript])
+
+    runner.invoke(push_app, ["--quiet"])
+    runner.invoke(push_app, ["--quiet"])
+    assert len([c for c in calls if c[0] == "/api/upload/sessions"]) == 1
+
+
+# ---------- Concurrency lock -------------------------------------------------
 
 
 def test_push_silent_exit_when_lock_held(tmp_path, monkeypatch):
     """Concurrent SessionEnd hooks: only one push runs, others silent-exit."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
+    _stub_config(monkeypatch, tmp_path)
+    transcript = _make_jsonl(tmp_path, "x.jsonl")
+    _stub_sessions(monkeypatch, [transcript])
 
     @contextmanager
     def _yield_none(workspace):
@@ -147,189 +207,19 @@ def test_push_silent_exit_when_lock_held(tmp_path, monkeypatch):
 
     monkeypatch.setattr("cli.commands.push.api_post", _raise)
 
-    transcript = tmp_path / "x.jsonl"
-    transcript.write_text("{}\n")
-    append_to_queue(tmp_path, "sid-1", str(transcript))
-
     result = runner.invoke(push_app, ["--quiet"])
     assert result.exit_code == 0
     assert result.output == ""
-    assert queue_path(tmp_path).read_text(encoding="utf-8") == f"sid-1\t{transcript}\n"
-
-
-def test_push_silent_exit_when_filelock_raises_oserror(tmp_path, monkeypatch):
-    """OSError from filelock (read-only FS, permission denied, disk full)
-    must not crash push with an unhandled traceback. Exercises the real
-    acquire_or_skip by replacing it with a context manager that raises
-    OSError on entry — simulates what filelock.FileLock.acquire raises
-    on a read-only mount."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
-
-    # Queue setup must happen BEFORE we install the failing lock — the
-    # `append_to_queue` path holds its own `agnes-queue.lock` and a
-    # blanket `FileLock.acquire` patch would break that one too.
-    transcript = tmp_path / "x.jsonl"
-    transcript.write_text("{}\n")
-    append_to_queue(tmp_path, "sid-1", str(transcript))
-
-    # Wrap the real acquire_or_skip with one that raises OSError before
-    # yielding. We can't just patch `cli.commands.push.acquire_or_skip`
-    # because the new behaviour lives inside `acquire_or_skip` itself —
-    # we have to exercise its except handler. So we patch `FileLock`
-    # used inside push_lock: subclass with overridden `acquire` that
-    # raises OSError.
-    from cli.lib import push_lock as pl
-
-    class _BrokenLock:
-        def __init__(self, path: str) -> None:
-            self._path = path
-
-        def acquire(self, timeout: float = -1):
-            raise OSError("read-only filesystem")
-
-    monkeypatch.setattr(pl, "FileLock", _BrokenLock)
-
-    def _api_should_not_be_called(*a, **kw):
-        raise AssertionError("api_post called when lock acquisition raised OSError")
-
-    monkeypatch.setattr("cli.commands.push.api_post", _api_should_not_be_called)
-
-    result = runner.invoke(push_app, ["--quiet"])
-    assert result.exit_code == 0, f"push must exit 0 on OSError, got: {result.output}"
-    # No traceback in output
-    assert "Traceback" not in result.output
-    # Queue preserved for next push attempt
-    assert queue_path(tmp_path).read_text(encoding="utf-8") == f"sid-1\t{transcript}\n"
-
-
-def test_push_processes_recovery_snapshot_first(tmp_path, monkeypatch):
-    """Pre-existing snapshot from a crashed push gets picked up."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
-    calls = _record_uploads(monkeypatch)
-
-    claude = tmp_path / ".claude"
-    claude.mkdir(parents=True, exist_ok=True)
-    recovery = claude / "agnes-sessions.snapshot.99999.txt"
-    crashed_jsonl = tmp_path / "crashed.jsonl"
-    crashed_jsonl.write_text("{}\n")
-    recovery.write_text(f"sid-old\t{crashed_jsonl}\n", encoding="utf-8")
-
-    fresh_jsonl = tmp_path / "fresh.jsonl"
-    fresh_jsonl.write_text("{}\n")
-    append_to_queue(tmp_path, "sid-new", str(fresh_jsonl))
-
-    result = runner.invoke(push_app, ["--quiet"])
-    assert result.exit_code == 0
-
-    sessions_calls = [c for c in calls if c[0] == "/api/upload/sessions"]
-    assert len(sessions_calls) == 2
-    assert not recovery.exists()
-    assert not queue_path(tmp_path).exists()
-
-
-def test_push_requeues_missing_file_with_stamp(tmp_path, monkeypatch):
-    """Queue entry pointing to a not-yet-written transcript: REQUEUED with a
-    first-failure stamp, never silently dropped. Claude Code creates the
-    jsonl lazily on the first prompt, so 'file not found' at push time
-    usually means the session just started — dropping the entry here lost
-    the whole session whenever another window's push raced a fresh start."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
-
-    def _raise(*a, **kw):
-        raise AssertionError("api_post should not be called for missing file")
-
-    monkeypatch.setattr("cli.commands.push.api_post", _raise)
-
-    ghost = tmp_path / "ghost.jsonl"
-    append_to_queue(tmp_path, "sid-1", str(ghost))
-
-    result = runner.invoke(push_app, ["--json"])
-    assert result.exit_code == 0
-    payload = json.loads(result.output)
-    assert payload["requeued"] == 1
-    live = queue_path(tmp_path).read_text(encoding="utf-8")
-    sid, path, stamp = live.strip().split("\t")
-    assert (sid, path) == ("sid-1", str(ghost))
-    assert stamp  # first-failure stamp added
-    assert not uploaded_log_path(tmp_path).exists()
-    assert not failed_log_path(tmp_path).exists()
-
-
-def test_push_requeued_missing_file_uploads_once_it_appears(tmp_path, monkeypatch):
-    """End-to-end of the requeue: first push requeues the ghost entry,
-    the transcript appears (user typed their first prompt), second push
-    uploads it."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
-    calls = _record_uploads(monkeypatch)
-
-    ghost = tmp_path / "ghost.jsonl"
-    append_to_queue(tmp_path, "sid-1", str(ghost))
-    runner.invoke(push_app, ["--quiet"])
-    assert calls == []
-
-    ghost.write_text('{"event":"now it exists"}\n')
-    result = runner.invoke(push_app, ["--quiet"])
-    assert result.exit_code == 0
-    assert [c[0] for c in calls] == ["/api/upload/sessions"]
-    assert str(ghost) in uploaded_log_path(tmp_path).read_text(encoding="utf-8")
-
-
-def test_push_drops_missing_file_after_ttl(tmp_path, monkeypatch):
-    """A ghost entry whose first failure is older than RETRY_TTL moves to
-    the forensic failed-log instead of looping forever."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
-    _record_uploads(monkeypatch)
-
-    ghost = tmp_path / "ghost.jsonl"
-    # Pre-stamped queue line, 31 days old.
-    queue_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
-    queue_path(tmp_path).write_text(
-        f"sid-1\t{ghost}\t2026-05-01T00:00:00Z\n", encoding="utf-8"
-    )
-
-    result = runner.invoke(push_app, ["--json"])
-    assert result.exit_code == 0
-    payload = json.loads(result.output)
-    assert payload["dropped_permanent"] == 1
-    assert payload["requeued"] == 0
-    assert not queue_path(tmp_path).exists()
-    log = failed_log_path(tmp_path).read_text(encoding="utf-8")
-    assert "\tnot_found_expired\t" in log
-    assert "sid-1" in log
-
-
-def test_push_requeues_failed_uploads(tmp_path, monkeypatch):
-    """Server returns 500 → path stays in queue for next push."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
-
-    def _fail(*a, **kw):
-        return _FakeResp(500)
-
-    monkeypatch.setattr("cli.commands.push.api_post", _fail)
-
-    transcript = tmp_path / "x.jsonl"
-    transcript.write_text("{}\n")
-    append_to_queue(tmp_path, "sid-1", str(transcript))
-
-    result = runner.invoke(push_app, [])
-    assert result.exit_code == 0
-    live = queue_path(tmp_path).read_text(encoding="utf-8")
-    sid, path, stamp = live.strip().split("\t")
-    assert (sid, path) == ("sid-1", str(transcript))
-    assert stamp  # first-failure stamp added
     assert not uploaded_log_path(tmp_path).exists()
 
 
-def test_push_uploads_local_md(tmp_path, monkeypatch):
-    """CLAUDE.local.md uploaded when present."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
+# ---------- CLAUDE.local.md --------------------------------------------------
+
+
+def test_push_uploads_local_md_from_workspace_root(tmp_path, monkeypatch):
+    """CLAUDE.local.md uploaded from <workspace_root>/.claude/, not cwd."""
+    _stub_config(monkeypatch, tmp_path)
+    _stub_sessions(monkeypatch, [])
     calls = _record_uploads(monkeypatch)
 
     claude = tmp_path / ".claude"
@@ -338,20 +228,15 @@ def test_push_uploads_local_md(tmp_path, monkeypatch):
 
     result = runner.invoke(push_app, ["--quiet"])
     assert result.exit_code == 0
-
     md_calls = [c for c in calls if c[0] == "/api/upload/local-md"]
     assert len(md_calls) == 1
 
 
 def test_push_json_output(tmp_path, monkeypatch):
-    """--json emits a single JSON object with results."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
+    _stub_config(monkeypatch, tmp_path)
     _record_uploads(monkeypatch)
-
-    transcript = tmp_path / "x.jsonl"
-    transcript.write_text("{}\n")
-    append_to_queue(tmp_path, "sid-1", str(transcript))
+    transcript = _make_jsonl(tmp_path, "x.jsonl")
+    _stub_sessions(monkeypatch, [transcript])
 
     result = runner.invoke(push_app, ["--json"])
     assert result.exit_code == 0
@@ -361,75 +246,61 @@ def test_push_json_output(tmp_path, monkeypatch):
     assert data["private_skipped"] == 0
 
 
-# ---------- Private filter tests --------------------------------------------
+# ---------- Private filter ---------------------------------------------------
 
 
 def test_push_skips_private_session_and_audit_logs(tmp_path, monkeypatch):
-    """Queue contains a private session_id → no upload, audit log appended."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
+    """A session whose id is on the private list is never uploaded; the skip
+    is audit-logged and the file's content never reaches the server."""
+    _stub_config(monkeypatch, tmp_path)
     calls = _record_uploads(monkeypatch)
 
-    transcript = tmp_path / "secret.jsonl"
-    transcript.write_text("{}\n")
+    transcript = _make_jsonl(tmp_path, "sid-private.jsonl")
+    _stub_sessions(monkeypatch, [transcript])
     add_private(tmp_path, "sid-private")
-    append_to_queue(tmp_path, "sid-private", str(transcript))
 
     result = runner.invoke(push_app, ["--quiet"])
     assert result.exit_code == 0
 
-    sessions_calls = [c for c in calls if c[0] == "/api/upload/sessions"]
-    assert sessions_calls == [], "private session must NOT be uploaded"
-
-    # Audit log entry written
+    assert [c for c in calls if c[0] == "/api/upload/sessions"] == []
     audit = private_skipped_log_path(tmp_path).read_text(encoding="utf-8")
     assert "sid-private" in audit
     assert str(transcript) in audit
-
-    # Queue consumed (snapshot processed and discarded — private entry not requeued)
-    assert not queue_path(tmp_path).exists()
+    # Private skip never records to the upload ledger.
+    assert not uploaded_log_path(tmp_path).exists()
 
 
 def test_push_mixes_private_and_public_correctly(tmp_path, monkeypatch):
-    """A push run with one private + one public session uploads only the public one."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
+    _stub_config(monkeypatch, tmp_path)
     calls = _record_uploads(monkeypatch)
 
-    secret = tmp_path / "secret.jsonl"
-    secret.write_text("{}\n")
-    public = tmp_path / "public.jsonl"
-    public.write_text("{}\n")
-
+    secret = _make_jsonl(tmp_path, "sid-secret.jsonl")
+    public = _make_jsonl(tmp_path, "sid-public.jsonl")
+    _stub_sessions(monkeypatch, [secret, public])
     add_private(tmp_path, "sid-secret")
-    append_to_queue(tmp_path, "sid-secret", str(secret))
-    append_to_queue(tmp_path, "sid-public", str(public))
 
     result = runner.invoke(push_app, ["--quiet"])
     assert result.exit_code == 0
 
-    sessions_calls = [c for c in calls if c[0] == "/api/upload/sessions"]
-    assert len(sessions_calls) == 1
-
+    uploaded_names = [
+        c[1]["files"]["file"][0] for c in calls if c[0] == "/api/upload/sessions"
+    ]
+    assert uploaded_names == ["sid-public.jsonl"]
     audit = private_skipped_log_path(tmp_path).read_text(encoding="utf-8")
     assert "sid-secret" in audit
     assert "sid-public" not in audit
 
 
 def test_push_dry_run_shows_private_skip(tmp_path, monkeypatch):
-    """--dry-run preview reports private-skipped count separately."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
+    _stub_config(monkeypatch, tmp_path)
+    transcript = _make_jsonl(tmp_path, "sid-priv.jsonl")
+    _stub_sessions(monkeypatch, [transcript])
+    add_private(tmp_path, "sid-priv")
 
     def _raise(*a, **kw):
         raise AssertionError("api_post was called during --dry-run")
 
     monkeypatch.setattr("cli.commands.push.api_post", _raise)
-
-    transcript = tmp_path / "secret.jsonl"
-    transcript.write_text("{}\n")
-    add_private(tmp_path, "sid-priv")
-    append_to_queue(tmp_path, "sid-priv", str(transcript))
 
     result = runner.invoke(push_app, ["--dry-run"])
     assert result.exit_code == 0
@@ -437,151 +308,98 @@ def test_push_dry_run_shows_private_skip(tmp_path, monkeypatch):
     assert "sid-priv" in result.output
 
 
-# ---------- 4xx permanent-failure handling -----------------------------------
+# ---------- Failure handling -------------------------------------------------
 
 
 def _stub_api_post_status(monkeypatch, status: int) -> None:
-    """Patch api_post to always return the given status code."""
     def _fixed(*a, **kw):
         return _FakeResp(status)
     monkeypatch.setattr("cli.commands.push.api_post", _fixed)
 
 
-def test_push_drops_4xx_to_audit_log_not_requeue(tmp_path, monkeypatch):
-    """4xx (here: 403 RBAC denial) → drop + audit, no requeue.
-    Closes the prior infinite-loop bug where every non-200 except
-    `file not found on disk` was requeued forever. (401 moved to the
-    transient bucket — see test_push_requeues_401_token_expired.)"""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
-    _stub_api_post_status(monkeypatch, 403)
-
-    transcript = tmp_path / "x.jsonl"
-    transcript.write_text("{}\n")
-    append_to_queue(tmp_path, "sid-1", str(transcript))
-
-    result = runner.invoke(push_app, [])
-    assert result.exit_code == 0
-    # Entry must NOT be in the live queue any more.
-    assert not queue_path(tmp_path).exists() or \
-        queue_path(tmp_path).read_text(encoding="utf-8") == ""
-    # Audit log must record the drop with status + session_id + path.
-    log = failed_log_path(tmp_path).read_text(encoding="utf-8")
-    assert "\t403\t" in log
-    assert "sid-1" in log
-    assert str(transcript) in log
-
-
-def test_push_drops_each_4xx_status(tmp_path, monkeypatch):
-    """400, 403, 413 → all drop."""
+def test_push_4xx_logged_to_failed_not_ledger(tmp_path, monkeypatch):
+    """403 (and 400/413) → forensic failed-log, NOT the upload ledger."""
     for status in (400, 403, 413):
         ws = tmp_path / f"ws-{status}"
         ws.mkdir()
-        monkeypatch.setenv("AGNES_LOCAL_DIR", str(ws))
-        _stub_config(monkeypatch)
+        _stub_config(monkeypatch, ws)
         _stub_api_post_status(monkeypatch, status)
-        transcript = ws / "x.jsonl"
-        transcript.write_text("{}\n")
-        append_to_queue(ws, f"sid-{status}", str(transcript))
+        transcript = _make_jsonl(ws, f"sid-{status}.jsonl")
+        _stub_sessions(monkeypatch, [transcript])
 
-        result = runner.invoke(push_app, [])
+        result = runner.invoke(push_app, ["--json"])
         assert result.exit_code == 0, (status, result.output)
+        payload = json.loads(result.output)
+        assert payload["dropped_permanent"] == 1, (status, payload)
+        assert payload["sessions"] == 0
         log = failed_log_path(ws).read_text(encoding="utf-8")
-        assert f"\t{status}\t" in log, (status, log)
+        assert f"\t{status}\t" in log
+        assert f"sid-{status}" in log
+        # Not recorded as uploaded → a later push (after the cause is fixed)
+        # can still retry. (Permanent failures stay in the forensic log only.)
+        assert read_uploaded(ws) == {}
 
 
-def test_push_requeues_408_and_429(tmp_path, monkeypatch):
-    """408 Request Timeout + 429 Too Many Requests are transient per
-    HTTP spec — server is asking us to retry, not telling us the
-    request is invalid. Must requeue, not drop."""
-    for status in (408, 429):
+def test_push_transient_failure_retries_next_run(tmp_path, monkeypatch):
+    """401 / 408 / 429 / 5xx / network → left out of the ledger (no failed-log),
+    so the next push retries the same file."""
+    for status in (401, 408, 429, 500, 503):
         ws = tmp_path / f"ws-{status}"
         ws.mkdir()
-        monkeypatch.setenv("AGNES_LOCAL_DIR", str(ws))
-        _stub_config(monkeypatch)
+        _stub_config(monkeypatch, ws)
         _stub_api_post_status(monkeypatch, status)
-        transcript = ws / "x.jsonl"
-        transcript.write_text("{}\n")
-        append_to_queue(ws, f"sid-{status}", str(transcript))
+        transcript = _make_jsonl(ws, f"sid-{status}.jsonl")
+        _stub_sessions(monkeypatch, [transcript])
 
-        result = runner.invoke(push_app, [])
+        result = runner.invoke(push_app, ["--json"])
         assert result.exit_code == 0
-        # Requeued → entry back in live queue (with first-failure stamp).
-        live = queue_path(ws).read_text(encoding="utf-8")
-        assert live.startswith(f"sid-{status}\t{transcript}\t")
-        # NOT in the failed audit log.
+        payload = json.loads(result.output)
+        assert payload["dropped_permanent"] == 0, (status, payload)
+        assert read_uploaded(ws) == {}
         assert not failed_log_path(ws).exists()
 
 
-def test_push_requeues_5xx(tmp_path, monkeypatch):
-    """5xx is genuine server-side failure: request was valid but server
-    couldn't honor it right now. Requeue for the next push."""
-    for status in (500, 502, 503):
-        ws = tmp_path / f"ws-{status}"
-        ws.mkdir()
-        monkeypatch.setenv("AGNES_LOCAL_DIR", str(ws))
-        _stub_config(monkeypatch)
-        _stub_api_post_status(monkeypatch, status)
-        transcript = ws / "x.jsonl"
-        transcript.write_text("{}\n")
-        append_to_queue(ws, f"sid-{status}", str(transcript))
+def test_push_transient_then_success(tmp_path, monkeypatch):
+    """503 leaves nothing recorded; once the server accepts, the next push
+    uploads it and writes the ledger."""
+    _stub_config(monkeypatch, tmp_path)
+    transcript = _make_jsonl(tmp_path, "x.jsonl")
+    _stub_sessions(monkeypatch, [transcript])
 
-        result = runner.invoke(push_app, [])
-        assert result.exit_code == 0
-        live = queue_path(ws).read_text(encoding="utf-8")
-        assert live.startswith(f"sid-{status}\t{transcript}\t")
-        assert not failed_log_path(ws).exists()
+    _stub_api_post_status(monkeypatch, 503)
+    runner.invoke(push_app, ["--quiet"])
+    assert read_uploaded(tmp_path) == {}
+
+    calls = _record_uploads(monkeypatch)  # now 200
+    result = runner.invoke(push_app, ["--quiet"])
+    assert result.exit_code == 0
+    assert len([c for c in calls if c[0] == "/api/upload/sessions"]) == 1
+    assert read_uploaded(tmp_path)["x"] == transcript.stat().st_size
 
 
-def test_push_requeues_network_exception(tmp_path, monkeypatch):
-    """Connection error / DNS / timeout — no status code from server.
-    Treat as transient: requeue rather than drop."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
+def test_push_network_exception_retries(tmp_path, monkeypatch):
+    _stub_config(monkeypatch, tmp_path)
+    transcript = _make_jsonl(tmp_path, "x.jsonl")
+    _stub_sessions(monkeypatch, [transcript])
 
     def _raise(*a, **kw):
         raise ConnectionError("server unreachable")
+
     monkeypatch.setattr("cli.commands.push.api_post", _raise)
-
-    transcript = tmp_path / "x.jsonl"
-    transcript.write_text("{}\n")
-    append_to_queue(tmp_path, "sid-net", str(transcript))
-
-    result = runner.invoke(push_app, [])
-    assert result.exit_code == 0
-    live = queue_path(tmp_path).read_text(encoding="utf-8")
-    assert live.startswith(f"sid-net\t{transcript}\t")
-    assert not failed_log_path(tmp_path).exists()
-
-
-def test_push_4xx_drop_count_in_json_output(tmp_path, monkeypatch):
-    """--json surfaces the new `dropped_permanent` counter so operators
-    can pipe it into monitoring / scripts."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
-    _stub_api_post_status(monkeypatch, 400)
-
-    transcript = tmp_path / "x.jsonl"
-    transcript.write_text("{}\n")
-    append_to_queue(tmp_path, "sid-1", str(transcript))
 
     result = runner.invoke(push_app, ["--json"])
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert payload["dropped_permanent"] == 1
-    assert payload["sessions"] == 0
+    assert payload["dropped_permanent"] == 0
+    assert read_uploaded(tmp_path) == {}
+    assert not failed_log_path(tmp_path).exists()
 
 
-def test_push_4xx_drop_visible_in_quiet_stdout(tmp_path, monkeypatch):
-    """Non-quiet stdout mentions the audit-log path so operators tailing
-    `agnes push` output get a pointer to the forensic trail."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
+def test_push_4xx_visible_in_stdout(tmp_path, monkeypatch):
+    _stub_config(monkeypatch, tmp_path)
     _stub_api_post_status(monkeypatch, 413)
-
-    transcript = tmp_path / "huge.jsonl"
-    transcript.write_text("{}\n")
-    append_to_queue(tmp_path, "sid-big", str(transcript))
+    transcript = _make_jsonl(tmp_path, "huge.jsonl")
+    _stub_sessions(monkeypatch, [transcript])
 
     result = runner.invoke(push_app, [])
     assert result.exit_code == 0
@@ -589,137 +407,102 @@ def test_push_4xx_drop_visible_in_quiet_stdout(tmp_path, monkeypatch):
     assert "permanent failure" in result.output
 
 
-# ---------- David #8: legacy-scan honors the private list -------------------
-#
-# `--legacy-scan` walks ~/.claude/projects/<encoded-cwd>/*.jsonl. Claude Code
-# names jsonls `<session-id>.jsonl`, so the file stem IS the session id —
-# the same private filter that protects queue uploads must apply. Without
-# this, an operator running `agnes push --legacy-scan` to backfill old
-# sessions would silently upload everything on disk.
+def test_push_permanent_failure_not_retried_next_run(tmp_path, monkeypatch):
+    """A 4xx-rejected transcript must NOT be re-uploaded on the next scan —
+    once logged to the failed-log, push skips it (the scan-based equivalent of
+    the old queue dropping a permanently-failed entry). Two-run coverage."""
+    _stub_config(monkeypatch, tmp_path)
+    transcript = _make_jsonl(tmp_path, "sid-413.jsonl")
+    _stub_sessions(monkeypatch, [transcript])
+
+    # Run 1: server permanently rejects (413) → logged to the failed-log.
+    _stub_api_post_status(monkeypatch, 413)
+    r1 = runner.invoke(push_app, ["--json"])
+    assert r1.exit_code == 0
+    assert json.loads(r1.output)["dropped_permanent"] == 1
+    assert "sid-413" in failed_log_path(tmp_path).read_text(encoding="utf-8")
+
+    # Run 2: same unchanged transcript must not be uploaded again.
+    def _boom(*a, **kw):
+        raise AssertionError("permanently-failed session must not be re-uploaded")
+
+    monkeypatch.setattr("cli.commands.push.api_post", _boom)
+    r2 = runner.invoke(push_app, ["--json"])
+    assert r2.exit_code == 0
+    payload = json.loads(r2.output)
+    assert payload["sessions"] == 0
+    assert payload["skipped_failed"] == 1
 
 
-def test_push_legacy_scan_skips_private_session(tmp_path, monkeypatch):
-    """Legacy-scan picks up `<sid>.jsonl` from the projects dir; if the
-    sid is on the private list, it must be skipped + audit-logged."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
-    calls = _record_uploads(monkeypatch)
-
-    projects_dir = tmp_path / "projects-fake"
-    projects_dir.mkdir()
-    pub = projects_dir / "sid-public.jsonl"
-    pub.write_text("{}\n")
-    priv = projects_dir / "sid-private.jsonl"
-    priv.write_text("{}\n")
-
-    monkeypatch.setattr(
-        "cli.lib.claude_sessions.list_session_files",
-        lambda _w: [pub, priv],
-    )
-    add_private(tmp_path, "sid-private")
-
-    result = runner.invoke(push_app, ["--legacy-scan", "--quiet"])
-    assert result.exit_code == 0
-
-    sessions_calls = [c for c in calls if c[0] == "/api/upload/sessions"]
-    assert len(sessions_calls) == 1
-    uploaded_path = sessions_calls[0][1]["files"]["file"][0]
-    assert uploaded_path == "sid-public.jsonl"
-
-    audit = private_skipped_log_path(tmp_path).read_text(encoding="utf-8")
-    assert "sid-private" in audit
-    assert str(priv) in audit
-
-
-def test_push_legacy_scan_dry_run_segregates_private(tmp_path, monkeypatch):
-    """Dry-run JSON shape: legacy-scan candidates surface in
-    would_upload OR would_skip_private depending on private membership."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
-
-    projects_dir = tmp_path / "projects-fake"
-    projects_dir.mkdir()
-    public_jsonl = projects_dir / "sid-pub.jsonl"
-    public_jsonl.write_text("{}\n")
-    private_jsonl = projects_dir / "sid-priv.jsonl"
-    private_jsonl.write_text("{}\n")
-
-    monkeypatch.setattr(
-        "cli.lib.claude_sessions.list_session_files",
-        lambda _w: [public_jsonl, private_jsonl],
-    )
+def test_push_private_skip_logged_once_across_runs(tmp_path, monkeypatch):
+    """A private session is audit-logged once, not on every push run (the
+    transcript stays on disk and the private list is persistent)."""
+    _stub_config(monkeypatch, tmp_path)
+    _record_uploads(monkeypatch)
+    transcript = _make_jsonl(tmp_path, "sid-priv.jsonl")
+    _stub_sessions(monkeypatch, [transcript])
     add_private(tmp_path, "sid-priv")
 
-    result = runner.invoke(push_app, ["--legacy-scan", "--dry-run", "--json"])
-    assert result.exit_code == 0
-    payload = json.loads(result.output)
-    assert str(public_jsonl) in payload["would_upload"]["sessions"]
-    assert str(private_jsonl) not in payload["would_upload"]["sessions"]
-    skipped_paths = [e["path"] for e in payload["would_skip_private"]]
-    assert str(private_jsonl) in skipped_paths
-
-
-def test_push_requeues_401_token_expired(tmp_path, monkeypatch):
-    """401 is recoverable (PAT expired / not yet imported) — the user
-    re-authenticates and the SAME upload succeeds. Dropping the queue on
-    401 silently lost every session pushed between token expiry and the
-    next `agnes auth` run. Requeue with a stamp instead."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
-    _stub_api_post_status(monkeypatch, 401)
-
-    transcript = tmp_path / "x.jsonl"
-    transcript.write_text("{}\n")
-    append_to_queue(tmp_path, "sid-1", str(transcript))
-
-    result = runner.invoke(push_app, ["--json"])
-    assert result.exit_code == 0
-    payload = json.loads(result.output)
-    assert payload["requeued"] == 1
-    assert payload["dropped_permanent"] == 0
-    live = queue_path(tmp_path).read_text(encoding="utf-8")
-    assert live.startswith(f"sid-1\t{transcript}\t")
-    assert not failed_log_path(tmp_path).exists()
-
-
-def test_push_401_recovers_after_reauth(tmp_path, monkeypatch):
-    """End-to-end: 401 push requeues; once the server accepts again
-    (token re-imported), the next push uploads the queued session."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
-    _stub_api_post_status(monkeypatch, 401)
-
-    transcript = tmp_path / "x.jsonl"
-    transcript.write_text("{}\n")
-    append_to_queue(tmp_path, "sid-1", str(transcript))
+    runner.invoke(push_app, ["--quiet"])
     runner.invoke(push_app, ["--quiet"])
 
-    calls = _record_uploads(monkeypatch)  # now returns 200
+    log = private_skipped_log_path(tmp_path).read_text(encoding="utf-8")
+    lines = [ln for ln in log.splitlines() if ln.strip()]
+    assert len(lines) == 1, lines
+    assert "\tsid-priv\t" in log
+
+
+def test_push_real_scan_uses_workspace_root_folder(tmp_path, monkeypatch):
+    """Integration: leave `list_session_files` REAL and exercise the central
+    glue — workspace_root → encoded Claude Code folder → scan — even when push
+    runs from a different cwd. Pins the contract the hook actually relies on."""
+    from cli.lib.session_paths import session_dir
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cc"))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    folder = session_dir(workspace)
+    folder.mkdir(parents=True)
+    (folder / "sid-real.jsonl").write_text('{"event":"x"}\n', encoding="utf-8")
+
+    monkeypatch.setattr("cli.commands.push.get_server_url", lambda: "http://x")
+    monkeypatch.setattr("cli.commands.push.get_token", lambda: "test-pat")
+    monkeypatch.setattr("cli.commands.push.get_workspace_root", lambda: str(workspace))
+    # NOTE: list_session_files is intentionally NOT patched here.
+    calls = _record_uploads(monkeypatch)
+
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    monkeypatch.chdir(other)
+
     result = runner.invoke(push_app, ["--quiet"])
-    assert result.exit_code == 0
-    assert [c[0] for c in calls if c[0] == "/api/upload/sessions"] == [
-        "/api/upload/sessions"
-    ]
-    assert str(transcript) in uploaded_log_path(tmp_path).read_text(encoding="utf-8")
+    assert result.exit_code == 0, result.output
+    names = [c[1]["files"]["file"][0] for c in calls if c[0] == "/api/upload/sessions"]
+    assert names == ["sid-real.jsonl"]
 
 
-def test_push_drops_transient_failure_after_ttl(tmp_path, monkeypatch):
-    """An entry that has been failing transiently (here: 503) for longer
-    than RETRY_TTL moves to the forensic failed-log — bounding the queue."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
-    _stub_config(monkeypatch)
-    _stub_api_post_status(monkeypatch, 503)
+def test_push_json_shape_consistent_across_paths(tmp_path, monkeypatch):
+    """Both non-dry-run --json paths (no workspace_root vs real run) emit the
+    SAME key set, so a consumer reading e.g. result['dropped_permanent'] never
+    KeyErrors depending on whether the workspace is anchored."""
+    # No workspace_root.
+    monkeypatch.setattr("cli.commands.push.get_server_url", lambda: "http://x")
+    monkeypatch.setattr("cli.commands.push.get_token", lambda: "test-pat")
+    monkeypatch.setattr("cli.commands.push.get_workspace_root", lambda: None)
+    r_none = runner.invoke(push_app, ["--json"])
+    assert r_none.exit_code == 0
+    keys_none = set(json.loads(r_none.output).keys())
 
-    transcript = tmp_path / "x.jsonl"
-    transcript.write_text("{}\n")
-    queue_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
-    queue_path(tmp_path).write_text(
-        f"sid-1\t{transcript}\t2026-05-01T00:00:00Z\n", encoding="utf-8"
-    )
+    # Real run.
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    _stub_config(monkeypatch, ws)
+    _record_uploads(monkeypatch)
+    _stub_sessions(monkeypatch, [_make_jsonl(ws, "x.jsonl")])
+    r_real = runner.invoke(push_app, ["--json"])
+    assert r_real.exit_code == 0
+    keys_real = set(json.loads(r_real.output).keys())
 
-    result = runner.invoke(push_app, ["--json"])
-    assert result.exit_code == 0
-    payload = json.loads(result.output)
-    assert payload["dropped_permanent"] == 1
-    log = failed_log_path(tmp_path).read_text(encoding="utf-8")
-    assert "\t503\t" in log
+    assert keys_none == keys_real, (keys_none, keys_real)
+    for k in ("sessions", "dropped_permanent", "skipped_failed", "workspace_root"):
+        assert k in keys_none

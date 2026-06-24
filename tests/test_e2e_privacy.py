@@ -1,31 +1,25 @@
 """End-to-end test pinning the user-visible privacy promise:
 **a session marked /agnes-private never reaches the server.**
 
-Each unit test (capture_session, mark_private, push, private_list) covers
-its own component edge cases. This file wires them together against a
-recording fake `api_post` to verify the cross-component contract — closes
-ZdenekSrotyr S2.9 in PR #242.
-
-The test exercises both race orderings:
-- mark BEFORE capture (capture-session sees the private flag and skips
-  the queue write — entry never enters the upload pipeline)
-- capture BEFORE mark (entry sits in the queue; push's per-entry
-  re-check against the private list filters it out and audit-logs)
+With the scan-based `agnes push`, the flow is: ``/agnes-private`` writes the
+session_id to the workspace's private list (anchored on the ``workspace_root``
+config key); the next push scans the workspace's Claude Code session folder
+and skips any transcript whose stem is on that list, audit-logging the skip.
+Both commands anchor on the SAME ``workspace_root``, so they always agree on
+which workspace's list to use. This file wires `mark-private` + `push`
+together against a recording fake `api_post` to verify the cross-component
+contract.
 """
 
 from __future__ import annotations
 
-import json
-
 from typer.testing import CliRunner
 
-from cli.commands.capture_session import capture_session_app
 from cli.commands.mark_private import mark_private_app
 from cli.commands.push import push_app
-from cli.lib.session_queue import (
+from cli.lib.upload_log import (
     failed_log_path,
     private_skipped_log_path,
-    queue_path,
     uploaded_log_path,
 )
 
@@ -39,8 +33,6 @@ class _FakeResp:
 
 
 def _record_uploads(monkeypatch) -> list[tuple[str, dict]]:
-    """Patch api_post to record every call. Sessions endpoint succeeds with
-    200; local-md endpoint also succeeds. Returns the recorder list."""
     calls: list[tuple[str, dict]] = []
 
     def _fake(endpoint, **kwargs):
@@ -51,158 +43,74 @@ def _record_uploads(monkeypatch) -> list[tuple[str, dict]]:
     return calls
 
 
-def _stub_push_config(monkeypatch) -> None:
+def _stub_push(monkeypatch, workspace, files) -> None:
     monkeypatch.setattr("cli.commands.push.get_server_url", lambda: "http://x")
     monkeypatch.setattr("cli.commands.push.get_token", lambda: "test-pat")
-
-
-def _capture(workspace, session_id, transcript_path, monkeypatch) -> None:
-    """Simulate a SessionStart hook firing `agnes capture-session` with the
-    real CC stdin payload shape."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(workspace))
-    payload = json.dumps({
-        "session_id": session_id,
-        "transcript_path": str(transcript_path),
-        "cwd": str(workspace),
-        "hook_event_name": "SessionStart",
-    })
-    result = runner.invoke(capture_session_app, [], input=payload)
-    assert result.exit_code == 0, result.output
+    monkeypatch.setattr("cli.commands.push.get_workspace_root", lambda: str(workspace))
+    monkeypatch.setattr("cli.commands.push.list_session_files", lambda _ws: list(files))
 
 
 def _mark_private(workspace, session_id, monkeypatch) -> None:
-    """Simulate the user typing `/agnes-private` inside Claude Code —
-    `!`-prefix bash spawns `agnes mark-private` with CLAUDE_CODE_SESSION_ID
-    set to the active session."""
-    monkeypatch.setenv("AGNES_LOCAL_DIR", str(workspace))
+    """Simulate `/agnes-private` — `!`-prefix bash runs `agnes mark-private`
+    with CLAUDE_CODE_SESSION_ID set and workspace_root anchored in config."""
+    monkeypatch.setattr("cli.commands.mark_private.get_workspace_root", lambda: str(workspace))
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session_id)
     result = runner.invoke(mark_private_app, [])
     assert result.exit_code == 0, result.output
 
 
-def _uploaded_session_names(calls: list[tuple[str, dict]]) -> list[str]:
-    """Extract the `name` field from every recorded /api/upload/sessions
-    multipart upload. Returns the list of jsonl filenames that reached
-    the (fake) server."""
+def _uploaded_session_names(calls) -> list[str]:
     out: list[str] = []
     for endpoint, kwargs in calls:
         if endpoint != "/api/upload/sessions":
             continue
-        files = kwargs.get("files", {})
-        file_field = files.get("file")
-        if file_field is None:
-            continue
-        # `files={"file": (name, fh)}` — `_upload_one` in push.py
-        name = file_field[0] if isinstance(file_field, tuple) else None
-        if name is not None:
-            out.append(name)
+        file_field = kwargs.get("files", {}).get("file")
+        if isinstance(file_field, tuple):
+            out.append(file_field[0])
     return out
 
 
-def test_e2e_mark_before_capture_session_never_uploads(tmp_path, monkeypatch):
-    """User marks /agnes-private *before* the SessionStart hook runs
-    capture-session. The capture-session call sees the session_id is on
-    the private list and skips the queue write entirely — the upload
-    pipeline never even sees it."""
-    _stub_push_config(monkeypatch)
+def _make_jsonl(workspace, name):
+    p = workspace / name
+    p.write_text("{}\n", encoding="utf-8")
+    return p
+
+
+def test_e2e_marked_session_never_uploads(tmp_path, monkeypatch):
+    """User runs /agnes-private; the next push skips that transcript and
+    audit-logs it, while a sibling public session uploads normally."""
+    private = _make_jsonl(tmp_path, "private-session.jsonl")
+    public = _make_jsonl(tmp_path, "public-session.jsonl")
+    _stub_push(monkeypatch, tmp_path, [private, public])
     calls = _record_uploads(monkeypatch)
 
-    private_id = "private-session"
-    private_transcript = tmp_path / "private.jsonl"
-    private_transcript.write_text("{}\n")
+    _mark_private(tmp_path, "private-session", monkeypatch)
 
-    # Step 1: user runs /agnes-private (e.g. typed it before any
-    # SessionStart hook reached capture-session).
-    _mark_private(tmp_path, private_id, monkeypatch)
-
-    # Step 2: SessionStart hook fires capture-session. It must see the
-    # private flag and skip the queue write.
-    _capture(tmp_path, private_id, private_transcript, monkeypatch)
-
-    # Queue must be empty / absent — capture-session bailed before write.
-    assert not queue_path(tmp_path).exists() or \
-        queue_path(tmp_path).read_text(encoding="utf-8") == ""
-
-    # Step 3: push runs (e.g. SessionEnd fires it).
     result = runner.invoke(push_app, ["--quiet"])
     assert result.exit_code == 0, result.output
 
-    # Assert: nothing reached the (fake) server.
-    assert _uploaded_session_names(calls) == [], (
-        f"Private session must not upload; got: {_uploaded_session_names(calls)}"
-    )
-    # And no uploaded-log entry was written.
-    assert not uploaded_log_path(tmp_path).exists()
+    assert _uploaded_session_names(calls) == ["public-session.jsonl"]
 
-
-def test_e2e_capture_before_mark_filters_at_push(tmp_path, monkeypatch):
-    """User marks /agnes-private *after* capture-session has already
-    queued the transcript (typical scenario — user types the slash
-    command mid-session). The entry sits in the queue; push's per-entry
-    re-check against the private list filters it out at the last moment
-    and audit-logs the skip."""
-    _stub_push_config(monkeypatch)
-    calls = _record_uploads(monkeypatch)
-
-    private_id = "private-session"
-    private_transcript = tmp_path / "private.jsonl"
-    private_transcript.write_text("{}\n")
-    public_id = "public-session"
-    public_transcript = tmp_path / "public.jsonl"
-    public_transcript.write_text("{}\n")
-
-    # Step 1: SessionStart hooks fire capture-session for BOTH sessions.
-    # Neither is private yet, so both land in the queue.
-    _capture(tmp_path, private_id, private_transcript, monkeypatch)
-    _capture(tmp_path, public_id, public_transcript, monkeypatch)
-    # Sanity: queue has both entries.
-    queue_lines = queue_path(tmp_path).read_text(encoding="utf-8").splitlines()
-    assert len(queue_lines) == 2
-
-    # Step 2: user marks one of them /agnes-private mid-session.
-    _mark_private(tmp_path, private_id, monkeypatch)
-
-    # Step 3: push runs.
-    result = runner.invoke(push_app, ["--quiet"])
-    assert result.exit_code == 0, result.output
-
-    # Assert: ONLY the public session reached the (fake) server.
-    uploaded = _uploaded_session_names(calls)
-    assert uploaded == ["public.jsonl"], (
-        f"Only the non-private session should upload; got: {uploaded}"
-    )
-
-    # Audit log records the skipped private entry — the forensic trail.
     skipped_log = private_skipped_log_path(tmp_path).read_text(encoding="utf-8")
-    assert private_id in skipped_log
-    assert "private.jsonl" in skipped_log
-
-    # Failed log MUST be empty — private skip is not a failure, just
-    # an intentional exclusion.
+    assert "private-session" in skipped_log
+    assert "private-session.jsonl" in skipped_log
+    # A privacy skip is an intentional exclusion, never a failure.
     assert not failed_log_path(tmp_path).exists()
+    # And the private session is never recorded in the upload ledger.
+    led = uploaded_log_path(tmp_path)
+    assert (not led.exists()) or "private-session" not in led.read_text(encoding="utf-8")
 
 
 def test_e2e_unmarked_sessions_upload_normally(tmp_path, monkeypatch):
-    """Control case: with no /agnes-private call, both sessions upload.
-    Proves the e2e tests above are exercising the privacy filter, not
-    some unrelated reason the upload didn't fire."""
-    _stub_push_config(monkeypatch)
+    """Control: with no /agnes-private call, both sessions upload — proves the
+    test above exercises the privacy filter, not some unrelated reason."""
+    a = _make_jsonl(tmp_path, "a.jsonl")
+    b = _make_jsonl(tmp_path, "b.jsonl")
+    _stub_push(monkeypatch, tmp_path, [a, b])
     calls = _record_uploads(monkeypatch)
-
-    t1 = tmp_path / "a.jsonl"
-    t1.write_text("{}\n")
-    t2 = tmp_path / "b.jsonl"
-    t2.write_text("{}\n")
-
-    _capture(tmp_path, "sid-a", t1, monkeypatch)
-    _capture(tmp_path, "sid-b", t2, monkeypatch)
 
     result = runner.invoke(push_app, ["--quiet"])
     assert result.exit_code == 0, result.output
 
-    uploaded = sorted(_uploaded_session_names(calls))
-    assert uploaded == ["a.jsonl", "b.jsonl"], (
-        f"Both unmarked sessions should upload; got: {uploaded}"
-    )
-    # No private-skipped audit entries either — nothing was marked private.
+    assert sorted(_uploaded_session_names(calls)) == ["a.jsonl", "b.jsonl"]
     assert not private_skipped_log_path(tmp_path).exists()

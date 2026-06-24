@@ -50,10 +50,10 @@ shouldn't shape org-wide context, etc.), mark it private:
   `<workspace>/.claude/agnes-sessions-private-skipped.txt`.
 - The Claude Code statusbar shows `🔒 agnes-private` while you are
   in a private session, so the marking is visible at a glance.
-- Marking before `capture-session` fires (the SessionStart hook that
-  queues the transcript) means the session never enters the upload
-  queue at all; marking after it fires is also safe — the push-side
-  re-check on the private list is the authoritative filter.
+- `agnes push` scans your Claude Code session folder and re-checks the
+  private list before uploading each transcript, so marking a session
+  private any time before its next push keeps it off the server. Uploads
+  that already completed are not undone — mark early if in doubt.
 
 ## Discovering tables — never enumerate from memory
 

@@ -25,7 +25,6 @@ if sys.platform == "win32":
         pass
 
 from cli.commands.auth import auth_app
-from cli.commands.capture_session import capture_session_app
 from cli.commands.init import init_app
 from cli.commands.mark_private import mark_private_app
 from cli.commands.onboarded import onboarded_app
@@ -178,7 +177,6 @@ app.add_typer(init_app, name="init")
 app.add_typer(onboarded_app, name="onboarded")
 app.add_typer(pull_app, name="pull")
 app.add_typer(push_app, name="push")
-app.add_typer(capture_session_app, name="capture-session")
 app.add_typer(mark_private_app, name="mark-private")
 app.add_typer(statusline_app, name="statusline")
 app.add_typer(update_workspace_app, name="update-workspace")

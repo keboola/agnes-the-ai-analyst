@@ -1,9 +1,12 @@
-"""Regression coverage for cli.lib.session_health.capture_session_health.
+"""Regression coverage for cli.lib.session_health.session_upload_health.
 
-Issue #244 — flag silently-broken `agnes capture-session` by comparing
-session files in `~/.claude/projects/<encoded>/` against entries in
-`<workspace>/.claude/agnes-sessions-uploaded.txt` within a sliding
-window.
+Issue #244, adapted to scan-based push: flag sessions on disk in the
+workspace's encoded Claude Code folder that aren't recorded in
+``<workspace>/.claude/agnes-sessions-uploaded.txt`` within a sliding window.
+We point ``CLAUDE_CONFIG_DIR`` at a tmp tree so ``session_paths`` resolves the
+session folder there, and write ledger rows in the current
+``<session_id>\\t<size>\\t<iso>`` format (with a legacy ``<iso>\\t<path>`` row
+proving backward-compatible parsing).
 """
 
 from __future__ import annotations
@@ -13,194 +16,147 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pytest
+from cli.lib.session_health import session_upload_health
+from cli.lib.session_paths import encode_workspace
 
 
-def _set_home(monkeypatch, tmp_path):
-    """Override the module-level ``_PROJECTS_DIR`` (evaluated once at
-    import via ``Path.home()``) so the check reads from a controlled
-    ``~/.claude/projects/`` tree under tmp_path."""
-    import cli.lib.claude_sessions as cs
-    monkeypatch.setattr(cs, "_PROJECTS_DIR", tmp_path / ".claude" / "projects")
+def _set_projects_root(monkeypatch, root: Path) -> None:
+    """Make `session_paths.projects_root()` resolve under *root*/projects."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(root))
 
 
-def _make_session_file(home: Path, workspace: Path, name: str, age_days: float) -> Path:
-    """Write an empty jsonl into one of the candidate encoded dirs and
-    backdate its mtime."""
-    # Use variant-a encoding (slash→dash) — matches the macOS-friendly
-    # form cli/lib/claude_sessions.py emits first.
-    encoded = str(workspace.resolve()).replace("/", "-")
-    target = home / ".claude" / "projects" / encoded
+def _make_session_file(cc_root: Path, workspace: Path, name: str, age_days: float) -> Path:
+    target = cc_root / "projects" / encode_workspace(workspace)
     target.mkdir(parents=True, exist_ok=True)
     f = target / name
     f.write_text("{}\n", encoding="utf-8")
-    # Backdate mtime
     age = time.time() - (age_days * 86400)
     os.utime(f, (age, age))
     return f
 
 
-def _append_uploaded_log(workspace: Path, when: datetime, transcript_path: str) -> None:
+def _append_uploaded(workspace: Path, when: datetime, session_id: str, size: int = 10) -> None:
     (workspace / ".claude").mkdir(parents=True, exist_ok=True)
     log = workspace / ".claude" / "agnes-sessions-uploaded.txt"
-    line = f"{when.strftime('%Y-%m-%dT%H:%M:%SZ')}\t{transcript_path}\n"
+    line = f"{session_id}\t{size}\t{when.strftime('%Y-%m-%dT%H:%M:%SZ')}\n"
     with open(log, "a", encoding="utf-8") as f:
         f.write(line)
 
 
 def test_no_sessions_returns_info(tmp_path, monkeypatch):
-    """Fresh workspace with no SessionStart events → info, not warning."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    _set_home(monkeypatch, tmp_path / "home")
-    (tmp_path / "home").mkdir()
-
-    from cli.lib.session_health import capture_session_health
-    r = capture_session_health(workspace)
+    _set_projects_root(monkeypatch, tmp_path / "cc")
+    r = session_upload_health(workspace)
     assert r["status"] == "info"
     assert r["expected_sessions"] == 0
     assert r["uploaded_entries"] == 0
 
 
 def test_aligned_counts_returns_ok(tmp_path, monkeypatch):
-    """SessionStart events match uploaded-log entries → ok."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    home = tmp_path / "home"
-    home.mkdir()
-    _set_home(monkeypatch, home)
-
-    # 3 recent sessions
+    cc = tmp_path / "cc"
+    _set_projects_root(monkeypatch, cc)
     for i in range(3):
-        _make_session_file(home, workspace, f"s{i}.jsonl", age_days=2)
+        _make_session_file(cc, workspace, f"s{i}.jsonl", age_days=2)
     now = datetime.now(timezone.utc)
     for i in range(3):
-        _append_uploaded_log(workspace, now - timedelta(days=2, hours=i),
-                             f"/path/s{i}.jsonl")
-
-    from cli.lib.session_health import capture_session_health
-    r = capture_session_health(workspace)
+        _append_uploaded(workspace, now - timedelta(days=2, hours=i), f"s{i}")
+    r = session_upload_health(workspace)
     assert r["status"] == "ok"
     assert r["expected_sessions"] == 3
     assert r["uploaded_entries"] == 3
 
 
 def test_silent_breakage_returns_warning(tmp_path, monkeypatch):
-    """SessionStart events ≫ uploaded entries (delta > threshold) → warning."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    home = tmp_path / "home"
-    home.mkdir()
-    _set_home(monkeypatch, home)
-
-    # 10 recent SessionStart events
+    cc = tmp_path / "cc"
+    _set_projects_root(monkeypatch, cc)
     for i in range(10):
-        _make_session_file(home, workspace, f"s{i}.jsonl", age_days=2)
-    # only 2 uploads — capture-session silently dropped 8
+        _make_session_file(cc, workspace, f"s{i}.jsonl", age_days=2)
     now = datetime.now(timezone.utc)
     for i in range(2):
-        _append_uploaded_log(workspace, now - timedelta(days=1), f"/p{i}.jsonl")
-
-    from cli.lib.session_health import capture_session_health
-    r = capture_session_health(workspace)
+        _append_uploaded(workspace, now - timedelta(days=1), f"s{i}")
+    r = session_upload_health(workspace)
     assert r["status"] == "warning"
     assert r["expected_sessions"] == 10
     assert r["uploaded_entries"] == 2
-    assert "capture-session may be silently failing" in r["detail"]
+    assert "session upload may be failing" in r["detail"]
 
 
 def test_older_sessions_outside_window_ignored(tmp_path, monkeypatch):
-    """Sessions outside the window must not count toward expected."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    home = tmp_path / "home"
-    home.mkdir()
-    _set_home(monkeypatch, home)
-
-    # 5 ancient sessions (60d ago) + 1 recent
+    cc = tmp_path / "cc"
+    _set_projects_root(monkeypatch, cc)
     for i in range(5):
-        _make_session_file(home, workspace, f"old{i}.jsonl", age_days=60)
-    _make_session_file(home, workspace, "recent.jsonl", age_days=2)
+        _make_session_file(cc, workspace, f"old{i}.jsonl", age_days=60)
+    _make_session_file(cc, workspace, "recent.jsonl", age_days=2)
     now = datetime.now(timezone.utc)
-    _append_uploaded_log(workspace, now - timedelta(days=2), "/p/recent.jsonl")
-
-    from cli.lib.session_health import capture_session_health
-    r = capture_session_health(workspace, window_days=7)
+    _append_uploaded(workspace, now - timedelta(days=2), "recent")
+    r = session_upload_health(workspace, window_days=7)
     assert r["status"] == "ok"
     assert r["expected_sessions"] == 1
     assert r["uploaded_entries"] == 1
 
 
 def test_uploaded_entries_outside_window_ignored(tmp_path, monkeypatch):
-    """Old uploaded-log entries don't count even if SessionStart count is high."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    home = tmp_path / "home"
-    home.mkdir()
-    _set_home(monkeypatch, home)
-
+    cc = tmp_path / "cc"
+    _set_projects_root(monkeypatch, cc)
     for i in range(10):
-        _make_session_file(home, workspace, f"s{i}.jsonl", age_days=1)
-    # 8 uploads but ancient — outside window
+        _make_session_file(cc, workspace, f"s{i}.jsonl", age_days=1)
     now = datetime.now(timezone.utc)
     for i in range(8):
-        _append_uploaded_log(workspace, now - timedelta(days=60),
-                             f"/p{i}.jsonl")
-
-    from cli.lib.session_health import capture_session_health
-    r = capture_session_health(workspace, window_days=7)
+        _append_uploaded(workspace, now - timedelta(days=60), f"s{i}")
+    r = session_upload_health(workspace, window_days=7)
     assert r["status"] == "warning"
     assert r["expected_sessions"] == 10
     assert r["uploaded_entries"] == 0
 
 
 def test_threshold_respected(tmp_path, monkeypatch):
-    """Delta within threshold stays ok (a couple unsynced sessions is fine)."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    home = tmp_path / "home"
-    home.mkdir()
-    _set_home(monkeypatch, home)
-
+    cc = tmp_path / "cc"
+    _set_projects_root(monkeypatch, cc)
     for i in range(5):
-        _make_session_file(home, workspace, f"s{i}.jsonl", age_days=1)
+        _make_session_file(cc, workspace, f"s{i}.jsonl", age_days=1)
     now = datetime.now(timezone.utc)
-    # 3 uploads of 5 events → delta=2, threshold=3 → still ok
     for i in range(3):
-        _append_uploaded_log(workspace, now - timedelta(days=1), f"/p{i}.jsonl")
-
-    from cli.lib.session_health import capture_session_health
-    r = capture_session_health(workspace, window_days=7, threshold=3)
+        _append_uploaded(workspace, now - timedelta(days=1), f"s{i}")
+    r = session_upload_health(workspace, window_days=7, threshold=3)
     assert r["status"] == "ok"
     assert r["expected_sessions"] == 5
     assert r["uploaded_entries"] == 3
 
 
-def test_malformed_uploaded_log_lines_skipped(tmp_path, monkeypatch):
-    """Garbage in uploaded-log doesn't crash the check; only well-formed
-    timestamped lines count."""
+def test_malformed_and_legacy_uploaded_log_lines(tmp_path, monkeypatch):
+    """Garbage rows don't crash the check; both the current
+    ``sid\\tsize\\tiso`` format and the legacy ``iso\\tpath`` format count
+    (the timestamp is found whether it's the last or the first field)."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     (workspace / ".claude").mkdir()
-    home = tmp_path / "home"
-    home.mkdir()
-    _set_home(monkeypatch, home)
-
+    cc = tmp_path / "cc"
+    _set_projects_root(monkeypatch, cc)
     for i in range(3):
-        _make_session_file(home, workspace, f"s{i}.jsonl", age_days=1)
+        _make_session_file(cc, workspace, f"s{i}.jsonl", age_days=1)
 
-    log = workspace / ".claude" / "agnes-sessions-uploaded.txt"
     now = datetime.now(timezone.utc)
+    recent = (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    log = workspace / ".claude" / "agnes-sessions-uploaded.txt"
     log.write_text(
         "totally bogus line\n"
-        "\n"  # blank
-        "no-tab-just-a-path\n"
-        f"{(now - timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%SZ')}\t/p.jsonl\n"
-        "not-a-timestamp\tstill-has-a-tab\n",
+        "\n"
+        f"s0\t10\t{recent}\n"          # current format
+        f"{recent}\t/p/legacy.jsonl\n"  # legacy format — still counted
+        "not-a-timestamp\tnope\n",
         encoding="utf-8",
     )
-
-    from cli.lib.session_health import capture_session_health
-    r = capture_session_health(workspace, window_days=7, threshold=3)
+    r = session_upload_health(workspace, window_days=7, threshold=0)
     assert r["expected_sessions"] == 3
-    assert r["uploaded_entries"] == 1
+    assert r["uploaded_entries"] == 2
