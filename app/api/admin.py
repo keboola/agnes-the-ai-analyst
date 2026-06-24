@@ -25,6 +25,7 @@ from src.identifier_validation import (
 
 from src.repositories import (
     audit_repo,
+    knowledge_repo,
     store_entities_repo,
     store_submissions_repo,
     sync_state_repo,
@@ -4013,6 +4014,9 @@ def run_corporate_memory(
     audit_params: dict = {
         "items_new": stats.get("items_new", 0),
         "items_filtered": stats.get("items_filtered", 0),
+        "items_db_inserted": stats.get("items_db_inserted", 0),
+        "items_db_updated": stats.get("items_db_updated", 0),
+        "items_db_errors": stats.get("items_db_errors", 0),
         "errors": len(stats.get("errors", [])),
         "skipped": stats.get("skipped", False),
     }
@@ -4029,7 +4033,80 @@ def run_corporate_memory(
     if job_error is not None:
         raise HTTPException(status_code=500, detail=audit_params["unhandled_error"])
 
-    return {"ok": not stats.get("errors"), "details": stats}
+    return {
+        "ok": not stats.get("errors") and stats.get("items_db_errors", 0) == 0,
+        "details": stats,
+    }
+
+
+@router.post("/run-knowledge-migration")
+def run_knowledge_migration(
+    user: dict = Depends(require_admin),
+):
+    """Retroactively import knowledge items from knowledge.json into the DB.
+
+    One-time migration for instances where collect_all() ran before v0.71.60
+    (which added the DB sync step). Idempotent — items already in the DB are
+    skipped. Remove this endpoint after all instances have been migrated.
+    """
+    data_dir = Path(os.environ.get("DATA_DIR", "./data"))
+    knowledge_file = data_dir / "corporate-memory" / "knowledge.json"
+
+    try:
+        knowledge_data = json.loads(knowledge_file.read_text())
+    except FileNotFoundError:
+        knowledge_data = []
+    except (json.JSONDecodeError, OSError) as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read knowledge.json: {e}")
+
+    if isinstance(knowledge_data, dict) and "items" in knowledge_data:
+        knowledge_data = list(knowledge_data["items"].values())
+    elif not isinstance(knowledge_data, list):
+        raise HTTPException(status_code=500, detail="knowledge.json has unexpected format")
+
+    count = 0
+    repo = knowledge_repo()
+    for item in knowledge_data:
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("id", "")
+        if not item_id:
+            continue
+        if repo.get_by_id(item_id):
+            continue
+        # Validate domain slug before INSERT to avoid a partial commit: create()
+        # does the INSERT first, then resolves the slug; if the slug is unknown
+        # it raises ValueError after the row is already committed, leaving an
+        # orphaned item that can never be re-migrated. Resolve upfront instead.
+        domain_slug = item.get("domain")
+        if domain_slug and not repo._resolve_domain_slug(domain_slug):
+            domain_slug = None
+        repo.create(
+            id=item_id,
+            title=item.get("title", ""),
+            content=item.get("content", ""),
+            category=item.get("category", ""),
+            source_user=item.get("source_user"),
+            tags=item.get("tags"),
+            status=item.get("status", "pending"),
+            confidence=item.get("confidence"),
+            domain=domain_slug,
+            entities=item.get("entities"),
+            source_type=item.get("source_type", "claude_local_md"),
+            source_ref=item.get("source_ref"),
+            sensitivity=item.get("sensitivity", "internal"),
+            is_personal=item.get("is_personal", False),
+        )
+        count += 1
+
+    audit_repo().log(
+        user_id=user.get("id"),
+        action="run_knowledge_migration",
+        resource="job:knowledge-migration",
+        params={"knowledge_imported": count},
+    )
+
+    return {"ok": True, "knowledge_imported": count}
 
 
 # ---------------------------------------------------------------------------
@@ -4271,7 +4348,6 @@ async def admin_get_store_submission(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-
     sub = store_submissions_repo().get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")

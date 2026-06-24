@@ -17,7 +17,7 @@ jobs:
       matrix:
         group: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6
         with:
@@ -45,12 +45,18 @@ jobs:
           TESTING: "1"
 
   test-pg:
-    # Runs tests/db_pg/ in a single dedicated job. Keeping these separate from
-    # the split shards avoids the pgserver session-fixture startup overhead
-    # (~60 s per worker) from landing in shard 1 and skewing wall-clock times.
+    # Runs tests/db_pg/ split across 2 parallel jobs to halve wall-clock time.
+    # Keeping these separate from the main split shards avoids the pgserver
+    # session-fixture startup overhead (~60 s per worker) from landing in shard
+    # 1 and skewing the main shards. pytest-split balances the 2 groups; tests
+    # without timing data receive the mean duration so the split is roughly even.
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6
         with:
@@ -64,15 +70,14 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system ".[dev,server]"
 
-      - name: Run Postgres contract tests
-        run: pytest tests/db_pg/ -v --tb=short -n auto
+      - name: Run Postgres contract tests (shard ${{ matrix.group }}/2)
+        run: pytest tests/db_pg/ -v --tb=short -n auto --splits 2 --group ${{ matrix.group }}
         env:
           TESTING: "1"
 
   # Single required status check. Branch protection requires `test`, but the
-  # matrix above publishes `test-shard (1..8)` — this job aggregates them
-  # (and the dedicated test-pg job) into one `test` result so no
-  # branch-protection change is needed.
+  # matrices above publish `test-shard (1..8)` and `test-pg (1..2)` — this job
+  # aggregates them into one `test` result so no branch-protection change is needed.
   test:
     needs: [test-shard, test-pg]
     if: always()
@@ -88,7 +93,7 @@ jobs:
             echo "::error::test-pg result was '${{ needs.test-pg.result }}' — Postgres contract tests failed"
             exit 1
           fi
-          echo "All 8 test shards and Postgres contract tests passed."
+          echo "All 8 test shards and both Postgres contract shards passed."
 
   lint:
     # Advisory only (continue-on-error) — ruff + mypy surface issues but
@@ -96,7 +101,7 @@ jobs:
     # full dependency install since neither tool needs it.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6
         with:
@@ -127,7 +132,7 @@ jobs:
     # cap), and the break only surfaces on the next analyst's first install.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6
         with:
@@ -177,7 +182,7 @@ jobs:
   docker-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Build Docker image
         run: docker build -t data-analyst:test .
@@ -187,7 +192,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: docker-build
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6
         with:
