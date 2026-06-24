@@ -1,7 +1,6 @@
 """Full tests for the Jira service (JiraService.process_webhook_event and friends)."""
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -32,6 +31,7 @@ def jira_env(tmp_path, monkeypatch):
 def _make_jira_service(jira_env):
     """Create a fresh JiraService with test configuration."""
     from connectors.jira import service as svc
+
     svc.Config.JIRA_DOMAIN = "mycompany.atlassian.net"
     svc.Config.JIRA_EMAIL = "bot@mycompany.com"
     svc.Config.JIRA_API_TOKEN = "test-token-xyz"
@@ -62,11 +62,13 @@ class TestJiraServiceWebhookProcessing:
         event_data, _, _ = WebhookEventFactory.issue_updated("PROJ-100")
         issue_data = _fake_issue_data("PROJ-100")
 
-        with patch.object(service, "fetch_issue", return_value=issue_data), \
-             patch.object(service, "fetch_remote_links", return_value=[]), \
-             patch.object(service, "fetch_sla_fields", return_value=None), \
-             patch.object(service, "download_all_attachments", return_value=[]), \
-             patch("connectors.jira.service.trigger_incremental_transform", return_value=True):
+        with (
+            patch.object(service, "fetch_issue", return_value=issue_data),
+            patch.object(service, "fetch_remote_links", return_value=[]),
+            patch.object(service, "fetch_refresh_fields", return_value=None),
+            patch.object(service, "download_all_attachments", return_value=[]),
+            patch("connectors.jira.service.trigger_incremental_transform", return_value=True),
+        ):
             result = service.process_webhook_event(event_data)
 
         assert result is True
@@ -116,11 +118,13 @@ class TestJiraServiceWebhookProcessing:
             },
         }
 
-        with patch.object(service, "fetch_issue", return_value=None), \
-             patch.object(service, "fetch_remote_links", return_value=[]), \
-             patch.object(service, "fetch_sla_fields", return_value=None), \
-             patch.object(service, "download_all_attachments", return_value=[]), \
-             patch("connectors.jira.service.trigger_incremental_transform", return_value=True):
+        with (
+            patch.object(service, "fetch_issue", return_value=None),
+            patch.object(service, "fetch_remote_links", return_value=[]),
+            patch.object(service, "fetch_refresh_fields", return_value=None),
+            patch.object(service, "download_all_attachments", return_value=[]),
+            patch("connectors.jira.service.trigger_incremental_transform", return_value=True),
+        ):
             result = service.process_webhook_event(event_data)
 
         assert result is True
@@ -137,7 +141,6 @@ class TestJiraServiceWebhookProcessing:
 
     def test_fetch_issue_returns_none_on_404(self, jira_env):
         """fetch_issue returns None when Jira returns 404."""
-        import httpx
 
         service = _make_jira_service(jira_env)
 
@@ -180,9 +183,7 @@ class TestJiraServiceWebhookProcessing:
         secret = "test-secret"
         event_data, payload, sig = WebhookEventFactory.issue_updated("TEST-1", secret)
 
-        expected_mac = hmac.new(
-            secret.encode("utf-8"), payload, hashlib.sha256
-        ).hexdigest()
+        expected_mac = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
         assert sig == f"sha256={expected_mac}"
 
 
@@ -204,34 +205,29 @@ class TestFetchRemoteLinks:
 
     def test_returns_list_on_200(self, jira_env):
         service = _make_jira_service(jira_env)
-        with patch("connectors.jira.service.httpx.Client",
-                   return_value=self._mock_http(200, [{"id": "1"}])):
+        with patch("connectors.jira.service.httpx.Client", return_value=self._mock_http(200, [{"id": "1"}])):
             assert service.fetch_remote_links("PROJ-1") == [{"id": "1"}]
 
     def test_returns_empty_on_404(self, jira_env):
         service = _make_jira_service(jira_env)
-        with patch("connectors.jira.service.httpx.Client",
-                   return_value=self._mock_http(404)):
+        with patch("connectors.jira.service.httpx.Client", return_value=self._mock_http(404)):
             assert service.fetch_remote_links("PROJ-1") == []
 
     def test_raises_on_401(self, jira_env):
         service = _make_jira_service(jira_env)
-        with patch("connectors.jira.service.httpx.Client",
-                   return_value=self._mock_http(401)):
+        with patch("connectors.jira.service.httpx.Client", return_value=self._mock_http(401)):
             with pytest.raises(JiraFetchError, match="auth"):
                 service.fetch_remote_links("PROJ-1")
 
     def test_raises_on_403(self, jira_env):
         service = _make_jira_service(jira_env)
-        with patch("connectors.jira.service.httpx.Client",
-                   return_value=self._mock_http(403)):
+        with patch("connectors.jira.service.httpx.Client", return_value=self._mock_http(403)):
             with pytest.raises(JiraFetchError, match="auth"):
                 service.fetch_remote_links("PROJ-1")
 
     def test_raises_on_500(self, jira_env):
         service = _make_jira_service(jira_env)
-        with patch("connectors.jira.service.httpx.Client",
-                   return_value=self._mock_http(500)):
+        with patch("connectors.jira.service.httpx.Client", return_value=self._mock_http(500)):
             with pytest.raises(JiraFetchError, match="server"):
                 service.fetch_remote_links("PROJ-1")
 
@@ -240,8 +236,7 @@ class TestFetchRemoteLinks:
         # A webhook burst hitting Jira's rate limiter is the most likely
         # production scenario; returning [] would re-trigger the wipe bug.
         service = _make_jira_service(jira_env)
-        with patch("connectors.jira.service.httpx.Client",
-                   return_value=self._mock_http(429)):
+        with patch("connectors.jira.service.httpx.Client", return_value=self._mock_http(429)):
             with pytest.raises(JiraFetchError, match="rate limited"):
                 service.fetch_remote_links("PROJ-1")
 
@@ -249,8 +244,7 @@ class TestFetchRemoteLinks:
         # Any non-success/non-404 status raises — covers 400, 405, 418, etc.
         # No silent fall-through.
         service = _make_jira_service(jira_env)
-        with patch("connectors.jira.service.httpx.Client",
-                   return_value=self._mock_http(418)):
+        with patch("connectors.jira.service.httpx.Client", return_value=self._mock_http(418)):
             with pytest.raises(JiraFetchError, match="unexpected status"):
                 service.fetch_remote_links("PROJ-1")
 
@@ -267,6 +261,7 @@ class TestFetchRemoteLinks:
         missing-creds + webhook-arrives combo is realistic, not
         theoretical."""
         from connectors.jira import service as svc
+
         # Mirror _make_jira_service except DROP the API credentials so
         # is_configured() returns False.
         svc.Config.JIRA_DOMAIN = ""
@@ -282,6 +277,7 @@ class TestFetchRemoteLinks:
 
     def test_raises_on_request_error(self, jira_env):
         import httpx
+
         service = _make_jira_service(jira_env)
         client = MagicMock()
         client.get.side_effect = httpx.RequestError("connection reset")
@@ -299,8 +295,10 @@ class TestSaveIssueRemoteLinksOverlay:
 
     def test_sets_remote_links_on_success(self, jira_env):
         service = _make_jira_service(jira_env)
-        with patch.object(service, "fetch_remote_links", return_value=[{"id": "rl-1"}]), \
-             patch.object(service, "fetch_sla_fields", return_value=None):
+        with (
+            patch.object(service, "fetch_remote_links", return_value=[{"id": "rl-1"}]),
+            patch.object(service, "fetch_refresh_fields", return_value=None),
+        ):
             path = service.save_issue(_fake_issue_data("PROJ-1"))
         with open(path) as f:
             data = json.load(f)
@@ -309,8 +307,10 @@ class TestSaveIssueRemoteLinksOverlay:
     def test_sets_empty_remote_links_on_404(self, jira_env):
         # 404 stays as [] — legitimately means "issue has no remote links".
         service = _make_jira_service(jira_env)
-        with patch.object(service, "fetch_remote_links", return_value=[]), \
-             patch.object(service, "fetch_sla_fields", return_value=None):
+        with (
+            patch.object(service, "fetch_remote_links", return_value=[]),
+            patch.object(service, "fetch_refresh_fields", return_value=None),
+        ):
             path = service.save_issue(_fake_issue_data("PROJ-1"))
         with open(path) as f:
             data = json.load(f)
@@ -320,15 +320,16 @@ class TestSaveIssueRemoteLinksOverlay:
         # When fetch raises, the key MUST be absent — that's the signal
         # to the transform that this isn't fresh data and should be skipped.
         service = _make_jira_service(jira_env)
-        with patch.object(service, "fetch_remote_links",
-                          side_effect=JiraFetchError("auth")), \
-             patch.object(service, "fetch_sla_fields", return_value=None):
+        with (
+            patch.object(service, "fetch_remote_links", side_effect=JiraFetchError("auth")),
+            patch.object(service, "fetch_refresh_fields", return_value=None),
+        ):
             path = service.save_issue(_fake_issue_data("PROJ-1"))
         with open(path) as f:
             data = json.load(f)
-        assert "_remote_links" not in data, \
-            "Absent key is the contract with transform_remote_links — " \
-            "do not change to an empty list."
+        assert "_remote_links" not in data, (
+            "Absent key is the contract with transform_remote_links — do not change to an empty list."
+        )
 
 
 class TestTransformRemoteLinks:
@@ -336,14 +337,18 @@ class TestTransformRemoteLinks:
     (preserve-existing signal) and [] when present-but-empty (legitimate 'none')."""
 
     def test_returns_list_when_links_present(self):
-        result = transform_remote_links({
-            "key": "PROJ-1",
-            "_remote_links": [{
-                "id": "rl-1",
-                "object": {"url": "https://x", "title": "X"},
-                "application": {"name": "App", "type": "type"},
-            }],
-        })
+        result = transform_remote_links(
+            {
+                "key": "PROJ-1",
+                "_remote_links": [
+                    {
+                        "id": "rl-1",
+                        "object": {"url": "https://x", "title": "X"},
+                        "application": {"name": "App", "type": "type"},
+                    }
+                ],
+            }
+        )
         assert result is not None
         assert len(result) == 1
         assert result[0]["remote_link_id"] == "rl-1"

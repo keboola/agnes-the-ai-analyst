@@ -17,6 +17,8 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from connectors.jira.service import refresh_fields
+
 logger = logging.getLogger(__name__)
 
 # Parquet write options applied to every monthly chunk.
@@ -99,16 +101,25 @@ ISSUES_SCHEMA = {
     "technical_issue_category": "string",
     "email_address": "string",
     "satisfaction": "Int64",
-    "first_response_breached": "string",
-    "first_response_goal_millis": "Int64",
-    "first_response_elapsed_millis": "Int64",
-    "time_to_resolution_breached": "string",
-    "time_to_resolution_goal_millis": "Int64",
-    "time_to_resolution_elapsed_millis": "Int64",
     "l3_team": "string",
     "_synced_at": "string",
     "_raw_file": "string",
 }
+
+
+def issues_schema() -> dict:
+    """ISSUES_SCHEMA extended with one string column per configured refresh field.
+
+    The operator's ``JIRA_REFRESH_FIELDS`` columns are appended (as JSON-text
+    strings) so ``apply_schema`` keeps them. Resolved at call time (the field list
+    comes from the env) and used everywhere the issues parquet is written, so the
+    generic columns survive both batch and incremental writes.
+    """
+    schema = dict(ISSUES_SCHEMA)
+    for _, column in refresh_fields():
+        schema.setdefault(column, "string")
+    return schema
+
 
 COMMENTS_SCHEMA = {
     "comment_id": "string",
@@ -287,38 +298,6 @@ def parse_datetime(dt_str: str | None) -> datetime | None:
         return None
 
 
-def extract_sla_metrics(sla_field: Any) -> dict:
-    """
-    Extract flattened SLA metrics from a Jira SLA field.
-
-    Prefers ongoingCycle (active tickets), falls back to last completedCycle.
-    Returns dict with breached, goal_millis, elapsed_millis.
-    """
-    result = {"breached": None, "goal_millis": None, "elapsed_millis": None}
-
-    if not isinstance(sla_field, dict):
-        return result
-    # Skip error responses from permission issues
-    if "errorMessage" in sla_field:
-        return result
-
-    # Prefer ongoing cycle, fall back to last completed cycle
-    cycle = sla_field.get("ongoingCycle")
-    if not cycle:
-        completed = sla_field.get("completedCycles", [])
-        if completed:
-            cycle = completed[-1]
-
-    if cycle:
-        result["breached"] = str(cycle.get("breached")) if cycle.get("breached") is not None else None
-        goal = cycle.get("goalDuration", {})
-        elapsed = cycle.get("elapsedTime", {})
-        result["goal_millis"] = goal.get("millis")
-        result["elapsed_millis"] = elapsed.get("millis")
-
-    return result
-
-
 def transform_issue(raw_issue: dict) -> dict:
     """
     Transform a single raw Jira issue into clean format.
@@ -394,13 +373,17 @@ def transform_issue(raw_issue: dict) -> dict:
         "satisfaction": fields.get("customfield_10157", {}).get("rating")
         if isinstance(fields.get("customfield_10157"), dict)
         else None,
-        **{f"first_response_{k}": v for k, v in extract_sla_metrics(fields.get("customfield_10328")).items()},
-        **{f"time_to_resolution_{k}": v for k, v in extract_sla_metrics(fields.get("customfield_10161")).items()},
         "l3_team": extract_option_value(fields.get("customfield_11831")),
         # Metadata
         "_synced_at": raw_issue.get("_synced_at"),
         "_raw_file": None,  # Will be set by caller
     }
+
+    # Generic operator-configured fields, refreshed onto the ticket. Each is stored
+    # as JSON text in its own column on `issues` (column name from refresh_fields()).
+    for field_id, column in refresh_fields():
+        value = fields.get(field_id)
+        record[column] = json.dumps(value, default=str) if value is not None else None
 
     return record
 
@@ -739,7 +722,7 @@ def transform_all(
     for month_key in sorted(issues_by_month.keys()):
         # Issues
         if issues_by_month[month_key]:
-            table = apply_schema(pd.DataFrame(issues_by_month[month_key]), ISSUES_SCHEMA)
+            table = apply_schema(pd.DataFrame(issues_by_month[month_key]), issues_schema())
             write_hive_parquet(table, output_dir / "issues", month_key)
             counts["issues"] += table.num_rows
             logger.info(f"Saved {table.num_rows} issues to issues/month={month_key}/data.parquet")
