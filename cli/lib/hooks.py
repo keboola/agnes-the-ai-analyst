@@ -13,18 +13,13 @@ Design notes:
   Third-party hooks (mixed entries, foreign commands) are left alone.
 - Uses `|| true` in the hook command so the hook never blocks a session on
   a transient sync error.
-- SessionStart gets three entries:
-    1. `agnes capture-session` — reads the SessionStart stdin JSON payload
-       (`transcript_path`) and appends the absolute path to the queue file
-       `<workspace>/.claude/agnes-sessions.txt`. This feeds `agnes push`
-       without reverse-engineering Claude Code's cwd-to-folder encoding.
-       Runs first so the path is captured before any subsequent hook can
-       fail and prevent later hooks from firing.
-    2. Chained `agnes self-upgrade; agnes pull` — self-upgrade runs first
+- SessionStart gets two entries:
+    1. Chained `agnes self-upgrade; agnes pull` — self-upgrade runs first
        so any wire-protocol bump lands before pull tries to use the new
-       CLI version. Both `|| true`-guarded so an upgrade failure doesn't
+       CLI version (and back-fills the `workspace_root` config anchor for
+       older clients). Both `|| true`-guarded so an upgrade failure doesn't
        block the pull.
-    3. `agnes refresh-marketplace --check` — independent entry. Detector-
+    2. `agnes refresh-marketplace --check` — independent entry. Detector-
        only (since the slash-command split): runs `git fetch` against the
        marketplace clone and emits a Claude Code hook JSON message
        hinting the user at `/update-agnes-plugins` when remote content
@@ -33,25 +28,16 @@ Design notes:
        Claude Code transcript and under user control. Failure (no clone,
        no token) silently no-ops via the surrounding `|| true`.
 
-  The previous SessionStart `agnes push` self-heal entry was removed once
-  the capture-queue mechanism made it redundant: orphan session JSONLs from
-  headless / crashed sessions stay in the queue and get uploaded by the
-  next SessionEnd push (queue file persists across runs). Workspaces with
-  the old entry are migrated cleanly — `_replace_or_add` strips any
-  matching `agnes push` from SessionStart on the next `agnes init`.
+  There is no `agnes capture-session` entry any more. `agnes push` now
+  scans the workspace's Claude Code session folder directly (anchored on
+  the `workspace_root` config key), which is reliable on macOS where the
+  hook stdin the old capture step depended on is delivered empty. The
+  capture-session markers below stay in `_OUR_COMMAND_MARKERS` only so the
+  old entries are stripped from a pre-existing settings.json on the next
+  `agnes init` / self-upgrade refresh.
 
-- SessionEnd gets one entry: `agnes capture-session` (synchronous) followed
-  by `agnes push --quiet` wrapped to detach into the background.
-
-  The leading capture-session re-queues the ENDING session with its final
-  transcript state. The SessionEnd payload carries the same `session_id` +
-  `transcript_path` fields as SessionStart, and the re-capture closes two
-  data-loss windows: (a) a long-lived session whose SessionStart queue
-  entry was consumed mid-flight by a push fired from another window's
-  SessionEnd — the server kept only the partial transcript that push saw;
-  (b) `/clear`, which fires SessionEnd(clear) + SessionStart(clear)
-  back-to-back — the push triggered by the SessionEnd consumed the
-  freshly-queued post-clear session as an empty stub.
+- SessionEnd gets one entry: `agnes push --quiet` wrapped to detach into
+  the background.
 
   The push must detach because Claude Code in `-p` (headless) mode
   terminates SessionEnd hook subprocesses after ~1 second regardless of
@@ -61,9 +47,9 @@ Design notes:
   orphans the upload child so it survives the Claude shutdown. Errors are
   routed to /dev/null — no worse than the previous `2>/dev/null` form.
   Operators who want visibility into push failures can manually run
-  `agnes push --json`. The SessionStart entry (3) above remains the safety
-  net for orphans from any prior session whose SessionEnd push didn't run
-  at all (genuine crash, kill, terminal close).
+  `agnes push --json`. The next session's SessionEnd push re-scans the
+  folder, so any transcript a prior push missed (crash, kill, terminal
+  close) is picked up then — the upload ledger dedups what already landed.
 """
 
 from __future__ import annotations
@@ -78,12 +64,22 @@ from pathlib import Path
 # next `agnes init` run. `agnes init` is listed so the one-time setup hook
 # written into Cowork bundles is replaced by the proper pull/push hooks the
 # first time `agnes init` calls `install_claude_hooks`.
+#
+# `agnes capture-session` and the two `capture-session/*.sh` script paths
+# stay here purely for MIGRATION cleanup: the capture step is gone, but a
+# settings.json seeded by an older CLI (CLI-form `agnes capture-session`) or
+# by the template (`bash .claude/hooks/capture-session/capture.sh`) still
+# carries those SessionStart/SessionEnd entries — matching them here lets the
+# next install / refresh strip them instead of leaving a dead entry that
+# shells out to a deleted script.
 _OUR_COMMAND_MARKERS = (
     "agnes self-upgrade",
     "agnes pull",
     "agnes push",
     "agnes refresh-marketplace",
     "agnes capture-session",
+    "capture-session/capture.sh",
+    "capture-session/stop-guard.sh",
     "agnes mark-private",
     "agnes statusline",
     "agnes init",
@@ -155,37 +151,21 @@ def install_claude_hooks(workspace: Path) -> None:
     # Workspaces still on the older `--quiet` form auto-upgrade here
     # because `_OUR_COMMAND_MARKERS` matches by substring on the
     # `agnes refresh-marketplace` prefix.
-    # `agnes capture-session` reads the SessionStart hook stdin (a JSON
-    # payload with `transcript_path`) and appends the path to
-    # `.claude/agnes-sessions.txt`. That queue file feeds `agnes push`,
-    # avoiding any reverse-engineering of Claude Code's cwd-to-folder
-    # encoding.
     #
-    # The previous SessionStart `agnes push` self-heal entry was dropped
-    # once the queue mechanism made it redundant — orphans from headless
-    # / crashed sessions remain in the queue and ship out with the next
-    # SessionEnd push. The marker substring "agnes push" stays in
-    # _OUR_COMMAND_MARKERS so the old entry is cleanly removed from any
-    # pre-existing settings.json on the next init.
+    # No `agnes capture-session` entry: `agnes push` scans the workspace's
+    # Claude Code session folder directly (anchored on the `workspace_root`
+    # config key), so there's nothing to capture at SessionStart. Any
+    # leftover capture entry from a CLI- or template-seeded settings.json is
+    # stripped because its command matches a `_OUR_COMMAND_MARKERS` substring
+    # ("agnes capture-session" or "capture-session/capture.sh").
     _replace_or_add(
         "SessionStart",
         [
-            'bash -c "agnes capture-session 2>/dev/null || true"',
             'bash -c "agnes self-upgrade --quiet 2>/dev/null || true; agnes pull --quiet 2>/dev/null || true"',
             'bash -c "agnes refresh-marketplace --check 2>/dev/null || true"',
         ],
     )
-    # SessionEnd runs capture-session FIRST (synchronous — a single queue
-    # append, fast enough for the ~1s hook budget), THEN the detached push.
-    # The SessionEnd hook payload carries the same `session_id` +
-    # `transcript_path` fields as SessionStart, so re-capturing here
-    # re-queues the ending session with its FINAL transcript state. Without
-    # this, a session whose queue entry was already consumed by an earlier
-    # push (fired by another window closing, or by /clear's SessionEnd)
-    # never uploads its final content: the server keeps whatever partial
-    # state that earlier push saw — or nothing at all.
-    #
-    # The push itself must run detached. Claude Code in `-p` (headless) mode
+    # SessionEnd runs the detached push. Claude Code in `-p` (headless) mode
     # SIGTERMs hook subprocesses after ~1 second regardless of work in
     # progress; a synchronous `agnes push` (5-30s for a typical workspace)
     # gets killed mid-first-upload and most session JSONLs never reach the
@@ -194,12 +174,12 @@ def install_claude_hooks(workspace: Path) -> None:
     # subprocess kill. `bash -c` mirrors the refresh-marketplace pattern
     # for Windows compatibility (Claude Code on Windows runs hook commands
     # directly, no shell). `; true` keeps the line exit-0 like the old
-    # `|| true` form.
+    # `|| true` form. push dedups against its upload ledger, so re-scanning
+    # the folder every SessionEnd never re-uploads an unchanged transcript.
     _replace_or_add(
         "SessionEnd",
         [
-            'bash -c "agnes capture-session 2>/dev/null || true ; '
-            '( nohup agnes push --quiet </dev/null >/dev/null 2>&1 & ) ; true"',
+            'bash -c "( nohup agnes push --quiet </dev/null >/dev/null 2>&1 & ) ; true"',
         ],
     )
 
@@ -349,13 +329,13 @@ def maybe_refresh_claude_hooks(workspace: Path) -> bool:
     an Agnes workspace, otherwise no-op.
 
     Called from ``agnes self-upgrade`` so that operators on workspaces
-    initialized with an older CLI version pick up new hook layout (e.g.
-    the v0.49 SessionStart ``agnes capture-session`` entry) on the next
-    session-start, without needing to re-run ``agnes init`` manually.
-    Without this, an existing v0.48 workspace would auto-upgrade the CLI
-    via its own SessionStart self-upgrade entry, but the new
-    capture-session hook would never get installed — the queue would stay
-    empty and ``agnes push`` would silently stop uploading sessions.
+    initialized with an older CLI version pick up the current hook layout
+    on the next session-start, without needing to re-run ``agnes init``
+    manually. This is what migrates an existing workspace off the removed
+    ``agnes capture-session`` SessionStart/SessionEnd entries (CLI- or
+    template-seeded) and onto the scan-based ``agnes push`` layout —
+    otherwise the dead capture entry would keep shelling out to a deleted
+    helper on every session.
 
     The guard (``workspace_has_agnes_hooks``) makes this safe to call from
     any working directory: ``agnes self-upgrade`` invoked from ``~/`` will

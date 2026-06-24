@@ -14,11 +14,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- `agnes push` now finds Claude Code session transcripts by scanning the workspace's session folder itself instead of consuming a hook-populated queue. It reads the workspace path from the new `workspace_root` config key (written by `agnes init`, back-filled by `agnes self-upgrade`), encodes it to Claude Code's projects-dir folder name, and uploads new/grown transcripts (dedup by `session_id` + byte size). This removes the dependency on hook stdin, which Claude Code delivers empty on macOS — making session upload reliable on macOS and Windows alike. With no `workspace_root` in config, `agnes push` is a clean no-op. `agnes mark-private` and the session-upload health check (`agnes diagnose`) now anchor on `workspace_root` too.
+
 ### Fixed
+
+- Session transcripts are reliably uploaded on macOS. The previous capture step depended on hook stdin (a `transcript_path` payload) that Claude Code delivers empty on macOS, so the upload queue stayed empty and sessions never reached the server. The encoding-based folder scan also fixes Windows, where the old encoder collapsed consecutive dashes and pointed at a non-existent folder (`C:\…` must encode to `C--…`).
 
 ### Removed
 
+- **BREAKING** (internal CLI surface): the `agnes capture-session` command and the SessionStart `agnes capture-session` hook are removed — `agnes push` scans the session folder directly. Existing workspaces are migrated automatically on the next `agnes self-upgrade` (the SessionStart/SessionEnd capture entries are stripped and the scan-based push hook is installed); the template no longer ships `capture-session/capture.sh`, `capture-session/stop-guard.sh`, or `_lib/agnes-path.sh`. The `agnes push --legacy-scan` flag is gone (the scan is now the default path).
+
 ### Internal
+
+- Session-upload internals reorganized: new `cli/lib/session_paths.py` (projects-dir encoder honoring `CLAUDE_CONFIG_DIR`, no dash-collapsing) and `cli/lib/upload_log.py` (upload ledger `session_id⇥size⇥iso` + audit logs); `cli/lib/session_queue.py` and `cli/lib/claude_sessions.py` removed. Hook installer (`cli/lib/hooks.py`) drops the capture entries while keeping the capture markers for one-time migration cleanup.
 
 ## [0.71.61] - 2026-06-23
 

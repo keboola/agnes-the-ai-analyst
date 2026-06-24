@@ -7,9 +7,9 @@ from typing import Optional
 import typer
 
 from cli.client import api_get
-from cli.config import get_sync_state
+from cli.config import get_sync_state, get_workspace_root
 from cli.lib.jira_partition_check import detect_jira_partition_layout
-from cli.lib.session_health import capture_session_health
+from cli.lib.session_health import session_upload_health
 
 diagnose_app = typer.Typer(help="System diagnostics")
 
@@ -82,15 +82,24 @@ def diagnose(
     except Exception as e:
         checks.append({"name": "api", "status": "error", "audience": "analyst", "detail": str(e)})
 
-    # Issue #244: detect silently-broken capture-session by comparing
-    # observed SessionStart files against the uploaded-log entries.
-    # Adds one entry to `checks` with status ok / warning / info.
+    # Issue #244: detect sessions on disk that aren't reaching the server by
+    # comparing transcripts in the workspace's Claude Code folder against the
+    # upload-ledger entries. Anchored on the `workspace_root` config key (the
+    # same anchor `agnes push` uses). Adds one `session-upload` check entry.
     try:
-        cap = capture_session_health(Path.cwd())
+        ws_root = get_workspace_root()
+        if ws_root:
+            cap = session_upload_health(Path(ws_root))
+        else:
+            cap = {
+                "name": "session-upload",
+                "status": "info",
+                "detail": "no workspace_root in config — run `agnes init`",
+            }
         cap.setdefault("audience", "analyst")
         checks.append(cap)
     except Exception as e:
-        checks.append({"name": "capture-session", "status": "info", "audience": "analyst", "detail": f"health check failed: {e}"})
+        checks.append({"name": "session-upload", "status": "info", "audience": "analyst", "detail": f"health check failed: {e}"})
 
     # Issue #394: detect Jira partition layout (flat YYYY-MM vs hive month=*/).
     # Resolves the Jira data directory from the DATA_DIR env var (mirrors how
@@ -134,11 +143,11 @@ def diagnose(
         if c.get("stale_tables"):
             for t in c["stale_tables"]:
                 actions.append(f"Table '{t}' is stale. Run: agnes server logs scheduler | grep {t}")
-        if c["name"] == "capture-session" and c["status"] == "warning":
+        if c["name"] == "session-upload" and c["status"] == "warning":
             actions.append(
-                "Capture-session may be silently failing. Run "
-                "`agnes capture-session --verbose < ~/.claude/projects/<encoded>/<session>.jsonl` "
-                "against a recent session file to surface the real error."
+                "Session upload may be failing. Run `agnes push --dry-run` to see "
+                "which transcripts would upload and confirm the workspace_root anchor "
+                "(check `agnes diagnose` / config) resolves to your Claude Code folder."
             )
 
     result = {

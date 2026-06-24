@@ -318,10 +318,12 @@ def test_maybe_refresh_claude_hooks_runs_regardless_of_sentinel(tmp_path):
     # Foreign admin hook preserved (no Agnes substring → not matched by
     # `_OUR_COMMAND_MARKERS`, so `_replace_or_add` leaves it).
     assert "echo admin-custom-hook" in cmds
-    # Agnes hooks rewritten to current default layout (capture-session,
-    # self-upgrade+pull chain, refresh-marketplace --check).
-    assert any("agnes capture-session" in c for c in cmds)
+    # Agnes hooks rewritten to current default layout (self-upgrade+pull
+    # chain, refresh-marketplace --check). No capture-session — push scans
+    # the session folder directly now.
+    assert any("agnes self-upgrade" in c and "agnes pull" in c for c in cmds)
     assert any("agnes refresh-marketplace --check" in c for c in cmds)
+    assert not any("capture-session" in c for c in cmds)
 
 
 def test_install_claude_commands_runs_regardless_of_sentinel(tmp_path):

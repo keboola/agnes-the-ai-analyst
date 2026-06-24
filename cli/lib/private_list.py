@@ -2,18 +2,14 @@
 
 A session is "private" iff its session_id appears (as a line) in
 ``<workspace>/.claude/agnes-sessions-private.txt``. The list is the single
-source of truth — both ``agnes capture-session`` (queue writer) and
-``agnes push`` (queue reader) consult it and skip private session IDs.
+source of truth: ``agnes push`` consults it while scanning the workspace's
+Claude Code session folder and skips any matching session_id.
 
-By making the list authoritative rather than treating queue removal as
-authoritative, the slash-command / SessionStart-hook race condition is
-impossible by construction:
-
-- If ``mark-private`` writes the ID before ``capture-session`` runs,
-  ``capture-session`` sees it on the list and skips the queue write.
-- If ``capture-session`` runs first, ``mark-private`` adds the ID to the
-  list. ``push`` re-checks the list before each upload — the list itself
-  is the source of truth, queue removal is incidental.
+Because the list is authoritative, the order of ``/agnes-private`` vs the
+session upload doesn't matter — push re-reads the list every run, so marking
+a session private at any point before its next push keeps it off the server.
+``agnes mark-private`` and ``agnes push`` both anchor the list to the same
+``workspace_root`` config key, so they always agree on which file to read.
 
 File format: one session_id per line, UTF-8, LF terminators. The file
 is never rewritten — only appended to (with dedup on add). The growth

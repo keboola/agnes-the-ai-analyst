@@ -213,6 +213,30 @@ def _smoke_test_new_binary(install_method: str, expected_version: str) -> tuple[
         return False, f"{type(e).__name__}: {e}"
 
 
+def _maybe_backfill_workspace_root() -> None:
+    """Record ``workspace_root`` in config for clients that pre-date the key.
+
+    ``agnes self-upgrade`` runs from a SessionStart hook on every Claude Code
+    session, so this is where workspaces initialized before the config-anchor
+    existed pick it up. Writes ONLY when (a) config has no ``workspace_root``
+    AND (b) the current directory is a genuinely-initialized workspace root —
+    it carries the ``.claude/init-complete`` sentinel that ``agnes init``
+    writes on success. The sentinel guard guarantees we never record a nested
+    subfolder. Best-effort: any failure is swallowed so a config-write hiccup
+    can't turn a SessionStart hook into a visible error.
+    """
+    try:
+        from cli.config import get_workspace_root, set_workspace_root
+
+        if get_workspace_root():
+            return
+        workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
+        if (workspace / ".claude" / "init-complete").exists():
+            set_workspace_root(str(workspace))
+    except Exception:
+        pass
+
+
 def _try_refresh_hooks(*, quiet: bool) -> None:
     """Best-effort idempotent refresh of the workspace's Claude Code hooks.
 
@@ -331,6 +355,11 @@ def self_upgrade(
         help="Reinstall the server's current wheel even when already on the latest version.",
     ),
 ) -> None:
+    # Back-fill the workspace-root config anchor on every SessionStart (runs
+    # before any network work so it happens even offline). No-op once set or
+    # when the current dir isn't an initialized workspace root.
+    _maybe_backfill_workspace_root()
+
     # Snapshot any prior sentinel so we restore (rather than destroy) it
     # in finally — we own the namespace but a wrapper could legitimately
     # set it.
@@ -381,9 +410,9 @@ def self_upgrade(
             # so the CLI is in a known-good state. Reset the failure
             # counter. Still attempt hook refresh in case the workspace
             # was initialized on an older CLI whose hook layout has
-            # since changed (e.g. v0.48 → v0.49 introduced the
-            # capture-session SessionStart entry). The refresh is a
-            # no-op for directories that don't look like Agnes
+            # since changed (e.g. migrating off the removed capture-session
+            # SessionStart/SessionEnd entries to the scan-based push). The
+            # refresh is a no-op for directories that don't look like Agnes
             # workspaces, so an `agnes self-upgrade` invoked from ~/
             # won't write there.
             record_outcome(success=True)

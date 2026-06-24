@@ -698,3 +698,54 @@ def test_check_only_does_not_touch_failure_counter(monkeypatch, tmp_path):
         result = runner.invoke(app, ["self-upgrade", "--check-only"])
         assert result.exit_code == 1
     assert us.read_status() == {}  # nothing recorded
+
+
+# ---------------------------------------------------------------------------
+# workspace_root back-fill (clients installed before the config anchor)
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_sets_workspace_root_when_init_complete_present(tmp_path, monkeypatch):
+    """A workspace with `.claude/init-complete` but no `workspace_root` in
+    config gets the anchor recorded on the next self-upgrade SessionStart."""
+    from cli.commands.self_upgrade import _maybe_backfill_workspace_root
+    from cli.config import get_workspace_root
+
+    ws = tmp_path / "ws"
+    (ws / ".claude").mkdir(parents=True)
+    (ws / ".claude" / "init-complete").write_text("completed_at: x\n", encoding="utf-8")
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(ws))
+
+    assert get_workspace_root() is None
+    _maybe_backfill_workspace_root()
+    assert get_workspace_root() == str(ws.resolve())
+
+
+def test_backfill_noop_without_init_complete(tmp_path, monkeypatch):
+    """Never record a workspace_root for a dir that isn't an initialized
+    workspace root — the `.claude/init-complete` sentinel is the guard that
+    keeps a nested subfolder from being recorded."""
+    from cli.commands.self_upgrade import _maybe_backfill_workspace_root
+    from cli.config import get_workspace_root
+
+    ws = tmp_path / "not-a-workspace"
+    ws.mkdir()
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(ws))
+
+    _maybe_backfill_workspace_root()
+    assert get_workspace_root() is None
+
+
+def test_backfill_does_not_overwrite_existing_workspace_root(tmp_path, monkeypatch):
+    """Once set, the anchor is left alone — back-fill only fills a gap."""
+    from cli.commands.self_upgrade import _maybe_backfill_workspace_root
+    from cli.config import get_workspace_root, set_workspace_root
+
+    set_workspace_root("/already/set")
+    ws = tmp_path / "ws"
+    (ws / ".claude").mkdir(parents=True)
+    (ws / ".claude" / "init-complete").write_text("x\n", encoding="utf-8")
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(ws))
+
+    _maybe_backfill_workspace_root()
+    assert get_workspace_root() == "/already/set"

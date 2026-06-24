@@ -54,11 +54,14 @@ def status(
     if db_path.exists():
         last_synced = datetime.fromtimestamp(db_path.stat().st_mtime, tz=timezone.utc).isoformat()
 
-    # Sessions live in ~/.claude/projects/<encoded-cwd>/ (where Claude Code
-    # writes them), with `<workspace>/user/sessions/` as a legacy fallback.
-    # The helper unions both — same source of truth as `agnes push`.
-    from cli.lib.claude_sessions import list_session_files
-    session_count = len(list_session_files(workspace))
+    # Sessions live in <projects_root>/<encoded-workspace_root>/ where Claude
+    # Code writes them. Count what `agnes push` would scan — anchored on the
+    # `workspace_root` config key (the same anchor push uses), so a status run
+    # from any cwd reports the real workspace. 0 when unset.
+    from cli.config import get_workspace_root
+    from cli.lib.session_paths import list_session_files
+    ws_root = get_workspace_root()
+    session_count = len(list_session_files(Path(ws_root))) if ws_root else 0
 
     info = {
         "workspace": str(workspace),
