@@ -191,6 +191,7 @@ def push(
                         "local_md": False,
                         "errors": [],
                         "private_skipped": 0,
+                        "dropped_permanent": 0,
                         "skipped_unchanged": 0,
                         "skipped_failed": 0,
                         "workspace_root": None,
@@ -267,6 +268,7 @@ def push(
             "dropped_permanent": 0,
             "skipped_unchanged": skipped_unchanged,
             "skipped_failed": skipped_failed,
+            "workspace_root": str(workspace),
         }
         now = datetime.now(timezone.utc)
 

@@ -479,3 +479,30 @@ def test_push_real_scan_uses_workspace_root_folder(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     names = [c[1]["files"]["file"][0] for c in calls if c[0] == "/api/upload/sessions"]
     assert names == ["sid-real.jsonl"]
+
+
+def test_push_json_shape_consistent_across_paths(tmp_path, monkeypatch):
+    """Both non-dry-run --json paths (no workspace_root vs real run) emit the
+    SAME key set, so a consumer reading e.g. result['dropped_permanent'] never
+    KeyErrors depending on whether the workspace is anchored."""
+    # No workspace_root.
+    monkeypatch.setattr("cli.commands.push.get_server_url", lambda: "http://x")
+    monkeypatch.setattr("cli.commands.push.get_token", lambda: "test-pat")
+    monkeypatch.setattr("cli.commands.push.get_workspace_root", lambda: None)
+    r_none = runner.invoke(push_app, ["--json"])
+    assert r_none.exit_code == 0
+    keys_none = set(json.loads(r_none.output).keys())
+
+    # Real run.
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    _stub_config(monkeypatch, ws)
+    _record_uploads(monkeypatch)
+    _stub_sessions(monkeypatch, [_make_jsonl(ws, "x.jsonl")])
+    r_real = runner.invoke(push_app, ["--json"])
+    assert r_real.exit_code == 0
+    keys_real = set(json.loads(r_real.output).keys())
+
+    assert keys_none == keys_real, (keys_none, keys_real)
+    for k in ("sessions", "dropped_permanent", "skipped_failed", "workspace_root"):
+        assert k in keys_none
