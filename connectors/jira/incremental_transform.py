@@ -21,12 +21,12 @@ from .transform import (
     CHANGELOG_SCHEMA,
     COMMENTS_SCHEMA,
     HIVE_PARTITION_PREFIX,
-    ISSUES_SCHEMA,
     ISSUELINKS_SCHEMA,
     PARQUET_WRITE_OPTIONS,
     REMOTE_LINKS_SCHEMA,
     apply_schema,
     get_month_key,
+    issues_schema,
     transform_attachments,
     transform_changelog,
     transform_comments,
@@ -284,7 +284,7 @@ def transform_single_issue(
             # Issues
             existing_issues = load_parquet_month(output_dir / "issues", month_key)
             updated_issues = upsert_dataframe(existing_issues, [issue_record], "issue_key", issue_key)
-            path = save_parquet_month(updated_issues, ISSUES_SCHEMA, output_dir / "issues", month_key)
+            path = save_parquet_month(updated_issues, issues_schema(), output_dir / "issues", month_key)
             updated_paths.append(path)
 
             # Comments
@@ -356,7 +356,7 @@ def _handle_deletion(
     found = False
 
     for table_name, schema in [
-        ("issues", ISSUES_SCHEMA),
+        ("issues", issues_schema()),
         ("comments", COMMENTS_SCHEMA),
         ("attachments", ATTACHMENTS_SCHEMA),
         ("changelog", CHANGELOG_SCHEMA),
