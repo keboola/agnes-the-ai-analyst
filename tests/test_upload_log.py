@@ -10,6 +10,8 @@ from cli.lib.upload_log import (
     mark_private_skipped,
     mark_uploaded,
     private_skipped_log_path,
+    read_failed_sessions,
+    read_private_skipped_sessions,
     read_uploaded,
     uploaded_log_path,
 )
@@ -69,3 +71,19 @@ def test_mark_failed_permanent_format(tmp_path):
     mark_failed_permanent(tmp_path, "sid-x", "/p/abc.jsonl", 403, when)
     line = failed_log_path(tmp_path).read_text(encoding="utf-8").strip()
     assert line == "2026-06-24T09:30:00Z\tsid-x\t403\t/p/abc.jsonl"
+
+
+def test_read_failed_sessions(tmp_path):
+    assert read_failed_sessions(tmp_path) == set()
+    mark_failed_permanent(tmp_path, "sid-a", "/p/a.jsonl", 413)
+    mark_failed_permanent(tmp_path, "sid-b", "/p/b.jsonl", 400)
+    assert read_failed_sessions(tmp_path) == {"sid-a", "sid-b"}
+
+
+def test_read_private_skipped_sessions(tmp_path):
+    assert read_private_skipped_sessions(tmp_path) == set()
+    mark_private_skipped(tmp_path, "sid-1", "/p/1.jsonl")
+    mark_private_skipped(tmp_path, "sid-2", "/p/2.jsonl")
+    # A duplicate row collapses in the set (the dedup primitive push relies on).
+    mark_private_skipped(tmp_path, "sid-1", "/p/1.jsonl")
+    assert read_private_skipped_sessions(tmp_path) == {"sid-1", "sid-2"}

@@ -7,7 +7,7 @@ where:
   ``CLAUDE_CONFIG_DIR`` is set, otherwise ``~/.claude/projects``.
 - the workspace path is encoded by replacing **every** non-alphanumeric
   character with ``-`` and **without** collapsing consecutive dashes. e.g.
-  ``C:\\Users\\me\\FoundryAI`` -> ``C--Users-me-FoundryAI`` (the ``:`` and
+  ``C:\\Users\\me\\Workspace`` -> ``C--Users-me-Workspace`` (the ``:`` and
   the first ``\\`` each become a ``-``, so ``C:\\`` yields ``C--``).
 
 This is the encoding recent Claude Code releases use on every platform. An

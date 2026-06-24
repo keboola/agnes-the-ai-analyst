@@ -1,11 +1,17 @@
 """Health check: detect sessions on disk that aren't reaching the server.
 
-Issue #244, adapted for the scan-based `agnes push`. push uploads 0 on every
-failure mode that matters here (no ``workspace_root`` anchored, the encoded
-session folder doesn't resolve, the server persistently rejects uploads), so
-the upload ledger stops growing while Claude Code keeps writing transcripts
-into ``<projects_root>/<encoded-workspace>/``. The gap between the two is a
-passive signal we surface in ``agnes diagnose``.
+Issue #244, adapted for the scan-based `agnes push`. When recent transcripts
+exist in the resolved Claude Code folder but the upload ledger isn't growing
+(the server persistently rejects uploads, or a misconfiguration stops push),
+the gap between the two is a passive signal we surface in ``agnes diagnose``.
+
+Diagnostic boundary: the check only fires when there ARE recent session files
+in the *resolved* ``<projects_root>/<encoded-workspace>/`` folder. A missing
+``workspace_root``, or an encoded folder that doesn't resolve to where Claude
+Code actually writes (e.g. an encoder mismatch), yields zero observed files —
+indistinguishable from a fresh workspace — and the caller reports ``info``,
+not ``warning``. So this catches "uploads are failing", not "the scan is
+pointed at the wrong folder".
 
 The check compares, within a sliding window:
 

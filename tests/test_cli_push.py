@@ -405,3 +405,77 @@ def test_push_4xx_visible_in_stdout(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "agnes-sessions-failed.txt" in result.output
     assert "permanent failure" in result.output
+
+
+def test_push_permanent_failure_not_retried_next_run(tmp_path, monkeypatch):
+    """A 4xx-rejected transcript must NOT be re-uploaded on the next scan —
+    once logged to the failed-log, push skips it (the scan-based equivalent of
+    the old queue dropping a permanently-failed entry). Two-run coverage."""
+    _stub_config(monkeypatch, tmp_path)
+    transcript = _make_jsonl(tmp_path, "sid-413.jsonl")
+    _stub_sessions(monkeypatch, [transcript])
+
+    # Run 1: server permanently rejects (413) → logged to the failed-log.
+    _stub_api_post_status(monkeypatch, 413)
+    r1 = runner.invoke(push_app, ["--json"])
+    assert r1.exit_code == 0
+    assert json.loads(r1.output)["dropped_permanent"] == 1
+    assert "sid-413" in failed_log_path(tmp_path).read_text(encoding="utf-8")
+
+    # Run 2: same unchanged transcript must not be uploaded again.
+    def _boom(*a, **kw):
+        raise AssertionError("permanently-failed session must not be re-uploaded")
+
+    monkeypatch.setattr("cli.commands.push.api_post", _boom)
+    r2 = runner.invoke(push_app, ["--json"])
+    assert r2.exit_code == 0
+    payload = json.loads(r2.output)
+    assert payload["sessions"] == 0
+    assert payload["skipped_failed"] == 1
+
+
+def test_push_private_skip_logged_once_across_runs(tmp_path, monkeypatch):
+    """A private session is audit-logged once, not on every push run (the
+    transcript stays on disk and the private list is persistent)."""
+    _stub_config(monkeypatch, tmp_path)
+    _record_uploads(monkeypatch)
+    transcript = _make_jsonl(tmp_path, "sid-priv.jsonl")
+    _stub_sessions(monkeypatch, [transcript])
+    add_private(tmp_path, "sid-priv")
+
+    runner.invoke(push_app, ["--quiet"])
+    runner.invoke(push_app, ["--quiet"])
+
+    log = private_skipped_log_path(tmp_path).read_text(encoding="utf-8")
+    lines = [ln for ln in log.splitlines() if ln.strip()]
+    assert len(lines) == 1, lines
+    assert "\tsid-priv\t" in log
+
+
+def test_push_real_scan_uses_workspace_root_folder(tmp_path, monkeypatch):
+    """Integration: leave `list_session_files` REAL and exercise the central
+    glue — workspace_root → encoded Claude Code folder → scan — even when push
+    runs from a different cwd. Pins the contract the hook actually relies on."""
+    from cli.lib.session_paths import session_dir
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cc"))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    folder = session_dir(workspace)
+    folder.mkdir(parents=True)
+    (folder / "sid-real.jsonl").write_text('{"event":"x"}\n', encoding="utf-8")
+
+    monkeypatch.setattr("cli.commands.push.get_server_url", lambda: "http://x")
+    monkeypatch.setattr("cli.commands.push.get_token", lambda: "test-pat")
+    monkeypatch.setattr("cli.commands.push.get_workspace_root", lambda: str(workspace))
+    # NOTE: list_session_files is intentionally NOT patched here.
+    calls = _record_uploads(monkeypatch)
+
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    monkeypatch.chdir(other)
+
+    result = runner.invoke(push_app, ["--quiet"])
+    assert result.exit_code == 0, result.output
+    names = [c[1]["files"]["file"][0] for c in calls if c[0] == "/api/upload/sessions"]
+    assert names == ["sid-real.jsonl"]

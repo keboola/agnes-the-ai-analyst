@@ -45,6 +45,8 @@ from cli.lib.upload_log import (
     mark_failed_permanent,
     mark_private_skipped,
     mark_uploaded,
+    read_failed_sessions,
+    read_private_skipped_sessions,
     read_uploaded,
     uploaded_log_path,
 )
@@ -83,6 +85,49 @@ def _upload_one(transcript: Path) -> tuple[bool, dict]:
     if resp.status_code == 200:
         return True, {"file": transcript.name}
     return False, {"file": transcript.name, "status": resp.status_code}
+
+
+def _partition(
+    workspace: Path,
+) -> tuple[list[tuple[str, Path, int]], list[tuple[str, Path]], int, int]:
+    """Scan the workspace session folder and split transcripts into
+    ``(to_upload, private_hits, skipped_unchanged, skipped_failed)``.
+
+    - private (session_id on the private list) -> ``private_hits`` (skip + audit)
+    - permanently failed (session_id in the failed-log) -> skipped, never
+      retried — the scan-based equivalent of the old queue dropping a
+      permanently-rejected entry; without this the same 4xx-rejected file would
+      re-upload (and re-fail, and re-log) on every SessionEnd hook
+    - already uploaded at the same byte size -> ``skipped_unchanged``
+    - everything else (new or grown) -> ``to_upload``
+    """
+    candidates = list_session_files(workspace)
+    uploaded = read_uploaded(workspace)
+    private_ids = read_all_private(workspace)
+    failed_ids = read_failed_sessions(workspace)
+
+    to_upload: list[tuple[str, Path, int]] = []
+    private_hits: list[tuple[str, Path]] = []
+    skipped_unchanged = 0
+    skipped_failed = 0
+    for p in candidates:
+        sid = p.stem
+        if sid and sid in private_ids:
+            private_hits.append((sid, p))
+            continue
+        if sid and sid in failed_ids:
+            skipped_failed += 1
+            continue
+        try:
+            size = p.stat().st_size
+        except OSError:
+            continue
+        prev = uploaded.get(sid)
+        if prev is not None and prev == size:
+            skipped_unchanged += 1
+            continue
+        to_upload.append((sid, p, size))
+    return to_upload, private_hits, skipped_unchanged, skipped_failed
 
 
 @push_app.callback(invoke_without_command=True)
@@ -147,6 +192,7 @@ def push(
                         "errors": [],
                         "private_skipped": 0,
                         "skipped_unchanged": 0,
+                        "skipped_failed": 0,
                         "workspace_root": None,
                     }
                 )
@@ -162,32 +208,10 @@ def push(
     local_md = workspace / ".claude" / "CLAUDE.local.md"
     has_local_md = local_md.exists()
 
-    candidates = list_session_files(workspace)
-    uploaded = read_uploaded(workspace)
-    private_ids = read_all_private(workspace)
-
-    # Partition the on-disk transcripts into: private (skip + audit), already
-    # uploaded at the same size (skip), and to-upload (new or grown).
-    to_upload: list[tuple[str, Path, int]] = []
-    private_hits: list[tuple[str, Path]] = []
-    skipped_unchanged = 0
-    for p in candidates:
-        sid = p.stem
-        if sid and sid in private_ids:
-            private_hits.append((sid, p))
-            continue
-        try:
-            size = p.stat().st_size
-        except OSError:
-            continue
-        prev = uploaded.get(sid)
-        if prev is not None and prev == size:
-            skipped_unchanged += 1
-            continue
-        to_upload.append((sid, p, size))
-
     # ---- DRY RUN ----------------------------------------------------------
+    # Read-only planning; safe to compute outside the push lock.
     if dry_run:
+        to_upload, private_hits, skipped_unchanged, skipped_failed = _partition(workspace)
         plan = {
             "dry_run": True,
             "would_upload": {
@@ -199,6 +223,7 @@ def push(
                 "sessions_count": len(to_upload),
                 "private_skipped_count": len(private_hits),
                 "skipped_unchanged": skipped_unchanged,
+                "skipped_failed": skipped_failed,
                 "local_md_present": has_local_md,
                 "uploaded_log": str(uploaded_log_path(workspace)),
             },
@@ -228,6 +253,12 @@ def push(
         if lock is None:
             return  # another push has the lock; this one no-ops
 
+        # Recompute the scan/partition INSIDE the lock: a push that held the
+        # lock while we waited may have uploaded transcripts and grown the
+        # ledger (or consulted the private list), so reading before the lock
+        # could re-upload an already-handled file or miss a fresh marker.
+        to_upload, private_hits, skipped_unchanged, skipped_failed = _partition(workspace)
+
         results: dict = {
             "sessions": 0,
             "local_md": False,
@@ -235,13 +266,20 @@ def push(
             "private_skipped": 0,
             "dropped_permanent": 0,
             "skipped_unchanged": skipped_unchanged,
+            "skipped_failed": skipped_failed,
         }
         now = datetime.now(timezone.utc)
 
-        # Private sessions: never upload, audit-log the intentional skip.
+        # Private sessions: never upload. Audit-log each only ONCE — the file
+        # stays on disk across runs and the private list is persistent, so
+        # re-logging every push would grow the audit trail unboundedly. The
+        # per-run counter still reflects all private sessions skipped this run.
+        already_skipped = read_private_skipped_sessions(workspace)
         for sid, p in private_hits:
-            mark_private_skipped(workspace, sid, p, now)
             results["private_skipped"] += 1
+            if sid not in already_skipped:
+                mark_private_skipped(workspace, sid, p, now)
+                already_skipped.add(sid)
 
         for sid, p, size in to_upload:
             ok, info = _upload_one(p)
@@ -290,6 +328,11 @@ def push(
         typer.echo(
             f"Dropped {results['dropped_permanent']} session(s) with permanent failure "
             f"(see .claude/agnes-sessions-failed.txt)"
+        )
+    if results["skipped_failed"]:
+        typer.echo(
+            f"Skipped {results['skipped_failed']} session(s) previously logged as "
+            f"permanently failed (clear .claude/agnes-sessions-failed.txt to retry)"
         )
     if results["local_md"]:
         typer.echo("Uploaded CLAUDE.local.md")

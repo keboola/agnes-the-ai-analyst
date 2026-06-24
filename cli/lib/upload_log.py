@@ -107,6 +107,53 @@ def read_uploaded(workspace: Path) -> dict[str, int]:
     return out
 
 
+def read_private_skipped_sessions(workspace: Path) -> set[str]:
+    """Return the set of session_ids already recorded in the private-skipped
+    audit log.
+
+    Lets push audit-log a private skip only ONCE per session instead of on
+    every scan-based run (the session file stays on disk and the private list
+    is persistent, so a naive re-log would grow the audit file by one row per
+    push). Rows are ``<iso>\\t<session_id>\\t<path>``; the session_id is the
+    second field. Missing file / malformed rows → not counted.
+    """
+    return _read_session_ids(private_skipped_log_path(workspace), index=1)
+
+
+def read_failed_sessions(workspace: Path) -> set[str]:
+    """Return the set of session_ids recorded as permanent upload failures.
+
+    push uses this as durable skip state so a deterministically-rejected
+    transcript (4xx other than 401/408/429) is NOT re-uploaded on every later
+    scan — the scan-based equivalent of the old queue "drop permanently, never
+    retry" contract. Keyed by session_id alone (not size): the permanent
+    failure types — 413 too-large, 400 filename, 403 RBAC — all re-fail
+    regardless of how the transcript grows, so a size-sensitive key would only
+    waste bandwidth re-uploading a file the server will reject again. Recovery
+    is clearing ``agnes-sessions-failed.txt`` (matching the old behaviour where
+    a dropped entry was gone for good). Rows are
+    ``<iso>\\t<session_id>\\t<status>\\t<path>``; the session_id is the second
+    field. Missing file / malformed rows → not counted.
+    """
+    return _read_session_ids(failed_log_path(workspace), index=1)
+
+
+def _read_session_ids(path: Path, index: int) -> set[str]:
+    out: set[str] = set()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for raw in text.splitlines():
+        parts = raw.split("\t")
+        if len(parts) <= index:
+            continue
+        sid = parts[index].strip()
+        if sid:
+            out.add(sid)
+    return out
+
+
 def mark_private_skipped(
     workspace: Path,
     session_id: str,

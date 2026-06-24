@@ -19,13 +19,16 @@ from cli.lib.session_paths import (
 
 
 def test_encode_windows_path_no_collapse():
-    # Ground truth: this is how Claude Code names the folder on Windows.
-    assert encode_workspace(r"C:\Users\arust\FoundryAI") == "C--Users-arust-FoundryAI"
-    assert encode_workspace(r"C:\Business\Groupon\Agnes") == "C--Business-Groupon-Agnes"
+    # Ground truth: this is how Claude Code names the folder on Windows — the
+    # drive-letter `:` and the first `\` each become a `-`, so `C:\` yields
+    # `C--`. An older collapse-runs variant produced `C-` and pointed at a
+    # non-existent folder. (Generic placeholder paths; vendor-agnostic repo.)
+    assert encode_workspace(r"C:\Users\analyst\Workspace") == "C--Users-analyst-Workspace"
+    assert encode_workspace(r"C:\Work\ExampleOrg\Data") == "C--Work-ExampleOrg-Data"
 
 
 def test_encode_posix_path():
-    assert encode_workspace("/Users/me/FoundryAI") == "-Users-me-FoundryAI"
+    assert encode_workspace("/Users/me/Workspace") == "-Users-me-Workspace"
     assert encode_workspace("/home/me/work space") == "-home-me-work-space"
 
 
