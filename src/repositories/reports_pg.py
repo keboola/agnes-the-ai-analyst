@@ -51,10 +51,14 @@ class ReportsPgRepository:
         return int(r[0] or 0)
 
     def events_daily(self, start: datetime, end: datetime) -> Dict[date, dict]:
+        # Bucket by the UTC calendar day. occurred_at is timestamptz; a plain
+        # CAST(... AS DATE) would first shift to the session TimeZone, so a
+        # non-UTC PG session would mis-bucket events near midnight UTC relative
+        # to this report's UTC windows and day labels. AT TIME ZONE 'UTC' pins it.
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
-                    """SELECT CAST(occurred_at AS DATE) AS d,
+                    """SELECT CAST((occurred_at AT TIME ZONE 'UTC') AS DATE) AS d,
                               COUNT(*),
                               COUNT(DISTINCT username),
                               SUM(CASE WHEN is_error THEN 1 ELSE 0 END)
@@ -133,10 +137,14 @@ class ReportsPgRepository:
 
     def installs_daily(self, start: datetime, end: datetime) -> Dict[date, int]:
         out: Dict[date, int] = {}
+        # AT TIME ZONE 'UTC' so day buckets match this report's UTC day labels
+        # regardless of the PG session TimeZone (see events_daily).
         stmts = (
-            "SELECT CAST(opted_out_at AS DATE) AS d, COUNT(*) FROM user_plugin_optouts "
+            "SELECT CAST((opted_out_at AT TIME ZONE 'UTC') AS DATE) AS d, COUNT(*) "
+            "FROM user_plugin_optouts "
             "WHERE opted_out_at >= :start AND opted_out_at < :end GROUP BY d",
-            "SELECT CAST(installed_at AS DATE) AS d, COUNT(*) FROM user_store_installs "
+            "SELECT CAST((installed_at AT TIME ZONE 'UTC') AS DATE) AS d, COUNT(*) "
+            "FROM user_store_installs "
             "WHERE installed_at >= :start AND installed_at < :end GROUP BY d",
         )
         with self._engine.connect() as conn:
