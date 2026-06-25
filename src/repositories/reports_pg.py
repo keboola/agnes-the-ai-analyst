@@ -1,10 +1,13 @@
 """Postgres-backed reports repository.
 
 Mirrors ``src/repositories/reports.py`` — same method names and return shapes,
-PG dialect (``:param`` binds, ``sa.text``). The aggregate SQL itself is
-backend-portable (``CAST(... AS DATE)``, ``COUNT(DISTINCT ...)``,
-``SUM(CASE WHEN is_error THEN 1 ELSE 0 END)``), so the two files stay nearly
-identical.
+PG dialect (``:param`` binds, ``sa.text``). Most aggregate shapes stay close to
+DuckDB (``COUNT(DISTINCT ...)``, ``SUM(CASE WHEN is_error THEN 1 ELSE 0 END)``).
+The one deliberate divergence is UTC day bucketing: a bare ``CAST(ts AS DATE)``
+would first shift to the Postgres session ``TimeZone``, so day labels would
+drift on a non-UTC server. This file pins it with ``CAST((ts AT TIME ZONE
+'UTC') AS DATE)`` — do NOT "simplify" that back to a bare cast; the method-level
+comments guard the same invariant.
 """
 
 from __future__ import annotations

@@ -204,6 +204,63 @@ def test_weekly_digest_window(seeded_app, admin_user):
     assert all(i["distinct_users"] is None for i in data["top_items"])
 
 
+def test_zero_usage_parent_plugin_attribution(seeded_app, admin_user):
+    """Child skill/agent usage marks its `parent_plugin` as used (kept OUT of
+    zero_usage), but the child item's own name must NOT suppress an unrelated
+    plugin that happens to share that name. Pins the business rule at
+    `app/api/admin_reports.py` (used_curated derivation) so a future edit can't
+    silently flag an active parent or clear an unrelated same-named plugin."""
+    from src.db import get_system_db
+    conn = get_system_db()
+
+    # A curated (non-builtin) marketplace so both plugins resolve as curated
+    # content eligible for zero_usage.
+    conn.execute(
+        """INSERT INTO marketplace_registry
+           (id, name, url, curator_name, last_synced_at, last_error)
+           VALUES ('curated-pp', 'PP', 'https://example.com/pp.git', 'Dana', ?, NULL)""",
+        [datetime.now(timezone.utc) - timedelta(hours=1)],
+    )
+    # `parent-only-plugin` is never invoked directly — only its child skill is.
+    # `child-skill` is an UNRELATED plugin that merely shares the child's name.
+    for name in ("parent-only-plugin", "child-skill"):
+        conn.execute(
+            "INSERT INTO marketplace_plugins (marketplace_id, name, is_system) "
+            "VALUES ('curated-pp', ?, FALSE)", [name])
+    # One curated child-skill invocation on the anchor day, parent_plugin set,
+    # type='skill' (NOT 'plugin').
+    conn.execute(
+        """INSERT INTO usage_marketplace_item_daily
+           (day, source, type, parent_plugin, name, count, distinct_users, error_count)
+           VALUES (?, 'curated', 'skill', 'parent-only-plugin', 'child-skill', 3, 1, 0)""",
+        [ANCHOR],
+    )
+    conn.close()
+
+    data = _get(seeded_app["client"], admin_user, "daily").json()
+    zero_names = {z["name"] for z in data["zero_usage"]}
+    # parent counted as used via its child's parent_plugin → excluded
+    assert "parent-only-plugin" not in zero_names
+    # the unrelated plugin sharing the child's NAME is not suppressed → listed
+    assert "child-skill" in zero_names
+
+
+def test_digest_survives_audit_failure(seeded_app, admin_user, monkeypatch):
+    """Audit logging is best-effort: a failing `audit_repo().log()` must not turn
+    a transient audit outage into a report outage for the headless pipeline.
+    Forces the burst-suppression gate open so the audit write is actually
+    attempted, then makes it raise."""
+    class _BoomAudit:
+        def log(self, *args, **kwargs):
+            raise RuntimeError("audit backend down")
+
+    monkeypatch.setattr("app.api.admin_reports._should_audit", lambda *a, **k: True)
+    monkeypatch.setattr("app.api.admin_reports.audit_repo", lambda: _BoomAudit())
+
+    resp = _get(seeded_app["client"], admin_user, "daily")
+    assert resp.status_code == 200
+
+
 def test_digest_admin_only(seeded_app, analyst_user):
     resp = _get(seeded_app["client"], analyst_user, "daily")
     assert resp.status_code in (401, 403)
