@@ -190,6 +190,30 @@ A file with the same name AT THE REPO ROOT (e.g.
 `<your-repo>/.claude/init-complete` outside `workspace/`) is fine —
 it's admin territory and never reaches the analyst anyway.
 
+### Launcher script convention (IWT contract)
+
+`agnes init` automatically installs a one-word shell shortcut named after
+the workspace folder, sanitized to alphanumerics and lowercased
+(`re.sub(r'[^A-Za-z0-9]', '', workspace.name).lower()`, matching the
+server's `get_workspace_dir_name`).  When the IWT ships a
+launcher script at `workspace/bin/<word>` (POSIX) or
+`workspace/bin/<word>.cmd` / `workspace/bin/<word>.ps1` (Windows), the
+auto-installed shortcut **routes through it** — adding
+`--permission-mode auto` on top — so the welcome skill fires correctly on
+each launch.
+
+**Naming contract:** the launcher script name MUST equal the workspace
+folder name with non-alphanumerics stripped and lowercased.  If your IWT
+installs the workspace into a folder called `MyTeamAI`, the launcher must
+be `workspace/bin/myteamai` (plus
+platform variants `.cmd` / `.ps1`).  A mismatch causes the shortcut to
+fall back to the plain `claude --permission-mode auto` path, which still
+works but skips the welcome skill.
+
+When there is no `workspace/bin/<word>` launcher (e.g. the default OSS
+seed), the shortcut falls back to `cd <workspace> && claude
+--permission-mode auto` — fully functional, just without the welcome skill.
+
 ## What Agnes stops doing when override is active
 
 Override is an **init-time** contract. When the
