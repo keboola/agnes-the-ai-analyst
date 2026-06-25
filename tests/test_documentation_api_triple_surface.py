@@ -147,6 +147,12 @@ _BUILTIN_DISABLE_REASON = (
     "web UI only at /admin/marketplaces, no analyst CLI/MCP analogue (mirrors "
     "the grandfathered admin marketplace register/sync/delete mutations)"
 )
+_REPORTS_REASON = (
+    "admin-only marketplace usage digest — read-only JSON feed for an external "
+    "rendering pipeline (e.g. n8n), consumed over HTTP with a PAT. No analyst "
+    "CLI/MCP analogue (mirrors the grandfathered /api/admin/adoption dashboard "
+    "aggregates)"
+)
 _KNOWLEDGE_MIGRATION_REASON = (
     "one-time retroactive migration trigger (pre-v0.71.60 knowledge.json → DB) — "
     "idempotent admin-only POST, no analyst CLI/MCP analogue; endpoint is "
@@ -180,6 +186,7 @@ _EXEMPT: dict[str, str] = {
     "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/disable": _BUILTIN_DISABLE_REASON,
     "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/enable": _BUILTIN_DISABLE_REASON,
     "/api/admin/run-knowledge-migration": _KNOWLEDGE_MIGRATION_REASON,
+    "/api/admin/reports/marketplace-digest": _REPORTS_REASON,
 }
 
 

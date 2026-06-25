@@ -754,6 +754,17 @@ authoring-suggestions queue (never an admin-direct write).
 - /api/admin/adoption/users/{user_id}/top-skills
 - /api/admin/adoption/users/{user_id}/top-tools
 
+### `/api/admin/reports` — Marketplace usage digest (admin)
+
+- /api/admin/reports/marketplace-digest
+
+  One consolidated, report-shaped JSON payload for an external rendering
+  pipeline (e.g. an n8n workflow). `?period=daily|weekly[&date=YYYY-MM-DD]`.
+  Returns headline KPIs (with prior-period deltas), a per-day trend series,
+  usage by source, top items, rising/falling movers, failures,
+  installs/adoption, zero-usage curated plugins, and per-marketplace sync
+  health. Admin-only; PAT-gated for headless callers.
+
 ### `/api/admin/telemetry` — Query telemetry
 
 - /api/admin/telemetry/ask
