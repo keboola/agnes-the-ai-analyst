@@ -154,17 +154,16 @@ def test_home_onboarded_user_sees_nav_hub(fresh_db):
     # Offboard escape strip + its button replace the in-hero self-mark control.
     assert_element(body, "div", class_="offboard-strip")
     assert "Mark me as offboarded" in body
-    # All six inline install-blocks are hidden post-onboarding — the
-    # labels rendered inside the install-block divs go away. Labels
-    # tracked with the CEO-mock-parity 6-step rename (Step 3 inserted
-    # as "Open a terminal", Step 6 added as the optional shortcut
-    # alias; the old Step 3 became Step 4).
+    # All install-blocks are hidden post-onboarding — the labels rendered
+    # inside the install-block divs go away. FAI-35 removed the manual
+    # "Optional: create a one-word shortcut" block; agnes init now
+    # auto-creates the shortcut.
     assert "Step 1 — Install Claude Code on your computer" not in body
     assert "Step 2 — Pick a folder for" not in body
     assert "Step 3 — Open a terminal inside that folder" not in body
     assert "Step 4 — Launch Claude with auto-approve on" not in body
     assert "Step 5 — Get the install script" not in body
-    assert "Step 6 — Optional: create a one-word shortcut" not in body
+    assert "Optional: create a one-word shortcut" not in body
 
 
 def test_connectors_section_removed_from_home(fresh_db):

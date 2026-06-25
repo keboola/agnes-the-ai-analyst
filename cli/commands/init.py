@@ -54,6 +54,7 @@ from cli.lib.commands import install_claude_commands
 from cli.lib.hooks import install_claude_hooks
 from cli.lib.initial_workspace import apply_override, probe_status
 from cli.lib.pull import PullResult, _override_server_env, run_pull
+from cli.lib.shortcut import install_launcher_shortcut
 
 
 # Substring that flags an already-bootstrapped workspace. The current default
@@ -251,6 +252,16 @@ def init(
             "a single multi-GB scheduled-query parquet. Materialized rows "
             "are still discoverable via `agnes catalog`; rerun `agnes pull` "
             "without this flag once you actually need them locally."
+        ),
+    ),
+    no_shortcut: bool = typer.Option(
+        False,
+        "--no-shortcut",
+        help=(
+            "Skip writing the one-word launcher shortcut to ~/.zshrc / "
+            "~/.bashrc (POSIX) or PowerShell $PROFILE (Windows). By default "
+            "`agnes init` appends an idempotent shell function named after "
+            "the workspace folder so you can launch from any terminal."
         ),
     ),
 ):
@@ -816,6 +827,14 @@ def init(
         pass
     except OSError:
         pass
+
+    # ------------------------------------------------------------------
+    # Install the one-word launcher shortcut. Runs in BOTH default and
+    # override modes — the workspace launcher (bin/<word>) is seeded by
+    # the IWT in override mode; default mode falls back to
+    # `claude --permission-mode auto`. Best-effort; never aborts init.
+    # ------------------------------------------------------------------
+    install_launcher_shortcut(workspace, no_shortcut=no_shortcut)
 
     # ------------------------------------------------------------------
     # Final: human-readable summary.
