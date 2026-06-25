@@ -185,12 +185,17 @@ def marketplace_digest(
         row["rank"] = rank
         top_items.append(row)
 
+    # Rising includes brand-new / reactivated items (prev == 0 → delta_pct None),
+    # which are exactly the ones worth surfacing. They have no finite growth rate,
+    # so rank them first (treat as +inf), then by largest delta, then volume.
     rising = [
         {"name": it["name"], "source": it["source"], "type": it["type"],
          "invocations": it["invocations"], "delta_pct": it["delta_pct"]}
         for it in sorted(
-            [i for i in items if i["invocations"] > i["prev_invocations"] and i["delta_pct"] is not None],
-            key=lambda x: x["delta_pct"], reverse=True,
+            [i for i in items if i["invocations"] > i["prev_invocations"]],
+            key=lambda x: (x["delta_pct"] if x["delta_pct"] is not None else float("inf"),
+                           x["invocations"]),
+            reverse=True,
         )[:_MOVERS_N]
     ]
     falling = [
@@ -242,7 +247,10 @@ def marketplace_digest(
 
     zero_usage = []
     for p in all_plugins:
-        if p.get("is_system"):
+        # System (mandatory) and admin-disabled plugins can't meaningfully be
+        # "not landing": disabled ones are hidden from served surfaces and
+        # cannot receive usage at all (mirrors the served-surface filters).
+        if p.get("is_system") or p.get("admin_disabled"):
             continue
         reg = reg_by_id.get(p["marketplace_id"]) or {}
         # "Not landing" is about admin-curated department content. Built-in

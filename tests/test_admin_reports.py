@@ -89,6 +89,10 @@ def _seed(conn):
     plug("curated-product", "product-analyzer")  # used → not in zero_usage
     plug("curated-product", "unused-skill")       # zero usage → listed
     plug("agnes-builtin", "welcome")              # built-in → excluded from zero_usage
+    conn.execute(                                  # admin-disabled → excluded
+        "INSERT INTO marketplace_plugins (marketplace_id, name, is_system, admin_disabled) "
+        "VALUES ('curated-product', 'disabled-skill', FALSE, TRUE)"
+    )
 
     # --- installs (anchor day) ----------------------------------------------
     conn.execute(
@@ -155,6 +159,10 @@ def test_daily_movers_failures_and_zero_usage(seeded_app, admin_user):
     # rising: product-analyzer 8 vs 4 → +100%
     assert any(i["name"] == "product-analyzer" and i["delta_pct"] == 100.0
                for i in data["rising"])
+    # rising must also surface brand-new items (no comparison base → delta null):
+    # data-bot appears only on the anchor day, so prev=0.
+    new_movers = [i for i in data["rising"] if i["name"] == "data-bot"]
+    assert new_movers and new_movers[0]["delta_pct"] is None
     # falling: old-skill dropped from 6 to 0
     assert any(i["name"] == "old-skill" for i in data["falling"])
     # failures: product-analyzer had 1 error
@@ -164,7 +172,8 @@ def test_daily_movers_failures_and_zero_usage(seeded_app, admin_user):
     zero_names = {z["name"] for z in data["zero_usage"]}
     assert "unused-skill" in zero_names
     assert "product-analyzer" not in zero_names
-    assert "welcome" not in zero_names  # built-in plugin must not be flagged
+    assert "welcome" not in zero_names        # built-in plugin must not be flagged
+    assert "disabled-skill" not in zero_names  # admin-disabled can't land → excluded
 
     # marketplace_health statuses derived correctly
     health = {h["id"]: h for h in data["marketplace_health"]}
@@ -173,7 +182,8 @@ def test_daily_movers_failures_and_zero_usage(seeded_app, admin_user):
     assert health["curated-err"]["sync_status"] == "error"
     # built-in is never git-synced (null last_synced) but is healthy, not stale
     assert health["agnes-builtin"]["sync_status"] == "ok"
-    assert health["curated-product"]["plugin_count"] == 2
+    # product-analyzer + unused-skill + disabled-skill (count is the catalog size)
+    assert health["curated-product"]["plugin_count"] == 3
 
 
 def test_weekly_digest_window(seeded_app, admin_user):
