@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `GET /api/admin/reports/marketplace-digest?period=daily|weekly[&date=YYYY-MM-DD]`:
+  one consolidated, report-shaped JSON payload for an external rendering
+  pipeline (e.g. an n8n workflow that fills an HTML template and publishes
+  the result). Composes headline KPIs (active users, sessions, invocations,
+  errors, error rate, new installs - each with a prior-period delta), a
+  per-day trend series, usage by source, top items, rising/falling movers,
+  failures, installs/adoption, zero-usage curated plugins, and per-marketplace
+  sync health - from the existing `usage_events`,
+  `usage_marketplace_item_daily`, `marketplace_registry`, and install-ledger
+  tables. Admin-only (PAT-gated), audit-logged via the shared
+  burst-suppression cache as `reports.marketplace_digest`. Lives in
+  `app/api/admin_reports.py`.
 
 ### Changed
 
