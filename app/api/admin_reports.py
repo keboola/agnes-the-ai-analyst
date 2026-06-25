@@ -231,7 +231,13 @@ def marketplace_digest(
     all_plugins = plug_repo.list_all()
 
     # A curated plugin "landed" if it (or one of its skills/agents) saw any
-    # invocation in the primary window.
+    # invocation in the primary window. Matched by plugin NAME: the usage rollup
+    # (usage_marketplace_item_daily) is not keyed by marketplace_id, so if two
+    # curated marketplaces ship a plugin with the same name they are treated as
+    # one here (a same-named plugin in another marketplace could be suppressed
+    # from zero_usage). Curated plugin names are effectively a shared namespace
+    # in the served marketplace, so collisions are not expected; scoping this by
+    # marketplace would require marketplace_id in the rollup (out of scope).
     used_curated = set()
     for it in items:
         if it["source"] != "curated" or it["invocations"] <= 0:
