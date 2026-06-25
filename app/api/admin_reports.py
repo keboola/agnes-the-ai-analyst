@@ -148,23 +148,20 @@ def marketplace_digest(
     compare = rr.items_window(c_start, c_end)
 
     # Per-item distinct users. The daily rollup column is a per-day distinct, so
-    # SUM-ing it over a multi-day window overcounts users who used an item on
-    # several days. Daily reports span one day, so the rollup value is exact.
-    # Weekly reports take the TRUE sliding-window distinct from the precomputed
-    # window snapshot (only meaningful for the live/default anchor — that table
-    # reflects the current trailing 7d, not an arbitrary historical date); when
-    # it isn't available we return null ("unknown") rather than an inflated sum.
-    win_distinct = {}
-    if period == "weekly" and date_str is None:
-        win_distinct = rr.item_window_distinct("last_7d")
-
+    # SUM-ing it over a multi-day window overcounts users active on several days.
+    # Daily reports span one day, so the rollup value is exact. There is no
+    # window-aligned true-distinct source for an arbitrary weekly window (the
+    # precomputed sliding-window snapshot refreshes from "now" and would be
+    # inconsistent with this report's invocation counts), so weekly per-item
+    # distinct_users is reported as null rather than an inflated or misaligned
+    # number. Headline active_users (from usage_events) stays window-accurate.
     items = []
     for key in set(primary) | set(compare):
         source, type_, parent, name = key
         p = primary.get(key, {})
         inv = p.get("invocations", 0)
         err = p.get("error_count", 0)
-        du = p.get("distinct_users", 0) if period == "daily" else win_distinct.get(key)
+        du = p.get("distinct_users", 0) if period == "daily" else None
         prev_inv = compare.get(key, {}).get("invocations", 0)
         items.append({
             "source": source, "type": type_, "parent_plugin": parent, "name": name,
@@ -234,11 +231,14 @@ def marketplace_digest(
     for it in items:
         if it["source"] != "curated" or it["invocations"] <= 0:
             continue
-        # The plugin counts as used whether the invocation landed on the plugin
-        # itself or on one of its skills/agents (whose parent_plugin names it).
-        used_curated.add(it["name"])
+        # A plugin counts as used when the invocation landed on the plugin
+        # itself (a plugin-level row) or on one of its skills/agents (whose
+        # parent_plugin names it). We must NOT treat a child item's own name as
+        # a plugin name - a skill could share a name with an unrelated plugin.
         if it["parent_plugin"]:
             used_curated.add(it["parent_plugin"])
+        if it["type"] == "plugin":
+            used_curated.add(it["name"])
 
     zero_usage = []
     for p in all_plugins:

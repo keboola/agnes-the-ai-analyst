@@ -96,18 +96,6 @@ class ReportsRepository:
             for r in rows
         }
 
-    def item_window_distinct(self, period_label: str) -> Dict[ItemKey, int]:
-        """True sliding-window distinct users per item from the precomputed
-        ``usage_marketplace_item_window`` snapshot (avoids summing per-day
-        distincts, which overcounts multi-day users)."""
-        rows = self.conn.execute(
-            """SELECT source, type, parent_plugin, name, distinct_users
-               FROM usage_marketplace_item_window
-               WHERE period_label = ?""",
-            [period_label],
-        ).fetchall()
-        return {(r[0], r[1], r[2], r[3]): int(r[4] or 0) for r in rows}
-
     # ---- installs / adoption ---------------------------------------------
     def install_counts(self, start: datetime, end: datetime) -> dict:
         curated = int(self.conn.execute(

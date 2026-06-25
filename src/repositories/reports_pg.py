@@ -112,18 +112,6 @@ class ReportsPgRepository:
             for r in rows
         }
 
-    def item_window_distinct(self, period_label: str) -> Dict[ItemKey, int]:
-        with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    """SELECT source, type, parent_plugin, name, distinct_users
-                       FROM usage_marketplace_item_window
-                       WHERE period_label = :label"""
-                ),
-                {"label": period_label},
-            ).fetchall()
-        return {(r[0], r[1], r[2], r[3]): int(r[4] or 0) for r in rows}
-
     # ---- installs / adoption ---------------------------------------------
     def install_counts(self, start: datetime, end: datetime) -> dict:
         with self._engine.connect() as conn:

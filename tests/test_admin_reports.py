@@ -51,9 +51,9 @@ def _seed(conn):
             [d, source, type_, name, count, du, err],
         )
 
-    item(ANCHOR, "curated", "skill", "product-analyzer", 8, 3, 1)
+    item(ANCHOR, "curated", "plugin", "product-analyzer", 8, 3, 1)
     item(ANCHOR, "flea", "agent", "data-bot", 4, 2, 0)
-    item(PREV, "curated", "skill", "product-analyzer", 4, 2, 0)   # rising (8 > 4)
+    item(PREV, "curated", "plugin", "product-analyzer", 4, 2, 0)  # rising (8 > 4)
     item(PREV, "curated", "skill", "old-skill", 6, 2, 0)          # falling (0 < 6)
 
     # --- marketplace registry + plugins -------------------------------------
@@ -187,9 +187,9 @@ def test_weekly_digest_window(seeded_app, admin_user):
     assert len(data["trend_series"]) == 30
     # weekly primary spans anchor-6..anchor, so both seeded days are included
     assert data["headline_kpis"]["invocations"]["value"] == 15  # 10 + 5
-    # P2: weekly never sums per-day distincts. With no live sliding-window
-    # snapshot (explicit historical date), per-item distinct_users is null
-    # rather than an inflated multi-day sum.
+    # P2: weekly never sums per-day distincts (that overcounts multi-day users)
+    # and has no window-aligned true-distinct source, so per-item distinct_users
+    # is reported as null rather than an inflated or window-misaligned number.
     assert data["top_items"], "expected weekly top_items"
     assert all(i["distinct_users"] is None for i in data["top_items"])
 

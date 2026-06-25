@@ -22,10 +22,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `marketplace_registry`, and the install ledgers. Reads route through the
   backend-aware repository layer (new `reports_repo()` →
   `ReportsRepository` / `ReportsPgRepository`) so the digest resolves the
-  correct DuckDB/Postgres backend; per-item `distinct_users` for weekly uses
-  the true sliding-window snapshot rather than summing per-day distincts.
-  Admin-only (PAT-gated), audit-logged via the shared burst-suppression cache
-  as `reports.marketplace_digest`. Lives in `app/api/admin_reports.py`.
+  correct DuckDB/Postgres backend. Per-item `distinct_users` is exact for
+  daily (single day) and reported as null for weekly (summing per-day
+  distincts would overcount and there is no window-aligned source); built-in
+  marketplace plugins are excluded from the zero-usage section and the
+  built-in marketplace is not flagged stale. Admin-only (PAT-gated),
+  audit-logged via the shared burst-suppression cache as
+  `reports.marketplace_digest`. Lives in `app/api/admin_reports.py`.
 
 ### Changed
 
