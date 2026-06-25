@@ -139,6 +139,8 @@ def test_daily_movers_failures_and_zero_usage(seeded_app, admin_user):
     assert data["top_items"][0]["name"] == "product-analyzer"
     assert data["top_items"][0]["rank"] == 1
     assert data["top_items"][0]["invocations"] == 8
+    # daily spans one day, so the per-day rollup distinct is exact
+    assert data["top_items"][0]["distinct_users"] == 3
 
     # rising: product-analyzer 8 vs 4 → +100%
     assert any(i["name"] == "product-analyzer" and i["delta_pct"] == 100.0
@@ -172,6 +174,11 @@ def test_weekly_digest_window(seeded_app, admin_user):
     assert len(data["trend_series"]) == 30
     # weekly primary spans anchor-6..anchor, so both seeded days are included
     assert data["headline_kpis"]["invocations"]["value"] == 15  # 10 + 5
+    # P2: weekly never sums per-day distincts. With no live sliding-window
+    # snapshot (explicit historical date), per-item distinct_users is null
+    # rather than an inflated multi-day sum.
+    assert data["top_items"], "expected weekly top_items"
+    assert all(i["distinct_users"] is None for i in data["top_items"])
 
 
 def test_digest_admin_only(seeded_app, analyst_user):

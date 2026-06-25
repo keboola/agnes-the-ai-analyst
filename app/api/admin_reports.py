@@ -6,8 +6,9 @@ publishes it).
 Why a dedicated endpoint rather than the existing /api/admin/telemetry/* ones:
 those expose tool/user/error/DAU rollups only. A marketplace digest also needs
 per-item usage (curated/flea/builtin), installs/adoption, sync health, and
-"what's not landing" — composed here from the same DuckDB tables the telemetry
-endpoints already read, so downstream processing stays near zero.
+"what's not landing" — composed here from the backend-aware repository layer so
+the digest reads the right backend (DuckDB or Postgres) and downstream
+processing stays near zero.
 
 Admin-only (PAT-gated for headless callers), audit-logged with the same
 burst-suppression cache as the other admin telemetry entry points.
@@ -19,13 +20,16 @@ import logging
 from datetime import datetime, date, timezone, timedelta
 from typing import Literal, Optional
 
-import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth.access import require_admin
-from app.auth.dependencies import _get_db
 from app.api.activity import _should_audit
-from src.repositories.audit import AuditRepository
+from src.repositories import (
+    audit_repo,
+    marketplace_plugins_repo,
+    marketplace_registry_repo,
+    reports_repo,
+)
 
 router = APIRouter(prefix="/api/admin/reports", tags=["admin-reports"])
 logger = logging.getLogger(__name__)
@@ -38,8 +42,7 @@ _ZERO_USAGE_N = 25
 
 def _midnight(d: date) -> datetime:
     """UTC midnight at the start of `d` — usage_events.occurred_at is a
-    timezone-aware TIMESTAMP, so we compare against aware datetimes (matching
-    the cutoff style in admin_usage_summary.py)."""
+    timezone-aware TIMESTAMP, so we compare against aware datetimes."""
     return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
 
 
@@ -65,7 +68,6 @@ def marketplace_digest(
                     "report. Defaults to yesterday.",
     ),
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Compose the full digest payload for `period`.
 
@@ -98,127 +100,72 @@ def marketplace_digest(
     trend_start = anchor - timedelta(days=trend_len - 1)
     trend_start_ts = _midnight(trend_start)
 
-    # ---- headline KPIs (usage_events / usage_session_summary / installs) ------
-    def _event_kpis(start_ts, end_ts):
-        row = conn.execute(
-            """SELECT COUNT(*),
-                      COUNT(DISTINCT username),
-                      SUM(CASE WHEN is_error THEN 1 ELSE 0 END)
-               FROM usage_events
-               WHERE occurred_at >= ? AND occurred_at < ?""",
-            [start_ts, end_ts],
-        ).fetchone()
-        inv, users, errs = int(row[0] or 0), int(row[1] or 0), int(row[2] or 0)
-        return inv, users, errs
+    rr = reports_repo()
 
-    def _session_count(start_ts, end_ts):
-        return int(conn.execute(
-            """SELECT COUNT(DISTINCT session_id) FROM usage_session_summary
-               WHERE started_at >= ? AND started_at < ?""",
-            [start_ts, end_ts],
-        ).fetchone()[0] or 0)
-
-    def _install_count(start_ts, end_ts):
-        curated = int(conn.execute(
-            "SELECT COUNT(*) FROM user_plugin_optouts WHERE opted_out_at >= ? AND opted_out_at < ?",
-            [start_ts, end_ts],
-        ).fetchone()[0] or 0)
-        flea = int(conn.execute(
-            "SELECT COUNT(*) FROM user_store_installs WHERE installed_at >= ? AND installed_at < ?",
-            [start_ts, end_ts],
-        ).fetchone()[0] or 0)
-        return curated + flea
-
-    p_inv, p_users, p_errs = _event_kpis(p_start_ts, p_end_ts)
-    c_inv, c_users, c_errs = _event_kpis(c_start_ts, c_end_ts)
-    p_sessions, c_sessions = _session_count(p_start_ts, p_end_ts), _session_count(c_start_ts, c_end_ts)
-    p_installs, c_installs = _install_count(p_start_ts, p_end_ts), _install_count(c_start_ts, c_end_ts)
-    p_rate = round(p_errs / p_inv, 4) if p_inv else 0.0
-    c_rate = round(c_errs / c_inv, 4) if c_inv else 0.0
+    # ---- headline KPIs -------------------------------------------------------
+    p_ev = rr.event_window(p_start_ts, p_end_ts)
+    c_ev = rr.event_window(c_start_ts, c_end_ts)
+    p_sessions = rr.session_count(p_start_ts, p_end_ts)
+    c_sessions = rr.session_count(c_start_ts, c_end_ts)
+    p_inst = rr.install_counts(p_start_ts, p_end_ts)
+    c_inst = rr.install_counts(c_start_ts, c_end_ts)
+    p_installs = p_inst["curated"] + p_inst["flea"]
+    c_installs = c_inst["curated"] + c_inst["flea"]
+    p_rate = round(p_ev["errors"] / p_ev["invocations"], 4) if p_ev["invocations"] else 0.0
+    c_rate = round(c_ev["errors"] / c_ev["invocations"], 4) if c_ev["invocations"] else 0.0
 
     headline_kpis = {
-        "active_users": _kpi(p_users, c_users),
+        "active_users": _kpi(p_ev["active_users"], c_ev["active_users"]),
         "sessions":     _kpi(p_sessions, c_sessions),
-        "invocations":  _kpi(p_inv, c_inv),
-        "errors":       _kpi(p_errs, c_errs),
+        "invocations":  _kpi(p_ev["invocations"], c_ev["invocations"]),
+        "errors":       _kpi(p_ev["errors"], c_ev["errors"]),
         "error_rate":   _kpi(p_rate, c_rate),
         "new_installs": _kpi(p_installs, c_installs),
     }
 
     # ---- trend_series (per-day, for sparklines / charts) ---------------------
-    ev_rows = conn.execute(
-        """SELECT CAST(occurred_at AS DATE) AS d,
-                  COUNT(*),
-                  COUNT(DISTINCT username),
-                  SUM(CASE WHEN is_error THEN 1 ELSE 0 END)
-           FROM usage_events
-           WHERE occurred_at >= ? AND occurred_at < ?
-           GROUP BY d""",
-        [trend_start_ts, p_end_ts],
-    ).fetchall()
-    ev_by_day = {r[0]: (int(r[1] or 0), int(r[2] or 0), int(r[3] or 0)) for r in ev_rows}
-
-    inst_by_day: dict[date, int] = {}
-    for sql, col in (
-        ("SELECT CAST(opted_out_at AS DATE) d, COUNT(*) FROM user_plugin_optouts "
-         "WHERE opted_out_at >= ? AND opted_out_at < ? GROUP BY d", None),
-        ("SELECT CAST(installed_at AS DATE) d, COUNT(*) FROM user_store_installs "
-         "WHERE installed_at >= ? AND installed_at < ? GROUP BY d", None),
-    ):
-        for r in conn.execute(sql, [trend_start_ts, p_end_ts]).fetchall():
-            inst_by_day[r[0]] = inst_by_day.get(r[0], 0) + int(r[1] or 0)
-
+    ev_by_day = rr.events_daily(trend_start_ts, p_end_ts)
+    inst_by_day = rr.installs_daily(trend_start_ts, p_end_ts)
     trend_series = []
     for i in range(trend_len):
         d = trend_start + timedelta(days=i)
-        inv, users, errs = ev_by_day.get(d, (0, 0, 0))
+        ev = ev_by_day.get(d, {})
         trend_series.append({
             "day": d.isoformat(),
-            "active_users": users,
-            "invocations": inv,
-            "errors": errs,
+            "active_users": ev.get("active_users", 0),
+            "invocations": ev.get("invocations", 0),
+            "errors": ev.get("errors", 0),
             "installs": inst_by_day.get(d, 0),
         })
 
     # ---- usage by source (primary window) ------------------------------------
-    by_source = [
-        {"source": r[0], "invocations": int(r[1] or 0),
-         "distinct_users": int(r[2] or 0), "error_count": int(r[3] or 0)}
-        for r in conn.execute(
-            """SELECT source, COUNT(*), COUNT(DISTINCT username),
-                      SUM(CASE WHEN is_error THEN 1 ELSE 0 END)
-               FROM usage_events
-               WHERE occurred_at >= ? AND occurred_at < ? AND source IS NOT NULL
-               GROUP BY source ORDER BY 2 DESC""",
-            [p_start_ts, p_end_ts],
-        ).fetchall()
-    ]
+    by_source = rr.by_source(p_start_ts, p_end_ts)
 
-    # ---- marketplace-item aggregates (usage_marketplace_item_daily) ----------
+    # ---- marketplace-item aggregates -----------------------------------------
     # Aggregate the primary and comparison windows separately, then take the
     # union of keys so an item that dropped to zero still shows up in `falling`.
-    def _item_agg(start_d, end_d):
-        rows = conn.execute(
-            """SELECT source, type, parent_plugin, name,
-                      SUM(count), SUM(distinct_users), SUM(error_count)
-               FROM usage_marketplace_item_daily
-               WHERE day >= ? AND day < ?
-               GROUP BY source, type, parent_plugin, name""",
-            [start_d, end_d],
-        ).fetchall()
-        return {
-            (r[0], r[1], r[2], r[3]): (int(r[4] or 0), int(r[5] or 0), int(r[6] or 0))
-            for r in rows
-        }
+    primary = rr.items_window(p_start, p_end)
+    compare = rr.items_window(c_start, c_end)
 
-    primary = _item_agg(p_start, p_end)
-    compare = _item_agg(c_start, c_end)
+    # Per-item distinct users. The daily rollup column is a per-day distinct, so
+    # SUM-ing it over a multi-day window overcounts users who used an item on
+    # several days. Daily reports span one day, so the rollup value is exact.
+    # Weekly reports take the TRUE sliding-window distinct from the precomputed
+    # window snapshot (only meaningful for the live/default anchor — that table
+    # reflects the current trailing 7d, not an arbitrary historical date); when
+    # it isn't available we return null ("unknown") rather than an inflated sum.
+    win_distinct = {}
+    if period == "weekly" and date_str is None:
+        win_distinct = rr.item_window_distinct("last_7d")
 
     items = []
     for key in set(primary) | set(compare):
         source, type_, parent, name = key
-        inv, du, err = primary.get(key, (0, 0, 0))
-        prev_inv = compare.get(key, (0, 0, 0))[0]
+        p = primary.get(key, {})
+        inv = p.get("invocations", 0)
+        err = p.get("error_count", 0)
+        du = p.get("distinct_users", 0) if period == "daily" else win_distinct.get(key)
+        prev_inv = compare.get(key, {}).get("invocations", 0)
         items.append({
             "source": source, "type": type_, "parent_plugin": parent, "name": name,
             "invocations": inv, "distinct_users": du, "error_count": err,
@@ -267,67 +214,51 @@ def marketplace_digest(
         )[:_TOP_N]
     ]
 
-    # ---- zero-usage curated plugins ("not landing") --------------------------
-    # Curated catalog rows with no invocations in the primary window. Joined to
-    # the registry for curator attribution.
-    used_curated = {
-        it["name"] for it in items
-        if it["source"] == "curated" and it["invocations"] > 0
-    }
-    zero_usage = []
-    for r in conn.execute(
-        """SELECT p.marketplace_id, p.name, r.curator_name
-           FROM marketplace_plugins p
-           LEFT JOIN marketplace_registry r ON r.id = p.marketplace_id
-           WHERE COALESCE(p.is_system, FALSE) = FALSE
-           ORDER BY p.marketplace_id, p.name""",
-    ).fetchall():
-        if r[1] not in used_curated:
-            zero_usage.append({
-                "marketplace_id": r[0], "name": r[1], "curator_name": r[2],
-            })
-        if len(zero_usage) >= _ZERO_USAGE_N:
-            break
-
     # ---- installs / adoption (primary window) --------------------------------
-    installs_curated = [
-        {"ref_id": f"{r[0]}/{r[1]}", "name": r[1], "installs": int(r[2] or 0)}
-        for r in conn.execute(
-            """SELECT marketplace_id, plugin_name, COUNT(*) AS n
-               FROM user_plugin_optouts
-               WHERE opted_out_at >= ? AND opted_out_at < ?
-               GROUP BY marketplace_id, plugin_name ORDER BY n DESC LIMIT ?""",
-            [p_start_ts, p_end_ts, _TOP_N],
-        ).fetchall()
-    ]
-    installs_flea = [
-        {"entity_id": r[0], "name": r[1], "installs": int(r[2] or 0)}
-        for r in conn.execute(
-            """SELECT usi.entity_id, s.name, COUNT(*) AS n
-               FROM user_store_installs usi
-               LEFT JOIN store_entities s ON s.id = usi.entity_id
-               WHERE usi.installed_at >= ? AND usi.installed_at < ?
-               GROUP BY usi.entity_id, s.name ORDER BY n DESC LIMIT ?""",
-            [p_start_ts, p_end_ts, _TOP_N],
-        ).fetchall()
-    ]
     installs = {
-        "curated": installs_curated,
-        "flea": installs_flea,
+        "curated": rr.installs_curated_detail(p_start_ts, p_end_ts, _TOP_N),
+        "flea": rr.installs_flea_detail(p_start_ts, p_end_ts, _TOP_N),
         "total": p_installs,
     }
 
-    # ---- marketplace health (registry + plugin counts) -----------------------
+    # ---- registry-derived sections (zero-usage + health) ---------------------
+    registry = marketplace_registry_repo().list_all()
+    reg_by_id = {r["id"]: r for r in registry}
+    plug_repo = marketplace_plugins_repo()
+    plugin_counts = plug_repo.count_by_marketplace()
+    all_plugins = plug_repo.list_all()
+
+    # A curated plugin "landed" if it (or one of its skills/agents) saw any
+    # invocation in the primary window.
+    used_curated = set()
+    for it in items:
+        if it["source"] != "curated" or it["invocations"] <= 0:
+            continue
+        # The plugin counts as used whether the invocation landed on the plugin
+        # itself or on one of its skills/agents (whose parent_plugin names it).
+        used_curated.add(it["name"])
+        if it["parent_plugin"]:
+            used_curated.add(it["parent_plugin"])
+
+    zero_usage = []
+    for p in all_plugins:
+        if p.get("is_system"):
+            continue
+        if p["name"] in used_curated:
+            continue
+        reg = reg_by_id.get(p["marketplace_id"]) or {}
+        zero_usage.append({
+            "marketplace_id": p["marketplace_id"], "name": p["name"],
+            "curator_name": reg.get("curator_name"),
+        })
+        if len(zero_usage) >= _ZERO_USAGE_N:
+            break
+
     now = datetime.now(timezone.utc)
     marketplace_health = []
-    for r in conn.execute(
-        """SELECT r.id, r.name, r.curator_name, r.last_synced_at, r.last_error,
-                  (SELECT COUNT(*) FROM marketplace_plugins p WHERE p.marketplace_id = r.id)
-           FROM marketplace_registry r
-           ORDER BY r.name""",
-    ).fetchall():
-        last_synced = r[3]
-        last_error = r[4]
+    for r in registry:
+        last_synced = r.get("last_synced_at")
+        last_error = r.get("last_error")
         if last_error:
             status = "error"
         elif last_synced is None:
@@ -336,8 +267,8 @@ def marketplace_digest(
             synced = last_synced if last_synced.tzinfo else last_synced.replace(tzinfo=timezone.utc)
             status = "stale" if (now - synced) > timedelta(hours=_STALE_SYNC_HOURS) else "ok"
         marketplace_health.append({
-            "id": r[0], "name": r[1], "curator_name": r[2],
-            "plugin_count": int(r[5] or 0),
+            "id": r["id"], "name": r.get("name"), "curator_name": r.get("curator_name"),
+            "plugin_count": int(plugin_counts.get(r["id"], 0) or 0),
             "last_synced_at": last_synced.isoformat() if last_synced else None,
             "sync_status": status,
             "last_error": last_error,
@@ -347,7 +278,7 @@ def marketplace_digest(
     actor_id = user.get("id") or "anonymous"
     if _should_audit(actor_id, {"endpoint": "reports.marketplace_digest", "period": period}):
         try:
-            AuditRepository(conn).log(
+            audit_repo().log(
                 user_id=actor_id,
                 action="reports.marketplace_digest",
                 params={"period": period, "anchor": anchor.isoformat()},

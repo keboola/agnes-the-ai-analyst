@@ -18,11 +18,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   errors, error rate, new installs - each with a prior-period delta), a
   per-day trend series, usage by source, top items, rising/falling movers,
   failures, installs/adoption, zero-usage curated plugins, and per-marketplace
-  sync health - from the existing `usage_events`,
-  `usage_marketplace_item_daily`, `marketplace_registry`, and install-ledger
-  tables. Admin-only (PAT-gated), audit-logged via the shared
-  burst-suppression cache as `reports.marketplace_digest`. Lives in
-  `app/api/admin_reports.py`.
+  sync health - from `usage_events`, `usage_marketplace_item_daily`,
+  `marketplace_registry`, and the install ledgers. Reads route through the
+  backend-aware repository layer (new `reports_repo()` →
+  `ReportsRepository` / `ReportsPgRepository`) so the digest resolves the
+  correct DuckDB/Postgres backend; per-item `distinct_users` for weekly uses
+  the true sliding-window snapshot rather than summing per-day distincts.
+  Admin-only (PAT-gated), audit-logged via the shared burst-suppression cache
+  as `reports.marketplace_digest`. Lives in `app/api/admin_reports.py`.
 
 ### Changed
 
