@@ -11,6 +11,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `GET /api/admin/reports/marketplace-digest?period=daily|weekly[&date=YYYY-MM-DD]`:
+  one consolidated, report-shaped JSON payload for an external rendering
+  pipeline (e.g. an n8n workflow that fills an HTML template and publishes
+  the result). Composes headline KPIs (active users, sessions, invocations,
+  errors, error rate, new installs - each with a prior-period delta), a
+  per-day trend series, usage by source, top items, rising/falling movers,
+  failures, installs/adoption, zero-usage curated plugins, and per-marketplace
+  sync health - from `usage_events`, `usage_marketplace_item_daily`,
+  `marketplace_registry`, and the install ledgers. Reads route through the
+  backend-aware repository layer (new `reports_repo()` →
+  `ReportsRepository` / `ReportsPgRepository`) so the digest resolves the
+  correct DuckDB/Postgres backend. Per-item `distinct_users` is exact for
+  daily (single day) and reported as null for weekly (summing per-day
+  distincts would overcount and there is no window-aligned source); built-in
+  marketplace plugins are excluded from the zero-usage section and the
+  built-in marketplace is not flagged stale. Admin-only (PAT-gated),
+  audit-logged via the shared burst-suppression cache as
+  `reports.marketplace_digest`. Lives in `app/api/admin_reports.py`.
 
 ### Changed
 

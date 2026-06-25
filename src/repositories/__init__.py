@@ -89,6 +89,7 @@ __all__ = [
     "session_processor_state_repo",
     "observability_views_repo",
     "usage_repo",
+    "reports_repo",
     # Store / marketplace
     "marketplace_registry_repo",
     "marketplace_plugins_repo",
@@ -297,6 +298,10 @@ _REGISTRY: dict[str, dict[str, tuple[str, str]]] = {
     "usage": {
         DUCKDB: ("src.repositories.usage", "UsageRepository"),
         PG: ("src.repositories.usage_pg", "UsagePgRepository"),
+    },
+    "reports": {
+        DUCKDB: ("src.repositories.reports", "ReportsRepository"),
+        PG: ("src.repositories.reports_pg", "ReportsPgRepository"),
     },
     # store / marketplace
     "marketplace_registry": {
@@ -547,6 +552,10 @@ def observability_views_repo() -> Any:
 
 def usage_repo() -> Any:
     return _build("usage")
+
+
+def reports_repo() -> Any:
+    return _build("reports")
 
 
 # store / marketplace

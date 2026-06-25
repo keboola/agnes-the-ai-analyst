@@ -291,6 +291,7 @@ from app.api.admin_user_sessions import router as admin_user_sessions_router
 from app.api.admin_sessions import router as admin_sessions_router
 from app.api.admin_usage import router as admin_usage_router
 from app.api.admin_usage_summary import router as admin_usage_summary_router
+from app.api.admin_reports import router as admin_reports_router
 from app.api.admin_adoption import router as admin_adoption_router
 from app.api.db_state import router as db_state_router
 from app.marketplace_server.router import router as marketplace_server_router
@@ -1458,6 +1459,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_sessions_router)
     app.include_router(admin_usage_router)
     app.include_router(admin_usage_summary_router)
+    app.include_router(admin_reports_router)
     app.include_router(admin_adoption_router)
     app.include_router(db_state_router)
     app.include_router(marketplace_server_router)
