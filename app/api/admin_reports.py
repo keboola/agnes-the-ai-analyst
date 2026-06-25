@@ -244,9 +244,14 @@ def marketplace_digest(
     for p in all_plugins:
         if p.get("is_system"):
             continue
+        reg = reg_by_id.get(p["marketplace_id"]) or {}
+        # "Not landing" is about admin-curated department content. Built-in
+        # marketplace plugins (usage attributed as source='builtin') are not
+        # curated and would otherwise show up here as false zero-usage rows.
+        if reg.get("is_builtin"):
+            continue
         if p["name"] in used_curated:
             continue
-        reg = reg_by_id.get(p["marketplace_id"]) or {}
         zero_usage.append({
             "marketplace_id": p["marketplace_id"], "name": p["name"],
             "curator_name": reg.get("curator_name"),
@@ -261,6 +266,11 @@ def marketplace_digest(
         last_error = r.get("last_error")
         if last_error:
             status = "error"
+        elif r.get("is_builtin"):
+            # The built-in marketplace is seeded locally and intentionally
+            # skipped by the nightly git sync, so it has no last_synced_at -
+            # that's healthy, not stale.
+            status = "ok"
         elif last_synced is None:
             status = "stale"
         else:

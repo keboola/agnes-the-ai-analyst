@@ -70,6 +70,15 @@ def _seed(conn):
     reg("curated-stale", "Marketing", "Juraj", now - timedelta(days=5), None)     # stale
     reg("curated-err", "Sales", "Carmen", now - timedelta(hours=1), "clone failed")  # error
 
+    # Built-in marketplace: seeded locally, never git-synced (null last_synced),
+    # is_builtin=TRUE. Must NOT be flagged stale, and its plugins must NOT show
+    # up as zero-usage curated content.
+    conn.execute(
+        """INSERT INTO marketplace_registry
+           (id, name, url, curator_name, last_synced_at, last_error, is_builtin)
+           VALUES ('agnes-builtin', 'Built-in', '', NULL, NULL, NULL, TRUE)"""
+    )
+
     def plug(mid, name):
         conn.execute(
             """INSERT INTO marketplace_plugins (marketplace_id, name, is_system)
@@ -79,6 +88,7 @@ def _seed(conn):
 
     plug("curated-product", "product-analyzer")  # used → not in zero_usage
     plug("curated-product", "unused-skill")       # zero usage → listed
+    plug("agnes-builtin", "welcome")              # built-in → excluded from zero_usage
 
     # --- installs (anchor day) ----------------------------------------------
     conn.execute(
@@ -150,16 +160,19 @@ def test_daily_movers_failures_and_zero_usage(seeded_app, admin_user):
     # failures: product-analyzer had 1 error
     assert any(f["name"] == "product-analyzer" and f["errors"] == 1
                for f in data["failures"])
-    # zero_usage: unused-skill listed, product-analyzer not
+    # zero_usage: unused-skill listed; used + built-in plugins excluded
     zero_names = {z["name"] for z in data["zero_usage"]}
     assert "unused-skill" in zero_names
     assert "product-analyzer" not in zero_names
+    assert "welcome" not in zero_names  # built-in plugin must not be flagged
 
     # marketplace_health statuses derived correctly
     health = {h["id"]: h for h in data["marketplace_health"]}
     assert health["curated-product"]["sync_status"] == "ok"
     assert health["curated-stale"]["sync_status"] == "stale"
     assert health["curated-err"]["sync_status"] == "error"
+    # built-in is never git-synced (null last_synced) but is healthy, not stale
+    assert health["agnes-builtin"]["sync_status"] == "ok"
     assert health["curated-product"]["plugin_count"] == 2
 
 
