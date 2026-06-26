@@ -1314,8 +1314,15 @@ class TestReportsSmoke:
         )
         assert r.status_code == 200
         body = r.json()
-        for key in ("meta", "headline_kpis", "trend_series", "by_source",
-                    "top_items", "installs", "marketplace_health"):
+        for key in (
+            "meta",
+            "headline_kpis",
+            "trend_series",
+            "by_source",
+            "top_items",
+            "installs",
+            "marketplace_health",
+        ):
             assert key in body
 
     def test_digest_weekly(self, seeded_app_both):
@@ -1736,6 +1743,8 @@ KNOWN_UNTESTED = {
     "POST /api/admin/run-jira-consistency-check",
     "POST /api/admin/run-jira-sla-poll",
     "POST /api/admin/run-knowledge-migration",
+    "POST /api/mcp-connect/token",  # tested in tests/test_mcp_connect.py
+    "GET /mcp-connect",  # web UI page tested in tests/test_mcp_connect.py
     "POST /api/admin/run-session-collector",
     "POST /api/admin/run-session-processor",
     "POST /api/admin/uploads/cover-image",
