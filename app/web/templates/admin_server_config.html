@@ -237,6 +237,28 @@
   .modal-card .diff-row { padding: 4px 0; border-bottom: 1px dashed var(--border, #e5e7eb); }
   .modal-card .diff-row:last-child { border-bottom: none; }
   .modal-card .diff-row .path { color: #b91c1c; font-weight: 600; }
+
+  /* Vault hint in Data source section */
+  .ds-vault-hint {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 10px 14px; border-radius: 8px; font-size: 13px; line-height: 1.5;
+    text-decoration: none;
+  }
+  .ds-vault-hint--ready {
+    background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d;
+  }
+  .ds-vault-hint--ready:hover { background: #dcfce7; }
+  .ds-vault-hint--ready strong { color: #15803d; }
+  .ds-vault-hint--info {
+    background: var(--background, #f9fafb); border: 1px solid var(--border, #e5e7eb);
+    color: var(--text-secondary, #6b7280);
+  }
+  .ds-vault-hint--info a { color: var(--ds-primary, #6366f1); }
+  .ds-vault-hint--info code {
+    font-size: 12px; background: var(--border-light, #f3f4f6);
+    padding: 1px 4px; border-radius: 3px; color: var(--text-primary, #111827);
+  }
+  .ds-vault-hint-icon { flex-shrink: 0; font-size: 15px; margin-top: 1px; }
 </style>
 {% endblock %}
 
@@ -907,6 +929,7 @@ function renderSection(section, payload, knownForSection) {
       <div class="section-body">
         ${fieldsHtml}
         ${bootstrap}
+        ${section === "data_source" ? '<div id="ds-vault-hint" style="margin-top:14px"></div>' : ""}
       </div>
       <div class="section-actions">
         <button class="btn btn-primary" data-action="save-section" data-section="${section}">Save ${escHtml(meta.title.toLowerCase())}</button>
@@ -1479,9 +1502,34 @@ async function loadConfig() {
     if (!r.ok) throw new Error("HTTP " + r.status);
     original = await r.json();
     renderAll(original);
+    loadDsVaultHint();
   } catch (e) {
     document.getElementById("cfg-loading").textContent = "Failed to load config: " + e.message;
   }
+}
+
+async function loadDsVaultHint() {
+  const el = document.getElementById("ds-vault-hint");
+  if (!el) return;
+  try {
+    const r = await fetch("/api/health", { credentials: "include" });
+    if (!r.ok) return;
+    const data = await r.json();
+    const vaultConfigured = data.vault_key_configured === true;
+    if (vaultConfigured) {
+      el.innerHTML = `<a href="/admin/datasource-credentials" class="ds-vault-hint ds-vault-hint--ready">
+        <span class="ds-vault-hint-icon">&#128274;</span>
+        <span>Credentials can also be managed via the encrypted vault &rarr; <strong>Manage datasource credentials</strong></span>
+      </a>`;
+    } else {
+      el.innerHTML = `<div class="ds-vault-hint ds-vault-hint--info">
+        <span class="ds-vault-hint-icon">&#128161;</span>
+        <span>Credentials can be stored in an encrypted vault instead of config files.
+        Set <code>AGNES_VAULT_KEY</code> on the server to enable the
+        <a href="/admin/datasource-credentials">vault credential manager</a>.</span>
+      </div>`;
+    }
+  } catch (_) { /* non-critical */ }
 }
 
 loadConfig();
