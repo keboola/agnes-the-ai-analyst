@@ -974,6 +974,13 @@ synced IWT clone for the bind-git file picker.
 - /api/mcp/query-table/{table_id}
 - /api/mcp/sources/{source_id}/my-secret
 
+### `/api/mcp-connect` — Headless MCP client setup
+
+Issues a PAT for headless AI editors (Cursor, GitHub Copilot) that cannot complete the
+interactive OAuth browser flow. The token is returned once and must be saved by the caller.
+
+- /api/mcp-connect/token
+
 ### `/api/me` — Current user self-service
 
 - /api/me/effective-access

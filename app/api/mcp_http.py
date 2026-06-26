@@ -484,7 +484,10 @@ async def _send_401(scope: Scope, send: Send) -> None:
         {
             "type": "http.response.start",
             "status": 401,
-            "headers": [[b"content-type", b"application/json"]],
+            "headers": [
+                [b"content-type", b"application/json"],
+                [b"www-authenticate", b'Bearer realm="Agnes MCP"'],
+            ],
         }
     )
     await send(
