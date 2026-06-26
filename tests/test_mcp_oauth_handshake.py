@@ -49,6 +49,26 @@ def test_discovery_metadata_at_origin_root(seeded_app):
     assert any(s.endswith("/api/mcp/http") for s in pr["authorization_servers"])
 
 
+def test_discovery_metadata_at_path_aware_locations(seeded_app):
+    """Strict clients (Cursor, Copilot, ChatGPT web) build the AS metadata URL
+    per RFC 8414 §3 by inserting the well-known segment between host and the
+    issuer's ``/api/mcp/http`` path. Lenient clients (Claude) fall back to the
+    bare root, so only path-aware probers regressed before this fix."""
+    client = seeded_app["client"]
+
+    for path in (
+        "/.well-known/oauth-authorization-server/api/mcp/http",
+        "/.well-known/openid-configuration",
+        "/.well-known/openid-configuration/api/mcp/http",
+    ):
+        r = client.get(path)
+        assert r.status_code == 200, f"{path}: {r.text}"
+        meta = r.json()
+        assert meta["authorization_endpoint"].endswith("/api/mcp/http/authorize")
+        assert meta["token_endpoint"].endswith("/api/mcp/http/token")
+        assert meta["registration_endpoint"].endswith("/api/mcp/http/register")
+
+
 def test_discovery_metadata_uses_request_host_when_env_unset(seeded_app, monkeypatch):
     """Production behind a TLS proxy must advertise the public host even when
     AGNES_BASE_URL / SERVER_URL are unset."""
