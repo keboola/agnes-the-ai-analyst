@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi import APIRouter, Depends, Form, Request, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 import duckdb
@@ -2952,6 +2952,49 @@ async def admin_marketplaces_page(
     """Admin page for marketplace git repositories (register / sync / delete)."""
     ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "admin_marketplaces.html", ctx)
+
+
+@router.get("/admin/contribute-skill", response_class=HTMLResponse)
+async def admin_contribute_skill_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Paste a generated SKILL.md and publish it into the contributed
+    marketplace. This is the landing target for an external "Load skill to
+    Agnes" button: the external tool copies the skill to the clipboard and
+    opens this page (optionally with ?prefill=1 to auto-read the clipboard)."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "contribute_skill.html", ctx)
+
+
+@router.post("/admin/contribute-skill", response_class=HTMLResponse)
+async def admin_contribute_skill_submit(
+    request: Request,
+    user: dict = Depends(require_admin),
+    skill_md: str = Form(...),
+    grant_group: str = Form("Admin"),
+):
+    """Publish the pasted SKILL.md, then re-render the page with a deep link
+    to the new plugin (the "open it in Agnes" advert loop)."""
+    from app.marketplace_server.packager import invalidate_etag_cache
+    from src.skill_contribution import SkillContributionError, contribute_skill
+
+    ctx = _build_context(request, user=user)
+    try:
+        ctx["result"] = contribute_skill(
+            skill_md,
+            registered_by=user.get("id") or user.get("email"),
+            grant_group=(grant_group or "Admin").strip(),
+        )
+        invalidate_etag_cache()
+    except SkillContributionError as e:
+        ctx["error"] = str(e)
+        ctx["skill_md"] = skill_md
+    except Exception as e:  # noqa: BLE001 — surface any failure in the page
+        logger.exception("contribute-skill failed")
+        ctx["error"] = f"Unexpected error: {e}"
+        ctx["skill_md"] = skill_md
+    return templates.TemplateResponse(request, "contribute_skill.html", ctx)
 
 
 @router.get("/admin/initial-workspace", response_class=HTMLResponse)
