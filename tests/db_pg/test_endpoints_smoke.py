@@ -1407,9 +1407,8 @@ KNOWN_UNTESTED = {
     "PUT /api/admin/mcp",
     "GET /api/admin/slack-secrets",
     "PUT /api/admin/slack-secrets",
-    # Admin datasource credentials — vault-backed GWS OAuth (web UI only)
+    # Admin datasource credentials — vault-backed Keboola/BQ secrets (web UI only)
     "GET /api/admin/datasource-secrets",
-    "POST /api/admin/validate-gws-credentials",
     "GET /admin/datasource-credentials",
     # Admin bigquery / keboola test endpoints
     "POST /api/admin/bigquery/test",

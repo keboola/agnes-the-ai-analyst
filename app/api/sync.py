@@ -254,6 +254,10 @@ def _run_materialized_pass(
                         or "KEBOOLA_STORAGE_TOKEN"
                     )
                     keboola_token = os.environ.get(token_env, "")
+                    if not keboola_token:
+                        from app.datasource_secrets import datasource_secret as _ds_secret
+
+                        keboola_token = _ds_secret("KEBOOLA_STORAGE_TOKEN") or ""
                     if not (keboola_url and keboola_token):
                         summary["errors"].append(
                             {

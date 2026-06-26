@@ -149,7 +149,7 @@ class _SilentUndefined(jinja2.Undefined):
 templates.env.undefined = _SilentUndefined
 
 # Add custom JSON filter that handles _SilentUndefined and _FlexDict
-import json as _json
+import json as _json  # noqa: E402
 
 
 class _SafeEncoder(_json.JSONEncoder):
@@ -287,7 +287,7 @@ templates.env.globals["static_url"] = _static_url
 # audience-filtered step list as JSON without each route having to thread it
 # through its own context. The single source of truth lives in
 # app/web/onboarding.py — see tests/test_onboarding_not_outdated.py.
-from app.web.onboarding import steps_for as _onboarding_steps_for
+from app.web.onboarding import steps_for as _onboarding_steps_for  # noqa: E402
 
 templates.env.globals["onboarding_steps"] = _onboarding_steps_for
 
@@ -794,7 +794,7 @@ async def dashboard(
 ):
     sync_repo = sync_state_repo()
     settings_repo = sync_settings_repo()
-    profiles = profile_repo()
+    profiles = profile_repo()  # noqa: F841
 
     all_states = sync_repo.get_all_states()
     enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
@@ -2732,7 +2732,7 @@ async def admin_datasource_credentials_page(
     request: Request,
     user: dict = Depends(require_admin),
 ):
-    """Vault-backed credential cards for each data-source connector.
+    """Keboola and BigQuery credential management via the server vault.
 
     Passes ``vault_key_configured`` so the template can render a blocking
     banner when ``AGNES_VAULT_KEY`` is absent. Secret values are never read

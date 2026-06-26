@@ -16,6 +16,8 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 DATA_SOURCE_SECRET_NAMES = (
+    "KEBOOLA_STORAGE_TOKEN",
+    "BIGQUERY_SERVICE_ACCOUNT_JSON",
     "AGNES_GWS_CLIENT_ID",
     "AGNES_GWS_CLIENT_SECRET",
 )

@@ -3,7 +3,6 @@
   - GET    /api/admin/datasource-secrets             — presence/source status (no values)
   - PUT    /api/admin/datasource-secrets/{name}      — set / rotate (write-only)
   - DELETE /api/admin/datasource-secrets/{name}      — clear vault row
-  - POST   /api/admin/validate-gws-credentials       — validate GWS client_id format
 
 All gated by ``require_admin``. Secret values are never returned by any
 endpoint and never placed in audit records (params are empty, mirroring
@@ -12,6 +11,7 @@ the Slack secrets endpoints).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -27,7 +27,8 @@ from src.repositories import audit_repo, system_secrets_repo
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin-datasource-secrets"])
 
-_GWS_CLIENT_ID_RE = re.compile(r"^\d+-[a-z0-9]+\.apps\.googleusercontent\.com$")
+_BQ_JSON_MAX_BYTES = 64 * 1024  # 64 KiB cap
+_GWS_CLIENT_ID_RE = re.compile(r"^\d+-\w+\.apps\.googleusercontent\.com$")
 
 
 class DatasourceSecretBody(BaseModel):
@@ -39,6 +40,30 @@ def _audit(actor_id: str, action: str, resource: str) -> None:
         audit_repo().log(user_id=actor_id, action=action, resource=resource, params={})
     except Exception:
         logger.warning("audit log failed for %s/%s", action, resource)
+
+
+def _validate_gws_credential(name: str, value: str) -> None:
+    if name == "AGNES_GWS_CLIENT_ID" and not _GWS_CLIENT_ID_RE.match(value):
+        raise HTTPException(status_code=400, detail="invalid_gws_client_id")
+    if name == "AGNES_GWS_CLIENT_SECRET" and not value.startswith("GOCSPX-"):
+        raise HTTPException(status_code=400, detail="invalid_gws_client_secret")
+
+
+def _validate_bq_json(value: str) -> None:
+    """Validate BigQuery service account JSON shape.
+
+    Raises ``HTTPException(400, detail='invalid_service_account_json')`` if the
+    value is not a well-formed service account credential.
+    """
+    if len(value.encode()) > _BQ_JSON_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="invalid_service_account_json")
+    try:
+        info = json.loads(value)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="invalid_service_account_json")
+    required = {"type", "private_key", "client_email"}
+    if not isinstance(info, dict) or info.get("type") != "service_account" or not required.issubset(info.keys()):
+        raise HTTPException(status_code=400, detail="invalid_service_account_json")
 
 
 @router.get("/datasource-secrets")
@@ -68,6 +93,10 @@ async def set_datasource_secret(
         raise HTTPException(status_code=400, detail="unknown_datasource_secret")
     if not body.value.strip():
         raise HTTPException(status_code=400, detail="secret value required")
+    if name == "BIGQUERY_SERVICE_ACCOUNT_JSON":
+        _validate_bq_json(body.value.strip())
+    if name in ("AGNES_GWS_CLIENT_ID", "AGNES_GWS_CLIENT_SECRET"):
+        _validate_gws_credential(name, body.value.strip())
     try:
         system_secrets_repo().upsert(name, body.value.strip())
     except VaultKeyNotConfiguredError as exc:
@@ -88,30 +117,3 @@ async def delete_datasource_secret(
         raise HTTPException(status_code=400, detail="unknown_datasource_secret")
     system_secrets_repo().delete(name)
     _audit(user["id"], "datasource.secret.clear", f"datasource_secret:{name}")
-
-
-@router.post("/validate-gws-credentials")
-async def validate_gws_credentials(user: dict = Depends(require_admin)):
-    """Validate the currently configured GWS OAuth client credentials.
-
-    Checks format only — does not make any network call to Google. A
-    well-formed client_id proves the GCP project number is present, which
-    is a prerequisite for the gws CLI's JSON schema.
-    """
-    from app.instance_config import get_gws_oauth_credentials
-
-    creds = get_gws_oauth_credentials()
-    issues: list[str] = []
-
-    if not creds["configured"]:
-        if not creds["client_id"]:
-            issues.append("AGNES_GWS_CLIENT_ID is not set")
-        if not creds["client_secret"]:
-            issues.append("AGNES_GWS_CLIENT_SECRET is not set")
-
-    if creds["client_id"] and not _GWS_CLIENT_ID_RE.match(creds["client_id"]):
-        issues.append(
-            "Client ID format is invalid — expected '<numeric-project-number>-<random>.apps.googleusercontent.com'"
-        )
-
-    return {"ok": len(issues) == 0, "configured": creds["configured"], "issues": issues}

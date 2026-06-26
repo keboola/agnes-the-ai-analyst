@@ -11,9 +11,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
-- `/admin/datasource-credentials` page — vault-backed credential cards for Google Workspace OAuth (`AGNES_GWS_CLIENT_ID` / `AGNES_GWS_CLIENT_SECRET`) with a collapsible step-by-step GCP setup guide, format validation, and clear/save/test actions. Keboola and BigQuery placeholders link back to instance settings (#718).
-- `GET/PUT/DELETE /api/admin/datasource-secrets` and `POST /api/admin/validate-gws-credentials` — admin-gated, write-only vault endpoints for datasource credentials (env > vault > unset resolution).
-- `app/datasource_secrets.py` — env > vault > None resolver for the GWS credential allow-list; wired into `get_gws_oauth_credentials()` so vault-stored credentials are picked up without `.env` editing.
+- `/admin/datasource-credentials` page — vault-backed credential management for Keboola (`KEBOOLA_STORAGE_TOKEN`), BigQuery (`BIGQUERY_SERVICE_ACCOUNT_JSON`), and Google Workspace OAuth (`AGNES_GWS_CLIENT_ID` / `AGNES_GWS_CLIENT_SECRET`); env always takes precedence over vault. Save/Test/Clear per source, status badge (env / vault / unset), vault-key banner when `AGNES_VAULT_KEY` is absent. GWS card includes a collapsible step-by-step GCP Console setup guide with deep-links (#718).
+- `GET/PUT/DELETE /api/admin/datasource-secrets` — admin-gated, write-only vault endpoints; BigQuery PUT validates SA JSON shape before storing; GWS PUT validates Client ID format and Client Secret prefix.
+- `app/datasource_secrets.py` — env > vault > None resolver with an explicit allow-list; wired into Keboola connectors and the sync subprocess env overlay so vault-stored tokens reach the extractor without `.env` editing.
+- BigQuery `connectors/bigquery/auth.py` vault tier — `BIGQUERY_SERVICE_ACCOUNT_JSON` from the vault is tried after the `GOOGLE_APPLICATION_CREDENTIALS` env var and before the GCE metadata server; the SA JSON is never written to disk.
 
 ### Changed
 
