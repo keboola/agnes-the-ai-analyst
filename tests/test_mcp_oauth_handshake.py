@@ -69,6 +69,20 @@ def test_discovery_metadata_at_path_aware_locations(seeded_app):
         assert meta["registration_endpoint"].endswith("/api/mcp/http/register")
 
 
+def test_subapp_discovery_includes_none_and_no_double_send(seeded_app):
+    """The MCP sub-app's own /.well-known/oauth-authorization-server endpoint is
+    patched by _PatchPublicClientDiscoveryMiddleware to add 'none' to
+    token_endpoint_auth_methods_supported. The middleware must not double-send
+    the http.response.start ASGI message (which would cause uvicorn to raise
+    RuntimeError('Response already started'))."""
+    client = seeded_app["client"]
+
+    r = client.get("/api/mcp/http/.well-known/oauth-authorization-server")
+    assert r.status_code == 200, r.text
+    meta = r.json()
+    assert "none" in meta.get("token_endpoint_auth_methods_supported", [])
+
+
 def test_discovery_metadata_uses_request_host_when_env_unset(seeded_app, monkeypatch):
     """Production behind a TLS proxy must advertise the public host even when
     AGNES_BASE_URL / SERVER_URL are unset."""

@@ -274,6 +274,7 @@ class _PatchPublicClientDiscoveryMiddleware:
                 response_started = True
                 status_code = message["status"]
                 headers = list(message.get("headers", []))
+                return
             elif message["type"] == "http.response.body":
                 body_chunks.append(message.get("body", b""))
                 if not message.get("more_body", False):
@@ -298,11 +299,9 @@ class _PatchPublicClientDiscoveryMiddleware:
                         }
                     )
                     await send({"type": "http.response.body", "body": patched, "more_body": False})
-                    return
-            # Forward non-body messages that arrived before we started buffering.
-            if not body_chunks or message.get("more_body", True):
-                if not response_started or message["type"] == "http.response.start":
-                    await send(message)
+                return
+            # Forward any other ASGI message types unchanged.
+            await send(message)
 
         await self._app(scope, receive, _patched_send)
 
