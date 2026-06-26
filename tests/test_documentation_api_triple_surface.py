@@ -163,6 +163,12 @@ _MCP_CONNECT_REASON = (
     "web UI flow that issues a connector token and returns ready-to-paste config "
     "snippets; no CLI/MCP analogue (the PAT it creates IS the MCP credential)"
 )
+_SOURCE_CONNECTIONS_REASON = (
+    "admin-only named source-connection CRUD (multi-project Keboola) — "
+    "vault-backed credential store and connectivity tester; no analyst "
+    "CLI/MCP analogue (mirrors the grandfathered /api/admin/register-table "
+    "and /api/admin/slack-secrets admin mutations)"
+)
 _EXEMPT: dict[str, str] = {
     "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
@@ -193,6 +199,10 @@ _EXEMPT: dict[str, str] = {
     "/api/admin/run-knowledge-migration": _KNOWLEDGE_MIGRATION_REASON,
     "/api/admin/reports/marketplace-digest": _REPORTS_REASON,
     "/api/mcp-connect/token": _MCP_CONNECT_REASON,
+    "/api/admin/source-connections": _SOURCE_CONNECTIONS_REASON,
+    "/api/admin/source-connections/{connection_id}": _SOURCE_CONNECTIONS_REASON,
+    "/api/admin/source-connections/{connection_id}/secret": _SOURCE_CONNECTIONS_REASON,
+    "/api/admin/source-connections/{connection_id}/test": _SOURCE_CONNECTIONS_REASON,
 }
 
 
