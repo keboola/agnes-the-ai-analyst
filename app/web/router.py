@@ -2981,12 +2981,15 @@ async def admin_contribute_skill_submit(
 
     ctx = _build_context(request, user=user)
     try:
-        ctx["result"] = contribute_skill(
+        result = contribute_skill(
             skill_md,
             registered_by=user.get("id") or user.get("email"),
             grant_group=(grant_group or "Admin").strip(),
         )
         invalidate_etag_cache()
+        # Assign result only after every fallible step succeeded, so a failure
+        # never leaves both the success and error banners rendered at once.
+        ctx["result"] = result
     except SkillContributionError as e:
         ctx["error"] = str(e)
         ctx["skill_md"] = skill_md

@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from app.utils import get_marketplaces_dir
-from src.marketplace import _refresh_plugin_cache, is_valid_slug
+from src.marketplace import _lock, _refresh_plugin_cache, is_valid_slug
 from src.marketplace_listing import _parse_frontmatter
 
 logger = logging.getLogger(__name__)
@@ -182,34 +182,39 @@ def contribute_skill(
         raise SkillContributionError(f"Could not derive a valid plugin name from {raw_name!r}.")
     description = (fm.get("description") or "").strip() or f"Contributed skill: {raw_name}"
 
-    # 1. Registry row (idempotent, sync-immune).
-    _ensure_registry_row(registered_by)
+    # Serialize the disk write + manifest read-modify-write + cache refresh
+    # under the same process-wide lock the nightly sync uses (src.marketplace._lock),
+    # so two concurrent contributions — or a contribution racing a sync — can't
+    # lose a manifest entry to a read-modify-write race.
+    with _lock:
+        # 1. Registry row (idempotent, sync-immune).
+        _ensure_registry_row(registered_by)
 
-    # 2. Write the plugin tree on disk: a one-skill plugin where the plugin
-    #    name == the skill name (simplest shape that renders a skill detail).
-    repo_root = get_marketplaces_dir() / CONTRIBUTED_MARKETPLACE_SLUG
-    plugin_root = repo_root / "plugins" / plugin_name
-    skill_dir = plugin_root / "skills" / plugin_name
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    (plugin_root / ".claude-plugin").mkdir(parents=True, exist_ok=True)
-    (plugin_root / ".claude-plugin" / "plugin.json").write_text(
-        json.dumps(
-            {"name": plugin_name, "version": "1.0.0", "description": description},
-            indent=2,
+        # 2. Write the plugin tree on disk: a one-skill plugin where the plugin
+        #    name == the skill name (simplest shape that renders a skill detail).
+        repo_root = get_marketplaces_dir() / CONTRIBUTED_MARKETPLACE_SLUG
+        plugin_root = repo_root / "plugins" / plugin_name
+        skill_dir = plugin_root / "skills" / plugin_name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_root / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+        (plugin_root / ".claude-plugin" / "plugin.json").write_text(
+            json.dumps(
+                {"name": plugin_name, "version": "1.0.0", "description": description},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
         )
-        + "\n",
-        encoding="utf-8",
-    )
-    (skill_dir / "SKILL.md").write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+        (skill_dir / "SKILL.md").write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
 
-    # 3. Register the plugin in the marketplace manifest.
-    _upsert_manifest_entry(repo_root, plugin_name, description)
+        # 3. Register the plugin in the marketplace manifest.
+        _upsert_manifest_entry(repo_root, plugin_name, description)
 
-    # 4. Refresh the plugin cache (writes marketplace_plugins, backend-aware).
-    plugin_count = _refresh_plugin_cache(CONTRIBUTED_MARKETPLACE_SLUG)
+        # 4. Refresh the plugin cache (writes marketplace_plugins, backend-aware).
+        plugin_count = _refresh_plugin_cache(CONTRIBUTED_MARKETPLACE_SLUG)
 
-    # 5. Grant so it shows up in the served feed + browse page.
-    granted = _grant_to_group(grant_group, plugin_name)
+        # 5. Grant so it shows up in the served feed + browse page.
+        granted = _grant_to_group(grant_group, plugin_name)
 
     detail_url = f"/marketplace/curated/{CONTRIBUTED_MARKETPLACE_SLUG}/{plugin_name}"
     skill_url = f"{detail_url}/skill/{plugin_name}"
