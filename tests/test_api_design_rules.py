@@ -223,6 +223,10 @@ _CREATOR_POST_ALLOWLIST = frozenset(
         "/api/admin/initial-workspace",
         # Saved-view upsert — ON CONFLICT updates existing name rather than creating
         "/api/admin/observability/views",
+        # Skill contribution — admin web-form page POST that re-renders HTML (200)
+        # and upserts the pasted skill into the contributed marketplace; not a
+        # JSON resource create. GET on the same path renders the form.
+        "/admin/contribute-skill",
     }
 )
 
