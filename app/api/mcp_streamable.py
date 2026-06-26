@@ -100,9 +100,7 @@ def _headers() -> dict[str, str]:
 
 
 def _oauth_client_registration_options() -> ClientRegistrationOptions:
-    return ClientRegistrationOptions(
-        enabled=True, valid_scopes=["read"], default_scopes=["read"]
-    )
+    return ClientRegistrationOptions(enabled=True, valid_scopes=["read"], default_scopes=["read"])
 
 
 def _oauth_revocation_options() -> RevocationOptions:
@@ -123,6 +121,15 @@ def _oauth_metadata_for_request(request: Request):
         client_registration_options=_oauth_client_registration_options(),
         revocation_options=_oauth_revocation_options(),
     )
+    # RFC 8252: public clients (VS Code, native apps) use
+    # token_endpoint_auth_method=none. build_metadata() hardcodes only
+    # confidential auth methods — extend the list so VS Code's discovery
+    # check passes and it proceeds with Dynamic Client Registration instead
+    # of showing the manual client-ID dialog.
+    _supported = list(as_metadata.token_endpoint_auth_methods_supported or [])
+    if "none" not in _supported:
+        as_metadata.token_endpoint_auth_methods_supported = _supported + ["none"]
+
     pr_metadata = ProtectedResourceMetadata(
         resource=issuer,
         authorization_servers=[issuer],
@@ -147,6 +154,19 @@ def _mcp_oauth_discovery_routes() -> list:
     documents are derived from the request host when ``AGNES_BASE_URL`` /
     ``SERVER_URL`` are unset, so production behind a TLS proxy advertises the
     public connector URL without requiring a separate env var.
+
+    Because the authorization-server issuer carries a path component
+    (``/api/mcp/http``), RFC 8414 §3 says a compliant client builds the
+    metadata URL by inserting the well-known segment *between host and path*:
+    ``/.well-known/oauth-authorization-server/api/mcp/http``. Lenient clients
+    (Claude) fall back to the bare root document, but stricter ones (Cursor,
+    GitHub Copilot, ChatGPT web) probe only the path-aware location and 404 →
+    they never discover the authorize/token/register endpoints and surface
+    "authentication required" before OAuth can even start. We therefore serve
+    the *same* AS document at the path-aware ``oauth-authorization-server`` and
+    OpenID-Connect ``openid-configuration`` locations as well. The root
+    protected-resource document already uses the path-aware form, so no
+    sibling is needed there.
     """
     from mcp.server.auth.handlers.metadata import (
         MetadataHandler,
@@ -162,18 +182,24 @@ def _mcp_oauth_discovery_routes() -> list:
         _, pr_metadata, _ = _oauth_metadata_for_request(request)
         return await ProtectedResourceMetadataHandler(pr_metadata).handle(request)
 
-    return [
-        Route(
-            "/.well-known/oauth-authorization-server",
-            endpoint=oauth_authorization_server,
-            methods=["GET", "OPTIONS"],
-        ),
+    # The AS document is published at the bare root *and* at the path-aware
+    # RFC 8414 / OIDC locations that carry the issuer's ``/api/mcp/http`` path
+    # suffix, so strict clients (Cursor, Copilot, ChatGPT web) discover it.
+    as_paths = [
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/oauth-authorization-server/api/mcp/http",
+        "/.well-known/openid-configuration",
+        "/.well-known/openid-configuration/api/mcp/http",
+    ]
+    routes = [Route(p, endpoint=oauth_authorization_server, methods=["GET", "OPTIONS"]) for p in as_paths]
+    routes.append(
         Route(
             _MCP_OAUTH_PROTECTED_RESOURCE_PATH,
             endpoint=oauth_protected_resource,
             methods=["GET", "OPTIONS"],
-        ),
-    ]
+        )
+    )
+    return routes
 
 
 class _FixMcpOAuthResourceMetadataMiddleware:
@@ -195,9 +221,7 @@ class _FixMcpOAuthResourceMetadataMiddleware:
             return
 
         request = Request(scope)
-        correct_metadata_url = (
-            f"{public_base_url(request=request)}/.well-known/oauth-protected-resource/api/mcp/http"
-        )
+        correct_metadata_url = f"{public_base_url(request=request)}/.well-known/oauth-protected-resource/api/mcp/http"
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
@@ -217,6 +241,69 @@ class _FixMcpOAuthResourceMetadataMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
+
+
+class _PatchPublicClientDiscoveryMiddleware:
+    """Append 'none' to token_endpoint_auth_methods_supported in FastMCP's OAuth discovery.
+
+    build_metadata() in the MCP SDK hardcodes only confidential auth methods.
+    VS Code native MCP is a public client (method=none, no client_secret + PKCE)
+    and skips Dynamic Client Registration when it doesn't see 'none' in this list.
+    This middleware patches the JSON body served by the FastMCP sub-app's own
+    /.well-known/oauth-authorization-server endpoint (distinct from the root-level
+    route patched in _oauth_metadata_for_request).
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or not scope["path"].endswith("/.well-known/oauth-authorization-server"):
+            await self._app(scope, receive, send)
+            return
+
+        # Collect the response from the inner app then patch the body.
+        response_started = False
+        status_code = 200
+        headers: list = []
+        body_chunks: list[bytes] = []
+
+        async def _patched_send(message):  # type: ignore[no-untyped-def]
+            nonlocal response_started, status_code, headers
+            if message["type"] == "http.response.start":
+                response_started = True
+                status_code = message["status"]
+                headers = list(message.get("headers", []))
+                return
+            elif message["type"] == "http.response.body":
+                body_chunks.append(message.get("body", b""))
+                if not message.get("more_body", False):
+                    import json as _json
+
+                    raw = b"".join(body_chunks)
+                    try:
+                        data = _json.loads(raw)
+                        methods = data.get("token_endpoint_auth_methods_supported") or []
+                        if "none" not in methods:
+                            data["token_endpoint_auth_methods_supported"] = methods + ["none"]
+                        patched = _json.dumps(data).encode()
+                    except Exception:
+                        patched = raw
+                    new_headers = [(k, v) for k, v in headers if k.lower() != b"content-length"]
+                    new_headers.append((b"content-length", str(len(patched)).encode()))
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": status_code,
+                            "headers": new_headers,
+                        }
+                    )
+                    await send({"type": "http.response.body", "body": patched, "more_body": False})
+                return
+            # Forward any other ASGI message types unchanged.
+            await send(message)
+
+        await self._app(scope, receive, _patched_send)
 
 
 def _make_streamable_app() -> ASGIApp:
@@ -363,9 +450,14 @@ def _make_streamable_app() -> ASGIApp:
     # lift it onto the main app and run its session manager in the lifespan.
     inner = mcp.streamable_http_app()
     inner.state.mcp_streamable_instance = mcp
+    # Layer 1: patch WWW-Authenticate resource_metadata for proxied deployments.
     wrapped = _FixMcpOAuthResourceMetadataMiddleware(inner)
     wrapped.state = inner.state
-    return wrapped
+    # Layer 2: patch the FastMCP sub-app's own OAuth discovery to add 'none'
+    # so VS Code native MCP proceeds with Dynamic Client Registration.
+    patched = _PatchPublicClientDiscoveryMiddleware(wrapped)
+    patched.state = inner.state  # type: ignore[attr-defined]
+    return patched
 
 
 def _register_dynamic_tools(mcp: FastMCP) -> None:

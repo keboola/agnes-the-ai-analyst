@@ -49,6 +49,40 @@ def test_discovery_metadata_at_origin_root(seeded_app):
     assert any(s.endswith("/api/mcp/http") for s in pr["authorization_servers"])
 
 
+def test_discovery_metadata_at_path_aware_locations(seeded_app):
+    """Strict clients (Cursor, Copilot, ChatGPT web) build the AS metadata URL
+    per RFC 8414 §3 by inserting the well-known segment between host and the
+    issuer's ``/api/mcp/http`` path. Lenient clients (Claude) fall back to the
+    bare root, so only path-aware probers regressed before this fix."""
+    client = seeded_app["client"]
+
+    for path in (
+        "/.well-known/oauth-authorization-server/api/mcp/http",
+        "/.well-known/openid-configuration",
+        "/.well-known/openid-configuration/api/mcp/http",
+    ):
+        r = client.get(path)
+        assert r.status_code == 200, f"{path}: {r.text}"
+        meta = r.json()
+        assert meta["authorization_endpoint"].endswith("/api/mcp/http/authorize")
+        assert meta["token_endpoint"].endswith("/api/mcp/http/token")
+        assert meta["registration_endpoint"].endswith("/api/mcp/http/register")
+
+
+def test_subapp_discovery_includes_none_and_no_double_send(seeded_app):
+    """The MCP sub-app's own /.well-known/oauth-authorization-server endpoint is
+    patched by _PatchPublicClientDiscoveryMiddleware to add 'none' to
+    token_endpoint_auth_methods_supported. The middleware must not double-send
+    the http.response.start ASGI message (which would cause uvicorn to raise
+    RuntimeError('Response already started'))."""
+    client = seeded_app["client"]
+
+    r = client.get("/api/mcp/http/.well-known/oauth-authorization-server")
+    assert r.status_code == 200, r.text
+    meta = r.json()
+    assert "none" in meta.get("token_endpoint_auth_methods_supported", [])
+
+
 def test_discovery_metadata_uses_request_host_when_env_unset(seeded_app, monkeypatch):
     """Production behind a TLS proxy must advertise the public host even when
     AGNES_BASE_URL / SERVER_URL are unset."""
@@ -342,3 +376,87 @@ def test_provider_rejects_unknown_token(seeded_app):
 
     provider = AgnesMCPOAuthProvider()
     assert asyncio.run(provider.load_access_token("not-a-real-token")) is None
+
+
+# ---------------------------------------------------------------------------
+# VS Code native MCP OAuth fixes (RFC 8252)
+# ---------------------------------------------------------------------------
+
+
+def test_discovery_metadata_includes_none_auth_method(seeded_app):
+    """RFC 8252: VS Code is a public client (token_endpoint_auth_method=none).
+
+    The root-level OAuth discovery document must include 'none' in
+    token_endpoint_auth_methods_supported so VS Code does not skip
+    Dynamic Client Registration and show the manual client-ID dialog.
+    """
+    client = seeded_app["client"]
+    r = client.get("/.well-known/oauth-authorization-server")
+    assert r.status_code == 200, r.text
+    meta = r.json()
+    methods = meta.get("token_endpoint_auth_methods_supported", [])
+    assert "none" in methods, f"'none' missing from token_endpoint_auth_methods_supported: {methods}"
+
+
+def test_vscode_mcp_client_seeded_in_db(seeded_app):
+    """The 'vscode-mcp' public OAuth client must be pre-seeded in the DB.
+
+    VS Code users who see the manual registration dialog can enter
+    'vscode-mcp' as the client ID without running dynamic registration.
+    """
+    import asyncio
+
+    from app.auth.mcp_oauth import AgnesMCPOAuthProvider
+
+    provider = AgnesMCPOAuthProvider()
+    client = asyncio.run(provider.get_client("vscode-mcp"))
+    assert client is not None, "vscode-mcp client must be pre-seeded"
+    assert client.client_secret is None, "vscode-mcp must be a public client (no secret)"
+
+
+def test_loopback_redirect_uri_different_port_accepted(seeded_app):
+    """RFC 8252 §7.3: loopback redirect URI port must be ignored.
+
+    VS Code uses http://127.0.0.1:<random-port>/callback.  Registering
+    with one port and authorizing with a different port must succeed.
+    """
+    client = seeded_app["client"]
+
+    # Register with the canonical vscode.dev redirect URI (as seeded)
+    # but authorize with a random loopback port — simulates VS Code behaviour.
+    r = client.post(
+        f"{MCP_MOUNT}/register",
+        json={
+            "client_name": "VS Code Loopback Test",
+            "redirect_uris": ["http://127.0.0.1:9100/callback"],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+        },
+    )
+    assert r.status_code in (200, 201), r.text
+    reg = r.json()
+    client_id = reg["client_id"]
+
+    verifier, challenge = _pkce()
+    # Use a different port than was registered — this is the VS Code scenario.
+    loopback_uri = "http://127.0.0.1:33418/callback"
+
+    r = client.get(
+        f"{MCP_MOUNT}/authorize",
+        params={
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": loopback_uri,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "state": "loopback_test",
+            "scope": "read",
+        },
+        follow_redirects=False,
+    )
+    # The SDK validates redirect_uri against registered URIs before calling
+    # authorize() — with RFC 8252 loopback matching the 400 turns into a 302.
+    assert r.status_code in (302, 307), (
+        f"loopback redirect_uri with different port must be accepted (got {r.status_code}): {r.text}"
+    )
