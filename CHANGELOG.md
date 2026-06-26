@@ -11,6 +11,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `/admin/contribute-skill` page (admin-only) that accepts a pasted Claude Code
+  `SKILL.md` and publishes it as a one-skill plugin in a local, sync-immune
+  "Agnes Contributed" marketplace — the landing target for an external "Load
+  skill to Agnes" button (the external tool copies the skill and opens this page
+  with the skill in the URL fragment / clipboard). Reuses the built-in-marketplace
+  pattern (`is_builtin` registry row + sentinel URL) so the nightly git-sync never
+  resets it and the boot re-seed never wipes it; refreshes the plugin cache and
+  RBAC-grants the new plugin (Admins-only by default, Everyone to publish
+  instance-wide). No new schema, repository method, or auth surface — uses the
+  admin session and existing marketplace primitives. New module
+  `src/skill_contribution.py`.
 
 ### Changed
 

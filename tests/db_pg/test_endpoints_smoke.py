@@ -1374,6 +1374,12 @@ KNOWN_UNTESTED = {
     "POST /api/studio/memory-mining/consent",
     "POST /api/admin/memory-mining/run",
     "GET /me/memory-mining",
+    # Skill contribution — admin web-form flow (paste a SKILL.md, publish it to
+    # the contributed marketplace). Core logic covered by
+    # tests/test_skill_contribution.py; the routes are thin form shells, not part
+    # of the parameter-free smoke sweep.
+    "GET /admin/contribute-skill",
+    "POST /admin/contribute-skill",
     # dulwich smart-HTTP git bridge — requires git repo on disk, explicit non-goal
     "GET /marketplace.git/{path}",
     "POST /marketplace.git/{path}",
