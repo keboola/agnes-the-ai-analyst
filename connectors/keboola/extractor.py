@@ -970,7 +970,15 @@ if __name__ == "__main__":
     url = os.environ.get("KEBOOLA_STACK_URL", "")
     from app.datasource_secrets import datasource_secret as _datasource_secret
 
-    token = _datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
+    try:
+        token = _datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
+    except Exception:
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "datasource_secret unavailable during extractor startup; falling back to env"
+        )
+        token = ""
 
     if not url or not token:
         try:
