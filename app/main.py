@@ -279,6 +279,7 @@ from app.api.cowork_bundle import (
     user_router as cowork_user_router,
     auth_router as cowork_auth_router,
 )
+from app.api.mcp_connect import router as mcp_connect_router  # noqa: E402
 from app.api.mcp_http import make_sse_app as _make_mcp_sse_app
 from app.api.mcp_streamable import _make_streamable_app as _make_mcp_streamable_app
 from app.api.mcp_streamable import _mcp_oauth_discovery_routes
@@ -1419,6 +1420,7 @@ def create_app() -> FastAPI:
     app.include_router(news_router)
     app.include_router(cowork_user_router)
     app.include_router(cowork_auth_router)
+    app.include_router(mcp_connect_router)
 
     # MCP mounts — registration order matters. Starlette matches mounts in
     # order and `/api/mcp` is a path-prefix of both `/api/mcp/http/*` and
@@ -1501,9 +1503,7 @@ def create_app() -> FastAPI:
     from app.instance_config import get_value as _get_value
     from app.plugins import load_routers as _load_plugin_routers
 
-    for _plugin_router in _load_plugin_routers(
-        _get_value("plugins", "admin_routers", default=[]) or []
-    ):
+    for _plugin_router in _load_plugin_routers(_get_value("plugins", "admin_routers", default=[]) or []):
         app.include_router(_plugin_router)
 
     # Web UI router (must be last — has catch-all routes)

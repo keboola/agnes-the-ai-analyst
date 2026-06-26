@@ -158,6 +158,11 @@ _KNOWLEDGE_MIGRATION_REASON = (
     "idempotent admin-only POST, no analyst CLI/MCP analogue; endpoint is "
     "temporary and will be removed once all instances have migrated"
 )
+_MCP_CONNECT_REASON = (
+    "user-facing PAT generator for headless MCP clients (Cursor, Copilot) — "
+    "web UI flow that issues a connector token and returns ready-to-paste config "
+    "snippets; no CLI/MCP analogue (the PAT it creates IS the MCP credential)"
+)
 _EXEMPT: dict[str, str] = {
     "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
@@ -187,6 +192,7 @@ _EXEMPT: dict[str, str] = {
     "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/enable": _BUILTIN_DISABLE_REASON,
     "/api/admin/run-knowledge-migration": _KNOWLEDGE_MIGRATION_REASON,
     "/api/admin/reports/marketplace-digest": _REPORTS_REASON,
+    "/api/mcp-connect/token": _MCP_CONNECT_REASON,
 }
 
 

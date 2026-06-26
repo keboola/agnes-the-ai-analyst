@@ -1,0 +1,268 @@
+{% extends "base_page.html" %}
+{% block title %}Connect editor — {{ instance_brand }}{% endblock %}
+
+{% set page_hero_eyebrow = "MCP" %}
+{% set page_hero_title = "Connect your editor" %}
+{% set page_hero_subtitle = "Generate a token so Cursor, VS Code / Copilot, or any MCP-compatible editor can reach Agnes without a browser login." %}
+
+{% block head_extra %}
+<style>
+.mcp-connect-page { max-width: 800px; }
+
+.mcp-warning {
+    background: var(--ds-accent-warn-bg);
+    color: var(--ds-accent-warn-ink);
+    border: 1px solid var(--ds-accent-warn-border, var(--ds-accent-warn-bg));
+    border-radius: var(--ds-radius-md, 6px);
+    padding: 10px 14px;
+    font-size: 14px;
+    margin-bottom: 20px;
+    display: none;
+}
+.mcp-warning.is-visible { display: block; }
+
+.mcp-client-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 0;
+    border-bottom: 1px solid var(--ds-border);
+    padding-bottom: 0;
+}
+
+.mcp-tab-btn {
+    padding: 7px 16px;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: var(--ds-radius-sm, 4px) var(--ds-radius-sm, 4px) 0 0;
+    background: transparent;
+    cursor: pointer;
+    font-size: 14px;
+    color: var(--ds-text-secondary);
+    position: relative;
+    bottom: -1px;
+    transition: color 0.1s, background 0.1s;
+}
+.mcp-tab-btn:hover { color: var(--ds-text); }
+.mcp-tab-btn.is-active {
+    background: var(--ds-surface);
+    border-color: var(--ds-border);
+    border-bottom-color: var(--ds-surface);
+    color: var(--ds-text);
+    font-weight: 600;
+}
+
+.mcp-tab-panel { display: none; }
+.mcp-tab-panel.is-active { display: block; }
+
+.mcp-snippet-wrap {
+    position: relative;
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border);
+    border-top: none;
+    border-radius: 0 0 var(--ds-radius-md, 6px) var(--ds-radius-md, 6px);
+    padding: 16px;
+}
+
+.mcp-snippet {
+    font-family: var(--ds-font-mono, monospace);
+    font-size: 13px;
+    white-space: pre;
+    overflow-x: auto;
+    color: var(--ds-text);
+    margin: 0;
+}
+
+.mcp-copy-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+}
+
+.mcp-path-hint {
+    font-size: 12px;
+    color: var(--ds-text-muted);
+    margin-top: 8px;
+    font-family: var(--ds-font-mono, monospace);
+}
+
+.mcp-placeholder { color: var(--ds-text-muted); font-style: italic; }
+</style>
+{% endblock %}
+
+{% block page %}
+<div class="mcp-connect-page">
+
+  {% call ds.panel(title='Generate connector token', tag='section',
+                   attrs='aria-label="Generate connector token"') %}
+    <p style="margin-bottom:16px;color:var(--ds-text-secondary);font-size:14px;">
+      Click below to create a Personal Access Token. The token is shown
+      <strong>once</strong> — paste it into your editor config immediately.
+      Calling this again revokes the previous token and issues a new one.
+    </p>
+
+    <div id="mcp-warning" class="mcp-warning" role="alert">
+      Save this token now — it will not be shown again after you navigate away.
+    </div>
+
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+      <button id="mcp-generate-btn" class="btn btn-primary" type="button">
+        Generate connector token
+      </button>
+      <span id="mcp-status" style="font-size:13px;color:var(--ds-text-muted);"></span>
+    </div>
+  {% endcall %}
+
+  <div id="mcp-snippets-section" style="display:none;margin-top:24px;">
+    {% call ds.panel(title='Editor configuration', tag='section',
+                     attrs='aria-label="Editor configuration snippets"') %}
+
+      <div class="mcp-client-tabs" role="tablist" aria-label="Editor">
+        <button class="mcp-tab-btn is-active" role="tab"
+                aria-selected="true" aria-controls="tab-cursor" id="tbtn-cursor"
+                data-tab="cursor">Cursor</button>
+        <button class="mcp-tab-btn" role="tab"
+                aria-selected="false" aria-controls="tab-vscode" id="tbtn-vscode"
+                data-tab="vscode">VS Code / Copilot</button>
+        <button class="mcp-tab-btn" role="tab"
+                aria-selected="false" aria-controls="tab-url" id="tbtn-url"
+                data-tab="url">Generic URL</button>
+      </div>
+
+      {# Cursor — ~/.cursor/mcp.json #}
+      <div class="mcp-tab-panel is-active" id="tab-cursor" role="tabpanel" aria-labelledby="tbtn-cursor">
+        <div class="mcp-snippet-wrap">
+          <pre class="mcp-snippet" id="snippet-cursor"><span class="mcp-placeholder">Token will appear here…</span></pre>
+          <button class="btn btn-secondary btn-sm mcp-copy-btn" type="button"
+                  data-copy-target="snippet-cursor">Copy</button>
+        </div>
+        <div class="mcp-path-hint">File: <code>~/.cursor/mcp.json</code></div>
+      </div>
+
+      {# VS Code / Copilot — .vscode/mcp.json #}
+      <div class="mcp-tab-panel" id="tab-vscode" role="tabpanel" aria-labelledby="tbtn-vscode">
+        <div class="mcp-snippet-wrap">
+          <pre class="mcp-snippet" id="snippet-vscode"><span class="mcp-placeholder">Token will appear here…</span></pre>
+          <button class="btn btn-secondary btn-sm mcp-copy-btn" type="button"
+                  data-copy-target="snippet-vscode">Copy</button>
+        </div>
+        <div class="mcp-path-hint">File: <code>.vscode/mcp.json</code> (workspace root)</div>
+      </div>
+
+      {# Generic URL for clients that accept only a URL with ?token= #}
+      <div class="mcp-tab-panel" id="tab-url" role="tabpanel" aria-labelledby="tbtn-url">
+        <div class="mcp-snippet-wrap">
+          <pre class="mcp-snippet" id="snippet-url"><span class="mcp-placeholder">Token will appear here…</span></pre>
+          <button class="btn btn-secondary btn-sm mcp-copy-btn" type="button"
+                  data-copy-target="snippet-url">Copy</button>
+        </div>
+        <div class="mcp-path-hint">
+          Use <code>?token=&lt;PAT&gt;</code> for clients that cannot set HTTP headers on SSE GET requests.
+        </div>
+      </div>
+
+    {% endcall %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+
+  var generateBtn = document.getElementById('mcp-generate-btn');
+  var statusEl    = document.getElementById('mcp-status');
+  var warningEl   = document.getElementById('mcp-warning');
+  var snippetsEl  = document.getElementById('mcp-snippets-section');
+
+  function _buildSnippets(token, baseUrl) {
+    var sseUrl = (baseUrl || window.location.origin) + '/api/mcp/sse';
+
+    var cursor = JSON.stringify({
+      mcpServers: {
+        agnes: {
+          url: sseUrl,
+          headers: { Authorization: 'Bearer ' + token }
+        }
+      }
+    }, null, 2);
+
+    var vscode = JSON.stringify({
+      servers: {
+        agnes: {
+          type: 'sse',
+          url: sseUrl,
+          headers: { Authorization: 'Bearer ' + token }
+        }
+      }
+    }, null, 2);
+
+    var genericUrl = sseUrl + '?token=' + token;
+
+    document.getElementById('snippet-cursor').textContent = cursor;
+    document.getElementById('snippet-vscode').textContent = vscode;
+    document.getElementById('snippet-url').textContent   = genericUrl;
+  }
+
+  generateBtn.addEventListener('click', function () {
+    generateBtn.disabled = true;
+    statusEl.textContent = 'Generating…';
+    warningEl.classList.remove('is-visible');
+
+    fetch('/api/mcp-connect/token', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' }
+    })
+      .then(function (r) {
+        if (!r.ok) { return r.json().then(function (b) { throw new Error(b.detail || r.status); }); }
+        return r.json();
+      })
+      .then(function (data) {
+        _buildSnippets(data.token, data.base_url);
+        snippetsEl.style.display = '';
+        warningEl.classList.add('is-visible');
+        statusEl.textContent = 'New token issued — copy the snippet before leaving this page.';
+        generateBtn.textContent = 'Regenerate token';
+        generateBtn.disabled = false;
+      })
+      .catch(function (err) {
+        statusEl.textContent = 'Error: ' + err.message;
+        generateBtn.disabled = false;
+      });
+  });
+
+  // Tab switching
+  document.querySelectorAll('.mcp-tab-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('.mcp-tab-btn').forEach(function (b) {
+        b.classList.remove('is-active');
+        b.setAttribute('aria-selected', 'false');
+      });
+      document.querySelectorAll('.mcp-tab-panel').forEach(function (p) {
+        p.classList.remove('is-active');
+      });
+      btn.classList.add('is-active');
+      btn.setAttribute('aria-selected', 'true');
+      var panel = document.getElementById('tab-' + btn.dataset.tab);
+      if (panel) { panel.classList.add('is-active'); }
+    });
+  });
+
+  // Copy buttons
+  document.querySelectorAll('[data-copy-target]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var target = document.getElementById(btn.dataset.copyTarget);
+      if (!target) { return; }
+      var text = target.textContent;
+      navigator.clipboard.writeText(text).then(function () {
+        var orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(function () { btn.textContent = orig; }, 1500);
+      });
+    });
+  });
+}());
+</script>
+{% endblock %}

@@ -794,7 +794,6 @@ async def dashboard(
 ):
     sync_repo = sync_state_repo()
     settings_repo = sync_settings_repo()
-    profiles = profile_repo()
 
     all_states = sync_repo.get_all_states()
     enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
@@ -986,6 +985,26 @@ async def me_mcp_redirect(request: Request):
     from fastapi.responses import RedirectResponse
 
     return RedirectResponse("/me/ai-connector", status_code=301)
+
+
+@router.get("/mcp-connect", response_class=HTMLResponse)
+async def mcp_connect_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Headless MCP editor connect page — generates a PAT + config snippets
+    for Cursor, VS Code / GitHub Copilot, and any client accepting a URL.
+
+    Any authenticated user (not admin-only) can reach this page.
+    """
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=is_user_admin(user["id"], conn),
+    )
+    return templates.TemplateResponse(request, "mcp_connect.html", ctx)
 
 
 @router.get("/me/activity", response_class=HTMLResponse)
@@ -3403,9 +3422,7 @@ async def me_profile_refetch_groups(
     # column-absent branch did (current_external_ids is empty in that case
     # anyway, so the diff is identical across backends).
     has_ext = any(r.get("external_id") for r in current_rows)
-    current_external_ids = {
-        r["external_id"].lower() for r in current_rows if r.get("external_id")
-    }
+    current_external_ids = {r["external_id"].lower() for r in current_rows if r.get("external_id")}
     current_names = [r["name"] for r in current_rows]
 
     fetched_set = set(relevant)
@@ -3469,8 +3486,6 @@ async def profile_session_download(
         media_type="application/x-ndjson",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-
-
 
 
 @router.get("/_debug/throw/http/{code:int}", response_class=HTMLResponse, include_in_schema=False)
