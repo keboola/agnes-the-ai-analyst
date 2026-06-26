@@ -45,7 +45,7 @@ def _audit(actor_id: str, action: str, resource: str) -> None:
 def _validate_gws_credential(name: str, value: str) -> None:
     if name == "AGNES_GWS_CLIENT_ID" and not _GWS_CLIENT_ID_RE.match(value):
         raise HTTPException(status_code=400, detail="invalid_gws_client_id")
-    if name == "AGNES_GWS_CLIENT_SECRET" and not value.startswith("GOCSPX-"):
+    if name == "AGNES_GWS_CLIENT_SECRET" and not value.strip():
         raise HTTPException(status_code=400, detail="invalid_gws_client_secret")
 
 
