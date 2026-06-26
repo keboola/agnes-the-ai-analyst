@@ -102,6 +102,13 @@ async def set_datasource_secret(
             status_code=409,
             detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
         ) from exc
+    if name == "BIGQUERY_SERVICE_ACCOUNT_JSON":
+        try:
+            from connectors.bigquery.auth import clear_token_cache  # noqa: PLC0415
+
+            clear_token_cache()
+        except Exception:
+            pass
     _audit(user["id"], "datasource.secret.set", f"datasource_secret:{name}")
 
 

@@ -22,6 +22,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [0.72.0] - 2026-06-26
 
+### Fixed
+- `POST /api/admin/keboola/test-connection` now resolves the Keboola token from the vault when absent from the environment, so the "Test connection" button on `/admin/datasource-credentials` works for vault-only deployments.
+- `PUT /api/admin/datasource-secrets/BIGQUERY_SERVICE_ACCOUNT_JSON` now calls `clear_token_cache()` after storing the new SA JSON, so the rotated credential takes effect immediately instead of after the cached token expires (up to ~50 min).
+
 ### Added
 - `/admin/datasource-credentials` page — vault-backed credential management for Keboola (`KEBOOLA_STORAGE_TOKEN`), BigQuery (`BIGQUERY_SERVICE_ACCOUNT_JSON`), and Google Workspace OAuth (`AGNES_GWS_CLIENT_ID` / `AGNES_GWS_CLIENT_SECRET`); env always takes precedence over vault. Save/Test/Clear per source, status badge (env / vault / unset), vault-key banner when `AGNES_VAULT_KEY` is absent. GWS card includes a collapsible step-by-step GCP Console setup guide with deep-links (#718).
 - `GET/PUT/DELETE /api/admin/datasource-secrets` — admin-gated, write-only vault endpoints; BigQuery PUT validates SA JSON shape before storing; GWS PUT validates Client ID format and Client Secret prefix.
