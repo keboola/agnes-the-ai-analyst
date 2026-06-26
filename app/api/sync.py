@@ -499,7 +499,16 @@ def _run_sync(
             # it, "filter excluded everything" looks identical to "registry
             # empty" and we'd re-discover + re-sync every tick regardless of
             # sync_schedule.
-            if not registry_has_tables and source_type == "keboola" and os.environ.get("KEBOOLA_STORAGE_TOKEN"):
+            if not os.environ.get("KEBOOLA_STORAGE_TOKEN"):
+                try:
+                    from app.datasource_secrets import datasource_secret as _ds  # noqa: PLC0415
+
+                    _kbc_token_available = bool(_ds("KEBOOLA_STORAGE_TOKEN"))
+                except Exception:
+                    _kbc_token_available = False
+            else:
+                _kbc_token_available = True
+            if not registry_has_tables and source_type == "keboola" and _kbc_token_available:
                 logger.info("No tables registered — running auto-discovery from Keboola")
                 try:
                     from app.api.admin import _discover_and_register_tables

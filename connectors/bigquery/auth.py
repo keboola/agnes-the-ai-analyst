@@ -165,7 +165,7 @@ def _fetch_vault_sa_token() -> Tuple[str, int]:
 
         info = _json.loads(sa_json)
         creds = service_account.Credentials.from_service_account_info(
-            info, scopes=["https://www.googleapis.com/auth/bigquery"]
+            info, scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
         creds.refresh(_GAuthRequest())
     except Exception as e:
