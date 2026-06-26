@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from app.auth.dependencies import require_session_token
 from app.auth.jwt import create_access_token
 from app.instance_config import get_public_url
-from src.repositories import access_token_repo
+from src.repositories import access_token_repo, audit_repo
 
 router = APIRouter(prefix="/api/mcp-connect", tags=["mcp-connect"])
 
@@ -51,6 +51,7 @@ async def create_mcp_headless_token(
     stored and cannot be retrieved again.
     """
     repo = access_token_repo()
+    alog = audit_repo()
     user_id: str = user["id"]
 
     # Revoke any existing non-revoked "mcp-headless" tokens for this user.
@@ -58,6 +59,15 @@ async def create_mcp_headless_token(
     for row in existing:
         if row.get("name") == _PAT_NAME and not row.get("revoked_at"):
             repo.revoke(row["id"])
+            try:
+                alog.log(
+                    user_id=user_id,
+                    action="token.revoke",
+                    resource=f"token:{row['id']}",
+                    params={"name": _PAT_NAME, "reason": "replaced"},
+                )
+            except Exception:
+                pass
 
     # Create a new PAT with a 1-year TTL.
     expires_delta = timedelta(days=_TTL_DAYS)
@@ -82,6 +92,15 @@ async def create_mcp_headless_token(
         prefix=prefix,
         expires_at=expires_at,
     )
+    try:
+        alog.log(
+            user_id=user_id,
+            action="token.create",
+            resource=f"token:{token_id}",
+            params={"name": _PAT_NAME, "ttl_days": _TTL_DAYS},
+        )
+    except Exception:
+        pass
 
     base_url = get_public_url() or ""
     return _TokenResponse(

@@ -267,7 +267,7 @@ target-version = "py313"
 "src/db.py" = ["E402"]
 # router.py registers Jinja globals and filters between import blocks;
 # the mid-file import json + onboarding import are intentional ordering.
-"app/web/router.py" = ["E402", "F841"]
+"app/web/router.py" = ["E402"]
 
 [tool.uv]
 dev-dependencies = [

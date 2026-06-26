@@ -794,7 +794,6 @@ async def dashboard(
 ):
     sync_repo = sync_state_repo()
     settings_repo = sync_settings_repo()
-    profiles = profile_repo()
 
     all_states = sync_repo.get_all_states()
     enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
