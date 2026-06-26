@@ -100,9 +100,7 @@ def _headers() -> dict[str, str]:
 
 
 def _oauth_client_registration_options() -> ClientRegistrationOptions:
-    return ClientRegistrationOptions(
-        enabled=True, valid_scopes=["read"], default_scopes=["read"]
-    )
+    return ClientRegistrationOptions(enabled=True, valid_scopes=["read"], default_scopes=["read"])
 
 
 def _oauth_revocation_options() -> RevocationOptions:
@@ -147,6 +145,19 @@ def _mcp_oauth_discovery_routes() -> list:
     documents are derived from the request host when ``AGNES_BASE_URL`` /
     ``SERVER_URL`` are unset, so production behind a TLS proxy advertises the
     public connector URL without requiring a separate env var.
+
+    Because the authorization-server issuer carries a path component
+    (``/api/mcp/http``), RFC 8414 §3 says a compliant client builds the
+    metadata URL by inserting the well-known segment *between host and path*:
+    ``/.well-known/oauth-authorization-server/api/mcp/http``. Lenient clients
+    (Claude) fall back to the bare root document, but stricter ones (Cursor,
+    GitHub Copilot, ChatGPT web) probe only the path-aware location and 404 →
+    they never discover the authorize/token/register endpoints and surface
+    "authentication required" before OAuth can even start. We therefore serve
+    the *same* AS document at the path-aware ``oauth-authorization-server`` and
+    OpenID-Connect ``openid-configuration`` locations as well. The root
+    protected-resource document already uses the path-aware form, so no
+    sibling is needed there.
     """
     from mcp.server.auth.handlers.metadata import (
         MetadataHandler,
@@ -162,18 +173,24 @@ def _mcp_oauth_discovery_routes() -> list:
         _, pr_metadata, _ = _oauth_metadata_for_request(request)
         return await ProtectedResourceMetadataHandler(pr_metadata).handle(request)
 
-    return [
-        Route(
-            "/.well-known/oauth-authorization-server",
-            endpoint=oauth_authorization_server,
-            methods=["GET", "OPTIONS"],
-        ),
+    # The AS document is published at the bare root *and* at the path-aware
+    # RFC 8414 / OIDC locations that carry the issuer's ``/api/mcp/http`` path
+    # suffix, so strict clients (Cursor, Copilot, ChatGPT web) discover it.
+    as_paths = [
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/oauth-authorization-server/api/mcp/http",
+        "/.well-known/openid-configuration",
+        "/.well-known/openid-configuration/api/mcp/http",
+    ]
+    routes = [Route(p, endpoint=oauth_authorization_server, methods=["GET", "OPTIONS"]) for p in as_paths]
+    routes.append(
         Route(
             _MCP_OAUTH_PROTECTED_RESOURCE_PATH,
             endpoint=oauth_protected_resource,
             methods=["GET", "OPTIONS"],
-        ),
-    ]
+        )
+    )
+    return routes
 
 
 class _FixMcpOAuthResourceMetadataMiddleware:
@@ -195,9 +212,7 @@ class _FixMcpOAuthResourceMetadataMiddleware:
             return
 
         request = Request(scope)
-        correct_metadata_url = (
-            f"{public_base_url(request=request)}/.well-known/oauth-protected-resource/api/mcp/http"
-        )
+        correct_metadata_url = f"{public_base_url(request=request)}/.well-known/oauth-protected-resource/api/mcp/http"
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":

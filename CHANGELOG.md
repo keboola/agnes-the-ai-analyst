@@ -18,6 +18,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- MCP OAuth discovery now serves the authorization-server metadata at the path-aware RFC 8414 / OIDC locations (`/.well-known/oauth-authorization-server/api/mcp/http`, `/.well-known/openid-configuration`, `/.well-known/openid-configuration/api/mcp/http`), not only the bare origin root. Strict MCP clients (Cursor, GitHub Copilot, ChatGPT web) build the metadata URL by inserting the well-known segment ahead of the issuer's `/api/mcp/http` path; the previous root-only routes 404'd for them, so OAuth never started and tool calls failed with "authentication required". Lenient clients (Claude) fell back to the root document and were unaffected.
+
 ### Removed
 
 ### Internal
