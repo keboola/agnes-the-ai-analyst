@@ -15,14 +15,40 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `GET/PUT/DELETE /api/admin/datasource-secrets` — admin-gated, write-only vault endpoints; BigQuery PUT validates SA JSON shape before storing; GWS PUT validates Client ID format and Client Secret prefix.
 - `app/datasource_secrets.py` — env > vault > None resolver with an explicit allow-list; wired into Keboola connectors and the sync subprocess env overlay so vault-stored tokens reach the extractor without `.env` editing.
 - BigQuery `connectors/bigquery/auth.py` vault tier — `BIGQUERY_SERVICE_ACCOUNT_JSON` from the vault is tried after the `GOOGLE_APPLICATION_CREDENTIALS` env var and before the GCE metadata server; the SA JSON is never written to disk.
+- `GET /api/admin/reports/marketplace-digest?period=daily|weekly[&date=YYYY-MM-DD]`:
+  one consolidated, report-shaped JSON payload for an external rendering
+  pipeline (e.g. an n8n workflow that fills an HTML template and publishes
+  the result). Composes headline KPIs (active users, sessions, invocations,
+  errors, error rate, new installs - each with a prior-period delta), a
+  per-day trend series, usage by source, top items, rising/falling movers,
+  failures, installs/adoption, zero-usage curated plugins, and per-marketplace
+  sync health - from `usage_events`, `usage_marketplace_item_daily`,
+  `marketplace_registry`, and the install ledgers. Reads route through the
+  backend-aware repository layer (new `reports_repo()` →
+  `ReportsRepository` / `ReportsPgRepository`) so the digest resolves the
+  correct DuckDB/Postgres backend. Per-item `distinct_users` is exact for
+  daily (single day) and reported as null for weekly (summing per-day
+  distincts would overcount and there is no window-aligned source); built-in
+  marketplace plugins are excluded from the zero-usage section and the
+  built-in marketplace is not flagged stale. Admin-only (PAT-gated),
+  audit-logged via the shared burst-suppression cache as
+  `reports.marketplace_digest`. Lives in `app/api/admin_reports.py`.
 
 ### Changed
 
+- `agnes push` now finds Claude Code session transcripts by scanning the workspace's session folder itself instead of consuming a hook-populated queue. It reads the workspace path from the new `workspace_root` config key (written by `agnes init`, back-filled by `agnes self-upgrade`), encodes it to Claude Code's projects-dir folder name, and uploads new/grown transcripts (dedup by `session_id` + byte size). This removes the dependency on hook stdin, which Claude Code delivers empty on macOS — making session upload reliable on macOS and Windows alike. With no `workspace_root` in config, `agnes push` is a clean no-op. `agnes mark-private` and the session-upload health check (`agnes diagnose`) now anchor on `workspace_root` too.
+
 ### Fixed
+
+- Session transcripts are reliably uploaded on macOS. The previous capture step depended on hook stdin (a `transcript_path` payload) that Claude Code delivers empty on macOS, so the upload queue stayed empty and sessions never reached the server. The encoding-based folder scan also fixes Windows, where the old encoder collapsed consecutive dashes and pointed at a non-existent folder (`C:\…` must encode to `C--…`).
 
 ### Removed
 
+- **BREAKING** (internal CLI surface): the `agnes capture-session` command and the SessionStart `agnes capture-session` hook are removed — `agnes push` scans the session folder directly. Existing workspaces are migrated automatically on the next `agnes self-upgrade` (the SessionStart/SessionEnd capture entries are stripped and the scan-based push hook is installed); the template no longer ships `capture-session/capture.sh`, `capture-session/stop-guard.sh`, or `_lib/agnes-path.sh`. The `agnes push --legacy-scan` flag is gone (the scan is now the default path).
+
 ### Internal
+
+- Session-upload internals reorganized: new `cli/lib/session_paths.py` (projects-dir encoder honoring `CLAUDE_CONFIG_DIR`, no dash-collapsing) and `cli/lib/upload_log.py` (upload ledger `session_id⇥size⇥iso` + audit logs); `cli/lib/session_queue.py` and `cli/lib/claude_sessions.py` removed. Hook installer (`cli/lib/hooks.py`) drops the capture entries while keeping the capture markers for one-time migration cleanup.
 
 ## [0.71.61] - 2026-06-23
 

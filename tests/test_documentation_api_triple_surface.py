@@ -147,6 +147,12 @@ _BUILTIN_DISABLE_REASON = (
     "web UI only at /admin/marketplaces, no analyst CLI/MCP analogue (mirrors "
     "the grandfathered admin marketplace register/sync/delete mutations)"
 )
+_REPORTS_REASON = (
+    "admin-only marketplace usage digest — read-only JSON feed for an external "
+    "rendering pipeline (e.g. n8n), consumed over HTTP with a PAT. No analyst "
+    "CLI/MCP analogue (mirrors the grandfathered /api/admin/adoption dashboard "
+    "aggregates)"
+)
 _KNOWLEDGE_MIGRATION_REASON = (
     "one-time retroactive migration trigger (pre-v0.71.60 knowledge.json → DB) — "
     "idempotent admin-only POST, no analyst CLI/MCP analogue; endpoint is "
@@ -190,6 +196,7 @@ _EXEMPT: dict[str, str] = {
         "(Keboola token, BigQuery SA JSON). Write-only, no analyst CLI/MCP analogue — "
         "instance admins set these once via the /admin/datasource-credentials UI."
     ),
+    "/api/admin/reports/marketplace-digest": _REPORTS_REASON,
 }
 
 

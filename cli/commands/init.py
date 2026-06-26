@@ -534,6 +534,13 @@ def init(
 
     workspace.mkdir(parents=True, exist_ok=True)
 
+    # Anchor the workspace root in config so `agnes push` (and the
+    # SessionEnd hook that runs it) can find this workspace's Claude Code
+    # session folder without depending on cwd or hook stdin — the macOS
+    # reliability fix. Written in BOTH default and override modes; a re-init
+    # in a new location updates it (single workspace per laptop).
+    save_config({"workspace_root": str(workspace)})
+
     # ------------------------------------------------------------------
     # Step 3.5: probe for a per-instance Initial Workspace Template.
     #

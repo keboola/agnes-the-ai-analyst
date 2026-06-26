@@ -73,6 +73,10 @@ def test_init_writes_expected_files(tmp_path, monkeypatch):
     assert (tmp_path / "AGNES_WORKSPACE.md").exists()
     # run_pull always creates the analytics.duckdb file (load-bearing).
     assert (tmp_path / "user" / "duckdb" / "analytics.duckdb").exists()
+    # init anchors the workspace root in config so `agnes push` (and its
+    # SessionEnd hook) can find the Claude Code session folder.
+    from cli.config import get_workspace_root
+    assert get_workspace_root() == str(tmp_path.resolve())
 
 
 def test_init_no_dead_dirs_zero_grants(tmp_path, monkeypatch):
