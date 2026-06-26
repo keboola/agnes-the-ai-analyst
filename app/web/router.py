@@ -2986,14 +2986,21 @@ async def admin_contribute_skill_page(
 
 
 @router.post("/admin/contribute-skill", response_class=HTMLResponse)
-async def admin_contribute_skill_submit(
+def admin_contribute_skill_submit(
     request: Request,
     user: dict = Depends(require_admin),
     skill_md: str = Form(...),
     grant_group: str = Form("Admin"),
 ):
     """Publish the pasted SKILL.md, then re-render the page with a deep link
-    to the new plugin (the "open it in Agnes" advert loop)."""
+    to the new plugin (the "open it in Agnes" advert loop).
+
+    Declared ``def`` (not ``async def``) so FastAPI dispatches it to the thread
+    pool: ``contribute_skill()`` acquires the process-wide marketplace ``_lock``,
+    which the nightly bulk sync can hold for minutes across git clones. Blocking
+    on it from the event-loop thread would freeze every concurrent request, so
+    the blocking work must run off-loop — same rationale as ``trigger_sync_all``
+    (app/api/marketplaces.py)."""
     from app.marketplace_server.packager import invalidate_etag_cache
     from src.skill_contribution import SkillContributionError, contribute_skill
 
