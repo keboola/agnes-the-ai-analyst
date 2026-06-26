@@ -36,6 +36,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- VS Code native MCP OAuth: added `none` to `token_endpoint_auth_methods_supported` in OAuth discovery so VS Code proceeds with Dynamic Client Registration instead of showing the manual client-ID dialog; pre-seeded a `vscode-mcp` public client (enter this as client ID when VS Code asks) via DuckDB schema v85 and a matching Alembic migration; implemented RFC 8252 §7.3 loopback redirect URI port-ignoring in `_LoopbackAwareClient` so any random `http://127.0.0.1:<port>` redirect URI is accepted without re-registration.
 - Session transcripts are reliably uploaded on macOS. The previous capture step depended on hook stdin (a `transcript_path` payload) that Claude Code delivers empty on macOS, so the upload queue stayed empty and sessions never reached the server. The encoding-based folder scan also fixes Windows, where the old encoder collapsed consecutive dashes and pointed at a non-existent folder (`C:\…` must encode to `C--…`).
 
 ### Removed
