@@ -1451,6 +1451,15 @@ KNOWN_UNTESTED = {
     "PUT /api/admin/mcp",
     "GET /api/admin/slack-secrets",
     "PUT /api/admin/slack-secrets",
+    # Admin source-connections (multi-project Keboola, #731) — tested in test_admin_source_connections.py
+    "GET /api/admin/source-connections",
+    "POST /api/admin/source-connections",
+    "GET /api/admin/source-connections/{connection_id}",
+    "PUT /api/admin/source-connections/{connection_id}",
+    "DELETE /api/admin/source-connections/{connection_id}",
+    "PUT /api/admin/source-connections/{connection_id}/secret",
+    "DELETE /api/admin/source-connections/{connection_id}/secret",
+    "POST /api/admin/source-connections/{connection_id}/test",
     # Admin bigquery / keboola test endpoints
     "POST /api/admin/bigquery/test",
     "POST /api/admin/keboola/test",
