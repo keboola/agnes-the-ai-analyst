@@ -546,6 +546,12 @@ def _run_sync(
             )
 
         env = {**os.environ}
+        if not env.get("KEBOOLA_STORAGE_TOKEN"):
+            from app.datasource_secrets import datasource_secret
+
+            _vt = datasource_secret("KEBOOLA_STORAGE_TOKEN")
+            if _vt:
+                env["KEBOOLA_STORAGE_TOKEN"] = _vt
 
         if run_extractor_subprocess:
             # v26: incremental + partitioned strategies need last_sync from
