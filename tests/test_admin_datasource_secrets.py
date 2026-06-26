@@ -179,14 +179,23 @@ def test_gws_client_id_rejects_invalid(seeded_app):
     assert r.json().get("detail") == "invalid_gws_client_id"
 
 
-def test_gws_client_secret_rejects_invalid(seeded_app):
+def test_gws_client_secret_rejects_empty(seeded_app):
     r = seeded_app["client"].put(
         "/api/admin/datasource-secrets/AGNES_GWS_CLIENT_SECRET",
         headers=_admin(seeded_app),
-        json={"value": "bad-secret-value"},
+        json={"value": "   "},
     )
     assert r.status_code == 400
-    assert r.json().get("detail") == "invalid_gws_client_secret"
+    assert r.json().get("detail") == "secret value required"
+
+
+def test_gws_client_secret_accepts_non_gocspx(seeded_app):
+    r = seeded_app["client"].put(
+        "/api/admin/datasource-secrets/AGNES_GWS_CLIENT_SECRET",
+        headers=_admin(seeded_app),
+        json={"value": "legacy-client-secret-value"},
+    )
+    assert r.status_code == 204
 
 
 def test_gws_client_id_accepts_valid(seeded_app, monkeypatch):
