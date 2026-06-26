@@ -148,6 +148,10 @@ class TestToolRegistration:
             # IWT, marketplaces, infra_repo_url). Triple-surface with
             # GET /api/admin/config-surface + `agnes admin config-surface`.
             "admin_config_surface",
+            # Multi-project Keboola: list named source connections (#731).
+            # Triple-surface with GET /api/admin/source-connections +
+            # `agnes admin connection list`.
+            "admin_source_connections_list",
         }
 
     def test_no_client_only_tools(self):

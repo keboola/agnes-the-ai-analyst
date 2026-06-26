@@ -41,6 +41,8 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/collections/search": ("collections search", "collections_search"),
     # Config-surface introspection (built-in marketplace spec Phase 1).
     "/api/admin/config-surface": ("admin config-surface", "admin_config_surface"),
+    # Multi-project Keboola: named source-connections (#731).
+    "/api/admin/source-connections": ("admin connection list", "admin_source_connections_list"),
 }
 
 
@@ -60,6 +62,7 @@ def test_cli_subcommands_registered():
 
     Walks the typer command tree at the top-level ``app`` and asserts each
     ``<group> <subcmd>`` pair from the cohort resolves to a registered command.
+    Supports two-level (``group cmd``) and three-level (``group sub cmd``) paths.
     """
     from cli.main import app
 
@@ -67,16 +70,34 @@ def test_cli_subcommands_registered():
     groups: dict[str, object] = {g.name: g.typer_instance for g in app.registered_groups if g.name}
 
     for path, (cli_cmd, _mcp_tool) in _COHORT.items():
-        head, tail = cli_cmd.split(" ", 1)
+        parts = cli_cmd.split(" ", 2)
+        head = parts[0]
         assert head in groups, (
             f"CLI group '{head}' missing for {path} — register via `app.add_typer(...)` in cli/main.py"
         )
         sub = groups[head]
-        sub_names = {c.name for c in sub.registered_commands if c.name}  # type: ignore[attr-defined]
-        assert tail in sub_names, (
-            f"CLI subcommand '{cli_cmd}' missing for {path} — define "
-            f'`@{head}_app.command("{tail}")` in cli/commands/{head}.py'
-        )
+        if len(parts) == 2:
+            # Two-level: "group cmd"
+            tail = parts[1]
+            sub_names = {c.name for c in sub.registered_commands if c.name}  # type: ignore[attr-defined]
+            assert tail in sub_names, (
+                f"CLI subcommand '{cli_cmd}' missing for {path} — define "
+                f'`@{head}_app.command("{tail}")` in cli/commands/{head}.py'
+            )
+        else:
+            # Three-level: "group sub cmd" — resolve the sub-group first
+            sub_group_name, leaf = parts[1], parts[2]
+            sub_groups = {g.name: g.typer_instance for g in sub.registered_groups if g.name}  # type: ignore[attr-defined]
+            assert sub_group_name in sub_groups, (
+                f"CLI sub-group '{head} {sub_group_name}' missing for {path} — "
+                f"register via `{head}_app.add_typer(...)` in cli/commands/{head}.py"
+            )
+            leaf_sub = sub_groups[sub_group_name]
+            leaf_names = {c.name for c in leaf_sub.registered_commands if c.name}  # type: ignore[attr-defined]
+            assert leaf in leaf_names, (
+                f"CLI subcommand '{cli_cmd}' missing for {path} — define "
+                f'`@{sub_group_name}_app.command("{leaf}")` in cli/commands/{head}_{sub_group_name}.py'
+            )
 
 
 def test_mcp_tools_registered():
@@ -163,6 +184,12 @@ _MCP_CONNECT_REASON = (
     "web UI flow that issues a connector token and returns ready-to-paste config "
     "snippets; no CLI/MCP analogue (the PAT it creates IS the MCP credential)"
 )
+_SOURCE_CONNECTIONS_CRUD_REASON = (
+    "named source-connection CRUD sub-paths (multi-project Keboola, #731) — "
+    "GET/PUT/DELETE /{id} and PUT/DELETE /{id}/secret and POST /{id}/test are "
+    "reachable via `agnes admin connection add/remove/test`; the list path carries "
+    "the triple-surface contract in _COHORT"
+)
 _EXEMPT: dict[str, str] = {
     "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
@@ -193,6 +220,9 @@ _EXEMPT: dict[str, str] = {
     "/api/admin/run-knowledge-migration": _KNOWLEDGE_MIGRATION_REASON,
     "/api/admin/reports/marketplace-digest": _REPORTS_REASON,
     "/api/mcp-connect/token": _MCP_CONNECT_REASON,
+    "/api/admin/source-connections/{connection_id}": _SOURCE_CONNECTIONS_CRUD_REASON,
+    "/api/admin/source-connections/{connection_id}/secret": _SOURCE_CONNECTIONS_CRUD_REASON,
+    "/api/admin/source-connections/{connection_id}/test": _SOURCE_CONNECTIONS_CRUD_REASON,
 }
 
 
