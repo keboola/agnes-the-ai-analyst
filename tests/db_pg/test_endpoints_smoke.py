@@ -1457,6 +1457,9 @@ KNOWN_UNTESTED = {
     "PUT /api/admin/mcp",
     "GET /api/admin/slack-secrets",
     "PUT /api/admin/slack-secrets",
+    # Admin datasource credentials — vault-backed Keboola/BQ secrets (web UI only)
+    "GET /api/admin/datasource-secrets",
+    "GET /admin/datasource-credentials",
     # Admin bigquery / keboola test endpoints
     "POST /api/admin/bigquery/test",
     "POST /api/admin/keboola/test",
@@ -1692,6 +1695,9 @@ KNOWN_UNTESTED = {
     # Admin slack secrets
     "DELETE /api/admin/slack-secrets/{name}",
     "PUT /api/admin/slack-secrets/{name}",
+    # Admin datasource secrets (per-name mutations)
+    "DELETE /api/admin/datasource-secrets/{name}",
+    "PUT /api/admin/datasource-secrets/{name}",
     # Admin store submissions (detail/actions beyond list)
     "DELETE /api/admin/store/submissions/{submission_id}",
     "GET /api/admin/store/submissions/{submission_id}",

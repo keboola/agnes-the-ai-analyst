@@ -253,8 +253,24 @@ def get_gws_oauth_credentials() -> dict:
     Both id and secret must be set for the configured branch to engage;
     a half-configured instance falls back to manual setup with a warning.
     """
-    cid = os.environ.get("AGNES_GWS_CLIENT_ID") or get_value("instance", "gws", "client_id", default="")
-    secret = os.environ.get("AGNES_GWS_CLIENT_SECRET") or get_value("instance", "gws", "client_secret", default="")
+    # Resolution order: env > vault (admin UI) > instance.yaml > ""
+    # Lazy import keeps app.datasource_secrets out of the module-level import
+    # graph (avoids circular import via src.repositories at startup).
+    try:
+        from app.datasource_secrets import datasource_secret as _ds_secret
+    except Exception:
+        _ds_secret = lambda _n: None  # noqa: E731
+
+    cid = (
+        os.environ.get("AGNES_GWS_CLIENT_ID")
+        or _ds_secret("AGNES_GWS_CLIENT_ID")
+        or get_value("instance", "gws", "client_id", default="")
+    )
+    secret = (
+        os.environ.get("AGNES_GWS_CLIENT_SECRET")
+        or _ds_secret("AGNES_GWS_CLIENT_SECRET")
+        or get_value("instance", "gws", "client_secret", default="")
+    )
     insecure = os.environ.get("AGNES_GWS_OAUTHLIB_INSECURE_TRANSPORT") or get_value(
         "instance", "gws", "oauthlib_insecure_transport", default="1"
     )
