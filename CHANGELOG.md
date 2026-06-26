@@ -11,6 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `/mcp-connect` page and `POST /api/mcp-connect/token` endpoint so headless AI editors (Cursor, GitHub Copilot) can authenticate via a pre-created PAT instead of the OAuth browser flow. Includes client-specific config snippets for Cursor, VS Code/Copilot, and a generic token-in-URL fallback.
 - `GET /api/admin/reports/marketplace-digest?period=daily|weekly[&date=YYYY-MM-DD]`:
   one consolidated, report-shaped JSON payload for an external rendering
   pipeline (e.g. an n8n workflow that fills an HTML template and publishes
