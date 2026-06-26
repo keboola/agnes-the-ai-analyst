@@ -28,6 +28,7 @@ on every request.
 
 import json
 import logging
+import os
 import threading
 import time
 import urllib.request
@@ -186,12 +187,11 @@ def _fetch_vault_sa_token() -> Tuple[str, int]:
 def get_metadata_token() -> str:
     """Return an OAuth access token suitable for BigQuery, cached in process.
 
-    Resolution order:
-    1. ``GOOGLE_APPLICATION_CREDENTIALS`` env / gcloud ADC (env-pinned, unchanged).
+    Resolution order (matches module-level docstring):
+    1. ``GOOGLE_APPLICATION_CREDENTIALS`` env var set → ADC path honours it first.
     2. Vault ``BIGQUERY_SERVICE_ACCOUNT_JSON`` — in-memory, never written to disk.
-       Wins over the VM's ambient GCE identity so UI-pasted keys take effect.
     3. GCE metadata server — production fast-path.
-    4. gcloud ADC — laptop / ``GOOGLE_APPLICATION_CREDENTIALS`` file.
+    4. gcloud ADC / other ADC sources — laptop fallback.
 
     The function name keeps ``_metadata_`` for backwards compat — call sites
     don't need to know which path won.
@@ -213,17 +213,22 @@ def get_metadata_token() -> str:
     token: Optional[str] = None
     expires_in: int = 0
 
-    # Tier 2: vault SA JSON (in-memory; wins over GCE ambient SA).
-    # Tier 1 (GOOGLE_APPLICATION_CREDENTIALS / gcloud ADC) is resolved by
-    # ``_fetch_adc_token`` when GCE metadata is unavailable — it honours the
-    # env var first, which is the Tier 1 behaviour documented at the module
-    # level.  The vault sits here (before GCE metadata) so non-GCP hosts that
-    # have no metadata server still benefit from the UI-managed key.
-    try:
-        token, expires_in = _fetch_vault_sa_token()
-        logger.info("BQ auth: using vault BIGQUERY_SERVICE_ACCOUNT_JSON")
-    except BQMetadataAuthError:
-        pass  # vault miss — try GCE metadata next
+    # Tier 1: GOOGLE_APPLICATION_CREDENTIALS env var — explicit file-pinned SA key.
+    # Check before vault so a deployment that sets GAC always uses that identity.
+    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        try:
+            token, expires_in = _fetch_adc_token()
+            logger.info("BQ auth: using GOOGLE_APPLICATION_CREDENTIALS")
+        except BQMetadataAuthError:
+            pass  # fall through to vault
+
+    # Tier 2: vault SA JSON (in-memory; wins over ambient GCE identity).
+    if not token:
+        try:
+            token, expires_in = _fetch_vault_sa_token()
+            logger.info("BQ auth: using vault BIGQUERY_SERVICE_ACCOUNT_JSON")
+        except BQMetadataAuthError:
+            pass  # vault miss — try GCE metadata next
 
     if not token:
         # Tier 3: GCE metadata server — production fast path (no library import,
@@ -233,7 +238,7 @@ def get_metadata_token() -> str:
             token, expires_in = _fetch_metadata_token()
         except BQMetadataAuthError as e:
             metadata_err = e
-            # Tier 4: ADC (gcloud / GOOGLE_APPLICATION_CREDENTIALS file).
+            # Tier 4: ADC (gcloud / other ADC sources without GAC env var).
             try:
                 token, expires_in = _fetch_adc_token()
                 logger.info(
