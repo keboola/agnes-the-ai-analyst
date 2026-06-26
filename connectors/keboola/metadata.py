@@ -31,8 +31,10 @@ def fetch(req: MetadataRequest) -> TableMetadata | None:
     """
     # Read credentials the same way KeboolaClient does — avoids constructing
     # a KeboolaClient which raises ValueError when the token is absent.
+    from app.datasource_secrets import datasource_secret
+
     url = os.environ.get("KEBOOLA_STACK_URL", "")
-    token = os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
+    token = datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
     if not url or not token:
         return None  # not configured — same posture as BQ sentinel
 

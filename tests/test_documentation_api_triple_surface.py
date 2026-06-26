@@ -191,6 +191,16 @@ _EXEMPT: dict[str, str] = {
     "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/disable": _BUILTIN_DISABLE_REASON,
     "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/enable": _BUILTIN_DISABLE_REASON,
     "/api/admin/run-knowledge-migration": _KNOWLEDGE_MIGRATION_REASON,
+    "/api/admin/datasource-secrets": (
+        "Admin-only vault-backed credential store for datasource secrets "
+        "(Keboola token, BigQuery SA JSON). Write-only, no analyst CLI/MCP analogue — "
+        "instance admins set these once via the /admin/datasource-credentials UI."
+    ),
+    "/api/admin/datasource-secrets/{name}": (
+        "Admin-only vault-backed credential store for datasource secrets "
+        "(Keboola token, BigQuery SA JSON). Write-only, no analyst CLI/MCP analogue — "
+        "instance admins set these once via the /admin/datasource-credentials UI."
+    ),
     "/api/admin/reports/marketplace-digest": _REPORTS_REASON,
     "/api/mcp-connect/token": _MCP_CONNECT_REASON,
 }

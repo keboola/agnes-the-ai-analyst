@@ -44,7 +44,6 @@ from src.repositories import (
     knowledge_repo,
     memory_domains_repo,
     news_template_repo,
-    profile_repo,
     recipes_repo,
     store_entities_repo,
     store_submissions_repo,
@@ -149,7 +148,7 @@ class _SilentUndefined(jinja2.Undefined):
 templates.env.undefined = _SilentUndefined
 
 # Add custom JSON filter that handles _SilentUndefined and _FlexDict
-import json as _json
+import json as _json  # noqa: E402
 
 
 class _SafeEncoder(_json.JSONEncoder):
@@ -287,7 +286,7 @@ templates.env.globals["static_url"] = _static_url
 # audience-filtered step list as JSON without each route having to thread it
 # through its own context. The single source of truth lives in
 # app/web/onboarding.py — see tests/test_onboarding_not_outdated.py.
-from app.web.onboarding import steps_for as _onboarding_steps_for
+from app.web.onboarding import steps_for as _onboarding_steps_for  # noqa: E402
 
 templates.env.globals["onboarding_steps"] = _onboarding_steps_for
 
@@ -2744,6 +2743,25 @@ async def admin_server_config_page(
     """
     ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "admin_server_config.html", ctx)
+
+
+@router.get("/admin/datasource-credentials", response_class=HTMLResponse)
+async def admin_datasource_credentials_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Keboola and BigQuery credential management via the server vault.
+
+    Passes ``vault_key_configured`` so the template can render a blocking
+    banner when ``AGNES_VAULT_KEY`` is absent. Secret values are never read
+    here — the JS loads presence/source status from
+    ``GET /api/admin/datasource-secrets`` and writes via PUT/DELETE.
+    """
+    from app.secrets_vault import vault_key_configured
+
+    ctx = _build_context(request, user=user)
+    ctx["vault_key_configured"] = vault_key_configured()
+    return templates.TemplateResponse(request, "admin_datasource_credentials.html", ctx)
 
 
 @router.get("/admin/database", response_class=HTMLResponse)

@@ -11,6 +11,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.72.0] - 2026-06-26
+
+### Fixed
+- `POST /api/admin/keboola/test-connection` now resolves the Keboola token from the vault when absent from the environment, so the "Test connection" button on `/admin/datasource-credentials` works for vault-only deployments.
+- `PUT /api/admin/datasource-secrets/BIGQUERY_SERVICE_ACCOUNT_JSON` now calls `clear_token_cache()` after storing the new SA JSON, so the rotated credential takes effect immediately instead of after the cached token expires (up to ~50 min).
+
+### Added
+- `/admin/datasource-credentials` page — vault-backed credential management for Keboola (`KEBOOLA_STORAGE_TOKEN`), BigQuery (`BIGQUERY_SERVICE_ACCOUNT_JSON`), and Google Workspace OAuth (`AGNES_GWS_CLIENT_ID` / `AGNES_GWS_CLIENT_SECRET`); env always takes precedence over vault. Save/Test/Clear per source, status badge (env / vault / unset), vault-key banner when `AGNES_VAULT_KEY` is absent. GWS card includes a collapsible step-by-step GCP Console setup guide with deep-links (#718).
+- `GET/PUT/DELETE /api/admin/datasource-secrets` — admin-gated, write-only vault endpoints; BigQuery PUT validates SA JSON shape before storing; GWS PUT validates Client ID format and Client Secret prefix.
+- `app/datasource_secrets.py` — env > vault > None resolver with an explicit allow-list; wired into Keboola connectors and the sync subprocess env overlay so vault-stored tokens reach the extractor without `.env` editing.
+- BigQuery `connectors/bigquery/auth.py` vault tier — `BIGQUERY_SERVICE_ACCOUNT_JSON` from the vault is tried after the `GOOGLE_APPLICATION_CREDENTIALS` env var and before the GCE metadata server; the SA JSON is never written to disk. The Python `bigquery.Client` path in `access.py` now also consults the vault when ADC is unavailable, so vault keys cover both the DuckDB-extension path and the Python client path (table discovery, test-connection).
 - `/mcp-connect` page and `POST /api/mcp-connect/token` endpoint so headless AI editors (Cursor, GitHub Copilot) can authenticate via a pre-created PAT instead of the OAuth browser flow. Includes client-specific config snippets for Cursor, VS Code/Copilot, and a generic token-in-URL fallback.
 - `GET /api/admin/reports/marketplace-digest?period=daily|weekly[&date=YYYY-MM-DD]`:
   one consolidated, report-shaped JSON payload for an external rendering

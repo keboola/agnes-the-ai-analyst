@@ -6,6 +6,7 @@ from instance config (same path as the Discover endpoint), then calls
 KeboolaClient.buckets.list() — a minimal round-trip that confirms the
 token is valid and the stack URL is reachable.
 """
+
 from __future__ import annotations
 
 import logging
@@ -41,34 +42,54 @@ def test_connection(_user: dict = Depends(require_admin)):
 
     stack_url = get_value("data_source", "keboola", "stack_url", default="")
     if not stack_url:
-        raise HTTPException(status_code=400, detail={
-            "kind": "not_configured",
-            "hint": "stack_url is not set. Configure it in Instance settings → Data source.",
-        })
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "kind": "not_configured",
+                "hint": "stack_url is not set. Configure it in Instance settings → Data source.",
+            },
+        )
 
     token_env = get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN")
     token = os.environ.get(token_env, "").strip() if token_env else ""
     if not token:
         token = os.environ.get("KEBOOLA_STORAGE_TOKEN", "").strip()
     if not token:
-        raise HTTPException(status_code=400, detail={
-            "kind": "not_configured",
-            "hint": f"Token env var {token_env!r} is not set. Add it to your .env file.",
-        })
+        try:
+            from app.datasource_secrets import datasource_secret  # noqa: PLC0415
+
+            token = (datasource_secret("KEBOOLA_STORAGE_TOKEN") or "").strip()
+        except Exception:
+            pass
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "kind": "not_configured",
+                "hint": f"Token env var {token_env!r} is not set. Add it to your .env file or the datasource-credentials vault.",
+            },
+        )
 
     try:
         from connectors.keboola.client import KeboolaClient
+
         client = KeboolaClient(token=token, url=stack_url)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail={
-            "kind": "not_configured",
-            "hint": str(exc),
-        })
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "kind": "not_configured",
+                "hint": str(exc),
+            },
+        )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail={
-            "kind": "keboola_upstream_error",
-            "hint": str(exc),
-        })
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "kind": "keboola_upstream_error",
+                "hint": str(exc),
+            },
+        )
 
     started = time.monotonic()
     try:
@@ -83,14 +104,20 @@ def test_connection(_user: dict = Depends(require_admin)):
         except AttributeError:
             pass
         if http_status == 401 or http_status == 403:
-            raise HTTPException(status_code=400, detail={
-                "kind": "invalid_token",
-                "hint": "Storage API token is invalid or expired. Check the token in your .env file.",
-            })
-        raise HTTPException(status_code=502, detail={
-            "kind": "keboola_upstream_error",
-            "hint": str(exc),
-        })
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "kind": "invalid_token",
+                    "hint": "Storage API token is invalid or expired. Check the token in your .env file.",
+                },
+            )
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "kind": "keboola_upstream_error",
+                "hint": str(exc),
+            },
+        )
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
     return {

@@ -237,6 +237,28 @@
   .modal-card .diff-row { padding: 4px 0; border-bottom: 1px dashed var(--border, #e5e7eb); }
   .modal-card .diff-row:last-child { border-bottom: none; }
   .modal-card .diff-row .path { color: #b91c1c; font-weight: 600; }
+
+  /* Vault hint in Data source section */
+  .ds-vault-hint {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 10px 14px; border-radius: 8px; font-size: 13px; line-height: 1.5;
+    text-decoration: none;
+  }
+  .ds-vault-hint--ready {
+    background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d;
+  }
+  .ds-vault-hint--ready:hover { background: #dcfce7; }
+  .ds-vault-hint--ready strong { color: #15803d; }
+  .ds-vault-hint--info {
+    background: var(--background, #f9fafb); border: 1px solid var(--border, #e5e7eb);
+    color: var(--text-secondary, #6b7280);
+  }
+  .ds-vault-hint--info a { color: var(--ds-primary, #6366f1); }
+  .ds-vault-hint--info code {
+    font-size: 12px; background: var(--border-light, #f3f4f6);
+    padding: 1px 4px; border-radius: 3px; color: var(--text-primary, #111827);
+  }
+  .ds-vault-hint-icon { flex-shrink: 0; font-size: 15px; margin-top: 1px; }
 </style>
 {% endblock %}
 
@@ -256,14 +278,12 @@
 
     <div class="cfg-main">
       <div id="cfg-loading" class="cfg-loading">Loading current configuration…</div>
+      <!-- General + Integrations sections (rendered by JS from instance.yaml) -->
       <div id="cfg-sections" hidden></div>
 
   <!--
     Initial Workspace Template — MOVED to its own page (#622 Slice 3 PR-B).
-    The registration / sync / delete UI now lives at /admin/initial-workspace.
-    This stub keeps the `#iw-section` anchor (operators deep-link it, e.g.
-    from the #622 issue body) and a one-line cross-link. The dedicated
-    /api/admin/initial-workspace endpoints are unchanged.
+    Stub kept so /admin/server-config#iw-section deep-links still work.
   -->
   <section class="cfg-section" id="iw-section">
     <header>
@@ -279,13 +299,8 @@
     </header>
   </section>
 
-  <!-- Cloud chat readiness — secret presence + live key test.
-
-       Like iw-section, this is a bespoke panel (NOT part of the generic
-       instance.yaml form): ANTHROPIC_API_KEY / E2B_API_KEY are env-var
-       secrets routed to the .env_overlay via /admin/chat/secrets, not
-       yaml fields. The status badges and the "Test keys" probe come from
-       /admin/chat/readiness and /admin/chat/secrets/test. -->
+  <!-- Cloud chat — bespoke panel (not part of instance.yaml).
+       ANTHROPIC_API_KEY / E2B_API_KEY via /admin/chat/secrets. -->
   <section class="cfg-section" id="chat-section">
     <header>
       <div>
@@ -321,10 +336,8 @@
     </div>
   </section>
 
-  <!-- Slack bot secrets — server-wide tokens stored encrypted in the vault
-       (system_secrets), routed through the env > vault > none resolver. Like
-       Cloud chat, these are NOT part of the instance.yaml form: presence/source
-       comes from /admin/slack-secrets, writes hit PUT /admin/slack-secrets/{name}. -->
+  <!-- Slack bot secrets — bespoke panel (not part of instance.yaml).
+       Presence/source from /admin/slack-secrets, writes via PUT /admin/slack-secrets/{name}. -->
   <section class="cfg-section" id="slack-secrets-section">
     <header>
       <div>
@@ -360,6 +373,11 @@
       <button type="button" class="btn btn-primary" id="slack-secrets-save-btn">Save secrets</button>
     </div>
   </section>
+
+      <!-- Danger zone sections (auth, server) rendered separately so bespoke sections above sit before them -->
+      <div id="cfg-sections-danger" hidden></div>
+      <!-- Tail: sections not in any known group (e.g. marketplace) — rendered last, no danger styling -->
+      <div id="cfg-sections-tail" hidden></div>
     </div><!-- /.cfg-main -->
   </div><!-- /.cfg-body -->
 </div><!-- /.cfg-page -->
@@ -420,6 +438,10 @@ const SECTION_META = {
   guardrails: {
     title: "Flea-market guardrails",
     help: "Per-component content quality thresholds for store uploads. Lower the min-* knobs to relax the bar; raise to push submitters toward longer, more useful descriptions. The LLM tier (review_model + enabled) governs the second-stage substantive review.",
+  },
+  marketplace: {
+    title: "Marketplace",
+    help: "Curated marketplace settings — e.g. the 'See all curators' link URL.",
   },
 };
 const DANGER_SECTIONS = new Set(["auth", "server"]);
@@ -907,6 +929,7 @@ function renderSection(section, payload, knownForSection) {
       <div class="section-body">
         ${fieldsHtml}
         ${bootstrap}
+        ${section === "data_source" ? '<div id="ds-vault-hint" style="margin-top:14px"></div>' : ""}
       </div>
       <div class="section-actions">
         <button class="btn btn-primary" data-action="save-section" data-section="${section}">Save ${escHtml(meta.title.toLowerCase())}</button>
@@ -922,7 +945,11 @@ function renderSection(section, payload, knownForSection) {
 
 const SECTION_GROUPS = [
   { label: "General",      sections: ["instance", "data_source", "email", "theme"] },
-  { label: "Integrations", sections: ["telegram", "jira", "ai", "openmetadata", "desktop", "corporate_memory", "materialize", "guardrails"] },
+  { label: "Integrations", sections: ["telegram", "jira", "ai", "openmetadata", "desktop", "corporate_memory", "materialize", "guardrails", "marketplace"] },
+  { label: "Services",     sections: [], bespoke: [
+    { id: "chat-section",          title: "Cloud chat" },
+    { id: "slack-secrets-section", title: "Slack bot secrets" },
+  ]},
   { label: "Danger zone",  sections: ["auth", "server"], isDanger: true },
 ];
 
@@ -933,16 +960,18 @@ function buildSidenav(sections) {
   const present = new Set(sections);
   const html = [];
 
-  // Render grouped sections. (Workspace template moved to its own page —
-  // /admin/initial-workspace — so it no longer appends a sidenav entry here.)
   SECTION_GROUPS.forEach(group => {
     const groupSections = group.sections.filter(s => present.has(s));
-    if (!groupSections.length) return;
+    const bespoke = group.bespoke || [];
+    if (!groupSections.length && !bespoke.length) return;
     html.push(`<span class="cfg-sidenav-label${group.isDanger ? " is-danger" : ""}">${group.label}</span>`);
     groupSections.forEach(s => {
       const meta = SECTION_META[s] || { title: s };
       html.push(`<a href="#cfg-s-${s}" class="${group.isDanger ? "sidenav-danger" : ""}" data-nav-section="${s}">${meta.title}</a>`);
       present.delete(s);
+    });
+    bespoke.forEach(b => {
+      html.push(`<a href="#${b.id}" data-bespoke-section="${b.id}">${b.title}</a>`);
     });
   });
 
@@ -954,13 +983,10 @@ function buildSidenav(sections) {
 
   nav.innerHTML = html.join("");
 
-  // Build a key→element map. Use the most specific selector possible:
-  // section.cfg-section[data-section="x"] inside #cfg-sections only —
-  // avoids false matches on inputs/buttons/textareas with the same attr.
+  // Build a key→element map — sections live in either cfg-sections or cfg-sections-danger.
   const sectionEls = new Map();
-  const wrap = document.getElementById("cfg-sections");
   sections.forEach(s => {
-    const el = wrap && wrap.querySelector(`section.cfg-section[data-section="${s}"]`);
+    const el = document.querySelector(`section.cfg-section[data-section="${s}"]`);
     if (el) { el.id = `cfg-s-${s}`; sectionEls.set(s, el); }
   });
 
@@ -970,7 +996,11 @@ function buildSidenav(sections) {
       e.preventDefault();
       nav.querySelectorAll("a").forEach(x => x.classList.remove("is-active"));
       a.classList.add("is-active");
-      const el = sectionEls.get(a.dataset.navSection);
+      const el = a.dataset.navSection
+        ? sectionEls.get(a.dataset.navSection)
+        : a.dataset.bespokeSection
+          ? document.getElementById(a.dataset.bespokeSection)
+          : null;
       if (el) {
         const top = el.getBoundingClientRect().top + window.scrollY - 80;
         window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
@@ -981,21 +1011,31 @@ function buildSidenav(sections) {
 
 function renderAll(data) {
   const wrap = document.getElementById("cfg-sections");
+  const dangerWrap = document.getElementById("cfg-sections-danger");
+  const tailWrap = document.getElementById("cfg-sections-tail");
   const apiSections = data.editable_sections || Object.keys(data.sections || {});
-  // Sort sections to match sidebar group order (General → Integrations → Danger zone)
+  // Sort sections to match sidebar group order (General → Integrations → Danger zone → tail)
   const groupOrder = SECTION_GROUPS.flatMap(g => g.sections);
   const sections = [...apiSections].sort((a, b) => {
     const ia = groupOrder.indexOf(a), ib = groupOrder.indexOf(b);
     return (ia === -1 ? 9999 : ia) - (ib === -1 ? 9999 : ib);
   });
   const known = data.known_fields || {};
-  wrap.innerHTML = sections.map(s => renderSection(s, data.sections[s] || {}, known[s] || {})).join("");
 
-  // (The Initial Workspace Template section moved to /admin/initial-workspace,
-  // so there's no longer an #iw-section to relocate into #cfg-sections here.)
+  const mainGroupSet = new Set(SECTION_GROUPS.filter(g => !g.isDanger).flatMap(g => g.sections));
+  const dangerGroupSet = new Set(SECTION_GROUPS.find(g => g.isDanger)?.sections || []);
+  const mainSections   = sections.filter(s => mainGroupSet.has(s));
+  const dangerSections = sections.filter(s => dangerGroupSet.has(s));
+  const tailSections   = sections.filter(s => !mainGroupSet.has(s) && !dangerGroupSet.has(s));
+
+  wrap.innerHTML       = mainSections.map(s => renderSection(s, data.sections[s] || {}, known[s] || {})).join("");
+  dangerWrap.innerHTML = dangerSections.map(s => renderSection(s, data.sections[s] || {}, known[s] || {})).join("");
+  tailWrap.innerHTML   = tailSections.map(s => renderSection(s, data.sections[s] || {}, known[s] || {})).join("");
 
   document.getElementById("cfg-loading").style.display = "none";
   wrap.hidden = false;
+  if (dangerSections.length) dangerWrap.hidden = false;
+  if (tailSections.length) tailWrap.hidden = false;
   buildSidenav(sections);
 
   // Hash-based deep-link: /admin/server-config#cfg-s-data_source scrolls to
@@ -1011,23 +1051,20 @@ function renderAll(data) {
     } catch (_) { /* invalid hash — ignore */ }
   }
 
-  wrap.querySelectorAll('[data-action="save-section"]').forEach(btn =>
-    btn.addEventListener("click", () => onSaveSection(btn.dataset.section)));
-
-  // Issue #160 §4.9: Test BigQuery connection — admin probe to verify the
-  // saved data_source.bigquery config is reachable WITHOUT having to
-  // ssh to the VM or wait for an analyst's failed query.
-  wrap.querySelectorAll('[data-action="test-bigquery"]').forEach(btn =>
-    btn.addEventListener("click", () => onTestBigQuery(btn)));
-
-  // Test Keboola connection — counterpart to BigQuery probe above.
-  wrap.querySelectorAll('[data-action="test-keboola"]').forEach(btn =>
-    btn.addEventListener("click", () => onTestKeboola(btn)));
+  // Wire buttons in all three wrappers.
+  [wrap, dangerWrap, tailWrap].forEach(w => {
+    w.querySelectorAll('[data-action="save-section"]').forEach(btn =>
+      btn.addEventListener("click", () => onSaveSection(btn.dataset.section)));
+    w.querySelectorAll('[data-action="test-bigquery"]').forEach(btn =>
+      btn.addEventListener("click", () => onTestBigQuery(btn)));
+    w.querySelectorAll('[data-action="test-keboola"]').forEach(btn =>
+      btn.addEventListener("click", () => onTestKeboola(btn)));
+  });
 
   // Wire array-of-scalars + map-of-scalars add/remove buttons via event
-  // delegation on the wrapper. Re-attaching after every renderAll() is
+  // delegation on all wrappers. Re-attaching after every renderAll() is
   // fine because we replace innerHTML wholesale on each load.
-  wrap.addEventListener("click", (e) => {
+  [wrap, dangerWrap, tailWrap].forEach(w => w.addEventListener("click", (e) => {
     const target = e.target;
     if (!(target instanceof Element)) return;
     // Add an array row.
@@ -1088,7 +1125,7 @@ function renderAll(data) {
       if (row) row.remove();
       return;
     }
-  });
+  }));
 }
 
 // Recursively strip secret-keyed leaves whose value is the redaction sentinel
@@ -1465,9 +1502,34 @@ async function loadConfig() {
     if (!r.ok) throw new Error("HTTP " + r.status);
     original = await r.json();
     renderAll(original);
+    loadDsVaultHint();
   } catch (e) {
     document.getElementById("cfg-loading").textContent = "Failed to load config: " + e.message;
   }
+}
+
+async function loadDsVaultHint() {
+  const el = document.getElementById("ds-vault-hint");
+  if (!el) return;
+  try {
+    const r = await fetch("/api/health", { credentials: "include" });
+    if (!r.ok) return;
+    const data = await r.json();
+    const vaultConfigured = data.vault_key_configured === true;
+    if (vaultConfigured) {
+      el.innerHTML = `<a href="/admin/datasource-credentials" class="ds-vault-hint ds-vault-hint--ready">
+        <span class="ds-vault-hint-icon">&#128274;</span>
+        <span>Credentials can also be managed via the encrypted vault &rarr; <strong>Manage datasource credentials</strong></span>
+      </a>`;
+    } else {
+      el.innerHTML = `<div class="ds-vault-hint ds-vault-hint--info">
+        <span class="ds-vault-hint-icon">&#128161;</span>
+        <span>Credentials can be stored in an encrypted vault instead of config files.
+        Set <code>AGNES_VAULT_KEY</code> on the server to enable the
+        <a href="/admin/datasource-credentials">vault credential manager</a>.</span>
+      </div>`;
+    }
+  } catch (_) { /* non-critical */ }
 }
 
 loadConfig();

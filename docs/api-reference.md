@@ -847,6 +847,13 @@ synced IWT clone for the bind-git file picker.
 
 - /api/admin/keboola/test-connection
 
+### `/api/admin/datasource-secrets` — Datasource credential management
+
+Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `BIGQUERY_SERVICE_ACCOUNT_JSON`). Values are encrypted via `AGNES_VAULT_KEY`; the GET endpoint returns presence/source status only, never the value.
+
+- /api/admin/datasource-secrets
+- /api/admin/datasource-secrets/{name}
+
 ### `/api/admin/slack-secrets` — Slack secret management
 
 - /api/admin/slack-secrets
