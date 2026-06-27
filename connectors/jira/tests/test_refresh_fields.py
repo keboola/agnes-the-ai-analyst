@@ -20,7 +20,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
 from connectors.jira import service as jira_service
 from connectors.jira.service import JiraService, refresh_fields
-from connectors.jira.transform import transform_issue
+from connectors.jira.transform import (
+    ISSUES_SCHEMA,
+    REFRESH_COLLISION_PREFIX,
+    resolved_refresh_columns,
+    transform_issue,
+)
 
 REFRESH_ENV = "JIRA_REFRESH_FIELDS"
 
@@ -204,3 +209,65 @@ class TestTransformGenericColumns:
         rec = transform_issue(self._raw({"summary": "x"}))
         assert "first_response_elapsed_millis" not in rec
         assert "time_to_resolution_elapsed_millis" not in rec
+
+
+# ---------------------------------------------------------------------------
+# Column-name collision guard (clean names; prefix only on collision)
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshColumnCollision:
+    @staticmethod
+    def _raw(fields: dict) -> dict:
+        return {"key": "SUPPORT-1", "id": "1", "fields": fields}
+
+    def test_alias_colliding_with_builtin_is_prefixed_builtin_preserved(
+        self, monkeypatch: pytest.MonkeyPatch, clear_refresh_env: None
+    ) -> None:
+        monkeypatch.setenv(REFRESH_ENV, "customfield_99001:resolution")
+        rec = transform_issue(
+            self._raw(
+                {
+                    "resolution": {"name": "Fixed"},
+                    "customfield_99001": {"name": "Time to resolution", "ongoingCycle": {}},
+                }
+            )
+        )
+        # the built-in `resolution` column keeps its clean extracted value
+        assert rec["resolution"] == "Fixed"
+        # the refresh field lands under the prefixed column, not over the built-in
+        assert json.loads(rec["cf_resolution"]) == {"name": "Time to resolution", "ongoingCycle": {}}
+
+    def test_standard_field_key_collision_no_alias(
+        self, monkeypatch: pytest.MonkeyPatch, clear_refresh_env: None
+    ) -> None:
+        # Refreshing the standard `resolution` field with no alias -> column would
+        # be "resolution" (== built-in) -> must be prefixed; built-in preserved.
+        monkeypatch.setenv(REFRESH_ENV, "resolution")
+        rec = transform_issue(self._raw({"resolution": {"name": "Fixed"}}))
+        assert rec["resolution"] == "Fixed"
+        assert json.loads(rec["cf_resolution"]) == {"name": "Fixed"}
+
+    def test_duplicate_columns_first_wins(self, monkeypatch: pytest.MonkeyPatch, clear_refresh_env: None) -> None:
+        monkeypatch.setenv(REFRESH_ENV, "customfield_1:dup,customfield_2:dup")
+        rec = transform_issue(self._raw({"customfield_1": {"a": 1}, "customfield_2": {"b": 2}}))
+        assert json.loads(rec["dup"]) == {"a": 1}
+
+    def test_non_colliding_alias_stays_clean(self, monkeypatch: pytest.MonkeyPatch, clear_refresh_env: None) -> None:
+        monkeypatch.setenv(REFRESH_ENV, "customfield_99001:lunch")
+        rec = transform_issue(self._raw({"customfield_99001": {"value": "pizza"}}))
+        assert "lunch" in rec
+        assert "cf_lunch" not in rec
+
+    def test_resolved_refresh_columns(self, monkeypatch: pytest.MonkeyPatch, clear_refresh_env: None) -> None:
+        monkeypatch.setenv(REFRESH_ENV, "customfield_1:status,customfield_2:lunch,customfield_3:lunch")
+        # `status` collides -> cf_status; lunch clean; the 2nd lunch is skipped
+        assert resolved_refresh_columns() == [
+            ("customfield_1", "cf_status"),
+            ("customfield_2", "lunch"),
+        ]
+
+
+class TestRefreshNamespaceLock:
+    def test_no_builtin_starts_with_collision_prefix(self) -> None:
+        assert not any(k.startswith(REFRESH_COLLISION_PREFIX) for k in ISSUES_SCHEMA)

@@ -107,6 +107,44 @@ ISSUES_SCHEMA = {
 }
 
 
+REFRESH_COLLISION_PREFIX = "cf_"
+
+
+def resolved_refresh_columns() -> list[tuple[str, str]]:
+    """``[(field_id, column), ...]`` for the configured refresh fields, collision-safe.
+
+    The column is the operator's alias (or field id) — kept clean, matching the
+    existing custom-field columns. If it would collide with a built-in
+    ``ISSUES_SCHEMA`` column it is prefixed with ``REFRESH_COLLISION_PREFIX`` so a
+    refresh field can never overwrite a built-in value. A column already used by an
+    earlier entry is skipped. Single source of truth for both ``transform_issue``
+    and ``issues_schema`` so they never drift.
+    """
+    reserved = set(ISSUES_SCHEMA)
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for field_id, column in refresh_fields():
+        if column in reserved:
+            safe = f"{REFRESH_COLLISION_PREFIX}{column}"
+            logger.warning(
+                "Jira refresh field %s: column %r collides with a built-in issues column; using %r instead",
+                field_id,
+                column,
+                safe,
+            )
+            column = safe
+        if column in seen:
+            logger.warning(
+                "Jira refresh field %s: column %r already used by another refresh field; skipping",
+                field_id,
+                column,
+            )
+            continue
+        seen.add(column)
+        out.append((field_id, column))
+    return out
+
+
 def issues_schema() -> dict:
     """ISSUES_SCHEMA extended with one string column per configured refresh field.
 
@@ -116,7 +154,7 @@ def issues_schema() -> dict:
     generic columns survive both batch and incremental writes.
     """
     schema = dict(ISSUES_SCHEMA)
-    for _, column in refresh_fields():
+    for _, column in resolved_refresh_columns():
         schema.setdefault(column, "string")
     return schema
 
@@ -381,7 +419,7 @@ def transform_issue(raw_issue: dict) -> dict:
 
     # Generic operator-configured fields, refreshed onto the ticket. Each is stored
     # as JSON text in its own column on `issues` (column name from refresh_fields()).
-    for field_id, column in refresh_fields():
+    for field_id, column in resolved_refresh_columns():
         value = fields.get(field_id)
         record[column] = json.dumps(value, default=str) if value is not None else None
 
