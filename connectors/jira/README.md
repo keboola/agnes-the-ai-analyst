@@ -269,7 +269,10 @@ JIRA_API_TOKEN=<API token from Atlassian; the account needs a JSM Agent licence 
 # Custom fields to refresh onto tickets — generic, no defaults (per instance).
 # field_id or field_id:column, comma-separated. Discover with:
 #   python -m connectors.jira.scripts.verify_sla_access --list-fields
-JIRA_REFRESH_FIELDS=customfield_10328:first_response,customfield_10161:resolution
+# Each becomes a JSON column on `issues` named by the alias (or field id). A column
+# that would collide with a built-in issues column (e.g. `resolution`, `status`) is
+# prefixed with `cf_` so the built-in is never overwritten.
+JIRA_REFRESH_FIELDS=customfield_10328:first_response,customfield_10161:time_to_resolution
 
 # Optional: set ONLY for a scoped API token (forces the api.atlassian.com
 # gateway). Classic tokens use the site domain URL and need nothing here.
