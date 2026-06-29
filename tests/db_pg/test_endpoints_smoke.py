@@ -1745,6 +1745,7 @@ KNOWN_UNTESTED = {
     "POST /api/admin/run-knowledge-migration",
     "POST /api/mcp-connect/token",  # tested in tests/test_mcp_connect.py
     "GET /mcp-connect",  # web UI page tested in tests/test_mcp_connect.py
+    "GET /connect-guide",  # web UI page tested in tests/test_connect_guide.py
     "POST /api/admin/run-session-collector",
     "POST /api/admin/run-session-processor",
     "POST /api/admin/uploads/cover-image",
