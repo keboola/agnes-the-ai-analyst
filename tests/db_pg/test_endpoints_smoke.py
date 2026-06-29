@@ -1298,6 +1298,50 @@ class TestMarketplacesSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Reports (marketplace usage digest)
+# ---------------------------------------------------------------------------
+
+
+class TestReportsSmoke:
+    COVERED_ROUTES = {
+        "GET /api/admin/reports/marketplace-digest",
+    }
+
+    def test_digest_daily(self, seeded_app_both):
+        r = seeded_app_both["client"].get(
+            "/api/admin/reports/marketplace-digest?period=daily",
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 200
+        body = r.json()
+        for key in (
+            "meta",
+            "headline_kpis",
+            "trend_series",
+            "by_source",
+            "top_items",
+            "installs",
+            "marketplace_health",
+        ):
+            assert key in body
+
+    def test_digest_weekly(self, seeded_app_both):
+        r = seeded_app_both["client"].get(
+            "/api/admin/reports/marketplace-digest?period=weekly",
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 200
+        assert r.json()["meta"]["report_type"] == "weekly"
+
+    def test_digest_bad_period(self, seeded_app_both):
+        r = seeded_app_both["client"].get(
+            "/api/admin/reports/marketplace-digest?period=bogus",
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # Route-coverage guard
 # ---------------------------------------------------------------------------
 
@@ -1407,6 +1451,9 @@ KNOWN_UNTESTED = {
     "PUT /api/admin/mcp",
     "GET /api/admin/slack-secrets",
     "PUT /api/admin/slack-secrets",
+    # Admin datasource credentials — vault-backed Keboola/BQ secrets (web UI only)
+    "GET /api/admin/datasource-secrets",
+    "GET /admin/datasource-credentials",
     # Admin bigquery / keboola test endpoints
     "POST /api/admin/bigquery/test",
     "POST /api/admin/keboola/test",
@@ -1642,6 +1689,9 @@ KNOWN_UNTESTED = {
     # Admin slack secrets
     "DELETE /api/admin/slack-secrets/{name}",
     "PUT /api/admin/slack-secrets/{name}",
+    # Admin datasource secrets (per-name mutations)
+    "DELETE /api/admin/datasource-secrets/{name}",
+    "PUT /api/admin/datasource-secrets/{name}",
     # Admin store submissions (detail/actions beyond list)
     "DELETE /api/admin/store/submissions/{submission_id}",
     "GET /api/admin/store/submissions/{submission_id}",
@@ -1693,6 +1743,8 @@ KNOWN_UNTESTED = {
     "POST /api/admin/run-jira-consistency-check",
     "POST /api/admin/run-jira-sla-poll",
     "POST /api/admin/run-knowledge-migration",
+    "POST /api/mcp-connect/token",  # tested in tests/test_mcp_connect.py
+    "GET /mcp-connect",  # web UI page tested in tests/test_mcp_connect.py
     "POST /api/admin/run-session-collector",
     "POST /api/admin/run-session-processor",
     "POST /api/admin/uploads/cover-image",

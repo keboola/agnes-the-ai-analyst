@@ -2263,7 +2263,9 @@ async def discover_tables(
             token_env = get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN")
             token = os.environ.get(token_env, "") if token_env else ""
             if not token:
-                token = os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
+                from app.datasource_secrets import datasource_secret
+
+                token = datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
             client = KeboolaClient(token=token, url=url)
             tables = client.discover_all_tables()
             return {"tables": tables, "count": len(tables), "source": "keboola"}
@@ -3715,7 +3717,9 @@ def _discover_and_register_tables(
     token_env = get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN")
     token = os.environ.get(token_env, "") if token_env else ""
     if not token:
-        token = os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
+        from app.datasource_secrets import datasource_secret
+
+        token = datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
 
     client = KeboolaClient(token=token, url=url)
     discovered = client.discover_all_tables()

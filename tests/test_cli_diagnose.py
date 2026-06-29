@@ -97,6 +97,42 @@ class TestDiagnoseJson:
         api_check = next(c for c in data["checks"] if c["name"] == "api")
         assert "latency_ms" in api_check
 
+    def test_diagnose_json_wires_session_upload_warning(self, tmp_path):
+        """`agnes diagnose --json` calls session_upload_health when
+        workspace_root is set, appends the `session-upload` check, and surfaces
+        the `agnes push --dry-run` suggested action on warning."""
+        warning = {
+            "name": "session-upload",
+            "status": "warning",
+            "expected_sessions": 9,
+            "uploaded_entries": 1,
+            "detail": "session upload may be failing. Try: `agnes push --dry-run`",
+        }
+        with patch("cli.commands.diagnose.api_get", return_value=_resp(200, HEALTHY_HEALTH)), \
+             patch("cli.commands.diagnose.get_workspace_root", return_value=str(tmp_path)), \
+             patch("cli.commands.diagnose.session_upload_health", return_value=warning):
+            result = runner.invoke(app, ["diagnose", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert any(
+            c["name"] == "session-upload" and c["status"] == "warning"
+            for c in data["checks"]
+        )
+        assert any("agnes push --dry-run" in a for a in data["suggested_actions"])
+
+    def test_diagnose_json_session_upload_info_without_workspace_root(self):
+        """No workspace_root → session-upload check is info (not warning) and
+        session_upload_health is not even called."""
+        with patch("cli.commands.diagnose.api_get", return_value=_resp(200, HEALTHY_HEALTH)), \
+             patch("cli.commands.diagnose.get_workspace_root", return_value=None), \
+             patch("cli.commands.diagnose.session_upload_health") as mock_health:
+            result = runner.invoke(app, ["diagnose", "--json"])
+        assert result.exit_code == 0
+        mock_health.assert_not_called()
+        data = json.loads(result.output)
+        check = next(c for c in data["checks"] if c["name"] == "session-upload")
+        assert check["status"] == "info"
+
 
 class TestAnalystAudienceFilter:
     """Issue #345 B — analysts shouldn't see ``Overall: degraded`` on fresh

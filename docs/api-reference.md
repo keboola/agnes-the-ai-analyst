@@ -754,6 +754,17 @@ authoring-suggestions queue (never an admin-direct write).
 - /api/admin/adoption/users/{user_id}/top-skills
 - /api/admin/adoption/users/{user_id}/top-tools
 
+### `/api/admin/reports` — Marketplace usage digest (admin)
+
+- /api/admin/reports/marketplace-digest
+
+  One consolidated, report-shaped JSON payload for an external rendering
+  pipeline (e.g. an n8n workflow). `?period=daily|weekly[&date=YYYY-MM-DD]`.
+  Returns headline KPIs (with prior-period deltas), a per-day trend series,
+  usage by source, top items, rising/falling movers, failures,
+  installs/adoption, zero-usage curated plugins, and per-marketplace sync
+  health. Admin-only; PAT-gated for headless callers.
+
 ### `/api/admin/telemetry` — Query telemetry
 
 - /api/admin/telemetry/ask
@@ -835,6 +846,13 @@ synced IWT clone for the bind-git file picker.
 ### `/api/admin/keboola` — Keboola diagnostics
 
 - /api/admin/keboola/test-connection
+
+### `/api/admin/datasource-secrets` — Datasource credential management
+
+Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `BIGQUERY_SERVICE_ACCOUNT_JSON`). Values are encrypted via `AGNES_VAULT_KEY`; the GET endpoint returns presence/source status only, never the value.
+
+- /api/admin/datasource-secrets
+- /api/admin/datasource-secrets/{name}
 
 ### `/api/admin/slack-secrets` — Slack secret management
 
@@ -962,6 +980,13 @@ synced IWT clone for the bind-git file picker.
 - /api/mcp/passthrough/tools/{tool_id}/call
 - /api/mcp/query-table/{table_id}
 - /api/mcp/sources/{source_id}/my-secret
+
+### `/api/mcp-connect` — Headless MCP client setup
+
+Issues a PAT for headless AI editors (Cursor, GitHub Copilot) that cannot complete the
+interactive OAuth browser flow. The token is returned once and must be saved by the caller.
+
+- /api/mcp-connect/token
 
 ### `/api/me` — Current user self-service
 

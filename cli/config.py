@@ -165,3 +165,22 @@ def save_config(data: dict):
         existing = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
     existing.update(data)
     config_file.write_text(yaml.dump(existing, default_flow_style=False), encoding="utf-8")
+
+
+def get_workspace_root() -> Optional[str]:
+    """Absolute path of the analyst workspace anchored at `agnes init`.
+
+    This is the single source of truth for where Claude Code session
+    transcripts live: `agnes push` encodes it to the projects-dir folder
+    name and scans that folder. Written by `agnes init` and back-filled by
+    `agnes self-upgrade` for clients installed before the config key existed.
+    Returns ``None`` when unset (push then uploads nothing).
+    """
+    config = load_config()
+    val = config.get("workspace_root")
+    return val or None
+
+
+def set_workspace_root(path: str) -> None:
+    """Persist the workspace root to config.yaml (merges, doesn't clobber)."""
+    save_config({"workspace_root": str(path)})

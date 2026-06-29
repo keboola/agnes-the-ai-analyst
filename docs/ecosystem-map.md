@@ -232,10 +232,9 @@ PAT verification, `agnes pull` of parquets + corporate-memory rules,
 - Shipping `.claude/init-complete` inside `workspace/` — reserved path,
   sync fails. Agnes writes this sentinel itself.
 - Hand-rolling `settings.json` with only `agnes pull` on SessionStart —
-  loses `agnes self-upgrade`, `agnes capture-session`,
-  `agnes refresh-marketplace --check`, and the detached `nohup agnes push`
-  on SessionEnd that Agnes's own default ships. Mirror the full default from
-  `cli/lib/hooks.py` and deviate intentionally.
+  loses `agnes self-upgrade`, `agnes refresh-marketplace --check`, and the
+  detached `nohup agnes push` on SessionEnd that Agnes's own default ships.
+  Mirror the full default from `cli/lib/hooks.py` and deviate intentionally.
 
 **Full reference:** [`docs/initial-workspace-override.md`](initial-workspace-override.md).
 

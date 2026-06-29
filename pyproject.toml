@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.71.61"
+version = "0.72.0"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = {file = "LICENSE"}
@@ -265,6 +265,9 @@ target-version = "py313"
 # db.py has a single mid-file `import threading` that precedes the lock
 # singleton; extracting it would break the sequential read. Pre-existing.
 "src/db.py" = ["E402"]
+# router.py registers Jinja globals and filters between import blocks;
+# the mid-file import json + onboarding import are intentional ordering.
+"app/web/router.py" = ["E402"]
 
 [tool.uv]
 dev-dependencies = [

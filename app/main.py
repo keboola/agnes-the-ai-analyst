@@ -240,6 +240,7 @@ from app.api.v2_marketplace import router as v2_marketplace_router
 from app.api.marketplaces import router as marketplaces_router
 from app.api.data_packages import router as data_packages_router
 from app.api.admin_mcp import router as admin_mcp_router
+from app.api.admin_datasource_secrets import router as admin_datasource_secrets_router
 from app.api.admin_slack_secrets import router as admin_slack_secrets_router
 from app.api.mcp_passthrough import router as mcp_passthrough_router
 from app.api.mcp_per_table import router as mcp_per_table_router
@@ -279,6 +280,7 @@ from app.api.cowork_bundle import (
     user_router as cowork_user_router,
     auth_router as cowork_auth_router,
 )
+from app.api.mcp_connect import router as mcp_connect_router  # noqa: E402
 from app.api.mcp_http import make_sse_app as _make_mcp_sse_app
 from app.api.mcp_streamable import _make_streamable_app as _make_mcp_streamable_app
 from app.api.mcp_streamable import _mcp_oauth_discovery_routes
@@ -291,6 +293,7 @@ from app.api.admin_user_sessions import router as admin_user_sessions_router
 from app.api.admin_sessions import router as admin_sessions_router
 from app.api.admin_usage import router as admin_usage_router
 from app.api.admin_usage_summary import router as admin_usage_summary_router
+from app.api.admin_reports import router as admin_reports_router
 from app.api.admin_adoption import router as admin_adoption_router
 from app.api.db_state import router as db_state_router
 from app.marketplace_server.router import router as marketplace_server_router
@@ -1389,6 +1392,7 @@ def create_app() -> FastAPI:
     app.include_router(marketplaces_router)
     app.include_router(data_packages_router)
     app.include_router(admin_mcp_router)
+    app.include_router(admin_datasource_secrets_router)
     app.include_router(admin_slack_secrets_router)
     app.include_router(mcp_passthrough_router)
     app.include_router(mcp_user_secrets_router)
@@ -1418,6 +1422,7 @@ def create_app() -> FastAPI:
     app.include_router(news_router)
     app.include_router(cowork_user_router)
     app.include_router(cowork_auth_router)
+    app.include_router(mcp_connect_router)
 
     # MCP mounts — registration order matters. Starlette matches mounts in
     # order and `/api/mcp` is a path-prefix of both `/api/mcp/http/*` and
@@ -1458,6 +1463,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_sessions_router)
     app.include_router(admin_usage_router)
     app.include_router(admin_usage_summary_router)
+    app.include_router(admin_reports_router)
     app.include_router(admin_adoption_router)
     app.include_router(db_state_router)
     app.include_router(marketplace_server_router)
@@ -1499,9 +1505,7 @@ def create_app() -> FastAPI:
     from app.instance_config import get_value as _get_value
     from app.plugins import load_routers as _load_plugin_routers
 
-    for _plugin_router in _load_plugin_routers(
-        _get_value("plugins", "admin_routers", default=[]) or []
-    ):
+    for _plugin_router in _load_plugin_routers(_get_value("plugins", "admin_routers", default=[]) or []):
         app.include_router(_plugin_router)
 
     # Web UI router (must be last — has catch-all routes)

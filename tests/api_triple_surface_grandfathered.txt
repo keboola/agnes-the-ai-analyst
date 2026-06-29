@@ -93,6 +93,8 @@
 /api/admin/sessions/list
 /api/admin/sessions/{username}/{session_file}/download
 /api/admin/sessions/{username}/{session_file}/transcript
+/api/admin/datasource-secrets
+/api/admin/datasource-secrets/{name}
 /api/admin/slack-secrets
 /api/admin/slack-secrets/{name}
 /api/admin/store/submissions

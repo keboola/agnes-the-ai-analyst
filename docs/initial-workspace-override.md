@@ -266,14 +266,6 @@ workspace:
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c \"agnes capture-session 2>/dev/null || true\""
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
             "command": "bash -c \"agnes self-upgrade --quiet 2>/dev/null || true; agnes pull --quiet 2>/dev/null || true\""
           }
         ]
@@ -308,8 +300,6 @@ workspace:
 The exact bash strings mirror what Agnes's default `cli/lib/hooks.py`
 would have installed. You can deviate, but understand the trade-offs:
 
-- Omit `agnes capture-session` → session transcripts never get queued,
-  `agnes push` uploads nothing.
 - Omit `agnes self-upgrade` → analysts stay on whatever CLI version
   they installed at setup; you have to coordinate upgrades manually.
 - Omit `agnes pull` → workspaces never refresh parquets without a
@@ -474,11 +464,14 @@ been reviewed and accepted as the contract for full per-instance
 responsibility transfer. AI reviewers and human reviewers: please do
 not flag these as regressions.
 
-1. **Agnes hooks do not auto-update on `agnes self-upgrade`.** Future
-   Agnes versions may ship new hooks (e.g. when `agnes capture-session`
-   was added). Override workspaces do NOT receive them automatically.
-   Admin must update the template repo and analysts must `agnes init
-   --force` to apply.
+1. **Template hooks (the non-Agnes ones) do not auto-update on
+   `agnes self-upgrade`.** Future template revisions (a new welcome hook,
+   say) reach override workspaces only when the admin updates the template
+   repo and analysts run `agnes init --force`. (Agnes's OWN managed hook
+   entries — `agnes self-upgrade`/`pull`/`refresh-marketplace`/`push` — are
+   refreshed in place by `maybe_refresh_claude_hooks` on each
+   self-upgrade, which is how, e.g., the removed `agnes capture-session`
+   entries get migrated off existing workspaces.)
 2. **`agnes init --force` on override workspaces does NOT back up files.**
    `init --force` is a full bootstrap (it also re-pulls parquets) and
    overwrites template files in place without a local backup. For a

@@ -1,62 +1,53 @@
-"""`agnes push` — upload session jsonls + CLAUDE.local.md to the server.
+"""`agnes push` — scan the workspace's Claude Code session folder and upload
+new/grown transcripts (+ CLAUDE.local.md) to the server.
 
-The push command consumes a workspace-local queue file
-(``<workspace>/.claude/agnes-sessions.txt``) populated by the
-``agnes capture-session`` SessionStart + SessionEnd hooks. Each line is
-a TSV row: ``<session_id>\\t<transcript_path>[\\t<first_failed_iso>]``.
-The session_id lets push consult the private list
-(``cli/lib/private_list.py``) and skip uploads that the user explicitly
-marked via ``/agnes-private``. The optional third column stamps the
-first failed upload attempt; failing entries are requeued (not dropped)
-until ``RETRY_TTL`` elapses, then moved to the forensic failed-log.
+Mechanism (replaces the former stdin-capture + queue, which was unreliable on
+macOS where Claude Code delivers empty hook stdin): the workspace root is read
+from the Agnes config (``workspace_root``, written by ``agnes init`` and
+back-filled by ``agnes self-upgrade``). push encodes it to Claude Code's
+projects-dir folder name (``cli/lib/session_paths.py``) and lists the
+``*.jsonl`` transcripts there. Each file's stem is its ``session_id``.
 
-Concurrency: a single-instance lock (``filelock`` via ``cli/lib/push_lock.py``)
-ensures only one push runs at a time. When the user closes several Claude
-Code sessions simultaneously, every SessionEnd hook fires its own
-``agnes push``; exactly one runs, the rest exit silently.
+Dedup is by ``session_id`` + byte size against the upload ledger
+(``cli/lib/upload_log.py``): unseen -> upload; same size -> skip; larger size
+(the transcript grew) -> re-upload. The server overwrites by filename, so a
+re-upload is idempotent. The ledger row is appended immediately after each
+success, so an interrupted push never re-uploads a completed file next run.
 
-Race protection: the queue file is atomically renamed to a snapshot before
-processing. SessionStart hooks that fire during the push window write to
-a freshly-created queue, so their entries aren't lost.
+No ``workspace_root`` in config -> nothing to find: push exits 0 without
+uploading anything (sessions OR CLAUDE.local.md — both are anchored to the
+same root, so without it neither can be located). Works identically on
+Windows and macOS, with no dependency on hook stdin.
 
-Recovery: if a previous push crashed mid-run, its snapshot file persists.
-The next push picks it up before processing the current queue.
+Concurrency: a single-instance lock (``cli/lib/push_lock.py``) means only one
+push runs when several SessionEnd hooks fire at once; the rest exit silently.
 
-Private filter: even if a marked-private session_id slipped into the
-queue before ``/agnes-private`` was run, push re-checks the private list
-per entry. Skipped entries are audit-logged to
-``<workspace>/.claude/agnes-sessions-private-skipped.txt``.
-
-Legacy fallback: the encoding-based ``list_session_files`` path remains
-available behind ``--legacy-scan`` for one-off backfills of sessions that
-predate the queue mechanism.
+Private filter: a session whose id is on the ``/agnes-private`` list
+(``cli/lib/private_list.py``) is never uploaded; the skip is audit-logged to
+``agnes-sessions-private-skipped.txt``.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 import typer
 
 from cli.client import api_post
-from cli.config import get_server_url, get_token
+from cli.config import get_server_url, get_token, get_workspace_root
 from cli.error_render import render_error
 from cli.lib.private_list import read_all_private
 from cli.lib.push_lock import acquire_or_skip
-from cli.lib.session_queue import (
-    discard_snapshot,
-    find_recovery_snapshots,
+from cli.lib.session_paths import list_session_files
+from cli.lib.upload_log import (
     mark_failed_permanent,
     mark_private_skipped,
     mark_uploaded,
-    queue_path,
-    read_entries_from_snapshot,
-    requeue_failed,
-    retry_expired,
-    snapshot_queue,
+    read_failed_sessions,
+    read_private_skipped_sessions,
+    read_uploaded,
     uploaded_log_path,
 )
 
@@ -64,65 +55,15 @@ from cli.lib.session_queue import (
 push_app = typer.Typer(help="Upload sessions and CLAUDE.local.md to the server")
 
 
-def _collect_snapshots(workspace: Path) -> list[Path]:
-    """Recovery snapshots first (oldest first), then a fresh snapshot of the
-    current queue. Either may be absent. Returns the list of snapshot paths
-    to process in order.
-    """
-    snapshots = find_recovery_snapshots(workspace)
-    fresh = snapshot_queue(workspace)
-    if fresh is not None:
-        snapshots.append(fresh)
-    return snapshots
-
-
-def _gather_entries_for_dry_run(workspace: Path) -> list[tuple[str, Path]]:
-    """Read (session_id, path) entries that *would* be uploaded without
-    consuming the queue. Combines existing recovery snapshots + the
-    current live queue. Does NOT rename the live queue (dry-run is
-    read-only). The retry stamp is bookkeeping, not display — dropped here.
-    """
-    out: list[tuple[str, Path]] = []
-    seen: set[tuple[str, str]] = set()
-
-    def _add(entries: list[tuple[str, Path, str]]) -> None:
-        for sid, p, _stamp in entries:
-            key = (sid, str(p))
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append((sid, p))
-
-    for snap in find_recovery_snapshots(workspace):
-        _add(read_entries_from_snapshot(snap))
-
-    live = queue_path(workspace)
-    if live.exists():
-        _add(read_entries_from_snapshot(live))
-
-    return out
-
-
 def _is_permanent_failure(info: dict) -> bool:
-    """True iff the server's response indicates a deterministic failure
-    that retrying won't help. We treat 4xx (except 401 / 408 / 429) as
-    permanent — 403 (RBAC denial), 413 (payload too large), 400
-    (validation error) all have the same property: re-uploading the
-    same file produces the same answer, so a requeue-loop only wastes
-    bytes and grows the queue forever. 5xx and network exceptions stay
-    transient — those reflect server or transport state that can change
-    between push runs.
+    """True iff the server response is a deterministic failure retrying won't fix.
 
-    401 is RECOVERABLE, not permanent: it means the PAT expired (90-day
-    TTL) or hasn't been imported yet. The user re-authenticates and the
-    same upload succeeds — dropping the queue on 401 silently lost every
-    session pushed between token expiry and the next `agnes auth` run.
-    The retry-stamp TTL (``RETRY_TTL``) bounds the requeue window, so
-    this cannot regress into the old infinite-requeue bug.
-
-    408 Request Timeout and 429 Too Many Requests are flagged transient
-    by the HTTP spec (RFC 7231 / RFC 6585); the server is telling us
-    to back off and try again later, not that the request is invalid.
+    4xx except 401 / 408 / 429: 403 (RBAC), 413 (too large), 400 (validation)
+    all re-produce the same answer on re-upload, so we log them to the
+    forensic failed-log instead of retrying forever. 401 is recoverable
+    (PAT expired — re-auth makes the same upload succeed), and 408 / 429 are
+    transient per HTTP spec; all three (plus 5xx and network errors) are left
+    unrecorded so the next push retries.
     """
     status = info.get("status")
     if not isinstance(status, int):
@@ -146,6 +87,49 @@ def _upload_one(transcript: Path) -> tuple[bool, dict]:
     return False, {"file": transcript.name, "status": resp.status_code}
 
 
+def _partition(
+    workspace: Path,
+) -> tuple[list[tuple[str, Path, int]], list[tuple[str, Path]], int, int]:
+    """Scan the workspace session folder and split transcripts into
+    ``(to_upload, private_hits, skipped_unchanged, skipped_failed)``.
+
+    - private (session_id on the private list) -> ``private_hits`` (skip + audit)
+    - permanently failed (session_id in the failed-log) -> skipped, never
+      retried — the scan-based equivalent of the old queue dropping a
+      permanently-rejected entry; without this the same 4xx-rejected file would
+      re-upload (and re-fail, and re-log) on every SessionEnd hook
+    - already uploaded at the same byte size -> ``skipped_unchanged``
+    - everything else (new or grown) -> ``to_upload``
+    """
+    candidates = list_session_files(workspace)
+    uploaded = read_uploaded(workspace)
+    private_ids = read_all_private(workspace)
+    failed_ids = read_failed_sessions(workspace)
+
+    to_upload: list[tuple[str, Path, int]] = []
+    private_hits: list[tuple[str, Path]] = []
+    skipped_unchanged = 0
+    skipped_failed = 0
+    for p in candidates:
+        sid = p.stem
+        if sid and sid in private_ids:
+            private_hits.append((sid, p))
+            continue
+        if sid and sid in failed_ids:
+            skipped_failed += 1
+            continue
+        try:
+            size = p.stat().st_size
+        except OSError:
+            continue
+        prev = uploaded.get(sid)
+        if prev is not None and prev == size:
+            skipped_unchanged += 1
+            continue
+        to_upload.append((sid, p, size))
+    return to_upload, private_hits, skipped_unchanged, skipped_failed
+
+
 @push_app.callback(invoke_without_command=True)
 def push(
     quiet: bool = typer.Option(
@@ -159,19 +143,8 @@ def push(
         "--dry-run",
         help="List what would be uploaded without sending anything.",
     ),
-    legacy_scan: bool = typer.Option(
-        False,
-        "--legacy-scan",
-        help=(
-            "Fallback: also include sessions found by the encoding-based scan "
-            "of ~/.claude/projects/. Use for one-off backfill of sessions "
-            "predating the queue mechanism. The /agnes-private list IS "
-            "consulted — Claude Code names jsonls ``<session-id>.jsonl`` so "
-            "the file stem provides the session id even for legacy entries."
-        ),
-    ),
 ):
-    """Upload queued session jsonls + CLAUDE.local.md from this workspace."""
+    """Upload new/grown session jsonls + CLAUDE.local.md from this workspace."""
     server_url = get_server_url()
     if not server_url:
         typer.echo(
@@ -204,48 +177,54 @@ def push(
         )
         raise typer.Exit(1)
 
-    workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
+    # The workspace root is the ONLY anchor. Without it we can't locate the
+    # Claude Code session folder OR the workspace's CLAUDE.local.md, so push
+    # is a clean no-op (exit 0). `agnes init` writes it; `agnes self-upgrade`
+    # back-fills it on the next SessionStart for older clients.
+    workspace_root = get_workspace_root()
+    if not workspace_root:
+        if as_json:
+            typer.echo(
+                json.dumps(
+                    {
+                        "sessions": 0,
+                        "local_md": False,
+                        "errors": [],
+                        "private_skipped": 0,
+                        "dropped_permanent": 0,
+                        "skipped_unchanged": 0,
+                        "skipped_failed": 0,
+                        "workspace_root": None,
+                    }
+                )
+            )
+        elif not quiet:
+            typer.echo(
+                "No workspace_root in config — nothing to upload. Run `agnes init` to set it.",
+                err=True,
+            )
+        return
+
+    workspace = Path(workspace_root)
     local_md = workspace / ".claude" / "CLAUDE.local.md"
     has_local_md = local_md.exists()
 
     # ---- DRY RUN ----------------------------------------------------------
+    # Read-only planning; safe to compute outside the push lock.
     if dry_run:
-        candidates = _gather_entries_for_dry_run(workspace)
-        private_ids = read_all_private(workspace)
-        non_private = [(sid, p) for sid, p in candidates if not (sid and sid in private_ids)]
-        private_skipped = [(sid, p) for sid, p in candidates if sid and sid in private_ids]
-
-        if legacy_scan:
-            from cli.lib.claude_sessions import list_session_files
-
-            seen = {str(p) for _sid, p in non_private}
-            for p in list_session_files(workspace):
-                if str(p) in seen:
-                    continue
-                # Apply the private filter to legacy-scan candidates too.
-                # Claude Code names jsonls ``<session-id>.jsonl``, so the
-                # file stem IS the session id and we can apply the same
-                # filter the queue path uses. Closes the gap David #8
-                # raised: legacy-scan would otherwise upload everything
-                # on disk, including sessions the user later marked
-                # private.
-                sid_from_path = p.stem
-                if sid_from_path and sid_from_path in private_ids:
-                    private_skipped.append((sid_from_path, p))
-                else:
-                    non_private.append((sid_from_path, p))
-                seen.add(str(p))
-
+        to_upload, private_hits, skipped_unchanged, skipped_failed = _partition(workspace)
         plan = {
             "dry_run": True,
             "would_upload": {
-                "sessions": [str(p) for _sid, p in non_private],
+                "sessions": [str(p) for _sid, p, _sz in to_upload],
                 "local_md": str(local_md) if has_local_md else None,
             },
-            "would_skip_private": [{"session_id": sid, "path": str(p)} for sid, p in private_skipped],
+            "would_skip_private": [{"session_id": sid, "path": str(p)} for sid, p in private_hits],
             "summary": {
-                "sessions_count": len(non_private),
-                "private_skipped_count": len(private_skipped),
+                "sessions_count": len(to_upload),
+                "private_skipped_count": len(private_hits),
+                "skipped_unchanged": skipped_unchanged,
+                "skipped_failed": skipped_failed,
                 "local_md_present": has_local_md,
                 "uploaded_log": str(uploaded_log_path(workspace)),
             },
@@ -255,12 +234,12 @@ def push(
             return
         if quiet:
             return
-        typer.echo(f"Dry run - would upload {len(non_private)} session file(s)")
-        for _sid, p in non_private:
+        typer.echo(f"Dry run - would upload {len(to_upload)} session file(s)")
+        for _sid, p, _sz in to_upload:
             typer.echo(f"  {p}")
-        if private_skipped:
-            typer.echo(f"Would skip {len(private_skipped)} private session(s):")
-            for sid, p in private_skipped:
+        if private_hits:
+            typer.echo(f"Would skip {len(private_hits)} private session(s):")
+            for sid, p in private_hits:
                 typer.echo(f"  [{sid}] {p}")
         if has_local_md:
             typer.echo(f"Would upload CLAUDE.local.md  ({local_md})")
@@ -269,127 +248,57 @@ def push(
         return
 
     # ---- REAL RUN ---------------------------------------------------------
-    # Acquire single-instance lock. Silent exit if another push is already
-    # running — typical when several SessionEnd hooks fire at once.
+    # Acquire single-instance lock. Silent exit if another push already holds
+    # it — typical when several SessionEnd hooks fire at once.
     with acquire_or_skip(workspace) as lock:
         if lock is None:
             return  # another push has the lock; this one no-ops
 
-        results = {
+        # Recompute the scan/partition INSIDE the lock: a push that held the
+        # lock while we waited may have uploaded transcripts and grown the
+        # ledger (or consulted the private list), so reading before the lock
+        # could re-upload an already-handled file or miss a fresh marker.
+        to_upload, private_hits, skipped_unchanged, skipped_failed = _partition(workspace)
+
+        results: dict = {
             "sessions": 0,
             "local_md": False,
             "errors": [],
             "private_skipped": 0,
             "dropped_permanent": 0,
-            "requeued": 0,
+            "skipped_unchanged": skipped_unchanged,
+            "skipped_failed": skipped_failed,
+            "workspace_root": str(workspace),
         }
+        now = datetime.now(timezone.utc)
 
-        # Snapshot the private list once at the start of the run. Adding
-        # a new private ID between snapshot and the per-entry check is
-        # benign (worst case: one more upload of a session the user just
-        # marked, which next push will skip).
-        private_ids = read_all_private(workspace)
+        # Private sessions: never upload. Audit-log each only ONCE — the file
+        # stays on disk across runs and the private list is persistent, so
+        # re-logging every push would grow the audit trail unboundedly. The
+        # per-run counter still reflects all private sessions skipped this run.
+        already_skipped = read_private_skipped_sessions(workspace)
+        for sid, p in private_hits:
+            results["private_skipped"] += 1
+            if sid not in already_skipped:
+                mark_private_skipped(workspace, sid, p, now)
+                already_skipped.add(sid)
 
-        # Process snapshots: recovery (from prior crash) first, then fresh.
-        snapshots = _collect_snapshots(workspace)
-        all_failed_entries: list[tuple[str, Path, str]] = []
+        for sid, p, size in to_upload:
+            ok, info = _upload_one(p)
+            if ok:
+                results["sessions"] += 1
+                # Record immediately (crash-safe): the next push won't re-send.
+                mark_uploaded(workspace, sid, size, now)
+                continue
+            results["errors"].append(info)
+            if _is_permanent_failure(info):
+                # 4xx (except 401 / 408 / 429): server will never accept it.
+                mark_failed_permanent(workspace, sid, p, info["status"], now)
+                results["dropped_permanent"] += 1
+            # Transient (401 / 408 / 429 / 5xx / network / file-not-found):
+            # leave it OUT of the ledger so the next push retries.
 
-        for snapshot in snapshots:
-            entries = read_entries_from_snapshot(snapshot)
-            failed_in_snapshot: list[tuple[str, Path, str]] = []
-            now = datetime.now(timezone.utc)
-            now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-            for session_id, transcript, first_failed in entries:
-                if session_id and session_id in private_ids:
-                    # Skip private; audit-log and move on. Do not requeue —
-                    # this is the user's explicit "do not upload" intent.
-                    mark_private_skipped(workspace, session_id, transcript, now)
-                    results["private_skipped"] += 1
-                    continue
-                ok, info = _upload_one(transcript)
-                if ok:
-                    results["sessions"] += 1
-                    mark_uploaded(workspace, transcript, now)
-                    continue
-                # Failure handling. Everything non-permanent is requeued
-                # with a first-failure stamp; RETRY_TTL bounds the window.
-                #
-                # "file not found on disk" is NOT a permanent condition:
-                # Claude Code creates the transcript lazily on the first
-                # prompt, so an entry captured at SessionStart routinely
-                # points at a file that doesn't exist YET. Dropping it
-                # here (the pre-stamp behavior) permanently lost any
-                # session whose start raced another session's push.
-                # Genuinely deleted transcripts age out via the TTL.
-                if _is_permanent_failure(info):
-                    # 4xx (except 401 / 408 / 429): server says this
-                    # request will never succeed. Drop + audit-log
-                    # instead of requeueing forever.
-                    mark_failed_permanent(
-                        workspace,
-                        session_id,
-                        transcript,
-                        info["status"],
-                        now,
-                    )
-                    results["dropped_permanent"] += 1
-                    results["errors"].append(info)
-                elif retry_expired(first_failed, now):
-                    # Failing for longer than RETRY_TTL — transcript gone
-                    # for good, or the server persistently rejecting it.
-                    # Move to the forensic log so the queue stays bounded.
-                    reason = info.get("status") or "retry_expired"
-                    if info.get("error") == "file not found on disk":
-                        reason = "not_found_expired"
-                    mark_failed_permanent(
-                        workspace,
-                        session_id,
-                        transcript,
-                        reason,
-                        now,
-                    )
-                    results["dropped_permanent"] += 1
-                    results["errors"].append(info)
-                else:
-                    # Transient (missing-file, 401, 5xx, 408, 429,
-                    # network errors): requeue for the next push,
-                    # stamping the first failure time on first failure.
-                    results["errors"].append(info)
-                    results["requeued"] += 1
-                    failed_in_snapshot.append((session_id, transcript, first_failed or now_iso))
-            # Failed entries from this snapshot get re-queued on the live file.
-            all_failed_entries.extend(failed_in_snapshot)
-            discard_snapshot(snapshot)
-
-        if all_failed_entries:
-            requeue_failed(workspace, all_failed_entries)
-
-        # Optional: legacy scan to backfill sessions outside the queue.
-        # Honors the private list — Claude Code names jsonls
-        # ``<session-id>.jsonl``, so the file stem IS the session id and
-        # we can apply the same filter the queue path uses. Without this
-        # filter, an operator running ``--legacy-scan`` to backfill old
-        # sessions would silently upload every transcript on disk,
-        # including ones the user later marked private (David's #8 from
-        # the PR review).
-        if legacy_scan:
-            from cli.lib.claude_sessions import list_session_files
-
-            private_ids = read_all_private(workspace)
-            for transcript in list_session_files(workspace):
-                sid_from_path = transcript.stem
-                if sid_from_path and sid_from_path in private_ids:
-                    mark_private_skipped(workspace, sid_from_path, str(transcript))
-                    results["private_skipped"] = results.get("private_skipped", 0) + 1
-                    continue
-                ok, info = _upload_one(transcript)
-                if ok:
-                    results["sessions"] += 1
-                    mark_uploaded(workspace, transcript, datetime.now(timezone.utc))
-                else:
-                    results["errors"].append(info)
-
-        # Upload CLAUDE.local.md.
+        # Upload CLAUDE.local.md from the anchored workspace root.
         if has_local_md:
             try:
                 content = local_md.read_text(encoding="utf-8")
@@ -417,15 +326,15 @@ def push(
         typer.echo(
             f"Skipped {results['private_skipped']} private session(s) (see .claude/agnes-sessions-private-skipped.txt)"
         )
-    if results["requeued"]:
-        typer.echo(
-            f"Requeued {results['requeued']} session(s) for the next push "
-            f"(transcript not written yet, auth expired, or server unavailable)"
-        )
     if results["dropped_permanent"]:
         typer.echo(
             f"Dropped {results['dropped_permanent']} session(s) with permanent failure "
             f"(see .claude/agnes-sessions-failed.txt)"
+        )
+    if results["skipped_failed"]:
+        typer.echo(
+            f"Skipped {results['skipped_failed']} session(s) previously logged as "
+            f"permanently failed (clear .claude/agnes-sessions-failed.txt to retry)"
         )
     if results["local_md"]:
         typer.echo("Uploaded CLAUDE.local.md")

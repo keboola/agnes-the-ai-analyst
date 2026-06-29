@@ -47,7 +47,7 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 84
+SCHEMA_VERSION = 85
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -5381,10 +5381,37 @@ def _v83_to_v84(conn: duckdb.DuckDBPyConnection) -> None:
     the refresh-token row so token rotation doesn't drop it. IF NOT EXISTS
     keeps this a no-op on fresh installs.
     """
-    conn.execute(
-        "ALTER TABLE oauth_refresh_tokens ADD COLUMN IF NOT EXISTS resource VARCHAR"
-    )
+    conn.execute("ALTER TABLE oauth_refresh_tokens ADD COLUMN IF NOT EXISTS resource VARCHAR")
     conn.execute("UPDATE schema_version SET version = 84")
+
+
+def _v84_to_v85(conn: duckdb.DuckDBPyConnection) -> None:
+    """v85: pre-seed the vscode-mcp public OAuth client.
+
+    VS Code native MCP is a public client (token_endpoint_auth_method=none,
+    no client_secret, PKCE required). Pre-seeding a well-known client_id
+    lets users who see the manual-registration dialog simply enter
+    'vscode-mcp' without running Dynamic Client Registration separately.
+
+    INSERT OR IGNORE is idempotent — re-running on a DB that already has
+    the row (e.g. from a previous manual registration or a re-applied
+    migration) is a safe no-op.
+    """
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO oauth_clients
+            (client_id, client_secret, redirect_uris, client_name, client_metadata, created_at)
+        VALUES (
+            'vscode-mcp',
+            NULL,
+            '["https://vscode.dev/redirect"]',
+            'VS Code (native MCP)',
+            '{"token_endpoint_auth_method": "none", "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"]}',
+            CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 85")
 
 
 def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
@@ -5725,6 +5752,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # v83→v84: resource column on oauth_refresh_tokens so refreshed
             # access tokens keep their RFC 8707 resource binding.
             _v83_to_v84(conn)
+            # v84→v85: pre-seed vscode-mcp public OAuth client so VS Code
+            # native MCP users can enter 'vscode-mcp' in the manual dialog.
+            _v84_to_v85(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -5946,6 +5976,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v82_to_v83(conn)
             if current < 84:
                 _v83_to_v84(conn)
+            if current < 85:
+                _v84_to_v85(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
