@@ -1,0 +1,215 @@
+{% extends "base_page.html" %}
+{% block title %}Connect guide — {{ instance_brand }}{% endblock %}
+
+{% set page_hero_eyebrow = "MCP" %}
+{% set page_hero_title = "Connect an AI agent" %}
+{% set page_hero_subtitle = "One connector URL, a browser sign-in, and your AI agent can query " ~ instance_brand ~ " with your own permissions. Pick your agent below." %}
+
+{% block head_extra %}
+<style>
+.connect-guide-page { max-width: 820px; }
+
+/* Shared connector URL row (mirrors me_cowork) */
+.cg-url-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-md, 6px);
+    padding: 12px 14px;
+    margin: 12px 0 4px;
+}
+.cg-url {
+    font-family: var(--ds-font-mono, monospace);
+    font-size: 14px;
+    color: var(--ds-text);
+    overflow-x: auto;
+    white-space: nowrap;
+}
+.cg-lede { color: var(--ds-text-secondary); font-size: 14px; line-height: 1.6; }
+
+/* Ordered step list inside each agent card */
+.cg-steps { margin: 8px 0 0; padding-left: 20px; }
+.cg-steps li {
+    color: var(--ds-text-secondary);
+    font-size: 14px;
+    line-height: 1.7;
+    margin-bottom: 4px;
+}
+.cg-steps code {
+    font-family: var(--ds-font-mono, monospace);
+    font-size: 13px;
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-sm, 4px);
+    padding: 1px 5px;
+}
+
+.cg-card-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.cg-badge {
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 999px;
+    padding: 2px 10px;
+    background: var(--ds-accent-warn-bg);
+    color: var(--ds-accent-warn-ink);
+}
+
+/* Tools table */
+.cg-tools { width: 100%; border-collapse: collapse; font-size: 14px; }
+.cg-tools th, .cg-tools td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--ds-border);
+    color: var(--ds-text-secondary);
+    vertical-align: top;
+}
+.cg-tools th { color: var(--ds-text); font-weight: 600; }
+.cg-tools code {
+    font-family: var(--ds-font-mono, monospace);
+    font-size: 13px;
+    color: var(--ds-text);
+}
+</style>
+{% endblock %}
+
+{% block page %}
+<div class="connect-guide-page">
+
+  {# ── The one value everyone needs ──────────────────────────────── #}
+  {% call ds.panel(title='The connector URL', tag='section',
+                   attrs='aria-label="Connector URL"') %}
+    <p class="cg-lede">
+      Every agent below uses the same native OAuth&nbsp;2.1 remote MCP
+      connector — no manually-issued token. Paste this URL into your agent,
+      sign in through the browser, and approve the consent screen. Access is
+      scoped to <strong>your</strong> {{ instance_brand }} permissions: every
+      table and query is filtered by the same RBAC rules that apply elsewhere.
+    </p>
+    <div class="cg-url-row">
+      <span class="cg-url" id="cg-connector-url">{{ server_url }}/api/mcp/http</span>
+      <button type="button" class="btn btn-secondary btn-sm" id="cg-connector-copy" style="margin-left:auto;">Copy</button>
+    </div>
+    <p class="cg-lede" style="font-size:13px;color:var(--ds-text-muted);margin-top:10px;">
+      The URL must be reachable over HTTPS — remote MCP clients only allow
+      plaintext HTTP for <code>localhost</code>.
+    </p>
+  {% endcall %}
+
+  {# ── Claude Desktop / Claude.ai ────────────────────────────────── #}
+  {% call ds.panel(title='Claude Desktop / Claude.ai', tag='section',
+                   attrs='aria-label="Connect Claude"') %}
+    <ol class="cg-steps">
+      <li>Open <strong>Settings → Connectors → Add custom connector</strong>.</li>
+      <li>Paste the connector URL above and click <strong>Add</strong>.</li>
+      <li>Claude registers itself automatically and opens a browser window.</li>
+      <li>Sign in to {{ instance_brand }} with your usual identity provider.</li>
+      <li>On the consent screen, review the requested scope and click <strong>Allow</strong>.</li>
+    </ol>
+    <p class="cg-lede" style="margin-top:10px;">
+      The same flow applies to Claude.ai on the web, under
+      <strong>Settings → Connectors</strong>.
+    </p>
+  {% endcall %}
+
+  {# ── Cursor ────────────────────────────────────────────────────── #}
+  {% call ds.panel(title='Cursor', tag='section',
+                   attrs='aria-label="Connect Cursor"') %}
+    <ol class="cg-steps">
+      <li>Add an MCP server entry pointing at the connector URL. In
+          <code>.cursor/mcp.json</code> (project) or
+          <code>~/.cursor/mcp.json</code> (global):
+        <pre class="cg-url" style="white-space:pre;margin:8px 0 0;">{
+  "mcpServers": {
+    "agnes": { "url": "{{ server_url }}/api/mcp/http" }
+  }
+}</pre>
+      </li>
+      <li>Open <strong>Settings → MCP</strong>; the <code>agnes</code> server appears.</li>
+      <li>Click to sign in — the browser opens for the {{ instance_brand }} login + consent.</li>
+      <li>The tools become available in Agent / Composer.</li>
+    </ol>
+  {% endcall %}
+
+  {# ── ChatGPT ───────────────────────────────────────────────────── #}
+  {% call ds.panel(title='ChatGPT connectors', tag='section',
+                   attrs='aria-label="Connect ChatGPT"') %}
+    <ol class="cg-steps">
+      <li>In ChatGPT, open the connector / custom-tool settings and choose to add a remote MCP server.</li>
+      <li>Paste the connector URL above.</li>
+      <li>ChatGPT registers itself and opens the browser for sign-in.</li>
+      <li>Approve the consent screen to finish.</li>
+    </ol>
+  {% endcall %}
+
+  {# ── VS Code / Copilot — known issue, kept honest ──────────────── #}
+  {% call ds.panel(title=None, tag='section',
+                   attrs='aria-label="VS Code / GitHub Copilot"') %}
+    <div class="cg-card-head">
+      <h3 style="margin:0;font-size:18px;color:var(--ds-text);">VS Code / GitHub Copilot</h3>
+      <span class="cg-badge">In progress</span>
+    </div>
+    <p class="cg-lede" style="margin-top:10px;">
+      VS Code completes the OAuth handshake, but the MCP session is not yet
+      reliable end-to-end. We are working on it — this guide will be updated
+      once it is supported.
+    </p>
+  {% endcall %}
+
+  {# ── What you get ──────────────────────────────────────────────── #}
+  {% call ds.panel(title='What you get', tag='section',
+                   attrs='aria-label="Available tools"') %}
+    <table class="cg-tools">
+      <thead>
+        <tr><th>Tool</th><th>Purpose</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>server_info</code></td><td>Connectivity check + your account email.</td></tr>
+        <tr><td><code>catalog</code></td><td>List the tables you can access (RBAC-filtered).</td></tr>
+        <tr><td><code>schema</code></td><td>Column names, types, and SQL-dialect hints for a table.</td></tr>
+        <tr><td><code>describe</code></td><td>Schema plus sample rows.</td></tr>
+        <tr><td><code>query</code></td><td>Run SQL (DuckDB for local/materialized, BigQuery for remote).</td></tr>
+        <tr><td><code>documentation_api</code></td><td>The curated {{ instance_brand }} REST API reference.</td></tr>
+      </tbody>
+    </table>
+  {% endcall %}
+
+  {# ── Troubleshooting ───────────────────────────────────────────── #}
+  {% call ds.panel(title='Troubleshooting', tag='section',
+                   attrs='aria-label="Troubleshooting"') %}
+    <ul class="cg-steps" style="list-style:disc;">
+      <li><strong>“Could not connect” right after adding the URL</strong> — the
+          instance must be reachable over HTTPS at the public host.</li>
+      <li><strong>Browser opens but login loops</strong> — the identity
+          provider is misconfigured on the instance; ask an admin.</li>
+      <li><strong>Connected, but <code>catalog</code> is empty</strong> — your
+          account has no table grants yet; ask an admin for access.</li>
+    </ul>
+  {% endcall %}
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    var copyBtn = document.getElementById('cg-connector-copy');
+    var urlEl = document.getElementById('cg-connector-url');
+    if (copyBtn && urlEl) {
+      copyBtn.addEventListener('click', function () {
+        navigator.clipboard.writeText(urlEl.textContent.trim()).then(function () {
+          copyBtn.textContent = 'Copied!';
+          setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1800);
+        });
+      });
+    }
+  })();
+</script>
+{% endblock %}
