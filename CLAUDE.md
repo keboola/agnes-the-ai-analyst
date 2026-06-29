@@ -130,8 +130,9 @@ cd .worktrees/fix-auth-redirect
 ```
 
 Keep only one writer active for DuckDB-backed state at a time. Do not run
-`da sync`, migrations, or other DuckDB-writing commands concurrently across
-worktrees. For parallel Docker Compose stacks, set a unique project name first:
+`agnes pull`, `agnes push`, migrations, or other DuckDB-writing commands
+concurrently across worktrees. For parallel Docker Compose stacks, set a
+unique project name first:
 
 ```bash
 export COMPOSE_PROJECT_NAME=agnes-<branch-slug>
