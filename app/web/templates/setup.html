@@ -1,11 +1,18 @@
-{% extends "base_login.html" %}
+{% extends "base_ds.html" %}
 
 {% block title %}Setup - {{ instance_brand or "Agnes" }} {{ instance_name or "AI Data Analyst" }}{% endblock %}
 
+{# issue 586: match the rest of the app — base_ds shell + the standard .container
+   at the narrow (800px) width used for single-form / setup flows, instead of
+   the old base_login centered card with a hardcoded 520px max-width. #}
+{% block container_modifier %}container--narrow{% endblock %}
+
 {% block content %}
-<div class="login-page">
-    <div class="login-card-wrapper" style="max-width: 520px; margin: 40px auto; padding: 0 20px;">
-        <div class="login-card" style="max-width: 520px;">
+{# All 7 wizard buttons render via `ds.button`; base_ds auto-imports `ds`, so
+   no _components.html import is needed. The hidden buttons (`#btn-next-sync`,
+   `#btn-dashboard`) use inline `style="display: none;"` rather than the
+   `hidden` attr because the JS toggles them via `btn.style.display`. #}
+<div class="card">
             <h2 id="wizard-title">Setup {{ instance_brand or "Agnes" }}</h2>
             <p class="login-description" id="wizard-description">
                 Create your admin account to get started.
@@ -13,10 +20,10 @@
 
             <!-- Progress -->
             <div style="display: flex; gap: 8px; margin-bottom: 24px;">
-                <div id="step-dot-1" style="flex: 1; height: 4px; border-radius: 2px; background: var(--primary, #2563eb);"></div>
-                <div id="step-dot-2" style="flex: 1; height: 4px; border-radius: 2px; background: #e5e7eb;"></div>
-                <div id="step-dot-3" style="flex: 1; height: 4px; border-radius: 2px; background: #e5e7eb;"></div>
-                <div id="step-dot-4" style="flex: 1; height: 4px; border-radius: 2px; background: #e5e7eb;"></div>
+                <div id="step-dot-1" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-primary);"></div>
+                <div id="step-dot-2" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-border);"></div>
+                <div id="step-dot-3" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-border);"></div>
+                <div id="step-dot-4" style="flex: 1; height: 4px; border-radius: 2px; background: var(--ds-border);"></div>
             </div>
 
             <!-- Status message -->
@@ -27,15 +34,15 @@
                 <form id="admin-form" onsubmit="return createAdmin(event)">
                     <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Email</label>
                     <input type="email" id="admin-email" required placeholder="admin@company.com"
-                        style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box;">
+                        style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
 
                     <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Password</label>
                     <input type="password" id="admin-password" required minlength="8" placeholder="Min. 8 characters"
-                        style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box;">
+                        style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
 
-                    <button type="submit" class="btn btn-primary" style="width: 100%;" id="btn-admin">
-                        Create Admin Account
-                    </button>
+                    {{ ds.button('Create Admin Account', variant='primary',
+                                 type='submit', id='btn-admin',
+                                 klass='btn-block') }}
                 </form>
             </div>
 
@@ -44,7 +51,7 @@
                 <form id="source-form" onsubmit="return configureSource(event)">
                     <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Data Source</label>
                     <select id="data-source" onchange="toggleSourceFields()"
-                        style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box;">
+                        style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
                         <option value="keboola">Keboola</option>
                         <option value="bigquery">BigQuery</option>
                         <option value="local">Local / CSV</option>
@@ -53,60 +60,63 @@
                     <div id="keboola-fields">
                         <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Keboola URL</label>
                         <input type="url" id="keboola-url" placeholder="https://connection.keboola.com"
-                            style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box;">
+                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
 
                         <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Storage API Token</label>
                         <input type="password" id="keboola-token" placeholder="Your Keboola storage token"
-                            style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box;">
+                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
                     </div>
 
                     <div id="bigquery-fields" style="display: none;">
                         <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">GCP Project</label>
                         <input type="text" id="bq-project" placeholder="my-gcp-project"
-                            style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box;">
+                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
 
                         <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Location</label>
                         <input type="text" id="bq-location" value="us" placeholder="us"
-                            style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box;">
+                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box; background: var(--ds-surface); color: var(--ds-text-primary);">
                     </div>
 
-                    <button type="submit" class="btn btn-primary" style="width: 100%;" id="btn-source">
-                        Configure Data Source
-                    </button>
-                    <button type="button" onclick="skipToStep(4)" class="btn btn-secondary" style="width: 100%; margin-top: 8px;" id="btn-skip-source">
-                        Skip (configure later)
-                    </button>
+                    {{ ds.button('Configure Data Source', variant='primary',
+                                 type='submit', id='btn-source',
+                                 klass='btn-block') }}
+                    {{ ds.button('Skip (configure later)', variant='secondary',
+                                 type='button', id='btn-skip-source',
+                                 klass='btn-block',
+                                 attrs='onclick="skipToStep(4)" style="margin-top: 8px;"') }}
                 </form>
             </div>
 
             <!-- Step 3: Discover Tables -->
             <div id="step-3" style="display: none;">
-                <p style="font-size: 14px; color: #6b7280; margin-bottom: 16px;">
+                <p style="font-size: 14px; color: var(--ds-text-muted); margin-bottom: 16px;">
                     Discover and register tables from your data source.
                 </p>
-                <button onclick="discoverTables()" class="btn btn-primary" style="width: 100%;" id="btn-discover">
-                    Discover Tables
-                </button>
-                <div id="discover-result" style="display: none; margin-top: 12px; padding: 12px; background: #f0fdf4; border-radius: 6px; font-size: 14px;"></div>
-                <button onclick="goToStep(4)" class="btn btn-primary" style="width: 100%; margin-top: 12px; display: none;" id="btn-next-sync">
-                    Continue
-                </button>
+                {{ ds.button('Discover Tables', variant='primary',
+                             type='button', id='btn-discover',
+                             klass='btn-block',
+                             attrs='onclick="discoverTables()"') }}
+                <div id="discover-result" style="display: none; margin-top: 12px; padding: 12px; background: var(--ds-accent-success-bg); border-radius: 6px; font-size: 14px;"></div>
+                {{ ds.button('Continue', variant='primary',
+                             type='button', id='btn-next-sync',
+                             klass='btn-block',
+                             attrs='onclick="goToStep(4)" style="margin-top: 12px; display: none;"') }}
             </div>
 
             <!-- Step 4: First Sync & Done -->
             <div id="step-4" style="display: none;">
-                <p style="font-size: 14px; color: #6b7280; margin-bottom: 16px;">
+                <p style="font-size: 14px; color: var(--ds-text-muted); margin-bottom: 16px;">
                     Start the first data sync and go to your dashboard.
                 </p>
-                <button onclick="triggerSync()" class="btn btn-primary" style="width: 100%;" id="btn-sync">
-                    Start First Sync
-                </button>
-                <a href="/dashboard" class="btn btn-primary" style="width: 100%; margin-top: 12px; display: none; text-align: center; text-decoration: none;" id="btn-dashboard">
-                    Go to Dashboard
-                </a>
+                {{ ds.button('Start First Sync', variant='primary',
+                             type='button', id='btn-sync',
+                             klass='btn-block',
+                             attrs='onclick="triggerSync()"') }}
+                {{ ds.button('Go to Dashboard', variant='primary',
+                             href='/dashboard', id='btn-dashboard',
+                             klass='btn-block',
+                             attrs='style="margin-top: 12px; display: none; text-align: center;"') }}
             </div>
-        </div>
-    </div>
 </div>
 
 <script>
@@ -122,8 +132,8 @@ function showStatus(msg, type) {
     const el = document.getElementById('status-msg');
     el.textContent = msg;
     el.style.display = 'block';
-    el.style.background = type === 'error' ? '#fef2f2' : '#f0fdf4';
-    el.style.color = type === 'error' ? '#dc2626' : '#16a34a';
+    el.style.background = type === 'error' ? 'var(--ds-accent-danger-bg)' : 'var(--ds-accent-success-bg)';
+    el.style.color = type === 'error' ? 'var(--ds-accent-danger-line)' : 'var(--ds-accent-success-line)';
 }
 
 function hideStatus() {
@@ -134,7 +144,7 @@ function goToStep(n) {
     hideStatus();
     for (let i = 1; i <= 4; i++) {
         document.getElementById('step-' + i).style.display = i === n ? 'block' : 'none';
-        document.getElementById('step-dot-' + i).style.background = i <= n ? 'var(--primary, #2563eb)' : '#e5e7eb';
+        document.getElementById('step-dot-' + i).style.background = i <= n ? 'var(--ds-primary)' : 'var(--ds-border)';
     }
     document.getElementById('wizard-title').textContent = steps[n].title;
     document.getElementById('wizard-description').textContent = steps[n].desc;

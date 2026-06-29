@@ -38,9 +38,16 @@ def _maybe_instrument(con, db_tag: str):
     return InstrumentedConnection(con, db_tag)
 
 
+# Re-export the lightweight helper. The implementation lives in
+# `src.duckdb_conn` so connectors / CLI / scripts can import it without
+# pulling the heavy `connectors.bigquery.auth` dep that this module
+# imports above.
+from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
+
+
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 40
+SCHEMA_VERSION = 85
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -70,7 +77,25 @@ CREATE TABLE IF NOT EXISTS users (
     -- self-mark "I've already set up Agnes locally" button on /home.
     -- Default FALSE; explicit signal required to flip (no PAT-heuristic
     -- auto-flip per the brainstorm decision §D).
-    onboarded BOOLEAN NOT NULL DEFAULT FALSE
+    onboarded BOOLEAN NOT NULL DEFAULT FALSE,
+    -- v44: per-user pull timestamp. Bumped on every GET /api/sync/manifest
+    -- so `agnes pull` (and the SessionStart hook that wraps it) imprints
+    -- the user's last sync time. Powers the /home status frame's "Last
+    -- sync" card.
+    last_pull_at TIMESTAMP,
+    -- v71: Slack identity binding. NULL until the analyst redeems a
+    -- /agnes verification code; maps a Slack user_id to this account so the
+    -- Slack bot can resolve who is talking. Formalized in the schema (was a
+    -- lazy ALTER in services/slack_bot/binding.py) so it lives in the active
+    -- state backend — the binding broke on Postgres when it only existed in
+    -- the DuckDB system file.
+    slack_user_id VARCHAR,
+    -- v77: forces a password change on first sign-in for accounts whose
+    -- password was set BY SOMEONE ELSE — the seed admin created from
+    -- SEED_ADMIN_PASSWORD (emailed in plaintext) and admin-set passwords.
+    -- Cleared when the user sets their own password via reset/setup confirm.
+    -- Irrelevant to SSO/magic-link accounts (they have no password).
+    must_change_password BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS sync_state (
@@ -135,7 +160,9 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     -- the row; is_personal scopes the row to the contributor only (excluded
     -- from /bundle, listed only when the contributor is the caller).
     confidence DOUBLE,
-    domain VARCHAR,
+    -- v49: the scalar ``domain`` column was replaced by the
+    -- ``knowledge_item_domains`` M:N junction (see ``memory_domains``
+    -- and the v49 backfill in ``_v51_to_v52``).
     entities JSON,
     source_type VARCHAR DEFAULT 'claude_local_md',
     source_ref VARCHAR,
@@ -144,6 +171,11 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     supersedes VARCHAR,
     sensitivity VARCHAR DEFAULT 'internal',
     is_personal BOOLEAN DEFAULT FALSE,
+    -- v49: governance Required tier, split out of the v15-era
+    -- status='mandatory' overload. status now tracks lifecycle only
+    -- (pending/approved/rejected); is_required is the orthogonal
+    -- "must appear in the bundle, cannot be dismissed" flag.
+    is_required BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT current_timestamp,
     updated_at TIMESTAMP
 );
@@ -225,6 +257,32 @@ CREATE TABLE IF NOT EXISTS knowledge_votes (
     PRIMARY KEY (item_id, user_id)
 );
 
+-- v76: per-user thumbs up/down ratings on store / marketplace entities.
+-- Mirrors knowledge_votes (one vote per (entity, user); ON CONFLICT upsert
+-- flips the value; a missing row means "no vote"). Issue #398.
+CREATE TABLE IF NOT EXISTS store_entity_votes (
+    entity_id VARCHAR NOT NULL,
+    user_id VARCHAR NOT NULL,
+    vote INTEGER,
+    voted_at TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (entity_id, user_id)
+);
+
+-- v46: per-user opt-out for knowledge items. A row here means the user has
+-- dismissed an item from their personal AI bundle and (optionally) their
+-- listing — but mandatory items can never be dismissed; the governance
+-- hard rule is enforced API-side and reinforced by the SQL filter via
+-- ``status != 'mandatory'`` in the EXISTS subquery in list_items/search/
+-- count_items/bundle. Idempotent inserts (ON CONFLICT do nothing).
+CREATE TABLE IF NOT EXISTS knowledge_item_user_dismissed (
+    user_id VARCHAR NOT NULL,
+    item_id VARCHAR NOT NULL,
+    dismissed_at TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (user_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_item_user_dismissed_user
+    ON knowledge_item_user_dismissed(user_id);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id VARCHAR PRIMARY KEY,
     timestamp TIMESTAMP NOT NULL DEFAULT current_timestamp,
@@ -233,7 +291,11 @@ CREATE TABLE IF NOT EXISTS audit_log (
     resource VARCHAR,
     params JSON,
     result VARCHAR,
-    duration_ms INTEGER
+    duration_ms INTEGER,
+    params_before JSON,
+    client_ip VARCHAR,
+    client_kind VARCHAR,
+    correlation_id VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS telegram_links (
@@ -289,7 +351,61 @@ CREATE TABLE IF NOT EXISTS table_registry (
     where_filters VARCHAR,
     partition_by VARCHAR,
     partition_granularity VARCHAR,
-    initial_load_chunk_days INTEGER
+    initial_load_chunk_days INTEGER,
+    -- v51: fully-qualified BigQuery path (`project.dataset.table`) for
+    -- BigQuery rows. When set, decouples the UX/RBAC `bucket` label from
+    -- the physical BQ dataset name; rows without it fall back to the
+    -- legacy `<remote_attach.project>.<bucket>.<source_table>` path.
+    -- Issue #343 (released on main as 0.54.29).
+    bq_fqn VARCHAR,
+    -- v55: per-table docs surface used by /catalog/t/<id>. All
+    -- admin-authored, optional. sample_questions + pairs_well_with are
+    -- JSON arrays so admins can edit lists without us cascading a new
+    -- junction table; things_to_know is freeform notes (markdown-ish
+    -- treated as plain text on render).
+    sample_questions JSON,
+    things_to_know   TEXT,
+    pairs_well_with  JSON,
+    -- v59: structured per-table documentation for the package-detail
+    -- rewrite. ``grain`` (e.g. "1 row per session × event_date"),
+    -- ``platforms`` (JSON list of platform names), ``partition_col``
+    -- (single column name — distinct from the v33-era ``partition_by``
+    -- which carries BigQuery partition-key SQL), ``history`` ("Full",
+    -- "Rolling 15 months", "Nov 2025+"), ``gotchas`` (JSON list of
+    -- ``{key: bool, body: str}`` — first ``key=true`` is rendered
+    -- distinctly as the "Key gotcha"). All additive + NULLABLE.
+    grain         VARCHAR,
+    platforms     VARCHAR,
+    partition_col VARCHAR,
+    history       VARCHAR,
+    gotchas       VARCHAR,
+    -- v74: distribution flag, decoupled from query_mode. When true the
+    -- table is kept server-side & queryable via `agnes query --remote`,
+    -- but `agnes pull` does NOT download its parquet (the manifest still
+    -- lists it for catalog discovery + RBAC). Only meaningful for
+    -- query_mode IN ('local', 'materialized'); ignored for 'remote'
+    -- (which has no server-stored parquet to suppress). Issue #607.
+    server_only   BOOLEAN DEFAULT false,
+    -- v79: nullable FK to source_connections.id. NULL = use the default
+    -- connection for the row's source_type (backwards-compatible).
+    connection_id VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS source_connections (
+    id          VARCHAR PRIMARY KEY,
+    name        VARCHAR NOT NULL UNIQUE,
+    source_type VARCHAR NOT NULL,
+    config      TEXT NOT NULL,
+    token_env   VARCHAR,
+    is_default  BOOLEAN DEFAULT FALSE,
+    created_by  VARCHAR,
+    created_at  TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS connection_secrets (
+    connection_id VARCHAR PRIMARY KEY,
+    ciphertext    TEXT NOT NULL,
+    updated_at    TIMESTAMP DEFAULT current_timestamp
 );
 
 CREATE TABLE IF NOT EXISTS table_profiles (
@@ -352,6 +468,20 @@ CREATE TABLE IF NOT EXISTS personal_access_tokens (
     revoked_at   TIMESTAMP
 );
 
+-- v60: short-lived setup tokens for the Agnes Cowork one-click setup flow.
+-- Generated by POST /api/user/cowork-bundle, consumed once by
+-- POST /api/auth/exchange-setup-token which mints a regular PAT.
+-- token_hash = SHA-256(raw "st_..." value) — plaintext never stored.
+-- used_at NULL = token still valid; non-NULL = already consumed.
+CREATE TABLE IF NOT EXISTS setup_tokens (
+    id          VARCHAR PRIMARY KEY,
+    user_id     VARCHAR NOT NULL,
+    token_hash  VARCHAR NOT NULL,
+    expires_at  TIMESTAMP NOT NULL,
+    used_at     TIMESTAMP,
+    created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+
 CREATE TABLE IF NOT EXISTS marketplace_registry (
     id              VARCHAR PRIMARY KEY,
     name            VARCHAR NOT NULL,
@@ -370,7 +500,11 @@ CREATE TABLE IF NOT EXISTS marketplace_registry (
     -- rows from pre-v37 instances survive migration; admin must fill via the
     -- /admin/marketplaces edit modal before the placeholder disappears.
     curator_name    VARCHAR,
-    curator_email   VARCHAR
+    curator_email   VARCHAR,
+    -- v78: built-in marketplace shipped with the wheel (not a git clone).
+    -- TRUE for the single system-seeded row; FALSE for all admin-registered rows.
+    -- The nightly git-sync path skips is_builtin=TRUE rows (nothing to fetch).
+    is_builtin      BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS marketplace_plugins (
@@ -404,6 +538,11 @@ CREATE TABLE IF NOT EXISTS marketplace_plugins (
     -- resolver itself is unchanged — system semantics are emergent from
     -- the materialized rows, not a new filter layer.
     is_system       BOOLEAN DEFAULT FALSE,
+    -- v78: per-plugin admin disable flag for built-in plugins. When TRUE,
+    -- the plugin is excluded from the served feed for all callers even
+    -- when they hold a resource_grant for it. Distinct from the per-user
+    -- user_plugin_optouts — this is an instance-wide admin decision.
+    admin_disabled  BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (marketplace_id, name)
 );
 
@@ -443,14 +582,237 @@ CREATE TABLE IF NOT EXISTS user_group_members (
 -- registered the resource type (e.g. '<marketplace_slug>/<plugin_name>').
 --
 -- v14: group_id FK→user_groups(id), same rationale as user_group_members.
+-- v49: ``requirement`` enum splits Required-tier semantics out of the
+-- grant identity. ``available`` (default) — grantee can opt in via
+-- ``user_stack_subscriptions``. ``required`` — auto-included in the
+-- effective stack, opt-out blocked at the API. Applies to
+-- ``data_package`` / ``memory_domain`` / ``memory_item`` grants;
+-- ``marketplace_plugin`` Required-tier stays on
+-- ``marketplace_plugins.is_system`` per D1.
 CREATE TABLE IF NOT EXISTS resource_grants (
     id            VARCHAR PRIMARY KEY,
     group_id      VARCHAR NOT NULL REFERENCES user_groups(id),
     resource_type VARCHAR NOT NULL,
     resource_id   VARCHAR NOT NULL,
+    requirement   VARCHAR DEFAULT 'available',
     assigned_at   TIMESTAMP DEFAULT current_timestamp,
     assigned_by   VARCHAR,
+    -- v60: per-type FK columns (E.3). One of these is non-NULL for each
+    -- of the 5 typed ResourceTypes; all NULL for marketplace_plugin.
+    -- DuckDB has no FK/CHECK enforcement — application-layer validates.
+    -- PG carries the real FKs + CHECK via migration 0013.
+    resource_id_table          VARCHAR,
+    resource_id_data_package   VARCHAR,
+    resource_id_memory_domain  VARCHAR,
+    resource_id_memory_item    VARCHAR,
+    resource_id_recipe         VARCHAR,
     UNIQUE (group_id, resource_type, resource_id)
+);
+
+-- v49: Data Packages — admin-curated bundles of tables. A package is a
+-- single Browse / Add-to-stack unit; effective TABLE set for RBAC =
+-- direct TABLE grants ∪ tables in DATA_PACKAGE grants. See
+-- ``docs/brainstorms/2026-05-15-unified-stack-design.md`` section 3.3.
+CREATE TABLE IF NOT EXISTS data_packages (
+    id              VARCHAR PRIMARY KEY,
+    slug            VARCHAR UNIQUE NOT NULL,
+    name            VARCHAR NOT NULL,
+    description     TEXT,
+    icon            VARCHAR,
+    color           VARCHAR,
+    -- v50: admin-uploaded cover image (served from /uploads/covers/<sha>.<ext>).
+    -- Closes the visual gap with /marketplace cards which render real
+    -- JPGs/PNGs; cards fall back to 2-letter initials when this is NULL.
+    cover_image_url VARCHAR,
+    -- v51: lifecycle + classification surface for /catalog cards. The
+    -- card eyebrow renders ``category``; the cover-corner status pill
+    -- renders ``status``. Hero filter checkboxes filter by status.
+    -- ``status`` is a soft enum ('prod' default; 'poc'; 'coming-soon';
+    -- 'draft' admin-only). ``category`` is free-form text for the
+    -- eyebrow line — admins should keep it short and consistent
+    -- (e.g. "Sessions & Traffic", "Customer Insights").
+    status          VARCHAR DEFAULT 'prod',
+    category        VARCHAR,
+    -- v54: soft-delete column. DELETE handlers set this instead of
+    -- removing the row, so junction tables + resource_grants survive
+    -- for the undo flow. list/get filter ``deleted_at IS NULL``.
+    deleted_at      TIMESTAMP,
+    -- v56: extended content for the /catalog/p/<slug> detail-page
+    -- rewrite (extended-descriptions admin spec). All additive + NULLABLE.
+    --   owner_name / owner_team — render "Owned by X · Team" line
+    --   tags                    — JSON list of category strings
+    --   long_description        — markdown body for "What it is"
+    --   when_to_use / when_not_to_use
+    --                           — JSON bullet lists
+    --   example_questions       — JSON list of analyst questions
+    --                             surfaced as a package-level prompt
+    --                             panel.
+    -- Badges (`curated` / `new`) are NOT persisted columns — they're
+    -- derived at render time from creator group + created_at age, so
+    -- backdating or admin-status changes pick up automatically.
+    owner_name      VARCHAR,
+    owner_team      VARCHAR,
+    tags            VARCHAR,
+    long_description TEXT,
+    when_to_use     VARCHAR,
+    when_not_to_use VARCHAR,
+    example_questions VARCHAR,
+    created_by      VARCHAR,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    updated_at      TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS data_package_tables (
+    package_id  VARCHAR NOT NULL REFERENCES data_packages(id),
+    table_id    VARCHAR NOT NULL REFERENCES table_registry(id),
+    added_at    TIMESTAMP DEFAULT current_timestamp,
+    added_by    VARCHAR,
+    PRIMARY KEY (package_id, table_id)
+);
+CREATE INDEX IF NOT EXISTS idx_data_package_tables_table
+    ON data_package_tables(table_id);
+
+-- v49: Memory Domains — first-class entities replacing the v15 scalar
+-- ``knowledge_items.domain`` string. Junction allows an item to belong
+-- to multiple domains; admin can create non-canonical domains beyond the
+-- legacy ``VALID_DOMAINS`` six. See spec section 3.4.
+CREATE TABLE IF NOT EXISTS memory_domains (
+    id              VARCHAR PRIMARY KEY,
+    slug            VARCHAR UNIQUE NOT NULL,
+    name            VARCHAR NOT NULL,
+    description     TEXT,
+    icon            VARCHAR,
+    color           VARCHAR,
+    -- v50: admin-uploaded cover image — same path / fallback contract as
+    -- data_packages.cover_image_url above.
+    cover_image_url VARCHAR,
+    -- v51: lifecycle ``status`` only ('prod' / 'poc' / 'coming-soon' /
+    -- 'draft'). Memory Domains don't carry ``category`` because the
+    -- domain itself IS the classification — adding a second-level
+    -- category would be redundant.
+    status          VARCHAR DEFAULT 'prod',
+    -- v54: soft-delete (see data_packages.deleted_at).
+    deleted_at      TIMESTAMP,
+    created_by      VARCHAR,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    updated_at      TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_item_domains (
+    item_id   VARCHAR NOT NULL REFERENCES knowledge_items(id),
+    domain_id VARCHAR NOT NULL REFERENCES memory_domains(id),
+    added_at  TIMESTAMP DEFAULT current_timestamp,
+    added_by  VARCHAR,
+    PRIMARY KEY (item_id, domain_id)
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_item_domains_domain
+    ON knowledge_item_domains(domain_id);
+
+-- v55: ``memory_domain_suggestions`` — non-admin users can suggest a new
+-- domain from /corporate-memory empty state. Admin queue surfaces them
+-- with one-click approve (creates the real ``memory_domains`` row +
+-- marks the suggestion ``status='approved'``) or reject. Open suggestions
+-- have ``status='pending'``; resolved ones keep the row for audit so the
+-- requester sees the disposition. No FK on ``created_by`` so a deleted
+-- user doesn't cascade-nuke their suggestion history.
+CREATE TABLE IF NOT EXISTS memory_domain_suggestions (
+    id              VARCHAR PRIMARY KEY,
+    name            VARCHAR NOT NULL,
+    description     TEXT,
+    rationale       TEXT,
+    status          VARCHAR DEFAULT 'pending',  -- 'pending' / 'approved' / 'rejected'
+    created_by      VARCHAR,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    resolved_at     TIMESTAMP,
+    resolved_by     VARCHAR,
+    resolution_note TEXT,
+    -- When approved, the resulting memory_domains.id so the admin queue
+    -- can deep-link to the created domain.
+    created_domain_id VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_memory_domain_suggestions_status
+    ON memory_domain_suggestions(status);
+
+-- v77: ``authoring_suggestions`` — generic non-admin suggestion queue for the
+-- authoring studio. A non-admin submits a proposed create payload (per studio
+-- domain); an admin approves (replays the payload through the real endpoint)
+-- or rejects. Generalizes ``memory_domain_suggestions`` across all domains.
+CREATE TABLE IF NOT EXISTS authoring_suggestions (
+    id                  VARCHAR PRIMARY KEY,
+    domain              VARCHAR NOT NULL,
+    payload             JSON,
+    status              VARCHAR DEFAULT 'pending',  -- 'pending' / 'approved' / 'rejected'
+    created_by          VARCHAR,
+    created_at          TIMESTAMP DEFAULT current_timestamp,
+    resolved_at         TIMESTAMP,
+    resolved_by         VARCHAR,
+    resolution_note     TEXT,
+    created_resource_id VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_authoring_suggestions_status
+    ON authoring_suggestions(status);
+
+-- v78: ``memory_mining_consent`` — per-user opt-IN to having their session
+-- transcripts mined into shared corporate memory (privacy gate, spec §4.4).
+CREATE TABLE IF NOT EXISTS memory_mining_consent (
+    user_email   VARCHAR PRIMARY KEY,
+    opted_in_at  TIMESTAMP,
+    opted_out_at TIMESTAMP,
+    updated_at   TIMESTAMP DEFAULT current_timestamp
+);
+
+-- v61: ``cli_auth_codes`` — short-lived, single-use exchange codes for the
+-- browser-loopback `agnes auth login` flow (gh-style). The browser, holding
+-- an authenticated session, confirms CLI authorization; the server mints a
+-- code (hash stored here, bound to the user) and redirects it to the CLI's
+-- localhost loopback. The CLI then POSTs the code to /cli/auth/exchange over
+-- HTTPS and receives a real PAT — so the durable credential never travels
+-- through the browser address bar / history. Codes expire in ~2 min and are
+-- consumed exactly once (compare-and-swap on ``consumed_at``). Rows are left
+-- after expiry/consumption for a short audit window; a cheap opportunistic
+-- delete of expired rows runs on each create.
+CREATE TABLE IF NOT EXISTS cli_auth_codes (
+    code_hash   VARCHAR PRIMARY KEY,   -- sha256(raw code); raw code never stored
+    user_id     VARCHAR NOT NULL,
+    email       VARCHAR NOT NULL,
+    created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    expires_at  TIMESTAMP NOT NULL,
+    consumed_at TIMESTAMP
+);
+
+-- v53: Recipes are admin-curated, multi-table query templates analysts
+-- copy + adapt. Sibling concept to Data Packages on /catalog (separate
+-- "Recipes" tab). Not stack subscribable — analysts use a recipe, they
+-- don't opt in to it. ``related_table_ids`` is a JSON array of
+-- ``table_registry.id`` values so the recipe drilldown can render
+-- per-table links without us cascading another junction table.
+CREATE TABLE IF NOT EXISTS recipes (
+    id              VARCHAR PRIMARY KEY,
+    slug            VARCHAR UNIQUE NOT NULL,
+    title           VARCHAR NOT NULL,
+    description     TEXT,
+    icon            VARCHAR,
+    color           VARCHAR,
+    sql_template    TEXT,
+    related_table_ids JSON,
+    status          VARCHAR DEFAULT 'prod',
+    -- v54: soft-delete (see data_packages.deleted_at).
+    deleted_at      TIMESTAMP,
+    created_by      VARCHAR,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    updated_at      TIMESTAMP DEFAULT current_timestamp
+);
+
+-- v49: generic per-user opt-in for resource_grants flagged
+-- ``requirement='available'``. Currently scoped to ``data_package`` /
+-- ``memory_domain`` resource types — Marketplace pluginy stay on the
+-- existing ``user_plugin_optouts`` opt-out shape per D1.
+CREATE TABLE IF NOT EXISTS user_stack_subscriptions (
+    user_id       VARCHAR NOT NULL,
+    resource_type VARCHAR NOT NULL,
+    resource_id   VARCHAR NOT NULL,
+    subscribed_at TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (user_id, resource_type, resource_id)
 );
 
 -- v22: reserved (formerly setup_banner — feature dropped, table kept for
@@ -474,7 +836,15 @@ CREATE TABLE IF NOT EXISTS instance_templates (
     content TEXT,
     previous_content TEXT,
     updated_at TIMESTAMP,
-    updated_by VARCHAR
+    updated_by VARCHAR,
+    -- v75 (#622): explicit Git⇄Editor source toggle for managed prompts,
+    -- superseding the implicit seed_owns() read-only lock. 'editor' = the DB
+    -- override (content) wins at render time; 'git' = bind to git_path in the
+    -- Initial Workspace Template clone. base_sha is reserved for Slice 2
+    -- divergence detection (written, not read in Slice 1).
+    source_mode VARCHAR NOT NULL DEFAULT 'editor',
+    git_path    VARCHAR,
+    base_sha    VARCHAR
 );
 
 -- v29: news_template — single table holding every saved version of the
@@ -552,6 +922,19 @@ CREATE TABLE IF NOT EXISTS store_entities (
     -- StoreEntitiesRepository.append_version + restore endpoint.
     version_no        INTEGER NOT NULL DEFAULT 1,
     version_history   JSON DEFAULT '[]',
+    -- v49: phase-1 Flea refactor adds three user-facing metadata columns.
+    -- `title` is a humanized display name (acronym-aware), shown on web
+    -- surfaces instead of the kebab-case `name`. `tagline` is an optional
+    -- 200-char short description for card UI (long-form lives in
+    -- `description`). `synthetic_name` is the deterministic
+    -- `<name>-by-<owner_username>` value baked into served bundles —
+    -- stored as a column so attribution + uniqueness checks can target a
+    -- single source of truth instead of recomputing the concat on every
+    -- query. Phase 1 only populates these; downstream surfaces (cards,
+    -- detail pages, Claude Code propagation) consume them in later phases.
+    title             VARCHAR NOT NULL,
+    tagline           VARCHAR,
+    synthetic_name    VARCHAR NOT NULL,
     created_at        TIMESTAMP DEFAULT current_timestamp,
     updated_at        TIMESTAMP DEFAULT current_timestamp,
     UNIQUE (owner_user_id, name)
@@ -635,6 +1018,12 @@ CREATE TABLE IF NOT EXISTS store_submissions (
 
 CREATE INDEX IF NOT EXISTS idx_store_submissions_status ON store_submissions(status);
 CREATE INDEX IF NOT EXISTS idx_store_submissions_entity ON store_submissions(entity_id);
+-- NOTE: the v50 UNIQUE INDEX on store_entities.synthetic_name is created
+-- by ``_v49_to_v50_migrate``, not here. Reason: ``_v48_to_v49_migrate``
+-- runs ``ALTER TABLE store_entities ALTER COLUMN … SET NOT NULL`` which
+-- DuckDB blocks when an index already references the table. Fresh-install
+-- ordering is therefore: CREATE TABLE (no index) → v49 migrate (no-op
+-- ALTERs on empty table) → v50 migrate (CREATE UNIQUE INDEX).
 -- NOTE: no created_at index. DuckDB 1.x has a bug where
 -- `ORDER BY <indexed col> DESC LIMIT N` short-returns on small tables
 -- (reproduced with N=2 against 3 rows during /admin/store/submissions
@@ -690,14 +1079,345 @@ CREATE TABLE IF NOT EXISTS bq_metadata_cache (
 -- close the column-set gap. Idempotent on fresh installs (no-op).
 ALTER TABLE bq_metadata_cache ADD COLUMN IF NOT EXISTS entity_type VARCHAR;
 ALTER TABLE bq_metadata_cache ADD COLUMN IF NOT EXISTS known_columns JSON;
+
+-- v42 (was v41 pre-rebase): usage telemetry tables — per-event log,
+-- per-session aggregate, daily rollups, and attribution tables for
+-- skills/agents/commands.
+CREATE TABLE IF NOT EXISTS usage_events (
+    id                  VARCHAR PRIMARY KEY,
+    session_id          VARCHAR NOT NULL,
+    session_file        VARCHAR NOT NULL,
+    username            VARCHAR NOT NULL,
+    event_uuid          VARCHAR,
+    parent_uuid         VARCHAR,
+    event_type          VARCHAR NOT NULL,
+    tool_name           VARCHAR,
+    skill_name          VARCHAR,
+    subagent_type       VARCHAR,
+    command_name        VARCHAR,
+    is_error            BOOLEAN DEFAULT FALSE,
+    source              VARCHAR NOT NULL,
+    ref_id              VARCHAR,
+    model               VARCHAR,
+    cwd                 VARCHAR,
+    occurred_at         TIMESTAMP NOT NULL,
+    processor_version   INTEGER NOT NULL,
+    extracted_at        TIMESTAMP DEFAULT current_timestamp,
+    friction_tags       JSON,
+    user_id             VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_usage_events_session ON usage_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_usage_events_user_time ON usage_events(username, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_usage_events_tool ON usage_events(tool_name);
+CREATE INDEX IF NOT EXISTS idx_usage_events_skill ON usage_events(skill_name);
+CREATE INDEX IF NOT EXISTS idx_usage_events_ref ON usage_events(source, ref_id);
+-- idx_usage_events_user_id is created by _v44_to_v45, not here: _SYSTEM_SCHEMA
+-- runs before the migration ladder, and CREATE TABLE IF NOT EXISTS won't add
+-- user_id to a pre-v45 usage_events, so an index on it would fail to bind.
+-- Same pattern as the v41 audit_log indices below.
+
+CREATE TABLE IF NOT EXISTS usage_session_summary (
+    session_file        VARCHAR PRIMARY KEY,
+    session_id          VARCHAR NOT NULL,
+    username            VARCHAR NOT NULL,
+    started_at          TIMESTAMP,
+    ended_at            TIMESTAMP,
+    active_seconds      INTEGER,
+    wall_seconds        INTEGER,
+    user_messages       INTEGER DEFAULT 0,
+    assistant_messages  INTEGER DEFAULT 0,
+    tool_calls          INTEGER DEFAULT 0,
+    tool_errors         INTEGER DEFAULT 0,
+    skill_invocations   INTEGER DEFAULT 0,
+    subagent_dispatches INTEGER DEFAULT 0,
+    mcp_calls           INTEGER DEFAULT 0,
+    slash_commands      INTEGER DEFAULT 0,
+    distinct_tools      INTEGER DEFAULT 0,
+    distinct_skills     INTEGER DEFAULT 0,
+    primary_model       VARCHAR,
+    processor_version   INTEGER NOT NULL,
+    extracted_at        TIMESTAMP DEFAULT current_timestamp,
+    -- v44: per-session token counters summed from JSONL message.usage.*.
+    -- BIGINT because cache tokens routinely exceed INT range over long
+    -- sessions. Default 0 so existing rows backfill cleanly; the
+    -- processor's reprocess loop (driven by USAGE_PROCESSOR_VERSION
+    -- bump) overwrites with real values on next tick.
+    input_tokens          BIGINT DEFAULT 0,
+    output_tokens         BIGINT DEFAULT 0,
+    cache_read_tokens     BIGINT DEFAULT 0,
+    cache_creation_tokens BIGINT DEFAULT 0,
+    user_id               VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_usage_session_user ON usage_session_summary(username);
+CREATE INDEX IF NOT EXISTS idx_usage_session_started ON usage_session_summary(started_at);
+-- idx_usage_session_user_id is created by _v44_to_v45, not here — see the
+-- note on idx_usage_events_user_id above.
+
+-- usage_tool_daily: legacy rollup of tool invocations by day/source. Currently
+-- only consumed by `src/usage_ask.py` SCHEMA_DIGEST + admin reprocess endpoint;
+-- has no product-UI consumer. Marked as candidate for removal in v46; will be
+-- evaluated for full drop in next telemetry refactor iteration.
+CREATE TABLE IF NOT EXISTS usage_tool_daily (
+    day                 DATE NOT NULL,
+    tool_name           VARCHAR NOT NULL,
+    source              VARCHAR NOT NULL,
+    invocations         INTEGER DEFAULT 0,
+    error_count         INTEGER DEFAULT 0,
+    distinct_users      INTEGER DEFAULT 0,
+    distinct_sessions   INTEGER DEFAULT 0,
+    PRIMARY KEY (day, tool_name, source)
+);
+
+-- v46: marketplace item telemetry rollup. Per-day fact table; window snapshot
+-- is sibling `usage_marketplace_item_window`.
+-- `parent_plugin` is '' (empty string, not NULL) for type='plugin' rows and
+-- standalone flea entities — keeps composite PK well-defined without NULL gymnastics.
+CREATE TABLE IF NOT EXISTS usage_marketplace_item_daily (
+    day            DATE    NOT NULL,
+    source         VARCHAR NOT NULL,            -- 'curated' | 'flea' | 'builtin'
+    type           VARCHAR NOT NULL,            -- 'plugin' | 'skill' | 'agent'
+    parent_plugin  VARCHAR NOT NULL DEFAULT '', -- '' = no parent
+    name           VARCHAR NOT NULL,
+    count          INTEGER NOT NULL DEFAULT 0,
+    distinct_users INTEGER NOT NULL DEFAULT 0, -- per-day COUNT(DISTINCT user_id)
+    error_count    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, source, type, parent_plugin, name)
+);
+CREATE INDEX IF NOT EXISTS idx_mid_lookup ON usage_marketplace_item_daily(source, type, parent_plugin, name);
+
+-- v46: sliding-window snapshot for marketplace items. Refreshed by
+-- `rebuild_rollups` — last_7d every UsageProcessor tick (~10 min),
+-- last_30d hourly. `distinct_users` here is the TRUE distinct count
+-- across the window (recomputed from usage_events at rebuild time),
+-- not a sum of per-day distincts.
+CREATE TABLE IF NOT EXISTS usage_marketplace_item_window (
+    period_label   VARCHAR NOT NULL,            -- 'last_7d' | 'last_30d' (extensible)
+    source         VARCHAR NOT NULL,
+    type           VARCHAR NOT NULL,
+    parent_plugin  VARCHAR NOT NULL DEFAULT '',
+    name           VARCHAR NOT NULL,
+    invocations    INTEGER NOT NULL DEFAULT 0,
+    distinct_users INTEGER NOT NULL DEFAULT 0,  -- true sliding-window distinct
+    refreshed_at   TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (period_label, source, type, parent_plugin, name)
+);
+CREATE INDEX IF NOT EXISTS idx_miw_lookup ON usage_marketplace_item_window(period_label, source, type);
+
+-- v68: cloud chat — per-session transcript storage + per-user workdir markers.
+-- DuckDB 1.5.x does NOT support ON DELETE CASCADE on foreign keys, so the
+-- chat_messages FK is a plain reference (blocks deletes when children exist);
+-- callers must delete messages before deleting a session, or use the
+-- ChatRepository.delete_session() helper that does both.
+-- DuckDB 1.5.x does NOT support partial (filtered) unique indexes, so the
+-- per-surface uniqueness for slack_dm / slack_thread is enforced at the
+-- application layer in ChatRepository (not by DB index).
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id               VARCHAR PRIMARY KEY,
+    user_email       VARCHAR NOT NULL,
+    surface          VARCHAR NOT NULL,
+    slack_channel_id VARCHAR,
+    slack_thread_ts  VARCHAR,
+    title            VARCHAR,
+    started_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- NOTE: last_message_at and message_count are NEVER written after
+    -- INSERT. DuckDB 1.5.3 raises a false FK violation when UPDATE-ing
+    -- last_message_at (it's part of idx_chat_sessions_user). Workaround:
+    -- ChatRepository computes both via LEFT JOIN at read time. Code that
+    -- reads these columns directly will see (NULL, 0) for every row.
+    last_message_at  TIMESTAMP,
+    message_count    INTEGER NOT NULL DEFAULT 0,
+    archived         BOOLEAN NOT NULL DEFAULT FALSE,
+    is_co_session    BOOLEAN NOT NULL DEFAULT FALSE,
+    ephemeral        BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Sandbox pause/resume refs (un-indexed — DuckDB 1.5.3 FK+index bug).
+    sandbox_id        VARCHAR,
+    runner_pid        INTEGER,
+    sandbox_paused_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_user
+    ON chat_sessions(user_email, last_message_at);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id          VARCHAR PRIMARY KEY,
+    session_id  VARCHAR NOT NULL REFERENCES chat_sessions(id),
+    role        VARCHAR NOT NULL,
+    content     TEXT NOT NULL,
+    tool_calls  JSON,
+    tokens_in   INTEGER,
+    tokens_out  INTEGER,
+    model       VARCHAR,
+    sender_email VARCHAR,
+    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session
+    ON chat_messages(session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS chat_session_participants (
+    id          VARCHAR PRIMARY KEY,
+    session_id  VARCHAR NOT NULL REFERENCES chat_sessions(id),
+    user_email  VARCHAR NOT NULL,
+    user_id     VARCHAR NOT NULL,
+    role        VARCHAR NOT NULL,
+    joined_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    left_at     TIMESTAMP,
+    UNIQUE (session_id, user_email)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_session_participants_user
+    ON chat_session_participants(user_email, session_id);
+
+CREATE TABLE IF NOT EXISTS user_workdirs (
+    user_email             VARCHAR PRIMARY KEY,
+    last_init_at           TIMESTAMP,
+    marketplace_sha        VARCHAR,
+    initial_workspace_sha  VARCHAR,
+    agnes_version_at_init  VARCHAR
+);
+
+-- v83: OAuth 2.1 tables for the native MCP connector.
+-- oauth_clients        — dynamic client registrations (RFC 7591)
+-- oauth_auth_codes     — short-lived PKCE authorization codes
+-- oauth_access_tokens  — issued access tokens (verify via load_access_token)
+-- oauth_refresh_tokens — refresh tokens for token rotation
+CREATE TABLE IF NOT EXISTS oauth_clients (
+    client_id        VARCHAR PRIMARY KEY,
+    client_secret    VARCHAR,
+    redirect_uris    TEXT NOT NULL DEFAULT '[]',
+    client_name      VARCHAR,
+    client_metadata  TEXT NOT NULL DEFAULT '{}',
+    created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS oauth_auth_codes (
+    code                             VARCHAR PRIMARY KEY,
+    client_id                        VARCHAR NOT NULL,
+    scopes                           TEXT NOT NULL DEFAULT '[]',
+    code_challenge                   VARCHAR NOT NULL,
+    redirect_uri                     VARCHAR NOT NULL,
+    redirect_uri_provided_explicitly BOOLEAN NOT NULL DEFAULT FALSE,
+    expires_at                       DOUBLE NOT NULL,
+    subject                          VARCHAR,
+    resource                         VARCHAR,
+    state                            VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+    token      VARCHAR PRIMARY KEY,
+    client_id  VARCHAR NOT NULL,
+    scopes     TEXT NOT NULL DEFAULT '[]',
+    expires_at BIGINT,
+    subject    VARCHAR,
+    resource   VARCHAR,
+    revoked_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+    token      VARCHAR PRIMARY KEY,
+    client_id  VARCHAR NOT NULL,
+    scopes     TEXT NOT NULL DEFAULT '[]',
+    expires_at BIGINT,
+    subject    VARCHAR,
+    resource   VARCHAR,
+    revoked_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+
+-- v82: Collections (bring-your-files) foundation.
+-- file_corpora: a Collection -- self-service container of uploaded files.
+CREATE TABLE IF NOT EXISTS file_corpora (
+    id VARCHAR PRIMARY KEY,
+    slug VARCHAR UNIQUE NOT NULL,
+    name VARCHAR NOT NULL,
+    description VARCHAR,
+    created_by VARCHAR NOT NULL,
+    created_at TIMESTAMP DEFAULT current_timestamp,
+    updated_at TIMESTAMP DEFAULT current_timestamp,
+    deleted_at TIMESTAMP
+);
+
+-- corpus_files: one row per uploaded file + its processing lifecycle.
+-- processing_status: pending | processing | indexed | rejected
+CREATE TABLE IF NOT EXISTS corpus_files (
+    id VARCHAR PRIMARY KEY,
+    corpus_id VARCHAR NOT NULL,
+    filename VARCHAR NOT NULL,
+    sha256 VARCHAR NOT NULL,
+    file_type VARCHAR,
+    size_bytes BIGINT,
+    storage_path VARCHAR,
+    processing_status VARCHAR NOT NULL DEFAULT 'pending',
+    processing_detail VARCHAR,
+    created_at TIMESTAMP DEFAULT current_timestamp,
+    updated_at TIMESTAMP DEFAULT current_timestamp
+);
+
+-- corpus_chunks: prose-document chunks + embedding vector.
+-- embedding FLOAT[384]: fixed-size array for array_cosine_similarity.
+-- Repo deferred to Retrieval slice; table created here so a single
+-- migration covers all Collections schema.
+CREATE TABLE IF NOT EXISTS corpus_chunks (
+    id VARCHAR PRIMARY KEY,
+    corpus_id VARCHAR NOT NULL,
+    file_id VARCHAR NOT NULL,
+    ordinal INTEGER,
+    text VARCHAR,
+    embedding FLOAT[384],
+    section_path VARCHAR,
+    page INTEGER,
+    bbox VARCHAR,
+    metadata VARCHAR,
+    created_at TIMESTAMP DEFAULT current_timestamp
+);
 """
 
 
-import threading
+import threading  # noqa: E402
 
 _system_db_lock = threading.Lock()
 _system_db_conn: duckdb.DuckDBPyConnection | None = None
 _system_db_path: str | None = None
+
+# Mirror the system-DB singleton pattern for the analytics DB. Pre-#163,
+# `get_analytics_db()` opened a fresh `duckdb.connect()` on every call —
+# most callers don't `.close()` the returned handle, so each leaked
+# connection held a WAL ref + FD until GC kicked in. Under load this
+# manifested as "too many open files" or DuckDB lock contention on the
+# analytics DB. Singleton + cursor-per-call (mirrors `get_system_db()`
+# above) means callers that close the cursor only close the cursor —
+# the underlying connection stays.
+_analytics_db_lock = threading.Lock()
+_analytics_db_conn: duckdb.DuckDBPyConnection | None = None
+_analytics_db_path: str | None = None
+
+# DuckDB per-connection memory budgets.
+#
+# DuckDB enforces ``memory_limit`` PER CONNECTION, not per process. In a
+# memory-constrained container (e.g. a 4 GiB cgroup) the live connections
+# must sum under the cap or the kernel OOM-kills the whole process. DuckDB
+# 1.5 is cgroup-aware — a fresh connection defaults to ~80% of the cgroup
+# limit — so a single *uncapped* connection can exceed the cap on its own.
+# We give each connection an explicit conservative budget:
+#
+#   system (singleton)             1 GiB    metadata + telemetry aggregations
+#   analytics (singleton)          1.5 GiB  working set over parquet views
+#   analytics readonly (per req)   1 GiB    one analyst's heavy query
+#
+# Steady state — the two singletons plus one in-flight readonly query —
+# is 3.5 GiB, under a 4 GiB cap with host headroom. The readonly path is
+# per-request and unbounded in count (FastAPI threadpool), so a burst of
+# concurrent analyst queries can momentarily exceed the cap; the
+# ``temp_directory`` disk spill below is the backstop — an over-budget
+# query spills to disk (or raises a clean DuckDB OOM) instead of growing
+# process RSS. For very memory-constrained, high-concurrency deployments,
+# tune AGNES_THREADPOOL_SIZE down too. (Bounding readonly connection
+# concurrency directly is a possible follow-up — out of scope here.)
+#
+# See docs/superpowers/specs/2026-06-01-system-duckdb-resilience-design.md.
+_SYSTEM_DB_MEMORY_LIMIT = "1GB"
+_ANALYTICS_DB_MEMORY_LIMIT = "1500MB"
+_ANALYTICS_RO_MEMORY_LIMIT = "1GB"
+_DUCKDB_THREADS = 2
+_DUCKDB_MAX_TEMP_DIR_SIZE = "10GB"
 
 
 def _get_data_dir() -> Path:
@@ -721,6 +1441,28 @@ def _get_state_dir() -> Path:
     return _get_data_dir() / "state"
 
 
+def _peek_schema_version(snapshot_path: Path) -> int:
+    """Open a DuckDB snapshot read-only and return its
+    ``MAX(schema_version.version)``.
+
+    Read-only mode bypasses WAL replay entirely — even if the snapshot
+    has its own stale WAL, the read-only handle ignores it. Any
+    ``duckdb.Error`` (table missing, file corrupt, permission denied)
+    is treated conservatively as version 0, so an unreadable snapshot
+    fails the freshness check in :func:`_try_open_system_db` and ends
+    in the refusal path. Defensive: never returns -1 / None / raises.
+    """
+    try:
+        conn = _open_duckdb(str(snapshot_path), read_only=True)
+        try:
+            row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+        finally:
+            conn.close()
+    except duckdb.Error:
+        return 0
+
+
 def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
     """Open ``system.duckdb``. If DuckDB's WAL replay raises an
     ``INTERNAL Error`` from ``ReplayAlter`` (a known failure mode when a
@@ -737,7 +1479,7 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
     legitimate corruption (operator-edited DB, disk failure, etc.).
     """
     try:
-        return duckdb.connect(db_path)
+        return _open_duckdb(db_path)
     except duckdb.Error as e:
         msg = str(e)
         is_wal_replay = (
@@ -747,31 +1489,199 @@ def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
         )
         if not is_wal_replay:
             raise
+        wal_path = Path(db_path + ".wal")
+
+        # STEP A — salvage the live file. Its last checkpoint is almost
+        # always newer than any pre-migrate snapshot (checkpoints run
+        # continuously; the snapshot is captured only at migrations).
+        # Discard ONLY the unreplayable WAL — DuckDB couldn't apply it
+        # anyway — and reopen the file at its last checkpoint. This loses
+        # at most the transactions written since that checkpoint, never
+        # the days of admin state a stale-snapshot rollback would drop.
+        # It also subsumes the mid-migration case: an uncommitted ALTER
+        # lives in the discarded WAL, so the file is at the pre-migration
+        # version and the idempotent ladder re-runs forward on this start.
+        salvaged = _salvage_discard_wal(db_path, wal_path, original_error=e)
+        if salvaged is not None:
+            return salvaged
+
+        # STEP B — the live file itself won't open. Fall back to the
+        # pre-migrate snapshot (with the #379 version guard below). The
+        # WAL was already moved aside by Step A, so _move_to_broken here
+        # just relocates the unreadable DB file.
         snapshot = Path(db_path).parent / "system.duckdb.pre-migrate"
         if not snapshot.exists():
             logger.error(
-                "WAL replay failed and no pre-migrate snapshot at %s — "
-                "manual recovery required.", snapshot,
+                "WAL replay failed, live file unreadable, and no pre-migrate "
+                "snapshot at %s — manual recovery required.",
+                snapshot,
             )
             raise
-        wal_path = Path(db_path + ".wal")
+
+        # #379: refuse auto-recovery if the snapshot version doesn't
+        # match SCHEMA_VERSION exactly. The migration ladder is
+        # idempotent for schema but not for data; re-running it against
+        # a stale snapshot (peek < SCHEMA_VERSION) silently drops every
+        # row added since the snapshot was captured. The mirror case
+        # (peek > SCHEMA_VERSION) is just as bad: an operator rolled
+        # the code back, but the snapshot was captured at a later
+        # migration transition — auto-recovery would copy the future
+        # snapshot in and the next start's _ensure_schema would land
+        # in the split-brain "current > target" branch. Both directions
+        # mean data corruption; the only safe move is to refuse and
+        # surface the version mismatch loudly. The broken DB + WAL are
+        # preserved either way for forensics.
+        snapshot_version = _peek_schema_version(snapshot)
+        if snapshot_version != SCHEMA_VERSION:
+            broken = _move_to_broken(db_path, wal_path)
+            direction = "stale" if snapshot_version < SCHEMA_VERSION else "future"
+            risk = (
+                f"would re-run the migration ladder and silently drop all rows added since v{snapshot_version}"
+                if snapshot_version < SCHEMA_VERSION
+                else (f"would land the DB at v{snapshot_version} under a v{SCHEMA_VERSION} binary (split-brain)")
+            )
+            logger.critical(
+                "REFUSING auto-recovery: pre-migrate snapshot %s "
+                "(snapshot v%d, target v%d). Auto-recovery %s. Broken "
+                "DB preserved at %s; broken WAL at %s.wal if it existed. "
+                "To accept the snapshot anyway and discard the broken "
+                "files, manually run: cp %s %s",
+                direction,
+                snapshot_version,
+                SCHEMA_VERSION,
+                risk,
+                broken,
+                broken,
+                snapshot,
+                db_path,
+                exc_info=e,
+            )
+            raise RuntimeError(
+                f"pre-migrate snapshot {direction} "
+                f"(v{snapshot_version} vs target v{SCHEMA_VERSION}); "
+                f"auto-recovery refused. Broken DB at {broken}. "
+                f"Manual recovery: cp {snapshot} {db_path}"
+            )
+
         logger.warning(
             "WAL replay failed (%s) — auto-restoring from pre-migrate "
             "snapshot %s. The migration ladder will re-run on this start.",
-            msg.split("\n", 1)[0][:200], snapshot,
+            msg.split("\n", 1)[0][:200],
+            snapshot,
         )
         # Move (not copy) the broken DB aside so an operator can post-
         # mortem if needed. The pre-migrate snapshot becomes the new
         # main DB; the WAL is dropped (its content is what failed to
         # replay).
-        broken = Path(db_path + f".broken.{int(time.time())}")
-        shutil.move(db_path, str(broken))
-        if wal_path.exists():
-            shutil.move(str(wal_path), str(broken) + ".wal")
+        _move_to_broken(db_path, wal_path)
         shutil.copy2(str(snapshot), db_path)
         # Re-open. If THIS also fails, propagate — auto-recovery has
         # exhausted its options.
-        return duckdb.connect(db_path)
+        return _open_duckdb(db_path)
+
+
+def _salvage_discard_wal(
+    db_path: str, wal_path: Path, *, original_error: Exception
+) -> duckdb.DuckDBPyConnection | None:
+    """Discard an unreplayable WAL and reopen the DB at its last checkpoint.
+
+    Returns the open connection on success, or ``None`` if the database
+    file itself won't open (the caller then falls back to the pre-migrate
+    snapshot). The discarded WAL is moved to ``<db>.wal.discarded.<ts>``
+    (chmod ``0o600`` — it can hold uncommitted password/PAT writes) and
+    preserved for forensics: its content is exactly what DuckDB failed to
+    replay.
+    """
+    if wal_path.exists():
+        discarded = Path(str(db_path) + f".wal.discarded.{int(time.time())}")
+        try:
+            shutil.move(str(wal_path), str(discarded))
+            try:
+                os.chmod(discarded, 0o600)
+            except OSError:
+                pass  # best-effort; preservation matters more than mode
+        except OSError as move_err:
+            logger.error(
+                "WAL salvage: could not move WAL aside (%s); cannot reopen",
+                move_err,
+            )
+            return None
+    try:
+        # Route through `_open_duckdb` so the salvage reopen inherits the
+        # same `SET GLOBAL TimeZone='UTC'` pin every other connection gets
+        # (frontend timezone fix, #473) — otherwise the WAL-salvage path
+        # would silently drop back to the host's local zone.
+        conn = _open_duckdb(db_path)
+    except duckdb.Error as reopen_err:
+        logger.warning(
+            "WAL salvage reopen failed (%s); falling back to pre-migrate snapshot",
+            reopen_err,
+        )
+        return None
+    logger.warning(
+        "WAL replay failed (%s) — discarded the unreplayable WAL and reopened "
+        "system.duckdb at its last checkpoint. Transactions written since that "
+        "checkpoint are lost; admin state up to the checkpoint is intact.",
+        str(original_error).split("\n", 1)[0][:200],
+    )
+    return conn
+
+
+def _move_to_broken(db_path: str, wal_path: Path) -> Path:
+    """Move the broken DB (+ WAL if present) aside to ``.broken.<ts>``.
+
+    Shared by both branches of :func:`_try_open_system_db` (refusal and
+    happy-path recovery). The preserved files are chmod'd to ``0o600``
+    because ``system.duckdb`` holds argon2 password hashes, personal-
+    access-token rows, and the audit log — ``shutil.move`` inherits the
+    source mode (typically ``0o644`` under default umask), so a stale
+    ``.broken.*`` would be world-readable on its way out. The
+    containing ``state/`` directory is usually ``0o700``, but defense
+    in depth matters: backups, container volumes, and tab-completion
+    mistakes can all surface the file. Returns the chosen broken path.
+    """
+    broken = Path(db_path + f".broken.{int(time.time())}")
+    shutil.move(db_path, str(broken))
+    try:
+        os.chmod(broken, 0o600)
+    except OSError:
+        pass  # best-effort; preservation is more important than mode
+    if wal_path.exists():
+        broken_wal = str(broken) + ".wal"
+        shutil.move(str(wal_path), broken_wal)
+        try:
+            os.chmod(broken_wal, 0o600)
+        except OSError:
+            pass
+    return broken
+
+
+def _apply_memory_caps(conn: duckdb.DuckDBPyConnection, memory_limit: str, *, label: str) -> None:
+    """Apply defensive memory caps + disk-spill settings to *conn*.
+
+    DuckDB ``memory_limit`` is per-connection; this keeps any single
+    connection from growing the process past the container cgroup cap
+    (see the ``_*_MEMORY_LIMIT`` constants). Best-effort: a failing PRAGMA
+    (read-only DB, in-memory DB, older DuckDB) is logged and skipped so
+    the connection stays usable on defaults. The essential caps
+    (memory_limit/threads) are applied in their own try so an optional
+    temp-spill failure can't undo them.
+    """
+    try:
+        conn.execute(f"SET memory_limit='{memory_limit}'")
+        conn.execute(f"SET threads={_DUCKDB_THREADS}")
+        conn.execute("SET preserve_insertion_order=false")
+    except Exception as e:
+        logger.warning("%s: SET memory/threads failed (%s); defaults remain", label, e)
+    # Disk spill: a query that exceeds its memory budget spills to disk
+    # (or raises a clean DuckDB error) instead of OOM-killing the process.
+    try:
+        tmp = _get_state_dir() / "duckdb-tmp"
+        tmp.mkdir(parents=True, exist_ok=True)
+        conn.execute(f"SET temp_directory='{tmp}'")
+        conn.execute(f"SET max_temp_directory_size='{_DUCKDB_MAX_TEMP_DIR_SIZE}'")
+    except Exception as e:
+        logger.debug("%s: temp_directory spill setup failed (%s)", label, e)
 
 
 def get_system_db() -> duckdb.DuckDBPyConnection:
@@ -794,21 +1704,93 @@ def get_system_db() -> duckdb.DuckDBPyConnection:
                     pass
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
             _system_db_conn = _try_open_system_db(db_path)
+            # Cap BEFORE _ensure_schema so migrations + the on-demand FTS
+            # index rebuild (src/fts.py) run under the budget too. The
+            # system DB was missed by the analytics-only cap in PR #434 —
+            # an uncapped singleton was the dominant allocator behind the
+            # 4 GiB-cgroup OOM loop.
+            _apply_memory_caps(_system_db_conn, _SYSTEM_DB_MEMORY_LIMIT, label="get_system_db")
             _system_db_path = db_path
             _ensure_schema(_system_db_conn)
         return _maybe_instrument(_system_db_conn.cursor(), "system")
 
 
 def get_analytics_db() -> duckdb.DuckDBPyConnection:
-    """Get a connection to the analytics database (parquet views)."""
-    db_path = _get_data_dir() / "analytics" / "server.duckdb"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    return _maybe_instrument(duckdb.connect(str(db_path)), "analytics")
+    """Get a connection to the analytics database (parquet views).
+
+    Singleton — mirrors `get_system_db()` above. Returns a cursor on the
+    shared connection so callers can `.close()` the handle without
+    closing the underlying connection. Re-opens transparently when
+    `DATA_DIR` changes (test fixtures that swap data dirs across cases).
+
+    Pre-#163 this opened a fresh connection on every call and most
+    callers leaked it; see the rationale block at the module-level
+    `_analytics_db_*` globals. `get_analytics_db_readonly()` deliberately
+    stays per-call because each invocation re-ATTACHes extract.duckdb
+    files into a fresh read-only context.
+    """
+    global _analytics_db_conn, _analytics_db_path
+    db_path = str(_get_data_dir() / "analytics" / "server.duckdb")
+
+    with _analytics_db_lock:
+        if _analytics_db_conn is None or _analytics_db_path != db_path:
+            # Close stale connection if DATA_DIR changed (test fixtures)
+            if _analytics_db_conn is not None:
+                try:
+                    _analytics_db_conn.close()
+                except Exception:
+                    pass
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            # Route through ``_open_duckdb`` so the connection inherits the
+            # ``SET GLOBAL TimeZone='UTC'`` pin (frontend timezone fix from
+            # #473), then apply the memory cap (OOM resilience from #479).
+            _analytics_db_conn = _open_duckdb(db_path)
+            # Defensive memory cap (budgeted with the system + readonly
+            # connections to sum under a 4 GiB cgroup — see the
+            # ``_*_MEMORY_LIMIT`` constants). Analyst-facing queries that
+            # hit the cap spill to disk or surface a clear DuckDB OOM
+            # exception, rather than a silent process-wide OOM-kill.
+            _apply_memory_caps(
+                _analytics_db_conn,
+                _ANALYTICS_DB_MEMORY_LIMIT,
+                label="get_analytics_db",
+            )
+            _analytics_db_path = db_path
+        return _maybe_instrument(_analytics_db_conn.cursor(), "analytics")
 
 
-def _reattach_remote_extensions(
-    conn: duckdb.DuckDBPyConnection, extracts_dir: Path
-) -> None:
+def close_singleton_connections() -> None:
+    """Close both shared DuckDB connections so a subprocess can take the lock.
+
+    Called from the DB-backend state-machine migrator-spawn path
+    (`app.api.db_state.start_migration`) right before launching the migrator
+    subprocess. DuckDB ≥1.5 holds an exclusive per-process file lock on each
+    open database file; without releasing it here the subprocess raises
+    ``IOException: Conflicting lock is held in /usr/local/bin/python3.13``.
+
+    Idempotent. The next call to ``get_system_db()`` / ``get_analytics_db()``
+    will lazily re-open if the file is still on disk; if the migration
+    flipped the backend to Postgres, the app process will be recreated by
+    the host applier and these globals never need to re-open.
+    """
+    global _system_db_conn, _analytics_db_conn
+    with _system_db_lock:
+        if _system_db_conn is not None:
+            try:
+                _system_db_conn.close()
+            except Exception:
+                pass
+            _system_db_conn = None
+    with _analytics_db_lock:
+        if _analytics_db_conn is not None:
+            try:
+                _analytics_db_conn.close()
+            except Exception:
+                pass
+            _analytics_db_conn = None
+
+
+def _reattach_remote_extensions(conn: duckdb.DuckDBPyConnection, extracts_dir: Path) -> None:
     """Re-LOAD DuckDB extensions listed in _remote_attach tables of each extract.duckdb.
 
     Called from get_analytics_db_readonly() after ATTACHing extract.duckdb files so
@@ -819,9 +1801,7 @@ def _reattach_remote_extensions(
         return
 
     try:
-        attached_dbs = {
-            r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()
-        }
+        attached_dbs = {r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()}
     except Exception:
         return
 
@@ -858,9 +1838,7 @@ def _reattach_remote_extensions(
 
         # Refresh attached list before processing each source's rows
         try:
-            attached_dbs = {
-                r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()
-            }
+            attached_dbs = {r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()}
         except Exception:
             pass
 
@@ -887,7 +1865,8 @@ def _reattach_remote_extensions(
                     "query-path remote_attach: extension %r not in allowlist; "
                     "refusing to LOAD/ATTACH for source %s. Override via "
                     "AGNES_REMOTE_ATTACH_EXTENSIONS if intended.",
-                    extension, alias,
+                    extension,
+                    alias,
                 )
                 continue
             if token_env and not is_token_env_allowed(token_env):
@@ -895,7 +1874,8 @@ def _reattach_remote_extensions(
                     "query-path remote_attach: token_env %r not in allowlist; "
                     "refusing for source %s. Override via "
                     "AGNES_REMOTE_ATTACH_TOKEN_ENVS if intended.",
-                    token_env, alias,
+                    token_env,
+                    alias,
                 )
                 continue
             if alias in attached_dbs:
@@ -926,25 +1906,20 @@ def _reattach_remote_extensions(
                     except BQMetadataAuthError as e:
                         logger.error(
                             "Failed to fetch BQ metadata token for %s: %s — skipping ATTACH",
-                            alias, e,
+                            alias,
+                            e,
                         )
                         continue
                     escaped = escape_sql_string_literal(bq_token)
                     secret_name = f"bq_secret_{alias}"
-                    conn.execute(
-                        f"CREATE OR REPLACE SECRET {secret_name} "
-                        f"(TYPE bigquery, ACCESS_TOKEN '{escaped}')"
-                    )
+                    conn.execute(f"CREATE OR REPLACE SECRET {secret_name} (TYPE bigquery, ACCESS_TOKEN '{escaped}')")
                     from connectors.bigquery.access import apply_bq_session_settings
+
                     apply_bq_session_settings(conn)
-                    conn.execute(
-                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
-                    )
+                    conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
                 elif token:
                     escaped_token = escape_sql_string_literal(token)
-                    conn.execute(
-                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
-                    )
+                    conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')")
                     # Apply BQ session settings on every BQ-extension attach,
                     # not only the metadata-token branch above. Previously the
                     # token-based branch fell through without setting
@@ -952,13 +1927,13 @@ def _reattach_remote_extensions(
                     # in place and causing "remote query timeout" surprises.
                     if extension == "bigquery":
                         from connectors.bigquery.access import apply_bq_session_settings
+
                         apply_bq_session_settings(conn)
                 else:
-                    conn.execute(
-                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
-                    )
+                    conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)")
                     if extension == "bigquery":
                         from connectors.bigquery.access import apply_bq_session_settings
+
                         apply_bq_session_settings(conn)
                 attached_dbs.add(alias)
                 logger.debug("Re-attached remote source %s via %s extension", alias, extension)
@@ -974,13 +1949,21 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
     db_path = _get_data_dir() / "analytics" / "server.duckdb"
     if not db_path.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = duckdb.connect(str(db_path), read_only=False)
+        conn = _open_duckdb(str(db_path), read_only=False)
         try:
             conn.execute("SET enable_external_access = false")
         except Exception:
             pass
+        # Memory cap — see get_analytics_db / the _*_MEMORY_LIMIT constants.
+        _apply_memory_caps(conn, _ANALYTICS_RO_MEMORY_LIMIT, label="analytics_ro")
         return _maybe_instrument(conn, "analytics_ro")
-    conn = duckdb.connect(str(db_path), read_only=True)
+    conn = _open_duckdb(str(db_path), read_only=True)
+    # Memory cap (see get_analytics_db rationale). Read-only conns can
+    # still buffer significant memory for analyst queries that hit
+    # ``CREATE TEMP TABLE`` over read_parquet — capping keeps a single
+    # analyst's heavy query from process-wide OOM-killing all other
+    # in-flight requests.
+    _apply_memory_caps(conn, _ANALYTICS_RO_MEMORY_LIMIT, label="analytics_ro")
     # ATTACH extract.duckdb files FIRST so views referencing them work
     extracts_dir = _get_data_dir() / "extracts"
     if extracts_dir.exists():
@@ -1279,8 +2262,7 @@ _V16_TO_V17_MIGRATIONS = [
         PRIMARY KEY (item_a_id, item_b_id, relation_type)
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_knowledge_item_relations_resolved "
-    "ON knowledge_item_relations(resolved)",
+    "CREATE INDEX IF NOT EXISTS idx_knowledge_item_relations_resolved ON knowledge_item_relations(resolved)",
 ]
 
 
@@ -1303,14 +2285,15 @@ _V19_TO_V20_MIGRATIONS = [
 # first so implies references resolve cleanly when expand_implies does BFS.
 _CORE_ROLES_SEED = [
     # (key, display_name, description, implies)
-    ("core.viewer", "Viewer",
-     "Read-only access to permitted datasets.", []),
-    ("core.analyst", "Analyst",
-     "Default user role; query data, run analyses.", ["core.viewer"]),
-    ("core.km_admin", "Knowledge-management admin",
-     "Manages metric definitions and column metadata.", ["core.analyst"]),
-    ("core.admin", "Administrator",
-     "Full system access; bypasses dataset_permissions.", ["core.km_admin"]),
+    ("core.viewer", "Viewer", "Read-only access to permitted datasets.", []),
+    ("core.analyst", "Analyst", "Default user role; query data, run analyses.", ["core.viewer"]),
+    (
+        "core.km_admin",
+        "Knowledge-management admin",
+        "Manages metric definitions and column metadata.",
+        ["core.analyst"],
+    ),
+    ("core.admin", "Administrator", "Full system access; bypasses dataset_permissions.", ["core.km_admin"]),
 ]
 
 # Maps the legacy users.role string values onto core.* keys for the v8→v9
@@ -1331,10 +2314,8 @@ SYSTEM_EVERYONE_GROUP = "Everyone"
 # app.auth.access (admin short-circuit) and the OAuth callback (default
 # Everyone membership for new users); changing them is a breaking change.
 _SYSTEM_GROUPS_SEED = [
-    (SYSTEM_ADMIN_GROUP,
-     "System: full access to all data and admin actions"),
-    (SYSTEM_EVERYONE_GROUP,
-     "System: default group every user is implicitly a member of"),
+    (SYSTEM_ADMIN_GROUP, "System: full access to all data and admin actions"),
+    (SYSTEM_EVERYONE_GROUP, "System: default group every user is implicitly a member of"),
 ]
 
 
@@ -1350,9 +2331,7 @@ def _seed_system_groups(conn: duckdb.DuckDBPyConnection) -> None:
     import uuid as _uuid
 
     for name, description in _SYSTEM_GROUPS_SEED:
-        existing = conn.execute(
-            "SELECT id, is_system FROM user_groups WHERE name = ?", [name]
-        ).fetchone()
+        existing = conn.execute("SELECT id, is_system FROM user_groups WHERE name = ?", [name]).fetchone()
         if existing is None:
             conn.execute(
                 """INSERT INTO user_groups (id, name, description, is_system, created_by)
@@ -1394,9 +2373,7 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
     try:
         _seed_system_groups(conn)
 
-        admin_group_id = conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
-        ).fetchone()[0]
+        admin_group_id = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()[0]
         everyone_group_id = conn.execute(
             "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_EVERYONE_GROUP]
         ).fetchone()[0]
@@ -1405,16 +2382,14 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         # column having been physically dropped already (re-run safety) and of
         # malformed JSON (caught row-by-row, skipped silently).
         has_groups_col = conn.execute(
-            "SELECT 1 FROM information_schema.columns "
-            "WHERE table_name = 'users' AND column_name = 'groups'"
+            "SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'groups'"
         ).fetchone()
         if has_groups_col:
-            rows = conn.execute(
-                "SELECT id, groups FROM users WHERE groups IS NOT NULL"
-            ).fetchall()
+            rows = conn.execute("SELECT id, groups FROM users WHERE groups IS NOT NULL").fetchall()
             for user_id, groups_json in rows:
                 try:
                     import json as _json
+
                     names = _json.loads(groups_json) if isinstance(groups_json, str) else (groups_json or [])
                 except (ValueError, TypeError):
                     names = []
@@ -1424,7 +2399,8 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                     if not isinstance(name, str) or not name.strip():
                         continue
                     group_row = conn.execute(
-                        "SELECT id FROM user_groups WHERE name = ?", [name],
+                        "SELECT id FROM user_groups WHERE name = ?",
+                        [name],
                     ).fetchone()
                     if not group_row:
                         continue
@@ -1437,9 +2413,9 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                         )
                     except duckdb.ConstraintException:
                         logger.debug(
-                            "v13 backfill step 2 (google_sync): skipped "
-                            "insert for user=%s group=%s — already present",
-                            user_id, name,
+                            "v13 backfill step 2 (google_sync): skipped insert for user=%s group=%s — already present",
+                            user_id,
+                            name,
                         )
 
         # 3. core.admin grants → Admin membership. Tolerant of either table being
@@ -1515,7 +2491,8 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                     logger.debug(
                         "v13 backfill step 5 (resource_grants): skipped "
                         "insert for group=%s resource=%s — already migrated",
-                        group_id, resource_id,
+                        group_id,
+                        resource_id,
                     )
 
         # Audit: log any non-core capability grants before dropping the
@@ -1540,7 +2517,8 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                     "If this role was registered via register_internal_role(), "
                     "the affected users need to be re-added to an "
                     "appropriate user_group post-upgrade.",
-                    cnt, role_key,
+                    cnt,
+                    role_key,
                 )
 
         # 6. Drop legacy tables in FK-correct order: dependent tables first.
@@ -1599,8 +2577,7 @@ def _v13_to_v14_finalize(conn: duckdb.DuckDBPyConnection) -> None:
     ).fetchone()[0]
     if orphan_members:
         logger.warning(
-            "v14 migration: dropping %d orphan user_group_members rows "
-            "(group_id pointed at a deleted user_groups.id)",
+            "v14 migration: dropping %d orphan user_group_members rows (group_id pointed at a deleted user_groups.id)",
             orphan_members,
         )
     if orphan_grants:
@@ -1623,9 +2600,7 @@ def _v13_to_v14_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         )
 
         # user_group_members rebuild
-        conn.execute(
-            "ALTER TABLE user_group_members RENAME TO user_group_members_v13_pre"
-        )
+        conn.execute("ALTER TABLE user_group_members RENAME TO user_group_members_v13_pre")
         conn.execute(
             """CREATE TABLE user_group_members (
                 user_id   VARCHAR NOT NULL,
@@ -1645,9 +2620,7 @@ def _v13_to_v14_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute("DROP TABLE user_group_members_v13_pre")
 
         # resource_grants rebuild
-        conn.execute(
-            "ALTER TABLE resource_grants RENAME TO resource_grants_v13_pre"
-        )
+        conn.execute("ALTER TABLE resource_grants RENAME TO resource_grants_v13_pre")
         conn.execute(
             """CREATE TABLE resource_grants (
                 id            VARCHAR PRIMARY KEY,
@@ -1758,11 +2731,13 @@ def _v18_to_v19_finalize(conn: duckdb.DuckDBPyConnection) -> None:
     `primary_key`) still migrate cleanly. Wrapped in BEGIN/COMMIT;
     on error ROLLBACK and the outer caller skips the schema_version bump.
     """
+
     def _existing_cols(table: str) -> set[str]:
         return {
-            r[0] for r in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = ?", [table],
+            r[0]
+            for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
+                [table],
             ).fetchall()
         }
 
@@ -1796,26 +2771,51 @@ def _v18_to_v19_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                 )"""
             )
             users_target_cols = [
-                "id", "email", "name", "password_hash",
-                "setup_token", "setup_token_created",
-                "reset_token", "reset_token_created",
-                "active", "deactivated_at", "deactivated_by",
-                "created_at", "updated_at",
+                "id",
+                "email",
+                "name",
+                "password_hash",
+                "setup_token",
+                "setup_token_created",
+                "reset_token",
+                "reset_token_created",
+                "active",
+                "deactivated_at",
+                "deactivated_by",
+                "created_at",
+                "updated_at",
             ]
             old_users_cols = _existing_cols("users_v18_pre")
             common = [c for c in users_target_cols if c in old_users_cols]
             col_list = ", ".join(common)
-            conn.execute(
-                f"INSERT INTO users ({col_list}) "
-                f"SELECT {col_list} FROM users_v18_pre"
-            )
+            conn.execute(f"INSERT INTO users ({col_list}) SELECT {col_list} FROM users_v18_pre")
             conn.execute("DROP TABLE users_v18_pre")
 
         # 4: rebuild table_registry without `is_public` column.
         if "is_public" in _existing_cols("table_registry"):
-            conn.execute(
-                "ALTER TABLE table_registry RENAME TO table_registry_v18_pre"
-            )
+            # v49: _SYSTEM_SCHEMA runs before the migration ladder and
+            # creates ``data_package_tables`` with a FK pointing at
+            # table_registry(id). DuckDB blocks the RENAME until the
+            # dependent is dropped — drop it and recreate after the swap.
+            # The v49 finalize re-establishes data_package_tables, and the
+            # body of this migration's INSERT … SELECT preserves all
+            # registry rows so the recreated FK won't dangle. Saved-rows
+            # in data_package_tables also stay valid (they reference
+            # table_registry.id which is preserved verbatim).
+            data_pkg_existed = False
+            pkg_rows = []
+            try:
+                pkg_rows = conn.execute(
+                    "SELECT package_id, table_id, added_at, added_by FROM data_package_tables"
+                ).fetchall()
+                data_pkg_existed = True
+                conn.execute("DROP TABLE data_package_tables")
+            except duckdb.Error:
+                # Table doesn't exist (pre-v49 DB or hand-crafted fixture);
+                # the v49 migration body will create it later.
+                pass
+
+            conn.execute("ALTER TABLE table_registry RENAME TO table_registry_v18_pre")
             conn.execute(
                 """CREATE TABLE table_registry (
                     id VARCHAR PRIMARY KEY,
@@ -1835,19 +2835,46 @@ def _v18_to_v19_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                 )"""
             )
             registry_target_cols = [
-                "id", "name", "source_type", "bucket", "source_table",
-                "sync_strategy", "query_mode", "sync_schedule",
-                "profile_after_sync", "primary_key", "folder",
-                "description", "registered_by", "registered_at",
+                "id",
+                "name",
+                "source_type",
+                "bucket",
+                "source_table",
+                "sync_strategy",
+                "query_mode",
+                "sync_schedule",
+                "profile_after_sync",
+                "primary_key",
+                "folder",
+                "description",
+                "registered_by",
+                "registered_at",
             ]
             old_registry_cols = _existing_cols("table_registry_v18_pre")
             common = [c for c in registry_target_cols if c in old_registry_cols]
             col_list = ", ".join(common)
-            conn.execute(
-                f"INSERT INTO table_registry ({col_list}) "
-                f"SELECT {col_list} FROM table_registry_v18_pre"
-            )
+            conn.execute(f"INSERT INTO table_registry ({col_list}) SELECT {col_list} FROM table_registry_v18_pre")
             conn.execute("DROP TABLE table_registry_v18_pre")
+
+            # Recreate the v49 junction + restore any rows we captured.
+            if data_pkg_existed:
+                conn.execute(
+                    """CREATE TABLE data_package_tables (
+                        package_id  VARCHAR NOT NULL REFERENCES data_packages(id),
+                        table_id    VARCHAR NOT NULL REFERENCES table_registry(id),
+                        added_at    TIMESTAMP DEFAULT current_timestamp,
+                        added_by    VARCHAR,
+                        PRIMARY KEY (package_id, table_id)
+                    )"""
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_data_package_tables_table ON data_package_tables(table_id)"
+                )
+                for row in pkg_rows:
+                    conn.execute(
+                        "INSERT INTO data_package_tables(package_id, table_id, added_at, added_by) VALUES (?, ?, ?, ?)",
+                        list(row),
+                    )
 
         conn.execute("COMMIT")
     except Exception:
@@ -1870,9 +2897,7 @@ def _seed_core_roles(conn: duckdb.DuckDBPyConnection) -> None:
     import uuid as _uuid
 
     for key, display_name, description, implies in _CORE_ROLES_SEED:
-        existing = conn.execute(
-            "SELECT id FROM internal_roles WHERE key = ?", [key]
-        ).fetchone()
+        existing = conn.execute("SELECT id FROM internal_roles WHERE key = ?", [key]).fetchone()
         implies_json = _json.dumps(implies)
         if existing:
             conn.execute(
@@ -1904,25 +2929,21 @@ def _backfill_users_role_to_grants(conn: duckdb.DuckDBPyConnection) -> None:
     # Verify users.role column still exists (we may be re-running after a
     # half-applied migration); skip silently if it's already gone.
     has_role_col = conn.execute(
-        "SELECT 1 FROM information_schema.columns "
-        "WHERE table_name = 'users' AND column_name = 'role'"
+        "SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'role'"
     ).fetchone()
     if not has_role_col:
         return
 
-    rows = conn.execute(
-        "SELECT id, role FROM users WHERE role IS NOT NULL"
-    ).fetchall()
+    rows = conn.execute("SELECT id, role FROM users WHERE role IS NOT NULL").fetchall()
     backfilled = 0
     for user_id, role_str in rows:
         role_key = _LEGACY_ROLE_TO_CORE_KEY.get(role_str, "core.viewer")
-        role_row = conn.execute(
-            "SELECT id FROM internal_roles WHERE key = ?", [role_key]
-        ).fetchone()
+        role_row = conn.execute("SELECT id FROM internal_roles WHERE key = ?", [role_key]).fetchone()
         if not role_row:
             logger.warning(
                 "v9 backfill: core role %s missing — skipping user %s",
-                role_key, user_id,
+                role_key,
+                user_id,
             )
             continue
         try:
@@ -2208,8 +3229,7 @@ def _v28_to_v29_finalize(conn) -> None:
     are gone after the first run and the seed INSERTs use ON CONFLICT.
     """
     has_welcome = conn.execute(
-        "SELECT 1 FROM information_schema.tables "
-        "WHERE table_schema = 'main' AND table_name = 'welcome_template'"
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'main' AND table_name = 'welcome_template'"
     ).fetchone()
     if has_welcome:
         conn.execute(
@@ -2220,8 +3240,7 @@ def _v28_to_v29_finalize(conn) -> None:
         conn.execute("DROP TABLE welcome_template")
 
     has_claude_md = conn.execute(
-        "SELECT 1 FROM information_schema.tables "
-        "WHERE table_schema = 'main' AND table_name = 'claude_md_template'"
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'main' AND table_name = 'claude_md_template'"
     ).fetchone()
     if has_claude_md:
         conn.execute(
@@ -2236,8 +3255,7 @@ def _v28_to_v29_finalize(conn) -> None:
     # operators) or via a prior migration run (idempotent re-execution).
     for key in ("welcome", "claude_md", "home"):
         conn.execute(
-            "INSERT INTO instance_templates (key, content) VALUES (?, NULL) "
-            "ON CONFLICT (key) DO NOTHING",
+            "INSERT INTO instance_templates (key, content) VALUES (?, NULL) ON CONFLICT (key) DO NOTHING",
             [key],
         )
 
@@ -2376,15 +3394,27 @@ def _v34_to_v35_migrate(conn: duckdb.DuckDBPyConnection) -> None:
     The audit columns (``archived_at``, ``archived_by``) ship first
     behind ``IF NOT EXISTS`` so they're safe in all three states.
     """
-    conn.execute(
-        "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP"
-    )
-    conn.execute(
-        "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_by VARCHAR"
-    )
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS archived_by VARCHAR")
+
+    # If the table is already at a post-v49 shape (synthetic_name column
+    # present from phase-1 Flea refactor), the v35 visibility_status rebuild
+    # has effectively been done long ago AND the v50 UNIQUE INDEX on
+    # synthetic_name now blocks `DROP COLUMN visibility_status` (DuckDB
+    # forbids dropping a column when an index references a column after it
+    # positionally). Short-circuit so re-runs of the ladder on a fully
+    # migrated DB (e.g. a test that resets schema_version backwards) stay
+    # idempotent.
+    post_v49 = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'store_entities' AND column_name = 'synthetic_name'"
+    ).fetchone()
+    if post_v49:
+        return
 
     cols = {
-        r[0] for r in conn.execute(
+        r[0]
+        for r in conn.execute(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_name = 'store_entities' "
             "  AND column_name IN ('visibility_status', '_vis_v35')"
@@ -2398,18 +3428,10 @@ def _v34_to_v35_migrate(conn: duckdb.DuckDBPyConnection) -> None:
         # in v36 (DuckDB ALTER COLUMN supports SET NOT NULL / SET DEFAULT
         # but not ADD CHECK on an existing column). Value-list enforcement
         # is application-side via VALID_VISIBILITY in StoreEntitiesRepository.
-        conn.execute(
-            "ALTER TABLE store_entities ADD COLUMN _vis_v35 VARCHAR"
-        )
-        conn.execute(
-            "UPDATE store_entities SET _vis_v35 = visibility_status"
-        )
-        conn.execute(
-            "ALTER TABLE store_entities DROP COLUMN visibility_status"
-        )
-        conn.execute(
-            "ALTER TABLE store_entities RENAME COLUMN _vis_v35 TO visibility_status"
-        )
+        conn.execute("ALTER TABLE store_entities ADD COLUMN _vis_v35 VARCHAR")
+        conn.execute("UPDATE store_entities SET _vis_v35 = visibility_status")
+        conn.execute("ALTER TABLE store_entities DROP COLUMN visibility_status")
+        conn.execute("ALTER TABLE store_entities RENAME COLUMN _vis_v35 TO visibility_status")
     elif has_temp and not has_vis:
         # Partial-rebuild recovery — prior attempt dropped visibility_status
         # but the RENAME never landed. Data is already in _vis_v35 from
@@ -2418,19 +3440,14 @@ def _v34_to_v35_migrate(conn: duckdb.DuckDBPyConnection) -> None:
             "v34→v35 detected partial-rebuild state (visibility_status "
             "missing, _vis_v35 present); recovering via RENAME"
         )
-        conn.execute(
-            "ALTER TABLE store_entities RENAME COLUMN _vis_v35 TO visibility_status"
-        )
+        conn.execute("ALTER TABLE store_entities RENAME COLUMN _vis_v35 TO visibility_status")
     elif has_vis and has_temp:
         # Both present — earlier rebuild aborted before the DROP.
         # visibility_status holds the canonical values; drop the temp.
         logger.warning(
-            "v34→v35 detected partial-rebuild state (both visibility_status "
-            "and _vis_v35 present); dropping the temp"
+            "v34→v35 detected partial-rebuild state (both visibility_status and _vis_v35 present); dropping the temp"
         )
-        conn.execute(
-            "ALTER TABLE store_entities DROP COLUMN _vis_v35"
-        )
+        conn.execute("ALTER TABLE store_entities DROP COLUMN _vis_v35")
     # else: neither column is present, which means store_entities itself
     # is at a shape ahead of v34. _SYSTEM_SCHEMA above already created
     # the post-v35 shape; nothing to do here.
@@ -2450,13 +3467,22 @@ def _v34_to_v35_migrate(conn: duckdb.DuckDBPyConnection) -> None:
 # whose schema_version row says 36 but whose users table is missing
 # `onboarded` — the only consequence-free recovery is an idempotent
 # ADD IF NOT EXISTS at the v36 step.
-_V35_TO_V36_MIGRATIONS = [
-    "UPDATE store_entities SET visibility_status = 'pending' WHERE visibility_status IS NULL",
-    "ALTER TABLE store_entities ALTER COLUMN visibility_status SET NOT NULL",
-    "ALTER TABLE store_entities ALTER COLUMN visibility_status SET DEFAULT 'pending'",
-    "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarded BOOLEAN DEFAULT FALSE",
-    "UPDATE users SET onboarded = FALSE WHERE onboarded IS NULL",
-]
+def _v35_to_v36_migrate(conn: duckdb.DuckDBPyConnection) -> None:
+    """Idempotent v35→v36. Gates the ALTER COLUMN steps on current
+    nullability — once v50 creates the UNIQUE INDEX on store_entities,
+    DuckDB blocks ALTER COLUMN against the table (the index references
+    a column "after" visibility_status positionally), so a redundant
+    SET NOT NULL on an already-NOT-NULL column would explode."""
+    conn.execute("UPDATE store_entities SET visibility_status = 'pending' WHERE visibility_status IS NULL")
+    nullable = conn.execute(
+        "SELECT is_nullable FROM information_schema.columns "
+        "WHERE table_name = 'store_entities' AND column_name = 'visibility_status'"
+    ).fetchone()
+    if nullable and nullable[0] == "YES":
+        conn.execute("ALTER TABLE store_entities ALTER COLUMN visibility_status SET NOT NULL")
+        conn.execute("ALTER TABLE store_entities ALTER COLUMN visibility_status SET DEFAULT 'pending'")
+    conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarded BOOLEAN DEFAULT FALSE")
+    conn.execute("UPDATE users SET onboarded = FALSE WHERE onboarded IS NULL")
 
 
 # v37→v38: flea-market entity edit feature with version history.
@@ -2483,47 +3509,55 @@ _V35_TO_V36_MIGRATIONS = [
 # created_at backfilled from the entity row; submission_id is best-
 # effort (we look up the most recent submission_id for the entity_id
 # if any exists, else NULL).
-_V37_TO_V38_MIGRATIONS = [
+def _v37_to_v38_migrate(conn: duckdb.DuckDBPyConnection) -> None:
+    """Idempotent v37→v38. Gates the ``version_no SET NOT NULL`` step on
+    current nullability — see ``_v35_to_v36_migrate`` for why."""
     # Defensive: minimal partial-state DBs from earlier migrations may
     # be missing columns the backfill UPDATE below references. Add
     # them idempotently first. Real post-v29 DBs already have these;
     # this is a no-op there. Keeps the recovery path through
     # `tests/test_db_schema_version.py::test_v32_db_with_partial_v35_recovers_through_full_ladder`
     # intact when walking from v32 fixture forward.
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version VARCHAR",
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS file_size BIGINT",
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS created_at TIMESTAMP",
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version VARCHAR")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS file_size BIGINT")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS created_at TIMESTAMP")
     # DuckDB ALTER doesn't accept "NOT NULL DEFAULT" together — split:
     # ADD nullable + DEFAULT, backfill nulls, then SET NOT NULL.
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version_no INTEGER DEFAULT 1",
-    "UPDATE store_entities SET version_no = 1 WHERE version_no IS NULL",
-    "ALTER TABLE store_entities ALTER COLUMN version_no SET NOT NULL",
-    "ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version_history JSON DEFAULT '[]'",
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version_no INTEGER DEFAULT 1")
+    conn.execute("UPDATE store_entities SET version_no = 1 WHERE version_no IS NULL")
+    nullable = conn.execute(
+        "SELECT is_nullable FROM information_schema.columns "
+        "WHERE table_name = 'store_entities' AND column_name = 'version_no'"
+    ).fetchone()
+    if nullable and nullable[0] == "YES":
+        conn.execute("ALTER TABLE store_entities ALTER COLUMN version_no SET NOT NULL")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS version_history JSON DEFAULT '[]'")
     # Backfill: synthesize a v1 entry from existing columns when the
-    # history is empty. Idempotent — re-running on a populated row
-    # is a no-op because the WHERE filters on empty/NULL history.
-    """
-    UPDATE store_entities SET version_history = json_array(
-        json_object(
-            'n',  1,
-            'hash', version,
-            'sha256', NULL,
-            'size', file_size,
-            'submission_id', (
-                SELECT id FROM store_submissions
-                 WHERE entity_id = store_entities.id
-                 ORDER BY created_at DESC
-                 LIMIT 1
-            ),
-            'created_at', CAST(created_at AS VARCHAR),
-            'created_by', owner_user_id
+    # history is empty. Idempotent — re-running on a populated row is
+    # a no-op because the WHERE filters on empty/NULL history.
+    conn.execute(
+        """
+        UPDATE store_entities SET version_history = json_array(
+            json_object(
+                'n',  1,
+                'hash', version,
+                'sha256', NULL,
+                'size', file_size,
+                'submission_id', (
+                    SELECT id FROM store_submissions
+                     WHERE entity_id = store_entities.id
+                     ORDER BY created_at DESC
+                     LIMIT 1
+                ),
+                'created_at', CAST(created_at AS VARCHAR),
+                'created_by', owner_user_id
+            )
         )
+        WHERE version_history IS NULL
+           OR version_history = '[]'
+           OR json_array_length(version_history) = 0
+        """
     )
-    WHERE version_history IS NULL
-       OR version_history = '[]'
-       OR json_array_length(version_history) = 0
-    """,
-]
 
 
 # v39: marketplace_plugins.is_system flag backing the "system plugin"
@@ -2565,6 +3599,755 @@ _V39_TO_V40_MIGRATIONS = [
     # the fresh-create path above and additive for the upgrade path.
     "ALTER TABLE bq_metadata_cache ADD COLUMN IF NOT EXISTS entity_type VARCHAR",
     "ALTER TABLE bq_metadata_cache ADD COLUMN IF NOT EXISTS known_columns JSON",
+]
+
+
+def _v40_to_v41(conn: duckdb.DuckDBPyConnection) -> None:
+    """v41 (was v40 pre-rebase): audit_log gains params_before (JSON), client_ip
+    (VARCHAR), client_kind (VARCHAR, 'cli'|'web'|'agent'|'scheduler'|'external'),
+    and correlation_id (VARCHAR, groups multi-step operations).
+
+    Three indices added on (timestamp), (user_id, timestamp), (action, timestamp)
+    to keep Activity Center timeline queries under 100ms even at 100k+ rows.
+
+    NOTE: DuckDB does not honor DESC in CREATE INDEX; the planner is free to
+    scan either direction. On a populated audit_log (~100k+ rows), each
+    CREATE INDEX is single-threaded and may take 10–30s.
+    """
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS timestamp TIMESTAMP DEFAULT current_timestamp")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS user_id VARCHAR")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS action VARCHAR")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS resource VARCHAR")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS params JSON")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS result VARCHAR")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS duration_ms INTEGER")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS params_before JSON")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS client_ip VARCHAR")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS client_kind VARCHAR")
+    conn.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS correlation_id VARCHAR")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_timestamp_desc ON audit_log(timestamp)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_user_time ON audit_log(user_id, timestamp)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_action_time ON audit_log(action, timestamp)")
+
+
+def _v41_to_v42(conn: duckdb.DuckDBPyConnection) -> None:
+    """v42 (was v41 pre-rebase): 7 new usage_* tables for platform telemetry.
+
+    - usage_events: per-event log (tool_use, slash_command, subagent, mcp_call)
+      extracted from session JSONLs.
+    - usage_session_summary: per-session aggregate keyed by session_file.
+      session_id is NOT NULL — the processor always extracts a session_id from
+      JSONL; orphan sessions are skipped before this row is written.
+    - usage_tool_daily / usage_plugin_daily: daily rollups for fast marketplace
+      queries.
+    - usage_attribution_skills / _agents / _commands: skill/agent/command
+      attribution exploded from plugin manifests; composite PKs allow the same
+      name to appear in two different plugins.
+
+    All CREATE TABLE/INDEX statements are IF NOT EXISTS — safe to re-run.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_events (
+            id                  VARCHAR PRIMARY KEY,
+            session_id          VARCHAR NOT NULL,
+            session_file        VARCHAR NOT NULL,
+            username            VARCHAR NOT NULL,
+            event_uuid          VARCHAR,
+            parent_uuid         VARCHAR,
+            event_type          VARCHAR NOT NULL,
+            tool_name           VARCHAR,
+            skill_name          VARCHAR,
+            subagent_type       VARCHAR,
+            command_name        VARCHAR,
+            is_error            BOOLEAN DEFAULT FALSE,
+            source              VARCHAR NOT NULL,
+            ref_id              VARCHAR,
+            model               VARCHAR,
+            cwd                 VARCHAR,
+            occurred_at         TIMESTAMP NOT NULL,
+            processor_version   INTEGER NOT NULL,
+            extracted_at        TIMESTAMP DEFAULT current_timestamp,
+            friction_tags       JSON
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_session_summary (
+            session_file        VARCHAR PRIMARY KEY,
+            session_id          VARCHAR NOT NULL,
+            username            VARCHAR NOT NULL,
+            started_at          TIMESTAMP,
+            ended_at            TIMESTAMP,
+            active_seconds      INTEGER,
+            wall_seconds        INTEGER,
+            user_messages       INTEGER DEFAULT 0,
+            assistant_messages  INTEGER DEFAULT 0,
+            tool_calls          INTEGER DEFAULT 0,
+            tool_errors         INTEGER DEFAULT 0,
+            skill_invocations   INTEGER DEFAULT 0,
+            subagent_dispatches INTEGER DEFAULT 0,
+            mcp_calls           INTEGER DEFAULT 0,
+            slash_commands      INTEGER DEFAULT 0,
+            distinct_tools      INTEGER DEFAULT 0,
+            distinct_skills     INTEGER DEFAULT 0,
+            primary_model       VARCHAR,
+            processor_version   INTEGER NOT NULL,
+            extracted_at        TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_tool_daily (
+            day                 DATE NOT NULL,
+            tool_name           VARCHAR NOT NULL,
+            source              VARCHAR NOT NULL,
+            invocations         INTEGER DEFAULT 0,
+            error_count         INTEGER DEFAULT 0,
+            distinct_users      INTEGER DEFAULT 0,
+            distinct_sessions   INTEGER DEFAULT 0,
+            PRIMARY KEY (day, tool_name, source)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_plugin_daily (
+            day                 DATE NOT NULL,
+            source              VARCHAR NOT NULL,
+            ref_id              VARCHAR NOT NULL,
+            invocations         INTEGER DEFAULT 0,
+            distinct_users      INTEGER DEFAULT 0,
+            distinct_sessions   INTEGER DEFAULT 0,
+            PRIMARY KEY (day, source, ref_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_attribution_skills (
+            source       VARCHAR NOT NULL,
+            ref_id       VARCHAR NOT NULL,
+            skill_name   VARCHAR NOT NULL,
+            PRIMARY KEY (source, ref_id, skill_name)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_attribution_agents (
+            source       VARCHAR NOT NULL,
+            ref_id       VARCHAR NOT NULL,
+            agent_name   VARCHAR NOT NULL,
+            PRIMARY KEY (source, ref_id, agent_name)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_attribution_commands (
+            source       VARCHAR NOT NULL,
+            ref_id       VARCHAR NOT NULL,
+            command_name VARCHAR NOT NULL,
+            PRIMARY KEY (source, ref_id, command_name)
+        )
+    """)
+    # Indices — created after all tables so the batch can be re-run safely.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_session ON usage_events(session_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_user_time ON usage_events(username, occurred_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_tool ON usage_events(tool_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_skill ON usage_events(skill_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_ref ON usage_events(source, ref_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session_user ON usage_session_summary(username)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session_started ON usage_session_summary(started_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_attr_skill_lookup ON usage_attribution_skills(skill_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_attr_agent_lookup ON usage_attribution_agents(agent_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_attr_command_lookup ON usage_attribution_commands(command_name)")
+
+
+def _v42_to_v43(conn: duckdb.DuckDBPyConnection) -> None:
+    """v43: user_observability_views — per-user saved filter combinations for
+    the new unified /admin/activity page.
+
+    Saved view payload (`query_json`) is the full UI state needed to reproduce
+    a page render: `{window, lens, filters: {user_id, action_prefix, source,
+    result_pattern}, search, sort}`. The schema is intentionally JSON not
+    columns — the UI evolves faster than DB migrations.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_observability_views (
+            id          VARCHAR PRIMARY KEY,
+            user_id     VARCHAR NOT NULL,
+            name        VARCHAR NOT NULL,
+            query_json  JSON NOT NULL,
+            created_at  TIMESTAMP DEFAULT current_timestamp,
+            UNIQUE (user_id, name)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_obs_views_user ON user_observability_views(user_id, created_at)")
+
+
+def _v43_to_v44(conn: duckdb.DuckDBPyConnection) -> None:
+    """v44: homepage status frame backing columns.
+
+    Adds ``users.last_pull_at`` (per-user manifest fetch timestamp) and
+    four BIGINT token counters on ``usage_session_summary``
+    (``input_tokens``, ``output_tokens``, ``cache_read_tokens``,
+    ``cache_creation_tokens``). All idempotent ALTERs — fresh installs
+    receive the columns from ``_SYSTEM_SCHEMA`` and this is a no-op for
+    them; upgrade path picks them up.
+
+    Token columns default to 0; existing summary rows backfill on the
+    next UsageProcessor tick because ``USAGE_PROCESSOR_VERSION`` bumps
+    from 1 → 2 in the same release, which the session-pipeline
+    reprocess loop uses to invalidate stale summaries.
+    """
+    conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_pull_at TIMESTAMP")
+    for col in (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_creation_tokens",
+    ):
+        conn.execute(f"ALTER TABLE usage_session_summary ADD COLUMN IF NOT EXISTS {col} BIGINT DEFAULT 0")
+
+
+def _v44_to_v45(conn: duckdb.DuckDBPyConnection) -> None:
+    """v45: add user_id column to usage tables for stable RBAC filtering.
+
+    The ``username`` column in ``usage_session_summary`` / ``usage_events``
+    stores the directory name from the session-data path, which is either
+    an email local-part (session collector) or a UUID (upload API). Email
+    local-parts are unstable — they change when users rename. ``user_id``
+    is the stable identity and becomes the authoritative RBAC filter
+    column for the ``agnes_sessions`` / ``agnes_telemetry`` aliases.
+
+    Backfill: the UsageProcessor populates ``user_id`` on every
+    (re)process run. Existing rows get backfilled when
+    ``USAGE_PROCESSOR_VERSION`` bumps, which triggers the session-pipeline
+    reprocess loop.
+    """
+    conn.execute("ALTER TABLE usage_session_summary ADD COLUMN IF NOT EXISTS user_id VARCHAR")
+    conn.execute("ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS user_id VARCHAR")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session_user_id ON usage_session_summary(user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_user_id ON usage_events(user_id)")
+
+
+def _v46_to_v47(conn: duckdb.DuckDBPyConnection) -> None:
+    """v47: DuckDB FTS BM25 index over knowledge_items(title, content).
+
+    Replaces ``ILIKE '%q%'`` ranking-by-insertion-order in
+    ``KnowledgeRepository.search`` with BM25 relevance scoring (#121).
+
+    The migration is *soft* — and soft against *any* exception, not just
+    the ``duckdb.Error`` that ``ensure_knowledge_fts_index`` already
+    handles. A non-DuckDB exception escaping from the inner helper (for
+    example an ``OSError`` from an extension fetch that bypasses
+    DuckDB's wrapping in a sandboxed environment, or a future DuckDB
+    version surfacing a non-``Error`` subclass) would otherwise leave
+    the DB stuck at v46 forever. ``KnowledgeRepository.search`` falls
+    back to ILIKE on a missing index, so a soft-fail here is always
+    recoverable later (boot-time lifespan rebuild + per-mutation
+    ``create_fts_index(overwrite=1)`` both retry on every restart and
+    every write).
+
+    DuckDB FTS indexes are static snapshots — they don't track
+    base-table mutations automatically. The lifespan in ``app/main.py``
+    rebuilds once at boot as a safety net; ``create`` and title-or-
+    content ``update`` in the repo rebuild on every relevant mutation
+    via the same ``overwrite=1`` PRAGMA. At corpus sizes <few-thousand
+    rows this is sub-100ms.
+    """
+    try:
+        from src.fts import ensure_knowledge_fts_index
+
+        ensure_knowledge_fts_index(conn)
+    except Exception:  # noqa: BLE001 — best-effort migration, see docstring
+        # Logged at the call site (``ensure_knowledge_fts_index`` already
+        # WARNs on duckdb.Error); only surfaces here for non-DuckDB
+        # escapes. Schema bump must proceed regardless.
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "v47 FTS index creation raised non-duckdb exception during migration; "
+            "schema bumped to 47 anyway, search will fall back to ILIKE until "
+            "the next boot-time / per-mutation rebuild succeeds",
+            exc_info=True,
+        )
+
+
+def _v45_to_v46(conn: duckdb.DuckDBPyConnection) -> None:
+    """v46: per-user opt-out (dismiss) for knowledge items.
+
+    Adds ``knowledge_item_user_dismissed`` (user_id, item_id, dismissed_at)
+    with composite PK and an index on ``user_id`` to support the EXISTS
+    subquery used by list_items / search / count_items / bundle to filter
+    out items the caller has dismissed. Mandatory items are excluded from
+    that filter at the SQL layer (``status != 'mandatory'``); the API
+    further refuses POSTs against mandatory items so the row is never
+    written in the first place.
+
+    Idempotent: ``CREATE TABLE IF NOT EXISTS`` + ``CREATE INDEX IF NOT
+    EXISTS`` are safe to re-run. Fresh installs receive the table via
+    ``_SYSTEM_SCHEMA``; the upgrade path picks it up here.
+    """
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS knowledge_item_user_dismissed (
+            user_id VARCHAR NOT NULL,
+            item_id VARCHAR NOT NULL,
+            dismissed_at TIMESTAMP DEFAULT current_timestamp,
+            PRIMARY KEY (user_id, item_id)
+        )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_item_user_dismissed_user ON knowledge_item_user_dismissed(user_id)"
+    )
+
+
+def _v47_to_v48(conn: duckdb.DuckDBPyConnection) -> None:
+    """v48: marketplace telemetry refactor.
+
+    The v42 attribution layer (``usage_attribution_skills``, ``_agents``,
+    ``_commands``) lookups on ``skill_name`` *without* the plugin prefix,
+    while Claude Code writes identifiers as ``<plugin_name>:<local_name>``
+    in JSONL — so the lookup never matched and every event was attributed
+    to ``('builtin', None)``. The downstream ``usage_plugin_daily`` rollup
+    was filtered ``WHERE source IN ('curated','flea')`` and therefore
+    always empty.
+
+    The fix: prefix-split + live lookup against ``marketplace_plugins`` /
+    ``store_entities`` makes the attribution layer redundant. The new
+    schema replaces all four tables with two purpose-built rollups:
+
+    - ``usage_marketplace_item_daily``: per-day fact with count +
+      per-day distinct_users + error_count, primary granularity for
+      sparkline charts and incremental refresh.
+    - ``usage_marketplace_item_window``: sliding-window snapshot with
+      true distinct_users per window (recomputed from usage_events at
+      rebuild time, can't be summed from daily distincts). Two labels
+      shipped: ``last_7d`` (refreshed every tick), ``last_30d``
+      (refreshed hourly).
+
+    Drop targets verified empty / derivable on production-shape data:
+    - ``usage_plugin_daily``: 0 rows (always — the attribution bug
+      meant the WHERE clause never matched).
+    - ``usage_attribution_*``: mapping tables, derivable from plugin
+      tree on disk if ever needed again.
+    """
+    conn.execute("DROP TABLE IF EXISTS usage_attribution_skills")
+    conn.execute("DROP TABLE IF EXISTS usage_attribution_agents")
+    conn.execute("DROP TABLE IF EXISTS usage_attribution_commands")
+    conn.execute("DROP TABLE IF EXISTS usage_plugin_daily")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_marketplace_item_daily (
+            day            DATE    NOT NULL,
+            source         VARCHAR NOT NULL,
+            type           VARCHAR NOT NULL,
+            parent_plugin  VARCHAR NOT NULL DEFAULT '',
+            name           VARCHAR NOT NULL,
+            count          INTEGER NOT NULL DEFAULT 0,
+            distinct_users INTEGER NOT NULL DEFAULT 0,
+            error_count    INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (day, source, type, parent_plugin, name)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage_marketplace_item_window (
+            period_label   VARCHAR NOT NULL,
+            source         VARCHAR NOT NULL,
+            type           VARCHAR NOT NULL,
+            parent_plugin  VARCHAR NOT NULL DEFAULT '',
+            name           VARCHAR NOT NULL,
+            invocations    INTEGER NOT NULL DEFAULT 0,
+            distinct_users INTEGER NOT NULL DEFAULT 0,
+            refreshed_at   TIMESTAMP DEFAULT current_timestamp,
+            PRIMARY KEY (period_label, source, type, parent_plugin, name)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mid_lookup ON usage_marketplace_item_daily(source, type, parent_plugin, name)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_miw_lookup ON usage_marketplace_item_window(period_label, source, type)"
+    )
+
+
+def _v48_to_v49_migrate(conn: duckdb.DuckDBPyConnection) -> None:
+    """v49: phase-1 Flea refactor — add ``title``, ``tagline``, ``synthetic_name``.
+
+    Python function (not a SQL list) because the backfill needs Python-side
+    humanize logic (acronym dict + Title Case) which has no clean SQL
+    equivalent. Pattern mirrors ``_v34_to_v35_migrate``.
+
+    Steps:
+      1. Add columns nullable + default NULL so the ALTER works on a populated
+         table.
+      2. Iterate rows: compute ``title = humanize_name(strip_archive_suffix(name))``
+         and ``synthetic_name = f"{name}-by-{owner_username}"``. ``tagline``
+         stays NULL.
+      3. SET NOT NULL on ``title`` and ``synthetic_name``. ``tagline`` stays
+         nullable by design (optional short description).
+
+    Idempotent: re-runs are safe — ADD COLUMN IF NOT EXISTS is a no-op;
+    UPDATEs overwrite with the same values; ALTER ... SET NOT NULL is a
+    no-op when already NOT NULL.
+    """
+    from src.store_naming import humanize_name, strip_archive_suffix
+
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS title VARCHAR")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS tagline VARCHAR")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS synthetic_name VARCHAR")
+
+    rows = conn.execute("SELECT id, name, owner_username FROM store_entities").fetchall()
+    for row_id, name, owner_username in rows:
+        display_base = strip_archive_suffix(name or "")
+        title = humanize_name(display_base) or display_base or "Untitled"
+        synthetic = f"{name}-by-{owner_username}"
+        conn.execute(
+            "UPDATE store_entities SET title = ?, synthetic_name = ? WHERE id = ?",
+            [title, synthetic, row_id],
+        )
+
+    # Gate ALTER … SET NOT NULL on current nullability. DuckDB blocks
+    # ALTER COLUMN once an index references the table (which happens after
+    # v50 creates the UNIQUE INDEX on synthetic_name), so an unconditional
+    # re-run on a fully-migrated DB would explode. Idempotent path: skip
+    # the ALTER when the column is already NOT NULL.
+    nullable = {
+        r[0]: r[1]
+        for r in conn.execute(
+            "SELECT column_name, is_nullable FROM information_schema.columns "
+            "WHERE table_name = 'store_entities' "
+            "AND column_name IN ('title', 'synthetic_name')"
+        ).fetchall()
+    }
+    if nullable.get("title") == "YES":
+        conn.execute("ALTER TABLE store_entities ALTER COLUMN title SET NOT NULL")
+    if nullable.get("synthetic_name") == "YES":
+        conn.execute("ALTER TABLE store_entities ALTER COLUMN synthetic_name SET NOT NULL")
+
+
+def _v49_to_v50_migrate(conn: duckdb.DuckDBPyConnection) -> None:
+    """v50: enforce DB-level uniqueness on ``store_entities.synthetic_name``.
+
+    v49 introduced the column as NOT NULL but without uniqueness. App-level
+    ``_suffixed_already_taken`` only fires at upload/rename; any other write
+    path (admin DB hand-fix, future migration drift) could silently insert a
+    duplicate, and ``WHERE synthetic_name = ?`` would then non-deterministically
+    return one of the matching rows. With ``synthetic_name`` now the canonical
+    attribution key (rollup tables, marketplace bundle naming, JSONL invocation
+    prefix), uniqueness must be enforced at the DB level.
+
+    DuckDB has no ``ALTER TABLE ADD CONSTRAINT UNIQUE`` for existing tables,
+    but ``CREATE UNIQUE INDEX`` is functionally equivalent (rejects duplicate
+    inserts). The archive rewrite path
+    (``StoreEntitiesRepository.archive``) renames synthetic_name alongside
+    name, so archived rows cannot collide with live ones — a full-table
+    UNIQUE index is correct.
+
+    Steps:
+      1. Pre-flight: scan for existing duplicates. If any are found, abort
+         with ``RuntimeError`` listing them — the index creation would fail
+         anyway, but a structured error gives the operator a clear diagnostic
+         instead of a raw DuckDB constraint-violation message.
+      2. Create the UNIQUE index (idempotent via IF NOT EXISTS).
+
+    Idempotent: a re-run finds the index already present and skips both
+    the duplicate scan (which would still pass) and the CREATE.
+    """
+    # Pre-flight duplicate detection. List the actual conflicting slugs +
+    # row counts so the operator can resolve manually (typically by
+    # archiving one of the colliding rows, which rewrites its
+    # synthetic_name to the __archived__<epoch>-suffixed form).
+    dupes = conn.execute(
+        """SELECT synthetic_name, COUNT(*) AS n
+             FROM store_entities
+            GROUP BY synthetic_name
+           HAVING COUNT(*) > 1
+            ORDER BY n DESC, synthetic_name"""
+    ).fetchall()
+    if dupes:
+        summary = ", ".join(f"{name!r} x{n}" for name, n in dupes)
+        raise RuntimeError(
+            "v49→v50 migration blocked: duplicate synthetic_name values "
+            f"present in store_entities ({summary}). Resolve manually "
+            "(archive or rename the colliding rows) and re-run."
+        )
+
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_store_entities_synthetic_name ON store_entities(synthetic_name)"
+    )
+
+
+def _v51_to_v52(conn: duckdb.DuckDBPyConnection) -> None:
+    """v49: unified stack for Data Packages + Memory.
+
+    Single migration entry point for the v49 cutover. See
+    ``docs/brainstorms/2026-05-15-unified-stack-design.md`` section 8.1
+    for the full step list. Idempotent (``ALTER ... ADD COLUMN IF NOT
+    EXISTS``, ``CREATE TABLE IF NOT EXISTS``) so re-running is safe.
+
+    Steps 6 + 9b (junction populate + recreate) are conditional on the
+    legacy ``knowledge_items.domain`` column actually existing — fresh
+    installs come through ``_SYSTEM_SCHEMA`` which already creates the
+    post-v49 table shape (no ``domain`` column, ``knowledge_item_domains``
+    junction in place), so those steps no-op.
+    """
+    has_legacy_domain_col = (
+        conn.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = 'knowledge_items' AND column_name = 'domain'"
+        ).fetchone()
+        is not None
+    )
+
+    # 1) resource_grants.requirement — per-group 'available' | 'required'
+    # enum. Default 'available' preserves pre-v49 semantics. Required-tier
+    # applies to data_package / memory_domain / memory_item grants;
+    # marketplace_plugin Required-tier stays on
+    # marketplace_plugins.is_system per D1.
+    conn.execute("ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS requirement VARCHAR DEFAULT 'available'")
+
+    # 2) knowledge_items.is_required — splits the v15-era status='mandatory'
+    # overload into an orthogonal boolean. Items can now be 'approved' and
+    # also Required (governance tier), or 'pending' without affecting the
+    # Required state. Existing 'mandatory' rows migrate to
+    # is_required=TRUE, status='approved'.
+    conn.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS is_required BOOLEAN DEFAULT FALSE")
+    # Skip the backfill UPDATE on hand-crafted v1 fixtures where
+    # ``status`` was never added — the ladder upgrade from v1 reaches v15
+    # before v49 anyway, but the migration body sees the pre-v15 shape
+    # only on those test paths. Guard so the migration stays no-op-safe.
+    has_status = conn.execute(
+        "SELECT 1 FROM information_schema.columns WHERE table_name = 'knowledge_items' AND column_name = 'status'"
+    ).fetchone()
+    if has_status:
+        conn.execute(
+            "UPDATE knowledge_items    SET is_required = TRUE, status = 'approved'  WHERE status = 'mandatory'"
+        )
+
+    # 3) Data Packages — admin-curated bundles of tables. A package is a
+    # browse / add-to-stack unit; the tables it contains flow into the
+    # caller's effective table set via DATA_PACKAGE grants. See spec
+    # section 3.3.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_packages (
+            id              VARCHAR PRIMARY KEY,
+            slug            VARCHAR UNIQUE NOT NULL,
+            name            VARCHAR NOT NULL,
+            description     TEXT,
+            icon            VARCHAR,
+            color           VARCHAR,
+            cover_image_url VARCHAR,
+            created_by      VARCHAR,
+            created_at      TIMESTAMP DEFAULT current_timestamp,
+            updated_at      TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_package_tables (
+            package_id  VARCHAR NOT NULL REFERENCES data_packages(id),
+            table_id    VARCHAR NOT NULL REFERENCES table_registry(id),
+            added_at    TIMESTAMP DEFAULT current_timestamp,
+            added_by    VARCHAR,
+            PRIMARY KEY (package_id, table_id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_data_package_tables_table ON data_package_tables(table_id)")
+
+    # 4) Memory Domains — first-class entities replacing the scalar
+    # ``knowledge_items.domain`` string. The ``memory_domains`` parent
+    # table is created here; ``knowledge_item_domains`` is deferred to
+    # after the legacy column is dropped (step 9) because DuckDB blocks
+    # ``ALTER TABLE knowledge_items DROP COLUMN`` while a child table
+    # holds an FK reference. See spec section 3.4.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_domains (
+            id              VARCHAR PRIMARY KEY,
+            slug            VARCHAR UNIQUE NOT NULL,
+            name            VARCHAR NOT NULL,
+            description     TEXT,
+            icon            VARCHAR,
+            color           VARCHAR,
+            cover_image_url VARCHAR,
+            created_by      VARCHAR,
+            created_at      TIMESTAMP DEFAULT current_timestamp,
+            updated_at      TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+
+    # 5) Seed canonical memory_domains from the legacy ``VALID_DOMAINS``
+    # constant in ``app/api/memory.py`` (the v15 hardcoded six). Deterministic
+    # ``md_<slug>`` ids so downstream Phase-2+ refactors can rely on the
+    # naming convention without re-querying. Icons / colors are part of the
+    # canonical seed so the Browse UI renders consistently across instances.
+    canonical_domains = [
+        ("md_finance", "finance", "Finance", "💰", "#dcfce7"),
+        ("md_engineering", "engineering", "Engineering", "⚙️", "#dbeafe"),
+        ("md_product", "product", "Product", "📦", "#fef3c7"),
+        ("md_data", "data", "Data", "📊", "#f3e8ff"),
+        ("md_operations", "operations", "Operations", "🔧", "#fff7ed"),
+        ("md_infrastructure", "infrastructure", "Infrastructure", "🏗️", "#fef2f2"),
+    ]
+    for did, slug, name, icon, color in canonical_domains:
+        conn.execute(
+            "INSERT INTO memory_domains (id, slug, name, icon, color, created_at) "
+            "VALUES (?, ?, ?, ?, ?, current_timestamp) "
+            "ON CONFLICT (slug) DO NOTHING",
+            [did, slug, name, icon, color],
+        )
+
+    # Plus one row per non-canonical ``knowledge_items.domain`` value found
+    # in the existing data (defensive — instances may have hand-set domains
+    # outside the six). Slug normalization mirrors the junction populate
+    # query below so the join in task 1.6 matches deterministically. Only
+    # runs on an upgrade path where the legacy column still exists; fresh
+    # installs skip this since ``_SYSTEM_SCHEMA`` ships the post-v49 shape.
+    if has_legacy_domain_col:
+        conn.execute(
+            """
+            INSERT INTO memory_domains(id, slug, name, created_at)
+            SELECT
+                'md_' || lower(regexp_replace(domain, '[^a-z0-9]+', '_', 'g')),
+                lower(regexp_replace(domain, '[^a-z0-9]+', '-', 'g')),
+                domain,
+                current_timestamp
+              FROM (SELECT DISTINCT domain FROM knowledge_items
+                     WHERE domain IS NOT NULL AND domain <> ''
+                       AND domain NOT IN ('finance','engineering','product','data','operations','infrastructure'))
+            ON CONFLICT (slug) DO NOTHING
+            """
+        )
+
+    # 6) Stash the legacy (item_id, domain_id) pairs in a temporary table
+    # so we can recreate the relation after dropping the scalar column.
+    # DuckDB blocks the DROP COLUMN as long as a child table FK-references
+    # ``knowledge_items``, so the junction itself is created in step 9b
+    # below — after the column is gone. Skipped on fresh installs where
+    # the legacy column has never existed.
+    if has_legacy_domain_col:
+        conn.execute("DROP TABLE IF EXISTS _v49_item_domain_pairs")
+        conn.execute(
+            """
+            CREATE TEMP TABLE _v49_item_domain_pairs AS
+            SELECT ki.id AS item_id, md.id AS domain_id
+              FROM knowledge_items ki
+              JOIN memory_domains  md
+                ON md.slug = lower(regexp_replace(ki.domain, '[^a-z0-9]+', '-', 'g'))
+             WHERE ki.domain IS NOT NULL AND ki.domain <> ''
+            """
+        )
+
+    # 7) Re-point ``MEMORY_DOMAIN`` grants — pre-v49 stored the domain slug
+    # directly in ``resource_grants.resource_id``; v49+ stores
+    # ``memory_domains.id``. Orphan grants (resource_id is a slug with no
+    # matching ``memory_domains`` row) are left untouched per spec D14 so
+    # an admin can decide whether to delete or re-create the domain.
+    conn.execute(
+        """
+        UPDATE resource_grants
+           SET resource_id = (
+               SELECT id FROM memory_domains
+                WHERE memory_domains.slug = resource_grants.resource_id
+           )
+         WHERE resource_type = 'memory_domain'
+           AND EXISTS (
+               SELECT 1 FROM memory_domains
+                WHERE memory_domains.slug = resource_grants.resource_id
+           )
+        """
+    )
+
+    # 8) ``user_stack_subscriptions`` — generic per-user opt-in for
+    # ``data_package`` and ``memory_domain`` grants flagged
+    # ``requirement='available'``. Composite PK (user_id, resource_type,
+    # resource_id) makes the insert idempotent. Marketplace pluginy stay
+    # on the existing ``user_plugin_optouts`` opt-out shape per D1.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_stack_subscriptions (
+            user_id       VARCHAR NOT NULL,
+            resource_type VARCHAR NOT NULL,
+            resource_id   VARCHAR NOT NULL,
+            subscribed_at TIMESTAMP DEFAULT current_timestamp,
+            PRIMARY KEY (user_id, resource_type, resource_id)
+        )
+        """
+    )
+
+    # 9a) Drop the legacy ``knowledge_items.domain`` scalar. Single-PR
+    # cutover per D14 — the temp-stashed pairs from step 6 + memory_domains
+    # seeded in step 5 are the new sources of truth.
+    #
+    # DuckDB blocks ``ALTER TABLE … DROP COLUMN`` while any FK references
+    # the same table (DependencyException). On the fresh-install +
+    # upgrade-from-v1 paths, ``_SYSTEM_SCHEMA`` runs BEFORE the migration
+    # ladder and creates ``knowledge_item_domains`` with the FK already
+    # in place. We DROP that dependent (stashing its rows), perform the
+    # column drop, and recreate the junction immediately after.
+    junction_existed = False
+    stashed_rows: list = []
+    try:
+        stashed_rows = conn.execute(
+            "SELECT item_id, domain_id, added_at, added_by FROM knowledge_item_domains"
+        ).fetchall()
+        junction_existed = True
+        conn.execute("DROP TABLE knowledge_item_domains")
+    except duckdb.Error:
+        # Junction didn't exist (genuine v48 upgrade path); fall through.
+        pass
+
+    conn.execute("ALTER TABLE knowledge_items DROP COLUMN IF EXISTS domain")
+
+    # 9b) (Re)create the M:N junction and replay any rows we stashed.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_item_domains (
+            item_id   VARCHAR NOT NULL REFERENCES knowledge_items(id),
+            domain_id VARCHAR NOT NULL REFERENCES memory_domains(id),
+            added_at  TIMESTAMP DEFAULT current_timestamp,
+            added_by  VARCHAR,
+            PRIMARY KEY (item_id, domain_id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_item_domains_domain ON knowledge_item_domains(domain_id)")
+    if junction_existed and stashed_rows:
+        for row in stashed_rows:
+            conn.execute(
+                "INSERT INTO knowledge_item_domains"
+                "(item_id, domain_id, added_at, added_by) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                list(row),
+            )
+    # Replay the stashed pairs. The temp table exists only when the
+    # upgrade path ran step 6 — fresh installs skip both step 6 and
+    # this replay since ``_v49_item_domain_pairs`` was never created.
+    has_pairs = conn.execute(
+        "SELECT 1 FROM information_schema.tables WHERE table_name = '_v49_item_domain_pairs'"
+    ).fetchone()
+    if has_pairs:
+        conn.execute(
+            """
+            INSERT INTO knowledge_item_domains(item_id, domain_id, added_at)
+            SELECT item_id, domain_id, current_timestamp
+              FROM _v49_item_domain_pairs
+            ON CONFLICT DO NOTHING
+            """
+        )
+        conn.execute("DROP TABLE _v49_item_domain_pairs")
+
+    # 10) bump schema_version row. Matches the pattern used by every
+    # prior in-function migration (e.g. _v30_to_v31_migrate, _v34_to_v35_migrate)
+    # — the per-step migrations declared as SQL lists rely on the
+    # outer ``UPDATE schema_version`` at the end of ``_ensure_schema``,
+    # but the ladder-internal function pattern keeps the bump local so a
+    # mid-ladder failure doesn't leave the version stale.
+    conn.execute("UPDATE schema_version SET version = 52")
+
+
+_V50_TO_V51_MIGRATIONS = [
+    # ``bq_fqn`` carries the fully-qualified BigQuery path
+    # (``project.dataset.table``) for a registered remote table when set,
+    # so the orchestrator's rebuild path no longer has to reconstruct it
+    # from the globally-attached ``_remote_attach`` project + the dual-
+    # purpose ``bucket`` field (which is also a UX/RBAC label).
+    # Nullable for backwards compat — rows without it keep using the
+    # legacy ``<remote_attach.project>.<bucket>.<source_table>`` fallback.
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS bq_fqn VARCHAR",
 ]
 
 
@@ -2687,8 +4470,10 @@ def _replace_for_v24(project_id: str):
     function-form replacement is the defensive idiom — it makes the
     intent explicit and removes the dependency on re.sub's replacement-
     string escaping rules."""
+
     def _repl(m):
         return f"`{project_id}.{m.group(1)}.{m.group(2)}`"
+
     return _repl
 
 
@@ -2697,6 +4482,7 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
 
     try:
         from app.instance_config import get_value
+
         project_id = get_value("data_source", "bigquery", "project", default="") or ""
     except Exception:
         project_id = ""
@@ -2730,7 +4516,7 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise RuntimeError(
             f"v24 migration cannot complete: {len(rows)} materialized "
             f"BigQuery row(s) need their source_query rewritten from "
-            f"DuckDB-flavor `bq.\"ds\".\"tbl\"` to BQ-native "
+            f'DuckDB-flavor `bq."ds"."tbl"` to BQ-native '
             f"`<project>.ds.tbl`, but `data_source.bigquery.project` is "
             f"not configured. Set it via /admin/server-config (or "
             f"`instance.yaml: data_source.bigquery.project`) and restart "
@@ -2751,12 +4537,1007 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                     [new_sq, row_id],
                 )
                 logger.info(
-                    "v24 migration: rewrote source_query for row %r", row_id,
+                    "v24 migration: rewrote source_query for row %r",
+                    row_id,
                 )
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
         raise
+
+
+def _v59_to_v60(conn: duckdb.DuckDBPyConnection) -> None:
+    """Backfill ``usage_events.username`` / ``usage_session_summary.username``
+    from ``users.email`` where the row has a resolved ``user_id``.
+
+    Pre-v60 the ``username`` column was written by three writers with
+    conflicting semantics:
+
+    * REST event emitters (``sync.py``, ``stack.py``, ``memory.py``,
+      ``web/router.py``) → full email (``user.get('email')``) or
+      ``user['id']`` UUID when email empty.
+    * Session pipeline via ``/data/user_sessions/<dir>/`` → directory
+      name. From the session collector the directory is the OS
+      username (typically the email local-part); from the upload API
+      it is the user's UUID.
+
+    Result: a single user surfaces in the admin telemetry dropdown
+    under up to three different ``username`` values. The runner now
+    normalises new writes to ``users.email``; this migration cleans up
+    the historical rows so the dropdown is one row per user
+    immediately.
+
+    Only rows with a non-null ``user_id`` are touched — orphaned
+    sessions (deleted users, never-matched directories) keep whatever
+    label they had so the data isn't silently lost.
+    """
+
+    # Skip backfill on stub schemas (e.g. the v1→vN end-to-end test
+    # seeds ``users`` with only an ``id`` column). The required
+    # ``users.email`` plus ``usage_*.username`` / ``usage_*.user_id``
+    # columns all come from earlier migrations on every real install;
+    # if any of them is missing here, this is a synthetic fixture.
+    def _cols(table: str) -> set[str]:
+        return {
+            r[0]
+            for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE lower(table_name) = lower(?)",
+                [table],
+            ).fetchall()
+        }
+
+    users_cols = _cols("users")
+    if "email" not in users_cols:
+        conn.execute("UPDATE schema_version SET version = 60")
+        return
+
+    for table, key_col in (
+        ("usage_events", "user_id"),
+        ("usage_session_summary", "user_id"),
+    ):
+        tcols = _cols(table)
+        if {"username", key_col} - tcols:
+            continue
+        conn.execute(
+            f"""
+            UPDATE {table}
+               SET username = u.email
+              FROM users u
+             WHERE {table}.{key_col} = u.id
+               AND u.email IS NOT NULL
+               AND u.email != ''
+               AND {table}.username IS DISTINCT FROM u.email
+            """
+        )
+    conn.execute("UPDATE schema_version SET version = 60")
+
+
+def _v61_to_v62(conn: duckdb.DuckDBPyConnection) -> None:
+    """v62: per-type FK columns on ``resource_grants`` (E.3).
+
+    Adds five NULLable columns to mirror the PG per-type FK design
+    (alembic migration 0013):
+
+      resource_id_table          — set when resource_type='table'
+      resource_id_data_package   — set when resource_type='data_package'
+      resource_id_memory_domain  — set when resource_type='memory_domain'
+      resource_id_memory_item    — set when resource_type='memory_item'
+      resource_id_recipe         — set when resource_type='recipe'
+
+    DuckDB has limited FK and CHECK constraint support, so neither is
+    enforced at the DB layer here — application code is the source of
+    truth for both backends. The PG migration (0013) carries the real
+    FK + CHECK; this step merely keeps the column set in sync so the
+    DB-state migrator can copy every column when moving DuckDB → PG.
+
+    All ALTERs use ADD COLUMN IF NOT EXISTS — idempotent.
+
+    Renumbered from v61 to v62 on the second merge with main (which
+    shipped ``cli_auth_codes`` as v61 via PR #475). The first renumber
+    (v60→v61) was for main's telemetry username collapse (PR #458).
+    """
+    for col_sql in (
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_table VARCHAR",
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_data_package VARCHAR",
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_memory_domain VARCHAR",
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_memory_item VARCHAR",
+        "ALTER TABLE resource_grants ADD COLUMN IF NOT EXISTS resource_id_recipe VARCHAR",
+    ):
+        conn.execute(col_sql)
+    # Backfill: copy resource_id into the per-type column for existing rows.
+    # marketplace_plugin rows are left with all per-type columns NULL.
+    for rtype, col in (
+        ("table", "resource_id_table"),
+        ("data_package", "resource_id_data_package"),
+        ("memory_domain", "resource_id_memory_domain"),
+        ("memory_item", "resource_id_memory_item"),
+        ("recipe", "resource_id_recipe"),
+    ):
+        conn.execute(
+            f"UPDATE resource_grants SET {col} = resource_id WHERE resource_type = ?",
+            [rtype],
+        )
+    conn.execute("UPDATE schema_version SET version = 62")
+
+
+def _v58_to_v59(conn: duckdb.DuckDBPyConnection) -> None:
+    """v56: extended-content columns on ``data_packages`` + structured
+    per-table doc columns on ``table_registry``.
+
+    Backs the ``/catalog/p/<slug>`` rewrite per the extended-descriptions
+    admin spec — owner attribution, curated tags,
+    long-form description, use/skip arrays, package-level example
+    questions on the package side; grain / platforms / partition /
+    history / gotchas on the per-table side.
+
+    All ALTERs are ADD COLUMN IF NOT EXISTS — idempotent + safe to
+    re-run.
+    """
+    for col_sql in (
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS owner_name VARCHAR",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS owner_team VARCHAR",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS tags VARCHAR",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS long_description TEXT",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS when_to_use VARCHAR",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS when_not_to_use VARCHAR",
+        "ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS example_questions VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS grain VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS platforms VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS partition_col VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS history VARCHAR",
+        "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS gotchas VARCHAR",
+    ):
+        conn.execute(col_sql)
+    conn.execute("UPDATE schema_version SET version = 59")
+
+
+def _v60_to_v61(conn: duckdb.DuckDBPyConnection) -> None:
+    """v61: ``cli_auth_codes`` table — single-use exchange codes for the
+    browser-loopback ``agnes auth login`` flow.
+
+    Idempotent CREATE TABLE IF NOT EXISTS. Fresh installs already get the
+    table from ``_SYSTEM_SCHEMA``; this migration covers the sequential
+    upgrade path from a v60 instance.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cli_auth_codes (
+            code_hash   VARCHAR PRIMARY KEY,
+            user_id     VARCHAR NOT NULL,
+            email       VARCHAR NOT NULL,
+            created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            expires_at  TIMESTAMP NOT NULL,
+            consumed_at TIMESTAMP
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 61")
+
+
+def _v62_to_v63(conn: duckdb.DuckDBPyConnection) -> None:
+    """v63: ``setup_tokens`` table for the Agnes Cowork one-click setup flow.
+
+    Short-lived tokens (24 h) generated by ``POST /api/user/cowork-bundle``
+    and consumed once by ``POST /api/auth/exchange-setup-token``, which mints
+    a regular PAT without requiring the analyst to log in interactively.
+
+    Renumbered from v62 to v63: main PR #455 shipped per-type FK columns on
+    resource_grants as v62 before this branch merged.
+
+    CREATE TABLE IF NOT EXISTS is idempotent — safe on fresh installs where
+    the table already exists courtesy of ``_SYSTEM_SCHEMA``.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS setup_tokens (
+            id          VARCHAR PRIMARY KEY,
+            user_id     VARCHAR NOT NULL,
+            token_hash  VARCHAR NOT NULL,
+            expires_at  TIMESTAMP NOT NULL,
+            used_at     TIMESTAMP,
+            created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 63")
+
+
+def _v63_to_v64(conn: duckdb.DuckDBPyConnection) -> None:
+    """v64: Universal MCP — ``mcp_sources``, ``tool_registry``, ``tool_grants``.
+
+    Tables for the inbound MCP connector (RFC #461). A row in ``mcp_sources``
+    describes an external MCP server we ingest from (stdio command or
+    HTTP/SSE URL). Each curated tool from that source becomes one row in
+    ``tool_registry`` with a ``mode`` of ``materialize`` (scheduled extract
+    into a parquet → analytics.duckdb table) or ``passthrough`` (live call
+    forwarded to the upstream MCP at query time). ``tool_grants`` is the
+    per-group ACL for passthrough tools, parallel to ``resource_grants``.
+
+    Renumbered from v63 to v64: main PR #455 shipped per-type FK columns on
+    resource_grants as v62 before this branch merged.
+
+    CREATE TABLE IF NOT EXISTS is idempotent — safe on fresh installs.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_sources (
+            id            VARCHAR PRIMARY KEY,
+            name          VARCHAR NOT NULL UNIQUE,
+            transport     VARCHAR NOT NULL,       -- stdio | http | sse
+            command       VARCHAR,                -- stdio: executable path
+            args          JSON,                   -- stdio: arg array
+            url           VARCHAR,                -- http/sse: endpoint URL
+            auth_method   VARCHAR,                -- none | bearer | basic
+            auth_secret_env VARCHAR,              -- name of env var holding the secret (POC: no vault yet)
+            enabled       BOOLEAN NOT NULL DEFAULT true,
+            created_at    TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            updated_at    TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tool_registry (
+            tool_id          VARCHAR PRIMARY KEY,        -- "<source_name>.<exposed_name>"
+            source_id        VARCHAR NOT NULL,
+            original_name    VARCHAR NOT NULL,
+            exposed_name     VARCHAR NOT NULL,
+            mode             VARCHAR NOT NULL,           -- materialize | passthrough
+            table_id         VARCHAR,                    -- FK to table_registry (materialize mode only)
+            input_schema     JSON,                       -- MCP inputSchema
+            description      VARCHAR,
+            mutating         BOOLEAN NOT NULL DEFAULT false,
+            pii_fields       JSON,                       -- array of column names to redact on output
+            rate_limit_pm    INTEGER,                    -- per-minute, per-user (NULL = unlimited)
+            schedule         VARCHAR,                    -- materialize only, e.g. 'every 6h'
+            enabled          BOOLEAN NOT NULL DEFAULT true,
+            created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            updated_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tool_grants (
+            tool_id   VARCHAR NOT NULL,
+            group_id  VARCHAR NOT NULL,
+            PRIMARY KEY (tool_id, group_id)
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 64")
+
+
+def _v64_to_v65(conn: duckdb.DuckDBPyConnection) -> None:
+    """v65: ``mcp_secrets`` table — server-wide vault for MCP source auth.
+
+    RFC #461 §4. One row per ``mcp_sources.id`` holds the Fernet-
+    ciphertext of the upstream auth token. Replaces the legacy
+    ``mcp_sources.auth_secret_env`` env-var pattern for HTTP/SSE
+    sources — connectors/mcp/client.py first consults this table, then
+    falls back to the env-var path so old registrations keep working.
+
+    Per-user secrets (analyst-scoped OAuth tokens for upstream MCP) land
+    in a follow-up migration as ``mcp_user_secrets``.
+
+    Renumbered from v64 to v65: main PR #455 shipped per-type FK columns
+    on resource_grants as v62 before this branch merged.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_secrets (
+            source_id        VARCHAR PRIMARY KEY,
+            secret_value_enc BLOB NOT NULL,
+            created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            updated_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 65")
+
+
+def _v65_to_v66(conn: duckdb.DuckDBPyConnection) -> None:
+    """v66: per-user MCP source secrets + ``scope`` column on ``mcp_sources``.
+
+    RFC #461 §4 phase B. ``mcp_user_secrets(source_id, user_id, ...)``
+    holds each analyst's own credential (their Notion/Slack/Linear OAuth
+    token) for upstream MCP servers that authenticate per-caller. The
+    new ``mcp_sources.scope`` column selects which lookup path
+    ``connectors/mcp/client._lookup_secret_for_source`` follows:
+
+      ``shared``    — default; use mcp_secrets (or auth_secret_env env var).
+                      Materialize scheduled jobs always use this scope —
+                      they don't have a calling user.
+      ``per_user``  — REST invoke endpoint threads the caller's id;
+                      look up mcp_user_secrets(source_id, user_id).
+                      Falls through to shared if the analyst hasn't
+                      stored their own credential yet (so the path stays
+                      forgiving while operators bootstrap).
+
+    ``CREATE TABLE IF NOT EXISTS`` + ``ADD COLUMN IF NOT EXISTS`` keep
+    the migration idempotent on fresh and upgrade paths.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_user_secrets (
+            source_id        VARCHAR NOT NULL,
+            user_id          VARCHAR NOT NULL,
+            secret_value_enc BLOB NOT NULL,
+            created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            updated_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            PRIMARY KEY (source_id, user_id)
+        )
+    """)
+    conn.execute("ALTER TABLE mcp_sources ADD COLUMN IF NOT EXISTS scope VARCHAR DEFAULT 'shared'")
+    conn.execute("UPDATE schema_version SET version = 66")
+
+
+def _v66_to_v67(conn: duckdb.DuckDBPyConnection) -> None:
+    """v67: ``data_package_tools`` — junction linking data packages to MCP tools.
+
+    RFC #461 §6. Mirrors ``data_package_tables`` so a package can surface
+    both its analytical tables AND the MCP tools that fit its workflow
+    (e.g. a "Customer Lifecycle" package lists the orders/sessions tables
+    AND a passthrough ``crm.searchAccounts`` tool). The package detail
+    response gains a ``related_tools`` array populated via this junction.
+
+    ``CREATE TABLE IF NOT EXISTS`` for idempotency on both fresh and
+    upgrade paths.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS data_package_tools (
+            package_id  VARCHAR NOT NULL,
+            tool_id     VARCHAR NOT NULL,
+            added_at    TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            PRIMARY KEY (package_id, tool_id)
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 67")
+
+
+def _v67_to_v68(conn: duckdb.DuckDBPyConnection) -> None:
+    """v68: cloud chat — per-session transcript storage + per-user workdir markers.
+
+    Creates three tables: chat_sessions, chat_messages, user_workdirs.
+    Adds two regular indexes for common query patterns.
+
+    DuckDB 1.5.x limitations (documented in _SYSTEM_SCHEMA comment above):
+    - ON DELETE CASCADE is not supported; application code must delete
+      child messages before deleting a session row.
+    - Partial (WHERE-clause) unique indexes are not supported; per-surface
+      uniqueness for slack_dm / slack_thread is enforced at the application
+      layer in ChatRepository.
+    - UPDATE on a column that is part of a secondary index on a parent
+      table raises a false FK violation when child rows exist. The
+      ``last_message_at`` column is part of ``idx_chat_sessions_user`` and
+      therefore cannot be UPDATEd once any chat_messages row references
+      the session. Consequently ``chat_sessions.last_message_at`` and
+      ``chat_sessions.message_count`` are NEVER written after row
+      creation — they stay (NULL, 0) at the SQL level. ChatRepository
+      computes both via LEFT JOIN at read time; any code that reads these
+      columns directly (bypassing ChatRepository) will see stale values.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id               VARCHAR PRIMARY KEY,
+            user_email       VARCHAR NOT NULL,
+            surface          VARCHAR NOT NULL,
+            slack_channel_id VARCHAR,
+            slack_thread_ts  VARCHAR,
+            title            VARCHAR,
+            started_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_message_at  TIMESTAMP,
+            message_count    INTEGER NOT NULL DEFAULT 0,
+            archived         BOOLEAN NOT NULL DEFAULT FALSE
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id          VARCHAR PRIMARY KEY,
+            session_id  VARCHAR NOT NULL REFERENCES chat_sessions(id),
+            role        VARCHAR NOT NULL,
+            content     TEXT NOT NULL,
+            tool_calls  JSON,
+            tokens_in   INTEGER,
+            tokens_out  INTEGER,
+            model       VARCHAR,
+            created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_workdirs (
+            user_email             VARCHAR PRIMARY KEY,
+            last_init_at           TIMESTAMP,
+            marketplace_sha        VARCHAR,
+            initial_workspace_sha  VARCHAR,
+            agnes_version_at_init  VARCHAR
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_email, last_message_at)")
+    conn.execute("UPDATE schema_version SET version = 68")
+
+
+def _v68_to_v69(conn: duckdb.DuckDBPyConnection) -> None:
+    """v69: per-source non-secret env vars for stdio MCP sources.
+
+    Adds ``mcp_sources.env`` — a JSON object of ``{VAR: value}`` passed to
+    the spawned stdio subprocess (the ``auth_secret_env`` secret overlays
+    it). NULL on existing rows preserves the prior single-secret behavior.
+    """
+    conn.execute("ALTER TABLE mcp_sources ADD COLUMN IF NOT EXISTS env VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 69")
+
+
+def _v69_to_v70(conn: duckdb.DuckDBPyConnection) -> None:
+    """v70: live co-drive foundation — co-session flags + participants table.
+
+    Additive-only and forward-safe on populated prod DBs:
+    - chat_sessions.is_co_session / ephemeral (BOOLEAN NOT NULL DEFAULT FALSE)
+    - chat_messages.sender_email (VARCHAR, nullable; backfilled to the
+      session owner for existing role='user' rows — every pre-v70 session
+      is single-principal)
+    - chat_session_participants table + index
+
+    Each ADD COLUMN is PRAGMA-guarded because this migration may re-run on a
+    partially-migrated DB (the ladder is idempotent). DuckDB has no
+    ON DELETE CASCADE, so ChatRepository.hard_delete_user_sessions deletes
+    participant rows by hand (see Task 4).
+    """
+    sess_cols = {r[1] for r in conn.execute("PRAGMA table_info('chat_sessions')").fetchall()}
+    # These are added NULLABLE (DEFAULT FALSE), even though _SYSTEM_SCHEMA
+    # (fresh install) and the Alembic PG migration declare them NOT NULL.
+    # DuckDB cannot promote them: `ALTER COLUMN ... SET NOT NULL` on
+    # chat_sessions raises DependencyException because the table is referenced
+    # by foreign keys (chat_messages, chat_session_participants); and the
+    # combined `ADD COLUMN ... NOT NULL DEFAULT` form is unsupported too. The
+    # DEFAULT FALSE materializes a concrete False for every existing row and
+    # the backfill below makes that explicit, so NO NULL is ever observed and
+    # every reader coerces via bool() — the only difference from PG/fresh is
+    # nullability *metadata*, not behavior. Closing it would require a full
+    # table rebuild (drop/recreate FKs), which is not worth the risk.
+    if "is_co_session" not in sess_cols:
+        conn.execute("ALTER TABLE chat_sessions ADD COLUMN is_co_session BOOLEAN DEFAULT FALSE")
+        conn.execute("UPDATE chat_sessions SET is_co_session = FALSE WHERE is_co_session IS NULL")
+    if "ephemeral" not in sess_cols:
+        conn.execute("ALTER TABLE chat_sessions ADD COLUMN ephemeral BOOLEAN DEFAULT FALSE")
+        conn.execute("UPDATE chat_sessions SET ephemeral = FALSE WHERE ephemeral IS NULL")
+    msg_cols = {r[1] for r in conn.execute("PRAGMA table_info('chat_messages')").fetchall()}
+    if "sender_email" not in msg_cols:
+        conn.execute("ALTER TABLE chat_messages ADD COLUMN sender_email VARCHAR")
+        # Backfill: pre-v70 user turns are owned by the session's user_email.
+        conn.execute(
+            "UPDATE chat_messages SET sender_email = ("
+            "  SELECT s.user_email FROM chat_sessions s WHERE s.id = chat_messages.session_id"
+            ") WHERE role = 'user' AND sender_email IS NULL"
+        )
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_session_participants (
+            id          VARCHAR PRIMARY KEY,
+            session_id  VARCHAR NOT NULL REFERENCES chat_sessions(id),
+            user_email  VARCHAR NOT NULL,
+            user_id     VARCHAR NOT NULL,
+            role        VARCHAR NOT NULL,
+            joined_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            left_at     TIMESTAMP,
+            UNIQUE (session_id, user_email)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_session_participants_user "
+        "ON chat_session_participants(user_email, session_id)"
+    )
+    conn.execute("UPDATE schema_version SET version = 70")
+
+
+def _v70_to_v71(conn: duckdb.DuckDBPyConnection) -> None:
+    """v71: formalize ``users.slack_user_id`` into the schema.
+
+    Previously this column was lazily ``ALTER``-ed in
+    ``services/slack_bot/binding.py`` only when the Slack bot ran — so it
+    existed only in the DuckDB system file and never on a Postgres instance,
+    which broke Slack identity binding on Postgres (the binding was written to
+    a DuckDB ``users`` table the factory-backed reads never consult). Adding it
+    to the schema lets the binding route through ``users_repo()`` on either
+    backend. Additive + nullable; idempotent (the lazy ALTER may already have
+    added it on existing DuckDB instances).
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "slack_user_id" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN slack_user_id VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 71")
+
+
+def _v71_to_v72(conn: duckdb.DuckDBPyConnection) -> None:
+    """v72: ``system_secrets`` table — server-wide vault for system-level
+    secrets keyed by name (Slack bot tokens).
+
+    Distinct from ``mcp_secrets`` (keyed by ``source_id``, MCP data sources):
+    this scope holds server-wide secrets that are not tied to any MCP source,
+    starting with the three Slack bot tokens. Fernet-encrypted at rest, read
+    via ``env > vault`` by ``services/slack_bot/secrets.slack_secret``.
+
+    Idempotent CREATE TABLE IF NOT EXISTS — safe on fresh and upgrade paths.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS system_secrets (
+            name             VARCHAR PRIMARY KEY,
+            secret_value_enc BLOB NOT NULL,
+            created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            updated_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 72")
+
+
+def _v72_to_v73(conn: duckdb.DuckDBPyConnection) -> None:
+    """v73: sandbox pause/resume refs on ``chat_sessions``.
+
+    Three nullable columns tracking the E2B sandbox ID, the runner PID,
+    and the time the session was paused. Must stay un-indexed — DuckDB 1.5.3
+    raises a false FK violation when UPDATE-ing indexed columns of
+    ``chat_sessions`` after any ``chat_messages`` INSERT (see comment at the
+    ``chat_sessions`` DDL in ``_SYSTEM_SCHEMA``).
+
+    Idempotent ADD COLUMN IF NOT EXISTS — safe on fresh and upgrade paths.
+    """
+    for ddl in (
+        "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS sandbox_id VARCHAR",
+        "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS runner_pid INTEGER",
+        "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS sandbox_paused_at TIMESTAMP",
+    ):
+        conn.execute(ddl)
+    conn.execute("UPDATE schema_version SET version = 73")
+
+
+def _v73_to_v74(conn: duckdb.DuckDBPyConnection) -> None:
+    """v74: ``server_only`` distribution flag on ``table_registry``.
+
+    Decoupled from ``query_mode``: a ``server_only=true`` row is kept
+    server-side and stays queryable via ``agnes query --remote``, but
+    ``agnes pull`` does NOT download its parquet (the manifest still lists
+    it for catalog discovery + RBAC). Only meaningful for
+    ``query_mode IN ('local', 'materialized')``; ignored for ``'remote'``
+    rows (no server-stored parquet to suppress). Issue #607.
+
+    Idempotent ADD COLUMN IF NOT EXISTS — safe on fresh and upgrade paths.
+    Default ``false`` leaves every existing row unchanged.
+    """
+    conn.execute("ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS server_only BOOLEAN DEFAULT false")
+    conn.execute("UPDATE schema_version SET version = 74")
+
+
+def _v74_to_v75(conn: duckdb.DuckDBPyConnection) -> None:
+    """v75: source_mode/git_path/base_sha on instance_templates (#622 Slice 1).
+
+    Generalizes the per-key prompt store with an explicit Git⇄Editor source
+    toggle, superseding the implicit seed_owns() read-only lock. Existing
+    keys default to 'editor' (today's behavior: the DB override wins when set;
+    no override → bundled default). base_sha is reserved for Slice 2
+    divergence detection (written, never read in Slice 1).
+
+    Idempotent ADD COLUMN IF NOT EXISTS — safe on fresh and upgrade paths.
+    Note: DuckDB ``ADD COLUMN ... DEFAULT`` does NOT backfill existing rows,
+    so the explicit ``UPDATE ... WHERE source_mode IS NULL`` is required to
+    stamp pre-existing 'welcome'/'claude_md' rows as 'editor'.
+    """
+    conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS source_mode VARCHAR DEFAULT 'editor'")
+    conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS git_path VARCHAR")
+    conn.execute("ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS base_sha VARCHAR")
+    conn.execute("UPDATE instance_templates SET source_mode = 'editor' WHERE source_mode IS NULL")
+    conn.execute("UPDATE schema_version SET version = 75")
+
+
+def _v75_to_v76(conn: duckdb.DuckDBPyConnection) -> None:
+    """v76: ``store_entity_votes`` — per-user thumbs up/down on store entities.
+
+    Mirrors ``knowledge_votes``: one row per (entity, user), the vote value
+    flips on re-vote (ON CONFLICT upsert in the repo), and a clear deletes the
+    row. Additive-only; ``_SYSTEM_SCHEMA`` already creates the table on fresh
+    installs (no-op CREATE IF NOT EXISTS here). Issue #398.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS store_entity_votes (
+            entity_id VARCHAR NOT NULL,
+            user_id VARCHAR NOT NULL,
+            vote INTEGER,
+            voted_at TIMESTAMP DEFAULT current_timestamp,
+            PRIMARY KEY (entity_id, user_id)
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 76")
+
+
+def _v76_to_v77(conn: duckdb.DuckDBPyConnection) -> None:
+    """v77: ``users.must_change_password`` — force a password change on first
+    sign-in for accounts whose password was set by someone else (seed admin
+    from SEED_ADMIN_PASSWORD, admin-set passwords). Additive-only; cleared when
+    the user sets their own password. Idempotent ADD COLUMN IF NOT EXISTS, so
+    safe on fresh and upgrade paths; ``_SYSTEM_SCHEMA`` already creates the
+    column on fresh installs. Issue: emailed-credential rotation.
+    """
+    conn.execute(
+        # DuckDB ALTER can't add a NOT NULL column ("constraints not yet
+        # supported"); DEFAULT FALSE backfills existing rows. Fresh installs
+        # get NOT NULL from _SYSTEM_SCHEMA. New rows always set it via the repo.
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE"
+    )
+    conn.execute("UPDATE schema_version SET version = 77")
+
+
+def _v77_to_v78(conn: duckdb.DuckDBPyConnection) -> None:
+    """v78: built-in marketplace columns.
+
+    Adds ``marketplace_registry.is_builtin`` (BOOLEAN NOT NULL DEFAULT FALSE) so
+    the system-seeded built-in marketplace row is distinguishable from
+    admin-registered rows. The nightly git-sync path skips is_builtin=TRUE rows.
+
+    Adds ``marketplace_plugins.admin_disabled`` (BOOLEAN NOT NULL DEFAULT FALSE)
+    so an admin can disable an individual built-in plugin instance-wide without
+    revoking its RBAC grant. Disabled plugins are filtered from the served feed
+    for all callers.
+
+    Both columns default to FALSE so pre-existing rows are unaffected. Additive
+    ADD COLUMN IF NOT EXISTS — idempotent on fresh and upgrade paths.
+    """
+    # DuckDB ALTER TABLE ADD COLUMN does NOT support inline constraints
+    # (NOT NULL) — "Adding columns with constraints not yet supported". The
+    # fresh-create path in CREATE TABLE keeps NOT NULL; the upgrade path adds a
+    # nullable column with DEFAULT FALSE (every writer supplies a value, so the
+    # nullable-vs-not-null divergence on upgraded DuckDB DBs is cosmetic). This
+    # matches the established additive ADD COLUMN pattern elsewhere in this file.
+    conn.execute("ALTER TABLE marketplace_registry ADD COLUMN IF NOT EXISTS is_builtin BOOLEAN DEFAULT FALSE")
+    conn.execute("ALTER TABLE marketplace_plugins ADD COLUMN IF NOT EXISTS admin_disabled BOOLEAN DEFAULT FALSE")
+    conn.execute("UPDATE schema_version SET version = 78")
+
+
+def _v78_to_v79(conn: duckdb.DuckDBPyConnection) -> None:
+    """Named source connections (spec 2026-06-12): generic connection
+    registry + vault-backed secrets + table_registry.connection_id."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS source_connections (
+            id          VARCHAR PRIMARY KEY,
+            name        VARCHAR NOT NULL UNIQUE,
+            source_type VARCHAR NOT NULL,
+            config      TEXT NOT NULL,
+            token_env   VARCHAR,
+            is_default  BOOLEAN DEFAULT FALSE,
+            created_by  VARCHAR,
+            created_at  TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS connection_secrets (
+            connection_id VARCHAR PRIMARY KEY,
+            ciphertext    TEXT NOT NULL,
+            updated_at    TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS connection_id VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 79")
+
+
+def _v79_to_v80(conn: duckdb.DuckDBPyConnection) -> None:
+    """v80: ``authoring_suggestions`` — generic non-admin suggestion queue for
+    the authoring studio (data-package / mcp / marketplace / corporate-memory).
+
+    A non-admin submits a proposed create payload (``status='pending'``); an
+    admin approves (re-validates + creates the resource, stamps
+    ``created_resource_id``) or rejects. Additive-only; ``_SYSTEM_SCHEMA`` creates
+    it on fresh installs (no-op CREATE IF NOT EXISTS here).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS authoring_suggestions (
+            id                  VARCHAR PRIMARY KEY,
+            domain              VARCHAR NOT NULL,
+            payload             JSON,
+            status              VARCHAR DEFAULT 'pending',
+            created_by          VARCHAR,
+            created_at          TIMESTAMP DEFAULT current_timestamp,
+            resolved_at         TIMESTAMP,
+            resolved_by         VARCHAR,
+            resolution_note     TEXT,
+            created_resource_id VARCHAR
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_authoring_suggestions_status ON authoring_suggestions(status)")
+    conn.execute("UPDATE schema_version SET version = 80")
+
+
+def _v80_to_v81(conn: duckdb.DuckDBPyConnection) -> None:
+    """v81: ``memory_mining_consent`` — per-user opt-IN to having their session
+    transcripts mined into shared corporate memory (design spec §4.4). The miner
+    only mines transcripts whose author positively opted in. Additive-only;
+    ``_SYSTEM_SCHEMA`` creates it on fresh installs (no-op CREATE here).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_mining_consent (
+            user_email   VARCHAR PRIMARY KEY,
+            opted_in_at  TIMESTAMP,
+            opted_out_at TIMESTAMP,
+            updated_at   TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 81")
+
+
+def _v81_to_v82(conn: duckdb.DuckDBPyConnection) -> None:
+    """v82: Collections (bring-your-files) foundation.
+
+    Creates ``file_corpora`` (collection container), ``corpus_files`` (per-file
+    row + processing lifecycle) and ``corpus_chunks`` (prose chunks + 384-dim
+    embedding). Additive; ``_SYSTEM_SCHEMA`` already creates them on fresh
+    installs via IF NOT EXISTS (no-op here). ``corpus_chunks.embedding`` is a
+    DuckDB ``FLOAT[384]`` array, queried with ``array_cosine_similarity``.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS file_corpora (
+            id VARCHAR PRIMARY KEY,
+            slug VARCHAR UNIQUE NOT NULL,
+            name VARCHAR NOT NULL,
+            description VARCHAR,
+            created_by VARCHAR NOT NULL,
+            created_at TIMESTAMP DEFAULT current_timestamp,
+            updated_at TIMESTAMP DEFAULT current_timestamp,
+            deleted_at TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS corpus_files (
+            id VARCHAR PRIMARY KEY,
+            corpus_id VARCHAR NOT NULL,
+            filename VARCHAR NOT NULL,
+            sha256 VARCHAR NOT NULL,
+            file_type VARCHAR,
+            size_bytes BIGINT,
+            storage_path VARCHAR,
+            processing_status VARCHAR NOT NULL DEFAULT 'pending',
+            processing_detail VARCHAR,
+            created_at TIMESTAMP DEFAULT current_timestamp,
+            updated_at TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS corpus_chunks (
+            id VARCHAR PRIMARY KEY,
+            corpus_id VARCHAR NOT NULL,
+            file_id VARCHAR NOT NULL,
+            ordinal INTEGER,
+            text VARCHAR,
+            embedding FLOAT[384],
+            section_path VARCHAR,
+            page INTEGER,
+            bbox VARCHAR,
+            metadata VARCHAR,
+            created_at TIMESTAMP DEFAULT current_timestamp
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 82")
+
+
+def _v82_to_v83(conn: duckdb.DuckDBPyConnection) -> None:
+    """v83: OAuth 2.1 tables for the native MCP connector (RFC 7591 / RFC 7636).
+
+    Four tables: oauth_clients, oauth_auth_codes, oauth_access_tokens,
+    oauth_refresh_tokens. IF NOT EXISTS guards make this a no-op on fresh
+    installs where _SYSTEM_SCHEMA already creates the tables.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_clients (
+            client_id        VARCHAR PRIMARY KEY,
+            client_secret    VARCHAR,
+            redirect_uris    TEXT NOT NULL DEFAULT '[]',
+            client_name      VARCHAR,
+            client_metadata  TEXT NOT NULL DEFAULT '{}',
+            created_at       TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_auth_codes (
+            code                             VARCHAR PRIMARY KEY,
+            client_id                        VARCHAR NOT NULL,
+            scopes                           TEXT NOT NULL DEFAULT '[]',
+            code_challenge                   VARCHAR NOT NULL,
+            redirect_uri                     VARCHAR NOT NULL,
+            redirect_uri_provided_explicitly BOOLEAN NOT NULL DEFAULT FALSE,
+            expires_at                       DOUBLE NOT NULL,
+            subject                          VARCHAR,
+            resource                         VARCHAR,
+            state                            VARCHAR
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+            token      VARCHAR PRIMARY KEY,
+            client_id  VARCHAR NOT NULL,
+            scopes     TEXT NOT NULL DEFAULT '[]',
+            expires_at BIGINT,
+            subject    VARCHAR,
+            resource   VARCHAR,
+            revoked_at TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+            token      VARCHAR PRIMARY KEY,
+            client_id  VARCHAR NOT NULL,
+            scopes     TEXT NOT NULL DEFAULT '[]',
+            expires_at BIGINT,
+            subject    VARCHAR,
+            resource   VARCHAR,
+            revoked_at TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 83")
+
+
+def _v83_to_v84(conn: duckdb.DuckDBPyConnection) -> None:
+    """v84: add resource column to oauth_refresh_tokens.
+
+    Refreshed access tokens must preserve the original token's `resource`
+    binding (RFC 8707). The auth-code exchange already persists `resource`
+    on the access token; the refresh path needs the same value carried on
+    the refresh-token row so token rotation doesn't drop it. IF NOT EXISTS
+    keeps this a no-op on fresh installs.
+    """
+    conn.execute("ALTER TABLE oauth_refresh_tokens ADD COLUMN IF NOT EXISTS resource VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 84")
+
+
+def _v84_to_v85(conn: duckdb.DuckDBPyConnection) -> None:
+    """v85: pre-seed the vscode-mcp public OAuth client.
+
+    VS Code native MCP is a public client (token_endpoint_auth_method=none,
+    no client_secret, PKCE required). Pre-seeding a well-known client_id
+    lets users who see the manual-registration dialog simply enter
+    'vscode-mcp' without running Dynamic Client Registration separately.
+
+    INSERT OR IGNORE is idempotent — re-running on a DB that already has
+    the row (e.g. from a previous manual registration or a re-applied
+    migration) is a safe no-op.
+    """
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO oauth_clients
+            (client_id, client_secret, redirect_uris, client_name, client_metadata, created_at)
+        VALUES (
+            'vscode-mcp',
+            NULL,
+            '["https://vscode.dev/redirect"]',
+            'VS Code (native MCP)',
+            '{"token_endpoint_auth_method": "none", "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"]}',
+            CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute("UPDATE schema_version SET version = 85")
+
+
+def _v57_to_v58(conn: duckdb.DuckDBPyConnection) -> None:
+    """v55: ``memory_domain_suggestions`` table — non-admin "Suggest a
+    domain" affordance + admin moderation queue.
+
+    Idempotent CREATE TABLE IF NOT EXISTS. Fresh installs already get
+    the table from ``_SYSTEM_SCHEMA``; this migration covers the
+    sequential-upgrade path from a v54 instance.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS memory_domain_suggestions (
+            id                VARCHAR PRIMARY KEY,
+            name              VARCHAR NOT NULL,
+            description       TEXT,
+            rationale         TEXT,
+            status            VARCHAR DEFAULT 'pending',
+            created_by        VARCHAR,
+            created_at        TIMESTAMP DEFAULT current_timestamp,
+            resolved_at       TIMESTAMP,
+            resolved_by       VARCHAR,
+            resolution_note   TEXT,
+            created_domain_id VARCHAR
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_domain_suggestions_status ON memory_domain_suggestions(status)")
+    conn.execute("UPDATE schema_version SET version = 58")
+
+
+def _v56_to_v57(conn: duckdb.DuckDBPyConnection) -> None:
+    """v54: soft-delete columns on data_packages / memory_domains / recipes.
+
+    Powers the "Deleted. Undo (10s)" toast on admin pages — DELETE sets
+    ``deleted_at`` instead of nuking the row, so the junction rows
+    (data_package_tables, knowledge_item_domains) + any resource_grants
+    referencing the resource id survive intact. The list/get endpoints
+    filter ``deleted_at IS NULL`` so users never see soft-deleted rows.
+
+    Idempotent ADD COLUMN IF NOT EXISTS.
+    """
+    for table in ("data_packages", "memory_domains", "recipes"):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP")
+    conn.execute("UPDATE schema_version SET version = 57")
+
+
+def _v55_to_v56(conn: duckdb.DuckDBPyConnection) -> None:
+    """v53: ``recipes`` table — admin-curated query templates surfaced as
+    a second tab on /catalog.
+
+    Idempotent CREATE TABLE IF NOT EXISTS. Fresh installs already get
+    the table from ``_SYSTEM_SCHEMA``; this migration covers the
+    sequential-upgrade path from a v52 instance.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS recipes (
+            id                VARCHAR PRIMARY KEY,
+            slug              VARCHAR UNIQUE NOT NULL,
+            title             VARCHAR NOT NULL,
+            description       TEXT,
+            icon              VARCHAR,
+            color             VARCHAR,
+            sql_template      TEXT,
+            related_table_ids JSON,
+            status            VARCHAR DEFAULT 'prod',
+            created_by        VARCHAR,
+            created_at        TIMESTAMP DEFAULT current_timestamp,
+            updated_at        TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 56")
+
+
+def _v54_to_v55(conn: duckdb.DuckDBPyConnection) -> None:
+    """v52: per-table docs columns on table_registry.
+
+    Adds three admin-authored fields read by the new /catalog/t/<id>
+    detail page: sample_questions (JSON array of strings),
+    things_to_know (freeform text), pairs_well_with (JSON array of
+    table_registry ids). All optional / NULL on legacy rows.
+
+    Idempotent ADD COLUMN IF NOT EXISTS; safe to re-run.
+    """
+    conn.execute("ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS sample_questions JSON")
+    conn.execute("ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS things_to_know TEXT")
+    conn.execute("ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS pairs_well_with JSON")
+    conn.execute("UPDATE schema_version SET version = 55")
+
+
+def _v53_to_v54(conn: duckdb.DuckDBPyConnection) -> None:
+    """v51: lifecycle ``status`` + per-package ``category`` columns.
+
+    Adds the surfaces the /catalog mockup audit identified as gaps:
+    a small status pill on each card (driven by hero filter checkboxes)
+    and an eyebrow line above the title (data_packages only — memory
+    domains don't need a second-level category since the domain itself
+    classifies its items).
+
+    All ADD COLUMN IF NOT EXISTS — idempotent re-run is safe. The fresh
+    install path picks the columns up from _SYSTEM_SCHEMA directly; this
+    migration covers the sequential-upgrade path off an earlier version.
+    """
+    conn.execute("ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'prod'")
+    conn.execute("ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS category VARCHAR")
+    conn.execute("ALTER TABLE memory_domains ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'prod'")
+    conn.execute("UPDATE schema_version SET version = 54")
+
+
+def _v52_to_v53(conn: duckdb.DuckDBPyConnection) -> None:
+    """v50: ``cover_image_url`` on ``data_packages`` + ``memory_domains``.
+
+    Closes the visual gap with /marketplace cards: marketplace items render
+    real JPGs/PNGs from ``cover_photo_url`` while /catalog + /memory have
+    been stuck with 2-letter initials. The upload endpoint at
+    ``POST /api/admin/uploads/cover-image`` returns a relative URL that
+    callers stash here; cards render ``<img>`` when set, fall back to the
+    initials banner when NULL.
+
+    Idempotent (``ADD COLUMN IF NOT EXISTS``) — re-running is safe. Bumps
+    the version row locally so the fresh-install path (which calls every
+    migration in sequence and relies on each step to stamp its own number
+    — see _v51_to_v52 step 10) lands at 50 even if a future step in the
+    same ladder fails before the outer driver gets to its UPDATE.
+    """
+    conn.execute("ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS cover_image_url VARCHAR")
+    conn.execute("ALTER TABLE memory_domains ADD COLUMN IF NOT EXISTS cover_image_url VARCHAR")
+    conn.execute("UPDATE schema_version SET version = 53")
 
 
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
@@ -2817,18 +5598,163 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 [SCHEMA_VERSION],
             )
             # v22 setup_banner row (kept as compat per CLAUDE.md schema notes).
-            conn.execute(
-                "INSERT INTO setup_banner (id, content) VALUES (1, NULL) "
-                "ON CONFLICT (id) DO NOTHING"
-            )
+            conn.execute("INSERT INTO setup_banner (id, content) VALUES (1, NULL) ON CONFLICT (id) DO NOTHING")
             # v26 instance_templates seed — three canonical keys with NULL
             # content (operator override absent → render OSS default).
             for key in ("welcome", "claude_md", "home"):
                 conn.execute(
-                    "INSERT INTO instance_templates (key, content) VALUES (?, NULL) "
-                    "ON CONFLICT (key) DO NOTHING",
+                    "INSERT INTO instance_templates (key, content) VALUES (?, NULL) ON CONFLICT (key) DO NOTHING",
                     [key],
                 )
+            # v41 audit_log indices: _SYSTEM_SCHEMA omits CREATE INDEX to
+            # avoid failures when pre-existing audit_log lacks timestamp
+            # (migration tests). Create them here for fresh installs; the
+            # upgrade path uses _v40_to_v41 below.
+            _v40_to_v41(conn)
+            # v42 usage_* tables + indices. _SYSTEM_SCHEMA already creates
+            # them via IF NOT EXISTS, so this is a safe no-op for fresh
+            # installs; mirrors the established pattern for the upgrade
+            # path below.
+            _v41_to_v42(conn)
+            # v43 user_observability_views — saved-views for /admin/activity.
+            _v42_to_v43(conn)
+            # v44 homepage-stats columns. _SYSTEM_SCHEMA already declares
+            # them on fresh installs (no-op ALTERs); kept here for the
+            # ladder's chronological readability.
+            _v43_to_v44(conn)
+            # v45 user_id column on usage tables. _SYSTEM_SCHEMA declares
+            # the columns for fresh installs; migration adds them for
+            # existing DBs. No-op on fresh.
+            _v44_to_v45(conn)
+            # v46 knowledge_item_user_dismissed — per-user opt-out for
+            # curated memory items. _SYSTEM_SCHEMA already creates the
+            # table on fresh installs; this call is a no-op there.
+            _v45_to_v46(conn)
+            # v47 fts index over knowledge_items — best-effort, silent
+            # fallback to ILIKE search if the fts extension can't load.
+            _v46_to_v47(conn)
+            # v48 marketplace telemetry refactor — drops 4 legacy tables
+            # and creates 2 new rollups. _SYSTEM_SCHEMA already creates
+            # the new tables on fresh installs; the DROPs are no-ops
+            # there because the legacy tables aren't in _SYSTEM_SCHEMA
+            # anymore. Kept here for ladder readability.
+            _v47_to_v48(conn)
+            # v49 phase-1 Flea refactor — title, tagline, synthetic_name
+            # columns. _SYSTEM_SCHEMA already declares them on fresh
+            # installs; this call is a no-op (table empty, ALTER IF NOT
+            # EXISTS, no rows to backfill, SET NOT NULL idempotent).
+            _v48_to_v49_migrate(conn)
+            # v50 UNIQUE INDEX on synthetic_name. _SYSTEM_SCHEMA already
+            # creates the index on fresh installs; this call is a no-op
+            # (table empty so no duplicates possible, CREATE UNIQUE
+            # INDEX IF NOT EXISTS is idempotent).
+            _v49_to_v50_migrate(conn)
+            # v49 unified stack — Data Packages + Memory Domains junction +
+            # requirement enum + is_required + user_stack_subscriptions.
+            # _SYSTEM_SCHEMA already creates the new tables on fresh
+            # installs; the migration body is idempotent (CREATE TABLE
+            # IF NOT EXISTS / ALTER ... ADD COLUMN IF NOT EXISTS), so
+            # this call no-ops apart from seeding canonical
+            # memory_domains and bumping the version row.
+            _v51_to_v52(conn)
+            # v50 cover_image_url on data_packages + memory_domains.
+            # _SYSTEM_SCHEMA already includes the column on fresh installs;
+            # the migration's IF NOT EXISTS ALTERs no-op there.
+            _v52_to_v53(conn)
+            # v51 status + category on data_packages, status on
+            # memory_domains. Same fresh-install no-op pattern.
+            _v53_to_v54(conn)
+            # v52 per-table docs columns on table_registry.
+            _v54_to_v55(conn)
+            # v53 recipes table.
+            _v55_to_v56(conn)
+            # v54 deleted_at columns on data_packages, memory_domains, recipes.
+            _v56_to_v57(conn)
+            # v55 memory_domain_suggestions table.
+            _v57_to_v58(conn)
+            # v56 extended content columns on data_packages + structured
+            # per-table doc columns on table_registry.
+            _v58_to_v59(conn)
+            # v59→v60 backfills ``username`` in usage_events /
+            # usage_session_summary from users.email. Fresh installs
+            # have empty usage_* tables, so the UPDATE is a no-op.
+            _v59_to_v60(conn)
+            # v60→v61 creates the ``cli_auth_codes`` table (browser-
+            # loopback login exchange codes).
+            _v60_to_v61(conn)
+            # v61→v62 adds per-type FK columns on resource_grants (E.3,
+            # PR #455). _SYSTEM_SCHEMA already declares the columns on
+            # fresh installs (no-op ALTERs); the backfill UPDATE is a
+            # no-op on empty rows.
+            _v61_to_v62(conn)
+            # v62→v63: setup_tokens table for Agnes Cowork one-click setup.
+            _v62_to_v63(conn)
+            # v63→v64: Universal MCP — mcp_sources, tool_registry, tool_grants.
+            _v63_to_v64(conn)
+            # v64→v65: mcp_secrets — shared vault for MCP source auth.
+            _v64_to_v65(conn)
+            # v65→v66: per-user MCP secrets + scope column on mcp_sources.
+            _v65_to_v66(conn)
+            # v66→v67: data_package_tools junction — links packages to MCP tools.
+            _v66_to_v67(conn)
+            # v67→v68: cloud chat tables — chat_sessions, chat_messages,
+            # user_workdirs + indexes. _SYSTEM_SCHEMA already creates them on
+            # fresh installs via CREATE TABLE/INDEX IF NOT EXISTS (no-op here).
+            _v67_to_v68(conn)
+            # v68→v69: mcp_sources.env — per-source non-secret env vars for
+            # the spawned stdio subprocess. ADD COLUMN IF NOT EXISTS (no-op here).
+            _v68_to_v69(conn)
+            # v69→v70: live co-drive foundation — co-session flags +
+            # chat_session_participants. Additive; _SYSTEM_SCHEMA builds it
+            # on fresh installs (no-op here).
+            _v69_to_v70(conn)
+            # v70→v71: formalize users.slack_user_id. _SYSTEM_SCHEMA already
+            # creates it on fresh installs (no-op here).
+            _v70_to_v71(conn)
+            # v71→v72: system_secrets — server-wide vault for Slack bot tokens.
+            _v71_to_v72(conn)
+            # v72→v73: sandbox pause/resume refs on chat_sessions (un-indexed).
+            _v72_to_v73(conn)
+            # v73→v74: server_only distribution flag on table_registry.
+            # _SYSTEM_SCHEMA already declares the column on fresh installs
+            # (no-op ALTER here). Issue #607.
+            _v73_to_v74(conn)
+            # v74→v75: source_mode/git_path/base_sha on instance_templates.
+            # _SYSTEM_SCHEMA already declares the columns on fresh installs
+            # (no-op ALTER here). Issue #622 Slice 1.
+            _v74_to_v75(conn)
+            # v75→v76: store_entity_votes (per-user thumbs up/down on store
+            # entities). _SYSTEM_SCHEMA already creates the table on fresh
+            # installs (no-op CREATE here). Issue #398.
+            _v75_to_v76(conn)
+            # v76→v77: users.must_change_password — forced rotation flag for
+            # seeded/admin-set passwords. _SYSTEM_SCHEMA already creates the
+            # column on fresh installs (no-op ALTER here).
+            _v76_to_v77(conn)
+            # v77→v78: built-in marketplace columns. is_builtin on
+            # marketplace_registry; admin_disabled on marketplace_plugins.
+            _v77_to_v78(conn)
+            # v78→v79: named source_connections + vault-backed connection_secrets
+            # + table_registry.connection_id (spec 2026-06-12).
+            _v78_to_v79(conn)
+            # v79→v80: authoring_suggestions (authoring-studio suggestion queue).
+            _v79_to_v80(conn)
+            # v80→v81: memory_mining_consent (per-user opt-in to session mining).
+            _v80_to_v81(conn)
+            # v81→v82: Collections foundation — file_corpora, corpus_files,
+            # corpus_chunks. _SYSTEM_SCHEMA already creates them on fresh
+            # installs (no-op CREATE IF NOT EXISTS here).
+            _v81_to_v82(conn)
+            # v82→v83: OAuth 2.1 tables for the native MCP connector
+            # (oauth_clients, oauth_auth_codes, oauth_access_tokens,
+            # oauth_refresh_tokens). IF NOT EXISTS — no-op on fresh installs.
+            _v82_to_v83(conn)
+            # v83→v84: resource column on oauth_refresh_tokens so refreshed
+            # access tokens keep their RFC 8707 resource binding.
+            _v83_to_v84(conn)
+            # v84→v85: pre-seed vscode-mcp public OAuth client so VS Code
+            # native MCP users can enter 'vscode-mcp' in the manual dialog.
+            _v84_to_v85(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -2870,8 +5796,7 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 # Skip UPDATE if the column never existed (e.g. test fixtures
                 # starting from v2/v3 with a hand-crafted minimal users table).
                 has_role_col = conn.execute(
-                    "SELECT 1 FROM information_schema.columns "
-                    "WHERE table_name = 'users' AND column_name = 'role'"
+                    "SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'role'"
                 ).fetchone()
                 if has_role_col:
                     conn.execute("UPDATE users SET role = NULL")
@@ -2950,20 +5875,109 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             if current < 35:
                 _v34_to_v35_migrate(conn)
             if current < 36:
-                for sql in _V35_TO_V36_MIGRATIONS:
-                    conn.execute(sql)
+                _v35_to_v36_migrate(conn)
             if current < 37:
                 for sql in _V36_TO_V37_MIGRATIONS:
                     conn.execute(sql)
             if current < 38:
-                for sql in _V37_TO_V38_MIGRATIONS:
-                    conn.execute(sql)
+                _v37_to_v38_migrate(conn)
             if current < 39:
                 for sql in _V38_TO_V39_MIGRATIONS:
                     conn.execute(sql)
             if current < 40:
                 for sql in _V39_TO_V40_MIGRATIONS:
                     conn.execute(sql)
+            if current < 41:
+                _v40_to_v41(conn)
+            if current < 42:
+                _v41_to_v42(conn)
+            if current < 43:
+                _v42_to_v43(conn)
+            if current < 44:
+                _v43_to_v44(conn)
+            if current < 45:
+                _v44_to_v45(conn)
+            if current < 46:
+                _v45_to_v46(conn)
+            if current < 47:
+                _v46_to_v47(conn)
+            if current < 48:
+                _v47_to_v48(conn)
+            if current < 49:
+                _v48_to_v49_migrate(conn)
+            if current < 50:
+                _v49_to_v50_migrate(conn)
+            if current < 51:
+                for sql in _V50_TO_V51_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 52:
+                _v51_to_v52(conn)
+            if current < 53:
+                _v52_to_v53(conn)
+            if current < 54:
+                _v53_to_v54(conn)
+            if current < 55:
+                _v54_to_v55(conn)
+            if current < 56:
+                _v55_to_v56(conn)
+            if current < 57:
+                _v56_to_v57(conn)
+            if current < 58:
+                _v57_to_v58(conn)
+            if current < 59:
+                _v58_to_v59(conn)
+            if current < 60:
+                _v59_to_v60(conn)
+            if current < 61:
+                _v60_to_v61(conn)
+            if current < 62:
+                _v61_to_v62(conn)
+            if current < 63:
+                _v62_to_v63(conn)
+            if current < 64:
+                _v63_to_v64(conn)
+            if current < 65:
+                _v64_to_v65(conn)
+            if current < 66:
+                _v65_to_v66(conn)
+            if current < 67:
+                _v66_to_v67(conn)
+            if current < 68:
+                _v67_to_v68(conn)
+            if current < 69:
+                _v68_to_v69(conn)
+            if current < 70:
+                _v69_to_v70(conn)
+            if current < 71:
+                _v70_to_v71(conn)
+            if current < 72:
+                _v71_to_v72(conn)
+            if current < 73:
+                _v72_to_v73(conn)
+            if current < 74:
+                _v73_to_v74(conn)
+            if current < 75:
+                _v74_to_v75(conn)
+            if current < 76:
+                _v75_to_v76(conn)
+            if current < 77:
+                _v76_to_v77(conn)
+            if current < 78:
+                _v77_to_v78(conn)
+            if current < 79:
+                _v78_to_v79(conn)
+            if current < 80:
+                _v79_to_v80(conn)
+            if current < 81:
+                _v80_to_v81(conn)
+            if current < 82:
+                _v81_to_v82(conn)
+            if current < 83:
+                _v82_to_v83(conn)
+            if current < 84:
+                _v83_to_v84(conn)
+            if current < 85:
+                _v84_to_v85(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
@@ -2997,7 +6011,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     "this process before any container restart is the "
                     "safe path; otherwise, the next start may need to "
                     "restore from %s.",
-                    e, _get_state_dir() / "system.duckdb.pre-migrate",
+                    e,
+                    _get_state_dir() / "system.duckdb.pre-migrate",
                 )
 
     # Always run the system-groups seed when the DB is on a version this binary
@@ -3055,3 +6070,28 @@ def close_system_db() -> None:
             logger.debug("close_system_db: close raised (%s); ignoring", exc)
         _system_db_conn = None
         _system_db_path = None
+
+
+def close_analytics_db() -> None:
+    """Close the shared analytics DB connection. Called on app shutdown.
+
+    Mirrors `close_system_db()` above (best-effort CHECKPOINT then
+    close, swallow exceptions). Analytics DB is the parquet-views layer;
+    a dirty WAL on it is less consequential than on the system DB
+    (read-only views can be rebuilt by the orchestrator on next start)
+    but the CHECKPOINT keeps the file on-disk clean for any operator
+    poking at it with the duckdb CLI.
+    """
+    global _analytics_db_conn, _analytics_db_path
+    if _analytics_db_conn:
+        try:
+            _analytics_db_conn.execute("CHECKPOINT")
+            logger.debug("close_analytics_db: CHECKPOINT ok")
+        except Exception as exc:
+            logger.warning("close_analytics_db: CHECKPOINT failed (%s); proceeding to close", exc)
+        try:
+            _analytics_db_conn.close()
+        except Exception as exc:
+            logger.debug("close_analytics_db: close raised (%s); ignoring", exc)
+        _analytics_db_conn = None
+        _analytics_db_path = None

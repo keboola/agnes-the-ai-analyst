@@ -21,15 +21,14 @@ from datetime import datetime, timedelta
 import pyarrow as pa
 import requests
 from kbcstorage.client import Client
-from kbcstorage.tables import Tables
 
 from dataclasses import dataclass, field
-from typing import Optional as _Opt
 
 
 @dataclass
 class WhereFilter:
     """Keboola where filter for export operations."""
+
     column: str
     operator: str = "eq"
     values: list = field(default_factory=list)
@@ -54,7 +53,7 @@ KEBOOLA_TO_PANDAS_TYPES = {
     "DATE": "datetime64[ns]",  # Pandas datetime
     "TIMESTAMP": "datetime64[ns]",
     "TIMESTAMP_NTZ": "datetime64[ns]",  # Without timezone
-    "TIMESTAMP_TZ": "datetime64[ns]",   # With timezone
+    "TIMESTAMP_TZ": "datetime64[ns]",  # With timezone
 }
 
 # Mapping Keboola data types to PyArrow types
@@ -95,14 +94,16 @@ class KeboolaClient:
             token: Storage API token. If None, loads from configuration.
             url: Stack URL. If None, loads from configuration.
         """
-        self.token = token or os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
+        if token:
+            self.token = token
+        else:
+            from app.datasource_secrets import datasource_secret
+
+            self.token = datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
         self.url = url or os.environ.get("KEBOOLA_STACK_URL", "")
 
         if not self.token:
-            raise ValueError(
-                "Keboola Storage token not set. "
-                "Set KEBOOLA_STORAGE_TOKEN in .env file."
-            )
+            raise ValueError("Keboola Storage token not set. Set KEBOOLA_STORAGE_TOKEN in .env file.")
 
         # Initialize kbcstorage client
         self.client = Client(self.url, self.token)
@@ -128,9 +129,7 @@ class KeboolaClient:
             try:
                 with open(self.metadata_cache_path, "r") as f:
                     self.metadata_cache = json.load(f)
-                logger.info(
-                    f"Metadata cache loaded: {len(self.metadata_cache)} tables"
-                )
+                logger.info(f"Metadata cache loaded: {len(self.metadata_cache)} tables")
             except Exception as e:
                 logger.warning(f"Error loading metadata cache: {e}")
                 self.metadata_cache = {}
@@ -147,12 +146,7 @@ class KeboolaClient:
         except Exception as e:
             logger.warning(f"Error saving metadata cache: {e}")
 
-    def get_table_metadata(
-        self,
-        table_id: str,
-        use_cache: bool = True,
-        cache_ttl_hours: int = 24
-    ) -> Dict[str, Any]:
+    def get_table_metadata(self, table_id: str, use_cache: bool = True, cache_ttl_hours: int = 24) -> Dict[str, Any]:
         """
         Get table metadata from Keboola Storage API.
 
@@ -213,7 +207,7 @@ class KeboolaClient:
                 "last_import_date": table_detail.get("lastImportDate"),
                 "last_change_date": table_detail.get("lastChangeDate"),
                 "is_alias": table_detail.get("isAlias", False),
-                "_cached_at": datetime.now().isoformat()
+                "_cached_at": datetime.now().isoformat(),
             }
 
             # Save to cache
@@ -230,7 +224,7 @@ class KeboolaClient:
         """
         Resolve Keboola data type from column metadata using provider cascade.
 
-        Provider priority: user > ai-metadata-enrichment > snowflake-transformation
+        Provider priority: user > ai-metadata-enrichment > snowflake-transformation > storage
         Falls back to STRING if no type found.
 
         Args:
@@ -239,8 +233,8 @@ class KeboolaClient:
         Returns:
             Keboola type (STRING, INTEGER, DATE, etc.)
         """
-        # Provider priority: user > ai-metadata-enrichment > snowflake-transformation
-        PROVIDER_PRIORITY = ["user", "ai-metadata-enrichment", "keboola.snowflake-transformation"]
+        # Provider priority: user > ai-metadata-enrichment > snowflake-transformation > storage
+        PROVIDER_PRIORITY = ["user", "ai-metadata-enrichment", "keboola.snowflake-transformation", "storage"]
 
         kbc_type = "STRING"  # default
 
@@ -298,10 +292,7 @@ class KeboolaClient:
         if not dtypes:
             columns = metadata.get("columns", [])
             dtypes = {col: "object" for col in columns}
-            logger.warning(
-                f"Column metadata not available for {table_id}, "
-                f"using 'object' for all columns"
-            )
+            logger.warning(f"Column metadata not available for {table_id}, using 'object' for all columns")
 
         return dtypes
 
@@ -349,10 +340,7 @@ class KeboolaClient:
 
         # If no column metadata, return None (graceful fallback)
         if not column_metadata:
-            logger.warning(
-                f"Column metadata not available for {table_id}, "
-                f"PyArrow schema will not be applied"
-            )
+            logger.warning(f"Column metadata not available for {table_id}, PyArrow schema will not be applied")
             return None
 
         fields = []
@@ -398,7 +386,7 @@ class KeboolaClient:
         changed_since: Optional[str] = None,
         changed_until: Optional[str] = None,
         columns: Optional[List[str]] = None,
-        where_filters: Optional[List[WhereFilter]] = None
+        where_filters: Optional[List[WhereFilter]] = None,
     ) -> Dict[str, Any]:
         """
         Export table from Keboola to CSV file.
@@ -439,10 +427,7 @@ class KeboolaClient:
         # If where_filters are specified, use direct API call (without changedSince)
         if where_filters:
             return self._export_table_with_filters(
-                table_id=table_id,
-                output_path=output_path,
-                where_filters=where_filters,
-                columns=columns
+                table_id=table_id, output_path=output_path, where_filters=where_filters, columns=columns
             )
 
         logger.info(
@@ -472,7 +457,7 @@ class KeboolaClient:
                     changed_since=changed_since,  # For incremental sync
                     changed_until=changed_until,  # For chunked initial load
                     columns=columns,  # Optionally - select only some columns
-                    is_gzip=False  # Don't want gzip compressed CSV
+                    is_gzip=False,  # Don't want gzip compressed CSV
                 )
             finally:
                 os.chdir(original_cwd)
@@ -486,9 +471,7 @@ class KeboolaClient:
                 # Rename to desired name (with .csv extension)
                 actual_file.rename(output_path)
             else:
-                raise FileNotFoundError(
-                    f"Keboola didn't create expected file: {actual_file}"
-                )
+                raise FileNotFoundError(f"Keboola didn't create expected file: {actual_file}")
 
             # Clean up slice files (*.csv_*_*_*.csv) that Keboola creates for large tables
             for slice_file in temp_dir.glob("*.csv_*_*_*.csv"):
@@ -501,7 +484,7 @@ class KeboolaClient:
 
             # Count rows (quick way using wc -l would be better for large files,
             # but for consistency we use Python)
-            with open(output_path, 'r') as f:
+            with open(output_path, "r") as f:
                 # First line is header, rest are data
                 row_count = sum(1 for _ in f) - 1
 
@@ -512,13 +495,10 @@ class KeboolaClient:
                 "export_time": datetime.now().isoformat(),
                 "changed_since": changed_since,
                 "changed_until": changed_until,
-                "output_path": str(output_path)
+                "output_path": str(output_path),
             }
 
-            logger.info(
-                f"Export complete: {row_count} rows, "
-                f"{file_size / 1024 / 1024:.2f} MB"
-            )
+            logger.info(f"Export complete: {row_count} rows, {file_size / 1024 / 1024:.2f} MB")
 
             return export_info
 
@@ -530,11 +510,7 @@ class KeboolaClient:
             raise
 
     def _export_table_with_filters(
-        self,
-        table_id: str,
-        output_path: Path,
-        where_filters: List[WhereFilter],
-        columns: Optional[List[str]] = None
+        self, table_id: str, output_path: Path, where_filters: List[WhereFilter], columns: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Export table with whereFilters using direct API call.
@@ -550,13 +526,8 @@ class KeboolaClient:
         Returns:
             Dictionary with export information
         """
-        filters_desc = ", ".join(
-            f"{f.column} {f.operator} {f.values}" for f in where_filters
-        )
-        logger.info(
-            f"Exporting table {table_id} -> {output_path} "
-            f"(filters: {filters_desc})"
-        )
+        filters_desc = ", ".join(f"{f.column} {f.operator} {f.values}" for f in where_filters)
+        logger.info(f"Exporting table {table_id} -> {output_path} (filters: {filters_desc})")
 
         # Ensure output folder exists
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -577,9 +548,7 @@ class KeboolaClient:
             for i, col in enumerate(columns):
                 payload[f"columns[{i}]"] = col
 
-        headers = {
-            "X-StorageApi-Token": self.token
-        }
+        headers = {"X-StorageApi-Token": self.token}
 
         try:
             # 1. Start async export job
@@ -652,7 +621,7 @@ class KeboolaClient:
 
             if is_sliced:
                 # Download manifest to get list of slice URLs
-                logger.debug(f"Downloading sliced file manifest")
+                logger.debug("Downloading sliced file manifest")
                 manifest_response = requests.get(download_url)
                 manifest_response.raise_for_status()
                 manifest = manifest_response.json()
@@ -670,9 +639,9 @@ class KeboolaClient:
                 # Create CSV header line
                 header_line = ",".join(f'"{col}"' for col in column_names) + "\n"
 
-                with open(output_path, 'wb') as outfile:
+                with open(output_path, "wb") as outfile:
                     # Write header first (sliced files don't contain headers)
-                    outfile.write(header_line.encode('utf-8'))
+                    outfile.write(header_line.encode("utf-8"))
 
                     for i, entry in enumerate(slice_entries):
                         slice_url = entry.get("url")
@@ -684,7 +653,7 @@ class KeboolaClient:
                             # gs://bucket/path -> https://storage.googleapis.com/bucket/path
                             slice_url = slice_url.replace("gs://", "https://storage.googleapis.com/", 1)
 
-                        logger.debug(f"Downloading slice {i+1}/{len(slice_entries)}")
+                        logger.debug(f"Downloading slice {i + 1}/{len(slice_entries)}")
 
                         # Add Bearer token for GCS authentication if available
                         slice_headers = {}
@@ -698,6 +667,7 @@ class KeboolaClient:
                         if slice_url.endswith(".gz"):
                             import gzip
                             import io
+
                             with gzip.GzipFile(fileobj=io.BytesIO(slice_response.content)) as gz:
                                 content = gz.read()
                         else:
@@ -707,8 +677,8 @@ class KeboolaClient:
                         outfile.write(content)
 
                         # Ensure newline at end of slice if missing
-                        if content and not content.endswith(b'\n'):
-                            outfile.write(b'\n')
+                        if content and not content.endswith(b"\n"):
+                            outfile.write(b"\n")
             else:
                 # Single file download
                 logger.debug(f"Downloading from: {download_url}")
@@ -722,12 +692,13 @@ class KeboolaClient:
                 if is_gzip:
                     import gzip
                     import io
+
                     compressed_data = download_response.content
                     with gzip.GzipFile(fileobj=io.BytesIO(compressed_data)) as gz:
-                        with open(output_path, 'wb') as f:
+                        with open(output_path, "wb") as f:
                             f.write(gz.read())
                 else:
-                    with open(output_path, 'wb') as f:
+                    with open(output_path, "wb") as f:
                         for chunk in download_response.iter_content(chunk_size=8192):
                             f.write(chunk)
 
@@ -735,7 +706,7 @@ class KeboolaClient:
             file_size = output_path.stat().st_size
 
             # Count rows
-            with open(output_path, 'r') as f:
+            with open(output_path, "r") as f:
                 row_count = sum(1 for _ in f) - 1  # -1 for header
 
             export_info = {
@@ -744,16 +715,12 @@ class KeboolaClient:
                 "file_size_bytes": file_size,
                 "export_time": datetime.now().isoformat(),
                 "where_filters": [
-                    {"column": wf.column, "operator": wf.operator, "values": wf.values}
-                    for wf in where_filters
+                    {"column": wf.column, "operator": wf.operator, "values": wf.values} for wf in where_filters
                 ],
-                "output_path": str(output_path)
+                "output_path": str(output_path),
             }
 
-            logger.info(
-                f"Export complete: {row_count} rows, "
-                f"{file_size / 1024 / 1024:.2f} MB"
-            )
+            logger.info(f"Export complete: {row_count} rows, {file_size / 1024 / 1024:.2f} MB")
 
             return export_info
 
@@ -792,18 +759,20 @@ class KeboolaClient:
         result = []
         for t in raw_tables:
             bucket = t.get("bucket", {})
-            result.append({
-                "id": t.get("id", ""),
-                "name": t.get("name", ""),
-                "bucket_id": bucket.get("id", ""),
-                "bucket_name": bucket.get("name", bucket.get("id", "")),
-                "columns": t.get("columns", []),
-                "row_count": t.get("rowsCount", 0),
-                "size_bytes": t.get("dataSizeBytes", 0),
-                "primary_key": t.get("primaryKey", []),
-                "last_change": t.get("lastChangeDate"),
-                "last_import": t.get("lastImportDate"),
-            })
+            result.append(
+                {
+                    "id": t.get("id", ""),
+                    "name": t.get("name", ""),
+                    "bucket_id": bucket.get("id", ""),
+                    "bucket_name": bucket.get("name", bucket.get("id", "")),
+                    "columns": t.get("columns", []),
+                    "row_count": t.get("rowsCount", 0),
+                    "size_bytes": t.get("dataSizeBytes", 0),
+                    "primary_key": t.get("primaryKey", []),
+                    "last_change": t.get("lastChangeDate"),
+                    "last_import": t.get("lastImportDate"),
+                }
+            )
 
         logger.info(f"Discovered {len(result)} tables")
         return result
@@ -819,10 +788,7 @@ class KeboolaClient:
             # Try to get list of buckets as connection test
             # (verification methods differ between kbcstorage versions)
             buckets = self.client.buckets.list()
-            logger.info(
-                f"Connection to Keboola OK. "
-                f"Found {len(buckets)} buckets."
-            )
+            logger.info(f"Connection to Keboola OK. Found {len(buckets)} buckets.")
             return True
         except Exception as e:
             logger.error(f"Error testing connection: {e}")
@@ -865,14 +831,14 @@ if __name__ == "__main__":
             print(f"   Testing table: {test_table_id}")
 
             metadata = client.get_table_metadata(test_table_id)
-            print(f"   ✅ Metadata loaded:")
+            print("   ✅ Metadata loaded:")
             print(f"      Columns: {len(metadata.get('columns', []))}")
             print(f"      Rows: {metadata.get('row_count', 0):,}")
             print(f"      Size: {metadata.get('data_size_bytes', 0) / 1024 / 1024:.2f} MB")
 
             # Test dtypes
             dtypes = client.get_pandas_dtypes(test_table_id)
-            print(f"      Pandas dtypes:")
+            print("      Pandas dtypes:")
             for col, dtype in list(dtypes.items())[:5]:
                 print(f"         {col}: {dtype}")
             if len(dtypes) > 5:
@@ -883,4 +849,5 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n❌ Error: {e}")
         import traceback
+
         traceback.print_exc()

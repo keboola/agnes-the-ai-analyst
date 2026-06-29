@@ -310,8 +310,7 @@ class TestMetricsAPI:
         client.post("/api/admin/metrics", json=SAMPLE_METRIC, headers=headers)
 
         resp = client.delete("/api/admin/metrics/finance/mrr", headers=headers)
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "deleted"
+        assert resp.status_code == 204
 
         resp = client.get("/api/metrics/finance/mrr", headers=headers)
         assert resp.status_code == 404

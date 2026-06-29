@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from cli.client import api_get, stream_download
+from cli.client import api_get, api_post, stream_download
 from cli.config import get_sync_state, save_sync_state
 
 
@@ -47,6 +47,9 @@ class PullResult:
 
     Fields:
     - `tables_updated`: count of parquets actually re-downloaded this run.
+    - `tables_removed`: count of local `server/parquet/<name>.parquet` files
+      pruned this run because the table left the authorized typed (v49)
+      stack. Always 0 against a pre-v49 server that emits no typed sections.
     - `parquets_total`: count of non-remote tables visible in the manifest.
     - `rules_count`: number of `km_*.md` files written to `.claude/rules/`.
     - `duration_s`: wall time of the call.
@@ -56,13 +59,29 @@ class PullResult:
     """
 
     tables_updated: int = 0
+    tables_removed: int = 0
     parquets_total: int = 0
     rules_count: int = 0
     duration_s: float = 0.0
     errors: list[dict] = field(default_factory=list)
+    # v49 (Phase 7, Task 7.5) — per-type stack-sync result. Populated when
+    # the manifest carries any of ``direct_tables`` / ``data_packages`` /
+    # ``memory_domains``. Kept off the constructor signature (None default)
+    # so older callers reading ``tables_updated`` keep compiling.
+    stack_sync: object = None
 
 
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
+
+# #596 — hash-mismatch recovery in `_download_one`. A download whose bytes
+# don't match the manifest hash is treated as transient (corrupt mid-flight
+# transfer, a server-side parquet rewrite that raced the manifest read) and
+# re-downloaded up to this many extra times before the table is recorded as
+# a hard error. The prior good `<tid>.parquet` is preserved across the whole
+# loop (download lands in a sidecar; only a verified sidecar is promoted), so
+# even a persistent mismatch never leaves the table missing from disk.
+_DOWNLOAD_RETRIES = 2
+_DOWNLOAD_RETRY_BACKOFFS_S = (0.5, 1.0)
 
 
 def _read_progress_interval_seconds() -> float:
@@ -185,6 +204,17 @@ class _TextualProgress:
                 self._last_emit_pct[tid] = pct - (pct % 10)
                 self._last_emit_bytes[tid] = current
                 self._emit_line(tid, current, total, now)
+
+    def reset(self, tid: str) -> None:
+        """Zero a file's progress before a retry attempt. Without this the
+        retry's bytes stack on top of the failed attempt's and the display
+        inflates past the file's total (e.g. "200.0 MB / 100.0 MB")."""
+        with self._lock:
+            self._bytes[tid] = 0
+            self._started_at.pop(tid, None)
+            self._last_emit_at.pop(tid, None)
+            self._last_emit_pct.pop(tid, None)
+            self._last_emit_bytes.pop(tid, None)
 
     def finish(self) -> None:
         """Emit a final `done` line for any file we never closed out."""
@@ -340,6 +370,58 @@ def run_pull(
         local_state = get_sync_state()
         local_tables = local_state.get("tables", {})
 
+        # #506 — make the legacy flat `server/parquet/` tree obey the stack.
+        #
+        # `agnes query` reads <workspace>/user/duckdb/analytics.duckdb whose
+        # views are rebuilt over <workspace>/server/parquet/*.parquet. The
+        # legacy flat `manifest["tables"]` dict is gated server-side by
+        # `can_access_table`, whose Admin short-circuit bypasses the stack —
+        # so for an admin it over-lists every accessible table regardless of
+        # subscription, and for everyone there is no prune on authorization
+        # loss. The typed v49 sections (``data_packages[].tables[]`` +
+        # ``direct_tables[]``) ARE stack-scoped via StackResolver, but
+        # historically run_pull consumed only the flat dict. Net: removing a
+        # data package dropped it from ``data_packages[]`` yet left its
+        # parquet + DuckDB view locally queryable.
+        #
+        # When the manifest carries the query-table typed sections, the authorized
+        # table-name set is the union of every typed entry's ``name`` field —
+        # which equals the flat parquet stem == sync_state.table_id ==
+        # registry name == _meta.table_name. We use that set both to (1) filter
+        # the download set (kills admin over-listing without touching server
+        # authz) and (2) prune already-downloaded parquets that left the stack.
+        #
+        # A pre-v49 server emits none of these keys → fall back to the flat
+        # dict exactly as before (no filter, no prune). A typed-sections-present
+        # but empty stack is a legitimate "subscribed to zero packages" state:
+        # the authorized set is empty and ALL flat parquets are pruned, which is
+        # the intended behavior (the server wraps each section builder in
+        # try/except returning [] on error, and StackResolver returns [] only
+        # for a genuinely empty stack — so an empty typed set is never an error
+        # signal that would wrongly nuke the local tree).
+        # Gate on the query-table typed sections only (``data_packages`` /
+        # ``direct_tables``) — NOT ``memory_domains``. Memory domains carry no
+        # query tables (no flat parquet), so a manifest that arrives with only
+        # ``memory_domains`` (a partial or hand-crafted delivery) must NOT build
+        # an empty authorized set and prune every local parquet. The end-of-run
+        # stack-sync gate keeps ``memory_domains`` (see below) — that path
+        # legitimately fires on memory domains alone.
+        has_query_table_sections = any(
+            k in manifest for k in ("direct_tables", "data_packages")
+        )
+        authorized_names: set[str] | None = None
+        if has_query_table_sections:
+            authorized_names = set()
+            for pkg in manifest.get("data_packages", []) or []:
+                for t in pkg.get("tables", []) or []:
+                    name = t.get("name")
+                    if name:
+                        authorized_names.add(name)
+            for t in manifest.get("direct_tables", []) or []:
+                name = t.get("name")
+                if name:
+                    authorized_names.add(name)
+
         # 2. Compute the download set, skipping remote-mode tables (no
         # parquet on the server) and unchanged hashes.
         #
@@ -364,7 +446,23 @@ def run_pull(
                 # still discoverable via `agnes catalog` and queryable
                 # the next time `agnes pull` runs without --skip-materialize.
                 continue
+            # #506 — when typed sections are present, the stack is the unit of
+            # access: never download a flat-dict table the typed stack omits
+            # (admin god-mode over-list). Pre-v49 servers have
+            # `authorized_names is None` → no filter.
+            if authorized_names is not None and tid not in authorized_names:
+                continue
             non_remote_total += 1
+            # #607 — server_only tables are kept fresh server-side and stay
+            # queryable via `agnes query --remote`, but their parquet is NOT
+            # distributed to laptops. Count them as listed (they're part of
+            # parquets_total above, like a hash-unchanged row) but never add
+            # them to the download set. Mirrors the remote-skip's
+            # listed-but-not-downloaded behavior, except remote rows aren't
+            # even counted (no server parquet exists at all); a server_only
+            # row HAS a server parquet, we just don't ship it.
+            if info.get("server_only"):
+                continue
             local_hash = local_tables.get(tid, {}).get("hash", "")
             server_hash = info.get("hash", "")
             target = parquet_dir / f"{tid}.parquet"
@@ -469,38 +567,102 @@ def run_pull(
             One bound thread per call; stream_download is sync I/O so a
             ThreadPoolExecutor (not asyncio) is the right tool. The
             progress callback is thread-safe — Rich's Progress.update
-            and the textual fallback's lock both serialize internally."""
+            and the textual fallback's lock both serialize internally.
+
+            Durability contract (#596): the prior good `<tid>.parquet`
+            (if any) is NEVER unlinked before a fresh download has
+            verified. The download lands in a sidecar
+            `<tid>.parquet.verify.tmp`, the hash (or, on a hash-less
+            legacy manifest, the PAR1 structural check) is checked
+            there, and only on success is the sidecar `os.replace`d into
+            the final target — atomic, so a reader never sees a
+            half-written or mismatched file. A hash mismatch is treated
+            as transient: the download+verify is retried up to
+            ``_DOWNLOAD_RETRIES`` times (small backoff between attempts)
+            before giving up. On persistent failure the sidecar is
+            removed, the OLD good parquet stays in place, and the table
+            is recorded under ``result.errors`` — the table is never
+            left missing from disk."""
             target = parquet_dir / f"{tid}.parquet"
+            sidecar = parquet_dir / f"{tid}.parquet.verify.tmp"
             expected_hash = server_tables[tid].get("hash", "")
             cb = None
+            reset_progress = None
             if progress is not None and tid in progress_tasks:
                 task_id = progress_tasks[tid]
                 def cb(n: int, _tid=tid, _task=task_id):
                     progress.update(_task, advance=n)
+                def reset_progress(_task=task_id):
+                    progress.update(_task, completed=0)
             elif textual is not None:
                 def cb(n: int, _tid=tid):
                     textual.advance(_tid, n)
+                def reset_progress(_tid=tid):
+                    textual.reset(_tid)
+
+            last_err: str | None = None
             try:
-                stream_download(f"/api/data/{tid}/download", str(target),
-                                progress_callback=cb)
-                if expected_hash:
-                    actual_hash = _file_md5(target)
-                    if actual_hash != expected_hash:
-                        target.unlink(missing_ok=True)
-                        raise ValueError(
-                            f"hash mismatch: expected {expected_hash[:12]}, got {actual_hash[:12]}"
+                for attempt in range(_DOWNLOAD_RETRIES + 1):
+                    # A failed attempt already reported its bytes; zero the
+                    # bar so the retry doesn't display 2x/3x the file size.
+                    if attempt and reset_progress is not None:
+                        reset_progress()
+                    try:
+                        # Download into a sidecar — the real target keeps
+                        # the prior good bytes until verification passes.
+                        stream_download(
+                            f"/api/data/{tid}/download", str(sidecar),
+                            progress_callback=cb,
                         )
-                elif not _is_valid_parquet(target):
-                    target.unlink(missing_ok=True)
-                    raise ValueError("not a valid parquet (missing PAR1 magic)")
-                entry = {
-                    "hash": expected_hash,
-                    "rows": server_tables[tid].get("rows", 0),
-                    "size_bytes": server_tables[tid].get("size_bytes", 0),
-                }
-                return tid, entry, None
-            except Exception as exc:
-                return tid, None, str(exc)
+                        if expected_hash:
+                            actual_hash = _file_md5(sidecar)
+                            if actual_hash != expected_hash:
+                                last_err = (
+                                    f"hash mismatch: expected "
+                                    f"{expected_hash[:12]}, got {actual_hash[:12]}"
+                                )
+                                sidecar.unlink(missing_ok=True)
+                                # Re-download on mismatch before giving up.
+                                if attempt < _DOWNLOAD_RETRIES:
+                                    time.sleep(
+                                        _DOWNLOAD_RETRY_BACKOFFS_S[
+                                            min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)
+                                        ]
+                                    )
+                                    continue
+                                # Persistent mismatch: prior good target
+                                # (if any) is untouched; record + bail.
+                                return tid, None, last_err
+                        elif not _is_valid_parquet(sidecar):
+                            # Pre-v49 / no-hash legacy path — unchanged
+                            # semantics, just verified on the sidecar.
+                            sidecar.unlink(missing_ok=True)
+                            raise ValueError(
+                                "not a valid parquet (missing PAR1 magic)"
+                            )
+                        # Verified — promote the sidecar atomically.
+                        os.replace(sidecar, target)
+                        entry = {
+                            "hash": expected_hash,
+                            "rows": server_tables[tid].get("rows", 0),
+                            "size_bytes": server_tables[tid].get("size_bytes", 0),
+                        }
+                        return tid, entry, None
+                    except Exception as exc:
+                        last_err = str(exc)
+                        sidecar.unlink(missing_ok=True)
+                        if attempt < _DOWNLOAD_RETRIES:
+                            time.sleep(
+                                _DOWNLOAD_RETRY_BACKOFFS_S[
+                                    min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)
+                                ]
+                            )
+                            continue
+                        return tid, None, last_err
+                # Loop exhausted without an explicit return (defensive).
+                return tid, None, last_err or "download failed"
+            finally:
+                sidecar.unlink(missing_ok=True)
 
         try:
             if workers <= 1:
@@ -521,6 +683,41 @@ def run_pull(
             else:
                 local_tables[tid] = entry
                 result.tables_updated += 1
+
+        # 4b. #506 — prune local parquets that left the authorized typed
+        # stack. Runs only when the manifest carries typed sections (else
+        # ``authorized_names is None`` and this is a no-op — pre-v49 servers
+        # are untouched). For any ``server/parquet/<stem>.parquet`` on disk
+        # whose stem is not authorized, unlink the file and drop its
+        # ``local_tables[stem]`` sync_state row. The unconditional view
+        # rebuild in step 6 then drops the now-orphaned view automatically
+        # (it DROPs all views, then recreates only from parquets still on
+        # disk). Remote tables have no flat parquet so they're untouched;
+        # materialized tables DO have a flat parquet and are pruned like any
+        # other table when they leave the stack (intended). User-created BASE
+        # TABLEs live in analytics.duckdb (not under server/parquet/) so they're
+        # never pruned. Done before
+        # save_sync_state so the dropped rows persist, and before
+        # _rebuild_duckdb_views so the orphaned views disappear.
+        # #607 (#630 review) — also prune parquets the manifest now marks
+        # server_only: the table stays authorized (listed, RBAC intact) but
+        # its parquet must leave the laptop, otherwise a copy downloaded
+        # before the admin flipped the flag keeps a local view alive and the
+        # table stays locally queryable despite server-only distribution.
+        server_only_names = {
+            tid for tid, info in server_tables.items() if info.get("server_only")
+        }
+        if parquet_dir.exists() and (
+            authorized_names is not None or server_only_names
+        ):
+            for pq_file in sorted(parquet_dir.glob("*.parquet")):
+                stem = pq_file.stem
+                authorized = authorized_names is None or stem in authorized_names
+                if authorized and stem not in server_only_names:
+                    continue
+                pq_file.unlink(missing_ok=True)
+                local_tables.pop(stem, None)
+                result.tables_removed += 1
 
         # 5. Persist sync state (only on real runs).
         # TODO(workspace-scoped-sync-state): currently saved to
@@ -545,8 +742,95 @@ def run_pull(
         except Exception as exc:
             result.errors.append({"stage": "memory_bundle", "error": str(exc)})
 
+        # 8. v49 stack sync — per-type loop into ``~/.claude/data/`` and
+        # ``~/.claude/memory/`` with reference-counted dedup. Runs only
+        # when the manifest carries the v49 fields (older servers /
+        # backward-compat workspaces are untouched). Best-effort:
+        # failure here records under ``result.errors`` but doesn't abort
+        # the rest of the pull.
+        if any(
+            k in manifest for k in ("direct_tables", "data_packages", "memory_domains")
+        ):
+            try:
+                result.stack_sync = _run_stack_sync_from_manifest(manifest, workspace)
+            except Exception as exc:
+                result.errors.append({"stage": "stack_sync", "error": str(exc)})
+
     result.duration_s = time.monotonic() - started
+
+    # 9. Pull-confirm telemetry — fire-and-forget POST so the server can
+    # close the loop on the ``sync.pull_started`` event from Phase 6.
+    try:
+        _emit_pull_confirm(server_url, token, result)
+    except Exception:
+        pass
+
     return result
+
+
+def _run_stack_sync_from_manifest(manifest: dict, workspace: Path):
+    """Build a ``pull_sync.PullStackOptions`` from the manifest payload
+    and invoke ``run_stack_sync``. The local sync root is the
+    ``<workspace>/.claude/`` dir so the stack-sync artifacts live next
+    to the existing ``<workspace>/.claude/rules/`` / ``<workspace>/.claude/
+    settings.json`` tree (workspace-scoped, not user-home, matching
+    Section 5.3 of the spec for analyst workspaces)."""
+    from cli.lib.pull_sync import PullStackOptions, run_stack_sync
+
+    local_root = workspace / ".claude"
+
+    def _fetcher(url: str, target: Path) -> None:
+        stream_download(url, str(target))
+
+    def _bundle_fetcher(slug: str) -> bytes:
+        resp = api_get("/api/memory/bundle", params={"domain": slug})
+        resp.raise_for_status()
+        return resp.content
+
+    opts = PullStackOptions(
+        manifest=manifest,
+        local_dir=local_root,
+        fetcher=_fetcher,
+        md5_of=_file_md5,
+        bundle_fetcher=_bundle_fetcher,
+    )
+    return run_stack_sync(opts)
+
+
+def _emit_pull_confirm(server_url: str, token: str, result: "PullResult") -> None:
+    """POST /api/sync/pull-confirm with the per-type aggregate counts.
+
+    Fire-and-forget — the parent already swallows exceptions but the
+    helper has its own ``try/except`` so a 404 (older server without
+    the endpoint) is silent rather than logged as a warning."""
+    stack = result.stack_sync
+    direct = getattr(stack, "direct_tables", None) if stack else None
+    dp = getattr(stack, "data_packages", None) if stack else None
+    md = getattr(stack, "memory_domains", None) if stack else None
+    payload = {
+        "duration_ms": int(result.duration_s * 1000),
+        "direct_tables": {
+            "added": getattr(direct, "added", 0),
+            "updated": getattr(direct, "updated", 0),
+            "removed": getattr(direct, "removed", 0),
+        },
+        "data_packages": {
+            "added": getattr(dp, "added", 0),
+            "updated": getattr(dp, "updated", 0),
+            "removed": getattr(dp, "removed", 0),
+        },
+        "memory_domains": {
+            "added": getattr(md, "added", 0),
+            "updated": getattr(md, "updated", 0),
+            "removed": getattr(md, "removed", 0),
+        },
+        "errors": len(result.errors),
+    }
+    try:
+        api_post("/api/sync/pull-confirm", json=payload)
+    except Exception:
+        # Endpoint may not exist on older servers; silent skip.
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -594,11 +878,12 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path) -> None:
     expect the file to exist. The parquet rebuild loop is a no-op when
     `parquet_dir` is missing.
     """
-    import duckdb
+    import duckdb  # noqa: F401  (kept for the duckdb.Error path below)
+    from src.duckdb_conn import _open_duckdb
 
     db_path = workspace / "user" / "duckdb" / "analytics.duckdb"
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = duckdb.connect(str(db_path))
+    conn = _open_duckdb(str(db_path))
     try:
         # Existing user-created BASE TABLEs we must not shadow with views.
         try:

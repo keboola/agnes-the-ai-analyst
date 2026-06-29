@@ -3,7 +3,7 @@
 Provides:
 
   * ``GET  /api/my-stack``                                 — combined view
-  * ``PUT  /api/my-stack/curated/{marketplace_id}/{plugin}`` — toggle opt-out
+  * ``PUT  /api/my-stack/curated/{marketplace_id}/{plugin}`` — toggle subscription
 
 Used by the ``agnes my-stack`` CLI subcommand. The web page that historically
 backed these endpoints (``/my-ai-stack``) was removed in favor of
@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from pathlib import Path
 from typing import Any, List, Optional
 
 import duckdb
@@ -26,13 +25,12 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import _get_db, get_current_user
 from src.marketplace_filter import resolve_allowed_plugins
-from src.repositories.audit import AuditRepository
-from src.repositories.store_entities import StoreEntitiesRepository
-from src.repositories.user_curated_subscriptions import (
-    UserCuratedSubscriptionsRepository,
+from src.repositories import (
+    audit_repo,
+    marketplace_plugins_repo,
+    user_curated_subscriptions_repo,
+    user_store_installs_repo,
 )
-from src.repositories.user_store_installs import UserStoreInstallsRepository
-from src.store_naming import suffixed_name
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/my-stack", tags=["my-stack"])
@@ -101,7 +99,7 @@ def _audit(
     params: Optional[dict] = None,
 ) -> None:
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id, action=action, resource=target, params=params
         )
     except Exception:
@@ -113,24 +111,22 @@ async def get_my_stack(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Combined view of admin-curated plugins (with current opt-out state)
-    and Store entities the caller has installed.
+    """Combined view of curated plugins the caller can subscribe to
+    and Store entities they have installed.
     """
     granted = resolve_allowed_plugins(conn, user)
     # Model B (v28+): explicit subscriptions decide what's enabled.
     # `enabled` mirrors the legacy "not opted_out" UX so the existing toggle
     # remains semantically intuitive in the my-stack view.
-    subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user["id"])
+    subs = user_curated_subscriptions_repo().subscribed_set(user["id"])
 
     # v39: surface is_system flag so the template can lock the toggle.
     # One round trip — set membership intersection in Python is cheaper
     # than joining marketplace_plugins per-row inside resolve_allowed_plugins
     # (which is also called from the marketplace_filter / packager hot path).
-    sys_rows = conn.execute(
-        "SELECT marketplace_id, name FROM marketplace_plugins "
-        "WHERE is_system = TRUE",
-    ).fetchall()
-    system_plugins: set[tuple[str, str]] = {(r[0], r[1]) for r in sys_rows}
+    system_plugins: set[tuple[str, str]] = set(
+        marketplace_plugins_repo().list_system_keys()
+    )
 
     curated: List[CuratedPlugin] = []
     for p in granted:
@@ -150,12 +146,17 @@ async def get_my_stack(
             )
         )
 
-    installs = UserStoreInstallsRepository(conn).list_for_user(user["id"])
+    installs = user_store_installs_repo().list_for_user(user["id"])
     store_items: List[StoreInstallEntry] = []
     from src.store_naming import strip_archive_suffix
     for row in installs:
         photo_url = (
-            f"/api/store/entities/{row['id']}/photo" if row.get("photo_path") else None
+            # ``?v=`` cache-busting fingerprint via ``version_no`` — see
+            # ``app/api/store.py:get_entity_photo`` for the cache-header
+            # contract. Bumps on every re-upload, so the URL refresh
+            # forces a browser refetch exactly when the bytes change.
+            f"/api/store/entities/{row['id']}/photo?v={row.get('version_no', 1)}"
+            if row.get("photo_path") else None
         )
         # Display name strips the archive-rename suffix so the user
         # sees their installed plugin's original label even after the
@@ -177,7 +178,10 @@ async def get_my_stack(
                 version=row["version"],
                 owner_user_id=row["owner_user_id"],
                 owner_username=row["owner_username"],
-                invocation_name=suffixed_name(raw_name, row["owner_username"]),
+                # v49 phase-3: stored synthetic_name (single source of
+                # truth). The column is NOT NULL and `list_for_user`
+                # selects it explicitly from the joined store_entities row.
+                invocation_name=row["synthetic_name"],
                 install_count=int(row.get("install_count") or 0),
                 photo_url=photo_url,
                 installed_at=_to_iso(row.get("installed_at")),
@@ -199,7 +203,7 @@ async def toggle_curated(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Toggle subscribe/unsubscribe for a single admin-granted plugin.
+    """Toggle subscribe/unsubscribe for a single curated plugin.
 
     UI thinks in terms of *enabled* (default off in Model B). v28+ the
     repository stores *subscribed* rows (presence = enabled in served set);
@@ -219,18 +223,14 @@ async def toggle_curated(
     # unsubscribe path. Subscribe is still allowed (no-op on the
     # already-materialized row).
     if not body.enabled:
-        sys_row = conn.execute(
-            "SELECT is_system FROM marketplace_plugins "
-            "WHERE marketplace_id = ? AND name = ?",
-            [marketplace_id, plugin_name],
-        ).fetchone()
-        if sys_row and bool(sys_row[0]):
+        row = marketplace_plugins_repo().get(marketplace_id, plugin_name)
+        if row and bool(row.get("is_system")):
             raise HTTPException(
                 status_code=409,
                 detail="cannot_unsubscribe_system_plugin",
             )
 
-    repo = UserCuratedSubscriptionsRepository(conn)
+    repo = user_curated_subscriptions_repo()
     if body.enabled:
         repo.subscribe(user["id"], marketplace_id, plugin_name)
     else:

@@ -1,13 +1,22 @@
 """Data download endpoint — streaming parquet files."""
 
+import logging
+import time
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
+from src.audit_helpers import client_kind_from_user
 from src.identifier_validation import _SAFE_QUOTED_IDENTIFIER
 from src.rbac import can_access_table
+
+from src.repositories import (
+    audit_repo,
+)
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/data", tags=["data"])
 
@@ -35,10 +44,43 @@ async def check_access(
     RBAC check is ~1 ms while a HEAD path involves filesystem walks
     (``rglob`` for the parquet across source subdirs).
     """
+    t0 = time.monotonic()
+    resource = f"table:{table_id}"[:256]
     if not _SAFE_QUOTED_IDENTIFIER.match(table_id):
+        try:
+            audit_repo().log(
+                user_id=user.get("id"),
+                action="data.access_check",
+                resource=resource,
+                params={"granted": False,
+                        "duration_ms": int((time.monotonic() - t0) * 1000),
+                        "error": "invalid_table_id"},
+                result="error.404",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed for data.access_check (invalid id); continuing")
         raise HTTPException(status_code=404, detail="Table not found")
-    if not can_access_table(user, table_id, conn):
-        raise HTTPException(status_code=403, detail="Access denied to this table")
+    granted = can_access_table(user, table_id, conn)
+    try:
+        audit_repo().log(
+            user_id=user.get("id"),
+            action="data.access_check",
+            resource=resource,
+            params={
+                "granted": granted,
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+            },
+            result="success" if granted else "error.403",
+            client_kind=client_kind_from_user(user),
+        )
+    except Exception:
+        logger.exception("audit_log write failed for data.access_check; continuing")
+    if not granted:
+        from src.rbac import table_not_in_stack_message
+        raise HTTPException(
+            status_code=403, detail=table_not_in_stack_message(table_id),
+        )
     return Response(status_code=204)
 
 
@@ -67,7 +109,10 @@ async def download_table(
         raise HTTPException(status_code=404, detail="Table not found")
     # Check access FIRST
     if not can_access_table(user, table_id, conn):
-        raise HTTPException(status_code=403, detail="Access denied to this table")
+        from src.rbac import table_not_in_stack_message
+        raise HTTPException(
+            status_code=403, detail=table_not_in_stack_message(table_id),
+        )
 
     data_dir = _get_data_dir()
 
@@ -93,6 +138,18 @@ async def download_table(
     if_none_match = request.headers.get("if-none-match")
     if if_none_match == etag:
         return Response(status_code=304)
+
+    try:
+        audit_repo().log(
+            user_id=user.get("id"),
+            action="data.download",
+            resource=f"table:{table_id}"[:256],
+            params={"bytes": stat.st_size, "format": "parquet"},
+            result="success",
+            client_kind=client_kind_from_user(user),
+        )
+    except Exception:
+        logger.exception("audit_log write failed for data.download; continuing")
 
     return FileResponse(
         path=file_path,

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
@@ -141,21 +141,29 @@ class StoreSubmissionsRepository:
         self, submitter_id: str, since,
     ) -> int:
         """Spam-quota helper. Counts submissions by ``submitter_id`` whose
-        verdict is one of the rejected/error states
-        (``blocked_inline | blocked_llm | review_error``) newer than
+        verdict is ``blocked_llm`` or ``review_error`` newer than
         ``since`` (a ``datetime`` — typically now - 24h). Called from
-        the POST entry point; refusal bounds disk growth from a single
-        bot looping on malformed/risky ZIPs.
+        the POST entry point; refusal bounds the load placed on the
+        async LLM reviewer by a single bot looping risky bundles.
 
-        Pre-fix this counted ONLY ``blocked_inline``. A bad-actor
-        submitter who triggered ten ``blocked_llm`` verdicts was
-        unbounded. All three states represent rejected uploads — count
-        them together.
+        Inline failures (manifest/content validation, static-security
+        deny-list) are hard-rejected upstream without creating a
+        submission row — they don't consume the LLM-tier quota.
+        Slowapi rate limits + the audit_log
+        ``store.upload.security_blocked`` trail cover that path.
+
+        Historical note: pre-#9 this counted only ``blocked_inline``;
+        a bot triggering ``blocked_llm`` verdicts was unbounded.
+        Post-#9 it widened to all three. The current incarnation
+        narrows back to LLM-tier states since inline failures no
+        longer create rows. Legacy ``blocked_inline`` rows in DBs that
+        ran the v30 contract are still present (historical audit) but
+        intentionally excluded from the live counter.
         """
         row = self.conn.execute(
             "SELECT COUNT(*) FROM store_submissions "
             "WHERE submitter_id = ? "
-            "  AND status IN ('blocked_inline', 'blocked_llm', 'review_error') "
+            "  AND status IN ('blocked_llm', 'review_error') "
             "  AND created_at >= ?",
             [submitter_id, since],
         ).fetchone()
@@ -165,6 +173,16 @@ class StoreSubmissionsRepository:
     # Routes to the broader counter post-#9.
     count_blocked_inline_for_submitter_since = count_blocked_for_submitter_since
 
+    # Terminal states whose `status` should never be silently overwritten
+    # by an asynchronous (BG-task) writer. Admin-triggered actions
+    # (override, delete) call dedicated repo methods or set
+    # ``allow_terminal_overwrite=True`` explicitly. The BG-task path
+    # in ``runner.run_llm_review`` calls ``update_status`` without that
+    # flag — so a late LLM verdict racing with an admin override OR
+    # with a more recent terminal verdict can no longer clobber the
+    # row.
+    _TERMINAL_STATUSES = frozenset({"approved", "overridden", "blocked_inline"})
+
     def update_status(
         self,
         id: str,
@@ -172,7 +190,19 @@ class StoreSubmissionsRepository:
         status: str,
         llm_findings: Optional[Dict[str, Any]] = None,
         reviewed_by_model: Optional[str] = None,
-    ) -> None:
+        allow_terminal_overwrite: bool = False,
+    ) -> bool:
+        """Update a submission's status. Returns ``True`` when the row
+        was actually updated, ``False`` when a compare-and-swap skipped
+        the write because the row had already moved to a terminal state.
+
+        The CAS protects against the BG-task race surfaced by the
+        adversarial review of PR #316: a late LLM verdict could
+        previously clobber ``status='overridden'`` (admin force-published
+        the submission while the LLM was still running). With the guard,
+        BG callers no-op on terminal rows; admin paths still call
+        ``set_override`` etc. which write unconditionally.
+        """
         if status not in VALID_STATUSES:
             raise ValueError(f"invalid submission status: {status!r}")
         sets = ["status = ?", "updated_at = ?"]
@@ -183,10 +213,54 @@ class StoreSubmissionsRepository:
         if reviewed_by_model is not None:
             sets.append("reviewed_by_model = ?")
             params.append(reviewed_by_model)
+        where_clauses = ["id = ?"]
         params.append(id)
+        if not allow_terminal_overwrite:
+            placeholders = ",".join("?" for _ in self._TERMINAL_STATUSES)
+            where_clauses.append(f"status NOT IN ({placeholders})")
+            params.extend(self._TERMINAL_STATUSES)
+        sql = (
+            f"UPDATE store_submissions SET {', '.join(sets)} "
+            f"WHERE {' AND '.join(where_clauses)}"
+        )
+        result = self.conn.execute(sql, params)
+        # DuckDB returns a relation with the rowcount in row 0, col 0
+        # for an UPDATE. fetchone() is the portable way to read it.
+        try:
+            row = result.fetchone()
+            rowcount = int(row[0]) if row else 0
+        except Exception:
+            rowcount = 0
+        return rowcount > 0
+
+    def set_inline_result(
+        self,
+        id: str,
+        *,
+        inline_checks: Optional[Dict[str, Any]],
+        status: str,
+    ) -> None:
+        """Admin rescan writeback: replace ``inline_checks``, clear any prior
+        ``llm_findings``, and set ``status``.
+
+        Unconditional (admin-triggered), unlike ``update_status`` which guards
+        terminal states with a CAS — a rescan must be able to flip an already
+        'approved' row back to 'blocked_inline'. Backs the /admin store rescan
+        route on both backends (was a raw ``subs.conn.execute`` that broke on PG).
+        """
+        if status not in VALID_STATUSES:
+            raise ValueError(f"invalid submission status: {status!r}")
         self.conn.execute(
-            f"UPDATE store_submissions SET {', '.join(sets)} WHERE id = ?",
-            params,
+            "UPDATE store_submissions "
+            "   SET inline_checks = ?, llm_findings = NULL, "
+            "       status = ?, updated_at = ? "
+            " WHERE id = ?",
+            [
+                json.dumps(inline_checks) if inline_checks is not None else None,
+                status,
+                datetime.now(timezone.utc),
+                id,
+            ],
         )
 
     def set_override(
@@ -212,6 +286,61 @@ class StoreSubmissionsRepository:
                 WHERE id = ?""",
             [admin_user_id, reason, datetime.now(timezone.utc), id],
         )
+
+    def reap_stuck_pending_llm(
+        self,
+        *,
+        grace_seconds: int,
+        error_payload: Dict[str, Any],
+    ) -> List[Tuple[str, str]]:
+        """Flip every ``pending_llm`` row older than ``grace_seconds`` to
+        ``review_error``, stamping ``llm_findings`` with ``error_payload``.
+
+        Returns ``[(submission_id, submitter_id), …]`` for the rows that
+        were actually flipped so the caller can write one audit row each.
+        Scoped strictly to ``pending_llm`` — the per-row CAS in the WHERE
+        clause keeps it idempotent and never touches a row that another
+        worker resolved in between. Engine-specific SQL lives here (not in
+        the reaper) so the Postgres sibling can mirror it; see
+        ``store_submissions_pg.StoreSubmissionsPgRepository``.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=grace_seconds)
+        rows = self.conn.execute(
+            """SELECT id, submitter_id
+                 FROM store_submissions
+                WHERE status = 'pending_llm'
+                  AND created_at < ?""",
+            [cutoff],
+        ).fetchall()
+        if not rows:
+            return []
+        now = datetime.now(timezone.utc)
+        payload = json.dumps(error_payload)
+        reaped: List[Tuple[str, str]] = []
+        for sub_id, submitter_id in rows:
+            result = self.conn.execute(
+                """UPDATE store_submissions
+                      SET status = 'review_error',
+                          llm_findings = ?,
+                          updated_at = ?
+                    WHERE id = ?
+                      AND status = 'pending_llm'""",
+                [payload, now, sub_id],
+            )
+            # Only report a row as reaped when the CAS actually flipped it.
+            # If a concurrent worker resolved the row between the SELECT
+            # above and this UPDATE, the row count is 0 — skip it so the
+            # caller doesn't write a phantom audit entry. Mirrors the PG
+            # sibling's atomic UPDATE … RETURNING semantics. DuckDB returns
+            # the affected-row count in row 0, col 0 of the UPDATE relation.
+            try:
+                row = result.fetchone()
+                flipped = int(row[0]) if row else 0
+            except Exception:
+                flipped = 0
+            if flipped:
+                reaped.append((sub_id, submitter_id))
+        return reaped
 
     def count_for_submitter(self, submitter_id: str, exclude_id: Optional[str] = None) -> int:
         """Number of submissions by a single user. Used by the detail page
@@ -252,6 +381,40 @@ class StoreSubmissionsRepository:
             return None
         columns = [d[0] for d in self.conn.description]
         return self._row_to_dict(columns, rows[0])
+
+    def delete(self, id: str) -> bool:
+        """Hard-delete a submission row by id. Returns ``True`` when a row
+        was actually removed, ``False`` when no row matched.
+
+        Backs the /admin store submission hard-delete route (was a raw
+        ``conn.execute("DELETE …")`` in ``app/api/admin.py`` that broke on
+        PG). The linked bundle + entity cleanup stays in the handler — this
+        only drops the submission row.
+        """
+        rows = self.conn.execute(
+            "DELETE FROM store_submissions WHERE id = ? RETURNING id",
+            [id],
+        ).fetchall()
+        return len(rows) > 0
+
+    def list_for_entity(self, entity_id: str) -> List[Dict[str, Any]]:
+        """Every submission row linked to ``entity_id``, newest first.
+
+        Powers the version-switcher on the admin submission detail page
+        (``app/web/router.py``) — ``list_for_admin`` deliberately doesn't
+        filter by entity_id, so this is the dedicated per-entity read.
+        Returns a fixed projection (no JSON columns) so no decode step is
+        needed.
+        """
+        rows = self.conn.execute(
+            "SELECT id, status, version, created_at, reviewed_by_model "
+            "FROM store_submissions "
+            "WHERE entity_id = ? "
+            "ORDER BY created_at DESC",
+            [entity_id],
+        ).fetchall()
+        columns = [d[0] for d in self.conn.description]
+        return [dict(zip(columns, row)) for row in rows]
 
     # Whitelisted column names for the click-to-sort UI. ``status`` and
     # ``name`` get NULL-safe wrapping so the sort is deterministic across
@@ -407,10 +570,16 @@ class StoreSubmissionsRepository:
                 history = []
             item["entity_version_history"] = history
             item["version_no"] = None
-            sub_hash = item.get("version")
+            # Look up THIS submission's version_no by submission_id,
+            # NOT by hash. Hash-based lookup mislabeled every
+            # byte-identical reupload (and every reused-verdict
+            # restore — common after PR #332) as v1 because the loop
+            # picked the FIRST history entry with matching hash.
+            # Same fix-pattern as PR #330 for runner / override.
+            sub_id = item.get("id")
             for entry in history:
                 try:
-                    if entry.get("hash") == sub_hash:
+                    if entry.get("submission_id") == sub_id:
                         item["version_no"] = int(entry.get("n"))
                         break
                 except (TypeError, ValueError):

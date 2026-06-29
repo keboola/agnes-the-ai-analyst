@@ -14,6 +14,17 @@ from pathlib import Path
 import typer
 
 
+# Mirrors the dual-marker convention documented in cli/commands/init.py:
+# `.claude/init-complete` is the authoritative sentinel written by every
+# successful init (default OR Initial-Workspace-override mode); the legacy
+# CLAUDE.md substring is kept as a fallback for pre-#259 workspaces. The
+# sentinel-first ordering matters for override workspaces: a customer-
+# supplied template body may legitimately omit the literal "AI Data
+# Analyst" substring (the marker is hardcoded against the default Agnes
+# template's `# {{ instance.name }} — AI Data Analyst` heading), and the
+# legacy grep alone would then falsely report "Initialized: no" even
+# when init wrote the sentinel and the workspace is functional.
+_INIT_SENTINEL = Path(".claude") / "init-complete"
 _INIT_MARKER = "AI Data Analyst"
 
 
@@ -26,10 +37,14 @@ def status(
 ):
     workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
 
-    initialized = False
-    claude_md = workspace / "CLAUDE.md"
-    if claude_md.exists():
-        initialized = _INIT_MARKER in claude_md.read_text(encoding="utf-8")
+    initialized = (workspace / _INIT_SENTINEL).exists()
+    if not initialized:
+        claude_md = workspace / "CLAUDE.md"
+        if claude_md.exists():
+            try:
+                initialized = _INIT_MARKER in claude_md.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                initialized = False
 
     parquet_dir = workspace / "server" / "parquet"
     parquets = list(parquet_dir.glob("*.parquet")) if parquet_dir.exists() else []
@@ -39,11 +54,14 @@ def status(
     if db_path.exists():
         last_synced = datetime.fromtimestamp(db_path.stat().st_mtime, tz=timezone.utc).isoformat()
 
-    # Sessions live in ~/.claude/projects/<encoded-cwd>/ (where Claude Code
-    # writes them), with `<workspace>/user/sessions/` as a legacy fallback.
-    # The helper unions both — same source of truth as `agnes push`.
-    from cli.lib.claude_sessions import list_session_files
-    session_count = len(list_session_files(workspace))
+    # Sessions live in <projects_root>/<encoded-workspace_root>/ where Claude
+    # Code writes them. Count what `agnes push` would scan — anchored on the
+    # `workspace_root` config key (the same anchor push uses), so a status run
+    # from any cwd reports the real workspace. 0 when unset.
+    from cli.config import get_workspace_root
+    from cli.lib.session_paths import list_session_files
+    ws_root = get_workspace_root()
+    session_count = len(list_session_files(Path(ws_root))) if ws_root else 0
 
     info = {
         "workspace": str(workspace),

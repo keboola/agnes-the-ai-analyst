@@ -51,12 +51,19 @@ def catalog(
     if json:
         typer.echo(json_lib.dumps(data, indent=2))
         return
-    # Human-readable table
-    typer.echo(f"{'ID':30s}  {'SOURCE':10s}  {'MODE':8s}  {'FLAVOR':10s}  NAME")
+    # Human-readable table.
+    # ENTITY column shows the upstream entity_type for remote BigQuery rows
+    # (BASE TABLE / VIEW / MATERIALIZED_VIEW) — matters because views don't
+    # support predicate pushdown, so an analyst should reach for `agnes
+    # snapshot create` rather than `agnes query --remote` on a view.
+    # For non-remote rows (local / materialized) entity_type is NULL upstream
+    # and we render a dash — those modes don't have an analogous distinction.
+    typer.echo(f"{'ID':30s}  {'SOURCE':10s}  {'MODE':8s}  {'ENTITY':18s}  NAME")
     for t in data.get("tables", []):
+        entity = t.get("entity_type") or "-"
         typer.echo(
             f"{t['id']:30s}  {t['source_type']:10s}  {t['query_mode']:8s}  "
-            f"{t['sql_flavor']:10s}  {t.get('name', '')}"
+            f"{entity:18s}  {t.get('name', '')}"
         )
 
 

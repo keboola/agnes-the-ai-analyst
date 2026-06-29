@@ -17,6 +17,7 @@ import typer
 from cli.config import _config_dir, get_server_url
 from cli.lib.hooks import maybe_refresh_claude_hooks
 from cli.update_check import UpdateInfo, check, format_outdated_notice
+from cli.upgrade_status import record_outcome
 
 self_upgrade_app = typer.Typer(
     name="self-upgrade",
@@ -35,6 +36,18 @@ class _Unreachable:
 
 
 _UNREACHABLE = _Unreachable()
+
+
+class _Offline:
+    """Sentinel returned by _resolve_info when --force was NOT specified and
+    the server probe failed. Distinguishes 'couldn't check, take no opinion'
+    (exit 0, silent, don't touch failure counter) from 'CLI is current' —
+    so a transient network blip during the SessionStart hook does not reset
+    the consecutive-failure count an analyst has accumulated from real
+    install failures (Devin BUG_0001 on #601)."""
+
+
+_OFFLINE = _Offline()
 
 
 def _invalidate_update_cache() -> None:
@@ -107,6 +120,36 @@ def _pip_bin_path() -> Optional[Path]:
     return candidate if candidate.exists() else None
 
 
+def _python_is_uv_tool_install() -> bool:
+    """True iff ``sys.executable`` lives under uv's tool-install root.
+
+    Routing key for self-upgrade. ``uv tool install --force`` only
+    rewrites the venv uv itself manages (``~/.local/share/uv/tools/<pkg>/``);
+    if the running agnes was installed elsewhere (project venv via
+    ``pip install -e .``, pipx, system pip, …), the uv install lands in
+    a different binary and the active one stays stale — but self-upgrade
+    would still report "Installed: <new>" because uv's own exit code is 0.
+    When this returns False, route through pip targeting
+    ``sys.executable`` so the actually-running binary is the one upgraded.
+    """
+    if not shutil.which("uv"):
+        return False
+    try:
+        out = subprocess.run(
+            ["uv", "tool", "dir"], capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode != 0:
+            return False
+        uv_tool_root = Path(out.stdout.strip()).resolve()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    try:
+        Path(sys.executable).resolve().relative_to(uv_tool_root)
+        return True
+    except ValueError:
+        return False
+
+
 def _install_with_uv(download_url: str, *, quiet: bool) -> int:
     out = subprocess.DEVNULL if quiet else None
     return subprocess.run(
@@ -170,6 +213,30 @@ def _smoke_test_new_binary(install_method: str, expected_version: str) -> tuple[
         return False, f"{type(e).__name__}: {e}"
 
 
+def _maybe_backfill_workspace_root() -> None:
+    """Record ``workspace_root`` in config for clients that pre-date the key.
+
+    ``agnes self-upgrade`` runs from a SessionStart hook on every Claude Code
+    session, so this is where workspaces initialized before the config-anchor
+    existed pick it up. Writes ONLY when (a) config has no ``workspace_root``
+    AND (b) the current directory is a genuinely-initialized workspace root —
+    it carries the ``.claude/init-complete`` sentinel that ``agnes init``
+    writes on success. The sentinel guard guarantees we never record a nested
+    subfolder. Best-effort: any failure is swallowed so a config-write hiccup
+    can't turn a SessionStart hook into a visible error.
+    """
+    try:
+        from cli.config import get_workspace_root, set_workspace_root
+
+        if get_workspace_root():
+            return
+        workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
+        if (workspace / ".claude" / "init-complete").exists():
+            set_workspace_root(str(workspace))
+    except Exception:
+        pass
+
+
 def _try_refresh_hooks(*, quiet: bool) -> None:
     """Best-effort idempotent refresh of the workspace's Claude Code hooks.
 
@@ -192,11 +259,12 @@ def _try_refresh_hooks(*, quiet: bool) -> None:
             sys.stderr.write(f"agnes self-upgrade: hook refresh failed: {exc}\n")
 
 
-def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, None]:
+def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, _Offline, None]:
     """Returns:
       UpdateInfo  — install this wheel
       _UNREACHABLE — --force specified, server probe failed
-      None        — nothing to do (current, or offline without --force)
+      _OFFLINE    — --force NOT specified, server probe failed (no opinion)
+      None        — CLI is genuinely current, nothing to do
     """
     # Always invalidate the cache — an explicit `agnes self-upgrade` is
     # the user asking "is there a newer version RIGHT NOW", not "use the
@@ -207,7 +275,7 @@ def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, None]:
     _invalidate_update_cache()
     info = check(get_server_url(), bypass_disabled=True)
     if info is None:
-        return _UNREACHABLE if force else None
+        return _UNREACHABLE if force else _OFFLINE
     if not info.download_url:
         return None
     if not force and not info.is_outdated():
@@ -221,7 +289,13 @@ def _do_install_with_smoke_and_rollback(
     """Returns the exit code typer should use (0 success, 1 failure)."""
     prior_url = _read_last_known_good()  # may be None on first upgrade
 
-    if shutil.which("uv"):
+    # Route by which install manager owns the running binary, not just
+    # by `which uv`. A developer with `uv` on PATH but agnes installed
+    # via `pip install -e .` into a project venv would otherwise see
+    # self-upgrade write to `~/.local/share/uv/tools/...` (a different
+    # binary entirely) while their `.venv/bin/agnes` stays stale forever —
+    # and the stale-version banner spams every subsequent command output.
+    if _python_is_uv_tool_install():
         rc = _install_with_uv(info.download_url, quiet=quiet)
         method = "uv"
     else:
@@ -281,6 +355,11 @@ def self_upgrade(
         help="Reinstall the server's current wheel even when already on the latest version.",
     ),
 ) -> None:
+    # Back-fill the workspace-root config anchor on every SessionStart (runs
+    # before any network work so it happens even offline). No-op once set or
+    # when the current dir isn't an initialized workspace root.
+    _maybe_backfill_workspace_root()
+
     # Snapshot any prior sentinel so we restore (rather than destroy) it
     # in finally — we own the namespace but a wrapper could legitimately
     # set it.
@@ -290,31 +369,61 @@ def self_upgrade(
         info = _resolve_info(force)
 
         # --check-only is read-only intent — never exit non-zero on
-        # transport errors. If unreachable, treat as "can't tell, current"
-        # and exit 0 silently.
+        # transport errors. If unreachable or offline, treat as "can't
+        # tell, current" and exit 0 silently.
         if check_only:
-            if isinstance(info, _Unreachable) or info is None or not info.is_outdated():
+            if (
+                isinstance(info, (_Unreachable, _Offline))
+                or info is None
+                or not info.is_outdated()
+            ):
                 raise typer.Exit(0)
             typer.echo(format_outdated_notice(info), err=True)
             raise typer.Exit(1)
 
         if isinstance(info, _Unreachable):
+            # --force + server unreachable: an attempted upgrade that
+            # couldn't even probe. Record a failure so repeated silent
+            # SessionStart failures (network down for days) surface on the
+            # next non-quiet command. (#478)
+            record_outcome(success=False)
             sys.stderr.write(
                 f"agnes self-upgrade: cannot reach {get_server_url()}/cli/latest\n"
             )
             raise typer.Exit(1)
 
+        if isinstance(info, _Offline):
+            # No --force, server unreachable: we have no opinion on
+            # whether an upgrade is needed. Do NOT touch the failure
+            # counter — a transient network blip (server restart, VPN
+            # drop) during the SessionStart hook would otherwise reset
+            # the consecutive-failure count that real install failures
+            # are accumulating, hiding the warning the feature exists
+            # to surface (Devin BUG_0001 on #601). Still attempt hook
+            # refresh (workspace layout may have shifted) and exit 0
+            # silently — quiet path is non-noisy by contract.
+            _try_refresh_hooks(quiet=quiet)
+            raise typer.Exit(0)
+
         if info is None:
-            # CLI already current — still attempt hook refresh in case the
-            # workspace was initialized on an older CLI whose hook layout
-            # has since changed (e.g. v0.48 → v0.49 introduced the
-            # capture-session SessionStart entry). The refresh is a no-op
-            # for directories that don't look like Agnes workspaces, so
-            # an `agnes self-upgrade` invoked from ~/  won't write there.
+            # CLI already current — server responded, version matches,
+            # so the CLI is in a known-good state. Reset the failure
+            # counter. Still attempt hook refresh in case the workspace
+            # was initialized on an older CLI whose hook layout has
+            # since changed (e.g. migrating off the removed capture-session
+            # SessionStart/SessionEnd entries to the scan-based push). The
+            # refresh is a no-op for directories that don't look like Agnes
+            # workspaces, so an `agnes self-upgrade` invoked from ~/
+            # won't write there.
+            record_outcome(success=True)
             _try_refresh_hooks(quiet=quiet)
             raise typer.Exit(0)
 
         rc = _do_install_with_smoke_and_rollback(info, quiet=quiet)
+        # Persist the outcome so a string of silent SessionStart failures
+        # (install error, smoke-test rollback) becomes visible on the next
+        # non-quiet command. Success resets the counter. (#478)
+        record_outcome(success=(rc == 0))
         if rc == 0:
             # After a successful install of the new wheel, refresh the
             # workspace hooks so any wire-format change in the new release

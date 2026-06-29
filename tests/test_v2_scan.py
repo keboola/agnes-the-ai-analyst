@@ -416,3 +416,82 @@ def test_resolve_schema_passes_bq_kwarg_to_build_schema(monkeypatch, bq_access):
         "build_schema no longer accepts project_id= — that's the bug this guards"
     )
     assert captured_kwargs["bq"] is bq
+
+
+def _reader_of(rows: int) -> pa.RecordBatchReader:
+    """A streaming reader over `rows` int64 rows, in 512-row batches — the
+    shape duckdb>=1.5 `.arrow()` returns instead of a materialized Table."""
+    table = pa.table({"v": list(range(rows))})
+    return pa.RecordBatchReader.from_batches(
+        table.schema, table.to_batches(max_chunksize=512)
+    )
+
+
+class TestMaxResultBytesTruncation:
+    """Regression for the 2026-06-11 production crash: duckdb>=1.5 `.arrow()`
+    returns a pyarrow RecordBatchReader, and the max_result_bytes truncation
+    guard assumed a pyarrow.Table (`.num_rows`/`.slice`) — every over-cap
+    scan result died with AttributeError instead of being truncated."""
+
+    def _run(self, reload_db, monkeypatch, result, raw_request, cap=4096):
+        from app.api import v2_scan
+        monkeypatch.setattr(
+            v2_scan, "_resolve_schema", lambda *a, **kw: {"v": "INT64"},
+        )
+        monkeypatch.setattr(v2_scan, "_run_bq_scan", lambda bq, sql: result)
+        import app.api.query as query_mod
+        monkeypatch.setattr(
+            query_mod, "run_remote_select_to_arrow",
+            lambda conn, user, sql, *, bq, quota: result,
+        )
+        monkeypatch.setattr(v2_scan, "_max_result_bytes", lambda: cap)
+        conn = reload_db.get_system_db()
+        try:
+            _seed(conn)
+            user = {"id": "admin1", "email": "a@x.com"}
+            tracker = v2_scan._build_quota_tracker()
+            return v2_scan.run_scan(
+                conn, user, raw_request, bq=_bq(data="proj"), quota=tracker,
+            )
+        finally:
+            conn.close()
+
+    def test_bq_reader_over_cap_truncates_instead_of_crashing(
+        self, reload_db, monkeypatch,
+    ):
+        ipc = self._run(
+            reload_db, monkeypatch, _reader_of(10_000),
+            {"table_id": "bq_view", "select": ["v"]},
+        )
+        got = parse_ipc_bytes(ipc)
+        assert 0 < got.num_rows < 2_000  # truncated near the 4 KiB cap
+
+    def test_from_query_reader_over_cap_truncates_instead_of_crashing(
+        self, reload_db, monkeypatch,
+    ):
+        ipc = self._run(
+            reload_db, monkeypatch, _reader_of(10_000),
+            {"from_query": "SELECT v FROM t"},
+        )
+        got = parse_ipc_bytes(ipc)
+        assert 0 < got.num_rows < 2_000
+
+    def test_table_over_cap_still_truncates(self, reload_db, monkeypatch):
+        """Characterization: the pre-1.5 pyarrow.Table shape keeps truncating."""
+        table = pa.table({"v": list(range(10_000))})
+        ipc = self._run(
+            reload_db, monkeypatch, table,
+            {"table_id": "bq_view", "select": ["v"]},
+        )
+        got = parse_ipc_bytes(ipc)
+        assert 0 < got.num_rows < 2_000
+
+    def test_reader_under_cap_returns_all_rows(self, reload_db, monkeypatch):
+        ipc = self._run(
+            reload_db, monkeypatch, _reader_of(100),
+            {"table_id": "bq_view", "select": ["v"]},
+            cap=10_000_000,
+        )
+        got = parse_ipc_bytes(ipc)
+        assert got.num_rows == 100
+        assert got.column_names == ["v"]

@@ -8,12 +8,13 @@ The v19 step (#150) drops dataset_permissions, access_requests tables and
 users.role, table_registry.is_public columns; v20 then ALTERs the post-v19
 table_registry to add the source_query column.
 """
+
 import duckdb
 
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_37():
+def test_schema_version_is_62():
     # v27 → v28: explicit-install (Model B) for curated marketplace plugins.
     # user_plugin_optouts row presence flips meaning from "excluded" to
     # "subscribed"; migration wipes existing rows so the inverted reading
@@ -74,16 +75,125 @@ def test_schema_version_is_37():
     #            pulls system plugins into every user's stack. UI then
     #            locks the corresponding controls so users can't
     #            unsubscribe and admins can't revoke per-group grants.
-    # v39 → v40 (this PR): persistent BigQuery metadata cache. Adds
+    # v39 → v40: persistent BigQuery metadata cache. Adds
     #            bq_metadata_cache(table_id PK, rows, size_bytes,
     #            partition_by, clustered_by, refreshed_at, error_at,
-    #            error_msg). Replaces the in-memory per-request BQ fetch
-    #            that GET /api/v2/catalog used to do — the cache is
-    #            populated by a scheduler-driven refresh job
-    #            (SCHEDULER_BQ_METADATA_REFRESH_INTERVAL, default 4 h)
-    #            and the catalog endpoint reads it without ever calling
-    #            BQ at request time.
-    assert SCHEMA_VERSION == 40
+    #            error_msg).
+    # v40 → v41: Activity Center schema — audit_log gains params_before
+    #            (JSON), client_ip (VARCHAR), client_kind (VARCHAR),
+    #            correlation_id (VARCHAR). Three indices on (timestamp),
+    #            (user_id, timestamp), (action, timestamp).
+    # v41 → v42 (this PR): platform telemetry schema — 7 new usage_*
+    #            tables: usage_events (per-event log), usage_session_summary
+    #            (per-session aggregate), usage_tool_daily + usage_plugin_daily
+    #            (daily rollups), usage_attribution_skills/agents/commands
+    #            (plugin manifest attribution). 10 indices for fast queries.
+    # v42 → v43: user_observability_views — per-user saved
+    #            filter combinations backing the unified /admin/activity
+    #            page (UNIQUE(user_id, name)). Schema is intentionally
+    #            opaque JSON because the UI evolves faster than DB.
+    # v43 → v44: homepage status frame backing columns —
+    #            users.last_pull_at (per-user manifest fetch timestamp,
+    #            bumped by GET /api/sync/manifest) plus four BIGINT token
+    #            counters on usage_session_summary (input_tokens,
+    #            output_tokens, cache_read_tokens, cache_creation_tokens).
+    #            USAGE_PROCESSOR_VERSION simultaneously bumps 1→2 so the
+    #            reprocess loop backfills tokens on next tick.
+    # v44 → v45: user_id column on usage_session_summary + usage_events
+    #            (stable RBAC filter — replaces the unstable email-local-part
+    #            ``username`` column) plus matching indices.
+    # v45 → v46: per-user opt-out (dismiss) for curated memory
+    #            items. New table ``knowledge_item_user_dismissed``
+    #            ((user_id, item_id) PK, dismissed_at) + index on user_id
+    #            for the EXISTS subquery used by list_items / search /
+    #            count_items / bundle. Mandatory items are governance-
+    #            protected: the API rejects POSTs against them, and the
+    #            SQL filter exempts ``status = 'mandatory'`` so any stale
+    #            row from before an item was mandated is silently ignored.
+    # v46 → v47: DuckDB FTS BM25 index over knowledge_items(title, content).
+    #            Replaces ``ILIKE '%q%'`` ranking-by-insertion-order in
+    #            ``KnowledgeRepository.search`` with BM25 relevance scoring.
+    #            Migration is soft-fail: a missing fts extension leaves the
+    #            DB at v46 (search falls back to ILIKE).
+    # v47 → v48 (this PR): marketplace telemetry refactor. Drops 4 legacy
+    #            tables (usage_attribution_skills/_agents/_commands,
+    #            usage_plugin_daily — all verified empty or derivable).
+    #            Adds usage_marketplace_item_daily (per-day fact with
+    #            count + distinct_users + error_count) and
+    #            usage_marketplace_item_window (sliding-window snapshot,
+    #            labels 'last_7d' refreshed every tick, 'last_30d' hourly).
+    #            New attribution logic = prefix split on `<plugin>:<local>`
+    #            identifier + live lookup against marketplace_plugins /
+    #            store_entities — no mapping tables needed.
+    # v48 → v49: phase-1 Flea refactor — title, tagline, synthetic_name on
+    #            store_entities, backfilled via humanize_name(strip_archive_suffix).
+    # v49 → v50: UNIQUE INDEX on store_entities.synthetic_name (canonical
+    #            attribution key — rollup keyspace, JSONL prefix, marketplace
+    #            bundle naming). Migration pre-checks for duplicates and
+    #            raises RuntimeError listing them rather than letting the
+    #            CREATE UNIQUE INDEX fail mid-way.
+    # v50 → v51: nullable ``table_registry.bq_fqn`` (issue #343) — fully-
+    #            qualified BigQuery path that decouples the UX/RBAC
+    #            ``bucket`` label from the physical BQ dataset name. Rows
+    #            without it fall back to the legacy
+    #            bucket+source_table+remote_attach.project path.
+    #            Released on main as 0.54.29 (PR #346).
+    # v51 → v52: unified stack — Data Packages + Memory Domains. Adds
+    #            resource_grants.requirement enum, knowledge_items.is_required
+    #            (splitting the status='mandatory' overload), data_packages
+    #            + data_package_tables, memory_domains +
+    #            knowledge_item_domains junction, and
+    #            user_stack_subscriptions for per-user opt-in. Drops the
+    #            scalar knowledge_items.domain column. (Originally v49
+    #            on the branch; renumbered to v52 on the second merge
+    #            with main to make room for main's v51 bq_fqn release.)
+    # v52 → v53: cover_image_url on data_packages + memory_domains.
+    # v53 → v54: lifecycle status + classification category for /catalog
+    #            cards (data_packages adds status + category, memory_domains
+    #            adds status only).
+    # v54 → v55: per-table docs columns on table_registry — feeds the
+    #            /catalog/t/<id> detail page (sample_questions,
+    #            things_to_know, pairs_well_with).
+    # v55 → v56: recipes table — admin-curated multi-table query templates
+    #            surfaced as a third "Recipes" tab on /catalog.
+    # v56 → v57: soft-delete columns (``deleted_at TIMESTAMP``) on
+    #            data_packages, memory_domains, recipes for the Undo
+    #            toast flow.
+    # v57 → v58: ``memory_domain_suggestions`` table backs the non-admin
+    #            "Suggest a domain" affordance on /corporate-memory's
+    #            empty state.
+    # v58 → v59: extended-content columns on ``data_packages``
+    #            (owner_name, owner_team, tags, long_description,
+    #            when_to_use, when_not_to_use, example_questions) +
+    #            structured per-table doc columns on ``table_registry``
+    #            (grain, platforms, partition_col, history, gotchas) for
+    #            the /catalog/p/<slug> rewrite per the extended-
+    #            descriptions admin spec. All additive + NULLABLE.
+    # v59 → v60: backfill ``usage_events.username`` and
+    #            ``usage_session_summary.username`` from ``users.email``
+    #            where ``user_id`` is non-null. Collapses the admin
+    #            telemetry dropdown which previously listed the same
+    #            user under multiple identities (email from REST writers,
+    #            UUID from upload-API sessions, OS-username from the
+    #            legacy collector).
+    # v60 → v61: ``cli_auth_codes`` table (browser-loopback login).
+    # v61 → v62: per-type FK columns on ``resource_grants`` (PR #455).
+    # v62 → v63: ``setup_tokens`` table for Agnes Cowork one-click setup.
+    # v63 → v64: ``mcp_sources``, ``tool_registry``, ``tool_grants``
+    #            for Universal MCP inbound connector (RFC #461).
+    # v63 → v64: ``mcp_secrets`` shared vault for MCP source auth.
+    # v64 → v65: ``mcp_user_secrets`` per-user vault.
+    # v65 → v66: ``data_package_tools`` junction.
+    # v67 → v68: cloud chat tables — chat_sessions, chat_messages,
+    #            user_workdirs + two regular indexes.
+    # v68 → v69: mcp_sources.env — per-source non-secret env vars for
+    #            stdio MCP sources.
+    # v69 → v70: live co-drive foundation — chat_session_participants +
+    #            is_co_session/ephemeral/sender_email.
+    # v77 → v78: built-in marketplace — is_builtin on marketplace_registry,
+    #            admin_disabled on marketplace_plugins.
+    # v81 → v82: collections (file_corpora / corpus_files / corpus_chunks).
+    assert SCHEMA_VERSION >= 80
 
 
 def test_v37_marketplace_curator_columns(tmp_path):
@@ -94,9 +204,9 @@ def test_v37_marketplace_curator_columns(tmp_path):
     _ensure_schema(conn)
 
     registry_cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'marketplace_registry'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'marketplace_registry'"
         ).fetchall()
     }
     assert {"curator_name", "curator_email"} <= registry_cols, (
@@ -104,9 +214,9 @@ def test_v37_marketplace_curator_columns(tmp_path):
     )
 
     plugin_cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'marketplace_plugins'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'marketplace_plugins'"
         ).fetchall()
     }
     assert {"cover_photo_url", "video_url", "doc_links"} <= plugin_cols, (
@@ -124,10 +234,7 @@ def test_v36_db_migrates_to_current(tmp_path):
 
     # Stand up a minimal v36-shape registry + plugin row, plus the
     # schema_version row that pins us to 36.
-    conn.execute(
-        "CREATE TABLE schema_version (version INTEGER, "
-        "applied_at TIMESTAMP DEFAULT current_timestamp)"
-    )
+    conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)")
     conn.execute("INSERT INTO schema_version (version) VALUES (36)")
     conn.execute("""CREATE TABLE marketplace_registry (
         id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL,
@@ -146,22 +253,15 @@ def test_v36_db_migrates_to_current(tmp_path):
         PRIMARY KEY (marketplace_id, name)
     )""")
     conn.execute(
-        "INSERT INTO marketplace_registry (id, name, url) "
-        "VALUES ('legacy', 'Legacy', 'https://example.com/repo.git')"
+        "INSERT INTO marketplace_registry (id, name, url) VALUES ('legacy', 'Legacy', 'https://example.com/repo.git')"
     )
-    conn.execute(
-        "INSERT INTO marketplace_plugins (marketplace_id, name) "
-        "VALUES ('legacy', 'foo')"
-    )
+    conn.execute("INSERT INTO marketplace_plugins (marketplace_id, name) VALUES ('legacy', 'foo')")
 
     _ensure_schema(conn)
     assert get_schema_version(conn) == SCHEMA_VERSION
 
     # v37 enrichment columns exist; existing rows preserved with NULL.
-    row = conn.execute(
-        "SELECT curator_name, curator_email FROM marketplace_registry "
-        "WHERE id = 'legacy'"
-    ).fetchone()
+    row = conn.execute("SELECT curator_name, curator_email FROM marketplace_registry WHERE id = 'legacy'").fetchone()
     assert row == (None, None)
 
     row = conn.execute(
@@ -181,27 +281,18 @@ def test_v39_adds_marketplace_plugins_is_system(tmp_path):
     _ensure_schema(conn)
 
     cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'marketplace_plugins'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'marketplace_plugins'"
         ).fetchall()
     }
     assert "is_system" in cols, f"is_system missing from {cols}"
 
     # New rows default to FALSE — required so a freshly-synced plugin
     # doesn't accidentally land in everyone's stack.
-    conn.execute(
-        "INSERT INTO marketplace_registry (id, name, url) "
-        "VALUES ('m', 'M', 'https://example.com/repo.git')"
-    )
-    conn.execute(
-        "INSERT INTO marketplace_plugins (marketplace_id, name) "
-        "VALUES ('m', 'p')"
-    )
-    row = conn.execute(
-        "SELECT is_system FROM marketplace_plugins "
-        "WHERE marketplace_id = 'm' AND name = 'p'"
-    ).fetchone()
+    conn.execute("INSERT INTO marketplace_registry (id, name, url) VALUES ('m', 'M', 'https://example.com/repo.git')")
+    conn.execute("INSERT INTO marketplace_plugins (marketplace_id, name) VALUES ('m', 'p')")
+    row = conn.execute("SELECT is_system FROM marketplace_plugins WHERE marketplace_id = 'm' AND name = 'p'").fetchone()
     assert row[0] is False, f"new plugin defaulted to {row[0]!r}, expected False"
     conn.close()
 
@@ -215,10 +306,7 @@ def test_v38_db_migrates_to_v39(tmp_path):
     # Stand up the v38 minimal shape: schema_version row + the two
     # marketplace tables + a pre-existing plugin row that must survive
     # the migration with is_system = FALSE.
-    conn.execute(
-        "CREATE TABLE schema_version (version INTEGER, "
-        "applied_at TIMESTAMP DEFAULT current_timestamp)"
-    )
+    conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)")
     conn.execute("INSERT INTO schema_version (version) VALUES (38)")
     conn.execute("""CREATE TABLE marketplace_registry (
         id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL,
@@ -239,21 +327,17 @@ def test_v38_db_migrates_to_v39(tmp_path):
         PRIMARY KEY (marketplace_id, name)
     )""")
     conn.execute(
-        "INSERT INTO marketplace_registry (id, name, url) "
-        "VALUES ('legacy', 'Legacy', 'https://example.com/repo.git')"
+        "INSERT INTO marketplace_registry (id, name, url) VALUES ('legacy', 'Legacy', 'https://example.com/repo.git')"
     )
-    conn.execute(
-        "INSERT INTO marketplace_plugins (marketplace_id, name) "
-        "VALUES ('legacy', 'foo')"
-    )
+    conn.execute("INSERT INTO marketplace_plugins (marketplace_id, name) VALUES ('legacy', 'foo')")
 
     _ensure_schema(conn)
     assert get_schema_version(conn) == SCHEMA_VERSION
 
     cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'marketplace_plugins'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'marketplace_plugins'"
         ).fetchall()
     }
     assert "is_system" in cols
@@ -261,8 +345,7 @@ def test_v38_db_migrates_to_v39(tmp_path):
     # Existing pre-v39 row backfilled to FALSE — no plugin lands in
     # everyone's stack just because we ran the migration.
     row = conn.execute(
-        "SELECT is_system FROM marketplace_plugins "
-        "WHERE marketplace_id = 'legacy' AND name = 'foo'"
+        "SELECT is_system FROM marketplace_plugins WHERE marketplace_id = 'legacy' AND name = 'foo'"
     ).fetchone()
     assert row[0] is False, f"pre-existing row backfilled to {row[0]!r}"
     conn.close()
@@ -274,9 +357,9 @@ def test_v20_adds_source_query(tmp_path):
     _ensure_schema(conn)
 
     cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'table_registry'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'table_registry'"
         ).fetchall()
     }
     assert "source_query" in cols, f"source_query missing from {cols}"
@@ -297,19 +380,13 @@ def test_claude_md_template_seeded_in_instance_templates(tmp_path):
     _ensure_schema(conn)
 
     tables = {
-        r[0] for r in conn.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'main'"
-        ).fetchall()
+        r[0]
+        for r in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'").fetchall()
     }
     assert "instance_templates" in tables
-    assert "claude_md_template" not in tables, (
-        "claude_md_template should be consolidated away post-v28"
-    )
+    assert "claude_md_template" not in tables, "claude_md_template should be consolidated away post-v28"
 
-    row = conn.execute(
-        "SELECT key, content FROM instance_templates WHERE key = 'claude_md'"
-    ).fetchone()
+    row = conn.execute("SELECT key, content FROM instance_templates WHERE key = 'claude_md'").fetchone()
     assert row is not None
     assert row[0] == "claude_md"
     assert row[1] is None  # default = no override
@@ -325,10 +402,7 @@ def test_v19_db_migrates_to_v20(tmp_path):
     # Simulate a v19 DB at minimal but realistic shape: schema_version row +
     # a table_registry row in the post-v19 column shape (no is_public column,
     # since v19 finalize dropped it via the table-rebuild idiom).
-    conn.execute(
-        "CREATE TABLE schema_version (version INTEGER, "
-        "applied_at TIMESTAMP DEFAULT current_timestamp)"
-    )
+    conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)")
     conn.execute("INSERT INTO schema_version (version) VALUES (19)")
     conn.execute("""CREATE TABLE table_registry (
         id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL,
@@ -346,16 +420,14 @@ def test_v19_db_migrates_to_v20(tmp_path):
 
     assert get_schema_version(conn) == SCHEMA_VERSION  # bumped 19→28 forward
     cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'table_registry'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'table_registry'"
         ).fetchall()
     }
     assert "source_query" in cols
     # Existing row preserved, new column NULL
-    row = conn.execute(
-        "SELECT id, source_query FROM table_registry WHERE id='foo'"
-    ).fetchone()
+    row = conn.execute("SELECT id, source_query FROM table_registry WHERE id='foo'").fetchone()
     assert row == ("foo", None)
     conn.close()
 
@@ -374,8 +446,7 @@ def _make_v34_store_entities(conn):
         )
     """)
     conn.execute(
-        "INSERT INTO store_entities (id, visibility_status) VALUES "
-        "('a', 'approved'), ('b', 'pending'), ('c', 'hidden')"
+        "INSERT INTO store_entities (id, visibility_status) VALUES ('a', 'approved'), ('b', 'pending'), ('c', 'hidden')"
     )
 
 
@@ -394,9 +465,9 @@ def test_v34_to_v35_clean_path_rebuilds_visibility_column(tmp_path):
     _v34_to_v35_migrate(conn)
 
     cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'store_entities'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'store_entities'"
         ).fetchall()
     }
     assert "visibility_status" in cols
@@ -404,12 +475,8 @@ def test_v34_to_v35_clean_path_rebuilds_visibility_column(tmp_path):
     assert "archived_at" in cols
     assert "archived_by" in cols
 
-    rows = dict(conn.execute(
-        "SELECT id, visibility_status FROM store_entities ORDER BY id"
-    ).fetchall())
-    assert rows == {"a": "approved", "b": "pending", "c": "hidden"}, (
-        f"row values must survive the rebuild: {rows}"
-    )
+    rows = dict(conn.execute("SELECT id, visibility_status FROM store_entities ORDER BY id").fetchall())
+    assert rows == {"a": "approved", "b": "pending", "c": "hidden"}, f"row values must survive the rebuild: {rows}"
     conn.close()
 
 
@@ -437,16 +504,15 @@ def test_v34_to_v35_recovers_from_partial_rebuild_missing_visibility(tmp_path):
         )
     """)
     conn.execute(
-        "INSERT INTO store_entities (id, _vis_v35) VALUES "
-        "('a', 'approved'), ('b', 'pending'), ('c', 'hidden')"
+        "INSERT INTO store_entities (id, _vis_v35) VALUES ('a', 'approved'), ('b', 'pending'), ('c', 'hidden')"
     )
 
     _v34_to_v35_migrate(conn)
 
     cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'store_entities'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'store_entities'"
         ).fetchall()
     }
     assert "visibility_status" in cols
@@ -454,9 +520,7 @@ def test_v34_to_v35_recovers_from_partial_rebuild_missing_visibility(tmp_path):
     assert "archived_at" in cols
     assert "archived_by" in cols
 
-    rows = dict(conn.execute(
-        "SELECT id, visibility_status FROM store_entities ORDER BY id"
-    ).fetchall())
+    rows = dict(conn.execute("SELECT id, visibility_status FROM store_entities ORDER BY id").fetchall())
     assert rows == {"a": "approved", "b": "pending", "c": "hidden"}, (
         f"row values must come back via RENAME, not be lost: {rows}"
     )
@@ -480,25 +544,20 @@ def test_v34_to_v35_recovers_from_partial_rebuild_both_columns(tmp_path):
             _vis_v35 VARCHAR
         )
     """)
-    conn.execute(
-        "INSERT INTO store_entities (id, visibility_status, _vis_v35) VALUES "
-        "('a', 'approved', 'approved')"
-    )
+    conn.execute("INSERT INTO store_entities (id, visibility_status, _vis_v35) VALUES ('a', 'approved', 'approved')")
 
     _v34_to_v35_migrate(conn)
 
     cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'store_entities'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'store_entities'"
         ).fetchall()
     }
     assert "visibility_status" in cols
     assert "_vis_v35" not in cols, "temp column must be dropped"
 
-    row = conn.execute(
-        "SELECT id, visibility_status FROM store_entities WHERE id = 'a'"
-    ).fetchone()
+    row = conn.execute("SELECT id, visibility_status FROM store_entities WHERE id = 'a'").fetchone()
     assert row == ("a", "approved")
     conn.close()
 
@@ -518,10 +577,7 @@ def test_v32_db_with_partial_v35_recovers_through_full_ladder(tmp_path):
     # Stand up the broken state. We only need enough of the schema for the
     # migration ladder to run — ``_ensure_schema`` will create the rest
     # via ``_SYSTEM_SCHEMA``'s IF NOT EXISTS guards.
-    conn.execute(
-        "CREATE TABLE schema_version (version INTEGER, "
-        "applied_at TIMESTAMP DEFAULT current_timestamp)"
-    )
+    conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)")
     conn.execute("INSERT INTO schema_version (version) VALUES (32)")
     conn.execute("""
         CREATE TABLE store_entities (
@@ -535,26 +591,21 @@ def test_v32_db_with_partial_v35_recovers_through_full_ladder(tmp_path):
             _vis_v35 VARCHAR
         )
     """)
-    conn.execute(
-        "INSERT INTO store_entities (id, type, name, _vis_v35) "
-        "VALUES ('a', 'skill', 'alpha', 'approved')"
-    )
+    conn.execute("INSERT INTO store_entities (id, type, name, _vis_v35) VALUES ('a', 'skill', 'alpha', 'approved')")
 
     _ensure_schema(conn)
 
     assert get_schema_version(conn) == SCHEMA_VERSION
     cols = {
-        r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'store_entities'"
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'store_entities'"
         ).fetchall()
     }
     assert "visibility_status" in cols
     assert "_vis_v35" not in cols
     # Existing row preserved, value carried over from _vis_v35.
-    row = conn.execute(
-        "SELECT id, visibility_status FROM store_entities WHERE id = 'a'"
-    ).fetchone()
+    row = conn.execute("SELECT id, visibility_status FROM store_entities WHERE id = 'a'").fetchone()
     assert row == ("a", "approved")
     conn.close()
 
@@ -578,13 +629,177 @@ def test_v35_to_v36_reapplies_visibility_constraints(tmp_path):
     ).fetchall()
     assert cols, "visibility_status column missing from store_entities"
     name, is_nullable, default_expr = cols[0]
-    assert is_nullable == "NO", (
-        f"visibility_status must be NOT NULL after v36; got is_nullable={is_nullable!r}"
-    )
+    assert is_nullable == "NO", f"visibility_status must be NOT NULL after v36; got is_nullable={is_nullable!r}"
     # DuckDB renders the default as a quoted literal — match either form.
     assert default_expr is not None, "visibility_status DEFAULT must be set"
-    assert "pending" in str(default_expr).lower(), (
-        f"visibility_status DEFAULT must be 'pending'; got {default_expr!r}"
+    assert "pending" in str(default_expr).lower(), f"visibility_status DEFAULT must be 'pending'; got {default_expr!r}"
+
+    conn.close()
+
+
+def test_v70_copresence_columns_and_table(tmp_path):
+    """Fresh install reaches v70 with co-presence additions on chat tables
+    and the chat_session_participants table present."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    sess_cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'chat_sessions'"
+        ).fetchall()
+    }
+    assert "is_co_session" in sess_cols, f"is_co_session missing from chat_sessions: {sess_cols}"
+    assert "ephemeral" in sess_cols, f"ephemeral missing from chat_sessions: {sess_cols}"
+
+    msg_cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'chat_messages'"
+        ).fetchall()
+    }
+    assert "sender_email" in msg_cols, f"sender_email missing from chat_messages: {msg_cols}"
+
+    tables = {
+        r[0]
+        for r in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'").fetchall()
+    }
+    assert "chat_session_participants" in tables, f"chat_session_participants table missing: {tables}"
+
+    conn.close()
+
+
+def test_v69_to_v70_migration(tmp_path):
+    """A DB at v69 (post-MCP-env, pre-co-presence) upgrades cleanly to v70."""
+    from src.db import _v69_to_v70
+
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+
+    # Minimal v69 shape: chat_sessions + chat_messages without co-presence cols.
+    conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (69)")
+    conn.execute("""
+        CREATE TABLE chat_sessions (
+            id VARCHAR PRIMARY KEY,
+            user_email VARCHAR NOT NULL,
+            surface VARCHAR NOT NULL,
+            started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            archived BOOLEAN NOT NULL DEFAULT FALSE
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE chat_messages (
+            id VARCHAR PRIMARY KEY,
+            session_id VARCHAR NOT NULL,
+            role VARCHAR NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    _v69_to_v70(conn)
+
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 70
+
+    sess_cols = {r[1] for r in conn.execute("PRAGMA table_info('chat_sessions')").fetchall()}
+    assert "is_co_session" in sess_cols
+    assert "ephemeral" in sess_cols
+
+    msg_cols = {r[1] for r in conn.execute("PRAGMA table_info('chat_messages')").fetchall()}
+    assert "sender_email" in msg_cols
+
+    tables = {r[0] for r in conn.execute("SHOW TABLES").fetchall()}
+    assert "chat_session_participants" in tables
+
+    conn.close()
+
+
+def test_v78_builtin_marketplace_columns(tmp_path):
+    """Fresh install reaches v78 with is_builtin on marketplace_registry and
+    admin_disabled on marketplace_plugins. Both default to FALSE so existing rows
+    and freshly-registered admin marketplaces are unaffected."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    reg_cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'marketplace_registry'"
+        ).fetchall()
+    }
+    assert "is_builtin" in reg_cols, f"is_builtin missing from marketplace_registry: {reg_cols}"
+
+    plugin_cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'marketplace_plugins'"
+        ).fetchall()
+    }
+    assert "admin_disabled" in plugin_cols, f"admin_disabled missing from marketplace_plugins: {plugin_cols}"
+
+    # New admin-registered rows default to is_builtin=FALSE.
+    conn.execute(
+        "INSERT INTO marketplace_registry (id, name, url) "
+        "VALUES ('admin-reg', 'Admin Reg', 'https://example.com/reg.git')"
     )
+    row = conn.execute("SELECT is_builtin FROM marketplace_registry WHERE id = 'admin-reg'").fetchone()
+    assert row[0] is False, f"admin row defaulted to is_builtin={row[0]!r}"
+
+    # New plugin rows default to admin_disabled=FALSE.
+    conn.execute("INSERT INTO marketplace_plugins (marketplace_id, name) VALUES ('admin-reg', 'plug')")
+    row = conn.execute(
+        "SELECT admin_disabled FROM marketplace_plugins WHERE marketplace_id = 'admin-reg' AND name = 'plug'"
+    ).fetchone()
+    assert row[0] is False, f"new plugin defaulted to admin_disabled={row[0]!r}"
+
+    conn.close()
+
+
+def test_v77_to_v78_migration(tmp_path):
+    """A DB at v77 upgrades cleanly to v78 — adds is_builtin + admin_disabled,
+    existing rows survive with both columns defaulting to FALSE."""
+    from src.db import _v77_to_v78
+
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+
+    conn.execute("CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (77)")
+    conn.execute("""
+        CREATE TABLE marketplace_registry (
+            id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL,
+            url VARCHAR NOT NULL, curator_name VARCHAR, curator_email VARCHAR
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE marketplace_plugins (
+            marketplace_id VARCHAR NOT NULL, name VARCHAR NOT NULL,
+            is_system BOOLEAN DEFAULT FALSE,
+            PRIMARY KEY (marketplace_id, name)
+        )
+    """)
+    conn.execute(
+        "INSERT INTO marketplace_registry (id, name, url) VALUES ('old', 'Old', 'https://example.com/old.git')"
+    )
+    conn.execute("INSERT INTO marketplace_plugins (marketplace_id, name) VALUES ('old', 'foo')")
+
+    _v77_to_v78(conn)
+
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 78
+
+    reg_row = conn.execute("SELECT is_builtin FROM marketplace_registry WHERE id = 'old'").fetchone()
+    assert reg_row[0] is False, f"pre-existing registry row got is_builtin={reg_row[0]!r}"
+
+    plug_row = conn.execute(
+        "SELECT admin_disabled FROM marketplace_plugins WHERE marketplace_id = 'old' AND name = 'foo'"
+    ).fetchone()
+    assert plug_row[0] is False, f"pre-existing plugin row got admin_disabled={plug_row[0]!r}"
 
     conn.close()

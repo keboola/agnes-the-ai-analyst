@@ -22,6 +22,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import duckdb
 import yaml
 
+from src.db import _open_duckdb
+
 logger = logging.getLogger(__name__)
 
 
@@ -94,14 +96,11 @@ DATA_DESCRIPTION_PATH = DOCS_DIR / "data_description.md"
 def _load_metrics_from_db() -> Dict[str, List[str]]:
     """Load metrics table map from DuckDB. Returns empty dict on failure."""
     try:
-        from src.db import get_system_db
-        from src.repositories.metrics import MetricRepository
+        # Backend-aware: metric definitions live in the active backend
+        # (Postgres on a PG instance) — use the factory, not a raw DuckDB conn.
+        from src.repositories import metric_repo
 
-        conn = get_system_db()
-        repo = MetricRepository(conn)
-        table_map = repo.get_table_map()
-        conn.close()
-        return table_map
+        return metric_repo().get_table_map()
     except Exception as exc:
         logger.debug("Could not load metrics from DuckDB: %s", exc)
         return {}
@@ -758,17 +757,33 @@ def profile_table(
       4. Per-column: sample values, histograms, top values (can't batch)
       5. Assemble profiles
     """
-    con = duckdb.connect()
+    con = _open_duckdb(":memory:")
 
     # Limit DuckDB memory to avoid OOM on servers with limited RAM.
-    # DuckDB defaults to using all available memory, which can trigger
-    # the OOM killer when profiling large tables alongside other services.
-    con.execute("SET memory_limit = '4GB'")
+    # DuckDB defaults to using all available memory; the prior 4 GiB
+    # cap matched typical container cgroup limits exactly, leaving zero
+    # headroom for the host Python interpreter + ATTACHed orchestrator
+    # state + sidecar processes — empirically on a 4 GiB cgroup
+    # container the profiler ran right up to the cap during
+    # ``[SYNC] Profiled N tables``, then the OOM killer reaped the
+    # uvicorn process within seconds of orchestrator rebuild completing.
+    # 2 GiB matches the materialize-path cap in
+    # ``connectors/{keboola,bigquery}/extractor.py`` (PR #431/#433) and
+    # leaves ~2 GiB for the rest of the process. Streaming row-group
+    # reads + the in-memory SAMPLE cap mean the profiler rarely needs
+    # more than a few hundred MiB; ``preserve_insertion_order=false``
+    # follows DuckDB's own out-of-memory hint and is safe — profiler
+    # output is per-column statistics, not row-ordered data.
+    con.execute("SET memory_limit = '2GB'")
     con.execute("SET threads = 2")
+    con.execute("SET preserve_insertion_order=false")
 
-    # Determine read expression
+    # Determine read expression. Use a recursive ``**`` glob so a directory of
+    # parquets is read whether they are flat (``<dir>/*.parquet``) or nested in
+    # a hive layout (``<dir>/month=*/data.parquet``, e.g. Jira). ``**`` matches
+    # zero or more directories, so the flat case still works.
     if parquet_path.is_dir():
-        read_expr = f"read_parquet('{parquet_path}/*.parquet', union_by_name=true)"
+        read_expr = f"read_parquet('{parquet_path}/**/*.parquet', union_by_name=true)"
     else:
         read_expr = f"read_parquet('{parquet_path}', union_by_name=true)"
 
@@ -1391,7 +1406,9 @@ def main() -> None:
                 logger.warning("Skipping %s: directory %s not found", jira_table.name, jira_path)
                 skip_count += 1
                 continue
-            parquet_files = list(jira_path.glob("*.parquet"))
+            # Recursive: matches both the flat (<table>/<YYYY-MM>.parquet) and
+            # hive (<table>/month=<YYYY-MM>/data.parquet) Jira layouts.
+            parquet_files = list(jira_path.rglob("*.parquet"))
             if not parquet_files:
                 logger.warning("Skipping %s: no parquet files in %s", jira_table.name, jira_path)
                 skip_count += 1

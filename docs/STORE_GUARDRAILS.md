@@ -101,12 +101,25 @@ Required environment variable (when guardrails enabled):
 ANTHROPIC_API_KEY=sk-ant-…   # or LLM_API_KEY for the proxy case
 ```
 
-If `guardrails.enabled: true` but neither key is set, the pipeline
-**auto-falls back to disabled** with a warning at startup — uploads
-auto-approve until the operator wires up the LLM. This keeps tests +
-first-boot sane; it does NOT silently let unreviewed uploads through
-when the operator clearly intended review (the env var is missing, not
-the YAML).
+### Three-state publish-gate matrix (fail-CLOSED)
+
+The pipeline distinguishes **operator intent** (the YAML toggle) from
+**provider readiness** (whether `ANTHROPIC_API_KEY` / `LLM_API_KEY` is
+in the environment). The two are deliberately separate so a missing
+env var can't silently flip an intended-on pipeline into auto-approve.
+
+| `guardrails.enabled` | Provider key in env | Behavior |
+|---|---|---|
+| `false` | (any) | Pipeline OFF. Inline checks still run. Uploads auto-approve. Operator's explicit opt-out — local dev / no-LLM deployments. |
+| `true` | yes | Normal hold-for-review. Inline + LLM both run. |
+| `true` | **no** | **Hold-for-review, but no async worker fires.** Submissions land at `status='pending_llm'` and stay there until an admin either provides the key and clicks **Retry review** on `/admin/store/submissions/<id>`, or overrides + publishes the row manually. The entity stays at `visibility_status='pending'` (initial v1) or at the prior approved version (v2+ edits/restores). No silent auto-approval. A loud boot-time warning surfaces the misconfig in the logs. |
+
+This is the **fail-CLOSED** policy. Before v45 the third row silently
+auto-approved every upload as a "first-boot sanity" affordance — which
+also meant a deployment whose operator forgot to set the key published
+every upload without security review. The split was introduced after a
+prod incident where an admin uploaded a skill containing a `curl … | sh`
+exfiltration script and the system happily marked it `approved`.
 
 ---
 
@@ -349,6 +362,56 @@ render directly:
 The submission row stays in the admin queue under
 `status='blocked_inline'` so admin triage can see what people tried to
 upload (useful for telemetry on what to harden checks against).
+
+---
+
+## Pre-submit dry-run
+
+`POST /api/store/entities/dryrun` runs the **full pipeline** (inline
+checks + LLM review) against a candidate bundle and returns the findings
+**without persisting anything** — no `store_entities` row, no
+`store_submissions` row, no `audit_log` entry, no bundle left on disk.
+
+It exists so a submitter can iterate on a draft before the real upload:
+see what would block publication, fix it, and only `POST
+/api/store/entities` once the bundle is clean. Without it, every
+iteration burns LLM tokens, counts against the blocked-upload quota, and
+files an admin queue entry the admin then has to triage.
+
+- **Payload** — same multipart form as the real upload: `file` (the ZIP),
+  `type` (`skill` | `agent` | `plugin`), `description` (optional).
+- **Auth** — `Depends(get_current_user)`, the same gate as
+  `POST /api/store/entities`. Never anonymous: an open dry-run would be a
+  free LLM proxy.
+- **Response**
+
+  ```json
+  {
+    "inline_checks": { "manifest": …, "static_security": …, "content": …, "quality": … },
+    "llm_findings":  { "risk_level": …, "summary": …, "findings": […], … },
+    "would_publish": true
+  }
+  ```
+
+  `would_publish` is the AND of the inline verdict (`InlineResult.passed`)
+  and the LLM `is_safe(verdict)` decision — exactly the condition the real
+  create path uses to flip an entity to `approved`. `inline_checks` is the
+  same shape returned in the [422 contract](#uploader-facing-422-contract);
+  `llm_findings` is the raw verdict dict (`null` when guardrails are
+  disabled or the LLM provider has no credentials — in which case
+  `would_publish` rests on the inline tier alone).
+
+The bundle bytes are extracted to a scratch dir, baked into a throwaway
+plugin tree, checked, and wiped in `finally` — identical lifecycle to the
+`/entities/preview` wizard step.
+
+**Deferred (tracked on #317):** a per-submitter dry-run quota (so the
+endpoint can't be looped to burn unlimited LLM tokens) and
+identical-bundle verdict caching (`bundle_sha256 + review_model` →
+reuse the previous verdict). Until those land, the auth gate plus the
+HTTP-level rate limiter bound abuse. The endpoint is REST-only: it's a
+web-form helper with no analyst CLI/MCP analogue (the real create
+endpoint carries the triple-surface contract).
 
 ---
 

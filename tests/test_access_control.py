@@ -21,29 +21,26 @@ def _auth(token):
 
 
 def _grant_table_to_analyst(conn, table_id: str, group_name: str = "analyst-grants") -> str:
-    """Create (or reuse) a custom group, add analyst1 to it, mint a TABLE
-    grant on `table_id`. Returns the group_id so callers can revoke later."""
-    from src.repositories.user_groups import UserGroupsRepository
-    from src.repositories.user_group_members import UserGroupMembersRepository
-    from src.repositories.resource_grants import ResourceGrantsRepository
+    """Grant analyst1 access to ``table_id`` via a wrapping data_package.
 
-    groups = UserGroupsRepository(conn)
-    grp = groups.get_by_name(group_name)
-    if not grp:
-        grp = groups.create(name=group_name, description="test", created_by="test")
-    members = UserGroupMembersRepository(conn)
-    if not members.has_membership("analyst1", grp["id"]):
-        members.add_member("analyst1", grp["id"], source="admin", added_by="test")
-    grants = ResourceGrantsRepository(conn)
-    if not grants.has_grant([grp["id"]], "table", table_id):
-        grants.create(group_id=grp["id"], resource_type="table", resource_id=table_id,
-                      assigned_by="test")
-    return grp["id"]
+    Stack-gated RBAC: per-table resource_grants no longer surface to
+    analysts — every analyst visibility flows through a data_package in
+    the user's stack. Delegates to the shared test helper which creates
+    the wrapping package + required grant.
+    """
+    from tests.conftest import grant_table_via_package
+    grant_table_via_package(
+        conn, table_id, "analyst1", group_name=group_name,
+    )
+    from src.repositories.user_groups import UserGroupsRepository
+    return UserGroupsRepository(conn).get_by_name(group_name)["id"]
 
 
 def _revoke_all_table_grants(conn, table_id: str) -> None:
-    from src.repositories.resource_grants import ResourceGrantsRepository
-    ResourceGrantsRepository(conn).delete_by_resource("table", table_id)
+    """Revoke via dropping the wrapping data_package (cascade clears
+    junction + grant)."""
+    from tests.conftest import revoke_table_via_package
+    revoke_table_via_package(conn, table_id)
 
 
 class TestAdminBypass:

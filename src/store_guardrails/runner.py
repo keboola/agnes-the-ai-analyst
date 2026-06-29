@@ -12,9 +12,12 @@ Two public entry points:
   and flips ``store_entities.visibility_status`` accordingly. Idempotent
   via the submission ID.
 
-Both functions take a connection factory rather than a live connection so
-the BackgroundTask runs against a fresh DuckDB handle (important —
-DuckDB connections aren't safe to share across threads).
+``run_llm_review`` resolves its repositories from the
+``src.repositories`` factory, so it persists the verdict to whichever
+backend the deployment runs on. The earlier DuckDB-only ``conn_factory``
+path silently no-op'd ("submission vanished") on Postgres-backed
+instances — the submission row lived in Postgres, the DuckDB handle was
+empty — leaving the row stuck at ``pending_llm`` with no verdict.
 """
 
 from __future__ import annotations
@@ -25,12 +28,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-import duckdb
-
-from src.repositories.audit import AuditRepository
-from src.repositories.store_entities import StoreEntitiesRepository
-from src.repositories.store_submissions import StoreSubmissionsRepository
-from . import llm_review, manifest_check, quality_check, static_scan
+from . import (
+    content_check,
+    llm_review,
+    manifest_check,
+    quality_check,
+    static_scan,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,16 +45,19 @@ class InlineResult:
 
     manifest: Dict[str, Any] = field(default_factory=dict)
     static_security: Dict[str, Any] = field(default_factory=dict)
+    content: Dict[str, Any] = field(default_factory=dict)
     quality: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:
         # Quality is a soft check — it can ``warn`` but never ``fail``,
-        # so we ignore its status here and only block on manifest +
-        # static-security failures.
+        # so we ignore its status here. Content is a hard fail
+        # (per-component description floor) and joins manifest +
+        # static-security as a blocking condition.
         return (
             self.manifest.get("status") == "pass"
             and self.static_security.get("status") == "pass"
+            and self.content.get("status") == "pass"
         )
 
     def to_response_dict(self) -> Dict[str, Any]:
@@ -58,6 +65,7 @@ class InlineResult:
         return {
             "manifest": self.manifest,
             "static_security": self.static_security,
+            "content": self.content,
             "quality": self.quality,
         }
 
@@ -83,10 +91,29 @@ def run_inline_checks(
     type_: str,
     description: Optional[str],
 ) -> InlineResult:
-    """Run the three deterministic checks and aggregate the verdicts."""
+    """Run the deterministic checks and aggregate the verdicts.
+
+    Content check merges per-component issues with the submission-level
+    description check — both go into ``content.issues`` so the rejection
+    UI doesn't need a special case for "submission description failed
+    AND a plugin agent description failed" combos.
+    """
+    content = content_check.check(plugin_dir)
+    submission_desc = content_check.check_submission_description(description)
+    if submission_desc.get("issues"):
+        # Merge the submission-level issues into the same bag. Mark the
+        # aggregate status fail if either component- or submission-level
+        # check failed.
+        merged_issues = list(content.get("issues") or []) + list(submission_desc["issues"])
+        content = {
+            "status": "fail" if merged_issues else "pass",
+            "issues": merged_issues,
+        }
+
     return InlineResult(
         manifest=manifest_check.check(plugin_dir, type_),
         static_security=static_scan.scan_dir(plugin_dir),
+        content=content,
         quality=quality_check.check(plugin_dir, description=description),
     )
 
@@ -100,9 +127,12 @@ def run_llm_review(
     submission_id: str,
     *,
     plugin_dir: Path,
-    conn_factory: Callable[[], duckdb.DuckDBPyConnection],
     api_key_loader: Callable[[], str],
     model_loader: Callable[[], str],
+    conn_factory: Optional[Callable[[], Any]] = None,
+    subs_repo: Any = None,
+    ents_repo: Any = None,
+    audit: Any = None,
 ) -> LlmResult:
     """Background-task entry point. Resolves the LLM verdict and persists it.
 
@@ -120,12 +150,24 @@ def run_llm_review(
     surface a retry button in the admin UI. Errors during persistence
     propagate — those mean a bug in our DB layer and we want a stack.
     """
-    conn = conn_factory()
+    # Resolve repositories from the factory so the verdict is read from /
+    # written to whichever backend the deployment runs on. ``conn_factory``
+    # is accepted for call-site/test compatibility but no longer used — the
+    # old ``conn_factory=get_system_db`` path was DuckDB-only and made this
+    # whole function a silent no-op on Postgres-backed instances (the
+    # submission row lives in PG; the DuckDB handle is empty, so ``get()``
+    # returned None → "submission vanished" → the row stuck at pending_llm
+    # forever). Explicit repos can still be injected by tests.
+    if subs_repo is None:
+        from src.repositories import store_submissions_repo
+        subs_repo = store_submissions_repo()
+    if ents_repo is None:
+        from src.repositories import store_entities_repo
+        ents_repo = store_entities_repo()
+    if audit is None:
+        from src.repositories import audit_repo
+        audit = audit_repo()
     try:
-        subs_repo = StoreSubmissionsRepository(conn)
-        ents_repo = StoreEntitiesRepository(conn)
-        audit = AuditRepository(conn)
-
         sub = subs_repo.get(submission_id)
         if sub is None:
             logger.warning("run_llm_review: submission %s vanished", submission_id)
@@ -195,12 +237,33 @@ def run_llm_review(
 
         passed = llm_review.is_safe(verdict)
         if passed:
-            subs_repo.update_status(
+            written = subs_repo.update_status(
                 submission_id,
                 status="approved",
                 llm_findings=verdict,
                 reviewed_by_model=model,
             )
+            if not written:
+                # The row hit a terminal status (approved / overridden /
+                # blocked_inline) before this BG verdict could land —
+                # most commonly an admin Override fired while the LLM
+                # call was running. Skip the entire downstream cascade
+                # (visibility flip, version promote, "approved" audit
+                # entry that would contradict the row) and log the
+                # suppression instead so the operator timeline shows
+                # the dropped verdict.
+                audit.log(
+                    user_id=submitter_id,
+                    action="store.submission.bg_verdict_skipped",
+                    resource=f"store_submission:{submission_id}",
+                    params={
+                        "attempted_verdict": "approved",
+                        "reason": "submission already at terminal status (CAS no-op)",
+                        "model": model,
+                    },
+                    result="skipped",
+                )
+                return LlmResult(verdict=verdict, reviewed_by_model=model)
             # Two outcomes are possible AND independent here:
             #
             # 1. Initial-upload (v1) approval flips visibility from
@@ -233,28 +296,38 @@ def run_llm_review(
                 # serve-able state. Archive / hidden-by-admin paths
                 # leave alone.
                 if current_visibility == "approved":
-                    sub_row = subs_repo.get(submission_id) or {}
-                    sub_hash = sub_row.get("version")
-                    target_version_no = None
-                    for entry in (ent_row.get("version_history") or []):
-                        if entry.get("hash") == sub_hash:
-                            try:
-                                target_version_no = int(entry.get("n"))
-                            except (TypeError, ValueError):
-                                target_version_no = None
-                            break
+                    # v48 (#329): attribution lookup is live — the next
+                    # UsageProcessor tick preloads the approved entity by
+                    # name against marketplace_plugins / store_entities;
+                    # no cached attribution rows to refresh on promote.
+                    # Look up THIS submission's version entry by
+                    # submission_id, NOT by hash. Hash-based lookup
+                    # breaks when a user re-uploads byte-identical
+                    # bundles (e.g. v2 same content as v1): the loop
+                    # picks the FIRST history entry with that hash
+                    # (always v1, n=1), so `target_version_no` lands at
+                    # 1 instead of the actual new entry's n. The
+                    # forward-only `target > current` guard then skips
+                    # the promote, leaving the entity stuck at v1.
+                    # Surfaced live on a development deployment with
+                    # an entity that had 5+ identical-hash history rows.
+                    from app.api.store import _version_no_for_submission
+                    target_version_no = _version_no_for_submission(
+                        ent_row, submission_id,
+                    )
+                    # Forward-only promotion. A late verdict landing for
+                    # an older submission must NOT demote the live bundle
+                    # past a version that was approved more recently.
                     if (target_version_no is not None
-                            and target_version_no != int(ent_row.get("version_no") or 0)):
-                        if ents_repo.promote_version(entity_id, target_version_no):
-                            try:
-                                from app.api.store import _swap_live_to_version
-                                _swap_live_to_version(entity_id, target_version_no)
-                                promoted_to = target_version_no
-                            except Exception:
-                                logger.exception(
-                                    "promote_version live swap failed for entity %s v%d",
-                                    entity_id, target_version_no,
-                                )
+                            and target_version_no > int(ent_row.get("version_no") or 0)):
+                        # Atomic helper: swap live bundle first, then
+                        # update the DB. Eliminates the
+                        # "DB promoted but live still on prior bytes"
+                        # window flagged by adversarial review.
+                        from app.api.store import promote_to_version
+                        promoted_to = promote_to_version(
+                            entity_id, target_version_no, ents_repo,
+                        )
                 else:
                     # Entity left the serve-able states between BG
                     # task start + verdict-write. Record so admin
@@ -292,12 +365,30 @@ def run_llm_review(
                     result="ok",
                 )
         else:
-            subs_repo.update_status(
+            written = subs_repo.update_status(
                 submission_id,
                 status="blocked_llm",
                 llm_findings=verdict,
                 reviewed_by_model=model,
             )
+            if not written:
+                # CAS no-op: row hit a terminal status before this
+                # verdict landed (admin override, prior terminal write).
+                # See the parallel `approved` branch above — same
+                # treatment: log the suppression, skip the misleading
+                # "blocked_llm" audit entry, return early.
+                audit.log(
+                    user_id=submitter_id,
+                    action="store.submission.bg_verdict_skipped",
+                    resource=f"store_submission:{submission_id}",
+                    params={
+                        "attempted_verdict": "blocked_llm",
+                        "reason": "submission already at terminal status (CAS no-op)",
+                        "model": model,
+                    },
+                    result="skipped",
+                )
+                return LlmResult(verdict=verdict, reviewed_by_model=model)
             # On block, entity state depends on which path triggered
             # this submission:
             #
@@ -321,10 +412,10 @@ def run_llm_review(
 
         return LlmResult(verdict=verdict, reviewed_by_model=model)
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        # Repositories come from the factory — a process-wide DuckDB
+        # singleton or a pooled Postgres engine. Neither is owned by this
+        # call, so there is nothing instance-scoped to close here.
+        pass
 
 
 # Convenience: default factories the API layer wires up. Kept here so

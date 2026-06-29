@@ -1,3 +1,5 @@
+> New: [docs/PLATFORM_SETUP.md](./PLATFORM_SETUP.md) is the consolidated operator playbook. This doc covers a focused subset; check the playbook first.
+
 # Onboarding a new Agnes instance
 
 End-to-end guide for deploying Agnes into a new GCP project. Target time: **under 1 hour**.
@@ -89,7 +91,7 @@ cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 #   seed_admin_email  = "...@customer.com"
 #   keboola_stack_url = "https://connection.<region>.gcp.keboola.com/"
 #
-# Optional (module infra-v1.4.0+):
+# Optional:
 #   runtime_secrets            = ["keboola-storage-token"]  # empty if non-keboola data_source
 #   firewall_ssh_source_ranges = ["35.235.240.0/20"]        # IAP range; "0.0.0.0/0" if public SSH
 #   notification_channel_ids   = ["projects/<p>/notificationChannels/<id>"]
@@ -161,13 +163,14 @@ curl -X POST "http://$PROD_IP:8000/api/sync/trigger" \
      -H "Authorization: Bearer $ADMIN_JWT"
 ```
 
-## 9. Monitoring + backup (recommended)
+## 9. Monitoring + backup
 
-- **Cloud Monitoring alert** on `/api/health` `status != "healthy"` for > 5 min
-- **Daily snapshot of `/data` PD**: `gcloud compute resource-policies create snapshot-schedule ...`
-- **Slack webhook** from Cloud Monitoring for alerts
+The `customer-instance` module already provisions:
+- **Per-VM uptime check + alert policy** — wire a `notification_channel_ids` tfvar to get paged (see § Monitoring alerts below).
+- **Daily snapshot of `/data` PD** — 30-day retention. See § Restoring from backup.
+- **Host-side watchdog + daily DB backup with restore-verification** (module ≥ the tag introducing `enable_watchdog`; on by default). The watchdog checks container logs every 5 minutes for incident signatures the uptime check cannot see — crash loops, the "zombie" state where `/api/health` stays 200 while every write 500s, WAL-salvage data-loss events — and the daily backup copies `system.duckdb` to `/data/backups/system-duckdb/` and proves the copy restorable. Set `alert_webhook_url` (Slack / Google Chat compatible incoming webhook) to receive alerts; left empty, alerts go to journald + `/var/log/agnes-watchdog.log` on the VM only.
 
-(These are follow-ups — not required for first deploy.)
+Optional add-on: Slack webhook from Cloud Monitoring for alerts.
 
 ## Ongoing maintenance
 

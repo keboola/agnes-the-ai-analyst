@@ -1,15 +1,53 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="{{ instance_theme | default('blue') }}">
 <head>
+    {# HTML5 requires <meta charset> within the first 1024 bytes; any
+       operator-injected snippet must come AFTER charset + viewport to
+       avoid pushing the declaration past that window (which makes
+       browsers fall back to a locale-default encoding and historically
+       opened UTF-7 charset-confusion XSS). #}
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {# Resolve the OS-aware "auto" theme before stylesheets load (no flash). #}
+    {% include "_theme_resolve.html" %}
+    {# Operator-injected scripts (placement=head_start) — run before any
+       CSS/JS so vendors that need to install global hooks first (GTM
+       dataLayer init, etc.) work. Admin-only, see instance.custom_scripts. #}
+    {% for s in custom_scripts | default([]) if s.placement == 'head_start' %}
+    {{ s.html | safe }}
+    {% endfor %}
+    <link rel="icon" type="image/svg+xml" href="{{ static_url('favicon.svg') }}">
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
-    <link rel="stylesheet" href="{{ static_url('style.css') }}">
     <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
+    {# Design-system tokens (`--ds-*`) — opt-in green/navy palette used
+       by pages that scope themselves with `.home-mock` /
+       `.advanced-mock`. Loaded globally so the tokens are available
+       anywhere; pages that haven't opted in just continue using the
+       legacy `--primary` family from style-custom.css. #}
+    <link rel="stylesheet" href="{{ static_url('css/design-tokens.css') }}">
+    {# Shared design-system components — `.callout-rec`, `.callout-hint`,
+       `.code-output`, `.lightbox`, `.setup-section-header`. Pages
+       opt in by adding the class to markup; no scope wrapper needed. #}
+    <link rel="stylesheet" href="{{ static_url('css/components.css') }}">
+    {# Shared stack card styles — drives /catalog + /memory Browse/My Stack
+       cards (matches marketplace.html .mp-card visual language). #}
+    <link rel="stylesheet" href="{{ static_url('css/stack_card.css') }}">
+    {# Walking-guide / product-tour overlay styles (inert until tour.js
+       un-hides the overlay). Markup + engine in _tour.html. #}
+    <link rel="stylesheet" href="{{ static_url('css/tour.css') }}">
+    {# app.js loaded by _app_header.html itself so pages that include
+       the header directly without extending base.html (e.g. admin_tables)
+       still get the nav-dropdown wiring. #}
     {% block head_extra %}{% endblock %}
     {% include '_theme.html' %}
+    {# Operator-injected scripts (placement=head_end, the default) —
+       analytics + feedback widgets like Marker.io, Sentry, Hotjar.
+       Admin-only, see instance.custom_scripts. #}
+    {% for s in custom_scripts | default([]) if s.placement == 'head_end' %}
+    {{ s.html | safe }}
+    {% endfor %}
 </head>
-<body>
+<body {% block body_attrs %}{% endblock %}>
     {% include '_app_header.html' %}
 
     {# `layout` block: pages opt out of the narrow .container wrap by overriding
@@ -40,6 +78,21 @@
     </div>
     {% endblock %}
     {% include "_version_badge.html" %}
+    {# Pages that mount a chip-input opt in via the {% raw %}{{ super() }}{% endraw %} +
+       {% raw %}{% block extra_scripts %}<script type="module" src="..."></script>{% endblock %}{% endraw %}
+       pattern. Was previously loaded globally here even though only
+       /admin/corporate-memory actually used it — pure waste on every
+       other admin/user page (#L85). #}
+    {% block extra_scripts %}{% endblock %}
+    {% include "_app_scripts.html" %}
+    {# Walking-guide / product-tour overlay (authed-only; self-guarded). #}
+    {% include "_tour.html" %}
     {% block scripts %}{% endblock %}
+    {# Operator-injected scripts (placement=body_end) — for vendors that
+       explicitly want bottom placement. Admin-only, see
+       instance.custom_scripts. #}
+    {% for s in custom_scripts | default([]) if s.placement == 'body_end' %}
+    {{ s.html | safe }}
+    {% endfor %}
 </body>
 </html>

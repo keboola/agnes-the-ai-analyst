@@ -30,7 +30,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6
         with:
@@ -40,7 +40,7 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Install dependencies
-        run: uv pip install --system ".[dev]"
+        run: uv pip install --system ".[dev,server]"
 
       - name: Lint with ruff
         run: |
@@ -55,7 +55,11 @@ jobs:
         continue-on-error: true  # Don't block on mypy initially, can tighten later
 
       - name: Run tests
-        run: pytest tests/ -v --tb=short
+        # `-n auto` parallelises across the runner's cores via pytest-xdist
+        # (matches ci.yml's per-shard invocation). Without it the full
+        # suite serialises into ~25 min — every deploy iteration paid
+        # that toll. `-q` keeps the log readable when 5000+ tests run.
+        run: pytest tests/ -n auto -q --tb=short
         env:
           TESTING: "1"
 
@@ -65,7 +69,7 @@ jobs:
     outputs:
       image_tag: ${{ steps.meta.outputs.tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Resolve tag + version
         id: meta
@@ -112,7 +116,7 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Start Agnes from built image
         run: |

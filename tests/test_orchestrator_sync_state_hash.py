@@ -52,7 +52,11 @@ def _run_update(system_db_path, meta_rows, data_dir):
     def fake_get_system_db():
         return duckdb.connect(str(system_db_path))
 
+    # The orchestrator now writes sync_state through the repo factory, which
+    # binds get_system_db at src.repositories import time — patch both the
+    # source and the factory's binding so the redirect takes effect.
     with patch("src.db.get_system_db", side_effect=fake_get_system_db), \
+         patch("src.repositories.get_system_db", side_effect=fake_get_system_db), \
          patch("src.orchestrator._get_extracts_dir", return_value=data_dir / "extracts"):
         orch = SyncOrchestrator.__new__(SyncOrchestrator)
         orch._update_sync_state(meta_rows=meta_rows, source_name="keboola")

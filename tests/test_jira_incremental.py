@@ -1,5 +1,6 @@
 """Tests for incremental Jira parquet transform (upsert_dataframe and friends)."""
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,8 +11,10 @@ import pytest
 from connectors.jira.incremental_transform import (
     load_parquet_month,
     save_parquet_month,
+    transform_single_issue,
     upsert_dataframe,
 )
+from connectors.jira.transform import REMOTE_LINKS_SCHEMA
 
 
 # Minimal schema compatible with ISSUES_SCHEMA for testing purposes
@@ -111,27 +114,27 @@ class TestParquetMonthlyPartitioning:
         assert result is None
 
     def test_save_empty_df_removes_file(self, parquet_dir):
-        """save_parquet_month with empty df removes existing parquet file."""
+        """save_parquet_month with empty df removes the hive dir for that month."""
         # First write a file
         df = _make_df([{"issue_key": "PROJ-1", "summary": "Test"}])
         save_parquet_month(df, _SIMPLE_SCHEMA, parquet_dir, "2026-01")
-        assert (parquet_dir / "2026-01.parquet").exists()
+        assert (parquet_dir / "month=2026-01" / "data.parquet").exists()
 
-        # Save empty df — file should be removed
+        # Save empty df — hive dir should be removed
         empty = pd.DataFrame()
         save_parquet_month(empty, _SIMPLE_SCHEMA, parquet_dir, "2026-01")
-        assert not (parquet_dir / "2026-01.parquet").exists()
+        assert not (parquet_dir / "month=2026-01").exists()
 
     def test_separate_months_independent_files(self, parquet_dir):
-        """Different month_keys write to separate parquet files."""
+        """Different month_keys write to separate hive partition directories."""
         df_april = _make_df([{"issue_key": "PROJ-A", "summary": "April issue"}])
         df_may = _make_df([{"issue_key": "PROJ-B", "summary": "May issue"}])
 
         save_parquet_month(df_april, _SIMPLE_SCHEMA, parquet_dir, "2026-04")
         save_parquet_month(df_may, _SIMPLE_SCHEMA, parquet_dir, "2026-05")
 
-        assert (parquet_dir / "2026-04.parquet").exists()
-        assert (parquet_dir / "2026-05.parquet").exists()
+        assert (parquet_dir / "month=2026-04" / "data.parquet").exists()
+        assert (parquet_dir / "month=2026-05" / "data.parquet").exists()
 
         april_loaded = load_parquet_month(parquet_dir, "2026-04")
         may_loaded = load_parquet_month(parquet_dir, "2026-05")
@@ -147,7 +150,7 @@ class TestParquetMonthlyPartitioning:
         ])
         save_parquet_month(df, _SIMPLE_SCHEMA, parquet_dir, "2026-04")
 
-        pq_file = str(parquet_dir / "2026-04.parquet")
+        pq_file = str(parquet_dir / "month=2026-04" / "data.parquet")
         conn = duckdb.connect()
         rows = conn.execute(f"SELECT count(*) FROM read_parquet('{pq_file}')").fetchone()
         conn.close()
@@ -183,3 +186,129 @@ class TestParquetMonthlyPartitioning:
         assert proj1.iloc[0]["summary"] == "Updated"
         proj2 = final[final["issue_key"] == "PROJ-2"]
         assert proj2.iloc[0]["summary"] == "Keep"
+
+
+def _seed_remote_links_parquet(parquet_root, month_key, rows):
+    """Write a starter remote_links parquet so we can assert preservation."""
+    df = pd.DataFrame(rows)
+    target = parquet_root / "remote_links"
+    target.mkdir(parents=True, exist_ok=True)
+    save_parquet_month(df, REMOTE_LINKS_SCHEMA, target, month_key)
+
+
+def _write_raw_issue(raw_dir, issue_key, payload):
+    """Seed raw issue JSON at the path transform_single_issue reads from."""
+    issues_dir = raw_dir / "issues"
+    issues_dir.mkdir(parents=True, exist_ok=True)
+    (issues_dir / f"{issue_key}.json").write_text(json.dumps(payload))
+
+
+def test_incremental_preserves_remote_links_when_overlay_absent(tmp_path):
+    """When the _remote_links key is absent from the raw JSON (the writer
+    skipped the overlay due to a Jira fetch failure), transform_single_issue
+    must NOT wipe existing parquet rows for that issue. Existing rows must
+    remain untouched and the function must report success."""
+    raw_dir = tmp_path / "raw"
+    output_dir = tmp_path / "parquet"
+    attachments_dir = tmp_path / "attachments"
+    output_dir.mkdir()
+    attachments_dir.mkdir()
+
+    # Pre-seed an existing remote-link row for PROJ-1 in month 2026-05.
+    _seed_remote_links_parquet(output_dir, "2026-05", [{
+        "issue_key": "PROJ-1",
+        "remote_link_id": "rl-existing",
+        "url": "https://example.com/old",
+        "title": "Pre-existing link",
+        "application_name": "X",
+        "application_type": "x",
+    }])
+
+    # Raw issue WITHOUT _remote_links key — overlay was skipped upstream.
+    _write_raw_issue(raw_dir, "PROJ-1", {
+        "key": "PROJ-1",
+        "id": "10001",
+        "fields": {
+            "summary": "test",
+            "status": {"name": "Open"},
+            "issuetype": {"name": "Bug"},
+            "attachment": [],
+            "comment": {"comments": []},
+            "created": "2026-05-15T00:00:00.000+0000",
+            "updated": "2026-05-15T00:00:00.000+0000",
+        },
+        # NOTE: no _remote_links key — that is the test condition.
+    })
+
+    ok = transform_single_issue(
+        issue_key="PROJ-1",
+        raw_dir=raw_dir,
+        output_dir=output_dir,
+        attachments_dir=attachments_dir,
+    )
+    assert ok is True
+
+    df = load_parquet_month(output_dir / "remote_links", "2026-05")
+    assert df is not None and len(df) == 1, \
+        "Existing remote-link row was wiped — overlay-absent signal not honored"
+    assert df.iloc[0]["remote_link_id"] == "rl-existing"
+
+
+def test_incremental_wipes_remote_links_when_overlay_present_but_empty(tmp_path):
+    """The mirror-image case: when _remote_links IS present but the list is
+    empty, that's a successful fetch confirming the issue legitimately has no
+    remote links right now. The transform MUST wipe any existing parquet rows
+    for that issue — keeping them would be stale data.
+
+    Together with test_incremental_preserves_remote_links_when_overlay_absent,
+    this locks the absent-vs-empty contract end-to-end. A future regression
+    that 'simplifies' the transform to treat [] the same as absent (i.e.,
+    skip upsert) would be caught here."""
+    raw_dir = tmp_path / "raw"
+    output_dir = tmp_path / "parquet"
+    attachments_dir = tmp_path / "attachments"
+    output_dir.mkdir()
+    attachments_dir.mkdir()
+
+    # Pre-seed a stale row that should be wiped.
+    _seed_remote_links_parquet(output_dir, "2026-05", [{
+        "issue_key": "PROJ-2",
+        "remote_link_id": "rl-stale",
+        "url": "https://example.com/stale",
+        "title": "Stale link to be wiped",
+        "application_name": "X",
+        "application_type": "x",
+    }])
+
+    # Raw issue WITH _remote_links: [] — fresh fetch confirmed empty.
+    _write_raw_issue(raw_dir, "PROJ-2", {
+        "key": "PROJ-2",
+        "id": "10002",
+        "fields": {
+            "summary": "test",
+            "status": {"name": "Open"},
+            "issuetype": {"name": "Bug"},
+            "attachment": [],
+            "comment": {"comments": []},
+            "created": "2026-05-15T00:00:00.000+0000",
+            "updated": "2026-05-15T00:00:00.000+0000",
+        },
+        "_remote_links": [],
+    })
+
+    ok = transform_single_issue(
+        issue_key="PROJ-2",
+        raw_dir=raw_dir,
+        output_dir=output_dir,
+        attachments_dir=attachments_dir,
+    )
+    assert ok is True
+
+    df = load_parquet_month(output_dir / "remote_links", "2026-05")
+    # Either the file was unlinked (df is None) or the row was removed.
+    # Both outcomes satisfy the contract — the stale row must not survive.
+    if df is not None:
+        remaining = df[df["issue_key"] == "PROJ-2"]
+        assert len(remaining) == 0, \
+            "Stale remote-link row survived a successful empty-list fetch — " \
+            "the empty-list (legitimate) signal was misinterpreted as preserve"

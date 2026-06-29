@@ -1,0 +1,282 @@
+{% extends "base_ds.html" %}
+{% block title %}Sync — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block head_extra %}
+<style>
+  .sync-toolbar {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;
+  }
+  .sync-status-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  }
+  .sync-status-badge.running {
+    background: #fef3c7; color: #92400e;
+  }
+  .sync-status-badge.idle {
+    background: #dcfce7; color: #166534;
+  }
+  .sync-status-badge .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: currentColor;
+  }
+  .sync-status-badge.running .dot {
+    animation: pulse 1s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  .sync-summary {
+    display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap;
+  }
+  .summary-card {
+    background: var(--surface, #fff); border: 1px solid var(--border, #e5e7eb);
+    border-radius: 10px; padding: 16px 20px; min-width: 140px; flex: 1;
+  }
+  .summary-card .label { font-size: 11px; color: var(--text-secondary, #6b7280); font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
+  .summary-card .value { font-size: 22px; font-weight: 700; color: var(--text-primary, #111827); margin-top: 4px; }
+  .summary-card .value.error { color: #b91c1c; }
+  .summary-card .value.warn  { color: #92400e; }
+
+  .status-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  }
+  .status-ok      { background: #dcfce7; color: #166534; }
+  .status-error   { background: #fee2e2; color: #b91c1c; }
+  .status-pending { background: #f3f4f6; color: #6b7280; }
+  .status-running { background: #fef3c7; color: #92400e; }
+
+  .error-cell { font-size: 11px; color: #b91c1c; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .search-input {
+    padding: 8px 12px 8px 32px; min-width: 260px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 8px; font-size: 13px;
+    background: var(--ds-surface) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 10px center;
+  }
+
+  .toast-stack { position: fixed; bottom: 24px; right: 24px; z-index: 2000; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+  .toast { background: #111827; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0,0,0,.25); opacity: 0; transform: translateY(8px); transition: opacity .2s, transform .2s; pointer-events: auto; max-width: 380px; }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error   { background: #b91c1c; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div>
+  {% set page_hero_eyebrow = "Data Pipeline" %}
+  {% set page_hero_title = "Sync" %}
+  {% set page_hero_subtitle = "Monitor extraction status and trigger manual syncs." %}
+  {% include "_page_hero.html" %}
+
+  <!-- Toolbar -->
+  <div class="sync-toolbar">
+    <span id="status-badge" class="sync-status-badge idle">
+      <span class="dot"></span>
+      <span id="status-label">Idle</span>
+    </span>
+    {{ ds.button('Trigger sync', variant='primary', id='trigger-btn') }}
+    <input id="table-search" type="search" class="search-input" placeholder="Filter tables…" autocomplete="off">
+    <span id="last-refresh" style="font-size:12px; color:var(--text-secondary,#6b7280); margin-left:auto;"></span>
+  </div>
+
+  <!-- Summary cards -->
+  <div class="sync-summary">
+    <div class="summary-card">
+      <div class="label">Total tables</div>
+      <div class="value" id="stat-total">—</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">Synced</div>
+      <div class="value" id="stat-synced">—</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">Never synced</div>
+      <div class="value warn" id="stat-never">—</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">Errors</div>
+      <div class="value error" id="stat-errors">—</div>
+    </div>
+  </div>
+
+  <!-- Table -->
+  <div class="data-table-wrap">
+    <table class="data-table" id="sync-table">
+      <thead>
+        <tr>
+          <th>Table</th>
+          <th>Source</th>
+          <th>Status</th>
+          <th>Last sync</th>
+          <th>Rows</th>
+          <th>Size</th>
+          <th>Error</th>
+        </tr>
+      </thead>
+      <tbody id="sync-tbody">
+        <tr><td colspan="7" style="text-align:center; padding:32px; color:var(--text-secondary,#6b7280);">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+let allRows = [];
+let filterText = "";
+let pollInterval = null;
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
+}
+
+function fmtSize(bytes) {
+  if (bytes == null || bytes === 0) return "—";
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + " MB";
+  return (bytes / 1024 / 1024 / 1024).toFixed(2) + " GB";
+}
+
+function fmtDate(s) {
+  if (!s) return "—";
+  const d = new Date(s);
+  if (isNaN(d)) return s;
+  const now = new Date();
+  const diff = Math.floor((now - d) / 1000);
+  if (diff < 60) return diff + "s ago";
+  if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+  if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
+  return d.toLocaleDateString();
+}
+
+function renderTable() {
+  const tbody = document.getElementById("sync-tbody");
+  const ft = filterText.trim().toLowerCase();
+  const filtered = ft
+    ? allRows.filter(r => (r.id || "").toLowerCase().includes(ft) || (r.source_type || "").toLowerCase().includes(ft) || (r.bucket || "").toLowerCase().includes(ft))
+    : allRows;
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--text-secondary,#6b7280);">${ft ? "No matches." : "No tables registered."}</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = "";
+  for (const r of filtered) {
+    const status = r.last_sync_status || (r.last_sync ? "ok" : "pending");
+    const pillClass = status === "ok" ? "status-ok" : status === "error" ? "status-error" : status === "running" ? "status-running" : "status-pending";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><a href="/admin/tables" style="font-weight:500;color:var(--text-primary,#111827);text-decoration:none;">${esc(r.id)}</a></td>
+      <td style="font-size:12px;color:var(--text-secondary,#6b7280);">${esc(r.source_type || "—")}${r.bucket ? " · " + esc(r.bucket) : ""}</td>
+      <td><span class="status-pill ${pillClass}">${esc(status)}</span></td>
+      <td style="font-size:12px;color:var(--text-secondary,#6b7280);">${fmtDate(r.last_sync)}</td>
+      <td style="font-size:12px;">${r.rows != null ? Number(r.rows).toLocaleString() : "—"}</td>
+      <td style="font-size:12px;">${fmtSize(r.file_size_bytes)}</td>
+      <td>${r.last_sync_error ? `<span class="error-cell" title="${esc(r.last_sync_error)}">${esc(r.last_sync_error)}</span>` : ""}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+function updateSummary() {
+  const total = allRows.length;
+  const synced = allRows.filter(r => r.last_sync).length;
+  const errors = allRows.filter(r => r.last_sync_status === "error").length;
+  const never = total - synced;
+  document.getElementById("stat-total").textContent = total;
+  document.getElementById("stat-synced").textContent = synced;
+  document.getElementById("stat-never").textContent = never;
+  document.getElementById("stat-errors").textContent = errors;
+}
+
+async function loadRegistry() {
+  try {
+    const r = await fetch("/api/admin/registry", { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    allRows = Array.isArray(data) ? data : (data.tables || data.items || []);
+    renderTable();
+    updateSummary();
+    const now = new Date();
+    document.getElementById("last-refresh").textContent = "Updated " + now.toLocaleTimeString();
+  } catch (e) {
+    toast("Failed to load tables: " + e.message, "error");
+  }
+}
+
+async function checkStatus() {
+  try {
+    const r = await fetch("/api/sync/status", { credentials: "include" });
+    if (!r.ok) return;
+    const data = await r.json();
+    const badge = document.getElementById("status-badge");
+    const label = document.getElementById("status-label");
+    if (data.locked) {
+      badge.className = "sync-status-badge running";
+      label.textContent = "Syncing…";
+      // Reload table data while sync runs
+      await loadRegistry();
+      if (!pollInterval) {
+        pollInterval = setInterval(async () => {
+          await checkStatus();
+        }, 3000);
+      }
+    } else {
+      badge.className = "sync-status-badge idle";
+      label.textContent = "Idle";
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+        await loadRegistry();
+      }
+    }
+  } catch (_) {}
+}
+
+document.getElementById("trigger-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("trigger-btn");
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/sync/trigger", { method: "POST", credentials: "include" });
+    if (r.ok || r.status === 202) {
+      toast("Sync started", "success");
+      await checkStatus();
+    } else if (r.status === 409) {
+      toast("Sync already running", "");
+      await checkStatus();
+    } else {
+      const d = await r.json().catch(() => ({}));
+      toast("Trigger failed: " + (d.detail || r.statusText), "error");
+    }
+  } catch (e) {
+    toast("Trigger failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("table-search").addEventListener("input", e => {
+  filterText = e.target.value;
+  renderTable();
+});
+
+// Init
+loadRegistry();
+checkStatus();
+// Lightweight status poll every 5s
+setInterval(checkStatus, 5000);
+</script>
+{% endblock %}

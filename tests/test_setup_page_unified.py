@@ -127,3 +127,43 @@ def test_install_legacy_path_redirects_to_setup(client):
     resp = client.get("/install", follow_redirects=False)
     assert resp.status_code in (302, 307)
     assert "/setup" in resp.headers["location"]
+
+
+def test_first_time_setup_renders_all_wizard_fields(client):
+    """The first-time-setup wizard (`setup.html`, served at /first-time-setup)
+    still renders every field end-to-end through the real Jinja/route stack
+    after the base_login.html → base_ds.html migration (#586).
+
+    The `client` fixture builds a fresh app rooted at tmp_path with no seeded
+    users, so /first-time-setup serves the wizard rather than redirecting to
+    /login. We assert all four steps, the four progress dots, the key inputs,
+    and that the page rides the design-system narrow shell — proving no field
+    was lost when the login-card wrapper divs were removed and that the page
+    is genuinely on base_ds (footer copyright + nav header), not base_login.
+    """
+    resp = client.get("/first-time-setup", follow_redirects=False)
+    assert resp.status_code == 200
+    text = resp.text
+    # Every wizard field marker survives the wrapper-div removal.
+    for marker in (
+        'id="admin-email"',
+        'id="admin-password"',
+        'id="data-source"',
+        'id="step-1"',
+        'id="step-2"',
+        'id="step-3"',
+        'id="step-4"',
+        'id="step-dot-1"',
+        'id="step-dot-2"',
+        'id="step-dot-3"',
+        'id="step-dot-4"',
+    ):
+        assert marker in text, f"wizard field marker missing: {marker}"
+    # Design-system shell marker — the page now opts into the narrow container.
+    assert "container--narrow" in text
+    # base_ds-only chrome the old base_login lacked: footer copyright marker
+    # (`&copy;` from base_ds's <footer>) confirms the page is genuinely on the
+    # design-system base, not just textually edited.
+    assert "&copy;" in text or "<footer>" in text
+    # The bespoke login-card chrome is gone.
+    assert "max-width: 520px" not in text

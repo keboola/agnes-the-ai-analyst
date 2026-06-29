@@ -9,8 +9,10 @@ from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
-from src.repositories.metrics import MetricRepository
 
+from src.repositories import (
+    metric_repo,
+)
 router = APIRouter(tags=["metrics"])
 
 
@@ -44,7 +46,7 @@ async def list_metrics(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List all metric definitions, optionally filtered by category."""
-    repo = MetricRepository(conn)
+    repo = metric_repo()
     metrics = repo.list(category=category)
     return {"metrics": metrics, "count": len(metrics)}
 
@@ -56,7 +58,7 @@ async def get_metric(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get a single metric definition by ID."""
-    repo = MetricRepository(conn)
+    repo = metric_repo()
     metric = repo.get(metric_id)
     if metric is None:
         raise HTTPException(status_code=404, detail=f"Metric '{metric_id}' not found")
@@ -70,7 +72,7 @@ async def create_or_update_metric(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Create or update a metric definition (admin only)."""
-    repo = MetricRepository(conn)
+    repo = metric_repo()
     metric = repo.create(
         id=body.id,
         name=body.name,
@@ -96,18 +98,17 @@ async def create_or_update_metric(
     return metric
 
 
-@router.delete("/api/admin/metrics/{metric_id:path}")
+@router.delete("/api/admin/metrics/{metric_id:path}", status_code=204)
 async def delete_metric(
     metric_id: str,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Delete a metric definition by ID (admin only)."""
-    repo = MetricRepository(conn)
+    repo = metric_repo()
     deleted = repo.delete(metric_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Metric '{metric_id}' not found")
-    return {"status": "deleted", "id": metric_id}
 
 
 @router.post("/api/admin/metrics/import", status_code=200)
@@ -127,7 +128,7 @@ async def import_metrics(
         raise HTTPException(status_code=400, detail="Empty YAML file")
 
     metric_list = data if isinstance(data, list) else [data]
-    repo = MetricRepository(conn)
+    repo = metric_repo()
     count = 0
 
     for metric in metric_list:

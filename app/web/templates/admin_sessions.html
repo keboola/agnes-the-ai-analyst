@@ -1,0 +1,411 @@
+{% extends "base_page.html" %}
+{% block title %}Analyst sessions — Admin{% endblock %}
+
+{% set page_hero_eyebrow = "Activity Center" %}
+{% set page_hero_title = "Analyst sessions" %}
+{% set page_hero_subtitle = "Every collected JSONL across users plus a transcript viewer with next-error navigation." %}
+
+{% block head_extra %}
+<style>
+.obs-page { font: 14px/1.5 var(--font-sans, system-ui); color: var(--text-primary, #111827); }
+.obs-topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
+  padding: 12px 0 20px; border-bottom: 1px solid var(--border, #e5e7eb); margin-bottom: 16px; }
+.obs-topbar-left { flex: 1; min-width: 0; }
+.obs-subtitle { margin: 0 0 10px; color: var(--text-secondary, #6b7280); font-size: 13px; max-width: 720px; }
+.obs-subtitle b { color: var(--text-primary, #111827); }
+.obs-narrative { font-size: 16px; line-height: 1.45; }
+.obs-narrative b { font-weight: 600; }
+.obs-topbar-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.obs-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--text-secondary, #6b7280); display: block; margin-bottom: 2px; }
+.obs-window select { padding: 6px 8px; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+  background: var(--surface, #fff); font: inherit; }
+/* `.obs-btn` rules deleted — buttons render via `ds.button(variant=
+   'secondary', size='sm')` carrying canonical .btn family. */
+.obs-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+.obs-kpi { text-align: left; padding: 14px 16px; border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px; background: var(--surface, #fff); cursor: pointer;
+  display: flex; flex-direction: column; gap: 4px; }
+.obs-kpi:hover { border-color: #2563eb; background: var(--border-light, #f3f4f6); }
+.obs-kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--text-secondary, #6b7280); }
+.obs-kpi-value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.obs-kpi-sub { font-size: 12px; color: var(--text-secondary, #6b7280); font-variant-numeric: tabular-nums; }
+.obs-filters { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;
+  padding: 12px 14px; background: var(--border-light, #f3f4f6); border-radius: 8px; margin-bottom: 12px; }
+.obs-filter { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
+.obs-filter-grow { flex: 1; min-width: 200px; }
+.obs-filter label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--text-secondary, #6b7280); }
+.obs-select, .obs-filter input[type=search] { padding: 6px 8px;
+  border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+  background: var(--surface, #fff); font: inherit; }
+.obs-checkbox { display: flex; align-items: center; gap: 6px;
+  text-transform: none; letter-spacing: 0; font-size: 13px;
+  color: var(--text-primary, #111827); cursor: pointer; padding-top: 14px; }
+.obs-filter-actions { display: flex; align-items: flex-end; }
+.obs-table-wrap { border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
+  overflow: hidden; background: var(--surface, #fff); }
+.obs-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.obs-table thead th { text-align: left; padding: 10px 12px; background: var(--border-light, #f3f4f6);
+  border-bottom: 1px solid var(--border, #e5e7eb); font-weight: 600;
+  color: var(--text-secondary, #6b7280); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap; }
+.obs-table thead th button { background: none; border: 0; padding: 0; font: inherit; color: inherit;
+  cursor: pointer; display: inline-flex; gap: 4px; text-transform: inherit; letter-spacing: inherit; }
+.obs-table thead th[aria-sort="ascending"] .obs-sort-arrow::before { content: "▲"; }
+.obs-table thead th[aria-sort="descending"] .obs-sort-arrow::before { content: "▼"; }
+.obs-sort-arrow { font-size: 9px; color: var(--text-secondary, #6b7280); }
+.obs-table tbody td { padding: 8px 12px; border-bottom: 1px solid var(--border-light, #f3f4f6); vertical-align: top; }
+.obs-table tbody tr { cursor: pointer; }
+.obs-table tbody tr:hover { background: var(--border-light, #f3f4f6); }
+.obs-table tbody tr.has-errors { background: #fff7f7; }
+.obs-table tbody tr.has-errors:hover { background: #ffebeb; }
+.obs-num { text-align: right; font-variant-numeric: tabular-nums; }
+.obs-empty { padding: 40px 16px; text-align: center; color: var(--text-secondary, #6b7280); font-size: 13px; }
+.obs-table-footer { display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px; border-top: 1px solid var(--border, #e5e7eb); background: var(--border-light, #f3f4f6); }
+.obs-row-count { color: var(--text-secondary, #6b7280); font-size: 12px; }
+.obs-err-chip { display: inline-block; padding: 1px 6px; border-radius: 4px; background: #fee2e2;
+  color: #991b1b; font-size: 11px; font-weight: 500; }
+</style>
+{% endblock %}
+
+{% block page %}
+{# Design-system component macros — Reset + Prev/Next paginator render
+   via `ds.button` (auto-imported by base_ds). .obs-kpi cards + .obs-table
+   page-local enhancements stay as-is per system.md. #}
+<div class="obs-page">
+
+
+  <header class="obs-topbar">
+    <div class="obs-topbar-left">
+      <p class="obs-subtitle">All Claude Code sessions across every user. Also available locally for analysis. Click any row to read the full transcript; tick <b>Errors only</b> to surface sessions where tools failed.</p>
+      <div class="obs-narrative" id="sx-narrative">Loading…</div>
+    </div>
+    <div class="obs-topbar-right">
+      <label class="obs-window">
+        <span class="obs-label">Time range</span>
+        <select id="sx-window">
+          <option value="1440">Last 24h</option>
+          <option value="10080" selected>Last 7d</option>
+          <option value="43200">Last 30d</option>
+          <option value="129600">Last 90d</option>
+          <option value="525600">All time</option>
+        </select>
+      </label>
+    </div>
+  </header>
+
+  <section class="obs-kpis" aria-label="Session metrics">
+    <button class="obs-kpi" data-quick="" type="button">
+      <span class="obs-kpi-label">Sessions</span>
+      <span class="obs-kpi-value" id="skpi-sessions">—</span>
+    </button>
+    <button class="obs-kpi" data-quick="users" type="button">
+      <span class="obs-kpi-label">Distinct users</span>
+      <span class="obs-kpi-value" id="skpi-users">—</span>
+    </button>
+    <button class="obs-kpi" data-quick="errors" type="button">
+      <span class="obs-kpi-label">Sessions w/ errors</span>
+      <span class="obs-kpi-value" id="skpi-errsess">—</span>
+      <span class="obs-kpi-sub" id="skpi-errsess-sub">—</span>
+    </button>
+    <button class="obs-kpi" data-quick="errrate" type="button">
+      <span class="obs-kpi-label">Tool error rate</span>
+      <span class="obs-kpi-value" id="skpi-rate">—</span>
+      <span class="obs-kpi-sub" id="skpi-rate-sub">—</span>
+    </button>
+  </section>
+
+  <section class="obs-filters" aria-label="Filter sessions">
+    <div class="obs-filter">
+      <label for="sx-user">User</label>
+      <select id="sx-user" class="obs-select"><option value="">Any</option></select>
+    </div>
+    <div class="obs-filter">
+      <label for="sx-model">Model</label>
+      <select id="sx-model" class="obs-select"><option value="">Any</option></select>
+    </div>
+    <div class="obs-filter">
+      <label class="obs-checkbox">
+        <input type="checkbox" id="sx-errors" />
+        <span>Errors only</span>
+      </label>
+    </div>
+    <div class="obs-filter obs-filter-grow">
+      <label for="sx-q">Search (session id / filename)</label>
+      <input id="sx-q" type="search" placeholder="abc-123…" />
+    </div>
+    <div class="obs-filter-actions">
+      {{ ds.button('Reset', variant='secondary', size='sm',
+                   type='button', id='sx-reset') }}
+    </div>
+  </section>
+
+  <section class="obs-table-wrap">
+    <table class="obs-table" id="sx-table">
+      <thead id="sx-thead"></thead>
+      <tbody id="sx-rows">
+        <tr><td colspan="7" class="obs-empty">Loading…</td></tr>
+      </tbody>
+    </table>
+    <div class="obs-table-footer">
+      <span id="sx-row-count" class="obs-row-count">—</span>
+      <div>
+        {{ ds.button('← Prev', variant='secondary', size='sm',
+                     type='button', id='sx-prev', attrs='hidden') }}
+        {{ ds.button('Next →', variant='secondary', size='sm',
+                     type='button', id='sx-next', attrs='hidden') }}
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+(function() {
+  const state = readUrl();
+  function readUrl() {
+    const p = new URLSearchParams(location.search);
+    return {
+      window:      parseInt(p.get('window'), 10) || 10080,
+      username:    p.get('username') || '',
+      model:       p.get('model') || '',
+      only_errors: p.get('only_errors') === '1',
+      q:           p.get('q') || '',
+      sort:        p.get('sort') || 'started_at:desc',
+      offset:      parseInt(p.get('offset'), 10) || 0,
+    };
+  }
+  function writeUrl() {
+    const p = new URLSearchParams();
+    if (state.window !== 10080) p.set('window', state.window);
+    if (state.username) p.set('username', state.username);
+    if (state.model) p.set('model', state.model);
+    if (state.only_errors) p.set('only_errors', '1');
+    if (state.q) p.set('q', state.q);
+    if (state.sort && state.sort !== 'started_at:desc') p.set('sort', state.sort);
+    if (state.offset) p.set('offset', state.offset);
+    const qs = p.toString();
+    history.replaceState(null, '', qs ? '?' + qs : location.pathname);
+  }
+  const $ = id => document.getElementById(id);
+  const winSel = $('sx-window'), fUser = $('sx-user'), fModel = $('sx-model');
+  const fErr = $('sx-errors'), fQ = $('sx-q'), fReset = $('sx-reset');
+  const thead = $('sx-thead'), tbody = $('sx-rows');
+  const rowCount = $('sx-row-count'), prevBtn = $('sx-prev'), nextBtn = $('sx-next');
+  const narrative = $('sx-narrative');
+
+  winSel.value = String(state.window);
+  fErr.checked = state.only_errors;
+  fQ.value = state.q;
+
+  function buildBase() {
+    const p = new URLSearchParams();
+    p.set('since_minutes', state.window);
+    if (state.username) p.set('username', state.username);
+    if (state.model) p.set('model', state.model);
+    if (state.only_errors) p.set('only_errors', 'true');
+    if (state.q) p.set('q', state.q);
+    return p;
+  }
+  async function get(url) {
+    const r = await fetch(url, { credentials: 'same-origin' });
+    if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+    return r.json();
+  }
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function fmtN(n) { return (n == null ? '—' : Number(n).toLocaleString()); }
+  function fmtDuration(s) {
+    if (s == null) return '—';
+    const n = Number(s);
+    if (!isFinite(n)) return '—';
+    if (n < 60)     return Math.round(n) + 's';
+    if (n < 3600)   return Math.round(n / 60) + 'm';
+    return (n / 3600).toFixed(1) + 'h';
+  }
+  function fmtTime(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString();
+  }
+  function winLabel(m) {
+    if (m <= 1440) return 'last 24h';
+    if (m <= 10080) return 'last 7d';
+    if (m <= 43200) return 'last 30d';
+    if (m <= 129600) return 'last 90d';
+    return 'all time';
+  }
+
+  async function loadFacets() {
+    const d = await get('/api/admin/sessions/facets?since_minutes=' + state.window);
+    fillSelect(fUser,  d.users  || [], state.username);
+    fillSelect(fModel, d.models || [], state.model);
+  }
+  function fillSelect(sel, items, current) {
+    while (sel.options.length > 1) sel.remove(1);
+    items.forEach(it => {
+      const o = document.createElement('option');
+      o.value = it.value; o.textContent = it.value + ' (' + it.count + ')';
+      sel.appendChild(o);
+    });
+    if (current) sel.value = current;
+  }
+
+  async function loadKpis() {
+    const d = await get('/api/admin/sessions/kpis?' + buildBase().toString());
+    $('skpi-sessions').textContent = fmtN(d.sessions_total);
+    $('skpi-users').textContent    = fmtN(d.distinct_users);
+    $('skpi-errsess').textContent  = fmtN(d.error_sessions);
+    $('skpi-errsess-sub').textContent = (d.sessions_total
+      ? (100 * d.error_sessions / d.sessions_total).toFixed(1) + '% of sessions' : '—');
+    $('skpi-rate').textContent     = (d.tool_error_rate * 100).toFixed(2) + '%';
+    $('skpi-rate-sub').textContent = fmtN(d.tool_errors_total) + ' of '
+      + fmtN(d.tool_calls_total) + ' tool calls';
+    renderNarrative(d);
+  }
+  function renderNarrative(d) {
+    const win = winLabel(state.window);
+    const bits = [];
+    if (state.username)    bits.push('user: ' + escapeHtml(state.username));
+    if (state.model)       bits.push('model: ' + escapeHtml(state.model));
+    if (state.only_errors) bits.push('errors only');
+    if (state.q)           bits.push('search: "' + escapeHtml(state.q) + '"');
+    const f = bits.length ? ' · filters: ' + bits.join(', ') : '';
+    if (d.sessions_total === 0) {
+      narrative.innerHTML = '<b>No sessions</b> in ' + win + f + '.';
+      return;
+    }
+    narrative.innerHTML =
+      '<b>' + fmtN(d.sessions_total) + '</b> sessions in ' + win +
+      ' · <b>' + fmtN(d.distinct_users) + '</b> users' +
+      ' · <b>' + fmtN(d.error_sessions) + '</b> with errors' +
+      ' · tool error rate <b>' + (d.tool_error_rate * 100).toFixed(2) + '%</b>' + f + '.';
+  }
+
+  async function loadTable() {
+    tbody.innerHTML = '<tr><td colspan="7" class="obs-empty">Loading…</td></tr>';
+    const p = buildBase();
+    p.set('sort', state.sort);
+    p.set('limit', '50'); p.set('offset', state.offset);
+    const d = await get('/api/admin/sessions/list?' + p.toString());
+    renderTable(d);
+  }
+  function renderTable(d) {
+    thead.innerHTML =
+      '<tr>' +
+      '<th data-sort="started_at"><button type="button">When <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="username"><button type="button">User <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="active_seconds" class="obs-num"><button type="button">Active <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="tool_calls" class="obs-num"><button type="button">Tool calls <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="tool_errors" class="obs-num"><button type="button">Errors <span class="obs-sort-arrow"></span></button></th>' +
+      '<th data-sort="primary_model"><button type="button">Model <span class="obs-sort-arrow"></span></button></th>' +
+      '<th>Actions</th>' +
+      '</tr>';
+    wireSort();
+
+    if (!d.rows.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="obs-empty">No sessions match these filters.</td></tr>';
+      rowCount.textContent = '0 of 0';
+      prevBtn.hidden = state.offset === 0;
+      nextBtn.hidden = true;
+      return;
+    }
+
+    tbody.innerHTML = '';
+    d.rows.forEach(r => {
+      const tr = document.createElement('tr');
+      if (r.tool_errors > 0) tr.classList.add('has-errors');
+      const errCell = r.tool_errors > 0
+        ? '<span class="obs-err-chip">' + fmtN(r.tool_errors) + '</span>'
+        : '<span style="color:var(--text-secondary, #6b7280)">0</span>';
+      // URL `{username}` segment is the on-disk directory name (UUID for
+      // upload-API sessions, OS-username for the legacy collector), NOT
+      // r.username — that's now the display email (v60 collapse, #458)
+      // which the `_safe_session_path` regex on the server rejects. The
+      // listing API returns `session_dir` derived from `session_file`
+      // explicitly so the UI doesn't have to re-derive it.
+      const sessionDir = r.session_dir || '_';
+      const viewerHref = '/admin/sessions/' + encodeURIComponent(sessionDir)
+                       + '/' + encodeURIComponent(r.session_file.split('/').pop());
+      const dlHref = '/api/admin/sessions/' + encodeURIComponent(sessionDir)
+                   + '/' + encodeURIComponent(r.session_file.split('/').pop()) + '/download';
+      tr.innerHTML =
+        '<td>' + escapeHtml(fmtTime(r.started_at)) + '</td>' +
+        '<td>' + escapeHtml(r.username || '—') + '</td>' +
+        '<td class="obs-num">' + escapeHtml(fmtDuration(r.active_seconds)) + '</td>' +
+        '<td class="obs-num">' + fmtN(r.tool_calls) + '</td>' +
+        '<td class="obs-num">' + errCell + '</td>' +
+        '<td>' + escapeHtml(r.primary_model || '—') + '</td>' +
+        '<td><a href="' + viewerHref + '">View transcript</a></td>';
+      tr.addEventListener('click', e => {
+        if (e.target.tagName === 'A') return; // let link handle itself
+        window.location.href = viewerHref;
+      });
+      tbody.appendChild(tr);
+    });
+
+    rowCount.textContent = 'Showing ' + (state.offset + 1) + '–' +
+      (state.offset + d.rows.length) + ' of ' + fmtN(d.total);
+    prevBtn.hidden = state.offset === 0;
+    nextBtn.hidden = d.next_offset == null;
+  }
+
+  function wireSort() {
+    document.querySelectorAll('#sx-thead th[data-sort]').forEach(th => {
+      const key = th.dataset.sort;
+      const [curKey, curDir] = (state.sort || 'started_at:desc').split(':');
+      th.setAttribute('aria-sort',
+        key === curKey ? (curDir === 'asc' ? 'ascending' : 'descending') : 'none');
+      th.addEventListener('click', () => {
+        const [k, d] = (state.sort || 'started_at:desc').split(':');
+        state.sort = key + ':' + (k === key && d === 'desc' ? 'asc' : 'desc');
+        state.offset = 0; writeUrl(); loadTable().catch(()=>{});
+      });
+    });
+  }
+
+  document.querySelectorAll('.obs-kpi').forEach(b => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.quick;
+      if (k === 'errors' || k === 'errrate') {
+        state.only_errors = true; fErr.checked = true;
+        state.sort = 'tool_errors:desc';
+      } else if (k === 'users') {
+        // no-op: user is already in the facet dropdown
+        fUser.focus(); return;
+      } else {
+        Object.assign(state, { username:'', model:'', only_errors:false, q:'' });
+        fUser.value=''; fModel.value=''; fErr.checked=false; fQ.value='';
+      }
+      state.offset = 0; writeUrl(); refreshAll();
+    });
+  });
+
+  winSel.addEventListener('change', () => { state.window = parseInt(winSel.value, 10); state.offset = 0; writeUrl(); refreshAll(); });
+  fUser.addEventListener('change',  () => { state.username = fUser.value; state.offset = 0; writeUrl(); refreshOnFilter(); });
+  fModel.addEventListener('change', () => { state.model = fModel.value; state.offset = 0; writeUrl(); refreshOnFilter(); });
+  fErr.addEventListener('change',   () => { state.only_errors = fErr.checked; state.offset = 0; writeUrl(); refreshOnFilter(); });
+  let qDebounce;
+  fQ.addEventListener('input', () => {
+    clearTimeout(qDebounce);
+    qDebounce = setTimeout(() => { state.q = fQ.value; state.offset = 0; writeUrl(); refreshOnFilter(); }, 250);
+  });
+  fReset.addEventListener('click', () => {
+    Object.assign(state, { username:'', model:'', only_errors:false, q:'', offset:0 });
+    fUser.value=''; fModel.value=''; fErr.checked=false; fQ.value='';
+    writeUrl(); refreshAll();
+  });
+  prevBtn.addEventListener('click', () => { state.offset = Math.max(0, state.offset - 50); writeUrl(); loadTable().catch(()=>{}); });
+  nextBtn.addEventListener('click', () => { state.offset = state.offset + 50; writeUrl(); loadTable().catch(()=>{}); });
+
+  function refreshOnFilter() { loadKpis().catch(()=>{}); loadTable().catch(()=>{}); }
+  function refreshAll() { loadKpis().catch(()=>{}); loadFacets().catch(()=>{}); loadTable().catch(()=>{}); }
+  refreshAll();
+})();
+</script>
+{% endblock %}

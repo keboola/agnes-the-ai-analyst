@@ -101,7 +101,11 @@ def with_token(tmp_path, monkeypatch) -> str:
 
 @pytest.fixture
 def claude_in_path(monkeypatch):
-    monkeypatch.setattr(rm_module.shutil, "which", lambda name: "/fake/claude" if name == "claude" else None)
+    # `shutil.which` returns the bare name (not a `/fake/...` path) so that on
+    # POSIX `_claude_base_cmd()` yields `["claude", ...]` — the argv prefix the
+    # scripts/assertions below match against. (The Windows `.cmd`-shim wrapping
+    # is covered directly in test_claude_base_cmd_* below.)
+    monkeypatch.setattr(rm_module.shutil, "which", lambda name: "claude" if name == "claude" else None)
 
 
 @pytest.fixture
@@ -307,13 +311,13 @@ def test_reconcile_updates_when_manifest_version_differs(
     monkeypatch.chdir(workspace)
     _set_marketplace_manifest(with_clone, [
         {"name": "grpn-eng", "version": "1.1.0"},  # admin pushed new version
-        {"name": "agnes-store-bundle", "version": "deadbeefcafef00d"},  # bundle bumped
+        {"name": "flea", "version": "deadbeefcafef00d"},  # bundle bumped
     ])
     recorder.script(
         ("claude", "plugin", "list", "--json"),
         stdout=_plugin_list_json([
             {"id": "grpn-eng@agnes", "version": "1.0.0", "projectPath": str(workspace)},
-            {"id": "agnes-store-bundle@agnes", "version": "0123456789abcdef",
+            {"id": "flea@agnes", "version": "0123456789abcdef",
              "projectPath": str(workspace)},
         ]),
     )
@@ -325,7 +329,7 @@ def test_reconcile_updates_when_manifest_version_differs(
         if c.cmd[:3] == ["claude", "plugin", "update"]
     )
     assert update_targets == [
-        f"agnes-store-bundle@{rm_module.MARKETPLACE_NAME}",
+        f"flea@{rm_module.MARKETPLACE_NAME}",
         f"grpn-eng@{rm_module.MARKETPLACE_NAME}",
     ]
     # No installs (both already present).
@@ -473,10 +477,20 @@ def test_manual_mode_no_change_does_not_print_reload_hint(
     with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
 ):
     """Manual `agnes refresh-marketplace` over an already-up-to-date stack
-    must NOT spam the reload hint — there's nothing to reload for."""
+    must NOT spam the reload hint — there's nothing to reload for.
+
+    "Up to date" now also means the workspace `enabledPlugins` map already
+    matches the stack; without that seed the enable step would otherwise
+    flip a missing entry to `true` and legitimately request a reload.
+    """
     workspace = tmp_path / "ws"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
+    settings_dir = workspace / ".claude"
+    settings_dir.mkdir()
+    (settings_dir / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"grpn-eng@agnes": True}}), encoding="utf-8",
+    )
     _set_marketplace_manifest(with_clone, [{"name": "grpn-eng", "version": "1.0.0"}])
     recorder.script(
         ("claude", "plugin", "list", "--json"),
@@ -606,6 +620,79 @@ def test_bootstrap_with_no_existing_clone_clones_and_registers(
     assert add_calls[0].cmd[4] == str(clone_target)
 
 
+def test_bootstrap_honors_marketplace_url_env_override(
+    tmp_path, monkeypatch, with_token, claude_in_path, recorder,
+):
+    """``AGNES_MARKETPLACE_URL`` overrides the derived ``server_host/marketplace.git/``
+    base for deployments that serve the marketplace from a different host
+    than the API — reverse-proxy split, CDN-fronted marketplace, etc.
+    Issue #345 A.
+    """
+    cfg_dir = tmp_path / "_cfg"
+    (cfg_dir / "config.yaml").write_text(
+        "server: https://agnes.example.com\n", encoding="utf-8",
+    )
+    monkeypatch.setenv("AGNES_MARKETPLACE_URL", "https://plugins.example.com/marketplace.git/")
+
+    clone_target = tmp_path / "fresh_marketplace"
+    monkeypatch.setattr(rm_module, "CLONE_DIR", clone_target)
+
+    real_run = recorder.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:2] == ["git", "clone"]:
+            (clone_target / ".git").mkdir(parents=True, exist_ok=True)
+            (clone_target / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+            (clone_target / ".claude-plugin" / "marketplace.json").write_text(
+                json.dumps({"name": "agnes", "plugins": []}),
+                encoding="utf-8",
+            )
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(rm_module.subprocess, "run", fake_run)
+
+    result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
+    assert result.exit_code == 0, result.output
+
+    # Clone URL must point at the env-override host, NOT at the
+    # api server's hostname, and must carry the PAT.
+    clone_calls = [c for c in recorder.calls if c.cmd[:2] == ["git", "clone"]]
+    assert len(clone_calls) == 1
+    url_arg = next(a for a in clone_calls[0].cmd if a.startswith("https://"))
+    assert "plugins.example.com/marketplace.git/" in url_arg
+    assert "agnes.example.com" not in url_arg
+    assert with_token in url_arg
+
+    # PAT-stripped URL after clone is also the override host.
+    set_url_calls = [
+        c for c in recorder.calls
+        if c.cmd[:5] == ["git", "-C", str(clone_target), "remote", "set-url"]
+    ]
+    assert len(set_url_calls) == 1
+    new_url = set_url_calls[0].cmd[6]
+    assert "plugins.example.com/marketplace.git/" in new_url
+    assert with_token not in new_url
+
+
+def test_bootstrap_rejects_invalid_marketplace_url_env(
+    tmp_path, monkeypatch, with_token, claude_in_path,
+):
+    """``AGNES_MARKETPLACE_URL`` without scheme is rejected with a clear
+    error — silent fallback to the derived URL would hide an operator
+    misconfiguration. Issue #345 A.
+    """
+    cfg_dir = tmp_path / "_cfg"
+    (cfg_dir / "config.yaml").write_text(
+        "server: https://agnes.example.com\n", encoding="utf-8",
+    )
+    monkeypatch.setenv("AGNES_MARKETPLACE_URL", "plugins.example.com/marketplace.git/")
+    monkeypatch.setattr(rm_module, "CLONE_DIR", tmp_path / "fresh_marketplace")
+
+    result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
+    assert result.exit_code == 1
+    assert "AGNES_MARKETPLACE_URL" in result.output
+
+
 def test_bootstrap_clone_failure_exits_nonzero(
     tmp_path, monkeypatch, with_token, claude_in_path, recorder,
 ):
@@ -653,27 +740,31 @@ def test_bootstrap_with_existing_clone_skips_clone_proceeds_to_refresh(
 # --- --check flag (SessionStart-hook detector mode) -----------------------------
 
 
-def _stage_rev_parse(monkeypatch, recorder, *, head: str, fetch_head: str) -> None:
-    """Wrap recorder.run so `git rev-parse HEAD` and
-    `git rev-parse FETCH_HEAD` return scripted SHAs while every other
-    command falls through to the recorder's normal handling.
+def _stage_rev_parse(monkeypatch, recorder, *, head: str, remote_head: str) -> None:
+    """Wrap recorder.run so `git rev-parse HEAD` returns the local SHA
+    and `git ls-remote origin HEAD` returns the remote SHA, while every
+    other command falls through to the recorder's normal handling.
 
-    Used by --check tests to drive the HEAD-vs-FETCH_HEAD comparison
-    independently of the (mocked) git fetch.
+    Used by --check tests to drive the local-HEAD vs remote-HEAD
+    comparison independently of the (mocked) git invocation.
     """
     real_run = recorder.run
 
     def staged_run(cmd, *args, **kwargs):
-        # Match the trailing rev-parse target so `-C <path>` injection
-        # doesn't break the prefix.
         if "rev-parse" in cmd:
             recorder.calls.append(
                 _RecordedCall(cmd=list(cmd), env=dict(kwargs.get("env") or {}))
             )
-            target = cmd[-1]
-            stdout = head if target == "HEAD" else fetch_head if target == "FETCH_HEAD" else ""
             return subprocess.CompletedProcess(
-                args=list(cmd), returncode=0, stdout=stdout + "\n", stderr="",
+                args=list(cmd), returncode=0, stdout=head + "\n", stderr="",
+            )
+        if "ls-remote" in cmd:
+            recorder.calls.append(
+                _RecordedCall(cmd=list(cmd), env=dict(kwargs.get("env") or {}))
+            )
+            return subprocess.CompletedProcess(
+                args=list(cmd), returncode=0,
+                stdout=f"{remote_head}\tHEAD\n", stderr="",
             )
         return real_run(cmd, *args, **kwargs)
 
@@ -683,13 +774,13 @@ def _stage_rev_parse(monkeypatch, recorder, *, head: str, fetch_head: str) -> No
 def test_check_emits_hook_json_when_remote_changed(
     with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
 ):
-    """`--check` + local HEAD differs from remote FETCH_HEAD →
+    """`--check` + local HEAD differs from remote HEAD →
     Claude Code hook JSON on stdout pointing the user at
     `/update-agnes-plugins`. The hook never installs anything itself."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
-    _stage_rev_parse(monkeypatch, recorder, head="abc123", fetch_head="def456")
+    _stage_rev_parse(monkeypatch, recorder, head="abc123", remote_head="def456")
 
     result = runner.invoke(refresh_marketplace_app, ["--check"])
     assert result.exit_code == 0
@@ -706,13 +797,13 @@ def test_check_emits_hook_json_when_remote_changed(
 def test_check_silent_when_remote_unchanged(
     with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
 ):
-    """`--check` + HEAD == FETCH_HEAD → silent exit 0, no JSON output.
-    Avoids spamming the user with "updates available" on every session
-    start when nothing actually changed."""
+    """`--check` + local HEAD == remote HEAD → silent exit 0, no JSON
+    output. Avoids spamming the user with "updates available" on every
+    session start when nothing actually changed."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
-    _stage_rev_parse(monkeypatch, recorder, head="samehash", fetch_head="samehash")
+    _stage_rev_parse(monkeypatch, recorder, head="samehash", remote_head="samehash")
 
     result = runner.invoke(refresh_marketplace_app, ["--check"])
     assert result.exit_code == 0
@@ -730,7 +821,7 @@ def test_check_does_not_call_claude_plugin_anything(
     workspace.mkdir()
     monkeypatch.chdir(workspace)
     # Even WITH a remote diff, --check must stay read-only.
-    _stage_rev_parse(monkeypatch, recorder, head="abc", fetch_head="def")
+    _stage_rev_parse(monkeypatch, recorder, head="abc", remote_head="def")
 
     result = runner.invoke(refresh_marketplace_app, ["--check"])
     assert result.exit_code == 0
@@ -756,7 +847,7 @@ def test_check_does_not_git_reset(
     workspace = tmp_path / "ws"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
-    _stage_rev_parse(monkeypatch, recorder, head="abc", fetch_head="def")
+    _stage_rev_parse(monkeypatch, recorder, head="abc", remote_head="def")
 
     result = runner.invoke(refresh_marketplace_app, ["--check"])
     assert result.exit_code == 0
@@ -767,32 +858,46 @@ def test_check_does_not_git_reset(
     )
 
 
-def test_check_runs_git_fetch(
+def test_check_runs_git_ls_remote_not_fetch(
     with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
 ):
-    """`--check` must run `git fetch origin` (otherwise FETCH_HEAD is
-    stale and we'd compare against an old snapshot, missing real
-    remote changes)."""
+    """`--check` must use `git ls-remote origin HEAD` — one HTTPS
+    round-trip, no objects downloaded — and must NOT run `git fetch`.
+    This is the whole point of the SessionStart-hook detector: ~0.5–1 s
+    instead of ~8 s. If somebody regresses this back to fetch, this
+    test catches it."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
-    _stage_rev_parse(monkeypatch, recorder, head="abc", fetch_head="abc")
+    _stage_rev_parse(monkeypatch, recorder, head="abc", remote_head="abc")
 
     result = runner.invoke(refresh_marketplace_app, ["--check"])
     assert result.exit_code == 0
 
-    fetch_calls = [
+    ls_remote_calls = [
         c for c in recorder.calls
-        if c.cmd and c.cmd[0] == "git" and "fetch" in c.cmd and "origin" in c.cmd
+        if c.cmd and c.cmd[0] == "git" and "ls-remote" in c.cmd
+        and "origin" in c.cmd and "HEAD" in c.cmd
     ]
-    assert fetch_calls, (
-        f"--check must run `git fetch origin`; got: {[c.cmd for c in recorder.calls]!r}"
+    assert ls_remote_calls, (
+        f"--check must run `git ls-remote origin HEAD`; got: "
+        f"{[c.cmd for c in recorder.calls]!r}"
     )
     # Same credential helper wiring as the default mode — PAT in env, not argv.
-    fetch = fetch_calls[0]
-    assert "-c" in fetch.cmd
-    assert fetch.cmd[fetch.cmd.index("-c") + 1].startswith("credential.helper=")
-    assert fetch.env.get("AGNES_TOKEN") == with_token
+    ls_remote = ls_remote_calls[0]
+    assert "-c" in ls_remote.cmd
+    assert ls_remote.cmd[ls_remote.cmd.index("-c") + 1].startswith("credential.helper=")
+    assert ls_remote.env.get("AGNES_TOKEN") == with_token
+
+    # No `git fetch` — that's the slow path we replaced.
+    fetch_calls = [
+        c for c in recorder.calls
+        if c.cmd and c.cmd[0] == "git" and "fetch" in c.cmd
+    ]
+    assert fetch_calls == [], (
+        f"--check must NOT run `git fetch` (slow path); got: "
+        f"{[c.cmd for c in fetch_calls]!r}"
+    )
 
 
 def test_check_no_clone_silent_exit_zero(tmp_path, monkeypatch, with_token, recorder):
@@ -807,15 +912,19 @@ def test_check_no_clone_silent_exit_zero(tmp_path, monkeypatch, with_token, reco
     assert recorder.calls == []
 
 
-def test_check_fetch_failure_exits_one(
+def test_check_ls_remote_failure_exits_one(
     with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
 ):
-    """A failed `git fetch` (network down, auth rejected, etc.) → exit 1
-    so the surrounding `|| true` in the hook command swallows it cleanly.
-    No hook JSON is emitted (we don't know if the remote changed)."""
+    """A failed `git ls-remote` (network down, auth rejected, etc.) →
+    exit 1 so the surrounding `|| true` in the hook command swallows it
+    cleanly. No hook JSON is emitted (we don't know if the remote
+    changed)."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
+    # `("git", "-c")` matches the credential-helper wiring shared by
+    # ls-remote and fetch — fine here since ls-remote is the only git
+    # subprocess --check runs.
     recorder.script(("git", "-c"), returncode=1, stderr="fatal: unable to access ...")
 
     result = runner.invoke(refresh_marketplace_app, ["--check"])
@@ -1039,3 +1148,272 @@ def test_bootstrap_recovery_add_failure_is_fatal_on_existing_clone(
         f"recovery must abort before `marketplace update` when add fails; got: "
         f"{[c.cmd for c in update_calls]!r}"
     )
+
+
+# --- enabledPlugins workspace-settings write -----------------------------------
+#
+# Refresh's reconcile step doesn't just register plugins in the global
+# `~/.claude/plugins/installed_plugins.json`; it also has to write
+# `enabledPlugins["<name>@agnes"] = true` into the workspace
+# `.claude/settings.json`. Without that entry, Claude Code treats the
+# plugin as disabled regardless of registry presence. These tests pin the
+# helper's contract end-to-end through the Typer command, since the helper
+# touches the filesystem and is easier to verify via the real settings.json
+# state than via additional mocking.
+
+
+def _read_workspace_settings(workspace: Path) -> dict:
+    settings_path = workspace / ".claude" / "settings.json"
+    return json.loads(settings_path.read_text(encoding="utf-8"))
+
+
+def test_enable_writes_missing_key_to_workspace_settings(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Fresh workspace with no `.claude/settings.json` → refresh creates the
+    file with `enabledPlugins` populated from the manifest."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _set_marketplace_manifest(with_clone, [
+        {"name": "grpn", "version": "1.0.0"},
+        {"name": "grpn-data", "version": "1.1.0"},
+    ])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([]))
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+
+    settings = _read_workspace_settings(workspace)
+    assert settings.get("enabledPlugins") == {
+        "grpn@agnes": True,
+        "grpn-data@agnes": True,
+    }
+
+
+def test_enable_writes_to_existing_settings_preserving_other_keys(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Workspace already has settings.json with hooks/model/permissions.
+    Refresh must add `enabledPlugins` without disturbing existing keys."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    settings_dir = workspace / ".claude"
+    settings_dir.mkdir()
+    pre_existing = {
+        "model": "sonnet",
+        "permissions": {"allow": ["Read", "Bash"]},
+        "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "echo hi"}]}]},
+    }
+    (settings_dir / "settings.json").write_text(
+        json.dumps(pre_existing, indent=2), encoding="utf-8",
+    )
+
+    _set_marketplace_manifest(with_clone, [{"name": "grpn", "version": "1.0.0"}])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([]))
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+
+    settings = _read_workspace_settings(workspace)
+    assert settings["model"] == "sonnet"
+    assert settings["permissions"] == {"allow": ["Read", "Bash"]}
+    assert settings["hooks"] == pre_existing["hooks"]
+    assert settings["enabledPlugins"] == {"grpn@agnes": True}
+
+
+def test_enable_overrides_local_false_back_to_true(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """User locally `claude plugin disable`-d a stack plugin (enabledPlugins
+    has `false`). Stack is source of truth → refresh re-enables it."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    settings_dir = workspace / ".claude"
+    settings_dir.mkdir()
+    (settings_dir / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"grpn@agnes": False}}), encoding="utf-8",
+    )
+
+    _set_marketplace_manifest(with_clone, [{"name": "grpn", "version": "1.0.0"}])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([
+                        {"id": "grpn@agnes", "version": "1.0.0",
+                         "projectPath": str(workspace)},
+                    ]))
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+
+    settings = _read_workspace_settings(workspace)
+    assert settings["enabledPlugins"] == {"grpn@agnes": True}
+    # Re-enabled → reload hint should fire (even though no install/update).
+    assert "/reload-plugins" in _clean(result.output)
+
+
+def test_enable_is_idempotent_when_already_true(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Every plugin in manifest already `true` in settings → refresh must
+    not rewrite the file (mtime stable) and must not advertise enable
+    events."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    settings_dir = workspace / ".claude"
+    settings_dir.mkdir()
+    settings_path = settings_dir / "settings.json"
+    settings_path.write_text(
+        json.dumps({"enabledPlugins": {"grpn@agnes": True}}, indent=2),
+        encoding="utf-8",
+    )
+    mtime_before = settings_path.stat().st_mtime_ns
+
+    _set_marketplace_manifest(with_clone, [{"name": "grpn", "version": "1.0.0"}])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([
+                        {"id": "grpn@agnes", "version": "1.0.0",
+                         "projectPath": str(workspace)},
+                    ]))
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+
+    settings = _read_workspace_settings(workspace)
+    assert settings["enabledPlugins"] == {"grpn@agnes": True}
+    assert settings_path.stat().st_mtime_ns == mtime_before, (
+        "no-op refresh must not rewrite settings.json"
+    )
+    # No install/update/enable changes → no reload hint.
+    assert "/reload-plugins" not in _clean(result.output)
+
+
+def test_enable_preserves_non_agnes_plugins_in_map(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Workspace's `enabledPlugins` contains entries from other marketplaces
+    (e.g. coupons-team-skills). Refresh must not touch those keys; it only
+    adds/sets `@agnes` entries."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    settings_dir = workspace / ".claude"
+    settings_dir.mkdir()
+    (settings_dir / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {
+            "coupons-skills@coupons-team-skills": True,
+            "platform-tools@coupons-team-skills": False,  # user disabled
+        }}),
+        encoding="utf-8",
+    )
+
+    _set_marketplace_manifest(with_clone, [{"name": "grpn", "version": "1.0.0"}])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([]))
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+
+    settings = _read_workspace_settings(workspace)
+    assert settings["enabledPlugins"] == {
+        "coupons-skills@coupons-team-skills": True,
+        "platform-tools@coupons-team-skills": False,
+        "grpn@agnes": True,
+    }
+
+
+def test_enable_runs_regardless_of_override_sentinel(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """`refresh-marketplace` is a runtime command — it ignores the
+    Initial Workspace Template sentinel and updates `enabledPlugins`
+    even in admin-templated (override: true) workspaces. The sentinel
+    governs `agnes init` skip only; runtime must keep the workspace in
+    sync with the user's current marketplace stack."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    settings_dir = workspace / ".claude"
+    settings_dir.mkdir()
+    # Admin-managed sentinel — must NOT block runtime enable.
+    (settings_dir / "init-complete").write_text(
+        "completed_at: 2026-05-13T14:32:00Z\n"
+        "agnes_version: 0.53.0\n"
+        "override: true\n",
+        encoding="utf-8",
+    )
+    # No pre-existing settings.json — refresh creates one with enabledPlugins.
+
+    _set_marketplace_manifest(with_clone, [{"name": "grpn", "version": "1.0.0"}])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([]))
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+
+    settings = _read_workspace_settings(workspace)
+    assert settings.get("enabledPlugins") == {"grpn@agnes": True}
+
+
+def test_reload_hint_printed_when_only_enable_changes(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Nothing to install/update, but enable map had a stale `false` entry
+    → refresh flips it to `true` and prints the /reload-plugins hint so
+    the user knows to reload the running session."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    settings_dir = workspace / ".claude"
+    settings_dir.mkdir()
+    (settings_dir / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"grpn@agnes": False}}), encoding="utf-8",
+    )
+    _set_marketplace_manifest(with_clone, [{"name": "grpn", "version": "1.0.0"}])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([
+                        {"id": "grpn@agnes", "version": "1.0.0",
+                         "projectPath": str(workspace)},
+                    ]))
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0, result.output
+    out = _clean(result.output)
+    assert "/reload-plugins" in out
+    # No install or update should have been triggered.
+    assert not any(c.cmd[:3] == ["claude", "plugin", "install"] for c in recorder.calls)
+    assert not any(c.cmd[:3] == ["claude", "plugin", "update"] for c in recorder.calls)
+
+
+# --- _claude_base_cmd: how the `claude` CLI gets launched cross-platform --------
+
+
+def test_claude_base_cmd_returns_none_when_claude_missing(monkeypatch):
+    """`claude` not on PATH → None, so callers hit their claude-missing path."""
+    monkeypatch.setattr(rm_module.shutil, "which", lambda name: None)
+    assert rm_module._claude_base_cmd() is None
+
+
+def test_claude_base_cmd_posix_returns_bare_exe(monkeypatch):
+    """POSIX: launch the resolved executable directly, no shell wrapper."""
+    monkeypatch.setattr(rm_module.os, "name", "posix")
+    monkeypatch.setattr(
+        rm_module.shutil, "which",
+        lambda name: "/usr/local/bin/claude" if name == "claude" else None,
+    )
+    assert rm_module._claude_base_cmd() == ["/usr/local/bin/claude"]
+
+
+def test_claude_base_cmd_windows_cmd_shim_routes_through_cmd(monkeypatch):
+    """Windows: a `.cmd`/`.bat` npm shim can't be CreateProcess'd directly even
+    with its full path — it must go through `cmd /c`."""
+    monkeypatch.setattr(rm_module.os, "name", "nt")
+    monkeypatch.setattr(
+        rm_module.shutil, "which",
+        lambda name: "C:\\path\\claude.cmd" if name == "claude" else None,
+    )
+    assert rm_module._claude_base_cmd() == ["cmd", "/c", "C:\\path\\claude.cmd"]

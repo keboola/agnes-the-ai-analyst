@@ -5,9 +5,6 @@
 <style>
   /* Width + padding come from .page-shell (style-custom.css) — same
      1280px container as /dashboard, /marketplace, /admin/* peers. */
-  .sched-title { margin: 0 0 8px 0; font-size: 22px; font-weight: 600; }
-  .sched-help { color: var(--text-secondary, #6b7280); font-size: 13px; margin-bottom: 20px; }
-  .sched-help code { background: var(--border-light, #f3f4f6); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
   .sched-table-wrap {
     background: var(--surface, #fff);
     border: 1px solid var(--border, #e5e7eb);
@@ -45,15 +42,10 @@
 </style>
 
 <div class="sched-page page-shell">
-  <h1 class="sched-title">Scheduler runs</h1>
-  <p class="sched-help">
-    Last 200 audited scheduler-driven admin actions, newest first.
-    Tracked actions: {% for a in actions %}<code>{{ a }}</code>{% if not loop.last %} {% endif %}{% endfor %}.
-    Failed ticks (HTTP 401, network errors) live only in the scheduler container's
-    stdout — <code>docker logs agnes-scheduler-1</code>. Set <code>SCHEDULER_API_TOKEN</code>
-    in <code>.env</code> if you see no rows here.
-  </p>
-
+  {% set page_hero_eyebrow = "Server" %}
+  {% set page_hero_title = "Scheduler runs" %}
+  {% set page_hero_subtitle = "Recent extractor + materialized + cache-warmup runs from the scheduler." %}
+  {% include "_page_hero.html" %}
   <div class="sched-table-wrap">
     {% if rows %}
     <table class="sched-table">
@@ -69,7 +61,7 @@
       <tbody>
         {% for r in rows %}
         <tr>
-          <td class="ts">{{ r.timestamp.strftime("%Y-%m-%d %H:%M:%S") if r.timestamp else "" }}</td>
+          <td class="ts">{% if r.timestamp %}<time datetime="{{ r.timestamp.isoformat() }}">{{ r.timestamp.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time>{% endif %}</td>
           <td class="action">{{ r.action }}</td>
           <td>{{ r.resource or "" }}</td>
           <td class="duration">{% if r.duration_ms is not none %}{{ r.duration_ms }} ms{% endif %}</td>

@@ -224,16 +224,52 @@ def test_is_outdated_false_for_unparseable_strings(tmp_config):
 
 
 def test_format_outdated_notice_drops_upgrade_line_when_no_download_url(tmp_config):
-    """`download_url=None` must NOT produce literal "None" in the copy-pasteable command."""
+    """`download_url=None` must NOT produce literal "None" — and must never
+    leak a version-pinned `/cli/wheel/` URL that 404s after a server upgrade."""
     from cli.update_check import UpdateInfo, format_outdated_notice
     info = UpdateInfo(installed="2.0.0", latest="2.1.0", download_url=None)
     msg = format_outdated_notice(info)
     assert "None" not in msg
     assert "uv tool install" not in msg
+    assert "/cli/wheel/" not in msg
     assert "2.0.0" in msg and "2.1.0" in msg
 
 
-def test_format_outdated_notice_includes_upgrade_command_when_url_present(tmp_config):
+def test_format_outdated_notice_recommends_self_upgrade_when_url_present(tmp_config):
+    """Even with a populated download_url, the banner must recommend
+    `agnes self-upgrade` and NOT emit the version-pinned wheel URL — that
+    URL 404s after a server upgrade (issue #521)."""
+    from cli.update_check import UpdateInfo, format_outdated_notice
+    download_url = "http://s/cli/wheel/a-2.1.0-py3-none-any.whl"
+    info = UpdateInfo(installed="2.0.0", latest="2.1.0", download_url=download_url)
+    msg = format_outdated_notice(info)
+    assert "agnes self-upgrade" in msg
+    assert "uv tool install" not in msg
+    assert "/cli/wheel/" not in msg
+    assert download_url not in msg
+
+
+@pytest.mark.parametrize(
+    "download_url",
+    ["http://s/cli/wheel/a-2.1.0-py3-none-any.whl", None],
+)
+def test_format_outdated_notice_recommends_self_upgrade_regardless_of_url(
+    tmp_config, download_url
+):
+    """The upgrade recommendation is URL-independent: it always points at
+    `agnes self-upgrade`, never a pinned/None wheel URL."""
+    from cli.update_check import UpdateInfo, format_outdated_notice
+    info = UpdateInfo(installed="2.0.0", latest="2.1.0", download_url=download_url)
+    msg = format_outdated_notice(info)
+    assert "agnes self-upgrade" in msg
+    assert "is out of date" in msg
+    assert "/cli/wheel/" not in msg
+    assert "None" not in msg
+
+
+def test_format_outdated_notice_reports_both_versions(tmp_config):
+    """The informational version reporting is preserved after the wording
+    change — both the installed and the server's latest version appear."""
     from cli.update_check import UpdateInfo, format_outdated_notice
     info = UpdateInfo(
         installed="2.0.0",
@@ -241,7 +277,8 @@ def test_format_outdated_notice_includes_upgrade_command_when_url_present(tmp_co
         download_url="http://s/cli/wheel/a-2.1.0-py3-none-any.whl",
     )
     msg = format_outdated_notice(info)
-    assert "uv tool install --force http://s/cli/wheel/a-2.1.0-py3-none-any.whl" in msg
+    assert info.installed in msg
+    assert info.latest in msg
 
 
 class TestRootCallbackIntegration:

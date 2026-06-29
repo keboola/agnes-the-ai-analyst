@@ -81,6 +81,29 @@ class SyncStateRepository:
         ).fetchall()
         return self._rows_to_dicts(results)
 
+    def list_recent(
+        self,
+        *,
+        since: datetime,
+        limit: int = 100,
+        status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return cross-table sync events newer than `since`, newest first.
+
+        Used by Activity Center's Sync tab to render a unified feed across
+        all registered tables. Per-table history stays available via
+        `get_sync_history(table_id, limit)`.
+        """
+        sql = "SELECT * FROM sync_history WHERE synced_at >= ?"
+        params: List[Any] = [since]
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status)
+        sql += " ORDER BY synced_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self.conn.execute(sql, params).fetchall()
+        return self._rows_to_dicts(rows)
+
     def set_error(self, table_id: str, error_message: str) -> None:
         """Record a per-table sync failure on the existing `error` /`status`
         columns so admin endpoints can surface it (`GET /api/admin/registry`
@@ -117,3 +140,22 @@ class SyncStateRepository:
             WHERE table_id = ? AND status = 'error'""",
             [table_id],
         )
+
+    def clear_for_table(self, table_id: str) -> int:
+        """Drop all sync_state + sync_history rows for `table_id`, returning
+        the number of sync_state rows removed.
+
+        Called when a table is unregistered: a row synced at any point
+        (local/materialized) leaves a sync_state entry that the manifest keeps
+        serving to `agnes pull` regardless of registry state, so it must be
+        purged alongside the registry row. This repo owns both tables, so both
+        deletes live here (formerly inline in the admin unregister handler).
+        """
+        self.conn.execute(
+            "DELETE FROM sync_history WHERE table_id = ?", [table_id]
+        )
+        removed = self.conn.execute(
+            "DELETE FROM sync_state WHERE table_id = ? RETURNING table_id",
+            [table_id],
+        ).fetchall()
+        return len(removed)

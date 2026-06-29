@@ -59,7 +59,21 @@ class StoreEntitiesRepository:
         doc_paths: Optional[List[str]] = None,
         file_size: int = 0,
         visibility_status: str = "pending",
+        title: Optional[str] = None,
+        tagline: Optional[str] = None,
+        synthetic_name: Optional[str] = None,
     ) -> Dict[str, Any]:
+        # v49 phase-1: title and synthetic_name fall back to derived values
+        # when caller doesn't supply them — keeps the column NOT NULL invariant
+        # without forcing every test/utility caller to recompute the same
+        # deterministic formula. Production code (POST /api/store/entities)
+        # passes both explicitly so the upload form's user-edited title is
+        # honored.
+        if not title:
+            from src.store_naming import humanize_name
+            title = humanize_name(name) or name or "Untitled"
+        if not synthetic_name:
+            synthetic_name = f"{name}-by-{owner_username}"
         now = datetime.now(timezone.utc)
         # v37: seed version_history with the v1 entry on create so the
         # edit feature's append_version always has a baseline to build
@@ -81,14 +95,16 @@ class StoreEntitiesRepository:
                  category, version, photo_path, video_url, doc_paths,
                  file_size, install_count, visibility_status,
                  version_no, version_history,
+                 title, tagline, synthetic_name,
                  created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?, ?, ?)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?, ?, ?, ?, ?, ?)""",
             [
                 id, owner_user_id, owner_username, type, name, description,
                 category, version, photo_path, video_url,
                 json.dumps(doc_paths or []),
                 int(file_size), visibility_status,
                 json.dumps([v1_entry]),
+                title, tagline, synthetic_name,
                 now, now,
             ],
         )
@@ -283,17 +299,23 @@ class StoreEntitiesRepository:
             }
 
         original = row.get("name") or ""
+        owner_username = row.get("owner_username") or ""
         now = datetime.now(timezone.utc)
         new_name = make_archive_name(original, int(now.timestamp()))
+        # v49: synthetic_name tracks the canonical <name>-by-<owner> string;
+        # rename it alongside `name` so the deterministic formula stays in
+        # sync with the actually-stored slug on disk.
+        new_synthetic = f"{new_name}-by-{owner_username}"
         self.conn.execute(
             """UPDATE store_entities
                   SET visibility_status = 'archived',
                       name = ?,
+                      synthetic_name = ?,
                       archived_at = ?,
                       archived_by = ?,
                       updated_at = ?
                 WHERE id = ?""",
-            [new_name, now, by_user_id, now, id],
+            [new_name, new_synthetic, now, by_user_id, now, id],
         )
         return {"original_name": original, "new_name": new_name}
 
@@ -439,6 +461,9 @@ class StoreEntitiesRepository:
         video_url: Optional[str] = None,
         doc_paths: Optional[List[str]] = None,
         file_size: Optional[int] = None,
+        title: Optional[str] = None,
+        tagline: Optional[str] = None,
+        synthetic_name: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Partial update — only the supplied columns change. Returns the
         updated row, or None if no row matched.
@@ -447,6 +472,14 @@ class StoreEntitiesRepository:
         responsible for collision checks BEFORE invoking this method
         (per-owner UNIQUE + global suffix uniqueness) and for
         renaming the on-disk skill/agent/plugin slug to match.
+
+        ``synthetic_name`` must be re-supplied by the caller when ``name``
+        changes — the repo does not recompute it automatically (avoids a
+        round-trip to fetch ``owner_username`` and keeps the deterministic
+        formula in one place: the API layer).
+
+        ``tagline`` accepts an empty string to clear the field; pass
+        ``None`` to leave it unchanged.
         """
         sets: List[str] = []
         params: List[Any] = []
@@ -466,6 +499,13 @@ class StoreEntitiesRepository:
             sets.append("doc_paths = ?"); params.append(json.dumps(doc_paths))
         if file_size is not None:
             sets.append("file_size = ?"); params.append(int(file_size))
+        if title is not None:
+            sets.append("title = ?"); params.append(title)
+        if tagline is not None:
+            # empty string clears tagline; sentinel preserved here
+            sets.append("tagline = ?"); params.append(tagline or None)
+        if synthetic_name is not None:
+            sets.append("synthetic_name = ?"); params.append(synthetic_name)
         if not sets:
             return self.get(id)
         sets.append("updated_at = ?"); params.append(datetime.now(timezone.utc))
@@ -476,6 +516,27 @@ class StoreEntitiesRepository:
         )
         return self.get(id)
 
+    def synthetic_name_taken(
+        self,
+        synthetic_name: str,
+        *,
+        exclude_entity_id: Optional[str] = None,
+        exclude_archived: bool = False,
+    ) -> bool:
+        """Whether any row already uses ``synthetic_name`` (the global flat-
+        namespace uniqueness check at upload time). Optionally excludes one
+        entity id and archived rows. Routed through the factory so the read
+        hits the active backend — a raw query here read the frozen DuckDB
+        system file on Postgres instances (#518)."""
+        sql = "SELECT id FROM store_entities WHERE synthetic_name = ?"
+        params: List[Any] = [synthetic_name]
+        if exclude_entity_id:
+            sql += " AND id != ?"
+            params.append(exclude_entity_id)
+        if exclude_archived:
+            sql += " AND visibility_status != 'archived'"
+        return bool(self.conn.execute(sql, params).fetchone())
+
     def get(self, id: str) -> Optional[Dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT * FROM store_entities WHERE id = ?", [id]
@@ -484,6 +545,55 @@ class StoreEntitiesRepository:
             return None
         columns = [d[0] for d in self.conn.description]
         return self._row_to_dict(columns, rows[0])
+
+    def get_with_version_approvals(
+        self, id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Same as :meth:`get` but each ``version_history`` entry gets
+        an additional ``submission_status`` field populated from
+        ``store_submissions``.
+
+        Used by the detail page + restore endpoint to gate which
+        versions are restorable. Legacy v1 rows created pre-v37 carry
+        ``submission_id=None`` (the v1 seed predates the
+        backfill) — those map to ``submission_status=None`` and the
+        consumer treats them as approved (back-compat).
+        """
+        entity = self.get(id)
+        if entity is None:
+            return None
+        history = list(entity.get("version_history") or [])
+        if not history:
+            return entity
+        sub_ids = [
+            entry.get("submission_id") for entry in history
+            if entry.get("submission_id")
+        ]
+        status_by_id: Dict[str, str] = {}
+        if sub_ids:
+            placeholders = ",".join("?" for _ in sub_ids)
+            rows = self.conn.execute(
+                f"SELECT id, status FROM store_submissions "
+                f"WHERE id IN ({placeholders})",
+                sub_ids,
+            ).fetchall()
+            for sub_id, status in rows:
+                status_by_id[sub_id] = status
+        # Defensive copy of each history entry before mutating — today
+        # ``self.get()`` re-parses JSON each call so the mutation can't
+        # leak across calls, but copying costs nothing and protects any
+        # future caching layer from carrying the annotated
+        # ``submission_status`` key into a subsequent plain ``get()``.
+        annotated: List[Dict[str, Any]] = []
+        for entry in history:
+            entry = dict(entry)
+            sid = entry.get("submission_id")
+            entry["submission_status"] = (
+                status_by_id.get(sid) if sid else None
+            )
+            annotated.append(entry)
+        entity["version_history"] = annotated
+        return entity
 
     def get_by_owner_and_name(
         self,
@@ -601,6 +711,59 @@ class StoreEntitiesRepository:
         columns = [d[0] for d in self.conn.description]
         items = [self._row_to_dict(columns, r) for r in rows]
         return items, int(total)
+
+    def category_counts(
+        self,
+        *,
+        type: Optional[str] = None,
+        visibility_status: Optional[List[str]] = None,
+        owner_id: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Per-category entity counts for the Flea tab category rail.
+
+        Replicates the GROUP BY behind ``GET /api/marketplace/categories``
+        (``app/api/marketplace.py`` ``list_categories``): NULL / empty
+        ``category`` collapses into the synthetic ``'Other'`` bucket, and
+        the WHERE mirrors the listing endpoint so the counts match what the
+        grid actually shows.
+
+        Filters (all optional, combined with AND):
+        - ``type`` — restrict to one entity type.
+        - ``visibility_status`` — whitelist of visible guardrail states.
+          Admin callers pass ``None`` (count everything); non-admins pass
+          ``["approved"]``.
+        - ``owner_id`` — when set ALONGSIDE ``visibility_status``, the
+          visibility clause becomes ``(visibility_status IN (...) OR
+          (owner_user_id = ? AND visibility_status != 'archived'))`` so the
+          caller's own non-archived under-review uploads are counted too
+          (parity with the handler's non-admin branch + :meth:`list`).
+        """
+        clauses: List[str] = []
+        params: List[Any] = []
+        if type:
+            clauses.append("type = ?"); params.append(type)
+        if visibility_status:
+            placeholders = ",".join("?" for _ in visibility_status)
+            if owner_id:
+                clauses.append(
+                    f"(visibility_status IN ({placeholders}) "
+                    f"OR (owner_user_id = ? AND visibility_status != 'archived'))"
+                )
+                params.extend(visibility_status)
+                params.append(owner_id)
+            else:
+                clauses.append(f"visibility_status IN ({placeholders})")
+                params.extend(visibility_status)
+        elif owner_id:
+            clauses.append("owner_user_id = ?")
+            params.append(owner_id)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self.conn.execute(
+            f"SELECT COALESCE(NULLIF(TRIM(category),''), 'Other') AS cat, "
+            f"COUNT(*) FROM store_entities {where} GROUP BY cat",
+            params,
+        ).fetchall()
+        return {str(r[0]): int(r[1]) for r in rows}
 
     def bump_install_count(self, id: str, delta: int) -> None:
         """Adjust install_count by delta (signed). Floors at 0 — concurrent

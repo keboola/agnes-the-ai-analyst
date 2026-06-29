@@ -2,7 +2,7 @@
 
 Confidence is intentionally NOT part of this schema. It is derived in code from
 (source_type, detection_type) via services.corporate_memory.confidence — the LLM
-is not trusted to set its own credibility (see docs/pd-ps-comments.md Q3).
+is not trusted to set its own credibility (see docs/archive/pd-ps-comments.md Q3).
 """
 
 VERIFICATION_SCHEMA: dict = {

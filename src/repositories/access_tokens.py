@@ -60,7 +60,7 @@ class AccessTokenRepository:
         columns = [desc[0] for desc in self.conn.description]
         return [dict(zip(columns, r)) for r in rows]
 
-    def list_all_with_user(self) -> List[Dict[str, Any]]:
+    def list_all_with_user(self, limit: int = 1000, offset: int = 0) -> List[Dict[str, Any]]:
         """Admin view: all tokens joined with the owning user's email.
 
         Returns dict rows including every column of `personal_access_tokens`
@@ -73,7 +73,9 @@ class AccessTokenRepository:
             FROM personal_access_tokens t
             LEFT JOIN users u ON u.id = t.user_id
             ORDER BY t.created_at DESC
-            """
+            LIMIT ? OFFSET ?
+            """,
+            [limit, offset],
         ).fetchall()
         if not rows:
             return []

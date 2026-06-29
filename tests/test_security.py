@@ -367,6 +367,10 @@ class TestJwtSecretHardening:
         saved_testing = os.environ.pop("TESTING", None)
         saved_data_dir = os.environ.get("DATA_DIR")
         os.environ["DATA_DIR"] = str(tmp_path)
+        # Auto-generation now lives behind local-dev mode (fail-closed in
+        # production), so opt in explicitly to exercise that path.
+        saved_local_dev = os.environ.get("LOCAL_DEV_MODE")
+        os.environ["LOCAL_DEV_MODE"] = "1"
         # Eject cached modules so the re-import re-executes module-level code
         sys.modules.pop("app.auth.jwt", None)
         sys.modules.pop("app.secrets", None)
@@ -381,6 +385,10 @@ class TestJwtSecretHardening:
             assert len(secret) == 64, "Auto-generated secret should be 64 hex chars (32 bytes)"
         finally:
             # Restore environment before re-importing so the module loads cleanly
+            if saved_local_dev is not None:
+                os.environ["LOCAL_DEV_MODE"] = saved_local_dev
+            else:
+                os.environ.pop("LOCAL_DEV_MODE", None)
             if saved_key is not None:
                 os.environ["JWT_SECRET_KEY"] = saved_key
             if saved_testing is not None:
@@ -398,3 +406,189 @@ class TestJwtSecretHardening:
             # Clean up the temporary TESTING flag if we added it
             if saved_key is None and saved_testing is None:
                 os.environ.pop("TESTING", None)
+
+
+# ---- API hardening (issue #336) ----
+
+@pytest.fixture
+def hardening_client(tmp_path, monkeypatch):
+    """Minimal seeded app with an admin and a plain analyst for RBAC tests."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+
+    from app.main import create_app
+    from src.db import get_system_db, SYSTEM_ADMIN_GROUP
+    from src.repositories.users import UserRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from app.auth.jwt import create_access_token
+
+    conn = get_system_db()
+    repo = UserRepository(conn)
+    repo.create(id="hadmin", email="hadmin@test.com", name="HAdmin")
+    repo.create(id="hanalyst", email="hanalyst@test.com", name="HAnalyst")
+    gid = conn.execute(
+        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+    ).fetchone()[0]
+    UserGroupMembersRepository(conn).add_member("hadmin", gid, source="system_seed")
+    conn.close()
+
+    app = create_app()
+    c = TestClient(app)
+    return {
+        "client": c,
+        "admin_token": create_access_token("hadmin", "hadmin@test.com"),
+        "analyst_token": create_access_token("hanalyst", "hanalyst@test.com"),
+        "admin_group_id": gid,
+    }
+
+
+class TestApiHardening336:
+    """Regression tests for the ADV-001…ADV-009 findings from issue #336."""
+
+    # ADV-001: RBAC on POST /api/sync/table-subscriptions
+    def test_table_subscriptions_rbac_blocks_unauthorized_table(self, hardening_client):
+        c = hardening_client["client"]
+        token = hardening_client["analyst_token"]
+        resp = c.post(
+            "/api/sync/table-subscriptions",
+            json={"table_mode": "explicit", "tables": {"secret_table": True}},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["updated"]["secret_table"] == {"error": "no permission"}
+
+    def test_table_subscriptions_rbac_allows_accessible_table(self, hardening_client):
+        # Admin has access to everything — verify subscription writes go through
+        c = hardening_client["client"]
+        token = hardening_client["admin_token"]
+        resp = c.post(
+            "/api/sync/table-subscriptions",
+            json={"table_mode": "explicit", "tables": {"any_table": True}},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["updated"]["any_table"] == {"enabled": True}
+
+    def test_table_subscriptions_dict_size_limit(self, hardening_client):
+        c = hardening_client["client"]
+        token = hardening_client["analyst_token"]
+        huge = {f"t{i}": True for i in range(501)}
+        resp = c.post(
+            "/api/sync/table-subscriptions",
+            json={"table_mode": "explicit", "tables": huge},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 422  # ADV-008 max_length guard
+
+    # ADV-003: /api/version must not expose commit_sha or schema_version
+    def test_version_does_not_expose_internal_fields(self, hardening_client):
+        resp = hardening_client["client"].get("/api/version")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "commit_sha" not in body, "commit_sha must not be in public /api/version"
+        assert "schema_version" not in body, "schema_version must not be in public /api/version"
+        assert "version" in body
+
+    # ADV-005: /docs, /redoc, /openapi.json gated behind auth
+    def test_docs_requires_auth(self, hardening_client):
+        resp = hardening_client["client"].get("/docs", follow_redirects=False)
+        assert resp.status_code in (401, 302)
+
+    def test_openapi_json_requires_auth(self, hardening_client):
+        resp = hardening_client["client"].get("/openapi.json")
+        assert resp.status_code == 401
+
+    def test_openapi_json_accessible_to_authenticated_user(self, hardening_client):
+        token = hardening_client["analyst_token"]
+        resp = hardening_client["client"].get(
+            "/openapi.json", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert resp.status_code == 200
+        assert "paths" in resp.json()
+
+    # ADV-006: /webhooks/ and /cli/ get JSON 401, not HTML redirect
+    def test_cli_path_gets_json_401_not_redirect(self, hardening_client):
+        # /cli/latest is public — test a hypothetical future gated endpoint
+        # by confirming the prefix is in _API_PATH_PREFIXES via /openapi.json
+        # returning JSON 401 (not a redirect) when unauthenticated.
+        resp = hardening_client["client"].get("/openapi.json", follow_redirects=False)
+        assert resp.status_code == 401
+        assert resp.headers.get("content-type", "").startswith("application/json")
+
+    # ADV-009 (reworked in #624): offset-based pagination is gone — the list
+    # endpoint is server-paged via ``limit`` and narrowed by ``search`` /
+    # ``group_id``. Exercise all three so a param regression fails loudly
+    # instead of being silently ignored by FastAPI.
+    def test_users_list_limit_search_group_filters(self, hardening_client):
+        c = hardening_client["client"]
+        headers = {"Authorization": f"Bearer {hardening_client['admin_token']}"}
+
+        resp = c.get("/api/users?limit=1", headers=headers)
+        assert resp.status_code == 200
+        assert len(resp.json()) == 1
+
+        resp = c.get("/api/users?search=hanalyst", headers=headers)
+        assert resp.status_code == 200
+        assert [u["email"] for u in resp.json()] == ["hanalyst@test.com"]
+
+        group_id = hardening_client["admin_group_id"]
+        resp = c.get(f"/api/users?group_id={group_id}", headers=headers)
+        assert resp.status_code == 200
+        assert [u["email"] for u in resp.json()] == ["hadmin@test.com"]
+
+    def test_tokens_list_pagination_params(self, hardening_client):
+        token = hardening_client["admin_token"]
+        resp = hardening_client["client"].get(
+            "/auth/admin/tokens?limit=5&offset=0",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+
+    # Regression guard for the reviewer-flagged auth-bypass on /auth/bootstrap
+    # introduced (and reverted) during ADV-009. The original ADV-009 fix
+    # repurposed UserRepository.list_all() to default to LIMIT 1000, which
+    # silently broke the bootstrap check `[u for u in list_all() if
+    # u.get('password_hash')]` on instances with >1000 users: if no
+    # password-holder landed in the email-sorted first page, bootstrap
+    # re-opened and an unauthenticated caller could claim admin.
+    #
+    # Fix shape: `list_all()` returns EVERY row (no LIMIT), API surface uses
+    # the new `list_paginated(limit, offset)` instead. The two tests below
+    # lock in both halves of the contract so a future cleanup doesn't
+    # silently re-introduce the bypass.
+    def test_users_list_all_returns_every_row_no_silent_limit(self):
+        """``UserRepository.list_all()`` must NOT apply a default LIMIT
+        — the bootstrap-lock check at ``app/auth/router.py`` and the
+        startup no-password warning at ``app/main.py`` both call this
+        no-arg and depend on exhaustive enumeration. Silent pagination
+        here is a real auth-bypass on instances with >LIMIT users."""
+        import inspect
+        from src.repositories.users import UserRepository
+        sig = inspect.signature(UserRepository.list_all)
+        # No params (other than self) means no caller can accidentally
+        # pass limit=N and end up with a windowed result.
+        non_self_params = [
+            p for p in sig.parameters.values() if p.name != "self"
+        ]
+        assert non_self_params == [], (
+            f"UserRepository.list_all() must take no arguments other than "
+            f"self (got {non_self_params}). Add limit/offset to "
+            f"list_paginated() instead — list_all() is the "
+            f"bootstrap-lock / startup-warning path and MUST enumerate "
+            f"every row."
+        )
+
+    def test_users_list_paginated_is_separate_method(self):
+        """The paginated variant must be a distinct method named
+        ``list_paginated`` (not an overload of ``list_all``) so call
+        sites are explicit about which contract they want.
+        """
+        from src.repositories.users import UserRepository
+        assert hasattr(UserRepository, "list_paginated"), (
+            "API-surface pagination must live on a separate "
+            "`list_paginated` method, not on `list_all`."
+        )
+        import inspect
+        sig = inspect.signature(UserRepository.list_paginated)
+        param_names = {p.name for p in sig.parameters.values() if p.name != "self"}
+        assert "limit" in param_names and "offset" in param_names

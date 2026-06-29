@@ -18,9 +18,11 @@ from pydantic import BaseModel, Field
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db, get_current_user
-from src.repositories.claude_md_template import ClaudeMdTemplateRepository
 from src.claude_md import build_claude_md_context, compute_default_claude_md, render_claude_md
 
+from src.repositories import (
+    claude_md_template_repo,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -96,6 +98,20 @@ class TemplateGetResponse(BaseModel):
     # Empty when no override is set or when the override is clean. Surfaced
     # so the admin UI can prompt re-authoring after a CLI surface rename.
     legacy_strings_detected: list[str] = []
+    # #622: the prompt's source toggle. `"editor"` = DB override editable;
+    # `"git"` = bound to the IWT clone file (editor read-only, edit in repo).
+    # `source` is retained for backward-compat with the old grandfathered UI
+    # ("local"/"seed"); new callers read `source_mode`/`git_path`.
+    source: str = "local"
+    seed_path: Optional[str] = None
+    source_mode: str = "editor"
+    git_path: Optional[str] = None
+
+
+# Path inside the seed repo for the analyst CLAUDE.md template. Shared
+# between the GET/PUT/DELETE gate so the admin UI banner names the same
+# file the endpoints check.
+_SEED_PATH = "workspace/CLAUDE.md"
 
 
 class TemplatePutRequest(BaseModel):
@@ -149,16 +165,38 @@ async def admin_get_workspace_template(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    row = ClaudeMdTemplateRepository(conn).get()
     server_url = str(request.base_url).rstrip("/")
+    # #622: the source toggle replaced the implicit seed_owns() read-only lock.
+    # In git mode we surface the bound IWT file content (read-only); in editor
+    # mode the DB override is editable even when an IWT repo is registered.
+    meta = claude_md_template_repo().get_meta()
     live_default = compute_default_claude_md(conn, user=user, server_url=server_url)
-    legacy_hits = _scan_legacy_strings(row["content"] or "")
+
+    if meta["source_mode"] == "git":
+        from src.initial_workspace import resolve_prompt
+
+        git_content, _mode = resolve_prompt("workspace", conn)
+        return TemplateGetResponse(
+            content=git_content or "",
+            default=live_default,
+            updated_at=meta["updated_at"].isoformat() if meta["updated_at"] else None,
+            updated_by=meta["updated_by"],
+            legacy_strings_detected=[],
+            source="seed",
+            seed_path=meta["git_path"] or _SEED_PATH,
+            source_mode="git",
+            git_path=meta["git_path"] or _SEED_PATH,
+        )
+
+    legacy_hits = _scan_legacy_strings(meta["content"] or "")
     return TemplateGetResponse(
-        content=row["content"],
+        content=meta["content"],
         default=live_default,
-        updated_at=row["updated_at"].isoformat() if row["updated_at"] else None,
-        updated_by=row["updated_by"],
+        updated_at=meta["updated_at"].isoformat() if meta["updated_at"] else None,
+        updated_by=meta["updated_by"],
         legacy_strings_detected=legacy_hits,
+        source="local",
+        source_mode="editor",
     )
 
 
@@ -176,6 +214,24 @@ async def admin_put_workspace_template(
     - Pass 2: render with a minimal anon-style user stub — catches templates
       that hard-depend on admin-only context fields.
     """
+    # #622: the editor is always writable in editor mode (even with an IWT
+    # repo registered — that was the production lock-out this fixes). Saving is
+    # only refused in git mode, where the DB content is dead-code the renderer
+    # would not consult — a confusing "where did my edit go" silent loss.
+    if claude_md_template_repo().get_meta()["source_mode"] == "git":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "kind": "prompt_in_git_mode",
+                "hint": (
+                    "This prompt is in Git source mode (bound to the Initial "
+                    "Workspace Template repo). Switch to Editor override in "
+                    "/admin/prompts before saving, or edit the bound file in "
+                    "the repo + 'Sync now'."
+                ),
+            },
+        )
+
     env = Environment(undefined=StrictUndefined, autoescape=False)
     try:
         template = env.from_string(payload.content)
@@ -195,7 +251,7 @@ async def admin_put_workspace_template(
             ),
         )
 
-    ClaudeMdTemplateRepository(conn).set(payload.content, updated_by=user["email"])
+    claude_md_template_repo().set(payload.content, updated_by=user["email"])
     return {"status": "ok"}
 
 
@@ -204,7 +260,21 @@ async def admin_reset_workspace_template(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    ClaudeMdTemplateRepository(conn).reset(updated_by=user["email"])
+    # #622: reset is allowed in editor mode; refused in git mode (no DB
+    # override to clear — the renderer reads the bound repo file).
+    if claude_md_template_repo().get_meta()["source_mode"] == "git":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "kind": "prompt_in_git_mode",
+                "hint": (
+                    "This prompt is in Git source mode — there is no Editor "
+                    "override to reset. Switch to Editor override in "
+                    "/admin/prompts, or edit the bound repo file."
+                ),
+            },
+        )
+    claude_md_template_repo().reset(updated_by=user["email"])
     return Response(status_code=204)
 
 

@@ -39,14 +39,11 @@ def system_conn(seeded_app):
 class TestTableBlocks:
     def test_groups_by_bucket(self, system_conn):
         repo = TableRegistryRepository(system_conn)
-        repo.register(id="t_finance_a", name="finance_a", bucket="in.c-finance",
-                      source_type="dummy")
-        repo.register(id="t_finance_b", name="finance_b", bucket="in.c-finance",
-                      source_type="dummy")
-        repo.register(id="t_marketing_a", name="marketing_a",
-                      bucket="in.c-marketing", source_type="dummy")
+        repo.register(id="t_finance_a", name="finance_a", bucket="in.c-finance", source_type="dummy")
+        repo.register(id="t_finance_b", name="finance_b", bucket="in.c-finance", source_type="dummy")
+        repo.register(id="t_marketing_a", name="marketing_a", bucket="in.c-marketing", source_type="dummy")
 
-        blocks = _table_blocks(system_conn)
+        blocks = _table_blocks()
         by_name = {b["name"]: b for b in blocks}
 
         assert "in.c-finance" in by_name
@@ -60,19 +57,22 @@ class TestTableBlocks:
     def test_item_shape_matches_ui_contract(self, system_conn):
         repo = TableRegistryRepository(system_conn)
         repo.register(
-            id="shape_test", name="shape_test", bucket="b1",
-            source_type="keboola", query_mode="remote",
+            id="shape_test",
+            name="shape_test",
+            bucket="b1",
+            source_type="keboola",
+            query_mode="remote",
             description="hello",
         )
 
-        blocks = _table_blocks(system_conn)
+        blocks = _table_blocks()
         item = blocks[0]["items"][0]
 
         # Fields that admin_access.html renderResources reads:
         assert item["resource_id"] == "shape_test"
         assert item["name"] == "shape_test"
-        assert item["category"] == "remote"        # query_mode → badge
-        assert item["source_type"] == "keboola"    # → badge
+        assert item["category"] == "remote"  # query_mode → badge
+        assert item["source_type"] == "keboola"  # → badge
         assert item["description"] == "hello"
 
     def test_handles_null_or_empty_bucket(self, system_conn):
@@ -80,7 +80,7 @@ class TestTableBlocks:
         repo.register(id="orphan", name="orphan", source_type="dummy")
         # bucket left as None
 
-        blocks = _table_blocks(system_conn)
+        blocks = _table_blocks()
         names = {b["name"] for b in blocks}
         assert "(no bucket)" in names
         orphan_block = next(b for b in blocks if b["name"] == "(no bucket)")
@@ -88,7 +88,7 @@ class TestTableBlocks:
 
     def test_empty_registry_returns_empty_list(self, system_conn):
         # Fresh DB, no tables registered yet.
-        assert _table_blocks(system_conn) == []
+        assert _table_blocks() == []
 
 
 class TestResourceTypeRegistration:
@@ -103,6 +103,86 @@ class TestResourceTypeRegistration:
         # Stored verbatim in resource_grants.resource_type — guard against
         # accidental rename.
         assert ResourceType.TABLE.value == "table"
+
+
+class TestMemoryItemResourceType:
+    """v49: ``memory_item`` exists for the per-group per-item Required override.
+    Global default Required tier still rides on ``knowledge_items.is_required``.
+    """
+
+    def test_memory_item_in_enum(self):
+        assert ResourceType.MEMORY_ITEM.value == "memory_item"
+
+    def test_memory_item_in_registry(self):
+        assert ResourceType.MEMORY_ITEM in RESOURCE_TYPES
+        spec = RESOURCE_TYPES[ResourceType.MEMORY_ITEM]
+        assert spec.key is ResourceType.MEMORY_ITEM
+        assert callable(spec.list_blocks)
+
+    def test_memory_item_blocks_empty_when_no_items(self, system_conn):
+        from app.resource_types import _memory_item_blocks
+
+        assert _memory_item_blocks() == []
+
+
+class TestMemoryDomainResourceType:
+    """v49: domain projection now reads from ``memory_domains`` table, not the
+    hardcoded VALID_DOMAINS list. resource_id is the ``memory_domains.id``.
+    """
+
+    def test_memory_domain_blocks_empty_when_no_domains(self, system_conn):
+        # The v49 migration seeds canonical domains, but a fresh manual seed
+        # may exclude them — verify the projection scales from 0 upward.
+        from app.resource_types import _memory_domain_blocks
+
+        system_conn.execute("DELETE FROM memory_domains")
+        assert _memory_domain_blocks() == []
+
+    def test_memory_domain_blocks_returns_id_not_slug(self, system_conn):
+        from app.resource_types import _memory_domain_blocks
+
+        system_conn.execute("DELETE FROM memory_domains")
+        system_conn.execute(
+            "INSERT INTO memory_domains(id, slug, name, icon, color) "
+            "VALUES ('md_test', 'test', 'Test domain', '🔬', '#abc')"
+        )
+        blocks = _memory_domain_blocks()
+        assert len(blocks) == 1
+        items = blocks[0]["items"]
+        assert items[0]["resource_id"] == "md_test"
+        assert items[0]["slug"] == "test"
+        assert items[0]["name"] == "Test domain"
+
+
+class TestDataPackageResourceType:
+    """v49: ``data_package`` is the unit of Add-to-Stack on /catalog."""
+
+    def test_data_package_in_enum(self):
+        assert ResourceType.DATA_PACKAGE.value == "data_package"
+
+    def test_data_package_in_registry(self):
+        assert ResourceType.DATA_PACKAGE in RESOURCE_TYPES
+        spec = RESOURCE_TYPES[ResourceType.DATA_PACKAGE]
+        assert spec.key is ResourceType.DATA_PACKAGE
+        assert callable(spec.list_blocks)
+
+    def test_data_package_blocks_empty_when_no_packages(self, system_conn):
+        from app.resource_types import _data_package_blocks
+
+        assert _data_package_blocks() == []
+
+    def test_data_package_blocks_includes_packages(self, system_conn):
+        from app.resource_types import _data_package_blocks
+
+        system_conn.execute(
+            "INSERT INTO data_packages(id, slug, name, description, icon, color) "
+            "VALUES ('pkg_sales', 'sales', 'Sales bundle', 'Sales tables', '📦', '#abc')"
+        )
+        blocks = _data_package_blocks()
+        assert len(blocks) == 1
+        block = blocks[0]
+        assert block["items"][0]["resource_id"] == "pkg_sales"
+        assert block["items"][0]["name"] == "Sales bundle"
 
 
 class TestAccessOverviewIncludesTables:
@@ -123,8 +203,10 @@ class TestAccessOverviewIncludesTables:
         conn = get_system_db()
         try:
             TableRegistryRepository(conn).register(
-                id="overview_test", name="overview_test",
-                bucket="in.c-overview", source_type="dummy",
+                id="overview_test",
+                name="overview_test",
+                bucket="in.c-overview",
+                source_type="dummy",
             )
         finally:
             conn.close()
@@ -135,15 +217,60 @@ class TestAccessOverviewIncludesTables:
             headers=_auth(seeded_app["admin_token"]),
         )
         assert resp.status_code == 200
-        tables_section = next(
-            r for r in resp.json()["resources"] if r["type_key"] == "table"
-        )
-        all_resource_ids = {
-            it["resource_id"]
-            for block in tables_section["blocks"]
-            for it in block["items"]
-        }
+        tables_section = next(r for r in resp.json()["resources"] if r["type_key"] == "table")
+        all_resource_ids = {it["resource_id"] for block in tables_section["blocks"] for it in block["items"]}
         assert "overview_test" in all_resource_ids
+
+
+class TestSlackChannelBlocks:
+    def test_enum_member_and_spec_registered(self):
+        from app.resource_types import RESOURCE_TYPES, ResourceType
+
+        assert ResourceType.SLACK_CHANNEL.value == "slack_channel"
+        spec = RESOURCE_TYPES[ResourceType.SLACK_CHANNEL]
+        assert spec.display_name == "Slack channels"
+        assert spec.id_format == "<channel_id>"
+
+    def test_in_enabled_resource_types(self):
+        from app.resource_types import enabled_resource_types, ResourceType
+
+        keys = {s.key for s in enabled_resource_types()}
+        assert ResourceType.SLACK_CHANNEL in keys
+
+    def test_projects_seeded_grant(self, system_conn):
+        from app.resource_types import _slack_channel_blocks
+
+        gid = system_conn.execute("SELECT id FROM user_groups WHERE name = 'Everyone'").fetchone()[0]
+        system_conn.execute(
+            "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
+            "VALUES ('rg_sc1', ?, 'slack_channel', 'C123')",
+            [gid],
+        )
+        blocks = _slack_channel_blocks()
+        items = [it for b in blocks for it in b["items"]]
+        assert any(it["resource_id"] == "C123" for it in items)
+
+    def test_empty_when_no_grants(self, system_conn):
+        from app.resource_types import _slack_channel_blocks
+
+        system_conn.execute("DELETE FROM resource_grants WHERE resource_type = 'slack_channel'")
+        assert _slack_channel_blocks() == []
+
+    def test_admin_group_grant_not_listed(self, system_conn):
+        """A slack_channel grant to a non-Everyone group (Admin) must NOT
+        appear in the projection — mirrors enforcement, which only honors
+        the Everyone group (see binding.is_channel_allowlisted)."""
+        from app.resource_types import _slack_channel_blocks
+
+        admin_gid = system_conn.execute("SELECT id FROM user_groups WHERE name = 'Admin'").fetchone()[0]
+        system_conn.execute(
+            "INSERT INTO resource_grants(id, group_id, resource_type, resource_id) "
+            "VALUES ('rg_sc_adm', ?, 'slack_channel', 'C_ADM')",
+            [admin_gid],
+        )
+        blocks = _slack_channel_blocks()
+        items = [it for b in blocks for it in b["items"]]
+        assert not any(it["resource_id"] == "C_ADM" for it in items)
 
 
 class TestTableGrantsAlwaysOn:
@@ -165,8 +292,10 @@ class TestTableGrantsAlwaysOn:
         conn = get_system_db()
         try:
             TableRegistryRepository(conn).register(
-                id="ff_table", name="ff_table",
-                bucket="in.c-ff", source_type="dummy",
+                id="ff_table",
+                name="ff_table",
+                bucket="in.c-ff",
+                source_type="dummy",
             )
         finally:
             conn.close()
@@ -189,3 +318,59 @@ class TestTableGrantsAlwaysOn:
             },
         )
         assert resp.status_code == 201
+
+
+class TestCollectionResourceType:
+    """v77: COLLECTION resource type for bring-your-files Collections."""
+
+    def test_collection_enum_value(self):
+        assert ResourceType.COLLECTION.value == "collection"
+
+    def test_collection_in_registry(self):
+        assert ResourceType.COLLECTION in RESOURCE_TYPES
+        spec = RESOURCE_TYPES[ResourceType.COLLECTION]
+        assert spec.key is ResourceType.COLLECTION
+        assert spec.display_name == "Collections"
+        assert callable(spec.list_blocks)
+
+    def test_collection_in_enabled_resource_types(self):
+        from app.resource_types import enabled_resource_types
+
+        keys = {s.key for s in enabled_resource_types()}
+        assert ResourceType.COLLECTION in keys
+
+    def test_collection_blocks_empty_when_no_corpora(self, system_conn):
+        from app.resource_types import _collection_blocks
+
+        assert _collection_blocks() == []
+
+    def test_collection_blocks_projects_live_corpora(self, system_conn):
+        from app.resource_types import _collection_blocks
+
+        system_conn.execute(
+            "INSERT INTO file_corpora (id, slug, name, description, created_by) "
+            "VALUES ('col_abc', 'my-files', 'My Files', 'A collection', 'u1')"
+        )
+        blocks = _collection_blocks()
+        assert len(blocks) == 1
+        block = blocks[0]
+        assert block["id"] == "collections"
+        assert block["name"] == "Collections"
+        items = block["items"]
+        assert len(items) == 1
+        assert items[0]["resource_id"] == "col_abc"
+        assert items[0]["name"] == "My Files"
+        assert items[0]["slug"] == "my-files"
+
+    def test_collection_blocks_excludes_soft_deleted(self, system_conn):
+        from app.resource_types import _collection_blocks
+
+        system_conn.execute(
+            "INSERT INTO file_corpora "
+            "(id, slug, name, created_by, deleted_at) "
+            "VALUES ('col_del', 'deleted', 'Deleted', 'u1', current_timestamp)"
+        )
+        blocks = _collection_blocks()
+        if blocks:
+            ids = [it["resource_id"] for b in blocks for it in b["items"]]
+            assert "col_del" not in ids

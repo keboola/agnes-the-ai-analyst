@@ -1,22 +1,42 @@
 /* Design System - Data Analyst Portal v2 */
 
 :root {
-    /* Colors */
+    /* Colors — `--primary` is the canonical app-wide brand colour
+       (blue), used across nav, buttons, links, and active states on
+       login, dashboard, catalog, marketplace, admin, etc. The /home
+       redesign opted into a green/navy palette via local
+       `.home-mock` / `.advanced-mock` overrides; those scopes set
+       their own `--hp-primary` so the green only applies where the
+       redesign explicitly opts in. Everything else inherits blue. */
     --primary: #0073D1;
     --primary-light: rgba(0, 115, 209, 0.1);
     --primary-dark: #005BA3;
-    --text-primary: #1A253C;
-    --text-secondary: #6B7280;
-    --background: #F5F7FA;
-    --surface: #FFFFFF;
-    --border: #E5E7EB;
-    --border-light: #F3F4F6;
+    --brand-accent: #4F9DEB;
+    --hero-bg: #0f1b3a;
+    --hero-ink: #f3f6ff;
+    --text-primary: #0e1525;
+    --text-secondary: #4a5168;
+    --background: #f6f7fa;
+    --surface: #ffffff;
+    --surface-dim: #f0f2f6;
+    --border: #e4e7ee;
+    --border-light: #f0f2f6;
+    --border-dark: #c4c4c4;
     --success: #10B77F;
     --warning: #F59F0A;
     --error: #EA580C;
+    --info-bg: #eef3ff;
+    --info-ink: #1c3994;
+    --info-line: #4f7cf2;
+    --warn-bg: #fff8e6;
+    --warn-ink: #6e4d00;
+    --warn-line: #f5c84b;
 
-    /* Typography */
-    --font-primary: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    /* Typography — system stack matching the CEO mock so weight +
+       letterforms render identically on macOS (San Francisco) and
+       Windows (Segoe UI). Inter remains a graceful fallback in the
+       cascade. */
+    --font-primary: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", system-ui, sans-serif;
     --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
     /* Font sizes */
@@ -63,15 +83,18 @@
     --radius-full: 9999px;
 
     /* Shadows. --shadow-card is the canonical card elevation;
-       --shadow-elevated lifts hero blocks (home install-hero used a
-       custom blue-tinted shadow before this token landed). */
-    --shadow-sm: rgba(0, 0, 0, 0.05) 0px 1px 2px 0px;
-    --shadow-md: rgba(0, 0, 0, 0.1) 0px 1px 3px 0px, rgba(0, 0, 0, 0.1) 0px 1px 2px -1px;
-    --shadow-card: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
-    --shadow-elevated: 0 8px 24px rgba(0, 86, 163, 0.18);
+       --shadow-elevated lifts hero blocks. Shadow tints aligned with
+       the new green/navy palette so heavy elevations don't carry a
+       leftover blue cast. */
+    --shadow-sm: rgba(15, 27, 58, 0.05) 0px 1px 2px 0px, rgba(15, 27, 58, 0.06) 0px 1px 3px 0px;
+    --shadow-md: rgba(15, 27, 58, 0.08) 0px 4px 16px 0px;
+    --shadow-card: 0 1px 3px 0 rgba(15, 27, 58, 0.06), 0 1px 2px -1px rgba(15, 27, 58, 0.05);
+    --shadow-elevated: 0 8px 24px rgba(15, 27, 58, 0.14);
 
-    /* Focus + interaction */
-    --focus-ring: 0 0 0 3px rgba(0, 115, 209, 0.25);
+    /* Focus + interaction — alpha brand-green below uses color-mix on
+       var(--ds-primary) so it follows the active theme (light/blue/dark);
+       these were hardcoded brand-green rgba() literals (#497 §5). */
+    --focus-ring: 0 0 0 3px color-mix(in srgb, var(--ds-primary) 25%, transparent);
     --transition-fast: 120ms ease;
     --transition-base: 200ms ease;
     --transition-slow: 320ms ease;
@@ -82,6 +105,105 @@
     --width-narrow: 800px;
     --width-app: 1280px;
     --width-wide: 1400px;
+
+    /* Legacy token aliases — keep absorbed style.css rules rendering
+       until Task 16 cleanup. Each legacy name maps onto its modern
+       equivalent so every absorbed selector resolves to a real value
+       instead of falling back to `unset`. */
+    --bg: var(--background);
+    --card-bg: var(--surface);
+    --text: var(--text-primary);
+    --text-light: var(--text-secondary);
+    --secondary: var(--text-secondary);
+    --radius: var(--radius-lg);
+
+    /* Intermediate font sizes used by the legacy absorbed section.
+       These fill gaps in the 10/12/14/16/18/24/30px scale. Added in
+       the design-token migration pass (issue #400) so rem literals
+       in legacy selectors resolve through a named token and follow
+       operator overrides. */
+    --text-13: 13px;   /* 0.8125rem — help text, small labels, code snippets */
+    --text-15: 15px;   /* 0.9375rem — slightly-larger body copy */
+    --text-22: 22px;   /* 1.375rem  — logo / brand lockup heading */
+    --text-28: 28px;   /* 1.75rem   — login card h2 display size */
+
+    /* Card accent surface tints — applied as background on .card-error,
+       .card-highlight, .card-ai, .card-success. Operator overrides to
+       the corresponding --ds-accent-* set automatically flow through. */
+    --card-error-bg:     #fff8f8;
+    --card-highlight-bg: #f8faff;
+    --card-ai-bg:        #f8fdf8;
+    --card-success-bg:   #f8fdf8;
+
+    /* Badge role colors — semantic fills for .badge-analyst / .badge-privileged /
+       .badge-admin. These live outside the --ds-accent-* family because they map
+       to UX roles rather than alert severity, but operator overrides apply. */
+    --badge-success-bg:  #e8f5e9;
+    --badge-success-ink: #2e7d32;
+    --badge-warn-bg:     #fff3e0;
+    --badge-warn-ink:    #ef6c00;
+    --badge-info-bg:     #e3f2fd;
+    --badge-info-ink:    #1565c0;
+
+    /* Flash message fills — success / error / info / warning. Kept separate
+       from --ds-accent-* so an operator can tune the flash palette independently
+       of card accents. Names follow the existing .flash-{variant} class family. */
+    --flash-success-bg:     #e8f5e9;
+    --flash-success-ink:    #2e7d32;
+    --flash-success-border: #c8e6c9;
+    --flash-error-bg:       #ffebee;
+    --flash-error-ink:      #c62828;
+    --flash-error-border:   #ffcdd2;
+    --flash-info-bg:        #e3f2fd;
+    --flash-info-ink:       #1565c0;
+    --flash-info-border:    #bbdefb;
+    --flash-warn-bg:        #fff3e0;
+    --flash-warn-ink:       #ef6c00;
+    --flash-warn-border:    #ffe0b2;
+    /* v2 flash ink shades (slightly darker than .flash-* for the v2 family). */
+    --flash-success-v2-ink: #0d9668;
+    --flash-error-v2-ink:   #c2410c;
+
+    /* Code-block dark surface — the pre-highlight dark code panel used in the
+       legacy Quick Start / SSH setup cards. Distinct from the page surface
+       tokens (which are light) so dark-on-light and light-on-dark don't
+       accidentally share the same token. */
+    --code-dark-bg:     #1a1a2e;
+    --code-dark-ink:    #e4e4e7;
+    --code-dark-border: #2d2d44;
+    /* Pure white for .code-block inside .code-block-wrapper (dark translucent
+       surface) — distinct from --code-dark-ink so contrast there is maximal. */
+    --code-wrapper-ink: #fff;
+
+    /* Form placeholder — the medium-grey used in text inputs and textareas. */
+    --placeholder-color: #9aa0a6;
+
+    /* Username box — sky-blue highlight panel on the dashboard setup page.
+       The copy-button family reuses the same blue so the panel reads
+       as one coherent block. */
+    --username-box-bg:   #f0f9ff;
+    --username-box-line: #0ea5e9;
+    --username-ink:      #0369a1;
+    --btn-copy-bg:       #0ea5e9;
+    --btn-copy-hover:    #0284c7;
+    --btn-copy-success:  #22c55e;
+
+    /* Info box — subtle surface used for hint / info panels in forms. */
+    --info-box-bg:     #f8fafc;
+    --info-box-border: #e2e8f0;
+
+    /* CC setup card gradient — purple-to-indigo used by the Claude Code
+       setup card. Exposed as tokens so an operator can swap the gradient
+       without editing the rule directly. */
+    --cc-gradient-from: #667eea;
+    --cc-gradient-to:   #764ba2;
+
+    /* Support info panel — same surface as --info-box-bg; named separately
+       so the .support-info component can be themed independently. */
+    --support-info-bg: var(--info-box-bg);
+
+    /* Username preview text — slate-grey used in .username-preview label. */
+    --username-preview-color: #64748b;
 }
 
 * {
@@ -98,6 +220,1139 @@ body {
     line-height: 1.5;
     min-height: 100vh;
 }
+
+/* =====================================================
+   Absorbed from the deleted app/web/static/style.css.
+   Kept verbatim here so legacy classes used by login/auth
+   pages, error pages, and password-setup pages keep
+   rendering. Individual rules retire in the design-pass
+   migration tasks; final cleanup in Task 16 removes the
+   ones no template references after that sweep.
+   ===================================================== */
+
+.container {
+    /* Canonical page-shell width + gutters. Pages inherit this
+       directly — no per-page max-width / padding override needed.
+       The 16px / 48px asymmetric vertical padding gives a tight gap
+       between the sticky nav and the first hero (matches /home) and
+       generous breathing room above the footer. Side gutters are
+       32px so dense tables / grids align to the same vertical rules
+       as the canonical `.page-header--hero`.
+       Pages that genuinely need narrower line-length (setup wizards,
+       single-form flows) opt in via .container--narrow; wide tables
+       opt in via .container--wide. */
+    max-width: var(--width-app);
+    margin: 0 auto;
+    padding: 16px 32px 48px;
+}
+/* Strip default `<main>` padding/margin when it sits inside our
+   canonical `.container`. The container already owns the gutters,
+   so the `<main>` element is a pure flow container. */
+.container > main {
+    margin: 0;
+    padding: 0;
+}
+
+/* Width modifiers — opt-in alternatives to the default page shell. */
+.container--narrow { max-width: var(--width-narrow); }   /* 800px — long-form reading, setup flows */
+.container--wide   { max-width: var(--width-wide); }     /* 1400px — admin index lists, marketplace grids */
+.container--full   { max-width: none; padding-left: var(--space-4); padding-right: var(--space-4); }
+
+/* Dashboard */
+.dashboard h2 {
+    font-size: var(--text-xl);
+    font-weight: 600;
+    margin-bottom: 24px;
+    color: var(--text);
+}
+
+/* Header */
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 0;
+    margin-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+    gap: 16px;
+}
+
+a.logo { text-decoration: none; color: inherit; display: block; }
+a.logo:hover h1 { color: var(--primary); }
+
+.logo h1 {
+    font-size: var(--text-22);
+    font-weight: 600;
+    color: var(--text);
+    margin: 0;
+    letter-spacing: -0.02em;
+}
+
+.logo .subtitle {
+    font-size: var(--text-13);
+    color: var(--text-light);
+    margin-top: 2px;
+}
+
+nav {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.user-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: var(--text-base);
+    color: var(--text-light);
+}
+
+.avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+}
+
+/* Buttons */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 20px;
+    font-size: var(--text-base);
+    font-weight: 500;
+    text-decoration: none;
+    border-radius: var(--radius);
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.2s, box-shadow 0.2s;
+}
+
+.btn-primary {
+    /* Primary action buttons across the app share /home's green CTA
+       fill (`--ds-primary`) so users see one consistent "do it"
+       affordance everywhere. The brand-blue `--primary` stays as
+       the link / accent colour elsewhere; only the filled button
+       background flips to green. */
+    background-color: var(--ds-primary);
+    color: white;
+    font-weight: 500;
+    transition: all 0.15s ease;
+}
+
+.btn-primary:hover {
+    background-color: var(--ds-primary-dark);
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--ds-primary) 30%, transparent);
+}
+
+.btn-primary:active {
+    transform: scale(0.98);
+}
+
+.btn-secondary {
+    background-color: transparent;
+    color: var(--secondary);
+    border: 1px solid var(--border);
+}
+
+.btn-secondary:hover {
+    background-color: var(--bg);
+}
+
+.btn-sm {
+    padding: 6px 12px;
+    font-size: var(--text-sm);
+}
+
+.btn-google {
+    background-color: white;
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 14px 28px;
+    font-size: var(--text-md);
+    font-weight: 500;
+    width: 100%;
+    max-width: 280px;
+    transition: all 0.2s ease;
+}
+
+.btn-google:hover {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+    border-color: var(--border-dark);
+    background-color: var(--background);
+}
+
+.btn-google:active {
+    transform: scale(0.98);
+}
+
+.google-icon {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+}
+
+/* Cards */
+.card {
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 20px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    border: 1px solid var(--border);
+}
+
+.card h3 {
+    font-size: var(--text-md);
+    font-weight: 600;
+    margin-bottom: 16px;
+    color: var(--text);
+    letter-spacing: -0.01em;
+}
+
+.card p {
+    color: var(--text-light);
+    margin-bottom: 12px;
+}
+
+.card-error {
+    border-left: 4px solid var(--error);
+    background-color: var(--card-error-bg);
+}
+
+.card-highlight {
+    border-left: 4px solid var(--primary);
+    background-color: var(--card-highlight-bg);
+}
+
+.card-ai {
+    border-left: 4px solid var(--success);
+    background-color: var(--card-ai-bg);
+}
+
+/* Manual setup collapsible */
+.manual-setup {
+    margin-top: 16px;
+}
+
+.manual-setup summary {
+    cursor: pointer;
+    font-size: var(--text-base);
+    color: var(--text-light);
+    padding: 8px 0;
+}
+
+.manual-setup summary:hover {
+    color: var(--text);
+}
+
+.manual-setup .card {
+    margin-top: 12px;
+    margin-bottom: 0;
+}
+
+.card-error h3 {
+    color: var(--error);
+}
+
+.error-message {
+    color: var(--error);
+    font-weight: 500;
+}
+
+/* Info grid */
+.info-grid {
+    display: grid;
+    gap: 12px;
+}
+
+.info-item {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.info-item .label {
+    font-weight: 500;
+    min-width: 140px;
+}
+
+.info-item .value {
+    color: var(--text-light);
+}
+
+/* Badges */
+.badge {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: var(--text-sm);
+    font-weight: 500;
+    border-radius: 4px;
+    background-color: var(--bg);
+    color: var(--text-light);
+    margin-right: 4px;
+}
+
+.badge-analyst {
+    background-color: var(--badge-success-bg);
+    color: var(--badge-success-ink);
+}
+
+.badge-privileged {
+    background-color: var(--badge-warn-bg);
+    color: var(--badge-warn-ink);
+}
+
+.badge-admin {
+    background-color: var(--badge-info-bg);
+    color: var(--badge-info-ink);
+}
+
+/* Code blocks */
+code {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    background: var(--border-light);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 1px var(--space-1);
+    color: var(--text-primary);
+}
+
+/* Label qualifiers — optional, default, hint text next to form labels */
+.label-qualifier,
+.optional {
+    font-size: var(--text-sm);
+    font-weight: var(--font-normal);
+    color: var(--text-secondary);
+    margin-left: var(--space-1);
+}
+
+/* Radio option cards — visual selected state */
+.sync-option-card:has(input:checked) {
+    border-color: var(--primary) !important;
+    background: var(--primary-light) !important;
+}
+
+.code-block {
+    background-color: var(--code-dark-bg);
+    color: var(--code-dark-ink);
+    padding: 14px 16px;
+    border-radius: var(--radius);
+    overflow-x: auto;
+    margin: 12px 0;
+    border: 1px solid var(--code-dark-border);
+}
+
+.code-block code,
+.code-block pre {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    font-size: var(--text-13);
+    color: inherit;
+    line-height: 1.6;
+}
+
+.code-block pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.code-block.code-compact {
+    padding: 10px 14px;
+    margin: 6px 0;
+}
+
+/* Command rows for Quick Start */
+.command-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.command-row .command-label {
+    font-weight: 500;
+    font-size: var(--text-base);
+    min-width: 70px;
+    color: var(--text-light);
+}
+
+.command-row .code-block {
+    flex: 1;
+    margin: 0;
+}
+
+/* SSH config details/summary */
+.ssh-config-details {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.ssh-config-details summary {
+    cursor: pointer;
+    font-size: var(--text-base);
+    font-weight: 500;
+    color: var(--primary);
+    padding: 4px 0;
+    user-select: none;
+}
+
+.ssh-config-details summary:hover {
+    color: var(--primary-dark);
+}
+
+.ssh-config-details[open] summary {
+    margin-bottom: 8px;
+}
+
+.ssh-config-details .help-text {
+    margin-top: 4px;
+    margin-bottom: 4px;
+}
+
+/* Forms */
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    font-weight: 500;
+    margin-bottom: 8px;
+}
+
+.form-group textarea {
+    width: 100%;
+    padding: 12px 14px;
+    font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", monospace;
+    font-size: var(--text-13);
+    line-height: 1.5;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    resize: vertical;
+    min-height: 100px;
+    background-color: var(--card-bg);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.form-group textarea:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: var(--focus-ring);
+}
+
+.form-group textarea::placeholder {
+    color: var(--placeholder-color);
+}
+
+.help-text {
+    font-size: var(--text-13);
+    color: var(--text-light);
+    margin-top: 8px;
+    line-height: 1.5;
+}
+
+.help-text strong {
+    color: var(--text);
+    font-weight: 500;
+}
+
+/* Flash messages */
+.flash-messages {
+    margin-bottom: 24px;
+}
+
+.flash {
+    padding: 14px 18px;
+    border-radius: var(--radius);
+    margin-bottom: 12px;
+    font-size: var(--text-base);
+    font-weight: 500;
+}
+
+.flash-success {
+    background-color: var(--flash-success-bg);
+    color: var(--flash-success-ink);
+    border: 1px solid var(--flash-success-border);
+}
+
+.flash-error {
+    background-color: var(--flash-error-bg);
+    color: var(--flash-error-ink);
+    border: 1px solid var(--flash-error-border);
+}
+
+.flash-info {
+    background-color: var(--flash-info-bg);
+    color: var(--flash-info-ink);
+    border: 1px solid var(--flash-info-border);
+}
+
+.flash-warning {
+    background-color: var(--flash-warn-bg);
+    color: var(--flash-warn-ink);
+    border: 1px solid var(--flash-warn-border);
+}
+
+/* Login page */
+.login-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 60vh;
+    padding: 20px;
+}
+
+.login-card {
+    background: var(--card-bg);
+    border-radius: 12px;
+    padding: 48px 40px;
+    text-align: center;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+    max-width: 640px;
+    width: 100%;
+    border: 1px solid var(--border);
+}
+
+/* Operator brand lockup above the Sign In heading. The card has a light
+   `--card-bg`, so a colored wordmark SVG (the typical operator logo) reads
+   well here. Constrain height and let width scale so any aspect ratio fits;
+   `svg { display: block }` drops the inline-baseline gap under the lockup. */
+.login-card-logo {
+    margin-bottom: 24px;
+    display: flex;
+    justify-content: center;
+}
+
+.login-card-logo svg,
+.login-card-logo img {
+    display: block;
+    height: 36px;
+    width: auto;
+    max-width: 100%;
+}
+
+.login-card h2 {
+    margin-bottom: 12px;
+    font-size: var(--text-28);
+    font-weight: 600;
+    color: var(--text);
+}
+
+.login-description {
+    color: var(--text-light);
+    margin-bottom: 32px;
+    font-size: var(--text-md);
+    line-height: 1.5;
+}
+
+.login-steps {
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    text-align: left;
+}
+
+.login-steps .step {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: var(--text-base);
+    color: var(--text-light);
+    padding: 6px 0;
+}
+
+.login-steps .step-num,
+.steps-horizontal .step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    background-color: var(--primary);
+    color: white;
+    border-radius: 50%;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+/* Inline steps for compact layout */
+.steps-inline {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+.steps-inline .step-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--text-13);
+    color: var(--text-light);
+}
+
+/* Form row for inline layout */
+.form-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.form-group-inline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 0;
+}
+
+.form-group-inline label {
+    margin-bottom: 0;
+}
+
+/* AI hint inline */
+.ai-hint {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    font-size: var(--text-13);
+    color: var(--text-light);
+}
+
+.ai-hint code {
+    display: inline;
+    font-size: var(--text-sm);
+    color: var(--primary);
+}
+
+/* Manual setup compact */
+.manual-content {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 12px 0;
+}
+
+.manual-content code {
+    font-size: var(--text-sm);
+}
+
+.manual-content .help-text {
+    margin: 0;
+    font-size: var(--text-sm);
+}
+
+.login-note {
+    font-size: var(--text-13);
+    color: var(--text-light);
+    margin-top: 12px;
+}
+
+/* Error page */
+.error-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 60vh;
+}
+
+.error-card {
+    text-align: center;
+}
+
+.error-card h2 {
+    font-size: 3rem;
+    margin-bottom: 16px;
+}
+
+.error-card p {
+    color: var(--text-light);
+    margin-bottom: 24px;
+}
+
+/* Footer */
+footer {
+    margin-top: 48px;
+    padding-top: 20px;
+    padding-bottom: 8px;
+    border-top: 1px solid var(--border);
+    text-align: center;
+    color: var(--text-light);
+    font-size: var(--text-13);
+}
+
+/* Username box and copy buttons */
+.username-box {
+    background: var(--username-box-bg);
+    border: 2px solid var(--username-box-line);
+    border-radius: 8px;
+    padding: 16px;
+    margin: 16px 0;
+}
+
+.username-display {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+}
+
+.username-display code {
+    font-size: 20px;
+    font-weight: bold;
+    color: var(--username-ink);
+    background: white;
+    padding: 8px 16px;
+    border-radius: 6px;
+    flex-grow: 1;
+}
+
+.btn-copy {
+    background: var(--btn-copy-bg);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: var(--text-base);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    transition: all 0.2s ease;
+}
+
+.btn-copy:hover {
+    background: var(--btn-copy-hover);
+}
+
+.btn-copy:active {
+    transform: scale(0.98);
+}
+
+.btn-copy.copied {
+    background: var(--btn-copy-success);
+}
+
+.btn-copy-inline {
+    background: var(--btn-copy-bg);
+    color: white;
+    border: none;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: var(--text-sm);
+    margin-left: 8px;
+    transition: background 0.15s ease;
+}
+
+.btn-copy-inline:hover {
+    background: var(--btn-copy-hover);
+}
+
+.btn-copy-block {
+    background: var(--btn-copy-bg);
+    color: white;
+    border: none;
+    padding: 10px 24px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: var(--text-base);
+    font-weight: 600;
+    width: 100%;
+    transition: all 0.2s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.btn-copy-block:hover {
+    background: var(--btn-copy-hover);
+    box-shadow: 0 2px 8px rgba(14, 165, 233, 0.3);
+}
+
+.btn-copy-block:active {
+    transform: scale(0.98);
+}
+
+.btn-copy-block.copied {
+    background: var(--btn-copy-success);
+}
+
+.username-preview {
+    font-size: 18px;
+    color: var(--username-preview-color);
+}
+
+.info-box {
+    background: var(--info-box-bg);
+    border: 1px solid var(--info-box-border);
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 16px;
+}
+
+.card-success {
+    border-left: 4px solid var(--success);
+    background-color: var(--card-success-bg);
+}
+
+.help-details {
+    margin-top: 12px;
+    font-size: var(--text-base);
+}
+
+.help-details summary {
+    cursor: pointer;
+    color: var(--primary);
+    padding: 4px 0;
+    font-weight: 500;
+}
+
+.help-details summary:hover {
+    color: var(--primary-dark);
+}
+
+.help-details ul {
+    margin-top: 8px;
+    margin-left: 20px;
+    color: var(--text-light);
+}
+
+.help-details li {
+    margin-bottom: 4px;
+}
+
+/* Claude Code Setup Card on Dashboard */
+.cc-setup-card {
+    background: linear-gradient(135deg, var(--cc-gradient-from) 0%, var(--cc-gradient-to) 100%);
+    color: white;
+    border: none;
+    margin-bottom: 24px;
+}
+
+.cc-setup-card h3 {
+    color: white;
+    margin-bottom: 12px;
+}
+
+.cc-setup-card .cc-instruction {
+    color: rgba(255, 255, 255, 0.95);
+    margin-bottom: 16px;
+    font-size: var(--text-15);
+    line-height: 1.6;
+}
+
+.cc-setup-card .cc-helper-text {
+    color: rgba(255, 255, 255, 0.8);
+    font-size: var(--text-13);
+    margin-top: 12px;
+    margin-bottom: 0;
+}
+
+.cc-setup-card .btn-copy-block {
+    background: white;
+    color: var(--cc-gradient-from);
+    font-weight: 600;
+    padding: 12px 24px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    font-size: var(--text-base);
+    width: 100%;
+    transition: all 0.2s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.cc-setup-card .btn-copy-block:hover {
+    background: var(--border-light);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.cc-setup-card .btn-copy-block:active {
+    transform: scale(0.98);
+}
+
+.cc-setup-card .btn-copy-block.copied {
+    background: var(--btn-copy-success);
+    color: white;
+}
+
+/* CLI hint in setup card */
+.cc-setup-card .cli-hint {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.cc-setup-card .cli-hint summary {
+    cursor: pointer;
+    color: rgba(255, 255, 255, 0.85);
+    font-size: var(--text-13);
+    font-weight: 500;
+    padding: 4px 0;
+}
+
+.cc-setup-card .cli-hint summary:hover {
+    color: white;
+}
+
+.cc-setup-card .cli-hint .cli-content {
+    margin-top: 10px;
+    background: rgba(255, 255, 255, 0.1);
+    padding: 10px 12px;
+    border-radius: 6px;
+}
+
+.cc-setup-card .cli-hint .cli-content code {
+    display: block;
+    background: rgba(0, 0, 0, 0.2);
+    color: white;
+    padding: 8px 10px;
+    border-radius: 4px;
+    font-size: var(--text-sm);
+    margin-bottom: 6px;
+}
+
+.cc-setup-card .cli-hint .cli-desc {
+    color: rgba(255, 255, 255, 0.7);
+    font-size: var(--text-sm);
+}
+
+/* Support info banner */
+.support-info {
+    text-align: center;
+    color: var(--text-light);
+    font-size: var(--text-13);
+    padding: 12px 16px;
+    background: var(--support-info-bg);
+    border-radius: 6px;
+    margin-bottom: 20px;
+    border: 1px solid var(--border);
+}
+
+.support-info strong {
+    color: var(--text);
+}
+
+/* Auth tabs */
+.auth-tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 24px;
+    border-bottom: 2px solid var(--border);
+}
+
+.auth-tab {
+    flex: 1;
+    padding: 12px 16px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    font-size: var(--text-15);
+    font-weight: 500;
+    color: var(--text-light);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.auth-tab:hover {
+    color: var(--text);
+}
+
+.auth-tab.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+}
+
+.auth-tab-content {
+    display: none;
+}
+
+.auth-tab-content.active {
+    display: block;
+}
+
+.tab-description {
+    color: var(--text-light);
+    font-size: var(--text-base);
+    margin-bottom: 20px;
+    text-align: center;
+}
+
+.signup-note {
+    color: var(--text-light);
+    font-size: var(--text-13);
+    text-align: center;
+    margin-top: 16px;
+}
+
+/* Login form styles */
+.login-form {
+    text-align: left;
+    margin: 24px 0;
+}
+
+.login-form .form-group {
+    margin-bottom: 16px;
+}
+
+.login-form .form-group label {
+    display: block;
+    font-weight: 500;
+    font-size: var(--text-base);
+    margin-bottom: 6px;
+    color: var(--text);
+}
+
+.login-form .form-group input {
+    width: 100%;
+    padding: 12px 14px;
+    font-size: var(--text-15);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background-color: var(--card-bg);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.login-form .form-group input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: var(--focus-ring);
+}
+
+.login-form .form-group input::placeholder {
+    color: var(--placeholder-color);
+}
+
+.login-form .form-hint {
+    display: block;
+    font-size: var(--text-sm);
+    color: var(--text-light);
+    margin-top: 4px;
+}
+
+.btn-block {
+    width: 100%;
+}
+
+.btn-link {
+    background: transparent;
+    color: var(--primary);
+    border: none;
+    padding: 8px 4px;
+    font-size: var(--text-base);
+    cursor: pointer;
+    text-decoration: none;
+}
+
+.btn-link:hover {
+    color: var(--primary-dark);
+    text-decoration: underline;
+}
+
+/* Login page links */
+.login-links {
+    display: flex;
+    justify-content: center;
+    gap: 16px;
+    margin: 16px 0;
+    flex-wrap: wrap;
+}
+
+.login-links form {
+    margin: 0;
+}
+
+/* Request access form */
+.request-access-form,
+.reset-form {
+    display: inline;
+}
+
+/* Divider */
+.divider {
+    display: flex;
+    align-items: center;
+    margin: 24px 0;
+    color: var(--text-light);
+    font-size: var(--text-base);
+}
+
+.divider::before,
+.divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background-color: var(--border);
+}
+
+.divider span {
+    padding: 0 16px;
+}
+
+/* Account email display */
+.account-email {
+    background-color: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 16px;
+    margin-bottom: 20px;
+    text-align: center;
+    font-size: var(--text-15);
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+    .container {
+        padding: 15px;
+    }
+
+    header {
+        flex-direction: column;
+        gap: 15px;
+        text-align: center;
+    }
+
+    .info-item {
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .info-item .label {
+        min-width: auto;
+    }
+
+    .username-display {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .username-display code {
+        text-align: center;
+    }
+
+    .login-links {
+        flex-direction: column;
+        gap: 8px;
+    }
+}
+
 
 /* Container */
 .container-v2 {
@@ -494,7 +1749,7 @@ body {
 }
 
 .badge-admin-v2 {
-    background: rgba(0, 115, 209, 0.1);
+    background: color-mix(in srgb, var(--ds-primary) 10%, transparent);
     color: var(--primary);
 }
 
@@ -610,6 +1865,11 @@ body {
     border-left: 3px solid var(--error);
 }
 
+.alert-warning-v2 {
+    background: rgba(245, 159, 10, 0.1);
+    border-left: 3px solid var(--warning);
+}
+
 .alert-v2 .alert-icon {
     font-size: var(--text-lg);
 }
@@ -642,20 +1902,20 @@ body {
 
 .flash-success-v2 {
     background: rgba(16, 183, 127, 0.1);
-    color: #0d9668;
+    color: var(--flash-success-v2-ink);
     border: 1px solid rgba(16, 183, 127, 0.3);
 }
 
 .flash-error-v2 {
     background: rgba(234, 88, 12, 0.1);
-    color: #c2410c;
+    color: var(--flash-error-v2-ink);
     border: 1px solid rgba(234, 88, 12, 0.3);
 }
 
 .flash-info-v2 {
     background: var(--primary-light);
     color: var(--primary);
-    border: 1px solid rgba(0, 115, 209, 0.3);
+    border: 1px solid color-mix(in srgb, var(--ds-primary) 30%, transparent);
 }
 
 /* Footer */
@@ -793,10 +2053,10 @@ body {
 
 .category-tag.finance { background: rgba(16, 183, 127, 0.1); color: #0d9668; }
 .category-tag.hr { background: rgba(139, 92, 246, 0.1); color: #7c3aed; }
-.category-tag.sales { background: rgba(0, 115, 209, 0.1); color: #0073D1; }
+.category-tag.sales { background: color-mix(in srgb, var(--ds-primary) 10%, transparent); color: var(--primary); }
 .category-tag.telemetry { background: rgba(245, 159, 10, 0.1); color: #b45309; }
 .category-tag.support { background: rgba(234, 88, 12, 0.1); color: #EA580C; }
-.category-tag.revenue { background: rgba(0, 115, 209, 0.1); color: #0073D1; }
+.category-tag.revenue { background: color-mix(in srgb, var(--ds-primary) 10%, transparent); color: var(--primary); }
 .category-tag.customers { background: rgba(139, 92, 246, 0.1); color: #7c3aed; }
 .category-tag.marketing { background: rgba(245, 159, 10, 0.1); color: #b45309; }
 
@@ -945,7 +2205,7 @@ a.slack-badge:hover {
     width: 32px;
     height: 32px;
     background: white;
-    color: #0073D1;
+    color: var(--primary);
     border-radius: 50%;
     font-weight: 700;
     font-size: 16px;
@@ -985,8 +2245,10 @@ a.slack-badge:hover {
 .code-block {
     flex: 1;
     font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
-    font-size: 13px;
-    color: #fff;
+    font-size: var(--text-13);
+    /* Pure white (not --code-dark-ink's #e4e4e7): this .code-block sits inside
+       .code-block-wrapper's dark translucent surface and needs max contrast. */
+    color: var(--code-wrapper-ink);
     background: transparent;
     border: none;
     white-space: pre;
@@ -1635,10 +2897,22 @@ a.slack-badge:hover {
 .login-features {
     background: var(--primary);
     color: white;
-    padding: var(--space-8);
+    padding: var(--space-6) var(--space-8);
     display: flex;
     align-items: center;
     justify-content: center;
+}
+
+/* Navy theme — when the instance opts in via
+   `AGNES_INSTANCE_THEME=navy` / `instance.theme=navy`, the
+   `<html data-theme="navy">` attribute is set by base_login.html and
+   we flip the login-page hero panel from the legacy brand-blue
+   `--primary` to the deep-navy gradient used by the design-system
+   hero so /login matches the rest of the navy-themed app. Only
+   `.login-features` carries a brand colour on the pre-login screens;
+   the rest of the login chrome is theme-neutral. */
+:root[data-theme="navy"] .login-features {
+    background: linear-gradient(135deg, #0f1b3a 0%, #0a1430 100%);
 }
 
 .features-content {
@@ -1656,7 +2930,7 @@ a.slack-badge:hover {
     font-size: var(--text-md);
     line-height: 1.6;
     opacity: 0.9;
-    margin-bottom: var(--space-6);
+    margin-bottom: var(--space-4);
 }
 
 /* Feature cards */
@@ -1669,7 +2943,7 @@ a.slack-badge:hover {
 .feature-card {
     display: flex;
     gap: var(--space-3);
-    padding: var(--space-4);
+    padding: var(--space-3) var(--space-4);
     background: rgba(255, 255, 255, 0.1);
     border-radius: var(--radius-lg);
     border: 1px solid rgba(255, 255, 255, 0.15);
@@ -1687,14 +2961,6 @@ a.slack-badge:hover {
     color: white;
 }
 
-.feature-icon-data,
-.feature-icon-memory,
-.feature-icon-auto,
-.feature-icon-notif {
-    background: rgba(255, 255, 255, 0.15);
-    color: white;
-}
-
 .feature-text h3 {
     font-size: var(--text-base);
     font-weight: var(--font-semibold);
@@ -1702,11 +2968,47 @@ a.slack-badge:hover {
     color: white;
 }
 
+/* BETA chip on a feature-card heading — translucent-white chip readable
+   on the brand-coloured features panel. Marks every capability that
+   isn't the mature data-package core. */
+.feature-text h3 .feature-beta {
+    display: inline-block;
+    margin-left: var(--space-2);
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: var(--font-semibold);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    vertical-align: middle;
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
 .feature-text p {
     font-size: var(--text-sm);
     line-height: 1.5;
     color: rgba(255, 255, 255, 0.8);
     margin: 0;
+}
+
+/* "Made by Keboola" attribution lockup at the foot of the brand panel.
+   Logo paths use currentColor so the wordmark renders white on the
+   coloured features panel. */
+.login-made-by {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-5);
+    color: rgba(255, 255, 255, 0.8);
+    font-size: var(--text-sm);
+}
+
+.login-made-by .made-by-logo {
+    height: 26px;
+    width: auto;
+    color: white;
 }
 
 /* Right side: Login card */
@@ -1795,8 +3097,8 @@ a.slack-badge:hover {
 
 .login-page .btn-google:hover {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-    border-color: #c4c4c4;
-    background-color: #fafafa;
+    border-color: var(--border-dark);
+    background-color: var(--background);
 }
 
 .login-page .btn-google:active {
@@ -1849,6 +3151,21 @@ a.slack-badge:hover {
 .login-page .btn-secondary:hover {
     background-color: var(--background);
     border-color: var(--text-secondary);
+}
+
+/* Login-card width constraints — provider buttons + inline error banner
+   sit centred at 280px max-width so they line up with the card's content
+   column. Previously these widths were carried inline on each element
+   (`style="max-width: 280px"`); pulled into the stylesheet so markup can
+   compose `.btn .btn-primary/secondary .btn-block .login-provider-btn`
+   via `ds.button(klass=...)`. */
+.login-page .login-provider-btn {
+    max-width: 280px;
+}
+.login-page .login-error {
+    max-width: 280px;
+    margin: 0 auto var(--space-4);
+    text-align: left;
 }
 
 /* Responsive: Tablet */
@@ -2109,7 +3426,11 @@ a.slack-badge:hover {
     font-weight: 600;
     font-size: 16px;
 }
-.app-header-logo svg { display: block; }
+.app-header-logo svg {
+    display: block;
+    max-height: 40px;
+    width: auto;
+}
 a.app-header-logo:focus-visible {
     outline: 2px solid var(--primary, #6366f1);
     outline-offset: 2px;
@@ -2158,22 +3479,43 @@ a.app-header-logo:focus-visible {
     border: 2px solid var(--border, #e5e7eb);
 }
 
+/* Top-nav entries. Both <a class="app-nav-link"> and
+   <button class="app-nav-link app-nav-menu-trigger"> share this rule
+   so the Admin dropdown trigger renders identical to its siblings —
+   same font, color, padding, hover, active state. The button-element
+   resets (background/border/font-family) flow from here, so
+   .app-nav-menu-trigger no longer needs to strip <button> chrome
+   separately. */
 .app-nav-link {
-    font-size: 13px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 14px;
     font-weight: 500;
-    color: var(--text-secondary, #6b7280);
+    font-family: inherit;
+    color: var(--text-secondary);
     text-decoration: none;
-    padding: 6px 12px;
+    padding: 8px 14px;
     border-radius: 8px;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    line-height: 1.2;
     transition: all 0.15s ease;
 }
 .app-nav-link:hover {
-    color: var(--text-primary, #111827);
-    background: var(--border-light, #f3f4f6);
+    color: var(--primary-dark);
+    background: var(--primary-light);
 }
-.app-nav-link.is-active {
-    color: var(--primary, #6366f1);
-    background: var(--primary-light, #eef2ff);
+.app-nav-link.is-active,
+.app-nav-link[aria-expanded="true"] {
+    color: var(--primary-dark);
+    background: var(--primary-light);
+}
+.app-nav-link:focus { outline: none; }
+.app-nav-link:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
 }
 
 .app-btn-logout {
@@ -2231,33 +3573,65 @@ a.app-header-logo:focus-visible {
     text-decoration: none; border-radius: 6px;
 }
 .app-user-menu-item:hover { background: var(--border-light, #f3f4f6); }
-.app-user-menu-item.is-active { background: rgba(0, 115, 209, 0.08); color: var(--primary, #0073D1); font-weight: 500; }
+.app-user-menu-item.is-active { background: var(--primary-light); color: var(--primary); font-weight: 500; }
+/* Onboarding launcher — the "?" help icon in the header that re-opens the
+   guided tour. Borderless icon button that sits next to the user menu. */
+.app-onboarding-launch {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 34px; height: 34px; padding: 0;
+    border: 0; border-radius: 8px; background: transparent;
+    color: var(--text-secondary, #6b7280); cursor: pointer;
+}
+.app-onboarding-launch:hover { background: var(--border-light, #f3f4f6); color: var(--text-primary, #111827); }
+.app-onboarding-launch:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
+
+/* ── Theme toggle — Light / Dark / System segmented control in the user menu.
+   Built only from tokens that flip under [data-theme="dark"] (--surface,
+   --surface-dim, --border, --text-*, --shadow-sm), so it themes itself in both
+   modes with no dark-specific rules. Wiring: app.js → window.__agnesTheme. ── */
+.app-user-menu-sep { height: 1px; background: var(--border-light, #f3f4f6); margin: 6px 4px; }
+.app-theme-toggle { padding: 6px 8px 4px; }
+.app-theme-toggle-label {
+    display: block; margin-bottom: 6px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px;
+    color: var(--text-secondary, #6b7280);
+}
+.app-theme-toggle-options {
+    display: flex; gap: 3px; padding: 3px;
+    background: var(--surface-dim, #f0f2f6);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+}
+.app-theme-toggle-btn {
+    flex: 1; border: 1px solid transparent; border-radius: 6px;
+    padding: 5px 6px;
+    font: inherit; font-size: 12px; line-height: 1.4;
+    color: var(--text-secondary, #6b7280);
+    background: transparent; cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.app-theme-toggle-btn:hover { color: var(--text-primary, #111827); }
+.app-theme-toggle-btn.is-active {
+    background: var(--surface, #fff);
+    border-color: var(--border, #e5e7eb);
+    color: var(--text-primary, #111827);
+    font-weight: 600;
+    box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.08));
+}
+.app-theme-toggle-btn:focus-visible { outline: 2px solid var(--ds-primary, #2ea877); outline-offset: 2px; }
 
 /* ── Admin nav dropdown — same vocabulary as user menu, scoped under nav links ── */
 .app-nav-menu { position: relative; display: inline-flex; }
-.app-nav-menu-trigger {
-    display: inline-flex; align-items: center; gap: 4px;
-    background: none;
-    /* Strip the default <button> chrome — the .app-nav-link class above
-       supplies the visual; the button element only carries semantics. */
-    border: 0;
-    color: inherit;
-    font: inherit;
-    cursor: pointer;
-}
-.app-nav-menu-trigger:focus { outline: none; }
-.app-nav-menu-trigger:focus-visible {
-    outline: 2px solid var(--primary, #0073D1);
-    outline-offset: 2px;
-}
-.app-nav-menu-trigger[aria-expanded="true"] {
-    background: var(--border-light, #f3f4f6);
-}
+/* .app-nav-menu-trigger styling flows entirely from .app-nav-link above.
+   The trigger class is kept in markup as a hook for app.js dropdown
+   wiring and for targeting the chevron rotation below. */
 .app-nav-menu-chevron { color: currentColor; transition: transform 0.15s ease; }
 .app-nav-menu-trigger[aria-expanded="true"] .app-nav-menu-chevron { transform: rotate(180deg); }
 .app-nav-menu-panel {
     position: absolute; top: calc(100% + 8px); right: 0;
     min-width: 200px;
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
     background: var(--surface, #fff);
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 10px;
@@ -2272,7 +3646,65 @@ a.app-header-logo:focus-visible {
     text-decoration: none; border-radius: 6px;
 }
 .app-nav-menu-item:hover { background: var(--border-light, #f3f4f6); }
-.app-nav-menu-item.is-active { background: rgba(0, 115, 209, 0.08); color: var(--primary, #0073D1); font-weight: 500; }
+.app-nav-menu-item.is-active { background: var(--primary-light); color: var(--primary-dark); font-weight: 500; }
+.admin-menu-separator { margin: 4px 8px; border: 0; border-top: 1px solid var(--border, #e5e7eb); }
+/* Section header inside the admin dropdown — non-clickable, small-caps,
+   sitting in a light gray band so each named group (Activity Center /
+   Users & Access / Data / Agent Experience / Server) reads as a
+   visually contained cluster. The negative horizontal margins extend
+   the band edge-to-edge inside the panel (panel has 6px padding;
+   matching -6px here). Rounded top corners on the first header line
+   up with the panel's own border-radius so the first band tucks
+   into the top of the panel cleanly. */
+.app-nav-menu-section {
+    background: var(--border-light, #f3f4f6);
+    margin: 8px -6px 4px;
+    padding: 6px 12px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary, #6b7280);
+    font-weight: 700;
+}
+.app-nav-menu-section:first-child {
+    margin-top: -6px;
+    border-radius: 10px 10px 0 0;
+}
+.app-nav-menu-section + .app-nav-menu-item { margin-top: 4px; }
+
+/* <details data-section=...> group wrapper — visually identical to the
+   pre-collapse render, but each section can fold up. <summary> reuses
+   the .app-nav-menu-section style and gets a chevron via :before that
+   rotates 90deg when [open] (no JS for the visual). */
+.app-nav-menu-group { margin: 0; }
+.app-nav-menu-group > summary.app-nav-menu-section {
+    cursor: pointer;
+    user-select: none;
+    list-style: none;       /* hide native disclosure triangle (most browsers) */
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.app-nav-menu-group > summary.app-nav-menu-section::-webkit-details-marker {
+    display: none;          /* WebKit fallback */
+}
+.app-nav-menu-group > summary.app-nav-menu-section::before {
+    content: "›";
+    font-size: 12px;
+    line-height: 1;
+    color: var(--text-secondary, #6b7280);
+    transition: transform 0.12s ease;
+}
+.app-nav-menu-group[open] > summary.app-nav-menu-section::before {
+    transform: rotate(90deg);
+}
+/* First-section rounded corners stayed on the original first-child rule,
+   but the wrapper <details> is now the first child — re-apply on the
+   nested <summary>. */
+.app-nav-menu-group:first-of-type > summary.app-nav-menu-section {
+    margin-top: -6px;
+    border-radius: 10px 10px 0 0;
+}
 
 @media (max-width: 720px) {
     .app-header { padding: 0 16px; gap: 8px; }
@@ -2285,12 +3717,11 @@ a.app-header-logo:focus-visible {
    dashboard's `.main` dimensions so /dashboard, /marketplace, and the
    marketplace detail pages all align. Add `page-shell` to a page's root
    wrapper to opt in. */
-.container:has(.page-shell) {
-    max-width: 1280px;
-    margin: 0 auto;
-    padding: 28px 32px 48px;
-}
-.container:has(.page-shell) > main { margin: 0; padding: 0; }
+/* `.page-shell` opt-in is now redundant — the canonical `.container`
+   already provides the 1280px max-width + `16px 32px 48px` padding +
+   stripped `<main>` defaults that this rule used to add. Kept as a
+   no-op marker so existing templates that opt in continue to render
+   the same as everything else. */
 
 
 /* ==============================================================
@@ -2315,14 +3746,14 @@ a.app-header-logo:focus-visible {
 
 /* Callouts — boxed inline notice with colored left border. */
 .callout {
-    border-left: 4px solid #0073D1;
-    background: #E6F3FC;
+    border-left: 4px solid var(--primary);
+    background: var(--primary-light);
     color: #111827;
     padding: 12px 16px;
     border-radius: 6px;
     margin: 12px 0;
 }
-.callout-info    { border-left-color: #0073D1; background: #E6F3FC; }
+.callout-info    { border-left-color: var(--primary); background: var(--primary-light); }
 .callout-warn    { border-left-color: #C2410C; background: #FED7AA; }
 .callout-success { border-left-color: #047857; background: #D1FAE5; }
 .callout-danger  { border-left-color: #B91C1C; background: #FEE2E2; }
@@ -2376,7 +3807,7 @@ a.app-header-logo:focus-visible {
 /* Anchor styled as primary button. */
 a.news-cta {
     display: inline-block;
-    background: #0073D1;
+    background: var(--primary);
     color: white !important;       /* override link colors on /home */
     text-decoration: none !important;
     padding: 9px 18px;
@@ -2481,12 +3912,12 @@ a.news-cta:hover { background: #0056A3; }
    drop `<section class="news-hero">` anywhere — /home perex, /news
    body, /admin/news preview. */
 .news-hero {
-    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+    background: linear-gradient(135deg, var(--primary) 0%, #0056A3 100%);
     color: white;
     border-radius: 16px;
     padding: 28px 32px;
     margin: 18px 0;
-    box-shadow: 0 8px 24px rgba(0, 86, 163, 0.18);
+    box-shadow: 0 8px 24px rgba(31, 138, 94, 0.18);
 }
 .news-hero .eyebrow {
     font-size: 11px;
@@ -2621,3 +4052,1331 @@ a.news-cta:hover { background: #0056A3; }
     margin-bottom: 16px;
 }
 .format-guide .back-link:hover { color: var(--primary, #6366f1); }
+
+/* =====================================================
+   Canonical button family (Task 4)
+   .btn + .btn-primary | .btn-secondary | .btn-ghost | .btn-danger
+                       + .btn-sm | .btn-lg
+
+   Base .btn, .btn-primary, .btn-secondary, .btn-sm come from the
+   absorbed style.css block above (no change needed — they already use
+   the new tokens via the legacy-alias layer). This section appends
+   selector-list aliases for legacy class names (   .btn-secondary-v2, .btn-ghost-v2, .modal-btn) and defines the new
+   variants (.btn-ghost, .btn-danger, .btn-lg) that the legacy stylesheet
+   didn't ship.
+
+   Aliases removed in Task 16 once templates migrate to canonical names.
+   Cascade-order note: this section is the LAST in the file, so it wins
+   over both the absorbed legacy rules AND any earlier v2-suffixed rules
+   (e.g. .btn-primary-v2 hover color in the absorbed block). Adding
+   per-page <style> overrides will still beat this on equal-specificity
+   selectors due to source order — Tasks 8–14 strip those.
+   ===================================================== */
+
+.btn-primary {
+    background-color: var(--ds-primary);
+    color: #fff;
+    border: 1px solid var(--ds-primary);
+    transition: all 0.15s ease;
+}
+.btn-primary:hover,
+.btn-primary-v2:hover,
+.modal-btn.primary:hover {
+    background-color: var(--ds-primary-dark);
+    border-color: var(--ds-primary-dark);
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--ds-primary) 30%, transparent);
+}
+
+.btn-secondary {
+    background-color: var(--surface);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+}
+.btn-secondary:hover,
+.btn-secondary-v2:hover,
+.modal-btn:not(.primary):not(.danger):hover {
+    background-color: var(--border-light);
+}
+
+.btn-ghost {
+    background-color: transparent;
+    color: var(--text-secondary);
+    border: 1px solid transparent;
+}
+.btn-ghost:hover,
+.btn-ghost-v2:hover {
+    background-color: var(--border-light);
+    color: var(--text-primary);
+}
+
+/* When the ds.button macro composes variant='ghost' with klass='btn-link'
+ * (the 3 auth pages — login_email, password_reset, password_setup —
+ * use this combo for "Forgot Password?" / "Back to Login" affordances
+ * that should look like links, not buttons), the cascade default would
+ * let .btn-ghost (defined later in this file) override .btn-link's
+ * blue with text-secondary grey. Boost specificity (0,0,3,0 beats the
+ * single-class rules above) to keep the link color in that case.
+ * Devin review on PR #375 flagged this contrast regression. */
+.btn.btn-ghost.btn-link {
+    color: var(--primary);
+}
+.btn.btn-ghost.btn-link:hover {
+    color: var(--primary-dark);
+    text-decoration: underline;
+    background-color: transparent;
+}
+
+.btn-danger {
+    background-color: #fff;
+    color: var(--error);
+    border: 1px solid var(--error);
+}
+.btn-danger:hover,
+.modal-btn.danger:hover {
+    background-color: var(--error);
+    color: #fff;
+}
+
+/* `.btn-warning` removed — the single use in admin_marketplaces.html
+   (system-confirm modal Confirm button) was destructive in spirit (fans
+   out a forced grant to every principal) and now renders via .btn-danger.
+   The 4 canonical variants (primary / secondary / ghost / danger) cover
+   every honest CTA without inventing a 5th amber-fill axis. */
+
+/* `.btn-required` — amber-disabled affordance for the "already in stack,
+   mandated by your org" state on catalog_package_detail + memory_domain_detail.
+   Always paired with the `disabled` attribute, so the base `.btn:disabled`
+   rule below applies its opacity wash on top of the amber accent. Uses the
+   canonical --ds-accent-warn-* vocabulary so a future warn-palette tweak
+   propagates here. */
+.btn-required {
+    background: var(--ds-accent-warn-bg);
+    color: var(--ds-accent-warn-ink);
+    border: 1px solid var(--ds-accent-warn-line);
+    cursor: not-allowed;
+}
+
+.btn-lg { padding: 12px 20px; font-size: var(--text-md); }
+
+/* `.info-panel-accent` — emitted by `ds.info_panel_accent(accent='…')`.
+   Canonical replacement for `.mp-curator-block`-style aside panels. The
+   `--{accent}` modifier supplies the surface tokens. Four canonical
+   accents reuse the `--ds-accent-{info,warn,success,danger}-*` family;
+   bespoke pages can layer additional modifiers locally. */
+.info-panel-accent {
+    border: 1px solid var(--ds-border);
+    border-left-width: 4px;
+    border-radius: 8px;
+    padding: 14px 18px;
+    background: var(--ds-surface);
+    color: var(--ds-text-primary);
+}
+.info-panel-accent__title {
+    font-size: var(--text-md);
+    font-weight: 600;
+    margin: 0 0 6px;
+    color: inherit;
+}
+.info-panel-accent__body { font-size: var(--text-sm); line-height: 1.55; }
+.info-panel-accent--info {
+    background: var(--ds-accent-info-bg);
+    color: var(--ds-accent-info-ink);
+    border-left-color: var(--ds-accent-info-line);
+}
+.info-panel-accent--warn {
+    background: var(--ds-accent-warn-bg);
+    color: var(--ds-accent-warn-ink);
+    border-left-color: var(--ds-accent-warn-line);
+}
+.info-panel-accent--success {
+    background: var(--ds-accent-success-bg);
+    color: var(--ds-accent-success-ink);
+    border-left-color: var(--ds-accent-success-line);
+}
+.info-panel-accent--danger {
+    background: var(--ds-accent-danger-bg);
+    color: var(--ds-accent-danger-ink);
+    border-left-color: var(--ds-accent-danger-line);
+}
+
+.btn:disabled,
+.btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+
+.btn:focus { outline: none; }
+.btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* =====================================================
+   Canonical form controls (Task 5)
+   .search-input | .filter-bar | .filter-pill | .form-input
+
+   Selector-list aliases for legacy per-page classes (   .marketplaces-search, .kb-search, .filters-card, .pill) so existing
+   markup keeps rendering until migration tasks swap them out.
+   ===================================================== */
+
+.search-input,
+.filter-bar input[type="search"],
+.filter-bar input[type="text"],
+.filter-bar select {
+    height: 36px;
+    padding: 0 var(--space-3);
+    font-family: var(--font-primary);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.search-input::placeholder,
+.users-search::placeholder,
+.marketplaces-search::placeholder,
+.kb-search::placeholder,
+.filter-bar input::placeholder { color: var(--text-muted); }
+
+.search-input:focus,
+.users-search:focus,
+.marketplaces-search:focus,
+.kb-search:focus,
+.filter-bar input:focus,
+.filter-bar select:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: var(--focus-ring);
+}
+
+.filter-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    padding: var(--space-3) var(--space-4);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    margin-bottom: var(--space-4);
+}
+
+.filter-bar > .search-input,
+.filters-card > .search-input { flex: 1 1 240px; min-width: 200px; }
+
+.filter-pill {
+    display: inline-flex;
+    align-items: center;
+    height: 28px;
+    padding: 0 var(--space-3);
+    font-family: var(--font-primary);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+    text-decoration: none;
+}
+
+.filter-pill:hover {
+    background: var(--border-light);
+    color: var(--text-primary);
+}
+
+.filter-pill.is-active,
+.filter-pill[aria-pressed="true"] {
+    background: var(--primary-light);
+    color: var(--primary);
+    border-color: var(--primary);
+}
+
+/* Form input — sibling of .search-input for forms (multi-line capable). */
+.form-input,
+input.form-input,
+select.form-input,
+textarea.form-input {
+    width: 100%;
+    min-height: 36px;
+    padding: var(--space-2) var(--space-3);
+    font-family: var(--font-primary);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+textarea.form-input {
+    min-height: 96px;
+    resize: vertical;
+    font-family: var(--font-mono);
+    line-height: 1.5;
+}
+
+textarea.form-textarea {
+    width: 100%;
+    min-height: 80px;
+    padding: var(--space-2) var(--space-3);
+    font-family: var(--font-primary);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    resize: vertical;
+    line-height: normal;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+textarea.form-textarea:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: var(--focus-ring);
+}
+
+textarea.form-textarea::placeholder { color: var(--text-muted); }
+
+.form-input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: var(--focus-ring);
+}
+
+.form-input::placeholder { color: var(--text-muted); }
+
+/* chip-input widget — set font on the container so the inner input's
+   `font: inherit` inline style picks up the right value */
+.chip-input {
+    font-family: var(--font-primary);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+}
+
+/* =====================================================
+   Page-header primitive (Task 6)
+   .page-header + __main / __title / __subtitle / __actions / __eyebrow
+   + variants: .page-header--hero | .page-header--compact
+   + .tab-strip (paired tab row for marketplace tabs etc.)
+   ===================================================== */
+
+.page-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-4);
+    margin: var(--space-6) 0 var(--space-5);
+    flex-wrap: wrap;
+}
+
+.page-header__main { min-width: 0; flex: 1 1 auto; }
+
+.page-header__title {
+    margin: 0;
+    font-size: 22px;
+    font-weight: var(--font-semibold);
+    color: var(--text-primary);
+    line-height: 1.2;
+}
+
+.page-header__subtitle {
+    margin: var(--space-2) 0 0;
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.page-header__eyebrow {
+    margin: 0 0 var(--space-2);
+    font-size: var(--text-xs);
+    font-weight: var(--font-semibold);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-secondary);
+}
+
+.page-header__actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+}
+
+/* Hero variant — gradient background, larger title, light eyebrow.
+   Tuned to match the look of admin_tokens.html's per-page .tokens-hero
+   (which analysts already liked): tighter padding, 14px radius, soft
+   blue glow shadow. Applied across all primary-content pages so the
+   admin section reads as one product instead of a patchwork. */
+.page-header--hero {
+    padding: 28px 32px 24px;
+    /* Spans the parent container width. `.container` already provides
+       the canonical max-width (1280px) + 32px side gutters, so the
+       hero sits flush with the rest of the page content rather than
+       self-constraining. Standalone pages without a `.container`
+       wrapper still get a sensible width via `.container--wide` /
+       `.container--narrow` modifiers on their own wrappers. */
+    margin: 0 0 var(--space-5);
+    box-sizing: border-box;
+    /* Hero gradient — `--ds-hero-bg` / `--ds-hero-bg-deep` flip
+       between themes (navy by default, blue under
+       `data-theme="blue"`). Markup and class names don't change. */
+    background: linear-gradient(135deg, var(--ds-hero-bg) 0%, var(--ds-hero-bg-deep) 100%);
+    color: #fff;
+    border-radius: 14px;
+    /* Shadow tint follows the gradient via `--ds-hero-shadow`. */
+    box-shadow: 0 4px 16px var(--ds-hero-shadow);
+    position: relative;
+    overflow: hidden;
+}
+.page-header--hero .page-header__main { color: inherit; }
+.page-header--hero .page-header__title {
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: #fff;
+    margin: 0 0 6px;
+}
+.page-header--hero .page-header__subtitle {
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 13.5px;
+    margin: 6px 0 0;
+    max-width: 720px;
+}
+.page-header--hero .page-header__eyebrow {
+    /* Eyebrow accent follows the theme: mint-green on navy
+       (default) or translucent white on blue. `--ds-hero-eyebrow`
+       is set per-theme in design-tokens.css. */
+    color: var(--ds-hero-eyebrow);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    margin: 0 0 6px;
+}
+.page-header--hero .page-header__actions a,
+.page-header--hero .page-header__actions button {
+    color: #fff;
+}
+/* Any anchor anywhere inside the gradient hero — default `--primary`
+   blue would disappear on the blue background, so force a white,
+   underlined link with full contrast. Applies without needing a
+   per-page class. */
+.page-header--hero a {
+    color: #fff;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.page-header--hero a:hover { color: rgba(255, 255, 255, 0.85); }
+/* `<code>` chips inside the gradient hero — translucent white pill
+   with white amber-yellow text so they read as code samples
+   against the navy background. The global `code` rule sets a
+   dark `color: var(--text-primary)` that turned chips into dark
+   text on a faint white pill (invisible on navy). */
+.page-header--hero code {
+    background: rgba(255, 255, 255, 0.18);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    color: #ffd866;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 1px 6px;
+    border-radius: 4px;
+}
+@media (max-width: 640px) {
+    .page-header--hero { padding: 24px 20px 20px; border-radius: 12px; }
+    .page-header--hero .page-header__title { font-size: 22px; }
+}
+
+/* Compact variant — for dense admin index pages that have many controls
+   already and don't need vertical generosity. Smaller title, tighter
+   spacing, no border. */
+.page-header--compact {
+    margin: var(--space-4) 0 var(--space-3);
+}
+.page-header--compact .page-header__title { font-size: 18px; }
+
+/* Tab strip — the secondary row pattern used by /marketplace?tab=… and
+   similar tabbed pages. Sits below the .page-header (or inside it on
+   hero-variant pages). */
+.tab-strip {
+    display: flex;
+    gap: var(--space-1);
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: var(--space-5);
+}
+
+.tab-strip__item {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-3);
+    font-family: var(--font-primary);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+    color: var(--text-secondary);
+    text-decoration: none;
+    background: transparent;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    cursor: pointer;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.tab-strip__item:hover { color: var(--text-primary); }
+
+.tab-strip__item.is-active,
+.tab-strip__item[aria-selected="true"] {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+}
+
+/* =====================================================
+   Data display + feedback primitives (Task 7)
+   .data-table (+ --compact) | .empty-state | .toast | .stat-card
+
+   Selector-list aliases for legacy per-page tables (   .gp-table, .marketplaces-table, .audit-table) so existing markup
+   keeps rendering until migration tasks swap them out.
+   ===================================================== */
+
+.data-table,
+.ad-table,
+.ea-table,
+.md-table,
+.members-table,
+.obs-table,
+.overview-stats-table,
+.registry-table,
+.sample-table,
+.sched-table,
+.sess-table,
+.sub-table,
+.subs-table,
+.ud-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    font-variant-numeric: tabular-nums;
+}
+
+.data-table thead,
+.ad-table thead,
+.ea-table thead,
+.md-table thead,
+.members-table thead,
+.obs-table thead,
+.overview-stats-table thead,
+.registry-table thead,
+.sample-table thead,
+.sched-table thead,
+.sess-table thead,
+.sub-table thead,
+.subs-table thead,
+.ud-table thead {
+    background: var(--border-light);
+}
+
+.data-table th,
+.ad-table th,
+.ea-table th,
+.md-table th,
+.members-table th,
+.obs-table th,
+.overview-stats-table th,
+.registry-table th,
+.sample-table th,
+.sched-table th,
+.sess-table th,
+.sub-table th,
+.subs-table th,
+.ud-table th {
+    padding: var(--space-3) var(--space-4);
+    text-align: left;
+    font-size: var(--text-xs);
+    font-weight: var(--font-semibold);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.data-table td,
+.ad-table td,
+.ea-table td,
+.md-table td,
+.members-table td,
+.obs-table td,
+.overview-stats-table td,
+.registry-table td,
+.sample-table td,
+.sched-table td,
+.sess-table td,
+.sub-table td,
+.subs-table td,
+.ud-table td {
+    padding: var(--space-3) var(--space-4);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-light);
+    vertical-align: middle;
+}
+
+.data-table tbody tr:last-child td,
+.ad-table tbody tr:last-child td,
+.ea-table tbody tr:last-child td,
+.md-table tbody tr:last-child td,
+.members-table tbody tr:last-child td,
+.obs-table tbody tr:last-child td,
+.overview-stats-table tbody tr:last-child td,
+.registry-table tbody tr:last-child td,
+.sample-table tbody tr:last-child td,
+.sched-table tbody tr:last-child td,
+.sess-table tbody tr:last-child td,
+.sub-table tbody tr:last-child td,
+.subs-table tbody tr:last-child td,
+.ud-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.data-table tbody tr:hover,
+.ad-table tbody tr:hover,
+.ea-table tbody tr:hover,
+.md-table tbody tr:hover,
+.members-table tbody tr:hover,
+.obs-table tbody tr:hover,
+.overview-stats-table tbody tr:hover,
+.registry-table tbody tr:hover,
+.sample-table tbody tr:hover,
+.sched-table tbody tr:hover,
+.sess-table tbody tr:hover,
+.sub-table tbody tr:hover,
+.subs-table tbody tr:hover,
+.ud-table tbody tr:hover {
+    background: var(--border-light);
+}
+
+/* Compact modifier — for dense lists like /admin/activity (audit log). */
+.data-table--compact th,
+.data-table--compact td {
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--text-xs);
+}
+
+/* =====================================================
+   .empty-state — for "no records" / "no results" panels
+   ===================================================== */
+
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-8) var(--space-6);
+    text-align: center;
+    background: var(--surface);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-lg);
+    color: var(--text-secondary);
+}
+
+.empty-state__icon {
+    font-size: 32px;
+    opacity: 0.5;
+    line-height: 1;
+}
+
+.empty-state__title {
+    margin: 0;
+    font-size: var(--text-md);
+    font-weight: var(--font-medium);
+    color: var(--text-primary);
+}
+
+.empty-state__description {
+    margin: 0;
+    max-width: 480px;
+    font-size: var(--text-sm);
+    line-height: 1.5;
+}
+
+.empty-state__actions {
+    margin-top: var(--space-3);
+    display: flex;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+/* =====================================================
+   .toast — global notification surface
+   Paired with window.appToast({kind, msg, timeout}) in app.js
+   ===================================================== */
+
+.toast-container {
+    position: fixed;
+    right: var(--space-5);
+    bottom: var(--space-5);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    z-index: 9999;
+    pointer-events: none;
+}
+
+.toast {
+    pointer-events: auto;
+    min-width: 240px;
+    max-width: 360px;
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-elevated);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    cursor: pointer;
+    animation: toast-in 200ms ease;
+}
+
+.toast.is-success { border-left: 3px solid var(--success); }
+.toast.is-warning { border-left: 3px solid var(--warning); }
+.toast.is-error   { border-left: 3px solid var(--error); }
+.toast.is-info    { border-left: 3px solid var(--primary); }
+
+@keyframes toast-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* =====================================================
+   .stat-card — for dashboard metric tiles
+   ===================================================== */
+
+.stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+}
+
+.stat-card__label {
+    font-size: var(--text-xs);
+    font-weight: var(--font-semibold);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+}
+
+.stat-card__value {
+    font-size: 28px;
+    font-weight: var(--font-semibold);
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+}
+
+.stat-card__hint {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+}
+
+.stat-card__icon {
+    font-size: 18px;
+    opacity: 0.6;
+}
+
+/* Variant: with primary accent. */
+.stat-card--accent {
+    border-color: var(--primary);
+    background: var(--primary-light);
+}
+.stat-card--accent .stat-card__value { color: var(--primary); }
+
+/* Stat row container — gap-spaced grid for the dashboard tile row. */
+.stat-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: var(--space-3);
+    margin-bottom: var(--space-5);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Design-system additions driven by .interface-design/system.md
+   ─────────────────────────────────────────────────────────────────────
+   Net-new canonical class families consumed by the `ds.button`,
+   `ds.panel`, `ds.tabs`, and `ds.table` macros in _components.html.
+   Append-only; nothing above this block was modified. Order:
+     1. `.btn--icon`           — icon-only square modifier
+     2. `.ds-card` family      — canonical card/panel surface + accent
+     3. `.ds-table` family     — canonical table + 15 legacy aliases
+     4. `.badge--*` modifiers  — accent vocabulary for badges
+     5. `.code-inline`         — mint inline-code chip
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ─── Icon-only button modifier ────────────────────────────────────────
+   Squares the button so an icon glyph (✕, ↡, etc.) sits centred without
+   the default 10×20 padding making it rectangular. Composes with any
+   .btn-* variant: `.btn .btn-ghost .btn--icon .btn-sm`. */
+.btn--icon {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    flex-shrink: 0;
+}
+.btn--icon.btn-sm { width: 28px; height: 28px; }
+
+/* ─── Cards — canonical .ds-card family ───────────────────────────────
+   `.ds-card`            white surface, 1px border, 8px radius, 24px pad,
+                         whisper shadow. The standard admin/data panel.
+   `.ds-card__title`     <h3> styling inside the card.
+   `.ds-card--accent`    adds a 4px solid left border in `--ds-card-accent`,
+                         defaults to `--ds-border`. Pair with an accent
+                         helper modifier (`--info`/`--success`/`--warn`/
+                         `--danger`) for the unified status vocabulary.
+   `.ds-card[data-clickable]`  opt-in hover lift (cards stay still by
+                         default — calm). */
+.ds-card {
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-6);
+    box-shadow: var(--shadow-sm);
+    margin-bottom: 0;
+}
+.ds-card > :first-child { margin-top: 0; }
+.ds-card > :last-child  { margin-bottom: 0; }
+
+.ds-card h2,
+.ds-card h3,
+.ds-card__title {
+    margin: 0 0 var(--space-3);
+    font-size: var(--text-md);
+    font-weight: var(--font-semibold);
+    color: var(--ds-text-primary);
+    line-height: 1.3;
+}
+
+.ds-card p,
+.ds-card__body {
+    margin: 0 0 var(--space-3);
+    color: var(--ds-text-secondary);
+    line-height: 1.55;
+}
+
+.ds-card--accent {
+    --ds-card-accent: var(--ds-border);
+    border-left: 4px solid var(--ds-card-accent);
+}
+.ds-card--info    { --ds-card-accent: var(--ds-accent-info-line); }
+.ds-card--success { --ds-card-accent: var(--ds-accent-success-line); }
+.ds-card--warn    { --ds-card-accent: var(--ds-accent-warn-line); }
+.ds-card--danger  { --ds-card-accent: var(--ds-accent-danger-line); }
+
+.ds-card[data-clickable] {
+    cursor: pointer;
+    text-decoration: none;
+    color: inherit;
+    transition:
+        border-color var(--transition-fast),
+        box-shadow var(--transition-fast),
+        transform var(--transition-fast);
+}
+.ds-card[data-clickable]:hover {
+    border-color: var(--ds-text-muted);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+.ds-card[data-clickable]:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* ─── Tables — canonical .ds-table family ─────────────────────────────
+   `.ds-table`            border-collapse, 1px row borders, 8px radius
+                          on the wrapping border, sticky header,
+                          `--ds-surface-dim` row hover (matches button
+                          hover), tabular-nums.
+   `.ds-table--dense`     reduced cell padding for reference tables.
+   `.ds-table--zebra`     optional row striping for long lists.
+   `td.num` / `th.num`    right-aligned monospace column.
+   Legacy aliases below   so admin pages can keep their existing class
+                          names while inheriting the canonical look. */
+.ds-table,
+:is(.data-table, .ad-table, .ea-table, .md-table, .members-table,
+    .obs-table, .overview-stats-table, .registry-table, .sample-table,
+    .sched-table, .sess-table, .sub-table, .subs-table, .ud-table,
+    .versions) {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    font-variant-numeric: tabular-nums;
+}
+.ds-table thead th,
+:is(.data-table, .ad-table, .ea-table, .md-table, .members-table,
+    .obs-table, .overview-stats-table, .registry-table, .sample-table,
+    .sched-table, .sess-table, .sub-table, .subs-table, .ud-table,
+    .versions) thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    text-align: left;
+    padding: var(--space-3) var(--space-4);
+    background: var(--ds-surface-dim);
+    border-bottom: 1px solid var(--ds-border);
+    font-weight: var(--font-semibold);
+    color: var(--ds-text-muted);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    white-space: nowrap;
+}
+.ds-table tbody td,
+:is(.data-table, .ad-table, .ea-table, .md-table, .members-table,
+    .obs-table, .overview-stats-table, .registry-table, .sample-table,
+    .sched-table, .sess-table, .sub-table, .subs-table, .ud-table,
+    .versions) tbody td {
+    padding: var(--space-2) var(--space-4);
+    border-bottom: 1px solid var(--border-light);
+    vertical-align: top;
+    color: var(--ds-text-primary);
+}
+.ds-table tbody tr:last-child td,
+:is(.data-table, .ad-table, .ea-table, .md-table, .members-table,
+    .obs-table, .overview-stats-table, .registry-table, .sample-table,
+    .sched-table, .sess-table, .sub-table, .subs-table, .ud-table,
+    .versions) tbody tr:last-child td {
+    border-bottom: none;
+}
+.ds-table tbody tr:hover,
+:is(.data-table, .ad-table, .ea-table, .md-table, .members-table,
+    .obs-table, .overview-stats-table, .registry-table, .sample-table,
+    .sched-table, .sess-table, .sub-table, .subs-table, .ud-table,
+    .versions) tbody tr:hover {
+    background: var(--ds-surface-dim);
+}
+.ds-table th.num, .ds-table td.num,
+:is(.data-table, .ad-table, .ea-table, .md-table, .members-table,
+    .obs-table, .overview-stats-table, .registry-table, .sample-table,
+    .sched-table, .sess-table, .sub-table, .subs-table, .ud-table,
+    .versions) th.num,
+:is(.data-table, .ad-table, .ea-table, .md-table, .members-table,
+    .obs-table, .overview-stats-table, .registry-table, .sample-table,
+    .sched-table, .sess-table, .sub-table, .subs-table, .ud-table,
+    .versions) td.num {
+    text-align: right;
+    font-family: var(--ds-font-mono);
+    font-variant-numeric: tabular-nums;
+}
+
+.ds-table--dense thead th,
+.data-table--compact thead th { padding: var(--space-1) var(--space-3); }
+.ds-table--dense tbody td,
+.data-table--compact tbody td  { padding: 6px var(--space-3); }
+
+.ds-table--zebra tbody tr:nth-child(even) td {
+    background: var(--ds-surface-dim);
+}
+
+/* ─── Badges — accent vocabulary ──────────────────────────────────────
+   The canonical .badge above gets neutral chrome (chip on
+   `--ds-surface-dim`). These modifiers add the cross-pattern accent
+   vocabulary so a "success" badge reads identically to a
+   `.ds-card--success` accent and a `.flash-success`. */
+.badge--info {
+    background: var(--ds-accent-info-bg);
+    color: var(--ds-accent-info-ink);
+}
+.badge--success {
+    background: var(--ds-accent-success-bg);
+    color: var(--ds-accent-success-ink);
+}
+.badge--warn {
+    background: var(--ds-accent-warn-bg);
+    color: var(--ds-accent-warn-ink);
+}
+.badge--danger {
+    background: var(--ds-accent-danger-bg);
+    color: var(--ds-accent-danger-ink);
+}
+
+/* ─── Inline-code chip — `.code-inline` ──────────────────────────────
+   Mint chip applied to `<code>` outside of `<pre>` blocks. Replaces
+   the legacy grey-blue inline-code styling. Used by `ds.code-inline`
+   class callsites; bare `<code>` keeps its existing rules from
+   elsewhere in this stylesheet (those are scoped to specific
+   parents so they don't conflict). */
+.code-inline {
+    display: inline-block;
+    padding: 1px 6px;
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+    border-radius: var(--radius-sm);
+    font-family: var(--ds-font-mono);
+    font-size: 0.9em;
+}
+
+/* =====================================================
+   /news page — page chrome
+   body.news-page class added by a DOMContentLoaded
+   script in news.html so these rules only apply there.
+   ===================================================== */
+body.news-page { background: var(--background); }
+body.news-page .container { max-width: 1280px; padding: 0 var(--space-8) var(--space-10); }
+body.news-page main { color: var(--text-primary); line-height: 1.6; }
+
+body.news-page .news-card {
+    margin-top: var(--space-7);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    padding: var(--space-8) var(--space-9);
+}
+body.news-page .news-meta {
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin-bottom: var(--space-4);
+}
+body.news-page .news-intro {
+    font-size: var(--text-md);
+    color: var(--text-secondary);
+    line-height: 1.55;
+    margin-bottom: 22px;
+    padding-bottom: 22px;
+    border-bottom: 1px solid var(--border-light);
+}
+body.news-page .news-intro p { margin: 0 0 8px; }
+body.news-page .news-intro p:last-child { margin-bottom: 0; }
+
+body.news-page .news-empty {
+    text-align: center;
+    padding: var(--space-12) var(--space-6);
+    color: var(--text-secondary);
+}
+body.news-page .news-empty h2 {
+    margin-bottom: var(--space-2);
+    color: var(--text-primary);
+}
+
+/* =====================================================
+   /me/profile page — read-only account view
+   ===================================================== */
+.container:has(.profile-page) { max-width: 1100px; }
+.profile-page {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: var(--space-7) var(--space-2) var(--space-10);
+    box-sizing: border-box;
+    font-family: var(--font-primary);
+}
+@media (max-width: 720px) {
+    .profile-page { padding: 20px 0 var(--space-8); }
+}
+.section-card {
+    border-radius: var(--radius-xl);
+    padding: var(--space-5) var(--space-6);
+    margin-bottom: var(--space-4);
+}
+.section-card h3 {
+    margin: 0 0 14px;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-secondary);
+}
+details.section-card > summary {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.account-grid {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 10px 18px;
+    font-size: var(--text-base);
+}
+.account-grid .k {
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-weight: 600;
+    align-self: center;
+}
+.account-grid .v {
+    color: var(--text-primary);
+    font-weight: 500;
+    word-break: break-word;
+}
+.groups-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+.group-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--background);
+}
+.group-row .group-name {
+    font-size: var(--text-base);
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 0;
+    flex: 0 1 auto;
+}
+.group-row .group-id {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    word-break: break-all;
+    flex: 1 1 auto;
+}
+.role-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1p5, 6px);
+    margin: 0 0 4px;
+}
+.role-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1p5, 6px);
+    padding: 4px 10px;
+    border-radius: var(--radius-full);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    background: color-mix(in srgb, var(--ds-primary) 10%, transparent);
+    color: var(--primary);
+    border: 1px solid color-mix(in srgb, var(--ds-primary) 25%, transparent);
+}
+.role-chip.is-core { background: rgba(16, 185, 129, 0.10); color: #047857; border-color: rgba(16, 185, 129, 0.25); }
+.grant-list, .group-roles-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+.grant-row, .group-roles-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--background);
+    flex-wrap: wrap;
+}
+.grant-row .grant-key, .group-roles-row .group-roles-name {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.group-roles-row .group-roles-name { font-family: var(--font-primary); }
+.grant-row .grant-source {
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    padding: 2px var(--space-2);
+    border-radius: var(--radius-sm);
+    background: rgba(107, 114, 128, 0.12);
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+.grant-row .grant-source.source-direct { background: color-mix(in srgb, var(--ds-primary) 12%, transparent); color: var(--primary); }
+.grant-row .grant-source.source-auto { background: rgba(245, 158, 11, 0.12); color: #b45309; }
+.grant-row .grant-meta {
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    margin-left: auto;
+}
+.group-roles-row .group-roles-arrow { color: var(--text-secondary); font-weight: 400; }
+.group-roles-row .role-chips { margin: 0; }
+.empty-state {
+    padding: 20px 0 4px;
+    color: var(--text-secondary);
+    font-size: var(--text-base);
+    line-height: 1.55;
+}
+.empty-state .empty-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+}
+.effective-help {
+    margin-top: var(--space-3);
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    line-height: 1.55;
+}
+
+/* Group chip — semantic role pill used on /me/profile and /admin/users.
+   Name-match wins: Admin/Everyone keep their canonical color even when
+   their server-side origin is google_sync. */
+.group-chip {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: var(--radius-full);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    background: #ede9fe;
+    color: #6d28d9;
+}
+.group-chip.is-admin       { background: #fef3c7; color: #92400e; font-weight: 600; }
+.group-chip.is-everyone    { background: #f3f4f6; color: #4b5563; }
+.group-chip.is-google_sync { background: #dcfce7; color: #166534; }
+.group-chip.is-custom      { background: #ede9fe; color: #6d28d9; }
+
+/* =====================================================
+   Error pages (4xx / 5xx)
+   ===================================================== */
+.error-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+    padding: var(--space-5) var(--space-3);
+}
+.error-card {
+    max-width: 36rem;
+    width: 100%;
+    padding: var(--space-9) var(--space-8);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-md);
+    text-align: center;
+}
+.error-code {
+    font-size: 4rem;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--ds-accent-danger-ink);
+    margin-bottom: var(--space-1);
+    letter-spacing: -0.02em;
+}
+.error-title {
+    margin: 0 0 var(--space-3);
+    font-size: var(--text-xl);
+    font-weight: 600;
+}
+.error-message {
+    color: var(--text-secondary);
+    margin: 0 0 var(--space-5);
+    line-height: 1.5;
+}
+.error-path {
+    margin: 0 0 var(--space-6);
+    font-size: var(--text-sm);
+}
+.error-path-label { color: var(--text-secondary); margin-right: var(--space-1); }
+.error-path code,
+.error-traceback pre,
+.error-request-id code {
+    background: var(--background);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+}
+.error-path code,
+.error-request-id code { padding: 0.15rem 0.4rem; font-size: 0.85em; }
+.error-traceback {
+    text-align: left;
+    margin: 0 0 var(--space-6);
+    padding: var(--space-3) var(--space-4);
+    background: var(--background);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+}
+.error-traceback summary {
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    user-select: none;
+}
+.error-traceback pre {
+    margin: var(--space-3) 0 0;
+    font-size: var(--text-sm);
+    line-height: 1.4;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.error-request-id {
+    margin: 0 0 var(--space-5);
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+.error-request-id-label { margin-right: var(--space-1); }
+.error-request-id code { user-select: all; }
+.error-actions {
+    display: flex;
+    gap: var(--space-3);
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+/* =====================================================================
+   Modal — global structural styles (#497 §1).
+
+   Promoted verbatim from the page-local <style> in admin_users.html so
+   the shared modal helper (static/js/modal.js → window.confirmModal /
+   alertModal / promptModal) renders correctly on EVERY page, not just
+   the three admin pages that hand-rolled these rules. admin_users.html /
+   admin_tokens.html / admin_marketplaces.html still ship identical
+   page-local copies; those are redundant now but harmless (same rules)
+   and can be stripped in a later cleanup pass.
+
+   Buttons inside .modal-actions use the canonical .btn / .btn-* variants
+   (via the ds.button macro or modal.js), so no .modal-btn rules here.
+   ===================================================================== */
+.modal-backdrop {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+    display: none; align-items: center; justify-content: center; z-index: 1000;
+    padding: 16px;
+}
+.modal-backdrop.is-open { display: flex; }
+.modal-card {
+    background: var(--surface, #fff); border-radius: 12px;
+    padding: 24px; width: 100%; max-width: 440px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+}
+.modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+.modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+.modal-card label { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary, #6b7280); margin: 12px 0 6px; }
+.modal-card input[type="text"], .modal-card input[type="email"], .modal-card input[type="password"], .modal-card select {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px; font-size: 13px; box-sizing: border-box;
+    background: var(--surface, #fff); color: var(--text-primary, #111827);
+}
+.modal-card input:focus, .modal-card select:focus { outline: 2px solid var(--ds-primary, #6366f1); outline-offset: -1px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+/* Preserve newlines in helper-supplied messages — native alert/confirm/
+   prompt rendered \n as line breaks (e.g. bulleted error lists). The
+   page-local admin_users copy never needed this (its modals are static). */
+.modal-card h3, .modal-card p.sub { white-space: pre-wrap; }

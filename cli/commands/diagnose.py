@@ -1,11 +1,15 @@
 """Diagnose command — agnes diagnose."""
 
 import json
+from pathlib import Path
+from typing import Optional
 
 import typer
 
 from cli.client import api_get
-from cli.config import get_sync_state
+from cli.config import get_sync_state, get_workspace_root
+from cli.lib.jira_partition_check import detect_jira_partition_layout
+from cli.lib.session_health import session_upload_health
 
 diagnose_app = typer.Typer(help="System diagnostics")
 
@@ -26,6 +30,20 @@ def diagnose(
             "operator is verifying a migration."
         ),
     ),
+    include_operator_checks: bool = typer.Option(
+        False,
+        "--include-operator-checks",
+        help=(
+            "Aggregate the headline status across operator-side checks "
+            "(stale tables, session-pipeline cadence, BQ billing config) "
+            "in addition to analyst-side ones. Default off when the caller "
+            "is an analyst — those checks aren't actionable from a fresh "
+            "analyst install and reading `Overall: degraded` on first run "
+            "erodes trust in the install (issue #345 B). Admins/operators "
+            "auto-promote to the full headline based on the server-reported "
+            "caller_role."
+        ),
+    ),
 ):
     """Run comprehensive system diagnostics. AI-agent friendly output."""
     # If a subcommand was invoked (e.g. `agnes diagnose system`), defer to it
@@ -34,18 +52,26 @@ def diagnose(
         return
 
     checks = []
+    # ``caller_role`` is present only on servers shipping the
+    # role-aware health fields (issue #345 B). Legacy servers don't
+    # ship it; absent role disables audience filtering so we don't
+    # regress against an older server with the full-aggregation
+    # contract the rest of the CLI was written against.
+    caller_role: Optional[str] = None
 
     # 1. API reachability
     try:
         resp = api_get("/api/health")
         health = resp.json()
-        checks.append({"name": "api", "status": "ok", "latency_ms": resp.elapsed.total_seconds() * 1000})
+        checks.append({"name": "api", "status": "ok", "audience": "analyst", "latency_ms": resp.elapsed.total_seconds() * 1000})
 
         # Detailed health (auth required) for service-level checks
         try:
             params = {"include": "schema"} if include_schema else None
             resp_d = api_get("/api/health/detailed", params=params)
             detailed = resp_d.json()
+            if "caller_role" in detailed:
+                caller_role = detailed["caller_role"]
             for svc_name, svc_data in detailed.get("services", {}).items():
                 check = {"name": svc_name, "status": svc_data.get("status", "unknown")}
                 check.update({k: v for k, v in svc_data.items() if k != "status"})
@@ -54,12 +80,55 @@ def diagnose(
             # Auth may not be configured — minimal reachability is sufficient
             pass
     except Exception as e:
-        checks.append({"name": "api", "status": "error", "detail": str(e)})
+        checks.append({"name": "api", "status": "error", "audience": "analyst", "detail": str(e)})
+
+    # Issue #244: detect sessions on disk that aren't reaching the server by
+    # comparing transcripts in the workspace's Claude Code folder against the
+    # upload-ledger entries. Anchored on the `workspace_root` config key (the
+    # same anchor `agnes push` uses). Adds one `session-upload` check entry.
+    try:
+        ws_root = get_workspace_root()
+        if ws_root:
+            cap = session_upload_health(Path(ws_root))
+        else:
+            cap = {
+                "name": "session-upload",
+                "status": "info",
+                "detail": "no workspace_root in config — run `agnes init`",
+            }
+        cap.setdefault("audience", "analyst")
+        checks.append(cap)
+    except Exception as e:
+        checks.append({"name": "session-upload", "status": "info", "audience": "analyst", "detail": f"health check failed: {e}"})
+
+    # Issue #394: detect Jira partition layout (flat YYYY-MM vs hive month=*/).
+    # Resolves the Jira data directory from the DATA_DIR env var (mirrors how
+    # the connector itself locates its output); defaults to /data/extracts/jira.
+    # Operator-only audience — analysts can't act on a partition migration.
+    try:
+        import os
+        _data_root = Path(os.environ.get("DATA_DIR", "/data"))
+        _jira_dir = _data_root / "extracts" / "jira"
+        jira_check = detect_jira_partition_layout(_jira_dir)
+        jira_check.setdefault("audience", "operator")
+        checks.append(jira_check)
+    except Exception as e:
+        checks.append({"name": "jira-partition-format", "status": "info", "audience": "operator", "detail": f"partition check failed: {e}"})
 
     # Determine overall — `info` and `unknown` surface in the per-check
     # output but never promote the headline (issue #178).
+    #
+    # Audience-aware headline (issue #345 B): when the server reports a
+    # ``caller_role``, analysts see analyst-only aggregation by default;
+    # operators auto-promote to the full headline; analysts can manually
+    # opt in via ``--include-operator-checks``. Legacy servers that don't
+    # ship ``caller_role`` keep the original full-aggregation behaviour
+    # — no analyst-only filtering until the server tags checks.
+    role_aware = caller_role is not None
+    operator_mode = (not role_aware) or include_operator_checks or caller_role != "analyst"
+    relevant = checks if operator_mode else [c for c in checks if c.get("audience") == "analyst"]
     overall = "healthy"
-    for c in checks:
+    for c in relevant:
         if c["status"] == "error":
             overall = "unhealthy"
             break
@@ -74,9 +143,16 @@ def diagnose(
         if c.get("stale_tables"):
             for t in c["stale_tables"]:
                 actions.append(f"Table '{t}' is stale. Run: agnes server logs scheduler | grep {t}")
+        if c["name"] == "session-upload" and c["status"] == "warning":
+            actions.append(
+                "Session upload may be failing. Run `agnes push --dry-run` to see "
+                "which transcripts would upload and confirm the workspace_root anchor "
+                "(check `agnes diagnose` / config) resolves to your Claude Code folder."
+            )
 
     result = {
         "overall": overall,
+        "caller_role": caller_role,
         "checks": checks,
         "suggested_actions": actions,
     }
@@ -84,7 +160,21 @@ def diagnose(
     if as_json:
         typer.echo(json.dumps(result, indent=2))
     else:
-        typer.echo(f"Overall: {overall}")
+        # When analysts are filtered to analyst-only aggregation, surface
+        # any operator-side warnings as a secondary line so they're not
+        # invisible — they just don't get to drive the headline.
+        operator_warns = [
+            c for c in checks
+            if c.get("audience") == "operator" and c.get("status") in ("warning", "error")
+        ]
+        if not operator_mode and operator_warns:
+            typer.echo(
+                f"Overall: {overall} (analyst-side); "
+                f"{len(operator_warns)} operator-side "
+                f"{'warning' if len(operator_warns) == 1 else 'warnings'}"
+            )
+        else:
+            typer.echo(f"Overall: {overall}")
         for c in checks:
             detail = ""
             if "detail" in c:

@@ -1,0 +1,162 @@
+name: E2E Nightly (agent-browser smokes)
+
+# Runs the browser-driven smoke scripts in scripts/e2e/ against a freshly
+# built agnes image. Catches regressions the pytest suite can't (rendering
+# failures, JS errors, click-through flows). Failures open a tracking
+# issue tagged `agent-browser-nightly` so the next morning's triage knows
+# something needs attention.
+
+on:
+  schedule:
+    - cron: "30 4 * * *"  # 04:30 UTC — after the regular nightly e2e in ci.yml
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "Run a single script (e.g. smoke_catalog.sh); blank = all."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One job per smoke script — parallel + per-script failure isolation
+        # so a flake in one area doesn't blame the whole run.
+        script:
+          - smoke_catalog.sh
+          - smoke_admin_activity.sh
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Filter by manual input (skip if mismatch)
+        if: github.event_name == 'workflow_dispatch' && inputs.script != '' && inputs.script != matrix.script
+        run: |
+          echo "Skipping ${{ matrix.script }} — manual run targeted '${{ inputs.script }}'."
+          echo "SKIP_MATRIX=1" >> $GITHUB_ENV
+
+      - name: Set up Node (for agent-browser)
+        if: env.SKIP_MATRIX != '1'
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install agent-browser CLI
+        if: env.SKIP_MATRIX != '1'
+        run: |
+          npm i -g agent-browser
+          agent-browser install --headless
+
+      - name: Build + start agnes stack
+        if: env.SKIP_MATRIX != '1'
+        run: |
+          # docker-compose.yml declares `env_file: .env` as required; CI
+          # ships no .env. Generate a random per-run JWT_SECRET_KEY so the
+          # app's v0.56.0 fail-closed guard (refuses to start in production
+          # without an explicit ≥32-char key; see app/auth/jwt.py and
+          # PR #483) is satisfied. Random rather than hard-coded so the
+          # value can't be mistaken for a real key in logs or screenshots,
+          # and so two parallel runs never share the same minted token.
+          # All other runtime values are still provided by the compose
+          # `environment:` block (DATA_DIR, AGNES_TEMP_DIR, …).
+          echo "JWT_SECRET_KEY=$(openssl rand -hex 32)" > .env
+          # --wait + healthcheck (defined in docker-compose.yml, hits
+          # /api/health) is the same pattern as ci.yml; cleaner than
+          # the prior hand-rolled curl loop, which polled the wrong
+          # path (/healthz) and silently passed on timeout.
+          docker compose up -d --build --wait --wait-timeout 120
+
+      - name: Dump docker logs on stack failure
+        if: failure() && env.SKIP_MATRIX != '1'
+        run: docker compose logs app | tail -200
+
+      - name: Seed E2E test user
+        if: env.SKIP_MATRIX != '1'
+        # DuckDB takes an exclusive POSIX lock on /data/state/system.duckdb
+        # for the writer process — running the seed via `docker compose exec`
+        # while uvicorn (PID 1) holds the lock fails with IO Error. Pattern:
+        # let the app boot (schema bootstrap seeds the Admin group); then
+        # stop it (lock released), run the seed in a one-shot container
+        # (`docker compose run --rm`) sharing the data volume, start app
+        # again, and wait for /api/health to recover. Seed is gated on
+        # AGNES_E2E_SEED=1 — defence-in-depth so a stray `docker exec` on
+        # a production image (the seed script is shipped via `COPY . .`)
+        # cannot mint an Admin user without an explicit opt-in.
+        # See docs/superpowers/specs/2026-05-25-smoke-login-flow-design.md.
+        run: |
+          docker compose stop app
+          docker compose run --rm -T -e AGNES_E2E_SEED=1 app python scripts/seed_e2e_user.py
+          docker compose start app
+          # Poll /api/health rather than `compose up --wait` (which only
+          # honours --wait on the up command, not start). 60 s ceiling
+          # mirrors the upstream `--wait-timeout 120` halved — restart
+          # without rebuild is materially faster than initial boot.
+          timeout 60 sh -c 'until curl -fsS http://localhost:8000/api/health >/dev/null 2>&1; do sleep 2; done'
+
+      - name: Export E2E credentials for smoke scripts
+        if: env.SKIP_MATRIX != '1'
+        # Single source of truth: import constants from scripts/seed_e2e_user.py
+        # via the running app container so _login.sh never drifts from the seed.
+        run: |
+          E2E_USER_EMAIL=$(docker compose exec -T app python -c 'from scripts.seed_e2e_user import E2E_USER_EMAIL; print(E2E_USER_EMAIL)')
+          E2E_USER_PASSWORD=$(docker compose exec -T app python -c 'from scripts.seed_e2e_user import E2E_USER_PASSWORD; print(E2E_USER_PASSWORD)')
+          echo "E2E_USER_EMAIL=$E2E_USER_EMAIL" >> $GITHUB_ENV
+          echo "::add-mask::$E2E_USER_PASSWORD"
+          echo "E2E_USER_PASSWORD=$E2E_USER_PASSWORD" >> $GITHUB_ENV
+
+      - name: Run smoke ${{ matrix.script }}
+        if: env.SKIP_MATRIX != '1'
+        env:
+          ARTIFACTS_DIR: ${{ github.workspace }}/e2e-artifacts/${{ matrix.script }}
+          E2E_USER_EMAIL: ${{ env.E2E_USER_EMAIL }}
+          E2E_USER_PASSWORD: ${{ env.E2E_USER_PASSWORD }}
+        run: |
+          mkdir -p "$ARTIFACTS_DIR"
+          bash "scripts/e2e/${{ matrix.script }}" http://localhost:8000
+
+      - name: Upload screenshots
+        if: always() && env.SKIP_MATRIX != '1'
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-artifacts-${{ matrix.script }}
+          path: e2e-artifacts/${{ matrix.script }}/
+          if-no-files-found: ignore
+
+      - name: Tear down docker-compose
+        if: always() && env.SKIP_MATRIX != '1'
+        run: docker compose down -v || true
+
+  open-tracking-issue:
+    needs: smoke
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: File a tracking issue
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = `[e2e-nightly] smoke failure — ${new Date().toISOString().slice(0, 10)}`;
+            const body = [
+              `Nightly agent-browser smoke run failed.`,
+              ``,
+              `**Run:** ${runUrl}`,
+              `**Commit:** ${context.sha}`,
+              ``,
+              `Check the per-script logs + the \`e2e-artifacts-*\` uploads`,
+              `(screenshots from the failing step) on the workflow page.`,
+              ``,
+              `_Filed automatically by .github/workflows/e2e-nightly.yml._`,
+            ].join("\n");
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["agent-browser-nightly", "bug"],
+            });

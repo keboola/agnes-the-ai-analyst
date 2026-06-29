@@ -1,48 +1,57 @@
-{% extends "base.html" %}
+{% extends "base_page.html" %}
 {% block title %}Users — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
+{% set page_hero_eyebrow = "Users & Access" %}
+{% set page_hero_title = "Users" %}
+{% set page_hero_subtitle = "Manage analyst accounts and group membership." %}
+
+{% block head_extra %}
 <style>
-  /* Override base.html's 800px .container cap for this wide table. */
-  .container:has(.users-page) { max-width: none; padding: 24px 16px; }
-  .users-page { max-width: 1400px; margin: 0 auto; padding: 0; }
   .users-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
   }
-  .users-title { margin: 0; font-size: 22px; font-weight: 600; }
-  .users-search {
-    flex: 1; max-width: 360px;
-    padding: 8px 12px 8px 36px;
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 8px;
-    font-size: 13px;
-    background: var(--surface, #fff) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 12px center;
-  }
-  .users-search:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
 
-  .users-table-wrap {
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 12px;
-    overflow-x: auto;
+  /* Total-users metric — server-rendered snapshot at first paint. */
+  .users-metric {
+    display: inline-flex; flex-direction: column; gap: 4px;
+    background: var(--surface, #fff); border: 1px solid var(--border, #e5e7eb);
+    border-radius: 10px; padding: 14px 20px; margin-bottom: 20px; min-width: 140px;
   }
-  .users-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .users-table thead th {
-    text-align: left; padding: 12px 16px;
-    background: var(--border-light, #f9fafb);
-    border-bottom: 1px solid var(--border, #e5e7eb);
-    font-weight: 600; color: var(--text-secondary, #6b7280);
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  .users-metric-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text-secondary, #6b7280);
   }
-  .users-table tbody td {
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border-light, #f3f4f6);
-    vertical-align: middle;
+  .users-metric-value {
+    font-size: 24px; font-weight: 700; color: var(--text-primary, #111827);
+    font-variant-numeric: tabular-nums;
   }
-  .users-table tbody tr:last-child td { border-bottom: none; }
-  .users-table tbody tr.is-deactivated { opacity: 0.55; }
-  .users-table tbody tr:hover { background: var(--border-light, #fafafa); }
+
+  /* Footnote under the table: tells the user the list is a capped window
+     and the search reaches accounts beyond it. */
+  .users-hint {
+    margin: 12px 2px 0; font-size: 12px; color: var(--text-secondary, #6b7280);
+  }
+
+  /* Search + group filter share the toolbar's left side; the Add-user
+     button stays pinned right via the toolbar's space-between. The select
+     mirrors the canonical `.search-input` control box (height 36px + the
+     same design tokens) so it sits flush beside the search field instead
+     of at a mismatched height. */
+  .users-filters { display: flex; align-items: center; gap: var(--space-2, 8px); flex-wrap: wrap; }
+  .group-filter {
+    height: 36px; padding: 0 var(--space-3, 12px);
+    font-family: var(--font-primary); font-size: var(--text-sm, 13px);
+    color: var(--text-primary, #111827); background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb); border-radius: var(--radius-md, 8px);
+    cursor: pointer; max-width: 220px;
+    transition: border-color var(--transition-fast, 0.15s), box-shadow var(--transition-fast, 0.15s);
+  }
+  .group-filter:focus {
+    outline: none; border-color: var(--ds-primary, #6366f1);
+    box-shadow: var(--focus-ring, 0 0 0 3px rgba(99, 102, 241, 0.25));
+  }
+
 
   /* Whole user-info cell is the click target for the detail page —
      anchor wraps avatar + name + email so the entire block lights up
@@ -55,7 +64,7 @@
     cursor: pointer;
   }
   .user-cell:hover .user-meta .name,
-  .user-cell.no-name:hover .email { color: var(--primary, #4338ca); }
+  .user-cell.no-name:hover .email { color: var(--ds-primary, #4338ca); }
   .user-avatar {
     width: 32px; height: 32px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
@@ -110,7 +119,7 @@
   }
   .toggle input:checked + .toggle-slider { background: #10b981; }
   .toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
-  .toggle input:focus-visible + .toggle-slider { outline: 2px solid var(--primary, #6366f1); outline-offset: 2px; }
+  .toggle input:focus-visible + .toggle-slider { outline: 2px solid var(--ds-primary, #6366f1); outline-offset: 2px; }
 
   .date-cell { color: var(--text-secondary, #6b7280); font-size: 12px; white-space: nowrap; }
 
@@ -159,18 +168,8 @@
     border-radius: 8px; font-size: 13px; box-sizing: border-box;
     background: var(--surface, #fff); color: var(--text-primary, #111827);
   }
-  .modal-card input:focus, .modal-card select:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
+  .modal-card input:focus, .modal-card select:focus { outline: 2px solid var(--ds-primary, #6366f1); outline-offset: -1px; }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
-  .modal-btn {
-    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-    cursor: pointer; transition: all 0.15s;
-  }
-  .modal-btn:hover { background: var(--border-light, #f9fafb); }
-  .modal-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
-  .modal-btn.primary:hover { filter: brightness(1.05); }
-  .modal-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
-  .modal-btn.danger:hover { filter: brightness(1.05); }
 
   .token-reveal {
     margin: 12px 0;
@@ -182,11 +181,19 @@
   }
   .token-reveal code { flex: 1; }
   .copy-btn {
-    background: var(--primary, #6366f1); color: #fff; border: none;
+    background: var(--ds-primary, #6366f1); color: #fff; border: none;
     padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 500;
     cursor: pointer; flex-shrink: 0;
   }
-  .copy-btn.copied { background: #10b981; }
+  .copy-btn.copied { background: var(--ds-accent-success-line); }
+
+  /* SMTP-not-configured warning note inside link modals */
+  [data-no-smtp] {
+    color: #92400e !important;
+    background: #fef3c7;
+    border-radius: 6px;
+    padding: 6px 10px;
+  }
 
   /* Toast */
   .toast-stack {
@@ -205,16 +212,34 @@
   .toast.success { background: #047857; }
   .toast.error { background: #b91c1c; }
 </style>
+{% endblock %}
 
+{% block page %}
+{# Design-system component macros — toolbar "+ Add user" + 9 modal action
+   buttons across 5 modals render via `ds.button` (auto-imported by base_ds).
+   JS-generated per-row table actions stay page-local. #}
 <div class="users-page">
-  <div class="users-toolbar">
-    <h2 class="users-title">Users</h2>
-    <input id="user-search" type="search" class="users-search" placeholder="Filter by email or name…" autocomplete="off">
-    <button class="modal-btn primary" id="open-create-btn">+ Add user</button>
+
+  <div class="users-metric">
+    <span class="users-metric-label">Total users</span>
+    <span class="users-metric-value">{{ total_users }}</span>
   </div>
 
-  <div class="users-table-wrap">
-    <table class="users-table" id="users-table">
+  <div class="users-toolbar">
+    <div class="users-filters">
+      <input id="user-search" type="search" class="search-input" placeholder="Search by email or name…" autocomplete="off">
+      <select id="group-filter" class="group-filter" aria-label="Filter by group">
+        <option value="">All groups</option>
+        {% for g in groups %}
+        <option value="{{ g.id }}">{{ g.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {{ ds.button('+ Add user', variant='primary', id='open-create-btn') }}
+  </div>
+
+  <div class="data-table-wrap">
+    <table class="data-table" id="users-table">
       <thead>
         <tr>
           <th>User</th>
@@ -233,6 +258,8 @@
       <div>Click <strong>Add user</strong> to invite the first one.</div>
     </div>
   </div>
+
+  <p class="users-hint" id="users-hint" role="status" aria-live="polite"></p>
 </div>
 
 <!-- Create user modal -->
@@ -254,8 +281,9 @@
       Send invitation link (generates setup token, emails it if transport is configured)
     </label>
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="create-modal">Cancel</button>
-      <button class="modal-btn primary" id="confirm-create-btn">Create</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="create-modal"') }}
+      {{ ds.button('Create', variant='primary', id='confirm-create-btn') }}
     </div>
   </div>
 </div>
@@ -268,8 +296,9 @@
     <label for="setpwd-input">New password (min 8 chars)</label>
     <input id="setpwd-input" type="password" autocomplete="new-password">
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="setpwd-modal">Cancel</button>
-      <button class="modal-btn primary" id="confirm-setpwd-btn">Set password</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="setpwd-modal"') }}
+      {{ ds.button('Set password', variant='primary', id='confirm-setpwd-btn') }}
     </div>
   </div>
 </div>
@@ -285,7 +314,8 @@
       <button class="copy-btn" id="reset-copy-btn">Copy</button>
     </div>
     <div class="modal-actions">
-      <button class="modal-btn primary" data-close-modal="reset-modal">Done</button>
+      {{ ds.button('Done', variant='primary',
+                   attrs='data-close-modal="reset-modal"') }}
     </div>
   </div>
 </div>
@@ -301,7 +331,8 @@
       <button class="copy-btn" id="invite-copy-btn">Copy</button>
     </div>
     <div class="modal-actions">
-      <button class="modal-btn primary" data-close-modal="invite-modal">Done</button>
+      {{ ds.button('Done', variant='primary',
+                   attrs='data-close-modal="invite-modal"') }}
     </div>
   </div>
 </div>
@@ -312,8 +343,9 @@
     <h3 id="confirm-title">Are you sure?</h3>
     <p class="sub" id="confirm-text"></p>
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="confirm-modal">Cancel</button>
-      <button class="modal-btn danger" id="confirm-ok-btn">Confirm</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="confirm-modal"') }}
+      {{ ds.button('Confirm', variant='danger', id='confirm-ok-btn') }}
     </div>
   </div>
 </div>
@@ -327,6 +359,9 @@ const API = "/api/users";
 // → "Legal") so the membership cell stays readable. Same shape used on
 // /admin/groups; keeping the surface identical.
 const GOOGLE_GROUP_PREFIX = {{ config.AGNES_GOOGLE_GROUP_PREFIX | tojson }};
+// Server-rendered snapshot of the total user count — drives the "showing 10
+// of N" footnote. A snapshot (not live), same as the metric card.
+const TOTAL_USERS = {{ total_users | tojson }};
 
 function esc(s) {
   const d = document.createElement("div");
@@ -350,18 +385,11 @@ function deriveDisplayName(fullEmail) {
   if (!s) return local;
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
-function fmtDate(s) { return s ? s.slice(0, 16).replace("T", " ") : "—"; }
-function initials(u) {
-  const src = (u.name || u.email || "?").trim();
-  const parts = src.split(/[\s@.]+/).filter(Boolean);
-  return ((parts[0]?.[0] || "?") + (parts[1]?.[0] || "")).toUpperCase();
-}
-function avatarColor(s) {
-  // Stable hash → hue
-  let h = 0;
-  for (const c of s || "") h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return `hsl(${h % 360}, 55%, 50%)`;
-}
+function fmtDate(s) { return s ? (window.AgnesTime.formatDateTime(s) || "—") : "—"; }
+// Avatar initials + stable color come from the shared AgnesIdentity helper
+// (app/web/static/js/identity.js) so the circle matches /admin/adoption.
+function initials(u) { return AgnesIdentity.initials(u.name || u.email); }
+function avatarColor(s) { return AgnesIdentity.avatarColor(s); }
 
 // ── Toast ──
 function toast(msg, kind = "") {
@@ -414,34 +442,52 @@ function confirmModal(text) {
 }
 
 // ── State ──
-let allUsers = [];
-let filterText = "";
+// Backend-filtered window: the table never holds the whole user
+// table. Every search / group change refetches a ≤10-row recency slice from
+// GET /api/users, so these just track the active filter for the request +
+// the empty-state copy.
+let currentSearch = "";
+let currentGroup = "";
 
-function renderUsers() {
+function renderUsers(users) {
   const tbody = document.getElementById("users-tbody");
   const loading = document.getElementById("users-loading");
   const empty = document.getElementById("users-empty");
   loading.style.display = "none";
 
-  const ft = filterText.trim().toLowerCase();
-  const filtered = ft
-    ? allUsers.filter(u => (u.email || "").toLowerCase().includes(ft) || (u.name || "").toLowerCase().includes(ft))
-    : allUsers;
+  const hasFilter = !!(currentSearch.trim() || currentGroup);
 
-  if (allUsers.length === 0) {
-    empty.style.display = "block";
+  // Footnote: explain the capped window + point at the search. Hidden when
+  // it adds nothing (everyone already fits, or a filter returned nothing).
+  const hint = document.getElementById("users-hint");
+  if (hasFilter) {
+    hint.textContent = users.length >= 10
+      ? "Showing the first 10 matches — refine your search to narrow it down."
+      : "";
+  } else if (TOTAL_USERS > 10) {
+    hint.textContent = `Showing the 10 most recently registered of ${TOTAL_USERS} users. `
+      + "Use the search above to find anyone who isn't listed here.";
+  } else {
+    hint.textContent = "";
+  }
+  hint.style.display = hint.textContent ? "block" : "none";
+
+  if (users.length === 0) {
     tbody.innerHTML = "";
+    if (hasFilter) {
+      // Filter active but no rows → "no matches", not "no users yet".
+      empty.style.display = "none";
+      const q = currentSearch.trim();
+      tbody.innerHTML = `<tr><td colspan="6" class="users-loading">No matches${q ? ` for "${esc(q)}"` : ""}</td></tr>`;
+    } else {
+      empty.style.display = "block";
+    }
     return;
   }
   empty.style.display = "none";
 
-  if (filtered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="6" class="users-loading">No matches for "${esc(filterText)}"</td></tr>`;
-    return;
-  }
-
   tbody.innerHTML = "";
-  for (const u of filtered) {
+  for (const u of users) {
     const tr = document.createElement("tr");
     if (!u.active) tr.classList.add("is-deactivated");
     const hasName = !!(u.name && u.name !== u.email);
@@ -510,20 +556,34 @@ function renderUsers() {
 }
 
 async function loadUsers() {
+  const loading = document.getElementById("users-loading");
+  loading.textContent = "Loading users…";
+  loading.style.display = "block";
   try {
-    const r = await fetch(API, { credentials: "include" });
+    const params = new URLSearchParams({ limit: "10" });
+    if (currentSearch.trim()) params.set("search", currentSearch.trim());
+    if (currentGroup) params.set("group_id", currentGroup);
+    const r = await fetch(`${API}?${params.toString()}`, { credentials: "include" });
     if (!r.ok) throw new Error("HTTP " + r.status);
-    allUsers = await r.json();
-    renderUsers();
+    renderUsers(await r.json());
   } catch (e) {
-    document.getElementById("users-loading").textContent = "Failed to load users: " + e.message;
+    loading.textContent = "Failed to load users: " + e.message;
+    loading.style.display = "block";
     toast("Failed to load users", "error");
   }
 }
 
+// Debounce keystrokes so we hit the backend once the analyst pauses, not on
+// every character.
+let searchDebounce;
 document.getElementById("user-search").addEventListener("input", e => {
-  filterText = e.target.value;
-  renderUsers();
+  currentSearch = e.target.value;
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(loadUsers, 250);
+});
+document.getElementById("group-filter").addEventListener("change", e => {
+  currentGroup = e.target.value;
+  loadUsers();
 });
 
 async function toggleActive(id, active) {
@@ -549,6 +609,27 @@ async function patch(id, body, successMsg) {
   loadUsers();
 }
 
+// ── Clipboard helper (works in both secure/HTTPS and plain-HTTP contexts) ──
+// navigator.clipboard is only available in secure contexts (HTTPS or localhost).
+// On plain HTTP the property is undefined, so we fall back to the legacy
+// document.execCommand('copy') via a temporary textarea.
+async function copyToClipboard(text) {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  // execCommand fallback for non-secure contexts
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0;";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  const ok = document.execCommand("copy");
+  document.body.removeChild(ta);
+  if (!ok) throw new Error("execCommand copy failed");
+}
+
 // ── Reset password ──
 async function resetPassword(id, email) {
   if (!await confirmModal(`Generate a password-reset link for ${email}?`)) return;
@@ -556,15 +637,20 @@ async function resetPassword(id, email) {
   const data = await r.json().catch(() => ({}));
   if (!r.ok) { toast("Failed: " + (data.detail || r.status), "error"); return; }
   document.getElementById("reset-target").textContent = `For ${email}`;
-  document.getElementById("reset-transport-note").textContent = data.email_sent
-    ? "Email sent. Copy the link below only if you need to deliver it manually."
-    : "Email transport unavailable — send this link to the user directly.";
+  const resetNote = document.getElementById("reset-transport-note");
+  if (data.email_sent) {
+    resetNote.textContent = "Email sent. Copy the link below only if you need to deliver it manually.";
+    resetNote.removeAttribute("data-no-smtp");
+  } else {
+    resetNote.textContent = "⚠ Email transport not configured — copy this link and send it to the user directly.";
+    resetNote.setAttribute("data-no-smtp", "");
+  }
   document.getElementById("reset-token-text").textContent = data.reset_url;
   const copyBtn = document.getElementById("reset-copy-btn");
   copyBtn.textContent = "Copy"; copyBtn.classList.remove("copied");
   copyBtn.onclick = async () => {
     try {
-      await navigator.clipboard.writeText(data.reset_url);
+      await copyToClipboard(data.reset_url);
       copyBtn.textContent = "Copied!"; copyBtn.classList.add("copied");
       setTimeout(() => { copyBtn.textContent = "Copy"; copyBtn.classList.remove("copied"); }, 1500);
     } catch { toast("Copy failed — select the text manually", "error"); }
@@ -628,15 +714,20 @@ document.getElementById("confirm-create-btn").addEventListener("click", async ()
 
 function showInviteLink(email, url, emailSent) {
   document.getElementById("invite-target").textContent = `For ${email}`;
-  document.getElementById("invite-transport-note").textContent = emailSent
-    ? "Invitation email sent. Copy the link below only if you need to deliver it manually."
-    : "Email transport unavailable — send this link to the user directly.";
+  const inviteNote = document.getElementById("invite-transport-note");
+  if (emailSent) {
+    inviteNote.textContent = "Invitation email sent. Copy the link below only if you need to deliver it manually.";
+    inviteNote.removeAttribute("data-no-smtp");
+  } else {
+    inviteNote.textContent = "⚠ Email transport not configured — copy this link and send it to the user directly.";
+    inviteNote.setAttribute("data-no-smtp", "");
+  }
   document.getElementById("invite-url-text").textContent = url;
   const copyBtn = document.getElementById("invite-copy-btn");
   copyBtn.textContent = "Copy"; copyBtn.classList.remove("copied");
   copyBtn.onclick = async () => {
     try {
-      await navigator.clipboard.writeText(url);
+      await copyToClipboard(url);
       copyBtn.textContent = "Copied!"; copyBtn.classList.add("copied");
       setTimeout(() => { copyBtn.textContent = "Copy"; copyBtn.classList.remove("copied"); }, 1500);
     } catch { toast("Copy failed — select the text manually", "error"); }

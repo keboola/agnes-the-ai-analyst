@@ -1,0 +1,2290 @@
+.home-mock {
+    /* Design-system scope — tokens live globally in
+       app/web/static/css/design-tokens.css (loaded by base.html).
+       This rule only applies the typography + base ink that the
+       redesign opts into. */
+    font-family: var(--ds-font);
+    color: var(--ds-text-primary);
+    font-size: 15px;
+    line-height: 1.55;
+}
+.home-mock,
+.home-mock * { font-family: var(--ds-font); }
+.home-mock code, .home-mock kbd, .home-mock pre,
+.home-mock .install-cmd, .home-mock .install-cmd *,
+.home-mock .terminal-body, .home-mock .terminal-body * {
+    font-family: var(--ds-font-mono);
+}
+.home-mock * { box-sizing: border-box; }
+
+.home-mock .install-hero {
+    position: relative;
+    background: linear-gradient(135deg, var(--ds-hero-bg) 0%, var(--ds-hero-bg-deep) 100%);
+    color: var(--ds-hero-ink);
+    border-radius: 16px;
+    padding: 38px 40px;
+    margin-bottom: 22px;
+    box-shadow: var(--ds-shadow-lg);
+}
+/* Subtle green accent strip across the top of the install-hero so the
+   wizard reads as the brand's primary CTA card. */
+.home-mock .install-hero::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--ds-brand-accent) 0%, var(--ds-primary) 60%, transparent 100%);
+    border-top-left-radius: 16px;
+    border-top-right-radius: 16px;
+}
+.home-mock .install-hero-close {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.14);
+    color: white;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+}
+.home-mock .install-hero-close:hover,
+.home-mock .install-hero-close:focus-visible {
+    background: rgba(255, 255, 255, 0.28);
+    outline: none;
+}
+.home-mock .offboard-strip {
+    margin: 0 0 22px;
+    padding: 10px 14px;
+    border: 1px solid var(--ds-border);
+    border-radius: 10px;
+    background: var(--ds-border-light);
+    color: var(--ds-text-secondary);
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+/* `.offboard-strip button` styling moved onto `.btn.btn-secondary.btn-sm`
+   (rendered via `ds.button`). The page-local bg/border/padding rules
+   used to live here; the canonical .btn family supplies them now. */
+.home-mock .install-hero .eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    opacity: 0.85;
+    margin-bottom: 10px;
+}
+.home-mock .install-hero h1 {
+    font-size: 30px;
+    font-weight: 600;
+    letter-spacing: -0.4px;
+    margin-bottom: 12px;
+    line-height: 1.2;
+    color: white;
+}
+.home-mock .install-hero .lead {
+    font-size: 15px;
+    opacity: 0.94;
+    line-height: 1.6;
+    margin-bottom: 22px;
+}
+.home-mock .install-hero .lead strong { font-weight: 600; }
+
+/* ── Getting Started + Overview + Usage modes (added in PR #289) ───
+   Three new content cards rendered between the install-hero and the
+   connector tiles. Getting Started + Usage modes ship in OSS;
+   Overview body comes from instance.overview yaml (operator-owned),
+   hidden when unset. Generic dismiss pattern: any element with
+   `<button class="home-card-close" data-dismiss-key="...">` gets
+   per-device localStorage dismissibility for free. */
+
+.home-mock .home-overview {
+    position: relative;
+    background: white;
+    border: 1px solid var(--ds-border);
+    border-radius: 12px;
+    padding: 22px 24px;
+    margin-bottom: 18px;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+/* `.home-usage` (the Surfaces section) used to inherit the white-card
+   chrome above; in the design spec the section is bare (just header +
+   grid on the page bg), so we leave it un-styled here and only set
+   bottom-margin. */
+.home-mock .home-usage {
+    position: relative;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    margin-bottom: 36px;
+    box-shadow: none;
+}
+/* Install-hero is the scroll target for Getting Started's first row.
+   Offset the anchor jump by the 72px sticky .app-header height + a
+   bit of breathing room so the hero's eyebrow lands cleanly under
+   the header bar. */
+.home-mock .install-hero { scroll-margin-top: 88px; }
+
+.home-mock .home-overview > h2,
+.home-mock .home-usage > header h2 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0 0 6px;
+    color: var(--ds-text-primary);
+}
+.home-mock .home-usage > header p {
+    font-size: 13px;
+    color: var(--ds-text-secondary);
+    margin: 0 0 14px;
+}
+
+.home-mock .home-card-close {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--ds-text-muted);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.home-mock .home-card-close:hover,
+.home-mock .home-card-close:focus-visible {
+    background: var(--ds-border-light);
+    color: var(--ds-text-primary);
+    outline: none;
+}
+
+
+.home-mock .home-overview-body {
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--ds-text-primary);
+}
+.home-mock .home-overview-body p { margin: 0 0 10px; }
+.home-mock .home-overview-body p:last-child { margin-bottom: 0; }
+.home-mock .home-overview-body a { color: var(--ds-primary); }
+
+.home-mock .home-usage-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 12px;
+}
+.home-mock .home-usage-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 14px;
+    border: 1px solid var(--ds-border);
+    border-radius: 10px;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.15s, background 0.15s;
+}
+/* Hover affordance only on the anchor variants (VS Code, Claude
+   Desktop). The Terminal tile renders as a plain <div> — the setup
+   hero above already covers the terminal install path, so a
+   click-through from here would round-trip to content the user just
+   scrolled past. */
+.home-mock a.home-usage-item:hover {
+    border-color: var(--ds-primary);
+    background: var(--ds-primary-light);
+}
+.home-mock .home-usage-item .ico { font-size: 20px; }
+.home-mock .home-usage-item strong { font-weight: 600; }
+.home-mock .home-usage-item span {
+    font-size: 13px;
+    color: var(--ds-text-secondary);
+    line-height: 1.5;
+}
+.home-mock .home-usage-foot {
+    font-size: 13px;
+    color: var(--ds-text-secondary);
+    margin: 0;
+}
+@media (max-width: 720px) {
+    .home-mock .home-usage-grid { grid-template-columns: 1fr; }
+}
+
+.home-mock .what-is {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+    margin-bottom: 18px;
+}
+.home-mock .what-is-item {
+    background: white;
+    border: 1px solid var(--ds-border);
+    border-radius: 12px;
+    padding: 18px 22px;
+    color: inherit;
+    text-decoration: none;
+    display: block;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.home-mock a.what-is-item:hover {
+    border-color: var(--ds-primary);
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--ds-primary) 14%, transparent);
+    transform: translateY(-1px);
+}
+.home-mock .what-is-item .ico { font-size: 22px; margin-bottom: 8px; display: block; }
+.home-mock .what-is-item .ttl {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ds-text-primary);
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.home-mock .what-is-item .ttl .arrow {
+    color: var(--ds-primary);
+    font-weight: 600;
+    transition: transform 0.15s ease;
+}
+.home-mock a.what-is-item:hover .ttl .arrow {
+    transform: translateX(2px);
+}
+.home-mock .what-is-item .desc {
+    font-size: 13px;
+    color: var(--ds-text-secondary);
+    line-height: 1.55;
+}
+
+.home-mock .look-around-lead {
+    font-size: 13px;
+    color: var(--ds-text-secondary);
+    line-height: 1.55;
+    margin: -4px 0 12px;
+}
+.home-mock .look-around-grid {
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    margin-bottom: 22px;
+}
+
+.home-mock .install-block {
+    background: rgba(15, 23, 42, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 12px;
+    padding: 18px 20px;
+}
+.home-mock .install-block + .install-block { margin-top: 14px; }
+.home-mock .os-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+}
+.home-mock .os-tab {
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.60);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 8px 14px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    font-family: inherit;
+}
+.home-mock .os-tab:hover { color: rgba(255, 255, 255, 0.85); }
+.home-mock .os-tab.is-active {
+    color: white;
+    border-bottom-color: #FBBF24;
+}
+/* `[hidden]` UA stylesheet has lower specificity than `.install-cmd { display: flex }`,
+   so we need an explicit override to actually hide the inactive tab panel. */
+.home-mock .install-cmd[hidden] { display: none; }
+.home-mock .install-block .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    opacity: 0.78;
+    margin-bottom: 10px;
+    font-weight: 600;
+}
+.home-mock .install-cmd {
+    background: #0F172A;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 8px;
+    padding: 14px 18px;
+    font-family: var(--ds-font-mono);
+    font-size: 13.5px;
+    color: #FBBF24;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+.home-mock .install-cmd .multiline { display: block; line-height: 1.7; white-space: pre-wrap; flex: 1; }
+.home-mock .install-cmd .copy-btn {
+    background: rgba(255, 255, 255, 0.10);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    padding: 7px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    font-weight: 500;
+    flex-shrink: 0;
+}
+.home-mock .install-cmd .copy-btn:hover { background: rgba(255, 255, 255, 0.18); }
+
+.home-mock .install-note {
+    font-size: 12.5px;
+    color: rgba(255, 255, 255, 0.85);
+    margin-top: 12px;
+    line-height: 1.55;
+}
+/* Inline `<code>` chips inside the blue install-hero (lead paragraphs +
+   install-note prose). Previous rule was `rgba(255,255,255,0.12)` bg +
+   inherited near-white text — barely-visible faint-white film on the
+   blue gradient with low-contrast white text on top (≈2:1, fails WCAG
+   AA). The visual effect read as a muddy bluish blob — the user
+   reported the text as "dark blue/black font" because the chip blended
+   into the hero and the white text lost its edges.
+   Switched to the same amber-on-dark-navy palette as the .install-cmd
+   copy-button boxes below (≈9:1 contrast). Border tint matches the
+   amber accent so chips read as clickable affordances even with the
+   transparent navy bg. */
+.home-mock .install-hero code,
+.home-mock .install-note code,
+.home-mock .install-note > code {
+    background: rgba(15, 23, 42, 0.75);
+    color: #FBBF24;
+    border: 1px solid rgba(251, 191, 36, 0.30);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--ds-font-mono);
+    font-size: 11.5px;
+}
+/* Links inside the blue install-hero need a non-blue color — the default
+   `<a>` style elsewhere on /home renders as `var(--ds-primary)` blue,
+   which is invisible against the hero's blue background. Use the same
+   high-contrast white-with-underline pattern the lead paragraph uses,
+   and bump hover to full white so the affordance stays obvious. */
+.home-mock .install-hero a {
+    color: #ffffff;
+    text-decoration: underline;
+    text-decoration-color: rgba(255, 255, 255, 0.6);
+    text-underline-offset: 2px;
+}
+.home-mock .install-hero a:hover,
+.home-mock .install-hero a:focus {
+    color: #ffffff;
+    text-decoration-color: #ffffff;
+}
+
+.home-mock .section-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--ds-text-secondary);
+    margin: 30px 0 12px;
+}
+
+.home-mock .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    margin-bottom: 18px;
+}
+.home-mock .card {
+    background: white;
+    border: 1px solid var(--ds-border);
+    border-radius: 12px;
+    padding: 22px;
+}
+.home-mock .card h3 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.home-mock .card p { font-size: 13px; color: var(--ds-text-secondary); line-height: 1.55; margin-bottom: 12px; }
+.home-mock .card-list { list-style: none; padding: 0; margin: 0; }
+.home-mock .card-list li {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 0;
+    font-size: 13px;
+    border-bottom: 1px solid var(--ds-border-light);
+}
+.home-mock .card-list li:last-child { border-bottom: none; }
+.home-mock .card-list .num {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--ds-primary-light);
+    color: var(--ds-primary);
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 11px;
+}
+.home-mock .card-list .step-text { flex: 1; line-height: 1.55; }
+.home-mock .card-list .step-text strong { display: block; margin-bottom: 2px; }
+.home-mock .card-list .step-text code {
+    font-family: var(--ds-font-mono);
+    font-size: 11.5px;
+    background: var(--ds-border-light);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--ds-text-primary);
+}
+
+.home-mock .explore-list { list-style: none; padding: 0; margin: 0; }
+.home-mock .explore-list li + li { margin-top: 8px; }
+.home-mock .explore-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    background: var(--ds-border-light);
+    border: 1px solid transparent;
+    border-radius: 8px;
+    text-decoration: none;
+    color: var(--ds-text-primary);
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+.home-mock .explore-item:hover {
+    border-color: var(--ds-primary);
+    background: var(--ds-primary-light);
+}
+.home-mock .explore-item .ico {
+    font-size: 22px;
+    flex-shrink: 0;
+    width: 28px;
+    text-align: center;
+}
+.home-mock .explore-item .explore-text {
+    flex: 1;
+    font-size: 13px;
+    color: var(--ds-text-secondary);
+    line-height: 1.45;
+}
+.home-mock .explore-item .explore-text strong {
+    display: block;
+    color: var(--ds-text-primary);
+    font-size: 13.5px;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+.home-mock .explore-item .arrow {
+    color: var(--ds-primary);
+    font-size: 16px;
+    flex-shrink: 0;
+    font-weight: 600;
+}
+
+.home-mock .advanced-pointer {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 10px;
+    padding: 16px 22px;
+    background: white;
+    border: 1px solid var(--ds-border);
+    border-left: 4px solid var(--ds-primary);
+    border-radius: 12px;
+    text-decoration: none;
+    color: inherit;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.home-mock .advanced-pointer:hover {
+    background: var(--ds-primary-light);
+    border-color: var(--ds-primary);
+}
+.home-mock .advanced-pointer .ico {
+    font-size: 22px;
+    flex-shrink: 0;
+    line-height: 1;
+}
+.home-mock .advanced-pointer-text {
+    flex: 1;
+    font-size: 13px;
+    color: var(--ds-text-secondary);
+    line-height: 1.55;
+}
+.home-mock .advanced-pointer-text strong {
+    display: block;
+    color: var(--ds-text-primary);
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+.home-mock .advanced-pointer .arrow {
+    color: var(--ds-primary);
+    font-size: 16px;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.home-mock .setup-cta-lead {
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.82);
+    margin-bottom: 14px;
+    line-height: 1.55;
+}
+.home-mock .setup-cta-lead code {
+    background: rgba(255, 255, 255, 0.12);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--ds-font-mono);
+    font-size: 11.5px;
+}
+.home-mock .setup-cta-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 14px;
+}
+.home-mock .btn-setup-primary {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    background: var(--ds-hero-cta-bg);
+    color: var(--ds-hero-cta-fg);
+    border: 1px solid var(--ds-hero-cta-bg);
+    border-radius: 6px;
+    padding: 10px 22px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.home-mock .btn-setup-primary:hover {
+    background: var(--ds-hero-cta-bg-hover);
+    color: var(--ds-hero-cta-fg-hover);
+    border-color: var(--ds-hero-cta-bg-hover);
+}
+.home-mock .btn-setup-primary.copied { background: #047857; color: #fff; border-color: #047857; }
+.home-mock .btn-setup-primary[disabled] { opacity: 0.7; cursor: wait; }
+.home-mock .setup-cta-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+.home-mock .setup-cta-hint {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.65);
+}
+.home-mock details.manual-fallback {
+    margin-top: 14px;
+    border-top: 1px solid rgba(255, 255, 255, 0.10);
+    padding-top: 12px;
+}
+.home-mock details.manual-fallback > summary {
+    cursor: pointer;
+    list-style: none;
+    font-size: 12.5px;
+    color: rgba(255, 255, 255, 0.78);
+    padding: 4px 0;
+    user-select: none;
+}
+.home-mock details.manual-fallback > summary::-webkit-details-marker { display: none; }
+.home-mock details.manual-fallback > summary::before {
+    content: "▸ ";
+    display: inline-block;
+    transition: transform 0.15s ease;
+    margin-right: 4px;
+}
+.home-mock details.manual-fallback[open] > summary::before { content: "▾ "; }
+.home-mock .manual-preview-wrap { margin-top: 10px; }
+.home-mock .manual-preview-wrap .setup-preview-pre {
+    background: #0F172A;
+    color: #E2E8F0;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-family: var(--ds-font-mono);
+    font-size: 12.5px;
+    line-height: 1.55;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+}
+/* Override the global `code { background: var(--bg); }` rule so the inner
+   <code> renders white-on-navy instead of dark-on-pale (unreadable). */
+.home-mock .manual-preview-wrap .setup-preview-pre code,
+.home-mock .manual-preview-wrap .setup-preview-code {
+    background: transparent;
+    color: #E2E8F0;
+    padding: 0;
+    border-radius: 0;
+    font-family: inherit;
+    font-size: inherit;
+}
+.home-mock .manual-preview-wrap .placeholder-token {
+    background: rgba(251, 191, 36, 0.20);
+    color: #FBBF24;
+    padding: 0 4px;
+    border-radius: 3px;
+    font-style: italic;
+}
+.home-mock .manual-preview-wrap .token-revealed {
+    background: rgba(16, 185, 129, 0.18);
+    color: #6EE7B7;
+    padding: 0 4px;
+    border-radius: 3px;
+    font-style: normal;
+    word-break: break-all;
+}
+
+/* In-hero (dark) variant: shown for not-onboarded users underneath the
+   inline install steps inside the blue hero. */
+.home-mock .self-mark {
+    margin-top: 16px;
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.85);
+}
+.home-mock .self-mark button {
+    background: rgba(255, 255, 255, 0.15);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.30);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    margin-left: 6px;
+}
+.home-mock .self-mark button:hover { background: rgba(255, 255, 255, 0.25); }
+.home-mock .self-mark button:disabled { opacity: 0.5; cursor: default; }
+.home-mock .self-mark .status { margin-left: 10px; font-style: italic; }
+
+/* Onboarded "steps complete" badge — shown inside the blue hero in
+   place of the hidden Step 1 + Step 2 install-blocks. */
+.home-mock .install-done {
+    margin-top: 4px;
+    margin-bottom: 4px;
+    padding: 12px 16px;
+    background: rgba(255, 255, 255, 0.10);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 10px;
+    color: rgba(255, 255, 255, 0.92);
+    font-size: 13px;
+    line-height: 1.55;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+.home-mock .install-done .check {
+    font-size: 16px;
+    line-height: 1.3;
+    flex-shrink: 0;
+}
+.home-mock .install-done strong { font-weight: 600; color: white; }
+
+/* News perex (admin-edited) — bottom of /home.
+   Keeps the styling within the admin-defined class vocabulary
+   (callout, video-embed) so authors get a predictable surface.
+   Full-width grid classes are intentionally NOT included here —
+   they live on /news where the layout has more room. */
+.home-mock .home-news {
+    margin-top: 28px;
+    background: white;
+    border: 1px solid var(--ds-border);
+    border-radius: 12px;
+    overflow: hidden;     /* keep the green strip's corners rounded */
+}
+.home-mock .home-news-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 22px;
+    background: #D1FAE5;          /* same green as .callout-success */
+    border-bottom: 1px solid #A7F3D0;
+}
+.home-mock .home-news-head h2 {
+    font-size: 14px;
+    font-weight: 600;
+    color: #047857;               /* darker green for contrast on the band */
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+}
+.home-mock .home-news-more {
+    font-size: 13px;
+    font-weight: 500;
+    color: #047857;
+    text-decoration: none;
+}
+.home-mock .home-news-more:hover { text-decoration: underline; }
+.home-mock .home-news-body {
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--ds-text-primary);
+    padding: 18px 22px;
+}
+.home-mock .home-news-body p { margin: 0 0 8px; }
+.home-mock .home-news-body p:last-child { margin-bottom: 0; }
+
+/* Callout, video-embed, news-hero, news-grid-*, news-cta — shared news
+   content vocabulary now lives in app/web/static/style-custom.css under
+   "News content vocabulary (shared)". Editing those rules in one place
+   updates /home perex, /news, and /admin/news preview together. */
+
+.home-mock .install-done code {
+    background: rgba(15, 23, 42, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--ds-font-mono);
+    font-size: 12px;
+    color: #FBBF24;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   Onboarding polish — friction fixes from internal usability testing.
+   Each block is tagged with its priority (P0/P1/P2) — P0 resolves the
+   highest-frequency confusion, P2 is nice-to-have polish.
+   ───────────────────────────────────────────────────────────────── */
+
+/* P0-1 — "Don't have a terminal open?" disclosure inside Step 1's
+   blue install-block. Yellow accent matches Claude footer mode dots
+   so it reads as a hint, not an error. */
+.home-mock details.terminal-howto {
+    margin-top: 10px;
+    padding: 8px 12px;
+    background: rgba(251, 191, 36, 0.10);
+    border: 1px solid rgba(251, 191, 36, 0.30);
+    border-radius: 8px;
+}
+.home-mock details.terminal-howto > summary {
+    cursor: pointer;
+    list-style: none;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: #FBBF24;
+    user-select: none;
+}
+.home-mock details.terminal-howto > summary::-webkit-details-marker { display: none; }
+.home-mock details.terminal-howto > summary::before { content: "▸ "; margin-right: 4px; }
+.home-mock details.terminal-howto[open] > summary::before { content: "▾ "; }
+.home-mock .terminal-howto-body {
+    margin-top: 10px;
+    font-size: 12.5px;
+    color: rgba(255, 255, 255, 0.92);
+    line-height: 1.6;
+}
+.home-mock .terminal-howto-body p { margin: 0 0 6px; }
+.home-mock .terminal-howto-body kbd {
+    background: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.30);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 11px;
+    font-family: var(--ds-font-mono);
+    color: white;
+}
+
+/* P1-6 — Auto-detect badge replaces the "Mark me as onboarded"
+   button as the primary affordance. Pulse dot signals it's actively
+   listening; the manual self-mark button stays as a fallback. */
+.home-mock .auto-detect-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 16px;
+    background: rgba(255, 255, 255, 0.10);
+    border: 1px solid rgba(255, 255, 255, 0.20);
+    color: rgba(255, 255, 255, 0.92);
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 12.5px;
+}
+.home-mock .auto-detect-badge .pulse {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #FBBF24;
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.7);
+    animation: agnes-pulse 1.6s infinite;
+}
+.home-mock .auto-detect-badge code {
+    background: rgba(0, 0, 0, 0.18);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: var(--ds-font-mono);
+    font-size: 11.5px;
+}
+@keyframes agnes-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.65); }
+    70% { box-shadow: 0 0 0 8px rgba(251, 191, 36, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+}
+
+/* P0-2 — Post-CTA modal with "where to paste" 3-step guide. Modal
+   markup lives at body level; this styles the backdrop + card. The
+   .home-mock prefix is intentionally NOT used so the modal is
+   render-isolated from the home page's CSS variables. */
+.cta-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.55);
+    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(2px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 20px;
+}
+.cta-modal-backdrop.is-open { display: flex; }
+.cta-modal {
+    background: white;
+    border-radius: 14px;
+    padding: 28px 32px;
+    max-width: 520px;
+    width: 100%;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+    color: #111827;
+    font-family: inherit;
+}
+.cta-modal h2 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0 0 6px;
+    color: #047857;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.cta-modal .lead {
+    font-size: 13px;
+    color: #6B7280;
+    margin: 0 0 18px;
+    line-height: 1.55;
+}
+.cta-modal ol {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 18px;
+    counter-reset: step;
+}
+.cta-modal ol li {
+    counter-increment: step;
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+    padding: 12px;
+    background: #F9FAFB;
+    border-radius: 8px;
+    margin-bottom: 10px;
+    font-size: 13.5px;
+    line-height: 1.5;
+}
+.cta-modal ol li::before {
+    content: counter(step);
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: var(--primary);
+    color: white;
+    font-weight: 700;
+    font-size: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.cta-modal ol li code,
+.cta-modal ol li kbd {
+    background: #fff;
+    border: 1px solid #E5E7EB;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--ds-font-mono, ui-monospace, monospace);
+    font-size: 12px;
+}
+.cta-modal ol li kbd { border-bottom-width: 2px; }
+.cta-modal ol li strong { display: block; margin-bottom: 4px; color: #111827; }
+.cta-modal-foot {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #F3F4F6;
+}
+.cta-modal-foot .meta { font-size: 12px; color: #6B7280; }
+/* `.cta-modal-foot button` styling moved onto `.btn.btn-primary`
+   (rendered via `ds.button`). The canonical .btn-primary supplies the
+   green-fill CTA pattern and the hover-darken behavior. */
+
+/* ─────────────────────────────────────────────────────────────────
+   Reskin overlay — value-first intro hero, pillars, progress chip,
+   first-session story, surfaces chrome, and browse-card upgrades.
+   Layered ON TOP of the existing wizard markup so the install-hero,
+   install-block, .home-usage, and .what-is structural classes (which
+   the test suite pins) keep their identities; this section adds the
+   new visual language around them.
+   ───────────────────────────────────────────────────────────────── */
+
+/* Top intro hero — dark navy card matching the design spec. Green
+   radial glow in the corner, white H1, rgba-white lede, green
+   eyebrow, green pill primary CTA on navy. Pillars row sits inside
+   the same card separated by a hairline border. */
+.home-mock .home-hero-intro {
+    /* Hero gradient follows the active theme via `--ds-hero-*`. */
+    background: linear-gradient(135deg, var(--ds-hero-bg) 0%, var(--ds-hero-bg-deep) 100%);
+    color: var(--ds-hero-ink);
+    border-radius: 20px;
+    padding: 44px 44px 36px;
+    margin-bottom: 22px;
+    box-shadow: var(--ds-shadow-md);
+    position: relative;
+    overflow: hidden;
+}
+.home-mock .home-hero-intro::after {
+    content: "";
+    position: absolute;
+    top: -80px;
+    right: -80px;
+    width: 280px;
+    height: 280px;
+    background: radial-gradient(circle, rgba(84,211,160,0.25) 0%, transparent 70%);
+    pointer-events: none;
+}
+.home-mock .home-hero-intro .eyebrow {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    /* Eyebrow accent follows the theme: mint-green on navy
+       (default) or translucent white on blue. `--ds-hero-eyebrow`
+       is set per-theme in design-tokens.css. */
+    color: var(--ds-hero-eyebrow);
+    margin-bottom: 14px;
+    position: relative;
+}
+.home-mock .home-hero-intro h1 {
+    font-size: 44px;
+    font-weight: 800;
+    letter-spacing: -1px;
+    margin: 0 0 16px;
+    color: #ffffff;
+    line-height: 1.1;
+    position: relative;
+}
+.home-mock .home-hero-intro h1 .accent { color: var(--ds-brand-accent); }
+.home-mock .home-hero-intro .lede {
+    font-size: 18px;
+    line-height: 1.6;
+    color: rgba(255, 255, 255, 0.8);
+    margin: 0 0 28px;
+    max-width: 720px;
+    position: relative;
+}
+.home-mock .home-hero-intro .lede strong { color: #ffffff; font-weight: 600; }
+.home-mock .home-hero-cta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 28px;
+    position: relative;
+}
+.home-mock .btn-intro {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 12px 22px;
+    border-radius: 10px;
+    font-size: 14.5px;
+    font-weight: 600;
+    text-decoration: none;
+    transition: transform 0.12s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    border: 1px solid transparent;
+}
+.home-mock .btn-intro-primary {
+    /* Primary CTA pill on the intro hero. Mint-green on navy by
+       default; white on blue under the "blue" theme.
+       `--ds-hero-cta-*` flips per theme in design-tokens.css. */
+    background: var(--ds-hero-cta-bg);
+    color: var(--ds-hero-cta-fg);
+    border-color: var(--ds-hero-cta-bg);
+}
+.home-mock .btn-intro-primary:hover {
+    background: var(--ds-hero-cta-bg-hover);
+    border-color: var(--ds-hero-cta-bg-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px var(--ds-hero-shadow);
+    color: var(--ds-hero-cta-fg-hover);
+}
+.home-mock .btn-intro-secondary {
+    background: rgba(255, 255, 255, 0.10);
+    color: #ffffff;
+    border-color: rgba(255, 255, 255, 0.20);
+}
+.home-mock .btn-intro-secondary:hover {
+    background: rgba(255, 255, 255, 0.18);
+    border-color: rgba(255, 255, 255, 0.32);
+    transform: translateY(-1px);
+}
+
+/* Pillars row — 4 columns inside the dark hero, separated from the
+   CTAs by a hairline top border. Each pillar header carries a green
+   square dot. */
+.home-mock .home-hero-pillars {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 18px;
+    padding-top: 26px;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    position: relative;
+}
+.home-mock .pillar {
+    color: rgba(255, 255, 255, 0.82);
+    font-size: 13.5px;
+    background: transparent;
+    border: none;
+    padding: 0;
+    border-radius: 0;
+}
+.home-mock .pillar-h {
+    font-size: 14.5px;
+    font-weight: 600;
+    color: #ffffff;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+.home-mock .pillar-h::before {
+    content: "";
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: var(--ds-brand-accent);
+    flex-shrink: 0;
+}
+.home-mock .pillar p {
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.78);
+    line-height: 1.55;
+    margin: 0;
+}
+/* Hero footnotes — two short paragraphs about telemetry + workspace layout,
+   rendered below the pillars row inside the same dark navy hero. Same
+   hairline separator pattern as `.home-hero-pillars` so the section
+   reads as a continuation of the welcome card. */
+.home-mock .home-hero-footnotes {
+    margin-top: 26px;
+    padding-top: 26px;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    position: relative;
+}
+.home-mock .home-hero-footnotes p {
+    font-size: 13.5px;
+    color: rgba(255, 255, 255, 0.78);
+    line-height: 1.6;
+    margin: 0 0 12px;
+    max-width: 860px;
+}
+.home-mock .home-hero-footnotes p:last-child { margin-bottom: 0; }
+.home-mock .home-hero-footnotes strong { color: #ffffff; font-weight: 600; }
+.home-mock .home-hero-footnotes code {
+    background: rgba(15, 23, 42, 0.55);
+    color: #FBBF24;
+    border: 1px solid rgba(251, 191, 36, 0.30);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--ds-font-mono);
+    font-size: 11.5px;
+}
+/* Support callout — operator-owned panel rendered inside the welcome
+   hero, below the Overview footnotes. Mint-tint background + brand-
+   accent border reads as a complementary help affordance (distinct
+   from the flat hairline-separated footnotes above it). Speech-bubble
+   icon on the left, operator HTML on the right. */
+.home-mock .home-hero-support {
+    margin-top: 22px;
+    padding: 16px 20px;
+    background: rgba(84, 211, 160, 0.10);
+    border: 1px solid rgba(84, 211, 160, 0.28);
+    border-radius: 12px;
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    position: relative;
+}
+.home-mock .home-hero-support-icon {
+    font-size: 22px;
+    line-height: 1.2;
+    flex-shrink: 0;
+    color: var(--ds-brand-accent);
+}
+.home-mock .home-hero-support-body {
+    font-size: 13.5px;
+    color: rgba(255, 255, 255, 0.92);
+    line-height: 1.55;
+    flex: 1;
+    min-width: 0;
+}
+.home-mock .home-hero-support-body p { margin: 0 0 8px; }
+.home-mock .home-hero-support-body p:last-child { margin-bottom: 0; }
+.home-mock .home-hero-support-body strong { color: #ffffff; font-weight: 600; }
+.home-mock .home-hero-support-body a {
+    color: #ffffff;
+    text-decoration: underline;
+    text-decoration-color: var(--ds-brand-accent);
+    text-underline-offset: 2px;
+    font-weight: 600;
+}
+.home-mock .home-hero-support-body a:hover,
+.home-mock .home-hero-support-body a:focus {
+    text-decoration-color: #ffffff;
+    color: #ffffff;
+}
+.home-mock .home-hero-support-body code {
+    background: rgba(15, 23, 42, 0.55);
+    color: #FBBF24;
+    border: 1px solid rgba(251, 191, 36, 0.30);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--ds-font-mono);
+    font-size: 11.5px;
+}
+@media (max-width: 880px) {
+    .home-mock .home-hero-intro { padding: 32px 24px 28px; }
+    .home-mock .home-hero-intro h1 { font-size: 26px; }
+    .home-mock .home-hero-pillars { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 480px) {
+    .home-mock .home-hero-pillars { grid-template-columns: 1fr; }
+}
+
+/* Setup-wizard chrome — progress chip + step number badges, layered
+   ON the existing .install-hero / .install-block markup. */
+.home-mock .setup-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 10px 0 14px;
+}
+.home-mock .setup-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--ds-brand-accent);
+    color: var(--ds-hero-bg);
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+}
+.home-mock .setup-chip-quiet {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.10);
+    color: rgba(255, 255, 255, 0.82);
+    font-size: 11.5px;
+    font-weight: 500;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+}
+.home-mock .progress-bar {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.10);
+    border-radius: 999px;
+    overflow: hidden;
+    margin-bottom: 22px;
+}
+.home-mock .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--ds-brand-accent), var(--ds-primary));
+    border-radius: 999px;
+    transition: width 0.3s ease;
+}
+
+/* Step number badges inside install-block. The existing .install-block
+   stays as the container (test-pinned); .step-num is positioned as a
+   left-side circle so the existing .label/.os-tabs/.install-cmd flow
+   continues to the right. */
+.home-mock .install-block {
+    position: relative;
+    padding-left: 56px;  /* room for step badge */
+}
+.home-mock .install-block .step-num {
+    position: absolute;
+    top: 18px;
+    left: 18px;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--ds-brand-accent);
+    color: var(--ds-hero-bg);
+    font-weight: 700;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* First-session story — bare section on the page bg (no wrapping
+   card). Matches the design spec where the eyebrow + h2 + lede sit
+   inline on the page and individual session-step rows have their
+   own visual rhythm via the 48px green circle on the left. */
+.home-mock .first-session {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    margin: 36px 0;
+}
+.home-mock .first-session > .eyebrow {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--ds-primary-dark);
+    margin-bottom: 14px;
+}
+/* First-session beat sizing — verbatim from the design spec. h2 28px,
+   lede 18px, session-step a 48px / 1fr grid, session-num a 40px
+   GREEN circle with WHITE text + soft green shadow, content h3 18px
+   + p 15px. */
+.home-mock .first-session > h2 {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    line-height: 1.2;
+    margin: 0 0 8px;
+    color: var(--ds-text-primary);
+}
+.home-mock .first-session > .lede {
+    font-size: 18px;
+    color: var(--ds-text-secondary);
+    line-height: 1.55;
+    margin: 0 0 24px;
+    max-width: 720px;
+}
+/* Session-intro card — white surface w/ mint icon block, frames the
+   "five beats" tagline above the walkthrough. Per design spec. */
+.home-mock .session-intro {
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 14px;
+    padding: 20px 24px;
+    margin: 4px 0 28px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    font-size: 14.5px;
+    color: var(--ds-text-secondary);
+    line-height: 1.55;
+    box-shadow: var(--ds-shadow-sm);
+}
+.home-mock .session-intro-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+    display: grid;
+    place-items: center;
+    font-size: 22px;
+    flex-shrink: 0;
+}
+.home-mock .session-intro strong { color: var(--ds-text-primary); }
+
+.home-mock .session-walk {
+    display: flex;
+    flex-direction: column;
+    gap: 36px;
+    margin-top: 8px;
+}
+.home-mock .session-step {
+    display: grid;
+    grid-template-columns: 48px 1fr;
+    gap: 22px;
+    padding: 0;
+    border-top: none;
+}
+.home-mock .session-step:first-of-type { padding-top: 0; }
+.home-mock .session-num {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--ds-primary);
+    color: #ffffff;
+    display: grid;
+    place-items: center;
+    font-weight: 700;
+    font-size: 16px;
+    box-shadow: 0 2px 6px color-mix(in srgb, var(--ds-primary) 25%, transparent);
+    flex-shrink: 0;
+}
+.home-mock .session-content { min-width: 0; }
+.home-mock .session-content h3 {
+    margin: 0 0 6px;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--ds-text-primary);
+}
+.home-mock .session-content > p {
+    font-size: 15px;
+    color: var(--ds-text-secondary);
+    line-height: 1.55;
+    margin: 0 0 10px;
+}
+.home-mock .session-content > p:last-child { margin-bottom: 0; }
+.home-mock .session-content .annotation {
+    font-size: 13.5px;
+    color: var(--ds-text-muted);
+    margin: 10px 0 0;
+    line-height: 1.55;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+}
+.home-mock .session-content .annotation strong { color: var(--ds-text-primary); }
+.home-mock .session-content code {
+    background: var(--ds-bg);
+    border: 1px solid var(--ds-border);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--ds-font-mono);
+    font-size: 12.5px;
+}
+.home-mock .session-tldr {
+    background: var(--ds-primary-light);
+    border-left: 4px solid var(--ds-primary-dark);
+    padding: 20px 24px;
+    border-radius: 0 8px 8px 0;
+    margin-top: 28px;
+    font-size: 15px;
+    color: var(--ds-text-primary);
+    line-height: 1.6;
+}
+.home-mock .session-tldr strong { color: var(--ds-primary-dark); }
+
+/* Terminal frame — exact design colors. Box-shadow uses the global
+   --ds-shadow-md so the frame lifts off the white first-session
+   surface; macOS traffic-light reds/yellows/greens match the real
+   colors (#ff5f57 / #febc2e / #28c840) so the framing reads as a
+   terminal, not a generic dark card. */
+.home-mock .terminal-frame {
+    background: var(--ds-code-bg);
+    border: 1px solid #1f2a4a;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: var(--ds-shadow-md);
+    margin: 10px 0 4px;
+}
+.home-mock .terminal-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #182241;
+    padding: 8px 14px;
+    border-bottom: 1px solid #1f2a4a;
+}
+.home-mock .terminal-bar .traffic {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: #4a5168;
+    display: inline-block;
+}
+.home-mock .terminal-bar .traffic.r { background: #ff5f57; }
+.home-mock .terminal-bar .traffic.y { background: #febc2e; }
+.home-mock .terminal-bar .traffic.g { background: #28c840; }
+.home-mock .terminal-bar .terminal-title {
+    margin-left: 8px;
+    font-family: var(--ds-font-mono);
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.55);
+}
+.home-mock .terminal-body {
+    font-family: var(--ds-font-mono);
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--ds-code-ink);
+    padding: 16px 20px;
+    white-space: pre-wrap;
+    word-break: normal;
+}
+.home-mock .terminal-body .prompt {
+    color: var(--ds-primary);
+    margin-right: 8px;
+    user-select: none;
+}
+.home-mock .terminal-body .you { color: var(--ds-code-yellow); }
+.home-mock .terminal-body .cmd { color: var(--ds-code-yellow); }
+.home-mock .terminal-body .ai-name { color: var(--ds-primary); font-weight: 600; }
+.home-mock .terminal-body .path { color: #8b9fe0; }
+.home-mock .terminal-body .dim { color: rgba(215, 228, 255, 0.55); }
+.home-mock .terminal-body strong { color: #ffffff; font-weight: 600; }
+.home-mock .terminal-body .caret {
+    display: inline-block;
+    width: 8px;
+    height: 14px;
+    background: var(--ds-primary);
+    vertical-align: text-bottom;
+    animation: agnes-blink 1s steps(2, end) infinite;
+}
+@keyframes agnes-blink { 50% { opacity: 0; } }
+
+/* ── Surfaces — 4-card layout matching the design spec verbatim. h2
+   28px / 700, surface-card padding 28px, .feature variant uses a
+   brand-light gradient + 2px brand border, .incomplete variant uses
+   a red-tinted gradient + 2px red border. Steps render in a tinted
+   panel with surface-dim bg. */
+.home-mock .surfaces { padding: 24px 28px; }
+.home-mock .surfaces > header { margin-bottom: 20px; }
+.home-mock .surfaces > header .eyebrow {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--ds-primary-dark);
+    margin-bottom: 14px;
+}
+.home-mock .surfaces > header h2 {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    line-height: 1.2;
+    margin: 0 0 8px;
+    color: var(--ds-text-primary);
+}
+.home-mock .surfaces > header p {
+    font-size: 18px;
+    color: var(--ds-text-secondary);
+    line-height: 1.55;
+    margin: 0 0 12px;
+    max-width: 760px;
+}
+.home-mock .surfaces-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+    margin-bottom: 14px;
+}
+.home-mock .surface-card {
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 14px;
+    padding: 28px;
+    box-shadow: var(--ds-shadow-sm);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.home-mock .surface-card.feature {
+    border: 2px solid var(--ds-primary);
+    background: linear-gradient(180deg, var(--ds-primary-light) 0%, var(--ds-surface) 40%);
+}
+.home-mock .surface-card.incomplete {
+    border: 2px solid #e35e5e;
+    background: linear-gradient(180deg, #fdecec 0%, var(--ds-surface) 60%);
+}
+.home-mock .surface-icon {
+    font-size: 26px;
+    line-height: 1;
+    margin-bottom: 6px;
+}
+.home-mock .surface-card h3 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0;
+    color: var(--ds-text-primary);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.home-mock .surface-card .badge {
+    background: var(--ds-primary);
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 3px 8px;
+    border-radius: 4px;
+}
+.home-mock .surface-card .badge-warn {
+    background: #e35e5e;
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 3px 8px;
+    border-radius: 4px;
+}
+.home-mock .surface-card .what {
+    font-size: 14px;
+    color: var(--ds-text-secondary);
+    line-height: 1.55;
+    margin: 0;
+}
+.home-mock .surface-card .what code {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+    border: 1px solid color-mix(in srgb, var(--ds-primary) 30%, transparent);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--ds-font-mono);
+    font-size: 12px;
+}
+/* VS Code thumb — anchor wrapping the real screenshot. Clicking opens
+   the lightbox. `.thumb-fallback` is only visible when the `<img>` is
+   missing/errors (handled by inline onerror → `.thumb-empty`). */
+.home-mock .vscode-thumb {
+    display: block;
+    position: relative;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--ds-border);
+    background: var(--ds-code-bg);
+    text-decoration: none;
+    color: inherit;
+    margin: 2px 0 4px;
+    cursor: zoom-in;
+    transition: transform 0.12s, box-shadow 0.12s, border-color 0.12s;
+}
+.home-mock .vscode-thumb:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(15, 27, 58, 0.25);
+    border-color: var(--ds-brand-accent);
+}
+.home-mock .vscode-thumb img {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+.home-mock .vscode-thumb.thumb-empty {
+    aspect-ratio: 16 / 9;
+    background: var(--ds-surface-dim);
+    cursor: default;
+    display: grid;
+    place-items: center;
+}
+.home-mock .vscode-thumb.thumb-empty:hover {
+    transform: none;
+    box-shadow: none;
+    border-color: var(--ds-border);
+}
+.home-mock .vscode-thumb .thumb-fallback {
+    display: none;
+    padding: 18px;
+    font-size: 12px;
+    color: var(--ds-text-muted);
+    text-align: center;
+}
+.home-mock .vscode-thumb.thumb-empty .thumb-fallback { display: block; }
+.home-mock .vscode-thumb .thumb-fallback-row {
+    display: flex;
+    justify-content: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    font-weight: 600;
+    color: var(--ds-code-ink);
+}
+.home-mock .vscode-thumb .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    display: inline-block;
+    margin-right: 4px;
+    vertical-align: middle;
+}
+.home-mock .vscode-thumb .dot.d-explorer { background: var(--ds-code-yellow); }
+.home-mock .vscode-thumb .dot.d-t1 { background: var(--ds-brand-accent); }
+.home-mock .vscode-thumb .dot.d-t2 { background: #e07b3f; }
+.home-mock .vscode-thumb .dot.d-t3 { background: #8b6ec7; }
+.home-mock .vscode-thumb .thumb-fallback-hint {
+    margin-top: 10px;
+    font-size: 11.5px;
+    color: rgba(215, 228, 255, 0.6);
+}
+.home-mock .vscode-thumb .thumb-fallback-hint code {
+    font-size: 11.5px;
+}
+.home-mock .vscode-thumb .thumb-caption {
+    position: absolute;
+    left: 12px;
+    bottom: 12px;
+    background: rgba(15, 27, 58, 0.78);
+    color: white;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+}
+
+/* Steps inner panel — surface-dim bg matching design + small caps
+   eyebrow on the first <strong>. */
+.home-mock .surface-card .steps {
+    background: var(--ds-surface-dim);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 4px 0;
+    font-size: 13px;
+    color: var(--ds-text-primary);
+}
+.home-mock .surface-card .steps .steps-eyebrow {
+    font-size: 12px;
+    letter-spacing: 1px;
+    color: var(--ds-text-muted);
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+.home-mock .surface-card .steps ol {
+    margin: 0;
+    padding-left: 18px;
+    list-style: decimal;
+}
+.home-mock .surface-card .steps li {
+    margin-bottom: 4px;
+    line-height: 1.55;
+}
+.home-mock .surface-card .steps li:last-child { margin-bottom: 0; }
+.home-mock .surface-card .steps code {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+    border: 1px solid color-mix(in srgb, var(--ds-primary) 30%, transparent);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-family: var(--ds-font-mono);
+    font-size: 12px;
+}
+.home-mock .surface-card .steps kbd {
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-bottom-width: 2px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: var(--ds-font-mono);
+}
+.home-mock .surface-card .steps a {
+    color: var(--ds-primary-dark);
+    text-decoration: underline;
+}
+
+
+/* `.code-output` extracted to shared
+   app/web/static/css/components.css — markup renamed accordingly
+   (`<div class="expected-output">` → `<div class="code-output">`). */
+
+/* When-to-use footer — top-border + ink-muted body, brand-dark for
+   links. Per design spec. */
+.home-mock .surface-card .when-to-use {
+    font-size: 13px;
+    color: var(--ds-text-muted);
+    border-top: 1px solid var(--ds-border);
+    padding-top: 12px;
+    margin-top: 4px;
+    line-height: 1.55;
+}
+.home-mock .surface-card .when-to-use strong { color: var(--ds-text-primary); }
+.home-mock .surface-card .when-to-use a { color: var(--ds-primary-dark); text-decoration: underline; }
+.home-mock .surface-card .when-to-use a:hover { color: var(--ds-primary); }
+
+.home-mock .incomplete-callout {
+    background: #ffffff;
+    border: 1px dashed #e35e5e;
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 13px;
+    color: #7a1f1f;
+    line-height: 1.55;
+}
+.home-mock .incomplete-callout strong {
+    color: #5a0e0e;
+}
+.home-mock .incomplete-callout ul {
+    margin: 8px 0 4px 18px;
+    padding: 0;
+    color: #7a1f1f;
+}
+.home-mock .incomplete-callout li { margin-bottom: 4px; }
+@media (max-width: 880px) {
+    .home-mock .surfaces-grid { grid-template-columns: 1fr; }
+}
+
+/* RECOMMENDED chip on the VS Code surface tile. Doesn't change the
+   .home-usage-item structure — just adds the badge. */
+.home-mock .recommend-pill {
+    display: inline-block;
+    margin-left: 6px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    background: var(--ds-brand-accent);
+    color: var(--ds-hero-bg);
+    border-radius: 999px;
+    vertical-align: middle;
+}
+
+/* Surfaces wrapper is now bare (no white card). Padding lives on the
+   inner header + grid, not on .home-usage itself. The global
+   `header { display: flex; justify-content: space-between; ... }`
+   rule absorbed from style.css makes our section header lay out
+   the eyebrow/h2/lede side-by-side; force block + no padding/border
+   so the title sits on the LEFT under the eyebrow as the design has. */
+.home-mock .home-usage { padding: 0; text-align: left; }
+.home-mock .home-usage > header,
+.home-mock .first-session > header,
+.home-mock .browse-section > header,
+.home-mock section > header {
+    display: block;
+    padding: 0;
+    margin-bottom: 20px;
+    border-bottom: none;
+    flex-wrap: initial;
+    gap: 0;
+    justify-content: initial;
+    align-items: initial;
+}
+.home-mock .home-usage > header h2,
+.home-mock .home-usage > header p {
+    text-align: left;
+    width: 100%;
+}
+
+/* Browse-section — bare section on the page bg, 5-col grid, cards
+   with green-hover lift. Per design spec. */
+.home-mock .browse-section {
+    margin: 36px 0;
+}
+.home-mock .browse-section .eyebrow {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--ds-primary-dark);
+    margin-bottom: 14px;
+}
+.home-mock .browse-section h2 {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    line-height: 1.2;
+    margin: 0 0 8px;
+    color: var(--ds-text-primary);
+}
+.home-mock .browse-section .lede {
+    font-size: 18px;
+    color: var(--ds-text-secondary);
+    line-height: 1.55;
+    margin: 0 0 20px;
+    max-width: 720px;
+}
+.home-mock .browse-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 14px;
+}
+.home-mock .browse-card {
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 12px;
+    padding: 22px 20px;
+    text-decoration: none;
+    color: var(--ds-text-primary);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    transition: transform 0.1s, box-shadow 0.1s, border-color 0.1s;
+    box-shadow: none;
+    transform: none;
+    position: relative;
+}
+.home-mock .browse-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--ds-shadow-md);
+    border-color: var(--ds-primary);
+}
+.home-mock .browse-card .browse-icon {
+    font-size: 28px;
+    margin-bottom: 4px;
+    line-height: 1;
+}
+.home-mock .browse-card .browse-title {
+    font-weight: 600;
+    font-size: 15px;
+    color: var(--ds-text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.home-mock .browse-card .browse-title .arrow {
+    color: var(--ds-primary-dark);
+    font-weight: 600;
+    transition: transform 0.15s ease;
+}
+.home-mock .browse-card:hover .browse-title .arrow {
+    transform: translateX(2px);
+}
+.home-mock .browse-card .browse-desc {
+    font-size: 12.5px;
+    color: var(--ds-text-muted);
+    line-height: 1.45;
+    flex-grow: 1;
+}
+/* "NEW" corner badge — design spec verbatim. */
+.home-mock .browse-card.new::after {
+    content: "NEW";
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: var(--ds-primary);
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+    letter-spacing: 0.5px;
+}
+/* Equal heights — grid stretches items by default; this just keeps
+   inner content laid out so titles + descs line up across cards. */
+.home-mock .browse-card { align-self: stretch; }
+@media (max-width: 880px) {
+    .home-mock .browse-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 480px) {
+    .home-mock .browse-grid { grid-template-columns: 1fr; }
+}
+.home-mock .home-usage-item {
+    padding: 16px;
+    transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+.home-mock a.home-usage-item:hover { transform: translateY(-1px); }
+
+/* Browse-cards (the existing .what-is look-around-grid) — give the
+   tiles a bit more breathing room and a green-on-hover highlight that
+   matches the new palette. */
+.home-mock .what-is.look-around-grid {
+    margin-top: 6px;
+}
+.home-mock .what-is-item {
+    padding: 20px;
+}
+
+/* Mobile tweaks for the install-hero now that the .install-block has
+   a 56px left-padding step badge. */
+@media (max-width: 560px) {
+    .home-mock .install-hero { padding: 24px 18px; }
+    .home-mock .install-block { padding-left: 18px; }
+    .home-mock .install-block .step-num { position: static; margin-bottom: 8px; }
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   Setup-wizard LIGHT theme — design spec has the install-hero as a
+   white surface card with light step rows, NOT a dark navy card.
+   This override block flips all the in-hero rules from the original
+   dark-navy palette to a light surface that matches the design. The
+   code-panel (.install-cmd) and terminal-frame mockups STAY dark
+   so they stand out as "what the user will type".
+   ───────────────────────────────────────────────────────────────── */
+.home-mock .install-hero {
+    background: var(--ds-surface);
+    color: var(--ds-text-primary);
+    border: 1px solid var(--ds-border);
+    border-radius: 16px;
+    padding: 36px;
+    box-shadow: var(--ds-shadow-sm);
+}
+/* Drop the navy gradient + sweep-shadow remnant; keep the slim green
+   accent strip across the top so the wizard reads as the brand CTA. */
+.home-mock .install-hero::before { content: none; }
+.home-mock .install-hero-close {
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    color: var(--ds-text-muted);
+}
+.home-mock .install-hero-close:hover,
+.home-mock .install-hero-close:focus-visible {
+    background: var(--ds-bg);
+    color: var(--ds-text-primary);
+}
+.home-mock .install-hero .eyebrow {
+    color: var(--ds-primary);
+    opacity: 1;
+}
+.home-mock .install-hero h1 {
+    color: var(--ds-text-primary);
+    font-size: 24px;
+}
+.home-mock .install-hero .lead,
+.home-mock .install-hero .lead-privacy {
+    color: var(--ds-text-secondary);
+    opacity: 1;
+}
+.home-mock .install-hero .lead strong { color: var(--ds-text-primary); }
+.home-mock .install-hero a {
+    color: var(--ds-primary);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--ds-primary) 40%, transparent);
+}
+.home-mock .install-hero a:hover,
+.home-mock .install-hero a:focus {
+    color: var(--ds-primary-dark);
+    text-decoration-color: var(--ds-primary-dark);
+}
+/* In-lead `<code>` chips — light variant (design uses brand-light bg). */
+.home-mock .install-hero code,
+.home-mock .install-note code,
+.home-mock .install-note > code {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+    border-color: color-mix(in srgb, var(--ds-primary) 30%, transparent);
+}
+/* Setup-meta chips on light bg — primary chip uses brand-light pill,
+   secondary chips lose the white-on-dark treatment for ink-muted. */
+.home-mock .setup-chip {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+}
+.home-mock .setup-chip-quiet {
+    background: var(--ds-bg);
+    color: var(--ds-text-secondary);
+    border-color: var(--ds-border);
+}
+.home-mock .progress-bar {
+    height: 6px;
+    background: var(--ds-bg);
+}
+.home-mock .progress-fill {
+    background: var(--ds-primary);
+}
+
+/* Step rows — grid layout with a light circle for the step number,
+   borders between rows, no dark card. */
+.home-mock .install-block {
+    background: transparent;
+    border: none;
+    border-top: 1px solid var(--ds-border);
+    border-radius: 0;
+    padding: 22px 0 22px 64px;
+    margin-top: 0 !important;
+}
+.home-mock .install-block:first-of-type {
+    border-top: none;
+    padding-top: 6px;
+}
+.home-mock .install-block + .install-block { margin-top: 0; }
+.home-mock .install-block .step-num {
+    top: 22px;
+    left: 8px;
+    width: 40px;
+    height: 40px;
+    background: var(--ds-surface-dim);
+    color: var(--ds-text-secondary);
+    font-size: 16px;
+    font-weight: 700;
+}
+.home-mock .install-block .label {
+    color: var(--ds-text-primary);
+    font-size: 17px;
+    font-weight: 700;
+    text-transform: none;
+    letter-spacing: 0;
+    opacity: 1;
+    margin-bottom: 6px;
+    line-height: 1.35;
+}
+/* Subhead under each step label — short body type explaining what
+   the step accomplishes before the OS tabs / code panel appear. */
+.home-mock .install-block .step-lede {
+    color: var(--ds-text-secondary);
+    font-size: 14.5px;
+    line-height: 1.55;
+    margin: 0 0 12px;
+    max-width: 720px;
+}
+.home-mock .install-block .step-lede strong { color: var(--ds-text-primary); font-weight: 600; }
+.home-mock .install-block .step-lede code {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+    border: 1px solid color-mix(in srgb, var(--ds-primary) 30%, transparent);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--ds-font-mono);
+    font-size: 12px;
+}
+/* OS tabs sit on white now — borders + colors flip to ink. */
+.home-mock .os-tabs {
+    border-bottom-color: var(--ds-border);
+}
+.home-mock .os-tab {
+    color: var(--ds-text-muted);
+}
+.home-mock .os-tab:hover { color: var(--ds-text-primary); }
+.home-mock .os-tab.is-active {
+    color: var(--ds-primary-dark);
+    border-bottom-color: var(--ds-primary-dark);
+}
+/* Code panel (.install-cmd) STAYS dark — it's the "type this" surface.
+   Just adjust spacing + ensure it pops on the white step row. */
+.home-mock .install-cmd {
+    background: var(--ds-code-bg);
+    border-color: rgba(0, 0, 0, 0.08);
+    color: var(--ds-code-yellow);
+}
+/* Install-note prose — ink-soft secondary on white, 14px to match
+   design's body type. */
+.home-mock .install-note {
+    color: var(--ds-text-secondary);
+    font-size: 14px;
+    line-height: 1.55;
+    margin-top: 10px;
+}
+/* `.callout-rec` and `.callout-hint` extracted to shared
+   app/web/static/css/components.css — markup renamed accordingly
+   (`<div class="rec">` → `<div class="callout-rec">`). */
+/* Mode-tabs — Auto / YOLO toggle in Step 6 selecting which shell
+   function gets installed. Visually mirrors `.os-tabs` but with a
+   labeled heading above. */
+.home-mock .install-block .step-mode-heading {
+    font-weight: 600;
+    margin: 14px 0 6px;
+    color: var(--ds-text-primary);
+}
+.home-mock .install-block .mode-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--ds-border);
+}
+.home-mock .install-block .mode-tab {
+    background: transparent;
+    border: none;
+    color: var(--ds-text-muted);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 8px 14px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    font-family: inherit;
+}
+.home-mock .install-block .mode-tab.is-active {
+    color: var(--ds-primary-dark);
+    border-bottom-color: var(--ds-primary-dark);
+}
+/* Single-line description below the mode-tab — kept on one row.
+   The text is tight enough to fit at typical widths; on narrow
+   viewports it wraps gracefully. */
+.home-mock .install-block .mode-panel-lede {
+    font-size: 13.5px;
+    line-height: 1.5;
+    color: var(--ds-text-secondary);
+    margin: 10px 0 12px;
+}
+.home-mock .install-block .mode-panel-lede code {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--ds-font-mono);
+    font-size: 12px;
+}
+/* `.setup-section-header` (eyebrow + heading + lede above a wizard
+   card) extracted to shared app/web/static/css/components.css. */
+.setup-section-header .lead.lead-privacy {
+    font-size: 13.5px;
+    color: var(--ds-text-muted);
+    margin-bottom: 0;
+}
+.setup-section-header .lead.lead-privacy strong { color: var(--ds-text-secondary); }
+/* Step 5 manual-fallback details — inline with the copy button on the
+   right of the cta row. When closed, just the summary is visible;
+   when opened, the expanded preview spans the full row width. */
+.home-mock .install-block .setup-cta-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px 16px;
+    margin-top: 4px;
+}
+.home-mock .install-block .setup-cta-row .manual-fallback {
+    margin-left: auto;
+    font-size: 13px;
+}
+.home-mock .install-block .setup-cta-row .manual-fallback[open] {
+    flex-basis: 100%;
+    margin-left: 0;
+}
+.home-mock .install-block .setup-cta-row .manual-fallback > summary {
+    color: var(--ds-text-muted);
+    cursor: pointer;
+    list-style: none;
+}
+.home-mock .install-block .setup-cta-row .manual-fallback > summary::-webkit-details-marker { display: none; }
+.home-mock .install-block .setup-cta-row .manual-fallback > summary::before {
+    content: "\25B8 ";
+    color: var(--ds-text-muted);
+}
+.home-mock .install-block .setup-cta-row .manual-fallback[open] > summary::before { content: "\25BE "; }
+.home-mock .install-block .setup-cta-row .manual-fallback > summary:hover { color: var(--ds-text-primary); }
+/* Setup-finish strip — flex row separating "waiting for agnes pull"
+   status from the right-aligned "Mark me as onboarded" fallback link.
+   Matches design spec's footer row on the setup card. */
+.home-mock .install-hero .setup-finish-strip {
+    border-top: 1px solid var(--ds-border);
+    padding-top: 16px;
+    margin-top: 20px;
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    font-size: 13px;
+    color: var(--ds-text-muted);
+}
+.home-mock .install-hero .setup-finish-text code {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--ds-font-mono);
+    font-size: 11.5px;
+}
+.home-mock .install-hero .setup-finish-link {
+    color: var(--ds-text-muted);
+    text-decoration: underline;
+    cursor: pointer;
+}
+.home-mock .install-hero .setup-finish-link:hover { color: var(--ds-text-primary); }
+.home-mock .install-hero .setup-finish-strip .status {
+    width: 100%;
+    font-style: italic;
+    margin-top: 4px;
+}
+.home-mock .setup-cta-lead {
+    color: var(--ds-text-secondary);
+}
+.home-mock .setup-cta-lead code {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+}
+/* Light-surface re-skin of the install CTA. The base rule at home.css:559
+   uses --ds-hero-cta-* tokens designed for the dark-navy hero context; on
+   the white .install-hero surface (re-skinned at home.css:1915) and the
+   blue theme (where --ds-hero-cta-bg resolves to #ffffff), those tokens
+   would render a white button on a white card. Override to brand-primary
+   fill + white ink so the CTA reads regardless of theme. Reported by
+   Devin Review on PR #427. */
+.home-mock .btn-setup-primary {
+    background: var(--ds-primary);
+    color: #ffffff;
+    border-color: var(--ds-primary);
+}
+.home-mock .btn-setup-primary:hover {
+    background: var(--ds-primary-dark);
+    border-color: var(--ds-primary-dark);
+    /* Force white ink — without this, `color` cascades to the base hover
+       rule at line 575 (`--ds-hero-cta-fg-hover` = `--primary-dark` on
+       blue theme), giving dark-blue text on a dark-blue background. */
+    color: #ffffff;
+}
+.home-mock .setup-cta-hint { color: var(--ds-text-muted); }
+.home-mock details.manual-fallback {
+    border-top-color: var(--ds-border);
+}
+.home-mock details.manual-fallback > summary {
+    color: var(--ds-text-secondary);
+}
+/* Self-mark + auto-detect badge — light variants. */
+.home-mock .self-mark { color: var(--ds-text-secondary); }
+.home-mock .self-mark button {
+    background: var(--ds-surface);
+    color: var(--ds-text-primary);
+    border: 1px solid var(--ds-border);
+}
+.home-mock .self-mark button:hover { background: var(--ds-bg); }
+.home-mock .auto-detect-badge {
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+    border: 1px solid color-mix(in srgb, var(--ds-primary) 30%, transparent);
+}
+.home-mock .auto-detect-badge .pulse { background: var(--ds-primary); }
+.home-mock .auto-detect-badge code {
+    background: color-mix(in srgb, var(--ds-primary) 18%, transparent);
+    color: var(--ds-primary-dark);
+}
+/* Terminal-howto disclosure — blue info-hint box matching the design's
+   `.step-body .hint` vocabulary (light blue bg, blue left-border,
+   blue ink, white kbd chips with thin border). */
+.home-mock details.terminal-howto {
+    background: var(--ds-info-bg);
+    border: none;
+    border-left: 3px solid var(--ds-info-line);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-top: 10px;
+}
+.home-mock details.terminal-howto > summary {
+    color: var(--ds-info-ink);
+    font-weight: 700;
+    font-size: 14px;
+}
+.home-mock details.terminal-howto > summary::before { color: var(--ds-info-ink); }
+.home-mock .terminal-howto-body {
+    color: var(--ds-info-ink);
+    margin-top: 8px;
+    font-size: 14px;
+}
+.home-mock .terminal-howto-body p { margin: 0 0 6px; }
+.home-mock .terminal-howto-body p:last-child { margin: 0; }
+.home-mock .terminal-howto-body strong { color: var(--ds-info-ink); }
+.home-mock .terminal-howto-body kbd {
+    background: var(--ds-surface);
+    color: var(--ds-text-primary);
+    border: 1px solid var(--ds-border);
+    border-bottom-width: 2px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: var(--ds-font-mono);
+}
+/* Step 3 (home_automode) extra .install-cmd nested inside — already
+   dark via .install-cmd rule above. Notes around it use ink-soft. */
+.home-mock .install-cmd .copy-btn {
+    background: rgba(255, 255, 255, 0.08);
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+}
+.home-mock .install-cmd .copy-btn:hover { background: rgba(255, 255, 255, 0.15); }
+/* Manual-preview-pre stays dark (rendered already) — no change needed. */
+
+@media (max-width: 560px) {
+    .home-mock .install-block { padding-left: 0; }
+    .home-mock .install-block .step-num { position: static; margin-bottom: 8px; }
+}

@@ -220,8 +220,7 @@ class TestMarkUnmark:
         r = web_client.delete(
             "/api/marketplaces/mkt-x/plugins/alpha/system", cookies=cookies,
         )
-        assert r.status_code == 200
-        assert r.json()["is_system"] is False
+        assert r.status_code == 204
 
         from src.db import get_system_db
         conn = get_system_db()
@@ -321,6 +320,55 @@ class TestGuards:
         )
         assert r.status_code == 409
         assert r.json()["detail"] == "cannot_revoke_system_grant"
+
+    def test_group_delete_with_system_grant_returns_clear_error_not_500(
+        self, web_client,
+    ):
+        """A custom group with an auto-materialized system-plugin grant must
+        be deletable (or at least fail with a clear 4xx, not 500). Empirical:
+        DELETE /api/admin/groups/<id> returns 500 — the in-handler cascade
+        deletes resource_grants explicitly first, but the system grant for
+        marketplace_plugin/<marketplace>/<plugin> survives or the server
+        rejects elsewhere, and the operator is stuck with a group that
+        cannot be removed via the CLI or API."""
+        _seed_marketplace_with_plugin()
+        _, admin_cookies = _create_user(
+            web_client, "admin@x.com", admin=True,
+        )
+        web_client.post(
+            "/api/marketplaces/mkt-x/plugins/alpha/system",
+            cookies=admin_cookies,
+        )
+        gid = _add_group("doomed-by-system-grant")
+
+        # Sanity-check the auto-grant landed.
+        from src.db import get_system_db
+        conn = get_system_db()
+        try:
+            grants = conn.execute(
+                "SELECT id, resource_type, resource_id FROM resource_grants "
+                "WHERE group_id = ?",
+                [gid],
+            ).fetchall()
+        finally:
+            conn.close()
+        assert any(
+            g[1] == "marketplace_plugin" and g[2] == "mkt-x/alpha"
+            for g in grants
+        ), f"system grant didn't auto-materialize for new group: {grants}"
+
+        r = web_client.delete(
+            f"/api/admin/groups/{gid}", cookies=admin_cookies,
+        )
+        # The point: the handler MUST not 500. Either it succeeds (cascade
+        # took care of the system grant — per-group rows are safe to drop,
+        # and the next group to be created will re-materialize) or it
+        # refuses with a 4xx + actionable detail. 500 leaves the operator
+        # stuck with an undeletable group on shared dev.
+        assert r.status_code != 500, (
+            f"group delete returned 500 for a group with a system grant; "
+            f"body={r.text}"
+        )
 
     def test_subscribe_via_my_stack_still_allowed(self, web_client):
         """The guard refuses unsubscribe only — explicit subscribe must
@@ -480,3 +528,103 @@ def test_resync_preserves_is_system(tmp_path, monkeypatch):
     finally:
         conn.close()
         close_system_db()
+
+
+# ---------------------------------------------------------------------------
+# Disabled-plugin invariants at the HTTP boundary
+# ---------------------------------------------------------------------------
+
+
+def test_mark_system_rejected_when_disabled(web_client):
+    """A disabled plugin cannot be marked system (409). Disabling clears
+    is_system and re-enabling does not restore it, so the backend must reject
+    a mark on a disabled plugin — otherwise re-enable would resurrect it as a
+    mandatory default. The UI greys the button out, but this endpoint is the
+    real state boundary (direct API call / stale-modal race)."""
+    _seed_marketplace_with_plugin()
+    _, cookies = _create_user(web_client, "admin@x.com", admin=True)
+
+    dis = web_client.post(
+        "/api/marketplaces/mkt-x/plugins/alpha/disable", cookies=cookies,
+    )
+    assert dis.status_code == 200, dis.text
+
+    r = web_client.post(
+        "/api/marketplaces/mkt-x/plugins/alpha/system", cookies=cookies,
+    )
+    assert r.status_code == 409, r.text
+
+    from src.db import get_system_db
+    conn = get_system_db()
+    try:
+        row = conn.execute(
+            "SELECT is_system FROM marketplace_plugins "
+            "WHERE marketplace_id = 'mkt-x' AND name = 'alpha'"
+        ).fetchone()
+        assert not row[0], "is_system must stay false on a rejected mark"
+    finally:
+        conn.close()
+
+
+def test_get_plugins_exposes_admin_disabled(web_client):
+    """GET /plugins surfaces admin_disabled so the Details modal can render the
+    switch + DISABLED pill. The flag must move False -> True -> False across
+    disable / enable."""
+    _seed_marketplace_with_plugin()
+    _, cookies = _create_user(web_client, "admin@x.com", admin=True)
+
+    def _flag():
+        r = web_client.get("/api/marketplaces/mkt-x/plugins", cookies=cookies)
+        assert r.status_code == 200, r.text
+        row = next(p for p in r.json() if p["name"] == "alpha")
+        return row["admin_disabled"]
+
+    assert _flag() is False
+    web_client.post("/api/marketplaces/mkt-x/plugins/alpha/disable", cookies=cookies)
+    assert _flag() is True
+    web_client.post("/api/marketplaces/mkt-x/plugins/alpha/enable", cookies=cookies)
+    assert _flag() is False
+
+
+def test_delete_marketplace_cascades_through_factory(web_client):
+    """DELETE /api/marketplaces/{id} must remove the registry row AND cascade
+    the plugin rows, plugin grants, and subscriptions through the active
+    backend — the route-wiring layer of the backend-split fix, above the
+    per-repo contract tests."""
+    _seed_marketplace_with_plugin()
+    admin_id, cookies = _create_user(web_client, "admin@x.com", admin=True)
+    gid = _add_group("engineers")
+
+    from src.db import get_system_db
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.user_curated_subscriptions import (
+        UserCuratedSubscriptionsRepository,
+    )
+    conn = get_system_db()
+    try:
+        ResourceGrantsRepository(conn).ensure_grant(
+            gid, "marketplace_plugin", "mkt-x/alpha", "test",
+        )
+        UserCuratedSubscriptionsRepository(conn).subscribe(admin_id, "mkt-x", "alpha")
+    finally:
+        conn.close()
+
+    r = web_client.delete("/api/marketplaces/mkt-x", cookies=cookies)
+    assert r.status_code == 204, r.text
+
+    conn = get_system_db()
+    try:
+        assert conn.execute(
+            "SELECT 1 FROM marketplace_registry WHERE id = 'mkt-x'"
+        ).fetchone() is None, "registry row survived delete"
+        assert conn.execute(
+            "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = 'mkt-x'"
+        ).fetchone() is None, "plugin rows orphaned after delete"
+        assert conn.execute(
+            "SELECT 1 FROM resource_grants WHERE resource_id = 'mkt-x/alpha'"
+        ).fetchone() is None, "plugin grant orphaned after delete"
+        assert conn.execute(
+            "SELECT 1 FROM user_plugin_optouts WHERE marketplace_id = 'mkt-x'"
+        ).fetchone() is None, "subscription orphaned after delete"
+    finally:
+        conn.close()

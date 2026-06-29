@@ -1,0 +1,191 @@
+{# Shared stack card macro — visual parity with marketplace.html .mp-card.
+
+   Vertical tile (mirrors mp-card pixel-for-pixel):
+
+     ┌──────────────────────────────────────┐
+     │                                      │
+     │             SA                       │  ← 120px photo banner,
+     │      (26px bold initials)            │     gradient bg, centered
+     │                                      │
+     ├──────────────────────────────────────┤
+     │ Sales bundle                         │  ← title (15px bold, clamp 2)
+     │ 12 tables                            │  ← meta (11px secondary)
+     │ Orders + line items …                │  ← description (clamp 2)
+     │ [keboola] [bigquery]                 │  ← optional tags
+     ├──────────────────────────────────────┤
+     │ Open →                  [+ Add]      │  ← footer
+     └──────────────────────────────────────┘
+
+   The 120px coloured banner with 2-letter initials replaces the old
+   tiny inline icon-box. This matches marketplace.html .mp-card .photo
+   exactly so /catalog, /memory and /marketplace read as one product.
+
+   Initials default to the first letter of the first two whitespace-
+   separated words ("Sales bundle" → "SB"); single-word names fall
+   back to name[:2]. When `entry.icon` is provided AND is a single
+   emoji glyph the admin set explicitly, we render it instead — at
+   30px so it doesn't dwarf the rest of the card.
+
+   States (dual-encoded: color border + text badge):
+     .stack-card.is-required → amber border + "Required" badge top-right
+     .stack-card.is-in-stack → amber border + "In stack" badge top-right
+     default                  → neutral border + "+ Add to stack" button
+
+   `entry` is a dict-like with keys:
+     id, name, description, icon, color, requirement ("available"|"required"),
+     in_stack (bool), meta (str), meta_html (str — server-built, trusted,
+     wins over `meta` for inline CTAs), tags (list[str]),
+     drilldown_url (str), footer_left (str).
+#}
+{% macro card(entry) %}
+{% set _cls_required = ' is-required' if entry.requirement == 'required' else '' %}
+{% set _cls_instack = ' is-in-stack' if entry.in_stack else '' %}
+{% set _name = (entry.name or '?')|string %}
+{% set _name_parts = _name.split() %}
+{% if _name_parts|length >= 2 %}
+  {% set _initials = (_name_parts[0][0] ~ _name_parts[1][0])|upper %}
+{% else %}
+  {% set _initials = _name[:2]|upper %}
+{% endif %}
+{# Per design review (2 independent assessments): emoji glyphs on cards
+   feel childish in a B2B context. Always render the 2-letter initials —
+   matches marketplace.html PL/SK/AG fallback exactly. The admin's
+   `entry.icon` is preserved on disk (admin/* edit screens still show it)
+   but not rendered on cards. Future polish: swap initials for Lucide
+   SVG icons keyed by `entry.icon`. #}
+{% set _has_glyph = False %}
+{# v51 status pill — only the non-default values surface as a visible
+   pill. 'prod' is the assumed-good default and would just be noise on
+   every card. Map drives both the visible label and a per-status CSS
+   class for tint. #}
+{% set _status = entry.status|default('prod') %}
+{% set _status_meta = {
+  'poc':         {'label': 'POC',         'cls': 'stack-card__status-pill--poc'},
+  'coming-soon': {'label': 'Coming soon', 'cls': 'stack-card__status-pill--coming'},
+  'draft':       {'label': 'Draft',       'cls': 'stack-card__status-pill--draft'}
+}.get(_status) %}
+<div class="stack-card{{ _cls_required }}{{ _cls_instack }}"
+     data-id="{{ entry.id }}"
+     data-requirement="{{ entry.requirement|default('available') }}"
+     data-status="{{ _status }}"
+     data-in-stack="{{ '1' if entry.in_stack else '0' }}">
+  {% if entry.requirement == 'required' %}
+    <div class="stack-card__req-badge" title="Required by your organization">Required</div>
+  {% elif entry.in_stack %}
+    <div class="stack-card__req-badge stack-card__req-badge--instack" title="In your stack">In stack</div>
+  {% endif %}
+
+  {# v56 derived badges (curated / new). Render top-left of the card
+     when present; multiple stack horizontally. When a lifecycle status
+     pill is also shown (poc / coming-soon / draft), it occupies the same
+     top-left corner, so drop the badge row just below it to avoid the two
+     overlapping. Class hooks ``data-badge="<name>"`` let the visual audit
+     test pin them. #}
+  {% if entry.badges %}
+  <div class="stack-card__badges" style="position:absolute; top:{{ '32px' if _status_meta else '8px' }}; left:8px;
+       display:flex; gap:4px; z-index:2;">
+    {% for b in entry.badges %}
+    <span class="stack-card__derived-badge stack-card__derived-badge--{{ b }}"
+          data-badge="{{ b }}"
+          style="display:inline-block; padding:2px 7px; border-radius:999px;
+                 font-size:9px; font-weight:700; text-transform:uppercase;
+                 letter-spacing:0.4px;
+                 {% if b == 'curated' %}background:#fef3c7; color:#92400e;
+                 {% elif b == 'new' %}background:#dcfce7; color:#166534;
+                 {% else %}background:#e5e7eb; color:#374151;{% endif %}">
+      {{ b|capitalize }}
+    </span>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# Photo banner — 120px tall.
+     - If `entry.cover_image_url` is set (v50 admin-uploaded cover), render
+       it as an <img> filling the banner. Mirrors marketplace.html's
+       cover_photo path (templates/marketplace.html:702-707) so /catalog
+       and /memory cards visually match the marketplace cards.
+     - If the <img> 404s (file deleted, mid-deploy file-server lag, etc.),
+       the `onerror` swap replaces the broken-image icon with the same
+       FLAT-color + initials fallback used when no cover is set at all.
+     - No cover → flat solid color from `entry.color` (was: pastel→pink
+       gradient, user feedback "vošklivé, divné") + 2-letter initials. #}
+  {# v53 cover-corner emoji glyph — when entry.icon is a single emoji
+     (not a Lucide name like "chart-line"), render it semi-transparent in
+     the lower-right of the cover for the "abstract glyph" feel the
+     mockup uses, without shipping a Lucide bundle. Heuristic: short
+     string + first char not an ASCII identifier char ⇒ treat as glyph.
+     Lucide-name strings are silently suppressed (no CDN dep). #}
+  {% set _icon_str = (entry.icon or '')|string %}
+  {% set _icon_first = _icon_str[:1] %}
+  {% set _cover_glyph = _icon_str if (
+       _icon_str and _icon_str|length <= 4 and
+       _icon_first not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_'
+     ) else '' %}
+  <div class="stack-card__photo{% if _has_glyph %} stack-card__photo--glyph{% endif %}"
+       style="background: {{ entry.color|default('#f1f5f9') }};">
+    {% if _status_meta %}
+      <span class="stack-card__status-pill {{ _status_meta.cls }}"
+            title="Lifecycle status: {{ _status_meta.label }}">{{ _status_meta.label }}</span>
+    {% endif %}
+    {% if entry.cover_image_url %}
+      <img src="{{ entry.cover_image_url }}" alt=""
+           onerror="this.parentElement.classList.add('stack-card__photo--failed');
+                    this.parentElement.textContent=this.dataset.fallback;"
+           data-fallback="{{ _initials }}">
+    {% elif _has_glyph %}{{ entry.icon }}{% else %}{{ _initials }}{% endif %}
+    {% if _cover_glyph and not entry.cover_image_url %}
+      <span class="stack-card__cover-glyph" aria-hidden="true">{{ _cover_glyph }}</span>
+    {% endif %}
+  </div>
+
+  <div class="stack-card__body">
+    {% if entry.category %}
+      <div class="stack-card__eyebrow">{{ entry.category }}</div>
+    {% endif %}
+    <h3 class="stack-card__title">{{ entry.name }}</h3>
+    {# `meta_html` (server-built, trusted) wins over `meta` (plain text)
+       so callers can render an inline action link on the meta line —
+       e.g. empty packages that want a "0 tables — assign some →" CTA. #}
+    {% if entry.meta_html %}<div class="stack-card__meta">{{ entry.meta_html|safe }}</div>
+    {% elif entry.meta %}<div class="stack-card__meta">{{ entry.meta }}</div>{% endif %}
+    {% if entry.description %}
+      <div class="stack-card__desc">{{ entry.description }}</div>
+    {% endif %}
+    {% if entry.tags %}
+      <div class="stack-card__tags">
+        {% for tag in entry.tags %}<span class="stack-card__tag">{{ tag }}</span>{% endfor %}
+      </div>
+    {% endif %}
+  </div>
+
+  {# v56 owner chip — small attribution line below tags. Only rendered
+     when the package has an owner; class hook `data-card-owner`
+     pins the contract for the visual-audit test. #}
+  {% if entry.owner_name %}
+  <div class="stack-card__owner" data-card-owner
+       style="padding: 4px 14px 8px; font-size: 11px; color: var(--text-secondary, #5f6368);">
+    Owned by <strong style="color:var(--text-primary);">{{ entry.owner_name }}</strong>{% if entry.owner_team %} · {{ entry.owner_team }}{% endif %}
+  </div>
+  {% endif %}
+
+  <div class="stack-card__footer">
+    {% if entry.drilldown_url %}
+      <a class="stack-card__drilldown" href="{{ entry.drilldown_url }}">{{ entry.footer_left|default('Open →') }}</a>
+    {% else %}
+      <span class="stack-card__author">{{ entry.footer_left|default('') }}</span>
+    {% endif %}
+    {% if entry.requirement == 'required' %}
+      <button class="stack-card__btn stack-card__btn--required" disabled
+              title="Required by your organization — managed by admin">
+        In stack (required)
+      </button>
+    {% elif entry.in_stack %}
+      <button class="stack-card__btn stack-card__btn--remove"
+              data-action="remove" data-id="{{ entry.id }}">Remove</button>
+    {% else %}
+      <button class="stack-card__btn stack-card__btn--add"
+              data-action="add" data-id="{{ entry.id }}">+ Add to stack</button>
+    {% endif %}
+  </div>
+</div>
+{% endmacro %}

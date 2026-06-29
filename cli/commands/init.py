@@ -40,6 +40,7 @@ import json
 import os
 import subprocess
 import sys
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -47,10 +48,11 @@ from typing import Optional
 import typer
 
 from cli.client import api_get
-from cli.config import save_config, save_token
+from cli.config import _config_dir, save_config, save_token
 from cli.error_render import render_error
 from cli.lib.commands import install_claude_commands
 from cli.lib.hooks import install_claude_hooks
+from cli.lib.initial_workspace import apply_override, probe_status
 from cli.lib.pull import PullResult, _override_server_env, run_pull
 
 
@@ -84,6 +86,32 @@ _INIT_COMPLETE_FILE = ".claude/init-complete"
 # (not appends to) the trust store, so a stale pointer is silently
 # catastrophic.
 _CA_ENV_VARS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO")
+
+
+def _chmod_workspace_hooks(workspace: Path) -> None:
+    """Set execute bit on every `.sh` under `<workspace>/.claude/hooks/`.
+
+    Claude Code's plugin install path doesn't always preserve the execute
+    bit on shell hook files — depending on the archive format the plugin
+    ships in (zip, no-bit-preserving git checkout config, etc.), hooks
+    can land on disk as `rw-r--r--` and every fire returns Permission
+    denied. The user-visible symptom is a silent SessionStart / PreToolUse
+    failure that looks like the hooks just aren't installed.
+
+    Best-effort. No-op on Windows NTFS via Git Bash (chmod is meaningless
+    on NTFS without ACLs). Failures are swallowed — a hook the user can
+    still read is no worse than the pre-fix baseline.
+    """
+    hooks_dir = workspace / ".claude" / "hooks"
+    if not hooks_dir.is_dir():
+        return
+    for path in hooks_dir.rglob("*.sh"):
+        try:
+            current = path.stat().st_mode
+            # Add user/group/other execute. Same effect as `chmod +x`.
+            path.chmod(current | 0o111)
+        except OSError:
+            pass
 
 
 def _is_windows_host() -> bool:
@@ -180,8 +208,39 @@ init_app = typer.Typer(help="Bootstrap an analyst workspace in this directory")
 
 @init_app.callback(invoke_without_command=True)
 def init(
-    server_url: str = typer.Option(..., "--server-url", help="Agnes server URL"),
-    token: str = typer.Option(..., "--token", help="Personal access token"),
+    server_url: Optional[str] = typer.Option(
+        None, "--server-url",
+        help="Agnes server URL. Required unless --bundle is provided.",
+    ),
+    token: Optional[str] = typer.Option(
+        None, "--token",
+        help=(
+            "Personal access token. Can also be supplied via the "
+            "AGNES_TOKEN env var or --token-file (see also). Inline "
+            "--token sometimes trips Claude Code's auto-classifier "
+            "(long bearer-token string in a command line); prefer "
+            "--token-file or AGNES_TOKEN to dodge that."
+        ),
+    ),
+    token_file: Optional[str] = typer.Option(
+        None, "--token-file",
+        help=(
+            "Path to a file whose first non-blank line is the PAT. Wins "
+            "over AGNES_TOKEN env when both are set; loses to an explicit "
+            "--token flag. The token never appears in the command string "
+            "this way, which dodges Claude Code's bearer-token classifier."
+        ),
+    ),
+    bundle: Optional[str] = typer.Option(
+        None, "--bundle",
+        help=(
+            "Path to an Agnes Cowork Setup Bundle (a directory containing "
+            ".agnes-bundle.json, or the .zip file itself). When provided, "
+            "exchanges the embedded setup token for a PAT automatically — "
+            "no --server-url or --token required. The bundle is one-use "
+            "and its .agnes-bundle.json is deleted from disk after exchange."
+        ),
+    ),
     force: bool = typer.Option(False, "--force", help="Re-initialize an existing workspace"),
     workspace_str: Optional[str] = typer.Option(None, "--workspace", help="Target dir (default: cwd)"),
     skip_materialize: bool = typer.Option(
@@ -197,7 +256,184 @@ def init(
 ):
     """Bootstrap workspace: auth, CLAUDE.md, hooks, first pull, AGNES_WORKSPACE.md."""
     workspace = Path(workspace_str).resolve() if workspace_str else Path.cwd()
+
+    # ------------------------------------------------------------------
+    # Bundle flow (M4): when --bundle is provided, exchange the embedded
+    # setup token for a PAT before the normal token-resolution path.
+    #
+    # Precedence after bundle handling: --server-url overrides the bundle's
+    # server_url if both are given (unusual but safe).
+    # ------------------------------------------------------------------
+    bundle_json_path: Optional[Path] = None
+    if bundle:
+        bundle_path = Path(bundle).expanduser().resolve()
+        try:
+            if bundle_path.is_dir():
+                # Directory: prefer `agnes-bundle.json` (no dot — current format,
+                # visible to Claude tools); fall back to `.agnes-bundle.json`
+                # (legacy bundles downloaded before the rename).
+                _candidate = bundle_path / "agnes-bundle.json"
+                if not _candidate.exists():
+                    _candidate = bundle_path / ".agnes-bundle.json"
+                bundle_json_path = _candidate
+                bundle_data = json.loads(
+                    bundle_json_path.read_text(encoding="utf-8")
+                )
+            elif bundle_path.suffix == ".zip":
+                # ZIP file: extract bundle JSON in memory.
+                # Supports both flat ZIPs (legacy) and folder-prefixed ZIPs
+                # (current format where unzipping creates a workspace folder).
+                # Also supports the old `.agnes-bundle.json` name (dot-prefixed)
+                # for bundles generated before the visibility rename.
+                with zipfile.ZipFile(bundle_path) as zf:
+                    names = zf.namelist()
+                    bundle_json_name = None
+                    # Current format: `agnes-bundle.json` (no dot)
+                    for candidate_name in ("agnes-bundle.json", ".agnes-bundle.json"):
+                        if candidate_name in names:
+                            bundle_json_name = candidate_name
+                            break
+                    if bundle_json_name is None:
+                        # Folder-prefixed: look for <folder>/agnes-bundle.json or .agnes-bundle.json
+                        for suffix in ("/agnes-bundle.json", "/.agnes-bundle.json"):
+                            candidates = sorted(n for n in names if n.endswith(suffix))
+                            if candidates:
+                                bundle_json_name = candidates[0]
+                                break
+                    if bundle_json_name is None:
+                        raise ValueError(
+                            "agnes-bundle.json not found inside the ZIP"
+                        )
+                    bundle_data = json.loads(
+                        zf.read(bundle_json_name).decode("utf-8")
+                    )
+                bundle_json_path = None  # nothing to delete from disk
+            else:
+                raise ValueError(
+                    f"--bundle must be a directory or a .zip file, got: {bundle_path}"
+                )
+        except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
+            typer.echo(render_error(0, {"detail": {
+                "kind": "partial_state",
+                "hint": f"Could not read bundle from {bundle!r}: {exc}",
+            }}), err=True)
+            raise typer.Exit(1)
+
+        bundle_server_url = bundle_data.get("server_url", "").rstrip("/")
+        setup_token_raw = bundle_data.get("setup_token", "")
+
+        if not bundle_server_url or not setup_token_raw:
+            typer.echo(render_error(0, {"detail": {
+                "kind": "partial_state",
+                "hint": "Bundle is missing server_url or setup_token.",
+            }}), err=True)
+            raise typer.Exit(1)
+
+        if not server_url:
+            server_url = bundle_server_url
+
+        # Exchange setup token → PAT (unauthenticated call; setup_token IS auth)
+        typer.echo(f"Connecting to {server_url} …")
+        try:
+            import httpx as _httpx
+            exchange_resp = _httpx.post(
+                f"{server_url}/api/auth/exchange-setup-token",
+                json={"setup_token": setup_token_raw},
+                timeout=30,
+            )
+            if exchange_resp.status_code == 401:
+                typer.echo(render_error(401, {"detail": {
+                    "kind": "auth_failed",
+                    "hint": (
+                        "Setup token is invalid, expired, or already used. "
+                        "Download a new bundle from Agnes and try again."
+                    ),
+                }}), err=True)
+                raise typer.Exit(1)
+            exchange_resp.raise_for_status()
+            exchange_data = exchange_resp.json()
+        except typer.Exit:
+            raise
+        except Exception as exc:
+            typer.echo(render_error(0, {"detail": {
+                "kind": "server_unreachable",
+                "hint": f"Token exchange failed: {exc}",
+            }}), err=True)
+            raise typer.Exit(1)
+
+        if not token:
+            token = exchange_data.get("access_token")
+        user_email = exchange_data.get("user_email", "")
+        typer.echo(f"Authenticated as {user_email}")
+
+        # Remove bundle file from disk (setup token must not linger)
+        if bundle_json_path and bundle_json_path.exists():
+            try:
+                bundle_json_path.unlink()
+            except OSError:
+                pass  # best-effort; file will expire server-side anyway
+
+    # ------------------------------------------------------------------
+    # Validate that we now have a server URL (required unless --bundle
+    # provided it above).
+    # ------------------------------------------------------------------
+    if not server_url:
+        typer.echo(render_error(0, {"detail": {
+            "kind": "partial_state",
+            "hint": "Supply --server-url or use --bundle to provide it automatically.",
+        }}), err=True)
+        raise typer.Exit(1)
+
     server_url = server_url.rstrip("/")
+
+    # ------------------------------------------------------------------
+    # Resolve the token. Precedence (highest to lowest):
+    #   1. explicit --token flag
+    #   2. --token-file flag
+    #   3. AGNES_TOKEN env var
+    #   4. ~/.config/agnes/token.json (saved by `agnes auth login` /
+    #      `agnes auth import-token`) — M1 bug fix: was missing before
+    #   5. --bundle exchange result (already set above as `token`)
+    #   6. → error
+    #
+    # --token-file and AGNES_TOKEN exist so the analyst can avoid Claude
+    # Code's auto-classifier flagging the long JWT in the command line.
+    # ------------------------------------------------------------------
+    if token is None and token_file:
+        try:
+            for line in Path(token_file).expanduser().read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line:
+                    token = line
+                    break
+        except OSError as exc:
+            typer.echo(render_error(0, {"detail": {
+                "kind": "partial_state",
+                "hint": f"--token-file {token_file!r} could not be read: {exc}",
+            }}), err=True)
+            raise typer.Exit(1)
+    if token is None:
+        token = os.environ.get("AGNES_TOKEN", "").strip() or None
+    if token is None:
+        # Fallback: PAT saved on a previous `agnes auth login` /
+        # `agnes auth import-token` run. Lets `agnes init --server-url X`
+        # work without re-supplying the token every time.
+        _tok_path = _config_dir() / "token.json"
+        if _tok_path.exists():
+            try:
+                _tok_data = json.loads(_tok_path.read_text(encoding="utf-8"))
+                token = _tok_data.get("access_token") or None
+            except (OSError, ValueError):
+                pass
+    if not token:
+        typer.echo(render_error(0, {"detail": {
+            "kind": "partial_state",
+            "hint": (
+                "Supply a token via --token, --token-file, AGNES_TOKEN env var, "
+                "or run `agnes auth login` first."
+            ),
+        }}), err=True)
+        raise typer.Exit(1)
 
     # Best-effort cleanup before ANY TLS handshake fires below — stale
     # SSL_CERT_FILE / REQUESTS_CA_BUNDLE / GIT_SSL_CAINFO pointers from a
@@ -210,57 +446,53 @@ def init(
 
     # ------------------------------------------------------------------
     # Step 1: detect an existing workspace.
+    #
+    # An init is considered to have happened when EITHER:
+    #   - the completion sentinel `.claude/init-complete` exists
+    #     (authoritative, written at the end of every successful init —
+    #     default OR override mode), OR
+    #   - the legacy "AI Data Analyst" string is in CLAUDE.md (pre-#259
+    #     default-mode workspaces that succeeded under an older CLI
+    #     version that didn't write a sentinel).
+    #
+    # The CLAUDE.md substring check is intentionally kept for legacy
+    # workspaces but does NOT trigger for Initial-Workspace-override
+    # workspaces (admin's repo CLAUDE.md doesn't contain the string).
+    # In override mode the sentinel IS the authoritative signal — this
+    # is why the override `agnes init` flow writes the sentinel as its
+    # very last step, same as the default flow.
     # ------------------------------------------------------------------
     claude_md = workspace / "CLAUDE.md"
     init_complete = workspace / _INIT_COMPLETE_FILE
-    if claude_md.exists() and not force:
+    sentinel_says_inited = init_complete.exists()
+    claude_md_says_inited = False
+    if claude_md.exists():
         try:
             existing = claude_md.read_text(encoding="utf-8")
-        except OSError:
+            claude_md_says_inited = _INIT_MARKER in existing
+        except (OSError, UnicodeDecodeError):
+            # A CLAUDE.md with non-UTF-8 bytes (operator edited with a
+            # legacy encoding) shouldn't crash the gate evaluation — fall
+            # back to "marker not found" so the sentinel-existence branch
+            # below carries the decision instead.
             existing = ""
-        if _INIT_MARKER in existing:
-            # Distinguish "fully initialized" from "previous attempt was
-            # killed mid-flight": only block when the completion sentinel
-            # is there. Issue #259 — pre-0.53 every interrupted init left
-            # CLAUDE.md behind and the next `agnes init` errored with
-            # `partial_state`, forcing `--force` + full re-download of any
-            # large materialized parquet.
-            if init_complete.exists():
-                typer.echo(render_error(0, {"detail": {
-                    "kind": "partial_state",
-                    "hint": "Workspace already initialized. Re-run with --force to redo.",
-                }}), err=True)
-                raise typer.Exit(1)
-            else:
-                typer.echo(
-                    "Previous init was interrupted (no completion sentinel "
-                    "found). Resuming — partial downloads will continue where "
-                    "they stopped.",
-                    err=True,
-                )
-
-    # On --force, snapshot the existing CLAUDE.md before regenerating it
-    # so an operator who edited it can recover their notes (issue #164).
-    # Backup name carries an ISO timestamp so multiple `--force` runs in
-    # the same workspace don't clobber each other. We write the backup
-    # *after* the existing-workspace gate above so the un-forced path is
-    # unchanged.
-    if claude_md.exists() and force:
-        try:
-            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            backup_path = workspace / f"CLAUDE.md.bak.{ts}"
-            backup_path.write_bytes(claude_md.read_bytes())
-            typer.echo(f"Backed up existing CLAUDE.md → {backup_path.name}")
-        except OSError as exc:
-            # FS error on the backup is annoying but shouldn't abort the
-            # init. Surface it so the operator knows their pre-existing
-            # CLAUDE.md is about to be overwritten without a recoverable
-            # copy on disk, then proceed.
-            typer.echo(
-                f"Warning: could not write CLAUDE.md backup ({exc}); "
-                f"continuing with --force overwrite",
-                err=True,
-            )
+    if (sentinel_says_inited or claude_md_says_inited) and not force:
+        if sentinel_says_inited:
+            typer.echo(render_error(0, {"detail": {
+                "kind": "partial_state",
+                "hint": "Workspace already initialized. Re-run with --force to redo.",
+            }}), err=True)
+            raise typer.Exit(1)
+        # CLAUDE.md substring matches but no sentinel — previous default-
+        # mode init was killed mid-flight (issue #259). Resume rather
+        # than refuse so a large materialized parquet stays partially
+        # cached and we don't re-download from zero.
+        typer.echo(
+            "Previous init was interrupted (no completion sentinel "
+            "found). Resuming — partial downloads will continue where "
+            "they stopped.",
+            err=True,
+        )
 
     # ------------------------------------------------------------------
     # Step 2: verify the PAT via /api/catalog/tables.
@@ -300,53 +532,170 @@ def init(
     save_config({"server": server_url})
     save_token(token, email="")
 
-    # ------------------------------------------------------------------
-    # Step 4: fetch the rendered CLAUDE.md from /api/welcome.
-    # ------------------------------------------------------------------
     workspace.mkdir(parents=True, exist_ok=True)
-    try:
-        with _override_server_env(server_url, token):
-            welcome_resp = api_get("/api/welcome", params={"server_url": server_url})
-        welcome_resp.raise_for_status()
-    except Exception as exc:
-        typer.echo(render_error(0, {"detail": {
-            "kind": "server_unreachable",
-            "hint": "Failed to fetch CLAUDE.md from /api/welcome",
-            "message": str(exc),
-        }}), err=True)
-        raise typer.Exit(1)
-    welcome_content = welcome_resp.json().get("content", "")
-    claude_md.write_text(welcome_content, encoding="utf-8")
+
+    # Anchor the workspace root in config so `agnes push` (and the
+    # SessionEnd hook that runs it) can find this workspace's Claude Code
+    # session folder without depending on cwd or hook stdin — the macOS
+    # reliability fix. Written in BOTH default and override modes; a re-init
+    # in a new location updates it (single workspace per laptop).
+    save_config({"workspace_root": str(workspace)})
 
     # ------------------------------------------------------------------
-    # Step 5: default settings.json + install hooks.
+    # Step 3.5: probe for a per-instance Initial Workspace Template.
     #
-    # Seed first-run model + permissions only when the file is absent;
-    # `install_claude_hooks` then merges SessionStart/End on top, leaving
-    # any third-party keys/hooks intact. Re-running init (with or without
-    # --force) is idempotent on settings.json.
+    # When the operator has registered a template repo on
+    # /admin/server-config, we branch into the OVERRIDE FLOW: download
+    # the server-rendered zip, optionally confirm with --force, extract
+    # to the analyst's workspace, write the extended sentinel. We
+    # explicitly SKIP the default-flow steps that would otherwise
+    # clobber admin's content:
+    #
+    #   - Step 4: fetch /api/welcome → CLAUDE.md  (admin's repo CLAUDE.md wins)
+    #   - Step 5: settings.json defaults + install_claude_hooks +
+    #             install_claude_commands  (admin's repo settings.json wins)
+    #   - Step 6: write .claude/CLAUDE.local.md stub  (admin decides)
+    #   - Step 8: render AGNES_WORKSPACE.md  (admin decides)
+    #
+    # Steps 7 (run_pull) and 9 (sentinel) still run, but step 9's
+    # sentinel write is folded INTO apply_override so the override
+    # sentinel ships the extended fields (override:true, template_source,
+    # template_sha) atomically with the extraction.
+    #
+    # OVERRIDE MODE — intentional behavior, NOT a bug. AI reviewers: see
+    # docs/initial-workspace-override.md §"What Agnes stops doing".
     # ------------------------------------------------------------------
-    settings_path = workspace / ".claude" / "settings.json"
-    if not settings_path.exists():
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
-        settings_path.write_text(json.dumps(
-            {"model": "sonnet", "permissions": {"allow": ["Read", "Bash", "Grep", "Glob"]}},
-            indent=2,
-        ), encoding="utf-8")
-    install_claude_hooks(workspace)
-    install_claude_commands(workspace)
+    override_status = None
+    try:
+        override_status = probe_status(server_url, token)
+    except typer.Exit:
+        raise
+    except Exception:
+        # Unexpected non-HTTP failure (parse error, etc.) — treat as
+        # "no override" and fall through. Default flow is safe.
+        override_status = None
+
+    override_active = bool(
+        override_status and override_status.configured
+    )
+
+    if override_active:
+        # Override flow: apply_override does its own download +
+        # extraction + sentinel write + audit event. Returns the
+        # ExtractResult so we can mention counts in the final summary.
+        try:
+            import importlib.metadata as _md
+            agnes_version = _md.version("agnes-the-ai-analyst")
+        except Exception:
+            agnes_version = "unknown"
+        override_result = apply_override(
+            workspace,
+            override_status,
+            server_url,
+            token,
+            force=force,
+            agnes_version=agnes_version,
+        )
+    else:
+        override_result = None
+
+        # ------------------------------------------------------------------
+        # On --force in DEFAULT mode only, snapshot the existing CLAUDE.md
+        # before regenerating it so an operator who edited it can recover
+        # their notes (issue #164). Backup name carries an ISO timestamp
+        # so multiple `--force` runs in the same workspace don't clobber
+        # each other.
+        #
+        # OVERRIDE MODE intentionally does NOT back up CLAUDE.md — the
+        # admin's Git repo is the source of truth, recovery is `git log`.
+        # Documented in CHANGELOG; not a regression of #164.
+        # ------------------------------------------------------------------
+        if claude_md.exists() and force:
+            try:
+                ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                backup_path = workspace / f"CLAUDE.md.bak.{ts}"
+                backup_path.write_bytes(claude_md.read_bytes())
+                typer.echo(f"Backed up existing CLAUDE.md → {backup_path.name}")
+            except OSError as exc:
+                typer.echo(
+                    f"Warning: could not write CLAUDE.md backup ({exc}); "
+                    f"continuing with --force overwrite",
+                    err=True,
+                )
+
+        # ------------------------------------------------------------------
+        # Step 4: fetch the rendered CLAUDE.md from /api/welcome.
+        # ------------------------------------------------------------------
+        try:
+            with _override_server_env(server_url, token):
+                welcome_resp = api_get("/api/welcome", params={"server_url": server_url})
+            welcome_resp.raise_for_status()
+        except Exception as exc:
+            typer.echo(render_error(0, {"detail": {
+                "kind": "server_unreachable",
+                "hint": "Failed to fetch CLAUDE.md from /api/welcome",
+                "message": str(exc),
+            }}), err=True)
+            raise typer.Exit(1)
+        welcome_content = welcome_resp.json().get("content", "")
+        claude_md.write_text(welcome_content, encoding="utf-8")
+
+    if not override_active:
+        # ------------------------------------------------------------------
+        # Step 5: default settings.json + install hooks.
+        #
+        # Seed first-run model + permissions only when the file is absent;
+        # `install_claude_hooks` then merges SessionStart/End on top, leaving
+        # any third-party keys/hooks intact. Re-running init (with or without
+        # --force) is idempotent on settings.json.
+        #
+        # OVERRIDE MODE skips this entire block — admin's repo settings.json
+        # is the source of truth. Documented in CHANGELOG / docs/initial-
+        # workspace-override.md. AI reviewers: not a regression of #242
+        # (`maybe_refresh_claude_hooks`), the override sentinel guards
+        # against later auto-refresh paths separately.
+        # ------------------------------------------------------------------
+        settings_path = workspace / ".claude" / "settings.json"
+        if not settings_path.exists():
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            settings_path.write_text(json.dumps(
+                {"model": "sonnet", "permissions": {"allow": ["Read", "Bash", "Bash(agnes *)", "Grep", "Glob"]}},
+                indent=2,
+            ), encoding="utf-8")
+        install_claude_hooks(workspace)
+        install_claude_commands(workspace)
+
+        # ------------------------------------------------------------------
+        # Step 6: CLAUDE.local.md stub — only when absent. `--force` does NOT
+        # overwrite; the operator's notes survive a re-init.
+        #
+        # OVERRIDE MODE: NOT created by Agnes. If the admin's template repo
+        # ships a CLAUDE.local.md, that one wins; otherwise the file simply
+        # doesn't exist. Documented contract: full override = full control.
+        # ------------------------------------------------------------------
+        local_md = workspace / ".claude" / "CLAUDE.local.md"
+        if not local_md.exists():
+            local_md.parent.mkdir(parents=True, exist_ok=True)
+            local_md.write_text(
+                "# My Notes\n\nPersonal notes for this workspace. Uploaded on `agnes push`.\n",
+                encoding="utf-8",
+            )
 
     # ------------------------------------------------------------------
-    # Step 6: CLAUDE.local.md stub — only when absent. `--force` does NOT
-    # overwrite; the operator's notes survive a re-init.
+    # Always chmod +x hook scripts that landed on disk, regardless of
+    # which path seeded the workspace. In DEFAULT mode the hooks come
+    # from `install_claude_hooks` above; in OVERRIDE mode they come
+    # from the admin's initial-workspace-template clone — and `git
+    # checkout` of that template doesn't reliably preserve the +x bit
+    # (filemode=false repos, archive extractions, FUSE/NFS mounts),
+    # so hooks like `.claude/hooks/skill-nudge/nudge.sh` or
+    # `.claude/hooks/prompt-history/log-prompt.sh` could land non-
+    # executable and fire `Permission denied` on the very next
+    # SessionStart. `_chmod_workspace_hooks` recurses (`rglob`) so
+    # subdir-scoped hook layouts are covered. Best-effort, no-op on
+    # Windows NTFS.
     # ------------------------------------------------------------------
-    local_md = workspace / ".claude" / "CLAUDE.local.md"
-    if not local_md.exists():
-        local_md.parent.mkdir(parents=True, exist_ok=True)
-        local_md.write_text(
-            "# My Notes\n\nPersonal notes for this workspace. Uploaded on `agnes push`.\n",
-            encoding="utf-8",
-        )
+    _chmod_workspace_hooks(workspace)
 
     # ------------------------------------------------------------------
     # Step 7: first pull. `run_pull` records per-stage failures inside
@@ -387,50 +736,108 @@ def init(
         }}), err=True)
         raise typer.Exit(1)
 
-    # ------------------------------------------------------------------
-    # Step 8: render AGNES_WORKSPACE.md from the static client-side
-    # template. Three placeholders: created_at, server_url, workspace_path.
-    # ------------------------------------------------------------------
-    here = Path(__file__).parent
-    template_path = here.parent.parent / "config" / "agnes_workspace_template.txt"
-    if template_path.exists():
-        template = template_path.read_text(encoding="utf-8")
-    else:
-        # Defensive fallback — the template ships with the repo so this
-        # branch only fires on a broken install. Better than crashing.
-        template = "# Agnes workspace\n\nCreated: {created_at}\nServer: {server_url}\n"
-    workspace_md = (
-        template
-        .replace("{created_at}", datetime.now(timezone.utc).isoformat())
-        .replace("{server_url}", server_url)
-        .replace("{workspace_path}", str(workspace))
-    )
-    (workspace / "AGNES_WORKSPACE.md").write_text(workspace_md, encoding="utf-8")
+    if not override_active:
+        # ------------------------------------------------------------------
+        # Step 8: render AGNES_WORKSPACE.md from the static client-side
+        # template. Three placeholders: created_at, server_url, workspace_path.
+        #
+        # OVERRIDE MODE skips — admin's template owns workspace docs (often
+        # there's nothing here at all, or the admin ships their own
+        # AGNES_WORKSPACE.md content).
+        # ------------------------------------------------------------------
+        here = Path(__file__).parent
+        template_path = here.parent.parent / "config" / "agnes_workspace_template.txt"
+        if template_path.exists():
+            template = template_path.read_text(encoding="utf-8")
+        else:
+            # Defensive fallback — the template ships with the repo so this
+            # branch only fires on a broken install. Better than crashing.
+            template = "# Agnes workspace\n\nCreated: {created_at}\nServer: {server_url}\n"
+        workspace_md = (
+            template
+            .replace("{created_at}", datetime.now(timezone.utc).isoformat())
+            .replace("{server_url}", server_url)
+            .replace("{workspace_path}", str(workspace))
+        )
+        (workspace / "AGNES_WORKSPACE.md").write_text(workspace_md, encoding="utf-8")
 
     # ------------------------------------------------------------------
     # Step 9: write the completion sentinel. The next `agnes init` (no
     # flags) checks this; absence means a previous attempt was killed
     # mid-flight and we should resume rather than refuse. Issue #259.
+    #
+    # OVERRIDE MODE already wrote the extended sentinel (with
+    # override: true + template_source + template_sha) from inside
+    # apply_override(), so skip — don't clobber its extra fields with
+    # the basic default-mode shape.
     # ------------------------------------------------------------------
-    sentinel = workspace / _INIT_COMPLETE_FILE
-    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    if override_active:
+        pass  # apply_override already wrote the extended sentinel
+    else:
+        # Default mode: fetch operator-provisioned per-tenant params and
+        # write <workspace>/.claude/agnes/.env so seed-resident connector
+        # skills can read them at install time. Best-effort; empty overlay
+        # or older server (no /api/connectors/params endpoint) silently
+        # skips the file.
+        try:
+            from cli.lib.initial_workspace import write_agnes_env
+            write_agnes_env(workspace, server_url, token)
+        except Exception as e:
+            # Best-effort — failure here doesn't block init. Seed skills
+            # will fall back to interactive prompts.
+            typer.echo(
+                f"  Warning: .env.agnes write skipped ({e})",
+                err=True,
+            )
+
+        sentinel = workspace / _INIT_COMPLETE_FILE
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            import importlib.metadata as _md
+            agnes_version = _md.version("agnes-the-ai-analyst")
+        except Exception:
+            agnes_version = "unknown"
+        sentinel.write_text(
+            f"completed_at: {datetime.now(timezone.utc).isoformat()}\n"
+            f"agnes_version: {agnes_version}\n"
+            f"server_url: {server_url}\n",
+            encoding="utf-8",
+        )
+
+    # ------------------------------------------------------------------
+    # Step final-1: clear the transient bootstrap token file.
+    #
+    # The setup prompt writes the raw PAT to `~/.agnes/token` and feeds it
+    # to `agnes init --token-file ~/.agnes/token`. That file is a transient
+    # *input*, not a credential store — the authoritative copy now lives in
+    # `~/.config/agnes/token.json` (written 0o600 by `save_token` above).
+    # Leaving the plaintext PAT behind in `~/.agnes/token` is an avoidable
+    # exposure (it sits at the default umask and lingers indefinitely), so
+    # delete it once init has consumed it. Best-effort: a removal failure
+    # must never fail an otherwise-successful init. (#580, Finding 1.)
+    # ------------------------------------------------------------------
+    _bootstrap_token = Path(os.path.expanduser("~/.agnes/token"))
     try:
-        import importlib.metadata as _md
-        agnes_version = _md.version("agnes-the-ai-analyst")
-    except Exception:
-        agnes_version = "unknown"
-    sentinel.write_text(
-        f"completed_at: {datetime.now(timezone.utc).isoformat()}\n"
-        f"agnes_version: {agnes_version}\n"
-        f"server_url: {server_url}\n",
-        encoding="utf-8",
-    )
+        _bootstrap_token.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
 
     # ------------------------------------------------------------------
     # Final: human-readable summary.
     # ------------------------------------------------------------------
     typer.echo("Workspace ready.")
     typer.echo(f"  Server   : {server_url}")
+    if override_active and override_result is not None:
+        typer.echo(
+            f"  Template : {override_status.template_source} "
+            f"@ {override_status.template_sha[:10] if override_status.template_sha else '—'}"
+        )
+        typer.echo(
+            f"  Files    : {len(override_result.created)} created, "
+            f"{len(override_result.overwritten)} overwritten from template"
+        )
     # `parquets_total` is the count of materialized rows in the manifest;
     # `tables_updated` is the count of those actually fetched this run.
     # The catalog can carry many more remote-only rows that aren't part

@@ -41,6 +41,7 @@ import httpx
 from dotenv import load_dotenv
 
 from app.logging_config import setup_logging
+from connectors.jira.service import JiraFetchError
 
 setup_logging(__name__)
 logger = logging.getLogger(__name__)
@@ -244,11 +245,10 @@ class JiraBackfill:
         """
         Fetch remote links for an issue from Jira.
 
-        Args:
-            issue_key: Issue key (e.g., "PROJ-123")
-
-        Returns:
-            List of remote link dicts, empty list on failure
+        Mirrors connectors.jira.service.JiraService.fetch_remote_links —
+        raises JiraFetchError on auth (401/403) or server (5xx) failure so
+        the caller can skip the overlay rather than wipe existing parquet
+        rows. 429 rate-limit retries are kept as-is (legitimate transient).
         """
         url = f"{self.base_url}/issue/{issue_key}/remotelink"
 
@@ -259,23 +259,34 @@ class JiraBackfill:
                     auth=self.auth,
                     headers={"Accept": "application/json"},
                 )
-
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 404:
-                return []
-            elif response.status_code == 429:
-                retry_after = int(response.headers.get("Retry-After", 60))
-                logger.warning(f"Rate limited on remote links, waiting {retry_after}s...")
-                time.sleep(retry_after)
-                return self.fetch_remote_links(issue_key)
-            else:
-                logger.debug(f"Failed to fetch remote links for {issue_key}: {response.status_code}")
-                return []
-
         except httpx.RequestError as e:
-            logger.debug(f"Error fetching remote links for {issue_key}: {e}")
+            raise JiraFetchError(
+                f"Backfill remote-links fetch for {issue_key} failed: connection — {e}"
+            ) from e
+
+        if response.status_code == 200:
+            return response.json()
+        if response.status_code == 404:
             return []
+        if response.status_code == 429:
+            retry_after = int(response.headers.get("Retry-After", 60))
+            logger.warning(f"Rate limited on remote links, waiting {retry_after}s...")
+            time.sleep(retry_after)
+            return self.fetch_remote_links(issue_key)
+        if response.status_code in (401, 403):
+            raise JiraFetchError(
+                f"Backfill remote-links fetch for {issue_key} failed: auth error "
+                f"({response.status_code}) — token may be expired/revoked"
+            )
+        if response.status_code >= 500:
+            raise JiraFetchError(
+                f"Backfill remote-links fetch for {issue_key} failed: server error "
+                f"({response.status_code})"
+            )
+        raise JiraFetchError(
+            f"Backfill remote-links fetch for {issue_key} failed: unexpected status "
+            f"{response.status_code}"
+        )
 
     def save_issue(self, issue_data: dict) -> Path | None:
         """
@@ -398,8 +409,15 @@ class JiraBackfill:
             self.stats["failed"] += 1
             return False
 
-        # Fetch and embed remote links for Parquet transform
-        issue_data["_remote_links"] = self.fetch_remote_links(issue_key)
+        # Fetch and embed remote links for Parquet transform. If fetch fails,
+        # leave the key ABSENT so transform_remote_links preserves existing rows.
+        try:
+            issue_data["_remote_links"] = self.fetch_remote_links(issue_key)
+        except JiraFetchError as e:
+            logger.warning(
+                f"Skipping _remote_links overlay for {issue_key}: {e}. "
+                f"Existing parquet rows will be preserved."
+            )
 
         # Save JSON
         if not self.save_issue(issue_data):

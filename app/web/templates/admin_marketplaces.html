@@ -1,53 +1,23 @@
-{% extends "base.html" %}
+{% extends "base_page.html" %}
 {% block title %}Curated Marketplaces — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
+{% set page_hero_eyebrow = "Agent Experience" %}
+{% set page_hero_title = "Curated Marketplaces" %}
+{% set page_hero_subtitle = "Admin-managed git repos cloned nightly. Synced plugins surface in the Claude Code marketplace feed." %}
+
+{% block head_extra %}
 <style>
-  /* Override base.html's 800px .container cap for this wide table. */
-  .container:has(.marketplaces-page) { max-width: none; padding: 24px 16px; }
-  .marketplaces-page { max-width: 1400px; margin: 0 auto; padding: 0; }
   .marketplaces-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
   }
-  .marketplaces-title { margin: 0; font-size: 22px; font-weight: 600; }
-  .marketplaces-search {
-    flex: 1; max-width: 360px;
-    padding: 8px 12px 8px 36px;
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 8px;
-    font-size: 13px;
-    background: var(--surface, #fff) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 12px center;
-  }
-  .marketplaces-search:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
 
-  .marketplaces-table-wrap {
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 12px;
-    overflow-x: auto;
-  }
-  .marketplaces-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .marketplaces-table thead th {
-    text-align: left; padding: 12px 16px;
-    background: var(--border-light, #f9fafb);
-    border-bottom: 1px solid var(--border, #e5e7eb);
-    font-weight: 600; color: var(--text-secondary, #6b7280);
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
-  }
-  .marketplaces-table tbody td {
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border-light, #f3f4f6);
-    vertical-align: middle;
-  }
-  .marketplaces-table tbody tr:last-child td { border-bottom: none; }
-  .marketplaces-table tbody tr:hover { background: var(--border-light, #fafafa); }
 
   .mp-cell { display: flex; align-items: center; gap: 10px; }
   .mp-avatar {
     width: 32px; height: 32px; border-radius: 8px;
     display: flex; align-items: center; justify-content: center;
-    background: var(--primary-light, #eef2ff); color: var(--primary, #6366f1);
+    background: var(--ds-primary-light, #eef2ff); color: var(--ds-primary, #6366f1);
     flex-shrink: 0;
   }
   .mp-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -98,7 +68,7 @@
     white-space: nowrap;
   }
   .icon-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb; }
-  .icon-btn.primary { color: var(--primary, #6366f1); border-color: #c7d2fe; }
+  .icon-btn.primary { color: var(--ds-primary, #6366f1); border-color: #c7d2fe; }
   .icon-btn.primary:hover { background: #eef2ff; }
   .icon-btn.danger:hover { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
   .icon-btn[disabled] { opacity: 0.5; cursor: wait; }
@@ -133,18 +103,8 @@
     font-family: inherit;
   }
   .modal-card textarea { min-height: 60px; resize: vertical; }
-  .modal-card input:focus, .modal-card textarea:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
+  .modal-card input:focus, .modal-card textarea:focus { outline: 2px solid var(--ds-primary, #6366f1); outline-offset: -1px; }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
-  .modal-btn {
-    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-    cursor: pointer; transition: all 0.15s;
-  }
-  .modal-btn:hover { background: var(--border-light, #f9fafb); }
-  .modal-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
-  .modal-btn.primary:hover { filter: brightness(1.05); }
-  .modal-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
-  .modal-btn.danger:hover { filter: brightness(1.05); }
 
   .sync-result {
     margin: 12px 0;
@@ -195,7 +155,7 @@
     margin-top: 6px; display: flex; gap: 12px; flex-wrap: wrap;
     font-size: 11px; color: var(--text-secondary, #6b7280);
   }
-  .plugin-meta a { color: var(--primary, #6366f1); text-decoration: none; }
+  .plugin-meta a { color: var(--ds-primary, #6366f1); text-decoration: none; }
   .plugin-meta a:hover { text-decoration: underline; }
 
   /* v39: SYSTEM pill + per-plugin toggle button. Pill uses the same
@@ -232,13 +192,50 @@
     background: #fde68a; border-color: #f59e0b; color: #78350f;
   }
   .plugin-system-btn[disabled] { opacity: 0.5; cursor: wait; }
+  /* v78: when a plugin is admin-disabled the system button is locked so a
+     hidden plugin can't be marked mandatory. `is-locked` is a persistent
+     greyed state (distinct from the transient `[disabled]` "Working…"
+     spinner state above). */
+  .plugin-system-btn.is-locked {
+    opacity: 0.45; cursor: not-allowed;
+    background: var(--surface, #fff); border-color: var(--border, #e5e7eb); color: var(--text-secondary, #9ca3af);
+  }
+  .plugin-system-btn.is-locked:hover {
+    background: var(--surface, #fff); border-color: var(--border, #e5e7eb); color: var(--text-secondary, #9ca3af);
+  }
+
+  /* v78: DISABLED pill — replaces the amber SYSTEM pill for admin-disabled
+     plugins. Neutral grey so it reads as "hidden / inert" rather than a
+     policy state. */
+  .plugin-disabled-pill {
+    display: inline-block; padding: 1px 7px; border-radius: 999px;
+    background: var(--border-light, #f3f4f6); color: var(--text-secondary, #6b7280);
+    font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+
+  /* v78: "Disable plugin" toggle switch — copied from admin_users.html so
+     the on/off control reads identically across the admin surface. */
+  .plugin-disable-toggle { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .plugin-disable-toggle .toggle-label { font-size: 11px; font-weight: 600; color: var(--text-secondary, #6b7280); }
+  .toggle { position: relative; display: inline-block; width: 36px; height: 20px; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle-slider {
+    position: absolute; cursor: pointer; inset: 0;
+    background: var(--border, #cbd5e1); border-radius: 999px; transition: 0.2s;
+  }
+  .toggle-slider::before {
+    content: ""; position: absolute; left: 2px; top: 2px;
+    width: 16px; height: 16px; background: var(--surface, #fff); border-radius: 50%;
+    transition: 0.2s;
+  }
+  .toggle input:checked + .toggle-slider { background: var(--ds-accent-danger-ink, #ef4444); }
+  .toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
+  .toggle input:focus-visible + .toggle-slider { outline: 2px solid var(--ds-primary, #6366f1); outline-offset: 2px; }
+  .toggle input:disabled + .toggle-slider { opacity: 0.5; cursor: wait; }
 
   /* Amber primary modal action — pairs with the system-confirm modal so
      the OK button matches the trigger button's visual weight. */
-  .modal-btn.warning {
-    background: #f59e0b; color: #fff; border-color: #d97706;
-  }
-  .modal-btn.warning:hover { filter: brightness(1.06); }
 
   /* Toast */
   .toast-stack {
@@ -257,20 +254,25 @@
   .toast.success { background: #047857; }
   .toast.error { background: #b91c1c; }
 </style>
+{% endblock %}
 
+{% block page %}
+{# Design-system component macros — toolbar "+ Add marketplace" + all 6 modal
+   action sets render via `ds.button` (auto-imported by base_ds). JS-generated
+   per-row `.icon-btn` actions stay page-local. #}
 <div class="marketplaces-page">
+
   <div class="marketplaces-toolbar">
-    <h2 class="marketplaces-title">Curated Marketplaces</h2>
-    <input id="mp-search" type="search" class="marketplaces-search" placeholder="Filter by slug, name, or URL…" autocomplete="off">
+    <input id="mp-search" type="search" class="search-input" placeholder="Filter by slug, name, or URL…" autocomplete="off">
     <a class="icon-btn" href="/marketplace/format-guide" target="_blank" rel="noopener"
        title="Open the marketplace-metadata.json format guide in a new tab">
       Format guide →
     </a>
-    <button class="modal-btn primary" id="open-create-btn">+ Add marketplace</button>
+    {{ ds.button('+ Add marketplace', variant='primary', id='open-create-btn') }}
   </div>
 
-  <div class="marketplaces-table-wrap">
-    <table class="marketplaces-table" id="marketplaces-table">
+  <div class="data-table-wrap">
+    <table class="data-table" id="marketplaces-table">
       <thead>
         <tr>
           <th>Marketplace</th>
@@ -328,8 +330,9 @@
     <div class="help">Stored in <code>$DATA_DIR/state/.env_overlay</code> (chmod 600) on the data volume. Never written to the database or committed to git.</div>
 
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="create-modal">Cancel</button>
-      <button class="modal-btn primary" id="confirm-create-btn">Register</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="create-modal"') }}
+      {{ ds.button('Register', variant='primary', id='confirm-create-btn') }}
     </div>
   </div>
 </div>
@@ -368,8 +371,9 @@
     </div>
 
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="edit-modal">Cancel</button>
-      <button class="modal-btn primary" id="confirm-edit-btn">Save</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="edit-modal"') }}
+      {{ ds.button('Save', variant='primary', id='confirm-edit-btn') }}
     </div>
   </div>
 </div>
@@ -381,7 +385,8 @@
     <p class="sub" id="sync-target"></p>
     <div id="sync-result-body" class="sync-result"></div>
     <div class="modal-actions">
-      <button class="modal-btn primary" data-close-modal="sync-modal">Close</button>
+      {{ ds.button('Close', variant='primary',
+                   attrs='data-close-modal="sync-modal"') }}
     </div>
   </div>
 </div>
@@ -393,7 +398,8 @@
     <p class="sub" id="details-sub"></p>
     <div id="details-body" class="plugin-list"></div>
     <div class="modal-actions">
-      <button class="modal-btn primary" data-close-modal="details-modal">Close</button>
+      {{ ds.button('Close', variant='primary',
+                   attrs='data-close-modal="details-modal"') }}
     </div>
   </div>
 </div>
@@ -407,8 +413,9 @@
       <input id="confirm-purge" type="checkbox" checked> Also delete the working copy from disk
     </label>
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="confirm-modal">Cancel</button>
-      <button class="modal-btn danger" id="confirm-ok-btn">Delete</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="confirm-modal"') }}
+      {{ ds.button('Delete', variant='danger', id='confirm-ok-btn') }}
     </div>
   </div>
 </div>
@@ -424,8 +431,32 @@
     <p class="sub" id="system-confirm-plugin" style="margin: 0 0 14px; font-size: 13px; color: var(--text-primary, #111827); font-weight: 500;"></p>
     <div id="system-confirm-body" style="font-size: 13px; line-height: 1.55; color: var(--text-secondary, #374151);"></div>
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="system-confirm-modal">Cancel</button>
-      <button class="modal-btn warning" id="system-confirm-ok-btn">Confirm</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="system-confirm-modal"') }}
+      {# Confirm starts as `.btn-danger` (Mark-as-system is destructive — fans
+         out a forced grant to every principal). JS below toggles between
+         `.btn-danger` (mark) and `.btn-primary` (unmark) on open. #}
+      {{ ds.button('Confirm', variant='danger', id='system-confirm-ok-btn') }}
+    </div>
+  </div>
+</div>
+
+<!-- v78: confirm dialog for the "Disable plugin" toggle. Separate modal from
+     system-confirm-modal so the two confirm flows never leak listeners into
+     each other. Title + body populated dynamically to handle both the
+     disable and enable directions. -->
+<div class="modal-backdrop" id="disable-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="disable-confirm-title">
+  <div class="modal-card" style="max-width: 520px;">
+    <h3 id="disable-confirm-title">Disable plugin?</h3>
+    <p class="sub" id="disable-confirm-plugin" style="margin: 0 0 14px; font-size: 13px; color: var(--text-primary, #111827); font-weight: 500;"></p>
+    <div id="disable-confirm-body" style="font-size: 13px; line-height: 1.55; color: var(--text-secondary, #374151);"></div>
+    <div class="modal-actions">
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="disable-confirm-modal"') }}
+      {# Confirm starts as `.btn-danger` (Disable hides the plugin instance-wide).
+         JS below toggles between `.btn-danger` (disable) and `.btn-primary`
+         (enable) on open. #}
+      {{ ds.button('Confirm', variant='danger', id='disable-confirm-ok-btn') }}
     </div>
   </div>
 </div>
@@ -440,7 +471,7 @@ function esc(s) {
   d.textContent = s == null ? "" : String(s);
   return d.innerHTML;
 }
-function fmtDate(s) { return s ? s.slice(0, 16).replace("T", " ") : "—"; }
+function fmtDate(s) { return s ? (window.AgnesTime.formatDateTime(s) || "—") : "—"; }
 function shortSha(s) { return s ? s.slice(0, 7) : "—"; }
 
 // ── Toast ──
@@ -625,13 +656,20 @@ async function openDetails(id, name) {
       if (p.category) meta.push(`category: ${esc(p.category)}`);
       if (p.homepage) meta.push(`<a href="${esc(p.homepage)}" target="_blank" rel="noopener">homepage ↗</a>`);
       const metaHtml = meta.length ? `<div class="plugin-meta">${meta.join(" · ")}</div>` : "";
-      const sysPill = p.is_system
-        ? `<span class="plugin-system-pill" title="Mandatory for every user — managed below">SYSTEM</span>`
-        : "";
+      const isDisabled = p.admin_disabled === true;
+      // v78: a disabled plugin is hidden everywhere, so the amber SYSTEM pill
+      // is replaced by a neutral DISABLED pill and the system button is locked.
+      const sysPill = isDisabled
+        ? `<span class="plugin-disabled-pill" title="Admin-disabled — hidden from every user across all served surfaces">DISABLED</span>`
+        : (p.is_system
+          ? `<span class="plugin-system-pill" title="Mandatory for every user — managed below">SYSTEM</span>`
+          : "");
       const sysBtnLabel = p.is_system ? "Unmark system" : "Mark as system";
-      const sysBtnTitle = p.is_system
-        ? "Remove the system mark. Existing per-group grants and per-user subscriptions remain — admin can clean them up via /admin/access."
-        : "Make this plugin mandatory for every user. Adds RBAC grants for every group and subscriptions for every user.";
+      const sysBtnTitle = isDisabled
+        ? "Plugin is disabled. Re-enable it before marking as system."
+        : (p.is_system
+          ? "Remove the system mark. Existing per-group grants and per-user subscriptions remain — admin can clean them up via /admin/access."
+          : "Make this plugin mandatory for every user. Adds RBAC grants for every group and subscriptions for every user.");
       // Shield icon on both states — it's the semantic anchor for
       // "org policy / system" and dropping it on unmark broke visual
       // parity between the two toggle states.
@@ -644,17 +682,34 @@ async function openDetails(id, name) {
         <div class="plugin-item-head">
           <span class="plugin-name">${esc(p.name)}</span>${ver}${src}${sysPill}
           <span class="spacer"></span>
-          <button class="plugin-system-btn ${p.is_system ? "is-system" : ""}"
+          <label class="plugin-disable-toggle" title="${esc(isDisabled
+              ? "Plugin is admin-disabled and hidden everywhere. Toggle off to re-enable."
+              : "Admin-disable this plugin instance-wide — hides it from every served surface for all users.")}">
+            <span class="toggle-label">Disabled</span>
+            <span class="toggle">
+              <input type="checkbox"
+                     data-action="toggle-disabled"
+                     data-marketplace="${esc(id)}"
+                     data-plugin="${esc(p.name)}"
+                     data-admin-disabled="${isDisabled ? "1" : "0"}"
+                     ${isDisabled ? "checked" : ""}>
+              <span class="toggle-slider"></span>
+            </span>
+          </label>
+          <button class="plugin-system-btn ${p.is_system ? "is-system" : ""} ${isDisabled ? "is-locked" : ""}"
                   data-action="toggle-system"
                   data-marketplace="${esc(id)}"
                   data-plugin="${esc(p.name)}"
                   data-is-system="${p.is_system ? "1" : "0"}"
+                  ${isDisabled ? "disabled" : ""}
                   title="${esc(sysBtnTitle)}">${sysBtnIcon}${esc(sysBtnLabel)}</button>
         </div>${desc}${metaHtml}
       </div>`;
     }).join("");
     body.querySelectorAll('[data-action="toggle-system"]').forEach(btn =>
       btn.addEventListener("click", () => toggleSystem(btn, id, name)));
+    body.querySelectorAll('[data-action="toggle-disabled"]').forEach(el =>
+      el.addEventListener("change", () => toggleDisabled(el, id, name)));
   } catch (e) {
     body.innerHTML = `<div class="empty" style="color:#b91c1c;">Failed to load plugins: ${esc(e.message)}</div>`;
   }
@@ -680,11 +735,11 @@ function toggleSystem(btn, marketplaceId, marketplaceName) {
       <ul style="margin: 0; padding-left: 20px;">
         <li>Existing per-group RBAC grants <strong>stay</strong>.</li>
         <li>Existing per-user subscriptions <strong>stay</strong>.</li>
-        <li>Operators can revoke either via <a href="/admin/access" style="color: var(--primary, #6366f1);">/admin/access</a> or by uninstalling on each user's stack.</li>
+        <li>Operators can revoke either via <a href="/admin/access" style="color: var(--ds-primary, #6366f1);">/admin/access</a> or by uninstalling on each user's stack.</li>
       </ul>`;
     okBtn.textContent = "Unmark system";
-    okBtn.classList.remove("warning");
-    okBtn.classList.add("primary");
+    okBtn.classList.remove("btn-danger");
+    okBtn.classList.add("btn-primary");
   } else {
     titleEl.textContent = "Mark as system plugin?";
     pluginEl.textContent = pluginName;
@@ -702,25 +757,22 @@ function toggleSystem(btn, marketplaceId, marketplaceName) {
         Unmarking later does not auto-clean the materialized grants — they stay until manually removed.
       </p>`;
     okBtn.textContent = "Mark as system";
-    okBtn.classList.remove("primary");
-    okBtn.classList.add("warning");
+    okBtn.classList.remove("btn-primary");
+    okBtn.classList.add("btn-danger");
   }
 
-  // Single-shot handler — re-bind on every open so we don't leak across
-  // toggles and so the closure captures the current btn / ids.
-  const onConfirm = async () => {
-    okBtn.removeEventListener("click", onConfirm);
+  // Single assignment (NOT addEventListener) so re-opening for a different
+  // plugin REPLACES any prior handler instead of stacking. Robust to every
+  // close path — Cancel button, backdrop click, Escape: a dismissed modal
+  // leaves a handler that can't fire until the modal is reopened, and
+  // reopening overwrites it. (addEventListener stacked listeners, and the
+  // backdrop/Escape close paths skipped cleanup, so a cancelled confirm could
+  // later fire on a different plugin.)
+  okBtn.onclick = async () => {
+    okBtn.onclick = null;
     closeModal("system-confirm-modal");
     await performToggleSystem(btn, marketplaceId, marketplaceName, isSystem);
   };
-  okBtn.addEventListener("click", onConfirm);
-  // Cancel cleanup — strip the listener so the next open starts fresh.
-  const onCancel = (e) => {
-    if (e && e.target === okBtn) return;
-    okBtn.removeEventListener("click", onConfirm);
-  };
-  document.querySelectorAll('[data-close-modal="system-confirm-modal"]').forEach(el =>
-    el.addEventListener("click", onCancel, { once: true }));
 
   openModal("system-confirm-modal");
 }
@@ -741,8 +793,8 @@ async function performToggleSystem(btn, marketplaceId, marketplaceName, isSystem
       btn.innerHTML = prevHtml;
       return;
     }
-    const result = await r.json();
     if (!isSystem) {
+      const result = await r.json();
       toast(`Marked ${pluginName} as system (${result.affected_groups} groups, ${result.affected_users} users)`, "success");
     } else {
       toast(`Unmarked ${pluginName} from system`, "success");
@@ -753,6 +805,96 @@ async function performToggleSystem(btn, marketplaceId, marketplaceName, isSystem
     toast(`Network error: ${e.message}`, "error");
     btn.disabled = false;
     btn.innerHTML = prevHtml;
+  }
+}
+
+// ── Disable / enable plugin (v78) ──
+function toggleDisabled(el, marketplaceId, marketplaceName) {
+  // Mirrors toggleSystem: render a populated confirm modal, then on OK
+  // perform the disable/enable POST. The checkbox state is reverted up-front
+  // and only persisted by the re-fetch in performToggleDisabled, so a
+  // cancelled confirm leaves the switch matching server state.
+  const pluginName = el.dataset.plugin;
+  const isDisabled = el.dataset.adminDisabled === "1";
+  const titleEl = document.getElementById("disable-confirm-title");
+  const pluginEl = document.getElementById("disable-confirm-plugin");
+  const bodyEl = document.getElementById("disable-confirm-body");
+  const okBtn = document.getElementById("disable-confirm-ok-btn");
+
+  // Revert the optimistic flip — the switch only reflects server state after
+  // the re-fetch in openDetails. If the admin cancels, it must stay as-is.
+  el.checked = isDisabled;
+
+  if (isDisabled) {
+    titleEl.textContent = "Enable plugin?";
+    pluginEl.textContent = pluginName;
+    bodyEl.innerHTML = `
+      <p style="margin: 0 0 10px;">This re-enables the plugin instance-wide.</p>
+      <ul style="margin: 0; padding-left: 20px;">
+        <li>It returns to the served feed (RBAC) for every user holding a grant.</li>
+        <li>It reappears on the marketplace page, my-stack, and the synthetic served marketplace.</li>
+        <li>The <strong>system flag is NOT restored</strong> — if it should be mandatory again, re-mark it as system.</li>
+      </ul>`;
+    okBtn.textContent = "Enable plugin";
+    okBtn.classList.remove("btn-danger");
+    okBtn.classList.add("btn-primary");
+  } else {
+    titleEl.textContent = "Disable plugin?";
+    pluginEl.textContent = pluginName;
+    bodyEl.innerHTML = `
+      <p style="margin: 0 0 10px;">After confirming, this plugin disappears for
+        <strong>all users</strong> across every served surface:</p>
+      <ul style="margin: 0 0 10px; padding-left: 20px;">
+        <li>The served feed (RBAC) no longer includes it.</li>
+        <li>It is hidden from the marketplace page.</li>
+        <li>It drops out of every user's my-stack.</li>
+        <li>It is removed from the synthetic served marketplace.</li>
+      </ul>
+      <p style="margin: 0; font-size: 12px; color: var(--text-secondary, #6b7280);">
+        If this plugin is marked as <strong>system</strong>, disabling also clears the system flag.
+        Re-enabling later does not restore it.
+      </p>`;
+    okBtn.textContent = "Disable plugin";
+    okBtn.classList.remove("btn-primary");
+    okBtn.classList.add("btn-danger");
+  }
+
+  // Single assignment (NOT addEventListener) so re-opening for a different
+  // plugin REPLACES any prior handler instead of stacking. Robust to every
+  // close path — Cancel button, backdrop click, Escape: a dismissed modal
+  // leaves a handler that can't fire until the modal is reopened, and
+  // reopening overwrites it. (addEventListener stacked listeners, and the
+  // backdrop/Escape close paths skipped cleanup, so a cancelled toggle could
+  // later fire on a different plugin.)
+  okBtn.onclick = async () => {
+    okBtn.onclick = null;
+    closeModal("disable-confirm-modal");
+    await performToggleDisabled(el, marketplaceId, marketplaceName, isDisabled);
+  };
+
+  openModal("disable-confirm-modal");
+}
+
+async function performToggleDisabled(el, marketplaceId, marketplaceName, isDisabled) {
+  const pluginName = el.dataset.plugin;
+  const path = isDisabled ? "enable" : "disable";
+  el.disabled = true;
+  try {
+    const url = `${API}/${encodeURIComponent(marketplaceId)}/plugins/${encodeURIComponent(pluginName)}/${path}`;
+    const r = await fetch(url, { method: "POST", credentials: "include" });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      toast(`Toggle failed: ${err.detail || r.status}`, "error");
+      el.disabled = false;
+      return;
+    }
+    toast(isDisabled ? `Enabled ${pluginName}` : `Disabled ${pluginName}`, "success");
+    // Re-render the modal so the pill, locked system button, and switch
+    // state all refresh from a fresh fetch.
+    openDetails(marketplaceId, marketplaceName);
+  } catch (e) {
+    toast(`Network error: ${e.message}`, "error");
+    el.disabled = false;
   }
 }
 

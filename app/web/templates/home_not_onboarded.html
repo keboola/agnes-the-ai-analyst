@@ -1,1187 +1,113 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 
 {% block title %}Setup — {{ instance_name or "AI Data Analyst" }}{% endblock %}
 
+{% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/home.css') }}">
+{% endblock %}
+
 {% block content %}
 {% include "_page_chrome.html" %}
-<style>
-.home-mock {
-    --hp-primary: #0073D1;
-    --hp-primary-dark: #0056A3;
-    --hp-primary-light: #E6F3FC;
-    --hp-border: #E5E7EB;
-    --hp-border-light: #F3F4F6;
-    --hp-text-primary: #111827;
-    --hp-text-secondary: #6B7280;
-    --hp-text-muted: #9CA3AF;
-    --hp-orange: #C2410C;
-    --hp-orange-light: #FED7AA;
-    --hp-font-mono: ui-monospace, "SF Mono", Consolas, monospace;
-    color: var(--hp-text-primary);
-    font-size: 14px;
-    line-height: 1.5;
-}
-.home-mock * { box-sizing: border-box; }
-
-.home-mock .install-hero {
-    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
-    color: white;
-    border-radius: 16px;
-    padding: 38px 40px;
-    margin-bottom: 22px;
-    box-shadow: 0 8px 24px rgba(0, 86, 163, 0.18);
-}
-.home-mock .install-hero .eyebrow {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    opacity: 0.85;
-    margin-bottom: 10px;
-}
-.home-mock .install-hero h1 {
-    font-size: 30px;
-    font-weight: 600;
-    letter-spacing: -0.4px;
-    margin-bottom: 12px;
-    line-height: 1.2;
-    color: white;
-}
-.home-mock .install-hero .lead {
-    font-size: 15px;
-    opacity: 0.94;
-    line-height: 1.6;
-    margin-bottom: 22px;
-}
-.home-mock .install-hero .lead strong { font-weight: 600; }
-
-.home-mock .what-is {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 14px;
-    margin-bottom: 18px;
-}
-.home-mock .what-is-item {
-    background: white;
-    border: 1px solid var(--hp-border);
-    border-radius: 12px;
-    padding: 18px 22px;
-    color: inherit;
-    text-decoration: none;
-    display: block;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
-}
-.home-mock a.what-is-item:hover {
-    border-color: var(--hp-primary);
-    box-shadow: 0 4px 12px rgba(0, 115, 209, 0.10);
-    transform: translateY(-1px);
-}
-.home-mock .what-is-item .ico { font-size: 22px; margin-bottom: 8px; display: block; }
-.home-mock .what-is-item .ttl {
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--hp-text-primary);
-    margin-bottom: 4px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-}
-.home-mock .what-is-item .ttl .arrow {
-    color: var(--hp-primary);
-    font-weight: 600;
-    transition: transform 0.15s ease;
-}
-.home-mock a.what-is-item:hover .ttl .arrow {
-    transform: translateX(2px);
-}
-.home-mock .what-is-item .desc {
-    font-size: 13px;
-    color: var(--hp-text-secondary);
-    line-height: 1.55;
-}
-
-.home-mock .look-around-lead {
-    font-size: 13px;
-    color: var(--hp-text-secondary);
-    line-height: 1.55;
-    margin: -4px 0 12px;
-}
-.home-mock .look-around-grid {
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    margin-bottom: 22px;
-}
-
-.home-mock .connector-tiles {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: 16px;
-    margin-bottom: 26px;
-}
-.home-mock .connector-tile {
-    background: white;
-    border: 1px solid var(--hp-border);
-    border-radius: 12px;
-    padding: 20px 22px;
-    display: flex;
-    flex-direction: column;
-}
-.home-mock .connector-tile .ico {
-    font-size: 24px;
-    margin-bottom: 10px;
-    line-height: 1;
-}
-.home-mock .connector-tile .ttl {
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--hp-text-primary);
-    margin-bottom: 6px;
-}
-.home-mock .connector-tile .desc {
-    font-size: 13px;
-    color: var(--hp-text-secondary);
-    line-height: 1.55;
-    margin-bottom: 14px;
-    flex: 1;
-}
-.home-mock .connector-tile .connector-actions {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-.home-mock .connector-tile .connector-copy {
-    align-self: flex-start;
-}
-
-.home-mock .install-block {
-    background: rgba(15, 23, 42, 0.55);
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    border-radius: 12px;
-    padding: 18px 20px;
-}
-.home-mock .install-block + .install-block { margin-top: 14px; }
-.home-mock .os-tabs {
-    display: flex;
-    gap: 4px;
-    margin-bottom: 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.10);
-}
-.home-mock .os-tab {
-    background: transparent;
-    border: none;
-    color: rgba(255, 255, 255, 0.60);
-    font-size: 12px;
-    font-weight: 500;
-    padding: 8px 14px;
-    cursor: pointer;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    font-family: inherit;
-}
-.home-mock .os-tab:hover { color: rgba(255, 255, 255, 0.85); }
-.home-mock .os-tab.is-active {
-    color: white;
-    border-bottom-color: #FBBF24;
-}
-/* `[hidden]` UA stylesheet has lower specificity than `.install-cmd { display: flex }`,
-   so we need an explicit override to actually hide the inactive tab panel. */
-.home-mock .install-cmd[hidden] { display: none; }
-.home-mock .install-block .label {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-    opacity: 0.78;
-    margin-bottom: 10px;
-    font-weight: 600;
-}
-.home-mock .install-cmd {
-    background: #0F172A;
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    border-radius: 8px;
-    padding: 14px 18px;
-    font-family: var(--hp-font-mono);
-    font-size: 13.5px;
-    color: #FBBF24;
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 16px;
-}
-.home-mock .install-cmd .multiline { display: block; line-height: 1.7; white-space: pre-wrap; flex: 1; }
-.home-mock .install-cmd .copy-btn {
-    background: rgba(255, 255, 255, 0.10);
-    color: white;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    padding: 7px 14px;
-    border-radius: 6px;
-    font-size: 12px;
-    cursor: pointer;
-    font-weight: 500;
-    flex-shrink: 0;
-}
-.home-mock .install-cmd .copy-btn:hover { background: rgba(255, 255, 255, 0.18); }
-
-.home-mock .install-note {
-    font-size: 12.5px;
-    color: rgba(255, 255, 255, 0.85);
-    margin-top: 12px;
-    line-height: 1.55;
-}
-.home-mock .install-note code,
-.home-mock .install-note > code {
-    background: rgba(255, 255, 255, 0.12);
-    padding: 1px 6px;
-    border-radius: 4px;
-    font-family: var(--hp-font-mono);
-    font-size: 11.5px;
-}
-/* Links inside the blue install-hero need a non-blue color — the default
-   `<a>` style elsewhere on /home renders as `var(--hp-primary)` blue,
-   which is invisible against the hero's blue background. Use the same
-   high-contrast white-with-underline pattern the lead paragraph uses,
-   and bump hover to full white so the affordance stays obvious. */
-.home-mock .install-hero a {
-    color: #ffffff;
-    text-decoration: underline;
-    text-decoration-color: rgba(255, 255, 255, 0.6);
-    text-underline-offset: 2px;
-}
-.home-mock .install-hero a:hover,
-.home-mock .install-hero a:focus {
-    color: #ffffff;
-    text-decoration-color: #ffffff;
-}
-
-.home-mock .automode-card {
-    margin: 22px 0;
-    background: white;
-    border: 1px solid var(--hp-border);
-    border-radius: 12px;
-    padding: 18px 22px;
-}
-.home-mock .automode-head {
-    display: flex;
-    gap: 14px;
-    align-items: flex-start;
-    margin-bottom: 14px;
-}
-.home-mock .automode-head .ico {
-    font-size: 22px;
-    flex-shrink: 0;
-    line-height: 1;
-}
-.home-mock .automode-head h3 {
-    font-size: 14px;
-    font-weight: 600;
-    margin-bottom: 4px;
-    color: var(--hp-text-primary);
-}
-.home-mock .automode-head p {
-    font-size: 13px;
-    color: var(--hp-text-secondary);
-    line-height: 1.55;
-    margin: 0;
-}
-.home-mock .automode-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 14px;
-}
-.home-mock .automode-step {
-    display: flex;
-    gap: 10px;
-    align-items: flex-start;
-    padding: 12px;
-    background: var(--hp-border-light);
-    border-radius: 8px;
-}
-.home-mock .automode-step .num {
-    width: 22px; height: 22px;
-    border-radius: 50%;
-    background: var(--hp-primary-light);
-    color: var(--hp-primary);
-    flex-shrink: 0;
-    display: flex; align-items: center; justify-content: center;
-    font-weight: 700; font-size: 11px;
-}
-.home-mock .automode-step .step-text {
-    flex: 1;
-    font-size: 12.5px;
-    line-height: 1.5;
-    color: var(--hp-text-secondary);
-}
-.home-mock .automode-step .step-text strong {
-    display: block;
-    color: var(--hp-text-primary);
-    margin-bottom: 4px;
-    font-size: 13px;
-}
-.home-mock .automode-step kbd {
-    background: white;
-    border: 1px solid var(--hp-border);
-    border-bottom-width: 2px;
-    border-radius: 4px;
-    padding: 1px 6px;
-    font-size: 11px;
-    font-family: var(--hp-font-mono);
-    color: var(--hp-text-primary);
-}
-.home-mock .automode-step code {
-    font-family: var(--hp-font-mono);
-    font-size: 11.5px;
-    background: white;
-    padding: 1px 5px;
-    border-radius: 3px;
-    color: var(--hp-text-primary);
-    border: 1px solid var(--hp-border);
-}
-.home-mock .automode-code {
-    background: #0F172A;
-    color: #FBBF24;
-    border-radius: 6px;
-    padding: 8px 10px;
-    margin-top: 6px;
-    font-family: var(--hp-font-mono);
-    font-size: 11.5px;
-    line-height: 1.5;
-    overflow-x: auto;
-    white-space: pre;
-}
-.home-mock .automode-foot {
-    margin-top: 12px;
-    padding-top: 10px;
-    border-top: 1px solid var(--hp-border-light);
-    font-size: 12px;
-    color: var(--hp-text-secondary);
-    line-height: 1.5;
-}
-.home-mock .automode-foot a { color: var(--hp-primary); text-decoration: underline; }
-.home-mock .automode-foot code {
-    font-family: var(--hp-font-mono);
-    font-size: 11px;
-    background: var(--hp-border-light);
-    padding: 1px 4px;
-    border-radius: 3px;
-}
-
-.home-mock .section-label {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-    color: var(--hp-text-secondary);
-    margin: 30px 0 12px;
-}
-
-.home-mock .grid-2 {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 18px;
-    margin-bottom: 18px;
-}
-.home-mock .card {
-    background: white;
-    border: 1px solid var(--hp-border);
-    border-radius: 12px;
-    padding: 22px;
-}
-.home-mock .card h3 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
-.home-mock .card p { font-size: 13px; color: var(--hp-text-secondary); line-height: 1.55; margin-bottom: 12px; }
-.home-mock .card-list { list-style: none; padding: 0; margin: 0; }
-.home-mock .card-list li {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 8px 0;
-    font-size: 13px;
-    border-bottom: 1px solid var(--hp-border-light);
-}
-.home-mock .card-list li:last-child { border-bottom: none; }
-.home-mock .card-list .num {
-    width: 22px; height: 22px;
-    border-radius: 50%;
-    background: var(--hp-primary-light);
-    color: var(--hp-primary);
-    flex-shrink: 0;
-    display: flex; align-items: center; justify-content: center;
-    font-weight: 700; font-size: 11px;
-}
-.home-mock .card-list .step-text { flex: 1; line-height: 1.55; }
-.home-mock .card-list .step-text strong { display: block; margin-bottom: 2px; }
-.home-mock .card-list .step-text code,
-.home-mock .card-mini-cmd code {
-    font-family: var(--hp-font-mono);
-    font-size: 11.5px;
-    background: var(--hp-border-light);
-    padding: 1px 5px;
-    border-radius: 3px;
-    color: var(--hp-text-primary);
-}
-
-.home-mock .card-mini-cmd {
-    margin-top: 6px;
-    padding: 8px 10px;
-    background: #0F172A;
-    color: #FBBF24;
-    border-radius: 6px;
-    font-family: var(--hp-font-mono);
-    font-size: 11.5px;
-    line-height: 1.5;
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 8px;
-}
-.home-mock .card-mini-cmd code {
-    background: transparent;
-    color: inherit;
-    padding: 0;
-    flex: 1;
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-.home-mock .connector-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-}
-.home-mock .connector-head strong {
-    display: inline;
-    margin-bottom: 0;
-}
-.home-mock .connector-copy {
-    background: var(--hp-primary);
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 5px 12px;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    font-family: inherit;
-    flex-shrink: 0;
-}
-.home-mock .connector-copy:hover { background: var(--hp-primary-dark); }
-.home-mock .connector-copy.copied { background: #047857; }
-.home-mock details.connector-preview {
-    margin-top: 6px;
-}
-.home-mock details.connector-preview > summary {
-    cursor: pointer;
-    list-style: none;
-    font-size: 11.5px;
-    color: var(--hp-text-secondary);
-    padding: 2px 0;
-    user-select: none;
-}
-.home-mock details.connector-preview > summary::-webkit-details-marker { display: none; }
-.home-mock details.connector-preview > summary::before {
-    content: "▸ ";
-    margin-right: 2px;
-}
-.home-mock details.connector-preview[open] > summary::before { content: "▾ "; }
-.home-mock details.connector-preview > summary:hover { color: var(--hp-text-primary); }
-.home-mock details.connector-preview .card-mini-cmd { margin-top: 6px; }
-
-.home-mock .explore-list { list-style: none; padding: 0; margin: 0; }
-.home-mock .explore-list li + li { margin-top: 8px; }
-.home-mock .explore-item {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 14px;
-    background: var(--hp-border-light);
-    border: 1px solid transparent;
-    border-radius: 8px;
-    text-decoration: none;
-    color: var(--hp-text-primary);
-    transition: border-color 0.15s ease, background 0.15s ease;
-}
-.home-mock .explore-item:hover {
-    border-color: var(--hp-primary);
-    background: var(--hp-primary-light);
-}
-.home-mock .explore-item .ico {
-    font-size: 22px;
-    flex-shrink: 0;
-    width: 28px;
-    text-align: center;
-}
-.home-mock .explore-item .explore-text {
-    flex: 1;
-    font-size: 13px;
-    color: var(--hp-text-secondary);
-    line-height: 1.45;
-}
-.home-mock .explore-item .explore-text strong {
-    display: block;
-    color: var(--hp-text-primary);
-    font-size: 13.5px;
-    font-weight: 600;
-    margin-bottom: 2px;
-}
-.home-mock .explore-item .arrow {
-    color: var(--hp-primary);
-    font-size: 16px;
-    flex-shrink: 0;
-    font-weight: 600;
-}
-
-.home-mock .advanced-pointer {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    margin-top: 10px;
-    padding: 16px 22px;
-    background: white;
-    border: 1px solid var(--hp-border);
-    border-left: 4px solid var(--hp-primary);
-    border-radius: 12px;
-    text-decoration: none;
-    color: inherit;
-    transition: background 0.15s ease, border-color 0.15s ease;
-}
-.home-mock .advanced-pointer:hover {
-    background: var(--hp-primary-light);
-    border-color: var(--hp-primary);
-}
-.home-mock .advanced-pointer .ico {
-    font-size: 22px;
-    flex-shrink: 0;
-    line-height: 1;
-}
-.home-mock .advanced-pointer-text {
-    flex: 1;
-    font-size: 13px;
-    color: var(--hp-text-secondary);
-    line-height: 1.55;
-}
-.home-mock .advanced-pointer-text strong {
-    display: block;
-    color: var(--hp-text-primary);
-    font-size: 14px;
-    font-weight: 600;
-    margin-bottom: 2px;
-}
-.home-mock .advanced-pointer .arrow {
-    color: var(--hp-primary);
-    font-size: 16px;
-    font-weight: 600;
-    flex-shrink: 0;
-}
-
-.home-mock .setup-cta-lead {
-    font-size: 13px;
-    color: rgba(255, 255, 255, 0.82);
-    margin-bottom: 14px;
-    line-height: 1.55;
-}
-.home-mock .setup-cta-lead code {
-    background: rgba(255, 255, 255, 0.12);
-    padding: 1px 6px;
-    border-radius: 4px;
-    font-family: var(--hp-font-mono);
-    font-size: 11.5px;
-}
-.home-mock .setup-cta-row {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 14px;
-}
-.home-mock .btn-setup-primary {
-    font-family: inherit;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--hp-primary);
-    background: #FFFFFF;
-    border: none;
-    border-radius: 6px;
-    padding: 10px 22px;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    white-space: nowrap;
-    transition: background 0.15s ease;
-}
-.home-mock .btn-setup-primary:hover { background: #F0F7FF; }
-.home-mock .btn-setup-primary.copied { background: #047857; color: #fff; }
-.home-mock .btn-setup-primary[disabled] { opacity: 0.7; cursor: wait; }
-.home-mock .setup-cta-meta {
-    display: inline-flex;
-    align-items: center;
-    gap: 14px;
-    flex-wrap: wrap;
-}
-.home-mock .setup-cta-hint {
-    font-size: 12px;
-    color: rgba(255, 255, 255, 0.65);
-}
-.home-mock details.manual-fallback {
-    margin-top: 14px;
-    border-top: 1px solid rgba(255, 255, 255, 0.10);
-    padding-top: 12px;
-}
-.home-mock details.manual-fallback > summary {
-    cursor: pointer;
-    list-style: none;
-    font-size: 12.5px;
-    color: rgba(255, 255, 255, 0.78);
-    padding: 4px 0;
-    user-select: none;
-}
-.home-mock details.manual-fallback > summary::-webkit-details-marker { display: none; }
-.home-mock details.manual-fallback > summary::before {
-    content: "▸ ";
-    display: inline-block;
-    transition: transform 0.15s ease;
-    margin-right: 4px;
-}
-.home-mock details.manual-fallback[open] > summary::before { content: "▾ "; }
-.home-mock .manual-preview-wrap { margin-top: 10px; }
-.home-mock .manual-preview-wrap .setup-preview-pre {
-    background: #0F172A;
-    color: #E2E8F0;
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    border-radius: 8px;
-    padding: 14px 16px;
-    font-family: var(--hp-font-mono);
-    font-size: 12.5px;
-    line-height: 1.55;
-    overflow-x: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
-    margin: 0;
-}
-/* Override the global `code { background: var(--bg); }` rule so the inner
-   <code> renders white-on-navy instead of dark-on-pale (unreadable). */
-.home-mock .manual-preview-wrap .setup-preview-pre code,
-.home-mock .manual-preview-wrap .setup-preview-code {
-    background: transparent;
-    color: #E2E8F0;
-    padding: 0;
-    border-radius: 0;
-    font-family: inherit;
-    font-size: inherit;
-}
-.home-mock .manual-preview-wrap .placeholder-token {
-    background: rgba(251, 191, 36, 0.20);
-    color: #FBBF24;
-    padding: 0 4px;
-    border-radius: 3px;
-    font-style: italic;
-}
-.home-mock .manual-preview-wrap .token-revealed {
-    background: rgba(16, 185, 129, 0.18);
-    color: #6EE7B7;
-    padding: 0 4px;
-    border-radius: 3px;
-    font-style: normal;
-    word-break: break-all;
-}
-
-/* In-hero (dark) variant: shown for not-onboarded users underneath the
-   inline install steps inside the blue hero. */
-.home-mock .self-mark {
-    margin-top: 16px;
-    font-size: 13px;
-    color: rgba(255, 255, 255, 0.85);
-}
-.home-mock .self-mark button {
-    background: rgba(255, 255, 255, 0.15);
-    color: white;
-    border: 1px solid rgba(255, 255, 255, 0.30);
-    padding: 6px 12px;
-    border-radius: 6px;
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    margin-left: 6px;
-}
-.home-mock .self-mark button:hover { background: rgba(255, 255, 255, 0.25); }
-.home-mock .self-mark button:disabled { opacity: 0.5; cursor: default; }
-.home-mock .self-mark .status { margin-left: 10px; font-style: italic; }
-
-/* Onboarded "steps complete" badge — shown inside the blue hero in
-   place of the hidden Step 1 + Step 2 install-blocks. */
-.home-mock .install-done {
-    margin-top: 4px;
-    margin-bottom: 4px;
-    padding: 12px 16px;
-    background: rgba(255, 255, 255, 0.10);
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    border-radius: 10px;
-    color: rgba(255, 255, 255, 0.92);
-    font-size: 13px;
-    line-height: 1.55;
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-}
-.home-mock .install-done .check {
-    font-size: 16px;
-    line-height: 1.3;
-    flex-shrink: 0;
-}
-.home-mock .install-done strong { font-weight: 600; color: white; }
-
-/* News perex (admin-edited) — bottom of /home.
-   Keeps the styling within the admin-defined class vocabulary
-   (callout, video-embed) so authors get a predictable surface.
-   Full-width grid classes are intentionally NOT included here —
-   they live on /news where the layout has more room. */
-.home-mock .home-news {
-    margin-top: 28px;
-    background: white;
-    border: 1px solid var(--hp-border);
-    border-radius: 12px;
-    overflow: hidden;     /* keep the green strip's corners rounded */
-}
-.home-mock .home-news-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 12px 22px;
-    background: #D1FAE5;          /* same green as .callout-success */
-    border-bottom: 1px solid #A7F3D0;
-}
-.home-mock .home-news-head h2 {
-    font-size: 14px;
-    font-weight: 600;
-    color: #047857;               /* darker green for contrast on the band */
-    margin: 0;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-}
-.home-mock .home-news-more {
-    font-size: 13px;
-    font-weight: 500;
-    color: #047857;
-    text-decoration: none;
-}
-.home-mock .home-news-more:hover { text-decoration: underline; }
-.home-mock .home-news-body {
-    font-size: 14px;
-    line-height: 1.55;
-    color: var(--hp-text-primary);
-    padding: 18px 22px;
-}
-.home-mock .home-news-body p { margin: 0 0 8px; }
-.home-mock .home-news-body p:last-child { margin-bottom: 0; }
-
-/* Setup-collapsible: each post-install section (Step 3 auto-mode,
-   Connect-your-tools) is wrapped in a <details open> so it keyboard-
-   collapses without JS. Default state on /home: summary hidden, body
-   flat — visually identical to the pre-collapse layout.
-
-   When the user clicks "Minimize setup view" in the hero, JS sets
-   `data-setup-minimized="1"` on `.home-mock` and removes the `open`
-   attribute on each <details>. The summary then appears as a slim
-   gray bar; the body collapses; clicking the bar re-opens that one
-   section. localStorage persists the minimize state per device. */
-.home-mock .setup-collapsible { margin-top: 22px; }
-.home-mock .setup-collapsible > summary {
-    /* Default: summary is structural-only. The "flat" rendering is
-       handled by the inner blocks (.automode-card already provides its
-       own padding/border/background; the connect-your-tools section
-       starts with a .section-label-flat). */
-    display: none;
-}
-.home-mock .setup-collapsible > summary::-webkit-details-marker { display: none; }
-
-/* Minimize ON: summary becomes a slim clickable bar; the inner body
-   inherits the existing block styling but tucks under the summary
-   when the <details> is closed. */
-.home-mock[data-setup-minimized="1"] .setup-collapsible {
-    border: 1px solid var(--hp-border);
-    border-radius: 12px;
-    background: white;
-    overflow: hidden;
-}
-.home-mock[data-setup-minimized="1"] .setup-collapsible > summary {
-    list-style: none;
-    cursor: pointer;
-    padding: 14px 22px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--hp-text-primary);
-    background: #F9FAFB;
-    border-bottom: 1px solid transparent;
-    transition: background 120ms ease;
-    user-select: none;
-}
-.home-mock[data-setup-minimized="1"] .setup-collapsible > summary:hover {
-    background: #F3F4F6;
-}
-.home-mock[data-setup-minimized="1"] .setup-collapsible > summary .ico {
-    font-size: 18px;
-    line-height: 1;
-}
-.home-mock[data-setup-minimized="1"] .setup-collapsible > summary .ttl { flex: 1; }
-.home-mock[data-setup-minimized="1"] .setup-collapsible > summary .ttl small {
-    color: var(--hp-text-secondary);
-    font-weight: 400;
-    margin-left: 6px;
-}
-.home-mock[data-setup-minimized="1"] .setup-collapsible > summary .chev {
-    font-size: 18px;
-    color: var(--hp-text-secondary);
-    transition: transform 160ms ease;
-}
-.home-mock[data-setup-minimized="1"] .setup-collapsible[open] > summary {
-    border-bottom-color: var(--hp-border);
-    background: #F3F4F6;
-}
-.home-mock[data-setup-minimized="1"] .setup-collapsible[open] > summary .chev {
-    transform: rotate(90deg);
-}
-/* Tighten the body padding so collapsed sections don't gain margin
-   when inside the white wrapper card. */
-.home-mock[data-setup-minimized="1"] .setup-collapsible[open] > .automode-card,
-.home-mock[data-setup-minimized="1"] .setup-collapsible[open] > .connector-tiles {
-    margin: 18px 22px 22px;
-}
-.home-mock[data-setup-minimized="1"] .setup-collapsible[open] > .section-label-flat {
-    padding: 14px 22px 0;
-}
-/* When a section's <details> is closed in minimize mode, the body
-   already auto-hides via the browser's <details> behaviour — no extra
-   rule needed. */
-
-/* Minimize toggle in the blue hero, only present when onboarded. */
-.home-mock .setup-minimize {
-    margin-top: 14px;
-    font-size: 13px;
-    color: rgba(255, 255, 255, 0.85);
-}
-.home-mock .setup-minimize button {
-    background: rgba(255, 255, 255, 0.10);
-    color: white;
-    border: 1px solid rgba(255, 255, 255, 0.25);
-    padding: 6px 14px;
-    border-radius: 6px;
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-}
-.home-mock .setup-minimize button:hover { background: rgba(255, 255, 255, 0.18); }
-
-/* Callout, video-embed, news-hero, news-grid-*, news-cta — shared news
-   content vocabulary now lives in app/web/static/style-custom.css under
-   "News content vocabulary (shared)". Editing those rules in one place
-   updates /home perex, /news, and /admin/news preview together. */
-
-.home-mock .install-done code {
-    background: rgba(15, 23, 42, 0.55);
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    padding: 1px 6px;
-    border-radius: 4px;
-    font-family: var(--hp-font-mono);
-    font-size: 12px;
-    color: #FBBF24;
-}
-
-/* ─────────────────────────────────────────────────────────────────
-   Onboarding polish — friction fixes from internal usability testing.
-   Each block is tagged with its priority (P0/P1/P2) — P0 resolves the
-   highest-frequency confusion, P2 is nice-to-have polish.
-   ───────────────────────────────────────────────────────────────── */
-
-/* P0-1 — "Don't have a terminal open?" disclosure inside Step 1's
-   blue install-block. Yellow accent matches Claude footer mode dots
-   so it reads as a hint, not an error. */
-.home-mock details.terminal-howto {
-    margin-top: 10px;
-    padding: 8px 12px;
-    background: rgba(251, 191, 36, 0.10);
-    border: 1px solid rgba(251, 191, 36, 0.30);
-    border-radius: 8px;
-}
-.home-mock details.terminal-howto > summary {
-    cursor: pointer;
-    list-style: none;
-    font-size: 12.5px;
-    font-weight: 600;
-    color: #FBBF24;
-    user-select: none;
-}
-.home-mock details.terminal-howto > summary::-webkit-details-marker { display: none; }
-.home-mock details.terminal-howto > summary::before { content: "▸ "; margin-right: 4px; }
-.home-mock details.terminal-howto[open] > summary::before { content: "▾ "; }
-.home-mock .terminal-howto-body {
-    margin-top: 10px;
-    font-size: 12.5px;
-    color: rgba(255, 255, 255, 0.92);
-    line-height: 1.6;
-}
-.home-mock .terminal-howto-body p { margin: 0 0 6px; }
-.home-mock .terminal-howto-body kbd {
-    background: rgba(255, 255, 255, 0.15);
-    border: 1px solid rgba(255, 255, 255, 0.30);
-    border-bottom-width: 2px;
-    border-radius: 4px;
-    padding: 1px 6px;
-    font-size: 11px;
-    font-family: var(--hp-font-mono);
-    color: white;
-}
-
-/* P0-3 — connector card time badge ("~5 min · self-serve") and the
-   post-copy "now paste into Step 2" hint with arrow back. */
-.home-mock .connector-tile .ttl-row {
-    display: flex; align-items: center; justify-content: space-between; gap: 8px;
-    margin-bottom: 6px;
-}
-.home-mock .time-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 11px;
-    font-weight: 600;
-    padding: 2px 8px;
-    border-radius: 999px;
-    background: var(--hp-primary-light);
-    color: var(--hp-primary-dark);
-    flex-shrink: 0;
-}
-.home-mock .time-badge.is-warn {
-    background: #FEF3C7;
-    color: #92400E;
-}
-.home-mock .copy-next-hint {
-    font-size: 12px;
-    color: var(--hp-primary-dark);
-    background: var(--hp-primary-light);
-    padding: 6px 10px;
-    border-radius: 6px;
-    margin-top: 6px;
-    display: none;
-    align-items: center;
-    gap: 6px;
-    line-height: 1.45;
-}
-.home-mock .copy-next-hint.is-visible { display: inline-flex; }
-.home-mock .copy-next-hint code {
-    background: rgba(0, 0, 0, 0.06);
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-family: var(--hp-font-mono);
-    font-size: 11px;
-}
-
-/* P1-8 — GWS gating note + Email-admin button. Yellow background
-   matches the same friction-level used by other "admin help likely"
-   surfaces (advanced setup warnings). */
-.home-mock .gating-note {
-    font-size: 12px;
-    color: #92400E;
-    background: #FEF3C7;
-    border: 1px solid #FCD34D;
-    border-radius: 6px;
-    padding: 8px 10px;
-    margin-bottom: 10px;
-    line-height: 1.5;
-}
-.home-mock .email-admin {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: white;
-    border: 1px solid var(--hp-border);
-    color: var(--hp-text-primary);
-    padding: 5px 12px;
-    border-radius: 6px;
-    font-size: 12px;
-    font-weight: 500;
-    text-decoration: none;
-    cursor: pointer;
-    align-self: flex-start;
-    margin-top: 6px;
-}
-.home-mock .email-admin:hover {
-    text-decoration: none;
-    border-color: var(--hp-primary);
-    color: var(--hp-primary-dark);
-}
-
-/* P1-6 — Auto-detect badge replaces the "Mark me as onboarded"
-   button as the primary affordance. Pulse dot signals it's actively
-   listening; the manual self-mark button stays as a fallback. */
-.home-mock .auto-detect-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 16px;
-    background: rgba(255, 255, 255, 0.10);
-    border: 1px solid rgba(255, 255, 255, 0.20);
-    color: rgba(255, 255, 255, 0.92);
-    padding: 8px 14px;
-    border-radius: 8px;
-    font-size: 12.5px;
-}
-.home-mock .auto-detect-badge .pulse {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    background: #FBBF24;
-    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.7);
-    animation: agnes-pulse 1.6s infinite;
-}
-.home-mock .auto-detect-badge code {
-    background: rgba(0, 0, 0, 0.18);
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-family: var(--hp-font-mono);
-    font-size: 11.5px;
-}
-@keyframes agnes-pulse {
-    0% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.65); }
-    70% { box-shadow: 0 0 0 8px rgba(251, 191, 36, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
-}
-
-/* P0-2 — Post-CTA modal with "where to paste" 3-step guide. Modal
-   markup lives at body level; this styles the backdrop + card. The
-   .home-mock prefix is intentionally NOT used so the modal is
-   render-isolated from the home page's CSS variables. */
-.cta-modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(15, 23, 42, 0.55);
-    -webkit-backdrop-filter: blur(2px);
-    backdrop-filter: blur(2px);
-    display: none;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    padding: 20px;
-}
-.cta-modal-backdrop.is-open { display: flex; }
-.cta-modal {
-    background: white;
-    border-radius: 14px;
-    padding: 28px 32px;
-    max-width: 520px;
-    width: 100%;
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
-    color: #111827;
-    font-family: inherit;
-}
-.cta-modal h2 {
-    font-size: 18px;
-    font-weight: 600;
-    margin: 0 0 6px;
-    color: #047857;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-.cta-modal .lead {
-    font-size: 13px;
-    color: #6B7280;
-    margin: 0 0 18px;
-    line-height: 1.55;
-}
-.cta-modal ol {
-    list-style: none;
-    padding: 0;
-    margin: 0 0 18px;
-    counter-reset: step;
-}
-.cta-modal ol li {
-    counter-increment: step;
-    display: flex;
-    gap: 14px;
-    align-items: flex-start;
-    padding: 12px;
-    background: #F9FAFB;
-    border-radius: 8px;
-    margin-bottom: 10px;
-    font-size: 13.5px;
-    line-height: 1.5;
-}
-.cta-modal ol li::before {
-    content: counter(step);
-    width: 26px; height: 26px;
-    border-radius: 50%;
-    background: #0073D1;
-    color: white;
-    font-weight: 700;
-    font-size: 12px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-}
-.cta-modal ol li code,
-.cta-modal ol li kbd {
-    background: #fff;
-    border: 1px solid #E5E7EB;
-    padding: 1px 6px;
-    border-radius: 4px;
-    font-family: var(--hp-font-mono, ui-monospace, monospace);
-    font-size: 12px;
-}
-.cta-modal ol li kbd { border-bottom-width: 2px; }
-.cta-modal ol li strong { display: block; margin-bottom: 4px; color: #111827; }
-.cta-modal-foot {
-    display: flex; justify-content: space-between; align-items: center;
-    gap: 12px;
-    padding-top: 12px;
-    border-top: 1px solid #F3F4F6;
-}
-.cta-modal-foot .meta { font-size: 12px; color: #6B7280; }
-.cta-modal-foot button {
-    background: #0073D1;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 8px 18px;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    font-family: inherit;
-}
-.cta-modal-foot button:hover { background: #0056A3; }
-</style>
+{# Design-system component macros — used by the offboard-strip "Mark
+   me as offboarded" button + the cta-modal "Got it" close button.
+   Setup-wizard chrome (.install-hero, .install-block, .os-tabs,
+   .home-overview, .what-is, .session-step, .cta-modal, .home-news)
+   stays page-local — home.css carries all page-scoped styles
+   (ds auto-imported by base_ds). #}
 
 <div class="home-mock">
 
+    {# Value-first intro hero — parametric: all content driven by {% set %}
+       variables below. Hero structure lives in _home_hero_intro.html. #}
     {% set display_name = (user.name or (user.email or "").split("@")[0] or "there") %}
+    {% set hero_eyebrow = "Welcome, " ~ display_name %}
+    {# `instance_brand` is operator-controlled (AGNES_INSTANCE_BRAND env or
+       `instance.brand` YAML) and gets spliced into HTML strings the partial
+       renders with `| safe`. The previous `{% set x = (instance_brand | e) ~ "…<span>…" %}`
+       approach silently broke: `~` concatenation of a Markup with a raw str
+       autoescapes the right operand, so the `<span>` chars came out as
+       `&lt;span&gt;` and showed as visible text in the browser. The
+       `{% set foo %}…{% endset %}` block form gets autoescape semantics
+       right: `{{ instance_brand }}` inside the block is autoescaped just
+       like a normal expression, literal HTML stays literal, and the captured
+       value is a Markup the partial's `| safe` filter passes through. #}
+    {% set hero_title_html %}{{ instance_brand }} is your team's <span class="accent">AI workspace.</span>{% endset %}
+    {% set hero_lede_para_1 %}One place to reach {{ instance_brand }}'s curated data, plugins, skills, and shared memory &mdash; so your AI agent stops guessing and starts answering. Curated, versioned, kept current. The system learns from every session and extends coverage so the next question doesn't trip on the same gap.{% endset %}
+    {% set hero_lede = [
+        hero_lede_para_1,
+        "Think of it as your <em>AI Chief of Staff</em> &mdash; it lives in a folder on your computer, gives you access to company data and curated skills, and lets you share your own skills and plugins back to the team. You run all your projects inside and it learns from it."
+    ] %}
+    {% set hero_pillars = [
+        {"title": "Data packages", "desc": "Tables, schema, metric definitions your team has registered &mdash; documented business rules."},
+        {"title": "Plugins",       "desc": "Asana, Jira, Google Workspace, Atlassian, GitHub. Curated &amp; community-built."},
+        {"title": "Skills",        "desc": "Reusable workflow templates Claude follows &mdash; brainstorming, planning, review, debugging. Curated company-wide plus a flea market to share yours."},
+        {"title": "Memory",        "desc": "Shared analyst knowledge and prior solutions, fed back into Claude&apos;s context on demand."}
+    ] %}
+    {% set hero_show_setup_cta   = not onboarded %}
+    {% set hero_setup_cta_href   = "#install-hero" %}
+    {% set hero_setup_cta_label  = "Set up in ~15&nbsp;min &rarr;" %}
+    {% set hero_show_browse_cta  = true %}
+    {% set hero_browse_cta_href  = "#look-around" %}
+    {% set hero_browse_cta_label = "Just browse &mdash; no install needed" %}
+    {% set hero_instance_overview = config.INSTANCE_OVERVIEW if config.INSTANCE_OVERVIEW else "" %}
+    {% set hero_instance_support  = config.INSTANCE_SUPPORT  if config.INSTANCE_SUPPORT  else "" %}
+    {% include "_home_hero_intro.html" %}
 
+    {# Homepage status frame — five counters with 24h/7d toggle.
+       Two gates: (a) operator flag instance.home.show_status_frame /
+       AGNES_HOME_SHOW_STATUS_FRAME (default on, evaluated in router and
+       passed as `status_frame_enabled`); (b) the user being onboarded —
+       fresh users see a clean install-hero before zero-value stats.
+       Router skips `compute_home_stats` (saves the DB hit) when either
+       gate is closed, so `home_stats` is None in that branch. #}
+    {% if status_frame_enabled and onboarded and home_stats %}
+        {% include "_home_stats.html" %}
+    {% endif %}
+
+
+    {# Install-hero renders only for not-onboarded users. Once `agnes init`
+       POSTs /api/me/onboarded (or the user clicks the in-hero X) the hero
+       disappears entirely — the rest of /home (connector tiles, news,
+       etc.) stays. Offboarding escape hatch moved to a discrete strip
+       below; see `.offboard-strip`. #}
+    {% if not onboarded %}
+    <div class="setup-section-header" id="install-hero">
+        <div class="eyebrow">First time here</div>
+        <h2 class="setup-heading">Set up {{ instance_brand }} on your machine</h2>
+        <p class="lead">
+            ~15&nbsp;minutes, one time. You'll install one CLI tool, pick a folder, and paste a script we generate for you. After that you have a working AI workspace that knows your team's data. Everything lives in <code>~/Desktop/{{ workspace_dir }}</code> and can be removed in one command.
+        </p>
+    </div>
     <div class="install-hero">
-        {% if onboarded %}
-        <div class="eyebrow">Welcome back, {{ display_name }} — your workspace is ready</div>
-        <h1>You're set up — keep this page handy</h1>
-        <p class="lead">
-            Your local {{ instance_brand }} install is confirmed. The steps below stay useful for <strong>adding another machine</strong>, <strong>connecting more services</strong>, or <strong>turning on auto-accept mode</strong>. Skip whatever you don't need; nothing here re-runs unless you click it.
-        </p>
-        {% else %}
-        <div class="eyebrow">Welcome, {{ display_name }} — let's get you set up</div>
-        <h1>Connect Claude Code on your machine to your team's data</h1>
-        <p class="lead">
-            {{ instance_brand }} gives <strong>Claude Code</strong> on your computer access to your team's <strong>curated data, plugins, and shared knowledge</strong> — so you can ask questions and get answers in plain language, right from your terminal. This page walks you through the <strong>one-time setup (~10 minutes)</strong>. Everything it installs lives in your home folder (<code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: var(--hp-font-mono); font-size: 12.5px;">~/{{ workspace_dir }}</code>) and can be removed in one command.
-        </p>
-        {% endif %}
+        <button type="button" class="install-hero-close" id="installHeroClose"
+                data-target-source="self_acknowledged"
+                aria-label="I'm already set up — close this setup hero">&times;</button>
 
-        {% if onboarded %}
-        <div class="install-done" role="status" aria-live="polite">
-            <span class="check" aria-hidden="true">&#x2705;</span>
-            <span><strong>Steps 1–4 done</strong> — Claude Code installed, auto-mode set, workspace folder created, {{ instance_brand }} ready in <code>~/{{ workspace_dir }}</code>. The full install steps stay one click away under the offboard control below.</span>
+        {# Progress meta — visual hint that the wizard is bounded ("~15 min,
+           one-time, reversible"). Six steps total when home_automode is
+           enabled, five when it's disabled (the "Launch Claude with
+           auto-approve" step hides via {% if home_automode.show %}).
+           Pre-empt: when more steps land in future iterations, just
+           bump the total_steps default; per-step numbering inside
+           .install-block carries its own count already. #}
+        {% set total_steps = 6 if home_automode.show else 5 %}
+        <div class="setup-meta" aria-label="Setup overview">
+            <span class="setup-chip">Step 1 of {{ total_steps }}</span>
+            <span class="setup-chip-quiet">~15 min total</span>
+            <span class="setup-chip-quiet">One-time setup</span>
+            <span class="setup-chip-quiet">Reversible &mdash; remove with one command</span>
         </div>
-        {% endif %}
+        <div class="progress-bar" aria-hidden="true">
+            <div class="progress-fill" style="width: {{ (100 // total_steps) }}%"></div>
+        </div>
 
-        {% if not onboarded %}
         <div class="install-block">
-            <div class="label">Step 1 — install Claude Code</div>
+            <div class="step-num" aria-hidden="true"><span>1</span></div>
+            <div class="label">Install Claude Code on your computer</div>
+            <p class="step-lede">Claude Code is the CLI tool that runs Claude on your machine. {{ instance_brand }} plugs into it. <strong>~3&nbsp;min.</strong></p>
             <div class="os-tabs" role="tablist" aria-label="Operating system">
                 <button type="button" role="tab" class="os-tab is-active"
-                        data-os-tab="unix" aria-selected="true">macOS / Linux / WSL</button>
+                        data-os-tab="unix" aria-selected="true">macOS / Linux</button>
                 <button type="button" role="tab" class="os-tab"
                         data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
             </div>
@@ -1194,65 +120,139 @@
                 <button class="copy-btn" data-copy-target="install-cmd-claude-windows">Copy</button>
             </div>
 
-            {# P0-1 — terminal-howto disclosure. Two panels (unix / windows)
-               that flip in lockstep with the install-cmd OS tabs above. #}
-            <details class="terminal-howto">
-                <summary>Don't have a terminal open? — show how</summary>
-                <div class="terminal-howto-body" data-howto-panel="unix">
-                    <p><strong>macOS:</strong> press <kbd>⌘</kbd> + <kbd>Space</kbd>, type <kbd>Terminal</kbd>, press <kbd>Enter</kbd>.</p>
-                    <p><strong>Linux:</strong> press <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>T</kbd> (most distros), or open the apps menu and search "Terminal".</p>
-                    <p><strong>WSL:</strong> open the Windows Start menu, search "Ubuntu" (or your installed distro), press <kbd>Enter</kbd>.</p>
-                    <p>Paste the command above with <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>V</kbd> (Linux/WSL) or <kbd>⌘</kbd> + <kbd>V</kbd> (macOS), then press <kbd>Enter</kbd>.</p>
-                </div>
-                <div class="terminal-howto-body" data-howto-panel="windows" hidden>
-                    <p><strong>Windows:</strong> press <kbd>Win</kbd> + <kbd>R</kbd>, type <kbd>powershell</kbd>, press <kbd>Enter</kbd>. (Or: open Start menu, type "PowerShell".)</p>
-                    <p>Paste the command above with <kbd>Ctrl</kbd> + <kbd>V</kbd> and press <kbd>Enter</kbd>.</p>
-                </div>
-            </details>
-
-            <div class="install-note">
-                Verify with <code>claude --version</code>. Sign in once with <code>claude</code> and complete the OAuth flow.
-                Don't have a Claude license yet? See <a href="/setup-advanced#claude-plan">plan options on /setup-advanced</a> (Pro / Max 5× / Max 20×).
+            <div class="callout-hint">
+                <strong>Don't have a terminal open yet?</strong>
+                On macOS, press <kbd>⌘</kbd> + <kbd>Space</kbd>, type <em>Terminal</em>, hit Enter.
+                On Windows, press the <kbd>⊞</kbd> key, type <em>PowerShell</em>, hit Enter.
             </div>
+
+            <p class="step-lede" style="margin-top: 14px;">
+                Once it finishes, verify with <code>claude --version</code>, then sign in with <code>claude</code>
+                (one-time OAuth in your browser). Don't have a Claude license yet?
+                <a href="/setup-advanced#claude-plan">Here's how to get one</a>
+                (Pro&nbsp;/&nbsp;Max&nbsp;5×&nbsp;/&nbsp;Max&nbsp;20×&nbsp;/&nbsp;Enterprise &mdash; Enterprise is the option for Finance and Legal).
+            </p>
         </div>
 
-        {% if home_automode.show %}
         <div class="install-block">
-            <div class="label">Step 2 — turn on auto-mode (recommended before Step 4)</div>
-            <div class="install-note">
-                In the Claude Code session you just signed into, press <strong>Shift + Tab</strong>. Claude cycles modes: default → <strong>auto-accept edits</strong> → plan mode → default; the footer shows <code>⏵⏵</code> when auto-accept is on. On the first cycle to auto-accept, Claude asks whether to make it the default — say <strong>yes</strong>. Closed the session already? Run <code>claude</code> again, then press <strong>Shift + Tab</strong>.
-                <br><br>
-                Want full auto-approve including Bash? See <a href="/setup-advanced#yolo">YOLO mode</a> on /setup-advanced — pairs <code>--dangerously-skip-permissions</code> with a reviewed <code>~/.claude/settings.local.json</code> allowlist. Skip if you're not sure.
-            </div>
-        </div>
-        {% endif %}
+            <div class="step-num" aria-hidden="true"><span>2</span></div>
+            <div class="label">Pick a folder for {{ instance_brand }}</div>
+            <p class="step-lede">This is where {{ instance_brand }} &mdash; and all your AI projects &mdash; will live. <strong>~1&nbsp;min.</strong></p>
 
-        <div class="install-block">
-            <div class="label">Step 3 — create your workspace folder</div>
+            <div class="callout-rec">
+                <strong>My recommendation: put it on your Desktop.</strong>
+                Desktop is easy to see in Finder/Explorer and easy to find from anywhere
+                (<code>~/Desktop/{{ workspace_dir }}</code> on macOS, <code>%USERPROFILE%\Desktop\{{ workspace_dir }}</code> on Windows).
+                I keep mine there because I open it 10&times; a day. Your home folder is fine too &mdash;
+                the install will work anywhere.
+            </div>
+
             <div class="os-tabs" role="tablist" aria-label="Operating system">
                 <button type="button" role="tab" class="os-tab is-active"
-                        data-os-tab="unix" aria-selected="true">macOS / Linux / WSL</button>
+                        data-os-tab="unix" aria-selected="true">macOS / Linux</button>
                 <button type="button" role="tab" class="os-tab"
                         data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
             </div>
             <div class="install-cmd" role="tabpanel" data-os-panel="unix">
-                <span class="multiline" id="install-cmd-mkdir-unix">mkdir -p ~/{{ workspace_dir }} &amp;&amp; cd ~/{{ workspace_dir }}</span>
+                <span class="multiline" id="install-cmd-mkdir-unix">mkdir -p ~/Desktop/{{ workspace_dir }} &amp;&amp; cd ~/Desktop/{{ workspace_dir }}</span>
                 <button class="copy-btn" data-copy-target="install-cmd-mkdir-unix">Copy</button>
             </div>
             <div class="install-cmd" role="tabpanel" data-os-panel="windows" hidden>
-                <span class="multiline" id="install-cmd-mkdir-windows">New-Item -ItemType Directory -Force -Path "$HOME\{{ workspace_dir }}" | Out-Null
-Set-Location "$HOME\{{ workspace_dir }}"</span>
+                <span class="multiline" id="install-cmd-mkdir-windows">New-Item -ItemType Directory -Force -Path "$HOME\Desktop\{{ workspace_dir }}" | Out-Null; Set-Location "$HOME\Desktop\{{ workspace_dir }}"</span>
                 <button class="copy-btn" data-copy-target="install-cmd-mkdir-windows">Copy</button>
             </div>
-            <div class="install-note">
-                This is where {{ instance_brand }} will live. Run the command in the terminal you opened for Step 1, then keep that terminal handy — the next step pastes the setup script into Claude Code from this same directory.
+            <div class="callout-hint">
+                <strong>What does <code>mkdir -p</code> do?</strong>
+                It creates a folder. The <code>-p</code> just means "don't complain if it already exists."
+                After this command, you have an empty folder called <code>{{ workspace_dir }}</code> on your Desktop.
+                You can verify by opening Finder/Explorer and looking on your Desktop &mdash; it'll be there.
             </div>
         </div>
 
+        {# Step 3 — open a terminal inside the workspace folder. No
+           shell command here: this step is just the OS-level "you are
+           now standing in the right directory" reassurance, mirroring
+           the design spec's Step 3. Step 2's `cd` already lands the
+           current shell here; this step covers the case where the
+           analyst closes that terminal between steps. #}
         <div class="install-block">
-            <div class="label">Step 4 — install {{ instance_brand }} from inside Claude Code</div>
-            <p class="setup-cta-lead">
-                Click the button — {{ instance_brand }} <strong>creates a 90-day login token</strong>, copies a ready-to-paste setup script to your clipboard, and a follow-up popup tells you exactly where to paste it. The script bootstraps everything in <code>~/{{ workspace_dir }}</code> once Claude Code receives it.
+            <div class="step-num" aria-hidden="true"><span>3</span></div>
+            <div class="label">Open a terminal inside that folder</div>
+            <p class="step-lede">The terminal is how you tell Claude what to do. You need to "be in" the <code>{{ workspace_dir }}</code> folder before you launch Claude. <strong>~1&nbsp;min.</strong></p>
+
+            <div class="callout-hint">
+                <strong>Two ways to get there.</strong> Pick whichever feels easier.
+                <ol>
+                    <li><strong>Drag-and-drop (easy).</strong> Open Terminal. Type <code>cd</code> followed by a space. Then drag the <code>{{ workspace_dir }}</code> folder from your file browser right onto the Terminal window &mdash; it pastes the path for you. Hit Enter.</li>
+                    <li><strong>Type the path (faster).</strong> See the command below.</li>
+                </ol>
+            </div>
+
+            <div class="os-tabs" role="tablist" aria-label="Operating system">
+                <button type="button" role="tab" class="os-tab is-active"
+                        data-os-tab="unix" aria-selected="true">macOS / Linux</button>
+                <button type="button" role="tab" class="os-tab"
+                        data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
+            </div>
+            <div class="install-cmd" role="tabpanel" data-os-panel="unix">
+                <span class="multiline" id="install-cmd-cd-unix">cd ~/Desktop/{{ workspace_dir }}</span>
+                <button class="copy-btn" data-copy-target="install-cmd-cd-unix">Copy</button>
+            </div>
+            <div class="install-cmd" role="tabpanel" data-os-panel="windows" hidden>
+                <span class="multiline" id="install-cmd-cd-windows">Set-Location "$HOME\Desktop\{{ workspace_dir }}"</span>
+                <button class="copy-btn" data-copy-target="install-cmd-cd-windows">Copy</button>
+            </div>
+
+            <div class="callout-hint">
+                <strong>What does <code>cd</code> mean?</strong>
+                "Change directory" &mdash; like double-clicking into a folder, but in the terminal.
+                After this command, every command you type happens <em>inside</em> the <code>{{ workspace_dir }}</code> folder.
+            </div>
+
+            <div class="code-output">$ pwd
+/Users/yourname/Desktop/{{ workspace_dir }}</div>
+
+            <p class="step-lede" style="font-size: 13px; color: var(--ds-text-muted); margin-top: 6px;">
+                (Optional: run <code>pwd</code> to print the path you're currently in. If it ends in <code>/Desktop/{{ workspace_dir }}</code>, you're in the right place.)
+            </p>
+        </div>
+
+        {% if home_automode.show %}
+        <div class="install-block">
+            <div class="step-num" aria-hidden="true"><span>4</span></div>
+            <div class="label">Launch Claude with auto-approve on</div>
+            <p class="step-lede">The next step pastes a setup script that runs ~20 shell commands. Launching Claude with the permission-skip flag lets it complete without per-command Yes/No prompts.</p>
+            <div class="install-cmd">
+                <span class="multiline" id="install-cmd-claude-yolo">claude --dangerously-skip-permissions</span>
+                <button class="copy-btn" data-copy-target="install-cmd-claude-yolo">Copy</button>
+            </div>
+            <div class="install-note">
+                Session-scoped — drops on next plain <code>claude</code>. Safe here because the script you paste in the next step is generated by this server and ends after a fixed sequence; the flag does not weaken future Claude sessions. Prefer reviewing each command? Run plain <code>claude</code> and press <strong>Shift + Tab</strong> to cycle on <strong>auto-accept edits</strong> (default → auto-accept edits → plan mode; footer shows <code>⏵⏵</code>). Covers file edits, not Bash — expect ~20 prompt clicks during the next step.
+                <br><br>
+                Persistent YOLO (allowlisted): see <a href="/setup-advanced#yolo" target="_blank" rel="noopener">YOLO mode</a> on /setup-advanced — pairs <code>--dangerously-skip-permissions</code> with a reviewed <code>~/.claude/settings.local.json</code> allowlist.
+            </div>
+
+            <div class="code-output">Welcome to Claude Code!
+
+What can I help you with?
+&gt;</div>
+            <p class="step-lede" style="margin-top: 12px;">
+                When you see the <code>&gt;</code> prompt, you're ready for the next step.
+            </p>
+        </div>
+        {% endif %}
+
+        <div class="install-block">
+            <div class="step-num" aria-hidden="true"><span>{% if home_automode.show %}5{% else %}4{% endif %}</span></div>
+            <div class="label">Get the install script and paste it into Claude</div>
+            <p class="step-lede">
+                Click the button below. {{ instance_brand }} generates a one-time install script
+                (with a 90-day login token) and copies it to your clipboard. Then paste it into the
+                Claude prompt from Step&nbsp;4 (<kbd>⌘</kbd>+<kbd>V</kbd> on macOS,
+                <kbd>Ctrl</kbd>+<kbd>V</kbd> on Windows) and hit Enter. The script installs ~20 things
+                (the marketplace, your team's plugins, data package definitions, hooks that keep
+                everything in sync) into <code>~/Desktop/{{ workspace_dir }}</code>.
+                <strong>~30&nbsp;sec to copy; ~5&nbsp;min to run.</strong>
             </p>
             <div class="setup-cta-row">
                 <button type="button" id="setupClaudeBtn" class="btn-setup-primary" onclick="setupNewClaude(this)">
@@ -1260,215 +260,472 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
                         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
                         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                     </svg>
-                    Setup a new Claude Code
+                    Copy install script to clipboard
                 </button>
                 <span class="setup-cta-meta">
-                    <span class="setup-cta-hint">Valid 90 days · token stays in clipboard only</span>
+                    <span class="setup-cta-hint">Token valid 90 days · stays in clipboard only</span>
                 </span>
+                <details class="manual-fallback">
+                    <summary>Or paste manually (preview the script)</summary>
+                    <div class="manual-preview-wrap">
+                        {% with preview_mode=True %}
+                        {% include "_claude_setup_instructions.jinja" %}
+                        {% endwith %}
+                    </div>
+                    <div class="install-note">
+                        The preview above is the exact text the button copies; the placeholder is replaced with a real token at click time. Don't create <code>~/Desktop/{{ workspace_dir }}/Projects/</code> manually — the bundled plugin offers to set it up after install.
+                    </div>
+                </details>
             </div>
             <div id="setupClaudeError" class="setup-error" role="alert" style="display:none;"></div>
 
-            <details class="manual-fallback">
-                <summary>Or paste manually (preview the script)</summary>
-                <div class="manual-preview-wrap">
-                    {% with preview_mode=True %}
-                    {% include "_claude_setup_instructions.jinja" %}
-                    {% endwith %}
-                </div>
-                <div class="install-note">
-                    The preview above is the exact text the button copies; the placeholder is replaced with a real token at click time. Don't create <code>~/{{ workspace_dir }}/Projects/</code> manually — the bundled plugin offers to set it up after install.
-                </div>
-            </details>
-
+            <div class="callout-hint">
+                <strong>You're done when</strong> the script finishes and {{ instance_brand }} auto-detects
+                your first <code>agnes pull</code> (~30 seconds after the script ends). This page will
+                update on its own.
+            </div>
         </div>
-        {% endif %}
 
-        {# P1-6 — auto-detect badge is the PRIMARY affordance after the
-           install-script copy: agnes-init's first POST to
-           /api/me/onboarded flips state automatically and the page
-           reloads. The manual "Mark me as onboarded" button below it
-           stays as a fallback when auto-flip never lands. #}
-        {% if not onboarded %}
-        <div class="auto-detect-badge" role="status" aria-live="polite">
-            <span class="pulse" aria-hidden="true"></span>
-            <span>Waiting for your first <code>agnes pull</code> — auto-detects within ~30 s of the setup script finishing.</span>
+        {# Step 6 — Optional one-word shortcut. Mirrors the design spec's
+           final step: a shell alias that drops the analyst into the
+           workspace folder and launches Claude with a single keyword.
+           Pure quality-of-life polish, gated by an inline <details>
+           so the wizard stays compact for analysts who just want the
+           default `claude` invocation. #}
+        <div class="install-block">
+            <div class="step-num" aria-hidden="true"><span>{% if home_automode.show %}6{% else %}5{% endif %}</span></div>
+            <div class="label">Optional: create a one-word shortcut for next time</div>
+            <p class="step-lede">
+                So you can stop retyping the long flag and stop typing <code>cd</code>. Adds a shell
+                function that <em>both</em> changes into your <code>{{ workspace_dir }}</code> folder
+                <em>and</em> launches Claude &mdash; one word, anywhere on your machine. <strong>~30&nbsp;seconds.</strong>
+            </p>
+
+            <p class="step-mode-heading">Pick a permission level:</p>
+
+            <div class="mode-tabs" role="tablist" aria-label="Permission level">
+                <button type="button" role="tab" class="mode-tab is-active"
+                        data-mode-tab="auto" aria-selected="true">Auto (safer &mdash; recommended)</button>
+                <button type="button" role="tab" class="mode-tab"
+                        data-mode-tab="yolo" aria-selected="false">YOLO (faster, broader)</button>
+            </div>
+
+            {# AUTO mode panel — `--permission-mode auto` is the right default. #}
+            <div data-mode-panel="auto">
+                <p class="mode-panel-lede"><code>--permission-mode auto</code> &mdash; auto-approves edits and safe read-only commands; still asks before anything destructive. Right default for most people.</p>
+                <div class="os-tabs" role="tablist" aria-label="Operating system">
+                    <button type="button" role="tab" class="os-tab is-active"
+                            data-os-tab="unix" aria-selected="true">macOS / Linux (zsh)</button>
+                    <button type="button" role="tab" class="os-tab"
+                            data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
+                </div>
+                <div class="install-cmd" role="tabpanel" data-os-panel="unix">
+                    <span class="multiline" id="install-cmd-shortcut-auto-unix">echo '{{ workspace_dir | lower }}() { cd ~/Desktop/{{ workspace_dir }} &amp;&amp; claude --permission-mode auto "$@"; }' &gt;&gt; ~/.zshrc &amp;&amp; source ~/.zshrc</span>
+                    <button class="copy-btn" data-copy-target="install-cmd-shortcut-auto-unix">Copy</button>
+                </div>
+                <div class="install-cmd" role="tabpanel" data-os-panel="windows" hidden>
+                    <span class="multiline" id="install-cmd-shortcut-auto-windows">if (!(Test-Path $PROFILE)) { New-Item $PROFILE -Force }; Add-Content $PROFILE '', 'function {{ workspace_dir | lower }} { Push-Location "$env:USERPROFILE\Desktop\{{ workspace_dir }}"; claude --permission-mode auto @args }'</span>
+                    <button class="copy-btn" data-copy-target="install-cmd-shortcut-auto-windows">Copy</button>
+                </div>
+                <p class="step-lede" style="margin-top: 8px;">
+                    Now typing <code>{{ workspace_dir | lower }}</code> from any terminal hops into the
+                    <code>{{ workspace_dir }}</code> folder and launches Claude in auto mode. Same on
+                    day&nbsp;1 as day&nbsp;100.
+                </p>
+            </div>
+
+            {# YOLO mode panel — `--dangerously-skip-permissions` skips every prompt. #}
+            <div data-mode-panel="yolo" hidden>
+                <p class="mode-panel-lede"><code>--dangerously-skip-permissions</code> &mdash; auto-approves <em>everything</em>, no prompts. Faster, broader blast radius. Read the security callout below first.</p>
+                <div class="os-tabs" role="tablist" aria-label="Operating system">
+                    <button type="button" role="tab" class="os-tab is-active"
+                            data-os-tab="unix" aria-selected="true">macOS / Linux (zsh)</button>
+                    <button type="button" role="tab" class="os-tab"
+                            data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
+                </div>
+                <div class="install-cmd" role="tabpanel" data-os-panel="unix">
+                    <span class="multiline" id="install-cmd-shortcut-yolo-unix">echo 'yolo() { cd ~/Desktop/{{ workspace_dir }} &amp;&amp; claude --dangerously-skip-permissions "$@"; }' &gt;&gt; ~/.zshrc &amp;&amp; source ~/.zshrc</span>
+                    <button class="copy-btn" data-copy-target="install-cmd-shortcut-yolo-unix">Copy</button>
+                </div>
+                <div class="install-cmd" role="tabpanel" data-os-panel="windows" hidden>
+                    <span class="multiline" id="install-cmd-shortcut-yolo-windows">if (!(Test-Path $PROFILE)) { New-Item $PROFILE -Force }; Add-Content $PROFILE '', 'function yolo { Push-Location "$env:USERPROFILE\Desktop\{{ workspace_dir }}"; claude --dangerously-skip-permissions @args }'</span>
+                    <button class="copy-btn" data-copy-target="install-cmd-shortcut-yolo-windows">Copy</button>
+                </div>
+                <p class="step-lede" style="margin-top: 8px;">
+                    Now typing <code>yolo</code> from any terminal hops into the
+                    <code>{{ workspace_dir }}</code> folder and launches Claude in full auto-approve.
+                    Use it when you trust the work; switch back to <code>{{ workspace_dir | lower }}</code>
+                    (auto mode) when you don't.
+                </p>
+            </div>
+
+            <div class="install-note">
+                Bash users: swap <code>~/.zshrc</code> for <code>~/.bashrc</code>. The shortcut is reversible &mdash; open the rc file and delete the function line to remove it.
+            </div>
+
+            <div class="callout-rec">
+                <strong>The install bundled a curated security allowlist &mdash; review it before going further.</strong>
+                {{ instance_brand }}'s setup script installed a reviewed <code>~/.claude/settings.local.json</code> for you,
+                with sensible defaults: read freely, run common dev tools, gate destructive ops. This is your
+                actual safety net &mdash; the auto / YOLO mode is only safe because of it.
+                <br><br>
+                Open the file (<code>open ~/.claude/settings.local.json</code> on macOS, or in VS Code) and
+                skim what's allowed and what's gated. Add or remove rules as you learn what you trust.
+                <a href="/setup-advanced#yolo">More on the allowlist &rarr;</a>
+            </div>
         </div>
-        {% endif %}
 
-        {# Self-mark control lives inside the blue hero in both states.
-           When onboarded, the install steps above are hidden so this is
-           the only thing rendered below the lead paragraph. #}
-        <div class="self-mark">
-            {% if onboarded %}
-            Wiped your workspace or want the full setup view back?
-            <button id="self-mark-btn" type="button"
-                    data-target-onboarded="false"
-                    data-target-source="self_unmark">Mark me as offboarded</button>
-            {% else %}
-            Already set this up?
-            <button id="self-mark-btn" type="button"
-                    data-target-onboarded="true"
-                    data-target-source="self_acknowledged">Mark me as onboarded</button>
-            {% endif %}
+        {# Setup-finish strip — flex row matching design spec: hourglass +
+           "Waiting for first agnes pull" on the left, "Already set up?
+           Mark me as onboarded →" link on the right. Auto-detect lands
+           via agnes-init's POST to /api/me/onboarded; the right-aligned
+           link is the manual fallback. JS hooks `self-mark-btn`. #}
+        <div class="setup-finish-strip" role="status" aria-live="polite">
+            <span class="setup-finish-text">
+                <span aria-hidden="true">⏳</span>
+                Waiting for your first <code>agnes pull</code> &mdash; auto-detects within ~30&nbsp;sec of the install script finishing.
+            </span>
+            <a href="#" id="self-mark-btn" class="setup-finish-link"
+               data-target-onboarded="true"
+               data-target-source="self_acknowledged">Already set up? Mark me as onboarded &rarr;</a>
             <span id="self-mark-status" class="status" role="status" aria-live="polite"></span>
         </div>
-
-        {% if onboarded %}
-        {# User-controlled minimize toggle for Connect-your-tools.
-           Default OFF (section renders flat). State persists in
-           localStorage so the choice is per-device. The agnes-init
-           auto-flip of users.onboarded never triggers a collapse on
-           its own — only an explicit click here does. The auto-mode
-           block used to be a peer collapsible (`step3`); it now lives
-           inside the install-hero as Step 2 and is not collapsible. #}
-        <div class="setup-minimize">
-            <button id="setupMinimizeToggle" type="button" aria-pressed="false">
-                Minimize setup view
-            </button>
-        </div>
-        {% endif %}
     </div>
+    {% endif %}
+
+    {% if onboarded %}
+    {# Offboarding escape hatch shown only after the hero has disappeared.
+       Lets the analyst (e.g. after wiping ~/Desktop/{{ workspace_dir }}) flip the
+       users.onboarded boolean back to false so the full install hero
+       renders again on next reload. Discrete by design — onboarded
+       users land on /home expecting the nav hub, not a setup screen. #}
+    <div class="offboard-strip">
+        <span>Workspace ready — wiped it and need the full setup view back?</span>
+        {{ ds.button('Mark me as offboarded', variant='secondary', size='sm',
+                     type='button', id='offboard-btn',
+                     attrs='data-target-source="self_unmark"') }}
+        <span id="offboard-status" class="status" role="status" aria-live="polite"></span>
+    </div>
+    {% endif %}
 
     {# Auto-mode card used to live here as a `<details>` reference block;
        moved into the install-hero as the new Step 2 so users enable it
        BEFORE Step 3's install runs ~20 commands. Gated by the same
        `home_automode.show` flag at the call site. #}
 
-    <details class="setup-collapsible" data-section="connectors" open>
-        <summary>
-            <span class="ico" aria-hidden="true">&#x1F517;</span>
-            <span class="ttl">Connect your tools <small>(Asana / Google Workspace / Atlassian)</small></span>
-            <span class="chev" aria-hidden="true">&rsaquo;</span>
-        </summary>
-        <div class="section-label section-label-flat">Once {{ instance_brand }} is installed — connect your tools</div>
+    {# Getting Started was previously rendered HERE (between the offboard
+       strip and Overview) as a full-card <section>. Moved up to render
+       BEFORE the install-hero as a collapsed-by-default <details> — see
+       the block right after `{% if not onboarded %}` near line ~1357. #}
 
-    <div class="connector-tiles">
-        <div class="connector-tile">
-            <span class="ico">&#x2705;</span>
-            {# P0-3 — title row + time-badge + post-copy hint. The hint
-               container is rendered hidden; the JS reveals it after the
-               copy succeeds, then auto-hides after 8 s. #}
-            <div class="ttl-row">
-                <span class="ttl">Asana</span>
-                <span class="time-badge">~5 min · self-serve</span>
-            </div>
-            <div class="desc">Read tasks and projects, comment, create updates — Claude works alongside your project boards without leaving the terminal.</div>
-            <div class="connector-actions">
-                <button class="connector-copy" data-copy-target="asana-prompt" data-connector="Asana">Copy prompt</button>
-                <div class="copy-next-hint" data-hint-for="Asana">
-                    <span>&#x2705; Copied. Now paste into Claude Code — run <code>claude</code> in your terminal, then paste &amp; press Enter.</span>
+    {# First-session story — five-beat narrative showing what the analyst
+       will actually see on their first run. Terminal frames design the
+       real output. Renders for both onboarded (reference / refresher)
+       and not-onboarded (preview of what's coming) so the visual
+       language stays consistent across visits. #}
+    <section class="first-session" id="first-session">
+        <div class="eyebrow">Your first session</div>
+        <h2>What happens when you launch {{ instance_brand }}</h2>
+        <p class="lede">A real session, end-to-end. You'll see exactly what appears on screen and what to type at each step. No prior terminal experience needed.</p>
+
+        <div class="session-intro">
+            <span class="session-intro-icon" aria-hidden="true">&#x1F9ED;</span>
+            <span>The whole loop is <strong>five beats</strong>: launch &rarr; pick a project &rarr; Claude loads its memory &rarr; ask anything &rarr; close when done. Every part of {{ instance_brand }} &mdash; plugins, data packages, skills, shared memory &mdash; quietly does its job inside this loop. You don't have to manage them.</span>
+        </div>
+
+        <div class="session-walk">
+            <div class="session-step">
+                <div class="session-num">1</div>
+                <div class="session-content">
+                    <h3>Launch your workspace</h3>
+                    <p><strong>Open a terminal</strong> &mdash; in VS Code, press <kbd>⌘</kbd>+<kbd>`</kbd> (Mac) or <kbd>Ctrl</kbd>+<kbd>`</kbd> (Windows). On macOS you can also open the standalone Terminal app from Spotlight.</p>
+                    <p><strong>Type one word</strong> &mdash; <code>{{ workspace_dir | lower }}</code> (or <code>claude</code> if you skipped Step&nbsp;6) &mdash; and hit Enter.</p>
+                    <div class="terminal-frame">
+                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">~/Desktop/{{ workspace_dir }} &nbsp;&mdash;&nbsp; zsh</span></div>
+                        <div class="terminal-body"><span class="prompt">$</span><span class="you">{{ workspace_dir | lower }}</span></div>
+                    </div>
+                    <p class="annotation">That single word jumps into your <code>~/Desktop/{{ workspace_dir }}</code> folder <em>and</em> launches Claude in one go &mdash; same on day&nbsp;1 as day&nbsp;100. No <code>cd</code>, no flags, no setup to remember. (The shortcut was installed in Step&nbsp;6 of the setup above.)</p>
                 </div>
-                <details class="connector-preview">
-                    <summary>Show prompt</summary>
-                    {# Asana prompt body sourced from app/web/connector_prompts.py
-                       (`asana_prompt()`). Same string the main setup script
-                       inlines in step 9, so the two surfaces stay in lockstep. #}
-                    <div class="card-mini-cmd"><code id="asana-prompt">{{ connector_prompts.asana }}</code></div>
-                </details>
+            </div>
+
+            <div class="session-step">
+                <div class="session-num">2</div>
+                <div class="session-content">
+                    <h3>{{ instance_brand }} greets you with today's menu</h3>
+                    <p>Claude reads your recent activity and shows the five projects you've touched most recently. Your screen looks something like this:</p>
+                    <div class="terminal-frame">
+                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
+                        <div class="terminal-body">2026-05-20
+
+What would you like to do?
+
+  <strong>[1]</strong> Talk to {{ instance_brand }} &mdash; workspace questions, setup, admin
+  <strong>[2]</strong> New project &mdash; scaffold a new project
+  <strong>[3]</strong> Switch to recent project:
+      a. RevenueAnalysis            <span class="dim">(2 hours ago)</span>
+      b. WeeklyReview               <span class="dim">(today)</span>
+      c. Onboarding                 <span class="dim">(1 day ago)</span>
+      d. OpsDb                      <span class="dim">(4 days ago)</span>
+      e. HRHandShake                <span class="dim">(5 days ago)</span>
+  <strong>[4]</strong> Switch to another project &mdash; browse the full registry
+<span class="prompt">&gt;</span><span class="caret"></span></div>
+                    </div>
+                    <p class="annotation">The recent-projects list updates every session based on what you actually worked on. Pick a code (like <code>3a</code>) or just type free text &mdash; <em>"open the news project"</em> or <em>"keep working on the marketing plan"</em> work the same way. Claude figures out the intent.</p>
+                </div>
+            </div>
+
+            <div class="session-step">
+                <div class="session-num">3</div>
+                <div class="session-content">
+                    <h3>Pick a project &mdash; Claude loads its memory</h3>
+                    <p>Type your choice and hit Enter. Claude switches into that project's folder, reads its <code>CLAUDE.md</code> (the project's living briefing doc), checks for new inputs you've dropped in, and tells you the state of play.</p>
+                    <div class="terminal-frame">
+                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
+                        <div class="terminal-body"><span class="prompt">&gt;</span><span class="you">3a</span>
+
+Switched to <strong>RevenueAnalysis</strong> &mdash; quarterly revenue
+review program.
+
+<span class="dim">Loaded: CLAUDE.md, 8 knowledge files, 4 active decisions</span>
+<span class="dim">Last session: yesterday, 4:12 PM &mdash; "Q1 close review"</span>
+
+One unprocessed input detected:
+  <span class="path">inputs/Q1_close_DRAFT.pdf</span> (3.4&nbsp;MB)
+
+Want me to process it into <span class="path">knowledge/</span> now?
+<span class="prompt">&gt;</span><span class="caret"></span></div>
+                    </div>
+                    <p class="annotation">Claude now has full project context loaded &mdash; past decisions, key numbers, ongoing work, who's involved. You don't have to re-explain anything every session. New files in <code>inputs/</code> are auto-detected so nothing gets forgotten on your hard drive.</p>
+                </div>
+            </div>
+
+            <div class="session-step">
+                <div class="session-num">4</div>
+                <div class="session-content">
+                    <h3>Ask anything &mdash; Claude is now scoped to that project</h3>
+                    <p>Plain English. No commands to memorise. Claude pulls from the project's files, your registered data packages, installed plugins, and the team's shared memory &mdash; quoting exact sources as it goes.</p>
+                    <div class="terminal-frame">
+                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
+                        <div class="terminal-body"><span class="prompt">&gt;</span><span class="you">what's the latest on the Q1 close? Give me the
+  headline numbers and the open risks.</span>
+
+<span class="dim">Reading <span class="path">knowledge/q1-close-input.md</span>…</span>
+<span class="dim">Reading <span class="path">temp/v4/close.md</span>…</span>
+
+<strong>Q1 close summary &mdash; v4, Apr 2026</strong>
+
+• Revenue: $124.3M &rarr; $131.0M (+5.4% QoQ)
+• Gross margin: 62.1% &rarr; 63.4%
+• 4 markets above plan, 2 below
+• Customer churn flat at 6.1%
+
+<strong>Open risks</strong>
+
+• FX hedging assumption is 6 weeks old &mdash; needs refresh
+• No DRI yet on the EMEA segmentation prerequisite
+• Q2 forecast model still in review
+
+Want me to draft a 1-page brief, or dig into one of these?
+<span class="prompt">&gt;</span><span class="caret"></span></div>
+                    </div>
+                    <p class="annotation"><strong>Cited sources are clickable paths</strong> &mdash; tap to open the actual file in your editor. If Claude needs data from a remote system, your registered plugins kick in silently. No copy-pasting between tabs.</p>
+                </div>
+            </div>
+
+            <div class="session-step">
+                <div class="session-num">5</div>
+                <div class="session-content">
+                    <h3>When you're done, just close &mdash; everything's saved</h3>
+                    <p>Type <code>/exit</code> or close the terminal window. {{ instance_brand }} saves the session, captures any new knowledge into the project's memory, and puts today's project at the top of tomorrow's menu.</p>
+                    <div class="terminal-frame">
+                        <div class="terminal-bar"><span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span><span class="terminal-title">claude&nbsp;&mdash;&nbsp;{{ instance_brand }}</span></div>
+                        <div class="terminal-body"><span class="prompt">&gt;</span><span class="you">/exit</span>
+
+<span class="dim">Session saved &mdash; 12 prompts, 4 files referenced.</span>
+<span class="dim">RevenueAnalysis will appear as "today" in your menu tomorrow.</span>
+
+<span class="ai-name">See you next time.</span>
+<span class="prompt">$</span><span class="caret"></span></div>
+                    </div>
+                    <p class="annotation">Nothing to clean up, no "save your work" prompt, no version to remember. Next time you type <code>{{ workspace_dir | lower }}</code>, this project is right at the top of the recent list &mdash; and Claude remembers every decision, file, and follow-up from today.</p>
+                    <p class="annotation session-privacy">
+                        <strong>What leaves your machine.</strong> Session telemetry &mdash; prompts, tool calls, and tool responses &mdash; flows back to the central catalog so the team can analyse failure patterns. Raw data rows you query locally stay on your machine; only the prompt/response transcript travels. Need a session off the record? Toggle Private in Claude Code (type <code>/agnes-private</code>) to disable telemetry for that chat &mdash; nothing from that session reaches the catalog.
+                    </p>
+                </div>
             </div>
         </div>
 
-        <div class="connector-tile">
-            <span class="ico">&#x1F4DA;</span>
-            {# P0-3 + P1-8 — Google Workspace tile. Time badge warns when
-               the operator hasn't provisioned a shared OAuth app (forces
-               the user to set up GCP themselves, which is a ~20-min
-               clickops detour). The gating-note + email-admin button
-               appear in that same un-configured branch so the user has
-               a way out before copying. #}
-            <div class="ttl-row">
-                <span class="ttl">Google Workspace</span>
-                {% if gws_oauth.configured %}
-                <span class="time-badge">~5 min · self-serve</span>
-                {% else %}
-                <span class="time-badge is-warn">~20 min · admin help likely</span>
-                {% endif %}
-            </div>
-            <div class="desc">Drive, Calendar, Gmail, Docs, Sheets, Chat — Claude reads and acts across your work account via the official <code>gws</code> CLI.</div>
-            {% if not gws_oauth.configured %}
-            <div class="gating-note">
-                <strong>Heads up:</strong> your {{ instance_brand }} admin hasn't provisioned a shared Google Cloud OAuth app yet, so this connector needs GCP project setup (creating an OAuth client, enabling APIs). It's fastest to ask your admin first — the button below pre-fills the email.
-            </div>
-            {% endif %}
-            <div class="connector-actions">
-                <button class="connector-copy" data-copy-target="gws-prompt" data-connector="Google Workspace">Copy prompt</button>
-                {% if not gws_oauth.configured and instance_admin_email %}
-                <a class="email-admin" href="mailto:{{ instance_admin_email }}?subject={{ instance_brand|urlencode }}%20%E2%80%94%20Google%20Workspace%20OAuth%20setup&amp;body=Hi%20%E2%80%94%20I'd%20like%20to%20connect%20Google%20Workspace%20in%20{{ instance_brand|urlencode }}%20but%20it%20looks%20like%20a%20shared%20OAuth%20app%20isn't%20provisioned%20yet.%20Could%20you%20set%20it%20up%20for%20our%20instance%3F%20Thanks!">
-                    &#x2709;&#xFE0F; Email admin
+        <div class="session-tldr">
+            <strong>That's the whole loop.</strong> One word to launch &mdash; pick a project &mdash; ask &mdash; close. Everything else (plugins, data packages, skills, shared memory) is Claude doing more for you inside the same five-beat rhythm. You learn it once on day&nbsp;1 and never re-learn it.
+        </div>
+    </section>
+
+    {# Surfaces — four places to use {{ instance_brand }}. Mirrors the
+       design spec's "Where you can use it" section: VS Code (RECOMMENDED),
+       Terminal, Claude Desktop, Cowork (claude.ai). Each card carries
+       a short pitch + an uppercase eyebrow (DAILY USE / QUICK ACCESS /
+       CONNECT IT) + a numbered step list + a one-liner "Best for".
+       The .home-usage class is kept on the wrapper so existing test
+       assertions and the legacy `.home-usage-grid` mobile media query
+       still apply. #}
+    <section class="home-usage surfaces" id="where-you-can-use-it">
+        <header>
+            <div class="eyebrow">Where you can use it</div>
+            <h2>Four places, one workspace</h2>
+            <p class="lede">Same plugins, same data access, same credentials &mdash; pick whichever fits the moment. VS Code is the most comfortable for most people; the others are useful when the situation calls for it.</p>
+        </header>
+        <div class="surfaces-grid">
+            <article class="surface-card feature">
+                <div class="surface-icon" aria-hidden="true">&#x1F4DD;</div>
+                <h3>VS Code <span class="badge">RECOMMENDED</span></h3>
+                <p class="what">The best place to live in {{ instance_brand }}. Multi-panel layout, built-in file editor, diff viewer, and a terminal Claude runs in &mdash; all in one window. Easier than a bare terminal for most people.</p>
+                <a href="#" id="vscode-screenshot-trigger" class="vscode-thumb">
+                    <img src="/static/img/vscode-layout.png" alt="VS Code with terminal-centric layout"
+                         onerror="this.parentElement.classList.add('thumb-empty');this.remove();">
+                    <div class="thumb-fallback">
+                        <div class="thumb-fallback-inner">
+                            <div class="thumb-fallback-row">
+                                <span class="dot d-explorer"></span>EXPLORER
+                                <span class="dot d-t1"></span>TERMINAL&nbsp;1
+                                <span class="dot d-t2"></span>TERMINAL&nbsp;2
+                                <span class="dot d-t3"></span>TERMINAL&nbsp;3
+                            </div>
+                            <div class="thumb-fallback-hint">Screenshot pending &mdash; drop at <code>app/web/static/img/vscode-layout.png</code></div>
+                        </div>
+                    </div>
+                    <span class="thumb-caption">Click to enlarge &mdash; recommended layout</span>
                 </a>
-                {% endif %}
-                <div class="copy-next-hint" data-hint-for="Google Workspace">
-                    <span>&#x2705; Copied. Now paste into Claude Code — run <code>claude</code> in your terminal, then paste &amp; press Enter.</span>
+                <div class="steps">
+                    <strong class="steps-eyebrow">DAILY USE</strong>
+                    <ol>
+                        <li>Open VS Code &rarr; <strong>File &rarr; Open Folder</strong> &rarr; select your <code>~/Desktop/{{ workspace_dir }}</code> folder.</li>
+                        <li>Open terminal: <kbd>⌘</kbd>+<kbd>`</kbd> (macOS) or <kbd>Ctrl</kbd>+<kbd>`</kbd> (Windows).</li>
+                        <li>Right-click the terminal tab &rarr; <em>"Move Terminal into Editor Area"</em>. Split with <kbd>⌘</kbd>+<kbd>\</kbd> &mdash; one panel for the conversation, one for diffs.</li>
+                        <li>Type <code>claude</code> (or <code>{{ workspace_dir | lower }}</code> if you set the Step&nbsp;6 shortcut). The welcome menu fires &mdash; pick a project or describe what you want.</li>
+                    </ol>
                 </div>
-                <details class="connector-preview">
-                    <summary>Show prompt</summary>
-                    <div class="card-mini-cmd"><code id="gws-prompt">{{ connector_prompts.gws }}</code></div>
-                </details>
-            </div>
-        </div>
-
-        <div class="connector-tile">
-            <span class="ico">&#x1F39F;&#xFE0F;</span>
-            <div class="ttl-row">
-                <span class="ttl">Atlassian (Jira / Confluence)</span>
-                <span class="time-badge">~7 min · self-serve</span>
-            </div>
-            <div class="desc">Read and write Jira issues, search Confluence pages — Claude pulls ticket context and posts updates without leaving the workspace.</div>
-            <div class="connector-actions">
-                <button class="connector-copy" data-copy-target="jira-prompt" data-connector="Atlassian">Copy prompt</button>
-                <div class="copy-next-hint" data-hint-for="Atlassian">
-                    <span>&#x2705; Copied. Now paste into Claude Code — run <code>claude</code> in your terminal, then paste &amp; press Enter.</span>
+                <div class="when-to-use">
+                    <strong>Full step-by-step guide:</strong> <a href="/setup-advanced#vscode">Open VS Code setup guide &rarr;</a>
                 </div>
-                <details class="connector-preview">
-                    <summary>Show prompt</summary>
-                    <div class="card-mini-cmd"><code id="jira-prompt">{{ connector_prompts.atlassian }}</code></div>
-                </details>
-            </div>
+            </article>
+
+            <article class="surface-card">
+                <div class="surface-icon" aria-hidden="true">&#x2328;&#xFE0F;</div>
+                <h3>Terminal</h3>
+                <p class="what">Quick access &mdash; when you don't want a whole IDE open. Same Claude, same plugins, just bare. Best for short questions and one-off scripts.</p>
+                <div class="steps">
+                    <strong class="steps-eyebrow">QUICK ACCESS</strong>
+                    <ol>
+                        <li>Open <strong>Terminal</strong> (macOS: <kbd>⌘</kbd>+<kbd>Space</kbd>, type <em>Terminal</em>) or <strong>PowerShell</strong> (Windows: <kbd>⊞</kbd>, type <em>PowerShell</em>).</li>
+                        <li>Go to your folder: <code>cd ~/Desktop/{{ workspace_dir }}</code></li>
+                        <li>Type <code>claude</code> (or <code>{{ workspace_dir | lower }}</code>) and hit Enter.</li>
+                        <li>Welcome menu fires &mdash; same as in VS Code.</li>
+                    </ol>
+                </div>
+                <div class="code-output">2026-05-20
+
+What would you like to do?
+
+  [1] Talk to {{ instance_brand }} &mdash; workspace questions
+  [2] New project &mdash; scaffold a new project
+  [3] Switch to recent project:
+      a. RevenueAnalysis (2 hours ago)
+      b. WeeklyReview (1 day ago)
+      c. Onboarding (3 days ago)
+  [4] Browse full registry</div>
+                <div class="when-to-use"><strong>Best for:</strong> quick questions, scripts, when you already have a terminal open from something else.</div>
+            </article>
+
+            <article class="surface-card">
+                <div class="surface-icon" aria-hidden="true">&#x1F5A5;&#xFE0F;</div>
+                <h3>Claude Code (Desktop app)</h3>
+                <p class="what">The Claude Code agent running inside the Claude Desktop app instead of in a terminal. You point it at your <code>{{ workspace_dir }}</code> folder and work from there with a native UI for diffs, file tree, and chat.</p>
+                <div class="steps">
+                    <strong class="steps-eyebrow">CONNECT IT</strong>
+                    <ol>
+                        <li>Install Claude Desktop from <a href="https://claude.ai/download" target="_blank" rel="noopener">claude.ai/download</a>.</li>
+                        <li>Sign in with the same account you use for Claude Code.</li>
+                        <li>Open the <code>{{ workspace_dir }}</code> folder on your Desktop in Claude Code (<strong>File &rarr; Open Folder</strong>).</li>
+                        <li>Everything in the workspace &mdash; plugins, skills, data packages, memory &mdash; is available there automatically.</li>
+                    </ol>
+                </div>
+                <div class="when-to-use"><strong>Best for:</strong> people who prefer a native UI to a terminal. Same Claude Code engine, same workspace.</div>
+            </article>
+
+            <article class="surface-card">
+                <div class="surface-icon" aria-hidden="true">&#x1F91D;</div>
+                <h3>Cowork (claude.ai)</h3>
+                <p class="what">Claude Cowork &mdash; the collaborative workspace on <a href="https://claude.ai/" target="_blank" rel="noopener">claude.ai</a>. Upload {{ instance_brand }}'s plugins one at a time and use their skills, agents &amp; commands right in Cowork.</p>
+                <div class="steps">
+                    <strong class="steps-eyebrow">CONNECT IT</strong>
+                    <ol>
+                        <li>Open <a href="/me/ai-connector">AI Connector</a> &mdash; connect your AI agent via the connector URL or grab a single plugin package.</li>
+                        <li>In Claude Desktop &rarr; Cowork, open <strong>Customize</strong>.</li>
+                        <li>Under <strong>Personal plugins</strong> click <strong>+</strong> &rarr; <strong>Create plugin</strong> &rarr; <strong>Upload plugin</strong>, and choose the <code>.zip</code>. <strong>One package per zip</strong> &mdash; repeat for each.</li>
+                    </ol>
+                </div>
+                <div class="when-to-use"><strong>Best for:</strong> using curated skills, agents &amp; commands on claude.ai. Data packages and script-backed execution stay in Claude Code. <a href="/me/ai-connector">Open AI Connector &rarr;</a></div>
+            </article>
         </div>
-    </div>
-    </details>
+        <p class="home-usage-foot">For the deepest integration, create every project under <code>~/Desktop/{{ workspace_dir }}/Projects/</code> &mdash; existing or new. The bundled plugin keeps each project in sync with the central catalog automatically, and the session-analysis loop is scoped to that root. Anything outside <code>{{ workspace_dir }}/</code> is invisible to the platform.</p>
+    </section>
 
-    <div class="section-label">Want to look around first?</div>
-    <p class="look-around-lead">You don't need {{ instance_brand }} installed locally to browse what's available. Anything you bookmark or subscribe to will be there waiting after you set {{ instance_brand }} up.</p>
+    {# Connectors `<details data-section="connectors">` block removed —
+       the install-hero's Step 4 clipboard payload (rendered via
+       `_claude_setup_instructions.jinja` inside the "Or paste manually"
+       fallback) already inlines the same Asana / GWS / Atlassian
+       prompts from app/web/connector_prompts.py via
+       app/web/setup_instructions.py::_connectors_block. Showing them
+       a second time as standalone cards duplicated UX without adding
+       reach — the install script visits them all in sequence. Brief
+       mention in the install-hero lead paragraph above covers the
+       benefits ("third-party tools (Asana, Google Workspace,
+       Atlassian)"); deep ops live in /setup-advanced. #}
 
-    <div class="what-is look-around-grid">
-        <a class="what-is-item" href="/marketplace">
-            <span class="ico">&#x1F9E9;</span>
-            <div class="ttl">Plugin marketplace <span class="arrow">&rarr;</span></div>
-            <div class="desc">Curated and community-built plugins for Claude Code — Asana, Jira, Google Workspace, and more. Browse, install, sync.</div>
-        </a>
-        <a class="what-is-item" href="/catalog">
-            <span class="ico">&#x1F4E6;</span>
-            <div class="ttl">Curated data packages <span class="arrow">&rarr;</span></div>
-            <div class="desc">Tables, schema, and metric definitions your team has registered. Subscribe and Claude can query them with documented business rules.</div>
-        </a>
-        {# Corporate memory + Activity center are both admin-only — matches
-           the top-nav gating logic (the "Memory" link is hidden for
-           non-admin in _app_header.html, and the /corporate-memory route
-           is `require_admin`). Without this gate non-admin users would
-           see a Corporate memory tile that 403s when clicked. #}
-        {% if is_admin %}
-        <a class="what-is-item" href="/corporate-memory">
-            <span class="ico">&#x1F9E0;</span>
-            <div class="ttl">Corporate memory <span class="arrow">&rarr;</span></div>
-            <div class="desc">Shared analyst knowledge and prior solutions to draw from. Searchable, versioned, fed back into Claude's context on demand.</div>
-        </a>
-        <a class="what-is-item" href="/activity-center">
-            <span class="ico">&#x1F4C8;</span>
-            <div class="ttl">Activity center <span class="arrow">&rarr;</span></div>
-            <div class="desc">Per-user analytics on {{ instance_brand }} adoption across your team. Sessions, plugin installs, prompt patterns.</div>
-        </a>
-        {% endif %}
-    </div>
+    <section class="browse-section" id="look-around">
+        <div class="eyebrow">{{ instance_brand }} workspace</div>
+        <h2>Explore your workspace</h2>
+        <p class="lede">Jump into any part of {{ instance_brand }} &mdash; what your team has registered, what's curated company-wide, and what's shared by your colleagues.</p>
 
-    <a class="advanced-pointer" href="/setup-advanced">
-        <span class="ico">&#x1F6E0;&#xFE0F;</span>
-        <div class="advanced-pointer-text">
-            <strong>Going deeper — Advanced setup</strong>
-            VS Code split-terminal layout, recommended Claude Code plugins (with copy-able install commands), multi-model second opinions (Codex + Gemini), custom skills + rules + hooks, project workflows, plan tier guidance.
+        <div class="browse-grid what-is look-around-grid">
+            <a class="browse-card what-is-item" href="/marketplace">
+                <span class="browse-icon ico" aria-hidden="true">&#x1F9E9;</span>
+                <span class="browse-title ttl">Plugin marketplace <span class="arrow">&rarr;</span></span>
+                <span class="browse-desc desc">Two tiers: <strong>Curated</strong> (official, vetted &mdash; Asana, Jira, GWS, GitHub) and <strong>Flea Market</strong> (team-shared, lower bar &mdash; anyone can publish for the team).</span>
+            </a>
+            <a class="browse-card what-is-item" href="/catalog">
+                <span class="browse-icon ico" aria-hidden="true">&#x1F4E6;</span>
+                <span class="browse-title ttl">Data packages <span class="arrow">&rarr;</span></span>
+                <span class="browse-desc desc">Tables, schema, metric definitions registered by your team. Subscribe + query.</span>
+            </a>
+            <a class="browse-card new what-is-item" href="/marketplace?type=skills">
+                <span class="browse-icon ico" aria-hidden="true">&#x26A1;</span>
+                <span class="browse-title ttl">Skills <span class="arrow">&rarr;</span></span>
+                <span class="browse-desc desc">Two tiers: <strong>Curated</strong> (official workflow templates &mdash; brainstorming, planning, review) and <strong>Flea Market</strong> (team-shared skills you and your colleagues publish).</span>
+            </a>
+            {# Curated Memory is user-facing — the /corporate-memory route runs
+               on get_current_user, so the tile shows for everyone, matching
+               its primary-nav placement. #}
+            <a class="browse-card what-is-item" href="/corporate-memory">
+                <span class="browse-icon ico" aria-hidden="true">&#x1F9E0;</span>
+                <span class="browse-title ttl">Memory <span class="arrow">&rarr;</span></span>
+                <span class="browse-desc desc">Shared analyst knowledge and prior solutions. Searchable, versioned.</span>
+            </a>
+            {# Activity center admin-only — matches the top-nav gating logic. #}
+            {% if is_admin %}
+            <a class="browse-card what-is-item" href="/activity-center">
+                <span class="browse-icon ico" aria-hidden="true">&#x1F4C8;</span>
+                <span class="browse-title ttl">Activity center <span class="arrow">&rarr;</span></span>
+                <span class="browse-desc desc">Adoption analytics across your team. Sessions, plugins, prompt patterns.</span>
+            </a>
+            {% endif %}
         </div>
-        <span class="arrow">&rarr;</span>
-    </a>
+    </section>
+
+    {# Legacy `.advanced-pointer` row removed — same link now lives in
+       the Getting Started card at the top of /home. `.advanced-pointer`
+       CSS (~line 721) is harmless dead style; left in place to keep
+       this diff focused. #}
 
     {% if news_intro %}
     <section class="home-news">
@@ -1514,7 +771,7 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
         </ol>
         <div class="cta-modal-foot">
             <span class="meta">Token is in clipboard only — never displayed here.</span>
-            <button type="button" id="cta-modal-close">Got it</button>
+            {{ ds.button('Got it', variant='primary', id='cta-modal-close') }}
         </div>
     </div>
 </div>
@@ -1525,6 +782,11 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
    and falls back to a modal when the clipboard API is blocked. The button
    above (id="setupClaudeBtn") is the primary trigger. #}
 {% include "_claude_setup_cta.jinja" %}
+
+{# VS Code screenshot lightbox — full-bleed overlay; click to close. #}
+<div class="lightbox" id="vscode-lightbox" aria-hidden="true">
+    <img src="/static/img/vscode-layout.png" alt="VS Code with terminal-centric layout">
+</div>
 
 <script>
 (function () {
@@ -1546,43 +808,15 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
     }
     document.querySelectorAll('.copy-btn[data-copy-target]').forEach(wireCopy);
 
-    // P0-3 + P2-12 — Connector copy buttons. Three things on click:
-    //   1) copy the prompt (same textContent trick so closed <details>
-    //      still copies);
-    //   2) flip the button to "✓ Copied" + disabled for 8 s so the user
-    //      stops mashing it while figuring out where to paste;
-    //   3) reveal a paste hint pointing the user at Claude Code.
-    document.querySelectorAll('.connector-copy[data-copy-target]').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-            var src = document.getElementById(btn.getAttribute('data-copy-target'));
-            if (!src) return;
-            var raw = src.textContent || '';
-            var connector = btn.getAttribute('data-connector') || '';
-            var hint = connector
-                ? document.querySelector('.copy-next-hint[data-hint-for="' + connector + '"]')
-                : null;
-            navigator.clipboard.writeText(raw).then(function () {
-                var orig = btn.textContent;
-                btn.classList.add('copied');
-                btn.textContent = '✓ Copied';
-                btn.disabled = true;
-                if (hint) hint.classList.add('is-visible');
-                setTimeout(function () {
-                    btn.classList.remove('copied');
-                    btn.textContent = orig;
-                    btn.disabled = false;
-                    if (hint) hint.classList.remove('is-visible');
-                }, 8000);
-            }).catch(function () { btn.textContent = 'Copy failed'; });
-        });
-    });
-
     // OS tab switching for Step 1. Flips both the command panel AND the
     // P0-1 terminal-howto body so the howto matches the active OS.
     document.querySelectorAll('.os-tab[data-os-tab]').forEach(function (tab) {
         tab.addEventListener('click', function () {
             var target = tab.getAttribute('data-os-tab');
-            var scope = tab.closest('.install-block') || document;
+            // Scope OS-tab switching to the nearest mode-panel when nested
+            // inside one (Step 6's Auto/YOLO panels each have their own
+            // OS toggle); otherwise scope to the install-block.
+            var scope = tab.closest('[data-mode-panel]') || tab.closest('.install-block') || document;
             scope.querySelectorAll('.os-tab[data-os-tab]').forEach(function (t) {
                 var on = t.getAttribute('data-os-tab') === target;
                 t.classList.toggle('is-active', on);
@@ -1598,6 +832,27 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
             // P0-1 — flip the howto bodies in lockstep.
             scope.querySelectorAll('[data-howto-panel]').forEach(function (p) {
                 if (p.getAttribute('data-howto-panel') === target) {
+                    p.removeAttribute('hidden');
+                } else {
+                    p.setAttribute('hidden', '');
+                }
+            });
+        });
+    });
+
+    // Mode tabs — Step 6's Auto / YOLO toggle. Mirrors os-tab handler
+    // but switches `[data-mode-panel]` siblings.
+    document.querySelectorAll('.mode-tab[data-mode-tab]').forEach(function (tab) {
+        tab.addEventListener('click', function () {
+            var target = tab.getAttribute('data-mode-tab');
+            var scope = tab.closest('.install-block') || document;
+            scope.querySelectorAll('.mode-tab[data-mode-tab]').forEach(function (t) {
+                var on = t.getAttribute('data-mode-tab') === target;
+                t.classList.toggle('is-active', on);
+                t.setAttribute('aria-selected', on ? 'true' : 'false');
+            });
+            scope.querySelectorAll('[data-mode-panel]').forEach(function (p) {
+                if (p.getAttribute('data-mode-panel') === target) {
                     p.removeAttribute('hidden');
                 } else {
                     p.setAttribute('hidden', '');
@@ -1638,16 +893,13 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
         });
     }
 
-    var btn = document.getElementById('self-mark-btn');
-    var status = document.getElementById('self-mark-status');
-    if (!btn) return;
-    btn.addEventListener('click', function () {
-        // Direction comes from data-attrs the template sets per render —
-        // onboarded view → flip to FALSE (offboard), not-onboarded → flip to TRUE.
-        var targetOnboarded = btn.getAttribute('data-target-onboarded') === 'true';
-        var targetSource = btn.getAttribute('data-target-source') || 'self_acknowledged';
-        btn.disabled = true;
-        status.textContent = targetOnboarded ? 'Marking…' : 'Resetting…';
+    // Shared poster for /api/me/onboarded — reused by every UI surface
+    // that flips users.onboarded (in-hero X close, "Mark me as onboarded"
+    // fallback button, the offboard strip). Reloads on success so the
+    // template re-renders with the new state.
+    function postOnboarded(triggerBtn, statusEl, targetOnboarded, targetSource) {
+        if (triggerBtn) triggerBtn.disabled = true;
+        if (statusEl) statusEl.textContent = targetOnboarded ? 'Marking…' : 'Resetting…';
         fetch('/api/me/onboarded', {
             method: 'POST',
             credentials: 'same-origin',
@@ -1655,57 +907,105 @@ Set-Location "$HOME\{{ workspace_dir }}"</span>
             body: JSON.stringify({ source: targetSource, onboarded: targetOnboarded }),
         }).then(function (resp) {
             if (resp.ok) {
-                status.textContent = 'Done. Reloading…';
+                if (statusEl) statusEl.textContent = 'Done. Reloading…';
                 window.location.reload();
             } else {
-                status.textContent = 'Failed (' + resp.status + '). Try again.';
-                btn.disabled = false;
+                if (statusEl) statusEl.textContent = 'Failed (' + resp.status + '). Try again.';
+                if (triggerBtn) triggerBtn.disabled = false;
             }
         }).catch(function () {
-            status.textContent = 'Network error. Try again.';
-            btn.disabled = false;
+            if (statusEl) statusEl.textContent = 'Network error. Try again.';
+            if (triggerBtn) triggerBtn.disabled = false;
+        });
+    }
+
+    // "Mark me as onboarded" fallback button inside the hero (rendered
+    // only when not-onboarded — the X close button is the primary path).
+    var btn = document.getElementById('self-mark-btn');
+    var status = document.getElementById('self-mark-status');
+    if (btn) {
+        btn.addEventListener('click', function (e) {
+            if (btn.tagName === 'A') e.preventDefault();
+            postOnboarded(
+                btn, status, true,
+                btn.getAttribute('data-target-source') || 'self_acknowledged'
+            );
+        });
+    }
+
+    // Hero X close — confirm first so a stray click doesn't flip state.
+    var heroClose = document.getElementById('installHeroClose');
+    if (heroClose) {
+        heroClose.addEventListener('click', async function () {
+            var ok = await confirmModal({
+                message: "Are you already onboarded? Closing this will mark your account as onboarded " +
+                    "and hide the setup steps. You can revert later from the strip below the hero.",
+                danger: false,
+            });
+            if (!ok) return;
+            postOnboarded(
+                heroClose, status, true,
+                heroClose.getAttribute('data-target-source') || 'self_acknowledged'
+            );
+        });
+    }
+
+    // Offboarding strip — only rendered when onboarded. Flips back to
+    // the install hero on next reload.
+    var offBtn = document.getElementById('offboard-btn');
+    var offStatus = document.getElementById('offboard-status');
+    if (offBtn) {
+        offBtn.addEventListener('click', function () {
+            postOnboarded(
+                offBtn, offStatus, false,
+                offBtn.getAttribute('data-target-source') || 'self_unmark'
+            );
+        });
+    }
+
+    // ── Generic dismiss-card handler ─────────────────────────────────
+    // Any `<button class="home-card-close" data-dismiss-key="...">`
+    // inside a `<section>` becomes dismissible: clicking sets the
+    // localStorage key to '1' and hides the section; on next page
+    // load the section starts hidden if the key is set. Used by the
+    // Getting Started card; future dismissible cards drop in with
+    // zero per-card JS.
+    document.querySelectorAll('.home-card-close[data-dismiss-key]').forEach(function (btn) {
+        var key = btn.getAttribute('data-dismiss-key');
+        var section = btn.closest('section, details');
+        if (!section || !key) return;
+        try {
+            if (localStorage.getItem(key) === '1') {
+                section.hidden = true;
+                return;
+            }
+        } catch (e) { /* private-mode: render visible, no-op */ }
+        btn.addEventListener('click', function () {
+            try { localStorage.setItem(key, '1'); } catch (e) { /* ignore */ }
+            section.hidden = true;
         });
     });
 
-    // ── Minimize-setup toggle ────────────────────────────────────────
-    // Default OFF: sections render flat (no <summary> visible).
-    // ON: data-setup-minimized="1" on .home-mock activates the slim
-    // gray summary bars; <details> open/close handles per-section
-    // expansion. Per-device via localStorage; survives reloads but
-    // resets on a new machine — which is correct (the user might
-    // want the full reference there).
-    var KEY = 'agnes_home_setup_minimized';
-    var mockEl = document.querySelector('.home-mock');
-    var minToggle = document.getElementById('setupMinimizeToggle');
-    var collapsibles = document.querySelectorAll('.setup-collapsible');
-
-    function applyMinimize(on) {
-        if (!mockEl) return;
-        if (on) {
-            mockEl.setAttribute('data-setup-minimized', '1');
-            collapsibles.forEach(function (d) { d.removeAttribute('open'); });
-            if (minToggle) {
-                minToggle.textContent = 'Show full setup view';
-                minToggle.setAttribute('aria-pressed', 'true');
+    // ── VS Code screenshot lightbox ──────────────────────────────────
+    // Anchor `.vscode-thumb` opens `#vscode-lightbox`. Skips wiring when
+    // the screenshot is missing (`.thumb-empty` set by the <img> onerror).
+    var vsLightbox = document.getElementById('vscode-lightbox');
+    var vsThumb = document.getElementById('vscode-screenshot-trigger');
+    if (vsThumb && vsLightbox && !vsThumb.classList.contains('thumb-empty')) {
+        vsThumb.addEventListener('click', function (e) {
+            e.preventDefault();
+            vsLightbox.classList.add('open');
+            document.body.style.overflow = 'hidden';
+        });
+        vsLightbox.addEventListener('click', function () {
+            vsLightbox.classList.remove('open');
+            document.body.style.overflow = '';
+        });
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape' && vsLightbox.classList.contains('open')) {
+                vsLightbox.classList.remove('open');
+                document.body.style.overflow = '';
             }
-        } else {
-            mockEl.removeAttribute('data-setup-minimized');
-            collapsibles.forEach(function (d) { d.setAttribute('open', ''); });
-            if (minToggle) {
-                minToggle.textContent = 'Minimize setup view';
-                minToggle.setAttribute('aria-pressed', 'false');
-            }
-        }
-    }
-
-    // Initial state — only when the toggle exists (= onboarded view).
-    if (minToggle) {
-        try { applyMinimize(localStorage.getItem(KEY) === '1'); }
-        catch (e) { /* ignore localStorage failures (private mode) */ }
-        minToggle.addEventListener('click', function () {
-            var nowOn = mockEl.getAttribute('data-setup-minimized') !== '1';
-            try { localStorage.setItem(KEY, nowOn ? '1' : '0'); } catch (e) {}
-            applyMinimize(nowOn);
         });
     }
 })();

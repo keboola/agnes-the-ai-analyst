@@ -59,7 +59,7 @@ The `_meta` table must have columns:
 | Latency under 100 ms, table fits on disk | `materialized` | Local parquet, no BQ roundtrip |
 | Table too large for analyst's disk, occasional ad-hoc query | `remote` | DuckDB BQ extension, no download |
 | Table too large for disk AND analyst hits it constantly | `materialized` with aggregation/filter | Scheduled COPY of a slice |
-| One-off subquery joined with local data | (no registry row) | Use `agnes query --register-bq …` for ad-hoc |
+| One-off subquery joined with local data | (no registry row) | `agnes snapshot create` a filtered slice and join locally, or run the join server-side via `agnes query --remote` |
 
 Cost: `materialized` runs once per `sync_schedule` regardless of how many analysts query it; `remote` runs once per analyst-query. The break-even is roughly query frequency × bytes scanned vs. one COPY × bytes scanned.
 

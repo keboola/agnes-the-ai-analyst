@@ -17,14 +17,23 @@ from uuid import uuid4
 import duckdb
 
 
+# Maps resource_type string to the per-type column name (schema v60 / PG
+# migration 0013). marketplace_plugin is absent — it uses only the legacy
+# polymorphic resource_id column (composite slug/name, no surrogate FK).
+_PER_TYPE_COLUMN: Dict[str, str] = {
+    "table": "resource_id_table",
+    "data_package": "resource_id_data_package",
+    "memory_domain": "resource_id_memory_domain",
+    "memory_item": "resource_id_memory_item",
+    "recipe": "resource_id_recipe",
+}
+
+
 class ResourceGrantsRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection):
         self.conn = conn
 
-    _SELECT_COLS = (
-        "id, group_id, resource_type, resource_id, "
-        "assigned_at, assigned_by"
-    )
+    _SELECT_COLS = "id, group_id, resource_type, resource_id, assigned_at, assigned_by, requirement"
 
     def list_all(
         self,
@@ -44,7 +53,7 @@ class ResourceGrantsRepository:
         rows = self.conn.execute(
             f"""SELECT g.id, g.group_id, ug.name AS group_name,
                        g.resource_type, g.resource_id,
-                       g.assigned_at, g.assigned_by
+                       g.assigned_at, g.assigned_by, g.requirement
                 FROM resource_grants g
                 JOIN user_groups ug ON ug.id = g.group_id
                 {where_sql}
@@ -122,20 +131,119 @@ class ResourceGrantsRepository:
         resource_type: str,
         resource_id: str,
         assigned_by: Optional[str] = None,
+        requirement: Optional[str] = None,
     ) -> str:
         """Insert a new grant. Returns the assigned id.
+
+        ``requirement`` defaults to the column default (``'available'``)
+        when ``None``. Pass ``'required'`` to create a Required-tier
+        grant in a single round-trip. Rejected by the column CHECK if
+        the string is anything other than the two enum values.
 
         Raises ``duckdb.ConstraintException`` on duplicate
         (group_id, resource_type, resource_id) — caller surfaces as 409.
         """
         grant_id = str(uuid4())
-        self.conn.execute(
-            """INSERT INTO resource_grants
-               (id, group_id, resource_type, resource_id, assigned_by)
-               VALUES (?, ?, ?, ?, ?)""",
-            [grant_id, group_id, resource_type, resource_id, assigned_by],
-        )
+        per_type_col = _PER_TYPE_COLUMN.get(resource_type)
+        if requirement is None:
+            if per_type_col:
+                self.conn.execute(
+                    f"""INSERT INTO resource_grants
+                       (id, group_id, resource_type, resource_id, {per_type_col}, assigned_by)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    [grant_id, group_id, resource_type, resource_id, resource_id, assigned_by],
+                )
+            else:
+                self.conn.execute(
+                    """INSERT INTO resource_grants
+                       (id, group_id, resource_type, resource_id, assigned_by)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    [grant_id, group_id, resource_type, resource_id, assigned_by],
+                )
+        else:
+            if requirement not in ("available", "required"):
+                raise ValueError(f"requirement must be 'available' or 'required', got {requirement!r}")
+            if per_type_col:
+                self.conn.execute(
+                    f"""INSERT INTO resource_grants
+                       (id, group_id, resource_type, resource_id, {per_type_col}, assigned_by, requirement)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    [grant_id, group_id, resource_type, resource_id, resource_id, assigned_by, requirement],
+                )
+            else:
+                self.conn.execute(
+                    """INSERT INTO resource_grants
+                       (id, group_id, resource_type, resource_id, assigned_by, requirement)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    [grant_id, group_id, resource_type, resource_id, assigned_by, requirement],
+                )
         return grant_id
+
+    def update_requirement(
+        self,
+        grant_id: str,
+        requirement: str,
+    ) -> Optional[str]:
+        """Update the ``requirement`` enum on a grant. Returns the prior
+        value (None if grant missing) so callers can detect transitions.
+
+        v49: ``requirement`` is one of ``'available'`` / ``'required'``.
+        Callers handle the soft-downgrade subscription fan-out at the
+        service layer (see app/api/access.py update_grant_requirement).
+        """
+        if requirement not in ("available", "required"):
+            raise ValueError(f"requirement must be 'available' or 'required', got {requirement!r}")
+        before = self.conn.execute(
+            "SELECT requirement FROM resource_grants WHERE id = ?",
+            [grant_id],
+        ).fetchone()
+        if before is None:
+            return None
+        prior = before[0]
+        self.conn.execute(
+            "UPDATE resource_grants SET requirement = ? WHERE id = ?",
+            [requirement, grant_id],
+        )
+        return prior
+
+    def ensure_grant(
+        self,
+        group_id: str,
+        resource_type: str,
+        resource_id: str,
+        assigned_by: Optional[str] = None,
+    ) -> bool:
+        """Create a grant if it does not already exist. Returns True iff the
+        grant row exists after the call (whether newly inserted or already
+        present) — mirrors the Postgres sibling's contract. The post-insert
+        ``SELECT`` cannot distinguish a fresh insert from a pre-existing row,
+        so callers must not treat the return value as "was inserted".
+
+        Uses INSERT OR IGNORE so repeated calls (e.g. on every boot from the
+        built-in marketplace seeder) are idempotent and cheap.
+        """
+        grant_id = str(uuid4())
+        per_type_col = _PER_TYPE_COLUMN.get(resource_type)
+        if per_type_col:
+            self.conn.execute(
+                f"""INSERT OR IGNORE INTO resource_grants
+                   (id, group_id, resource_type, resource_id, {per_type_col}, assigned_by)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [grant_id, group_id, resource_type, resource_id, resource_id, assigned_by],
+            )
+        else:
+            self.conn.execute(
+                """INSERT OR IGNORE INTO resource_grants
+                   (id, group_id, resource_type, resource_id, assigned_by)
+                   VALUES (?, ?, ?, ?, ?)""",
+                [grant_id, group_id, resource_type, resource_id, assigned_by],
+            )
+        # Check if we just inserted by verifying the row now exists.
+        row = self.conn.execute(
+            "SELECT 1 FROM resource_grants WHERE group_id = ? AND resource_type = ? AND resource_id = ? LIMIT 1",
+            [group_id, resource_type, resource_id],
+        ).fetchone()
+        return row is not None
 
     def delete(self, grant_id: str) -> bool:
         """Remove a grant by id. Returns True iff a row was removed."""
@@ -162,6 +270,38 @@ class ResourceGrantsRepository:
         ).fetchall()
         return len(rows)
 
+    def delete_for_marketplace_plugins(self, marketplace_id: str) -> int:
+        """Remove every ``marketplace_plugin`` grant belonging to a marketplace.
+
+        Used by the marketplace-delete cascade so grants don't outlive the
+        plugins they reference. ``resource_id`` is
+        ``"<marketplace_slug>/<plugin_name>"``; match the slug via
+        ``split_part(resource_id, '/', 1)`` rather than a LIKE prefix —
+        marketplace slugs may contain ``_`` (validated by
+        ``[a-z0-9][a-z0-9_-]{0,63}``), which LIKE would treat as a single-char
+        wildcard and silently drop grants from sibling marketplaces whose slug
+        differs by exactly one character. Returns the number of rows removed.
+        ``'marketplace_plugin'`` is the literal value of
+        ``ResourceType.MARKETPLACE_PLUGIN`` (kept inline so the repo layer stays
+        free of the resource_types import).
+        """
+        rows = self.conn.execute(
+            """DELETE FROM resource_grants
+               WHERE resource_type = 'marketplace_plugin'
+                 AND split_part(resource_id, '/', 1) = ?
+               RETURNING 1""",
+            [marketplace_id],
+        ).fetchall()
+        return len(rows)
+
+    def delete_all_for_group(self, group_id: str) -> int:
+        """Drop every grant for ``group_id``. Used by the group-delete cascade."""
+        rows = self.conn.execute(
+            "DELETE FROM resource_grants WHERE group_id = ? RETURNING 1",
+            [group_id],
+        ).fetchall()
+        return len(rows)
+
     def count_for_group(self, group_id: str) -> int:
         row = self.conn.execute(
             "SELECT COUNT(*) FROM resource_grants WHERE group_id = ?",
@@ -170,25 +310,31 @@ class ResourceGrantsRepository:
         return int(row[0]) if row else 0
 
     def fanout_system_for_group(
-        self, group_id: str, assigned_by: Optional[str] = None,
+        self,
+        group_id: str,
+        assigned_by: Optional[str] = None,
     ) -> int:
-        """Grant every ``is_system=TRUE`` marketplace_plugin to ``group_id``.
+        """Grant every active system marketplace_plugin to ``group_id``.
+
+        Only plugins with ``is_system=TRUE`` and ``admin_disabled=FALSE`` are
+        granted — a disabled plugin stays hidden instance-wide, so a new group
+        must not inherit a grant that would activate the moment it is
+        re-enabled. Symmetric with ``UserCuratedSubscriptions.fanout_system_for_user``.
 
         Idempotent — pre-existing grants for the same plugin survive
         unchanged (ON CONFLICT against the UNIQUE
         ``(group_id, resource_type, resource_id)`` index). Returns the
         number of grant rows newly inserted (diagnostic / audit only).
 
-        Called from two places:
-        * the admin ``mark_system`` endpoint (one plugin × every existing
-          group, but the SELECT-side filter still walks all system
-          plugins — harmless and keeps the helper symmetric)
-        * the group-create hooks (admin POST + Google sync) so a new
-          group inherits the mandatory tier without an admin reconcile.
+        Called from the group-create hooks (admin POST + Google sync) so a new
+        group inherits the mandatory tier without an admin reconcile — it grants
+        *every* active system plugin to *one* group. (The admin ``mark_system``
+        endpoint does its own inline per-group ``ensure_grant`` fan-out for the
+        single plugin being marked and does NOT route through this helper.)
         """
         rows = self.conn.execute(
             "SELECT marketplace_id, name FROM marketplace_plugins "
-            "WHERE is_system = TRUE",
+            "WHERE is_system = TRUE AND admin_disabled = FALSE",
         ).fetchall()
         inserted = 0
         for marketplace_id, plugin_name in rows:

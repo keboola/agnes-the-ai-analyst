@@ -9,7 +9,6 @@ import logging
 import os
 import re
 from datetime import datetime
-from pathlib import Path
 from typing import Any, List, Optional
 
 import duckdb
@@ -19,6 +18,7 @@ from pydantic import BaseModel
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from app.resource_types import ResourceType
+from app.secrets import persist_overlay_token
 from src.marketplace import (
     MarketplaceNotFound,
     delete_marketplace_dir,
@@ -26,9 +26,15 @@ from src.marketplace import (
     sync_marketplaces,
     sync_one,
 )
-from src.repositories.audit import AuditRepository
-from src.repositories.marketplace_plugins import MarketplacePluginsRepository
-from src.repositories.marketplace_registry import MarketplaceRegistryRepository
+
+from src.repositories import (
+    audit_repo,
+    marketplace_plugins_repo,
+    marketplace_registry_repo,
+    resource_grants_repo,
+    user_curated_subscriptions_repo,
+    user_groups_repo,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/marketplaces", tags=["marketplaces"])
@@ -55,7 +61,7 @@ def _audit(
                     safe_params[k] = v.isoformat()
                 else:
                     safe_params[k] = v
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id,
             action=action,
             resource=f"marketplace:{target_id}",
@@ -156,6 +162,9 @@ class PluginResponse(BaseModel):
     # v39: surfaced so the admin Details modal renders the SYSTEM pill
     # + flips the "Mark as system" / "Unmark system" toggle button.
     is_system: bool = False
+    # v78: surfaced so the admin Details modal renders the "Disable plugin"
+    # toggle + greys out the system button for admin-disabled plugins.
+    admin_disabled: bool = False
 
 
 class SystemFlagResponse(BaseModel):
@@ -169,8 +178,13 @@ class SystemFlagResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Token persistence — mirrors app/api/admin.py::configure_instance
+# Token env-var naming
 # ---------------------------------------------------------------------------
+#
+# Read-modify-write of `.env_overlay` lives in `app.secrets.persist_overlay_token`
+# (single shared helper with a process-wide lock). Multiple admins clicking
+# Save in /admin/marketplaces + /admin/server-config concurrently must not
+# corrupt the overlay file.
 
 
 def _token_env_name(slug: str) -> str:
@@ -180,43 +194,6 @@ def _token_env_name(slug: str) -> str:
     """
     normalized = slug.upper().replace("-", "_")
     return f"AGNES_MARKETPLACE_{normalized}_TOKEN"
-
-
-def _persist_token(env_name: str, value: str) -> None:
-    """Write (or update) a single key in ``${STATE_DIR}/.env_overlay`` and ``os.environ``.
-
-    Path resolution matches ``app/main.py``'s startup-time read; without
-    this alignment, marketplace PATs persisted under the flat-mount
-    layout (``STATE_DIR=/data-state``) would land at
-    ``/data/state/.env_overlay`` while the app reads from
-    ``/data-state/.env_overlay``, silently dropping the token on the
-    next restart.
-    """
-    from app.secrets import _state_dir
-    overlay_path = _state_dir() / ".env_overlay"
-    overlay_path.parent.mkdir(parents=True, exist_ok=True)
-
-    existing: dict[str, str] = {}
-    if overlay_path.exists():
-        for line in overlay_path.read_text().splitlines():
-            if "=" in line and not line.startswith("#"):
-                k, v = line.split("=", 1)
-                existing[k.strip()] = v.strip()
-
-    if value:
-        existing[env_name] = value
-        os.environ[env_name] = value
-    else:
-        existing.pop(env_name, None)
-        os.environ.pop(env_name, None)
-
-    overlay_path.write_text(
-        "\n".join(f"{k}={v}" for k, v in existing.items()) + ("\n" if existing else "")
-    )
-    try:
-        overlay_path.chmod(0o600)
-    except OSError:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -229,11 +206,8 @@ async def list_marketplaces(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    counts = MarketplacePluginsRepository(conn).count_by_marketplace()
-    return [
-        _to_response(row, counts.get(row["id"], 0))
-        for row in MarketplaceRegistryRepository(conn).list_all()
-    ]
+    counts = marketplace_plugins_repo().count_by_marketplace()
+    return [_to_response(row, counts.get(row["id"], 0)) for row in marketplace_registry_repo().list_all()]
 
 
 @router.get("/{marketplace_id}/plugins", response_model=List[PluginResponse])
@@ -248,9 +222,9 @@ async def list_plugins(
     `.claude-plugin/marketplace.json` on every successful sync. An
     unsynced marketplace will return an empty list.
     """
-    if not MarketplaceRegistryRepository(conn).get(marketplace_id):
+    if not marketplace_registry_repo().get(marketplace_id):
         raise HTTPException(status_code=404, detail="marketplace not found")
-    rows = MarketplacePluginsRepository(conn).list_for_marketplace(marketplace_id)
+    rows = marketplace_plugins_repo().list_for_marketplace(marketplace_id)
     return [
         PluginResponse(
             name=r["name"],
@@ -262,6 +236,7 @@ async def list_plugins(
             source_type=r.get("source_type"),
             source_spec=r.get("source_spec"),
             is_system=bool(r.get("is_system")),
+            admin_disabled=bool(r.get("admin_disabled")),
         )
         for r in rows
     ]
@@ -292,25 +267,28 @@ async def create_marketplace(
     curator_email = (payload.curator_email or "").strip()
     if not curator_name:
         raise HTTPException(
-            status_code=400, detail="curator_name is required",
+            status_code=400,
+            detail="curator_name is required",
         )
     if not curator_email:
         raise HTTPException(
-            status_code=400, detail="curator_email is required",
+            status_code=400,
+            detail="curator_email is required",
         )
     if not _EMAIL_RE.match(curator_email):
         raise HTTPException(
-            status_code=400, detail="curator_email is not a valid email address",
+            status_code=400,
+            detail="curator_email is not a valid email address",
         )
 
-    repo = MarketplaceRegistryRepository(conn)
+    repo = marketplace_registry_repo()
     if repo.get(slug):
         raise HTTPException(status_code=409, detail=f"marketplace '{slug}' already exists")
 
     token_env: Optional[str] = None
     if payload.token:
         token_env = _token_env_name(slug)
-        _persist_token(token_env, payload.token)
+        persist_overlay_token(token_env, payload.token)
 
     repo.register(
         id=slug,
@@ -340,7 +318,7 @@ async def update_marketplace(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = MarketplaceRegistryRepository(conn)
+    repo = marketplace_registry_repo()
     existing = repo.get(marketplace_id)
     if not existing:
         raise HTTPException(status_code=404, detail="marketplace not found")
@@ -394,12 +372,12 @@ async def update_marketplace(
         # None = untouched; "" = clear token_env binding; non-empty = rotate.
         if payload.token == "":
             if updated["token_env"]:
-                _persist_token(updated["token_env"], "")
+                persist_overlay_token(updated["token_env"], "")
             updated["token_env"] = None
             changed["token"] = "cleared"
         else:
             env_name = _token_env_name(marketplace_id)
-            _persist_token(env_name, payload.token)
+            persist_overlay_token(env_name, payload.token)
             updated["token_env"] = env_name
             changed["token"] = "rotated"
 
@@ -411,11 +389,13 @@ async def update_marketplace(
     # so untouched legacy rows are not broken.
     if not (updated.get("curator_name") or "").strip():
         raise HTTPException(
-            status_code=400, detail="curator_name is required",
+            status_code=400,
+            detail="curator_name is required",
         )
     if not (updated.get("curator_email") or "").strip():
         raise HTTPException(
-            status_code=400, detail="curator_email is required",
+            status_code=400,
+            detail="curator_email is required",
         )
 
     repo.register(
@@ -430,7 +410,7 @@ async def update_marketplace(
         curator_email=updated["curator_email"],
     )
     _audit(conn, user["id"], "marketplace.update", marketplace_id, changed)
-    counts = MarketplacePluginsRepository(conn).count_by_marketplace()
+    counts = marketplace_plugins_repo().count_by_marketplace()
     return _to_response(repo.get(marketplace_id), counts.get(marketplace_id, 0))
 
 
@@ -441,7 +421,7 @@ async def delete_marketplace(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = MarketplaceRegistryRepository(conn)
+    repo = marketplace_registry_repo()
     existing = repo.get(marketplace_id)
     if not existing:
         raise HTTPException(status_code=404, detail="marketplace not found")
@@ -449,34 +429,23 @@ async def delete_marketplace(
     # Also clear any overlay token binding so a re-created marketplace of the
     # same slug doesn't accidentally inherit the old PAT.
     if existing.get("token_env"):
-        _persist_token(existing["token_env"], "")
+        persist_overlay_token(existing["token_env"], "")
 
     repo.unregister(marketplace_id)
     # Drop cached plugin rows and any resource grants that reference plugins
-    # from this marketplace. resource_grants stores resource_id as
-    # "<marketplace_slug>/<plugin_name>" — match the slash-prefix via
-    # starts_with(), not LIKE: marketplace slugs may contain '_' (validated
-    # by [a-z0-9][a-z0-9_-]{0,63}) and LIKE would interpret it as a
-    # single-char wildcard, silently dropping grants from sibling
-    # marketplaces whose slug differs by exactly one character.
+    # from this marketplace. Routed through the repo factory so the deletes hit
+    # the ACTIVE backend (PG / DuckDB) — a raw conn.execute on the
+    # Depends(_get_db) connection runs against the always-DuckDB system file and
+    # silently no-ops on a Postgres instance, orphaning the plugins + grants in
+    # PG (#518 backend-split). The repos match the marketplace slug via
+    # split_part(resource_id, '/', 1) rather than a LIKE prefix, so a slug
+    # containing '_' can't drop a sibling marketplace's grants.
     try:
-        conn.execute(
-            "DELETE FROM marketplace_plugins WHERE marketplace_id = ?",
-            [marketplace_id],
-        )
-        conn.execute(
-            "DELETE FROM resource_grants "
-            "WHERE resource_type = ? AND starts_with(resource_id, ? || '/')",
-            [ResourceType.MARKETPLACE_PLUGIN.value, marketplace_id],
-        )
+        marketplace_plugins_repo().clear_for_marketplace(marketplace_id)
+        resource_grants_repo().delete_for_marketplace_plugins(marketplace_id)
         # Drop user subscriptions to plugins from this marketplace so a
         # re-registered slug doesn't inherit stale subscribe state.
-        from src.repositories.user_curated_subscriptions import (
-            UserCuratedSubscriptionsRepository,
-        )
-        UserCuratedSubscriptionsRepository(conn).delete_for_marketplace(
-            marketplace_id
-        )
+        user_curated_subscriptions_repo().delete_for_marketplace(marketplace_id)
     except Exception as e:
         logger.warning("cleanup for marketplace %s failed: %s", marketplace_id, e)
     purged = False
@@ -582,6 +551,7 @@ def _invalidate_marketplace_etag() -> None:
     the cache layer survives an import error during early startup."""
     try:
         from app.marketplace_server import packager
+
         packager.invalidate_etag_cache()
     except Exception:
         logger.exception("failed to invalidate marketplace etag cache")
@@ -603,56 +573,61 @@ def mark_plugin_system(
     runs the fanout (cheap; ON CONFLICT DO NOTHING) so any user/group
     that slipped past the creation hooks gets caught up.
     """
-    from src.repositories.resource_grants import ResourceGrantsRepository
-    from src.repositories.user_curated_subscriptions import (
-        UserCuratedSubscriptionsRepository,
-    )
 
-    plugin_row = conn.execute(
-        "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    ).fetchone()
-    if not plugin_row:
+    # Existence check + is_system flip routed through the factory so they hit
+    # the ACTIVE backend (PG / DuckDB). A raw conn.execute on the
+    # Depends(_get_db) connection runs against the always-DuckDB system file and
+    # silently no-ops on a Postgres instance (#518 backend-split): the SELECT
+    # would 404 a plugin that only exists in PG, and the UPDATE would never
+    # persist is_system.
+    plugins_repo = marketplace_plugins_repo()
+    plugin = plugins_repo.get(marketplace_id, plugin_name)
+    if not plugin:
+        raise HTTPException(status_code=404, detail="plugin not found")
+    # A disabled plugin must not regain system status. Disabling clears
+    # is_system and re-enabling does NOT restore it; marking a disabled plugin
+    # system here would resurrect it as a mandatory default on re-enable,
+    # breaking that contract. The UI greys the button out, but this endpoint is
+    # the real state boundary (direct API call / stale-modal race).
+    if plugin.get("admin_disabled"):
+        raise HTTPException(status_code=409, detail="plugin is disabled")
+    # set_system returns False only on a concurrent delete between the fetch
+    # above and the flip — surface it as a 404 rather than fanning out a ghost.
+    if not plugins_repo.set_system(marketplace_id, plugin_name, True):
         raise HTTPException(status_code=404, detail="plugin not found")
 
     resource_id = f"{marketplace_id}/{plugin_name}"
     affected_groups = 0
     affected_users = 0
 
-    conn.execute(
-        "UPDATE marketplace_plugins SET is_system = TRUE "
-        "WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    )
-
-    # Pivot fanout: this plugin × every group / every user. We
-    # intentionally do NOT wrap the loop in a single BEGIN/COMMIT —
-    # DuckDB aborts the whole transaction on a ConstraintException, so
-    # an idempotent re-run (where most rows are duplicates) would die
-    # on the very first existing grant. Each row stands alone here:
-    # duplicate grants raise ConstraintException which we swallow
-    # (mirrors ``ON CONFLICT DO NOTHING`` semantics without DuckDB
-    # multi-target conflict resolution); duplicate subscriptions go
-    # through DuckDB's ON CONFLICT on the PK, which is well-supported.
-    # Partial-application is safe: a re-run completes the remainder.
-    groups = conn.execute("SELECT id FROM user_groups").fetchall()
-    grants_repo = ResourceGrantsRepository(conn)
+    # Pivot fanout: this plugin × every group / every user, through the repo
+    # factory. user_groups lives in the active backend, so the raw
+    # "SELECT id FROM user_groups" on the DuckDB conn read the wrong (frozen)
+    # group set on Postgres. ensure_grant is INSERT-OR-IGNORE / ON-CONFLICT-DO-
+    # NOTHING on both engines, so an idempotent re-run is cheap and never raises
+    # on a duplicate (the old code caught DuckDB's ConstraintException, which a
+    # Postgres IntegrityError would have slipped past). has_grant before the
+    # ensure keeps affected_groups meaning "newly granted"; user_groups is small.
+    grants_repo = resource_grants_repo()
     actor_email = user.get("email") or user.get("id")
-    for (group_id,) in groups:
-        try:
-            grants_repo.create(
-                group_id=group_id,
-                resource_type=ResourceType.MARKETPLACE_PLUGIN.value,
-                resource_id=resource_id,
-                assigned_by=actor_email,
-            )
+    for group in user_groups_repo().list_all():
+        group_id = group["id"]
+        already = grants_repo.has_grant(
+            [group_id], ResourceType.MARKETPLACE_PLUGIN.value, resource_id
+        )
+        grants_repo.ensure_grant(
+            group_id,
+            ResourceType.MARKETPLACE_PLUGIN.value,
+            resource_id,
+            actor_email,
+        )
+        if not already:
             affected_groups += 1
-        except duckdb.ConstraintException:
-            continue
 
-    affected_users = UserCuratedSubscriptionsRepository(
-        conn,
-    ).fanout_system_for_plugin(marketplace_id, plugin_name)
+    affected_users = user_curated_subscriptions_repo().fanout_system_for_plugin(
+        marketplace_id,
+        plugin_name,
+    )
 
     _audit(
         conn,
@@ -674,7 +649,7 @@ def mark_plugin_system(
 
 @router.delete(
     "/{marketplace_id}/plugins/{plugin_name}/system",
-    response_model=SystemFlagResponse,
+    status_code=204,
 )
 def unmark_plugin_system(
     marketplace_id: str,
@@ -687,18 +662,11 @@ def unmark_plugin_system(
     (which immediately unlocks the checkboxes for this plugin) and
     users can unsubscribe normally on /marketplace?tab=my.
     """
-    plugin_row = conn.execute(
-        "SELECT 1 FROM marketplace_plugins WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    ).fetchone()
-    if not plugin_row:
+    # Routed through the factory so the flip lands on the active backend — a
+    # raw UPDATE on the Depends(_get_db) DuckDB conn no-ops on Postgres
+    # (#518 backend-split). set_system returns False when no row matched.
+    if not marketplace_plugins_repo().set_system(marketplace_id, plugin_name, False):
         raise HTTPException(status_code=404, detail="plugin not found")
-
-    conn.execute(
-        "UPDATE marketplace_plugins SET is_system = FALSE "
-        "WHERE marketplace_id = ? AND name = ?",
-        [marketplace_id, plugin_name],
-    )
     _audit(
         conn,
         user["id"],
@@ -708,8 +676,66 @@ def unmark_plugin_system(
     )
     _invalidate_marketplace_etag()
 
-    return SystemFlagResponse(
-        marketplace_id=marketplace_id,
-        plugin_name=plugin_name,
-        is_system=False,
-    )
+
+# ---------------------------------------------------------------------------
+# Per-plugin admin disable (v77 built-in marketplace)
+# ---------------------------------------------------------------------------
+
+
+class AdminDisableResponse(BaseModel):
+    """Return shape of the enable/disable plugin endpoints."""
+
+    marketplace_id: str
+    plugin_name: str
+    admin_disabled: bool
+
+
+@router.post(
+    "/{marketplace_id}/plugins/{plugin_name}/disable",
+    response_model=AdminDisableResponse,
+)
+async def disable_plugin(
+    marketplace_id: str,
+    plugin_name: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Admin-disable a plugin instance-wide.
+
+    Disabled plugins are filtered from the served feed for all callers
+    regardless of their RBAC grants. Distinct from per-user opt-outs.
+    Primarily intended for built-in plugins (is_builtin=TRUE registry row),
+    but works on any registered plugin.
+    """
+    if not marketplace_registry_repo().get(marketplace_id):
+        raise HTTPException(status_code=404, detail="marketplace not found")
+    found = marketplace_plugins_repo().set_admin_disabled(marketplace_id, plugin_name, True)
+    if not found:
+        raise HTTPException(status_code=404, detail="plugin not found")
+    _audit(conn, user["id"], "marketplace.plugin.disable", f"{marketplace_id}/{plugin_name}", None)
+    _invalidate_marketplace_etag()
+    return AdminDisableResponse(marketplace_id=marketplace_id, plugin_name=plugin_name, admin_disabled=True)
+
+
+@router.post(
+    "/{marketplace_id}/plugins/{plugin_name}/enable",
+    response_model=AdminDisableResponse,
+)
+async def enable_plugin(
+    marketplace_id: str,
+    plugin_name: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Re-enable a previously admin-disabled plugin.
+
+    Restores the plugin to the served feed for callers who hold a resource_grant.
+    """
+    if not marketplace_registry_repo().get(marketplace_id):
+        raise HTTPException(status_code=404, detail="marketplace not found")
+    found = marketplace_plugins_repo().set_admin_disabled(marketplace_id, plugin_name, False)
+    if not found:
+        raise HTTPException(status_code=404, detail="plugin not found")
+    _audit(conn, user["id"], "marketplace.plugin.enable", f"{marketplace_id}/{plugin_name}", None)
+    _invalidate_marketplace_etag()
+    return AdminDisableResponse(marketplace_id=marketplace_id, plugin_name=plugin_name, admin_disabled=False)

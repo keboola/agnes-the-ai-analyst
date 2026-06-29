@@ -37,6 +37,7 @@ from typing import Dict, List, Optional
 import duckdb
 
 from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+from src.db import _open_duckdb
 from src.orchestrator_security import (
     escape_sql_string_literal,
     is_builtin_extension,
@@ -129,6 +130,92 @@ class SyncOrchestrator:
                 _capture_orchestrator_exception(exc, op="rebuild_source", source=source_name)
                 raise
 
+    def _sync_bq_remote_attach_with_overlay(self, extracts_dir: Path) -> None:
+        """Detect drift in BQ extract.duckdb's ``_remote_attach.url`` and
+        rewrite the extract when it disagrees with the overlay project.
+
+        Operational hazard this closes (issue #343, observed on Foundry AI
+        2026-05-19): an admin updates ``data_source.bigquery.project`` via
+        ``POST /api/admin/server-config`` (overlay write), but the BQ
+        ``extract.duckdb`` keeps the previously-baked ``project=<old>``
+        in its ``_remote_attach`` row. The next rebuild ATTACHes the OLD
+        project, queries against datasets that don't exist there, and the
+        error message points at the old project — confusing operators
+        who just changed the config.
+
+        Fix: at every rebuild, read the BQ extract's ``_remote_attach.url``,
+        compare against the overlay's ``data_source.bigquery.project``, and
+        if they differ, call ``rebuild_from_registry`` to regenerate the
+        extract. The regeneration path is the same one ``register-table``
+        uses, so its semantics are well-tested.
+
+        No-op preconditions (any one short-circuits to silent return):
+          - no BQ extract directory on disk (instance never had BQ)
+          - extract.duckdb missing (extracted-but-failed state)
+          - overlay project unset (BQ not configured yet — first-time
+            setup, not drift)
+          - no ``_remote_attach`` table in the extract (legacy / non-BQ
+            extract, e.g. a future "bigquery" name collision with a local
+            connector)
+          - existing url matches overlay (no drift)
+        """
+        bq_extract = extracts_dir / "bigquery" / "extract.duckdb"
+        if not bq_extract.exists():
+            return
+        try:
+            from app.instance_config import get_value
+        except Exception:
+            return
+        overlay_project = (get_value("data_source", "bigquery", "project") or "").strip()
+        if not overlay_project:
+            return
+        # Read-only handle, separate connection — orchestrator's rebuild
+        # connection is per-call and hasn't ATTACHed extracts yet at
+        # this pre-pass point, so this won't fight a file lock.
+        try:
+            ro = _open_duckdb(str(bq_extract), read_only=True)
+        except Exception:
+            return
+        try:
+            row = ro.execute(
+                "SELECT url FROM _remote_attach WHERE alias='bq'"
+            ).fetchone()
+        except Exception:
+            row = None
+        finally:
+            try:
+                ro.close()
+            except Exception:
+                pass
+        if not row or not row[0]:
+            return
+        current_url = row[0]
+        expected_url = f"project={overlay_project}"
+        if current_url == expected_url:
+            return
+        logger.info(
+            "BQ remote_attach drift detected: extract.duckdb has %r, "
+            "overlay has %r — regenerating extract via "
+            "rebuild_from_registry()",
+            current_url, expected_url,
+        )
+        try:
+            from connectors.bigquery.extractor import rebuild_from_registry
+            result = rebuild_from_registry()
+            logger.info(
+                "BQ remote_attach drift sync: regenerated extract — "
+                "tables_registered=%s errors=%s",
+                result.get("tables_registered"),
+                len(result.get("errors", [])),
+            )
+        except Exception as e:
+            logger.warning(
+                "BQ remote_attach drift sync: rebuild_from_registry() "
+                "failed: %s — extract.duckdb still points at %r, queries "
+                "will fail until next manual sync",
+                e, current_url,
+            )
+
     def _scan_meta_pairs(self, extracts_dir: Path) -> tuple:
         """Read every connector's `_meta` and return (pairs, clean) where:
 
@@ -159,7 +246,7 @@ class SyncOrchestrator:
             if not _validate_identifier(ext_dir.name, "source_name"):
                 continue
             try:
-                ro_conn = duckdb.connect(str(db_file), read_only=True)
+                ro_conn = _open_duckdb(str(db_file), read_only=True)
                 try:
                     rows = ro_conn.execute(
                         "SELECT table_name FROM _meta"
@@ -185,17 +272,41 @@ class SyncOrchestrator:
             logger.warning("Extracts directory %s does not exist", extracts_dir)
             return {}
 
+        # Pre-pass: detect drift between extract.duckdb _remote_attach.url
+        # (where the orchestrator's ATTACH path will read the BQ project
+        # from) and the overlay's data_source.bigquery.project (the
+        # writable source of truth, edited via admin /server-config). If
+        # they differ, regenerate the BQ extract so the new project
+        # propagates into views before we run the main rebuild loop.
+        # No-op when there is no BQ extract or no overlay project. See
+        # issue #343 for the operational hazard this closes (admin
+        # changes project in the UI, extract.duckdb stays stale, all
+        # remote queries fail with "Dataset not found in <old project>").
+        try:
+            self._sync_bq_remote_attach_with_overlay(extracts_dir)
+        except Exception as e:
+            # Defensive: drift sync is a best-effort safety net. A failure
+            # here must not block the rest of the rebuild — the worst
+            # case is the same stale-extract failure mode the sync was
+            # trying to prevent, which the operator can still resolve
+            # manually via /admin/sync trigger.
+            logger.warning(
+                "BQ remote_attach drift sync failed: %s — continuing with "
+                "existing extract.duckdb (queries may fail until next "
+                "manual sync if project drifted)", e,
+            )
+
         # Issue #81 Group C — load view ownership map from system DB so we
         # can detect cross-connector view-name collisions during this
         # rebuild and refuse to silently overwrite a previously-claimed
         # name. The map is kept in system.duckdb (analytics.duckdb is
         # rebuilt fresh each time and would not survive).
-        from src.db import get_system_db
-        from src.repositories.view_ownership import ViewOwnershipRepository
-        sys_conn_for_views = get_system_db()
+        # Backend-aware: view ownership lives in system state (Postgres on a
+        # PG instance) — use the factory, not a raw DuckDB conn.
+        from src.repositories import view_ownership_repo
         view_repo = None
         try:
-            view_repo = ViewOwnershipRepository(sys_conn_for_views)
+            view_repo = view_ownership_repo()
             # Pre-scan every connector's _meta so we can run the reconcile
             # pass BEFORE claims are evaluated. This makes "owner stopped
             # publishing → name freed → another source can claim" work in
@@ -224,11 +335,6 @@ class SyncOrchestrator:
             )
             existing_owners = {}
             view_repo = None
-            try:
-                sys_conn_for_views.close()
-            except Exception:
-                pass
-            sys_conn_for_views = None
 
         # Track every (source, view) pair this rebuild successfully claims.
         claimed_pairs: List[tuple] = []
@@ -238,7 +344,7 @@ class SyncOrchestrator:
         tmp_path = self._db_path + ".tmp"
         if Path(tmp_path).exists():
             Path(tmp_path).unlink()
-        conn = duckdb.connect(tmp_path)
+        conn = _open_duckdb(tmp_path)
         try:
             # Detach any previously attached databases (except main and temp)
             attached = [
@@ -270,7 +376,7 @@ class SyncOrchestrator:
                     conn, ext_dir.name, str(db_file),
                     existing_owners=existing_owners,
                     claimed_pairs=claimed_pairs,
-                    view_repo=view_repo if sys_conn_for_views else None,
+                    view_repo=view_repo,
                 )
                 if tables:
                     result[ext_dir.name] = tables
@@ -288,11 +394,6 @@ class SyncOrchestrator:
         finally:
             conn.execute("CHECKPOINT")
             conn.close()
-            if sys_conn_for_views is not None:
-                try:
-                    sys_conn_for_views.close()
-                except Exception:
-                    pass
 
         # Atomic swap: replace analytics.duckdb with new version
         _atomic_swap_db(tmp_path, self._db_path)
@@ -449,30 +550,23 @@ class SyncOrchestrator:
                     # parquet_in_extracts` pins this contract.
                     registered_ids: Optional[set] = None
                     try:
-                        from src.db import get_system_db
-                        from src.repositories.table_registry import (
-                            TableRegistryRepository,
-                        )
-                        sys_conn = get_system_db()
-                        try:
-                            rows = TableRegistryRepository(sys_conn).list_all()
-                            # Match parquet stems against registry rows for
-                            # THIS source where query_mode='materialized'.
-                            # The parquet filename is keyed by registry
-                            # `name` (per `_run_materialized_pass` /
-                            # `materialize_query` convention).
-                            registered_ids = {
-                                str(r.get("name"))
-                                for r in rows
-                                if (r.get("source_type") or "") == source_name
-                                and (r.get("query_mode") or "") == "materialized"
-                                and r.get("name")
-                            }
-                        finally:
-                            try:
-                                sys_conn.close()
-                            except Exception:
-                                pass
+                        # Backend-aware: read the registry through the factory
+                        # (Postgres on a PG instance) — a raw DuckDB conn would
+                        # see an empty registry and skip materialized parquets.
+                        from src.repositories import table_registry_repo
+                        rows = table_registry_repo().list_all()
+                        # Match parquet stems against registry rows for
+                        # THIS source where query_mode='materialized'.
+                        # The parquet filename is keyed by registry
+                        # `name` (per `_run_materialized_pass` /
+                        # `materialize_query` convention).
+                        registered_ids = {
+                            str(r.get("name"))
+                            for r in rows
+                            if (r.get("source_type") or "") == source_name
+                            and (r.get("query_mode") or "") == "materialized"
+                            and r.get("name")
+                        }
                     except Exception as e:
                         # No registry access (test fixture, transient DB
                         # error) — skip the fallback rather than risk
@@ -693,30 +787,27 @@ class SyncOrchestrator:
         path while their on-disk content was unrelated.
         """
         try:
-            from src.db import get_system_db
-            from src.repositories.sync_state import SyncStateRepository
+            # Backend-aware: write sync_state through the factory (Postgres on
+            # a PG instance) so /dashboard's factory-backed reads see it.
+            from src.repositories import sync_state_repo
 
             extracts_dir = _get_extracts_dir()
-            sys_conn = get_system_db()
-            try:
-                repo = SyncStateRepository(sys_conn)
-                for table_name, rows, size_bytes, query_mode in meta_rows:
-                    pq_path = extracts_dir / source_name / "data" / f"{table_name}.parquet"
-                    file_hash = ""
-                    if pq_path.exists():
-                        h = hashlib.md5()
-                        with open(pq_path, "rb") as f:
-                            for chunk in iter(lambda: f.read(8192), b""):
-                                h.update(chunk)
-                        file_hash = h.hexdigest()
+            repo = sync_state_repo()
+            for table_name, rows, size_bytes, query_mode in meta_rows:
+                pq_path = extracts_dir / source_name / "data" / f"{table_name}.parquet"
+                file_hash = ""
+                if pq_path.exists():
+                    h = hashlib.md5()
+                    with open(pq_path, "rb") as f:
+                        for chunk in iter(lambda: f.read(8192), b""):
+                            h.update(chunk)
+                    file_hash = h.hexdigest()
 
-                    repo.update_sync(
-                        table_id=table_name,
-                        rows=rows or 0,
-                        file_size_bytes=size_bytes or 0,
-                        hash=file_hash,
-                    )
-            finally:
-                sys_conn.close()
+                repo.update_sync(
+                    table_id=table_name,
+                    rows=rows or 0,
+                    file_size_bytes=size_bytes or 0,
+                    hash=file_hash,
+                )
         except Exception as e:
             logger.warning("Could not update sync_state: %s", e)

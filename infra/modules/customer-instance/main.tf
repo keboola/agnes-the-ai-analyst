@@ -28,6 +28,45 @@ locals {
     [merge(var.prod_instance, { role = "prod" })],
     [for d in var.dev_instances : merge(local.dev_defaults, d)]
   )
+
+  # Watchdog + DB-backup artifacts shipped to every VM via the startup
+  # script (base64 — metadata is a single string, so files can't ride
+  # along any other way). fileset() means a new file under files/ is
+  # delivered automatically; the install/enable lines in the template
+  # stay explicit per artifact.
+  watchdog_files_b64 = {
+    for f in fileset("${path.module}/files", "agnes-*") :
+    f => filebase64("${path.module}/files/${f}")
+  }
+  # Per-VM OAuth (Sign-in with Google) secret names, derived from
+  # var.oauth_secret_name_template. Empty template -> empty map ->
+  # startup-script falls back to legacy `google-oauth-client-{id,secret}`.
+  #
+  # The {kind}/{role}/{name} substitution is done in HCL so the resolved
+  # names are visible to the IAM resource (it needs the literal strings to
+  # set secretAccessor on each).
+  per_vm_oauth = var.oauth_secret_name_template == "" ? {} : {
+    for inst in local.all_instances : inst.name => {
+      id = replace(replace(replace(
+        var.oauth_secret_name_template,
+        "{kind}", "id"),
+        "{role}", inst.role),
+        "{name}", inst.name
+      )
+      secret = replace(replace(replace(
+        var.oauth_secret_name_template,
+        "{kind}", "secret"),
+        "{role}", inst.role),
+        "{name}", inst.name
+      )
+    }
+  }
+  # Deduplicated union — multiple VMs with the same role collapse to the
+  # same name when the template uses {role}, and the toset() makes the
+  # IAM resource for_each idempotent across those collisions.
+  per_instance_oauth_secrets = toset(flatten([
+    for k, v in local.per_vm_oauth : [v.id, v.secret]
+  ]))
 }
 
 # --- Secrets ---
@@ -50,6 +89,27 @@ resource "google_secret_manager_secret_version" "jwt" {
   secret_data = random_password.jwt.result
 }
 
+# Postgres password for the side-car postgres:16-alpine container.
+# Startup-script pulls this and writes POSTGRES_PASSWORD + DATABASE_URL
+# into /opt/agnes/.env before docker compose up.
+resource "google_secret_manager_secret" "postgres" {
+  secret_id = "agnes-${var.customer_name}-postgres-password"
+  project   = var.gcp_project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "random_password" "postgres" {
+  length  = 32
+  special = false # PG-friendly; avoids shell-quoting in startup-script
+}
+
+resource "google_secret_manager_secret_version" "postgres" {
+  secret      = google_secret_manager_secret.postgres.id
+  secret_data = random_password.postgres.result
+}
+
 # --- VM service account (dedicated, read-only on specific secrets only) ---
 
 resource "google_service_account" "vm" {
@@ -68,10 +128,46 @@ resource "google_secret_manager_secret_iam_member" "vm_jwt" {
   member    = "serviceAccount:${google_service_account.vm.email}"
 }
 
+# Same scoped read access for the postgres password secret.
+resource "google_secret_manager_secret_iam_member" "vm_postgres" {
+  project   = var.gcp_project_id
+  secret_id = google_secret_manager_secret.postgres.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
 # Grant read access to additional secrets the app needs (e.g. keboola-storage-token).
 # Caller specifies these via var.runtime_secrets. Each secret must already exist.
 resource "google_secret_manager_secret_iam_member" "vm_runtime" {
   for_each  = toset(var.runtime_secrets)
+  project   = var.gcp_project_id
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
+# Grant read access to secrets that get auto-injected as .env entries (E2B,
+# Anthropic, Slack, etc.) per var.runtime_secret_env. The startup script
+# iterates this map and writes one `<env_var>=$(gcloud secrets ...)` line
+# per entry to /opt/agnes/.env.
+resource "google_secret_manager_secret_iam_member" "vm_runtime_env" {
+  for_each  = var.runtime_secret_env
+  project   = var.gcp_project_id
+  secret_id = each.key
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
+# Per-VM OAuth client secrets, expanded from var.oauth_secret_name_template.
+# Granted to the same shared VM SA (all VMs in this module call use one SA, so
+# every per-VM OAuth secret is technically readable from every VM — isolation
+# comes from distinct OAuth clients with different redirect URIs at Google's
+# end, not from at-rest read scoping). A per-VM SA refactor is tracked
+# separately. When the template is empty the local resolves to an empty set
+# and this resource is a noop (legacy `google-oauth-client-{id,secret}` are
+# still listed by the caller in var.runtime_secrets and bound there).
+resource "google_secret_manager_secret_iam_member" "vm_oauth" {
+  for_each  = local.per_instance_oauth_secrets
   project   = var.gcp_project_id
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
@@ -218,19 +314,28 @@ resource "google_compute_instance" "vm" {
   }
 
   metadata_startup_script = templatefile("${path.module}/startup-script.sh.tpl", {
-    customer_name       = var.customer_name
-    image_repo          = var.image_repo
-    image_tag           = each.value.image_tag
-    upgrade_mode        = each.value.upgrade_mode
-    tls_mode            = each.value.tls_mode
-    domain              = each.value.domain
-    acme_email          = var.acme_email != "" ? var.acme_email : var.seed_admin_email
-    data_source         = var.data_source
-    keboola_stack_url   = var.keboola_stack_url
-    seed_admin_email    = var.seed_admin_email
-    seed_admin_password = var.enable_seed_password ? var.seed_admin_password : ""
-    role                = each.value.role
-    compose_ref         = var.compose_ref
+    customer_name                   = var.customer_name
+    image_repo                      = var.image_repo
+    image_tag                       = each.value.image_tag
+    app_mem_limit                   = each.value.app_mem_limit
+    scheduler_mem_limit             = each.value.scheduler_mem_limit
+    upgrade_mode                    = each.value.upgrade_mode
+    tls_mode                        = each.value.tls_mode
+    domain                          = each.value.domain
+    acme_email                      = var.acme_email != "" ? var.acme_email : var.seed_admin_email
+    data_source                     = var.data_source
+    keboola_stack_url               = var.keboola_stack_url
+    seed_admin_email                = var.seed_admin_email
+    seed_admin_password             = var.enable_seed_password ? var.seed_admin_password : ""
+    role                            = each.value.role
+    compose_ref                     = var.compose_ref
+    oauth_client_id_secret_name     = try(local.per_vm_oauth[each.value.name].id, "")
+    oauth_client_secret_secret_name = try(local.per_vm_oauth[each.value.name].secret, "")
+    runtime_secret_env              = var.runtime_secret_env
+    home_route                      = var.home_route
+    enable_watchdog                 = var.enable_watchdog
+    alert_webhook_url               = var.alert_webhook_url
+    watchdog_files_b64              = local.watchdog_files_b64
   })
 
   service_account {
@@ -257,6 +362,8 @@ resource "google_compute_instance" "vm" {
   depends_on = [
     google_secret_manager_secret_iam_member.vm_jwt,
     google_secret_manager_secret_iam_member.vm_runtime,
+    google_secret_manager_secret_iam_member.vm_runtime_env,
+    google_secret_manager_secret_iam_member.vm_oauth,
     google_secret_manager_secret_version.jwt,
   ]
 }

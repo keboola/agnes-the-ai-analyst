@@ -119,6 +119,63 @@ def test_materialize_query_writes_parquet_and_returns_metadata(
     assert call_args.kwargs["export_filter"].file_type == "parquet"
 
 
+def test_materialize_query_resolves_date_placeholder_in_where_filters(
+    tmp_path, fake_storage_client_parquet
+):
+    """Materialized where_filters must resolve {{last_6_months}} to a literal
+    date before reaching the Storage API — an unresolved placeholder is
+    compared verbatim and silently returns 0 rows. Mirrors the local path's
+    resolve_placeholders step, which materialized rows previously skipped."""
+    from datetime import datetime, timedelta, timezone
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    kbe.materialize_query(
+        table_id="kbc_job",
+        bucket="in.c-kbc_telemetry",
+        source_table="kbc_job",
+        source_query=(
+            '{"where_filters": [{"column": "job_created_at", '
+            '"operator": "ge", "values": ["{{last_6_months}}"]}]}'
+        ),
+        storage_client=fake_storage_client_parquet,
+        output_dir=output_dir,
+    )
+
+    wf = fake_storage_client_parquet.prepare_export.call_args.kwargs[
+        "export_filter"
+    ].where_filters
+    resolved = wf[0]["values"][0]
+    assert "{{" not in resolved, f"placeholder left unresolved: {resolved!r}"
+    expected = (
+        datetime.now(timezone.utc).date() - timedelta(days=180)
+    ).strftime("%Y-%m-%d")
+    assert resolved == expected
+
+
+def test_materialize_query_rejects_unknown_where_filter_placeholder(
+    tmp_path, fake_storage_client_parquet
+):
+    """An unknown placeholder must fail loudly, not silently pass a literal
+    `{{typo}}` to the Storage API (which would return 0 rows)."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    with pytest.raises(ValueError, match="placeholder"):
+        kbe.materialize_query(
+            table_id="kbc_job",
+            bucket="in.c-kbc_telemetry",
+            source_table="kbc_job",
+            source_query=(
+                '{"where_filters": [{"column": "job_created_at", '
+                '"operator": "ge", "values": ["{{lasst_week}}"]}]}'
+            ),
+            storage_client=fake_storage_client_parquet,
+            output_dir=output_dir,
+        )
+
+
 def test_materialize_query_parquet_sliced_merges_via_duckdb(tmp_path):
     """Sliced parquet output: each slice is itself a complete parquet file
     (Snowflake UNLOAD MAX_FILE_SIZE behavior). The extractor must use
@@ -496,3 +553,40 @@ def test_keboola_materialize_uses_tmp_path_during_copy(tmp_path, fake_storage_cl
     assert not (output_dir / "tmp_path_test.parquet.tmp").exists()
     assert result["path"].endswith(".parquet")
     assert not result["path"].endswith(".tmp")
+
+
+# ---- consolidation-connection resource caps (#431 / #432) ------------------
+
+def test_consolidation_conn_applies_memory_and_thread_caps():
+    """``_open_consolidation_conn`` must apply the three resource caps that
+    keep the materialize CSV->parquet COPY inside a small cgroup container:
+    ``memory_limit`` capped (normalizes to ~1.8 GiB for the '2GB' source
+    constant), ``threads=2``, and ``preserve_insertion_order=false``.
+
+    Asserted via observable DuckDB ``current_setting`` state, not by reading
+    source strings — a regression that drops or changes any SET fails here.
+    """
+    # Pin the source-of-truth constants so a silent value change is caught.
+    assert kbe._CONSOLIDATION_MEMORY_LIMIT == "2GB"
+    assert kbe._CONSOLIDATION_THREADS == 2
+
+    conn = kbe._open_consolidation_conn()
+    try:
+        threads = conn.execute("SELECT current_setting('threads')").fetchone()[0]
+        assert int(threads) == 2
+
+        preserve = conn.execute(
+            "SELECT current_setting('preserve_insertion_order')"
+        ).fetchone()[0]
+        # DuckDB returns this as a bool (or a 'false' string on older builds).
+        assert preserve in (False, "false")
+
+        # DuckDB normalizes '2GB' to '1.8 GiB' (2e9 bytes). Assert the
+        # banded/normalized form — an exact '2GB' string compare would
+        # false-fail. The cap must be well below the DuckDB default
+        # (80% of host RAM), so a numeric prefix <= 2.0 GiB proves it.
+        mem = conn.execute("SELECT current_setting('memory_limit')").fetchone()[0]
+        assert "GiB" in mem, mem
+        assert float(mem.split()[0]) <= 2.0, mem
+    finally:
+        conn.close()

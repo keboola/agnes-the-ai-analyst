@@ -1,10 +1,15 @@
 {% extends "base.html" %}
-{% block title %}{{ plugin_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block title %}{{ (entity.title if entity else None) or plugin_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+{# Design-system component macros — owner-actions row (Edit + 7 delete/
+   archive variants) renders via `ds.button`. Hero, install/remove
+   JS-generated buttons, .btn-copy on dark surfaces, and per-kind
+   colour chrome stay page-local. #}
+{% import "_components.html" as ds %}
 <style>
   .plugin-detail {
-    --primary-light: rgba(0, 115, 209, 0.12);
+    --primary-light: color-mix(in srgb, var(--ds-primary) 12%, transparent);
     --border-light: #eceff1;
     --text-primary: #202124;
     --text-secondary: #5f6368;
@@ -18,11 +23,11 @@
   /* ── Hero ─────────────────────────────────────────────────────────── */
   .plugin-detail .hero {
     position: relative;
-    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+    background: linear-gradient(135deg, var(--ds-primary) 0%, var(--ds-primary-dark) 100%);
     border-radius: 14px;
     padding: 22px 28px 28px;
     margin-bottom: 24px;
-    box-shadow: 0 4px 16px rgba(0, 115, 209, 0.18);
+    box-shadow: 0 4px 16px color-mix(in srgb, var(--ds-primary) 18%, transparent);
     color: #fff;
   }
   .plugin-detail .crumbs {
@@ -131,6 +136,37 @@
   .plugin-detail .pill.flea    { background: #EDE9FE; color: #6D28D9; font-weight: 600; }
   .plugin-detail .pill.muted   { background: transparent; color: rgba(255,255,255,0.72); padding-left: 0; }
 
+  /* Hero telemetry chip — mirrors the listing card chip shape but
+     restyled for the gradient hero background (white text, larger
+     14px glyphs than the 12px on cards). All four segments are
+     joined by ` · ` and sit inline; the listing card's left/right
+     split via margin-auto isn't reused here — the hero has space,
+     so a single coherent metadata strip reads cleaner. */
+  .plugin-detail .hero-telemetry {
+    margin-top: 12px;
+    font-size: 12.5px;
+    color: rgba(255,255,255,0.92);
+    line-height: 1.7;
+  }
+  .plugin-detail .hero-telemetry > span {
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .plugin-detail .hero-telemetry svg {
+    width: 14px; height: 14px;
+    flex-shrink: 0;
+  }
+  /* On the dark hero we tint icons in lighter tokens so they read
+     as a visual accent rather than punctuation. The trend pill
+     keeps a real colour because direction-coding genuinely helps. */
+  .plugin-detail .hero-telemetry .seg-active    > svg { color: #6ee7b7; }
+  .plugin-detail .hero-telemetry .seg-calls     > svg { color: #fdba74; }
+  .plugin-detail .hero-telemetry .seg-installed > svg { color: #fde68a; }
+  .plugin-detail .hero-telemetry .trend-up   { color: #6ee7b7; font-weight: 600; }
+  .plugin-detail .hero-telemetry .trend-down { color: #fca5a5; font-weight: 600; }
+
   .plugin-detail .actions {
     /* Absolute on .hero — anchored at the top-right corner with equal
        22px offsets from top and right. Hint card stacks below the
@@ -164,7 +200,7 @@
        visible white border without shifting the button's size. */
     border: 1px solid transparent;
     transition: all 0.15s ease;
-    background: #fff; color: var(--primary);
+    background: #fff; color: var(--ds-primary);
   }
   .plugin-detail .btn-install:hover {
     /* Darken-glass — same formula as the secondary "Open parent plugin"
@@ -210,6 +246,29 @@
   .plugin-detail .btn-remove:hover {
     background: rgba(220, 38, 38, 0.85); color: #fff;
     border-color: rgba(220, 38, 38, 0.95);
+  }
+  /* Cowork export — secondary outlined action on its OWN line below the
+     stack/remove row, right-aligned. Padding/font/border mirror .btn-remove
+     so the two stacked actions read as the same control size; align-self
+     flex-end pins it to the right edge of the column-flex .actions box. */
+  .plugin-detail .btn-cowork {
+    align-self: flex-end;
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer; text-decoration: none;
+    /* box-sizing + line-height pinned to match the <button>.btn-remove UA
+       defaults — an <a> otherwise inherits the hero's larger line-height
+       and renders a visibly taller box despite identical padding. */
+    box-sizing: border-box; line-height: normal;
+    padding: 11px 22px; border-radius: 9px;
+    font-size: 13px; font-weight: 600; font-family: inherit;
+    background: transparent; color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.55);
+    transition: all 0.15s ease;
+    white-space: nowrap;
+  }
+  .plugin-detail .btn-cowork:hover {
+    background: rgba(0, 0, 0, 0.2);
+    border-color: rgba(255, 255, 255, 0.8);
   }
   .plugin-detail .btn-remove:focus-visible {
     outline: 2px solid rgba(254, 202, 202, 0.85); outline-offset: 2px;
@@ -299,7 +358,7 @@
   }
   .plugin-detail .stack-hint .learn-more {
     display: inline-block; margin-top: 8px;
-    font-size: 12px; color: var(--primary); text-decoration: none;
+    font-size: 12px; color: var(--ds-primary); text-decoration: none;
   }
   .plugin-detail .stack-hint .learn-more:hover { text-decoration: underline; }
 
@@ -371,9 +430,9 @@
     overflow-x: auto; margin: 8px 0 14px;
   }
   .plugin-detail .lead-rendered pre code {
-    background: transparent; padding: 0; color: inherit;
+    background: transparent; border: none; border-radius: 0; padding: 0; color: inherit;
   }
-  .plugin-detail .lead-rendered a { color: var(--primary); text-decoration: none; }
+  .plugin-detail .lead-rendered a { color: var(--ds-primary); text-decoration: none; }
   .plugin-detail .lead-rendered a:hover { text-decoration: underline; }
 
   /* Use-cases grid — 3-column on wide, 2 on tablet, 1 on phone. Each card
@@ -414,6 +473,13 @@
     line-height: 1.4;
     overflow-x: auto;
     white-space: pre-wrap; word-break: break-word;
+  }
+  .plugin-detail .use-case-prompt code {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    color: inherit;
   }
 
   /* Sample interaction — Claude Code transcript styling. Single dark
@@ -479,6 +545,7 @@
   .plugin-detail .sample-assistant-body em { color: #f9e2af; font-style: italic; } /* mocha yellow */
   .plugin-detail .sample-assistant-body code {
     background: rgba(255,255,255,0.06);
+    border: none;
     color: #f5c2e7;                          /* mocha pink */
     border-radius: 4px;
     padding: 1px 5px;
@@ -496,8 +563,7 @@
     margin: 8px 0;
   }
   .plugin-detail .sample-assistant-body pre code {
-    background: transparent; padding: 0;
-    color: inherit;
+    background: transparent; border: none; border-radius: 0; padding: 0; color: inherit;
   }
   .plugin-detail .sample-assistant-body ul,
   .plugin-detail .sample-assistant-body ol {
@@ -571,7 +637,7 @@
     border: 1px solid var(--border);
   }
   .plugin-detail .doc-link-list a {
-    color: var(--primary); text-decoration: none; font-weight: 500;
+    color: var(--ds-primary); text-decoration: none; font-weight: 500;
     display: block;
   }
   .plugin-detail .doc-link-list a:hover { text-decoration: underline; }
@@ -592,15 +658,15 @@
     transition: all 0.15s ease; text-decoration: none; color: inherit;
   }
   .plugin-detail .inner-card:hover {
-    border-color: var(--primary);
-    box-shadow: 0 4px 14px rgba(0, 115, 209, 0.10);
+    border-color: var(--ds-primary);
+    box-shadow: 0 4px 14px color-mix(in srgb, var(--ds-primary) 10%, transparent);
     transform: translateY(-1px);
   }
   .plugin-detail .inner-card .photo {
     width: 100%; aspect-ratio: 715 / 310;
     display: flex; align-items: center; justify-content: center;
-    background: linear-gradient(135deg, var(--primary-light) 0%, #fce7f3 100%);
-    color: var(--primary);
+    background: linear-gradient(135deg, var(--ds-primary-light) 0%, #fce7f3 100%);
+    color: var(--ds-primary);
     font-size: 18px; font-weight: var(--font-bold);
     letter-spacing: 0.5px;
     border: none; border-radius: 0;
@@ -641,6 +707,33 @@
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
     overflow: hidden;
   }
+  /* Funnel chip on each inner card — lifted from marketplace.html
+     `.mp-card .inv-chip`, re-scoped to the plugin detail surface so
+     listing-card rules can evolve independently. Same colour mapping
+     so users carry mental model from listing → detail. */
+  .plugin-detail .inner-card .inv-chip {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 8px;
+    font-size: 11.5px; color: var(--text-secondary);
+    line-height: 1.4;
+  }
+  .plugin-detail .inner-card .inv-chip-left {
+    display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .plugin-detail .inner-card .inv-chip > span,
+  .plugin-detail .inner-card .inv-chip-left > span {
+    display: inline-flex; align-items: center; gap: 3px;
+    white-space: nowrap;
+  }
+  .plugin-detail .inner-card .inv-chip .seg-installed { margin-left: auto; }
+  .plugin-detail .inner-card .inv-chip svg {
+    width: 13px; height: 13px; flex-shrink: 0;
+  }
+  .plugin-detail .inner-card .inv-chip .seg-installed > svg { color: #F59F0A; }
+  .plugin-detail .inner-card .inv-chip .seg-active    > svg { color: #0e9b6a; }
+  .plugin-detail .inner-card .inv-chip .seg-calls     > svg { color: #f97316; }
+  .plugin-detail .inner-card .inv-chip .trend-up   { color: #10b77f; font-weight: 600; }
+  .plugin-detail .inner-card .inv-chip .trend-down { color: #ef4444; font-weight: 600; }
 
   /* Tables (commands, hooks, mcps) */
   .plugin-detail .substruct table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -657,7 +750,7 @@
   .plugin-detail .substruct tr:last-child td { border-bottom: none; }
   .plugin-detail .substruct .cell-name {
     font-family: var(--font-mono); font-size: 12.5px; font-weight: 600;
-    color: var(--primary); white-space: nowrap;
+    color: var(--ds-primary); white-space: nowrap;
   }
   .plugin-detail .substruct .cell-event,
   .plugin-detail .substruct .cell-type {
@@ -687,30 +780,12 @@
      so the visible state matches what the API will accept. #}
   {% if entity and (is_owner or is_admin) %}
   <style>
+    /* Container layout only — buttons render via `ds.button`. The
+       danger-variant's hover ("fills red on hover") is the system-
+       aligned commit-on-hover treatment for destructive actions. */
     .plugin-detail .owner-actions {
-      display: flex; gap: 10px; margin: 0 0 16px 0; justify-content: flex-end;
-    }
-    .plugin-detail .owner-actions a,
-    .plugin-detail .owner-actions button {
-      padding: 6px 14px; border-radius: 8px;
-      font-size: 13px; font-weight: 500; font-family: var(--font-primary);
-      text-decoration: none; border: 1px solid var(--border, #e5e7eb);
-      background: var(--surface, #fff); color: var(--text, #111827);
-      cursor: pointer;
-    }
-    .plugin-detail .owner-actions a:hover {
-      border-color: var(--primary, #0073D1); color: var(--primary, #0073D1);
-    }
-    .plugin-detail .owner-actions .delete {
-      color: #b91c1c; border-color: rgba(185,28,28,0.3);
-    }
-    .plugin-detail .owner-actions .delete:hover {
-      background: rgba(185,28,28,0.08); border-color: #b91c1c;
-    }
-    .plugin-detail .owner-actions button:disabled,
-    .plugin-detail .owner-actions a[aria-disabled="true"] {
-      color: #9ca3af !important; border-color: #e5e7eb !important;
-      background: #f3f4f6 !important; cursor: not-allowed;
+      display: flex; gap: var(--space-2); margin: 0 0 var(--space-4) 0;
+      justify-content: flex-end;
     }
   </style>
   <div class="owner-actions">
@@ -721,15 +796,13 @@
        entity stayed at visibility='approved' (deferred-promotion
        path so existing installers keep receiving the prior bundle). #}
     {% if edit_in_flight %}
-    <a href="#" aria-disabled="true"
-       title="Wait for the in-flight review to finish before editing.">
-      Edit (review in flight)
-    </a>
+      {{ ds.button('Edit (review in flight)', variant='secondary', size='sm',
+                   href='#', disabled=True,
+                   attrs='title="Wait for the in-flight review to finish before editing."') }}
     {% else %}
-    <a href="/marketplace/flea/{{ entity.id }}/edit"
-       title="Edit metadata or upload a new version.">
-      Edit
-    </a>
+      {{ ds.button('Edit', variant='secondary', size='sm',
+                   href='/marketplace/flea/' ~ entity.id ~ '/edit',
+                   attrs='title="Edit metadata or upload a new version."') }}
     {% endif %}
     {# v35 delete UX: Archive (soft) is the primary path. Owner sees
        Archive only when the entity is approved or already archived
@@ -738,53 +811,40 @@
        state. Quarantined (non-approved + non-archived) entities lock
        both buttons for the owner — admin still sees both. #}
     {% if is_admin %}
-      {# Archive (soft) only meaningful when the entity is currently
-         public (approved). For non-approved states the entity is
-         already hidden — archiving would just lose the quarantine /
-         pending state info. Admin still has Hard delete + the
-         override / rescan / retry actions on the quarantine banner
-         to manage non-approved entities. #}
       {% if entity.visibility_status == 'approved' %}
-        <button class="delete" id="owner-archive-btn" type="button"
-                title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle.">
-          Archive
-        </button>
+        {{ ds.button('Archive', variant='danger', size='sm', type='button',
+                     id='owner-archive-btn',
+                     attrs='title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle."') }}
       {% elif entity.visibility_status == 'archived' %}
-        <button class="delete" type="button" disabled
-                title="Already archived. Hidden from browse; existing installs still served. Use Hard delete to purge.">
-          Archived
-        </button>
+        {{ ds.button('Archived', variant='danger', size='sm', type='button',
+                     disabled=True,
+                     attrs='title="Already archived. Hidden from browse; existing installs still served. Use Hard delete to purge."') }}
       {% else %}
-        <button class="delete" type="button" disabled
-                title="Archive is only available for approved entities. Use Override (in quarantine banner) to publish, Rescan to re-evaluate, or Hard delete to purge.">
-          Archive (not applicable while {{ entity.visibility_status }})
-        </button>
+        {{ ds.button('Archive (not applicable while ' ~ entity.visibility_status ~ ')',
+                     variant='danger', size='sm', type='button', disabled=True,
+                     attrs='title="Archive is only available for approved entities. Use Override (in quarantine banner) to publish, Rescan to re-evaluate, or Hard delete to purge."') }}
       {% endif %}
-      <button class="delete" id="owner-hard-delete-btn" type="button"
-              style="border-color: rgba(185,28,28,0.45);"
-              title="Hard delete: drops the bundle from disk + removes existing user_store_installs. Use only for legal / privacy removals — existing users lose the plugin.">
-        Hard delete (admin)
-      </button>
+      {% call ds.button(variant='danger', size='sm', type='button',
+                        id='owner-hard-delete-btn',
+                        attrs='title="Hard delete: drops the bundle from disk + removes existing user_store_installs. Use only for legal / privacy removals — existing users lose the plugin. Visible only to admins — analysts won\'t see this button."') %}
+        Hard delete <span class="admin-only-hint">admin-only</span>
+      {% endcall %}
     {% elif entity.visibility_status == 'approved' %}
-      <button class="delete" id="owner-archive-btn" type="button"
-              title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle.">
-        Archive
-      </button>
+      {{ ds.button('Archive', variant='danger', size='sm', type='button',
+                   id='owner-archive-btn',
+                   attrs='title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle."') }}
     {% elif entity.visibility_status == 'archived' %}
-      <button class="delete" type="button" disabled
-              title="Already archived. Hidden from browse; existing installs still served. Contact an admin for hard delete.">
-        Archived
-      </button>
+      {{ ds.button('Archived', variant='danger', size='sm', type='button',
+                   disabled=True,
+                   attrs='title="Already archived. Hidden from browse; existing installs still served. Contact an admin for hard delete."') }}
     {% elif entity.visibility_status == 'pending' %}
-      <button class="delete" type="button" disabled
-              title="Submission is under review — Delete is locked until checks finish.">
-        Delete (locked — under review)
-      </button>
+      {{ ds.button('Delete (locked — under review)', variant='danger', size='sm',
+                   type='button', disabled=True,
+                   attrs='title="Submission is under review — Delete is locked until checks finish."') }}
     {% else %}
-      <button class="delete" type="button" disabled
-              title="Submission is quarantined. Only an admin can delete it (so the failure evidence isn't lost). Edit + re-upload to fix the issues.">
-        Delete (locked — quarantined)
-      </button>
+      {{ ds.button('Delete (locked — quarantined)', variant='danger', size='sm',
+                   type='button', disabled=True,
+                   attrs='title="Submission is quarantined. Only an admin can delete it (so the failure evidence isn\'t lost). Edit + re-upload to fix the issues."') }}
     {% endif %}
   </div>
   {% endif %}
@@ -795,9 +855,9 @@
     <div class="crumbs">
       <a href="/marketplace?tab={{ 'curated' if source == 'curated' else 'flea' }}">Marketplace</a>
       <span class="sep">›</span>
-      <span id="crumb-mid">{{ source | capitalize }}</span>
+      <a href="/marketplace?tab={{ 'curated' if source == 'curated' else 'flea' }}" id="crumb-mid">{{ 'Curated Marketplace' if source == 'curated' else 'Flea Market' }}</a>
       <span class="sep">›</span>
-      <span id="crumb-name">{{ plugin_name }}</span>
+      <span id="crumb-name">{{ (entity.title if entity else None) or plugin_name }}</span>
     </div>
     <div class="hero-head">
       <div class="hero-window" id="hero-photo" aria-hidden="true">
@@ -805,15 +865,24 @@
           <span class="hwdot red"></span>
           <span class="hwdot yellow"></span>
           <span class="hwdot green"></span>
-          <span class="hero-window-label" id="hero-window-label">{{ plugin_name }}</span>
+          <span class="hero-window-label" id="hero-window-label">{{ (entity.title if entity else None) or plugin_name }}</span>
         </div>
         <div class="hero-window-body" id="hero-window-body">PL</div>
       </div>
       <div class="meta">
-        <h1 id="hero-name">{{ plugin_name }}</h1>
-        <div class="tagline" id="hero-tagline">Loading…</div>
-        <div class="curator" id="hero-curator"></div>
+        <h1 id="hero-name">{{ (entity.title if entity else None) or plugin_name }}</h1>
+        <!-- v49 phase-2: hidden by default; JS only un-hides when d.tagline
+             is truthy. Pre-fix this rendered "Loading…" then collapsed to
+             empty for entities without a tagline, causing a flicker. -->
+        <div class="tagline" id="hero-tagline" hidden></div>
         <div class="pills" id="hero-pills"></div>
+        <!-- Telemetry funnel chip — same shape as the listing card so a
+             user who clicks through from /marketplace sees identical
+             figures. Visibility decided by JS: hidden when stack_count
+             == 0 AND invocations_30d == 0 (brand-new plugin, no signals
+             yet). Lives at the bottom of meta so it reads as the last
+             "what is this" facet before the action buttons take over. -->
+        <div class="hero-telemetry" id="hero-telemetry" hidden></div>
       </div>
     </div>
     <!-- Actions absolutely anchored at the hero's top-right corner with
@@ -826,6 +895,13 @@
         <span class="status-pill" id="status-pill" hidden>✓ In your stack</span>
         <button class="btn-remove" id="remove-btn" type="button" hidden>✕ Remove from stack</button>
       </div>
+      {# Cowork export — its own line UNDER the stack/remove row, right-
+         aligned via align-self:flex-end. Downloads this plugin transformed
+         into a single Cowork-uploadable zip. Href + visibility set by JS
+         once the detail payload resolves (curated plugins have a stable
+         prefixed_name; see GET /marketplace/cowork/<prefixed>.zip). #}
+      <a class="btn-cowork" id="cowork-btn" hidden
+         title="Download this plugin as a single zip to upload in Claude Cowork (claude.ai)">&darr; Download for Cowork</a>
       <div class="stack-hint" id="stack-hint" hidden>
         <div class="head">
           <span class="title" id="stack-hint-title">✓ Added to your stack</span>
@@ -924,6 +1000,14 @@
     if (n < 1024*1024*1024) return (n/(1024*1024)).toFixed(1) + ' MB';
     return (n/(1024*1024*1024)).toFixed(2) + ' GB';
   }
+  // Short integer formatter — matches the listing card's fmtNum so a
+  // user clicking from /marketplace sees the same shortened figures.
+  function fmtNum(n) {
+    if (!n) return '0';
+    if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1000)    return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+    return String(n);
+  }
   function fmtRelative(iso) {
     if (!iso) return '—';
     const t = new Date(iso);
@@ -963,28 +1047,34 @@
   // when the curator hasn't filled the friendly tagline yet — preserves
   // the historical hero look for un-enriched plugins.
   const heroTitle = d.display_name || d.manifest_name || d.plugin_name;
-  document.getElementById('crumb-mid').textContent =
-    d.source === 'curated' ? (d.marketplace_name || d.marketplace_id) : 'Flea Market';
+  // crumb-mid is rendered server-side as the generic "Curated Marketplace"
+  // / "Flea Market" link — no JS update needed (was previously overwritten
+  // with the per-instance marketplace_name, which was opaque to analysts).
   document.getElementById('crumb-name').textContent = heroTitle;
   document.title = `${heroTitle} — Marketplace`;
 
   document.getElementById('hero-name').textContent = heroTitle;
-  document.getElementById('hero-tagline').textContent = d.tagline || d.description || '';
+  // v49 phase-2: tagline appears in hero only when explicitly set. Pre-fix
+  // it fell back to `d.description` (verbose long-form text from frontmatter
+  // / marketplace.json), which read awkwardly under the h1 and pulled the
+  // hero too tall. Description still renders in the "What it does" panel
+  // below the hero.
+  const tagEl = document.getElementById('hero-tagline');
+  if (d.tagline) {
+    tagEl.textContent = d.tagline;
+    tagEl.hidden = false;
+  } else {
+    tagEl.textContent = '';
+    tagEl.hidden = true;
+  }
   // Window titlebar label mirrors the h1 — keeps the mac-window framing
   // consistent with whichever name the user actually sees as the title.
   const heroWindowLabel = document.getElementById('hero-window-label');
   if (heroWindowLabel) heroWindowLabel.textContent = heroTitle;
 
-  const curator = document.getElementById('hero-curator');
-  if (d.source === 'curated') {
-    if (d.author_name && d.author_name !== 'owner_todo') {
-      curator.innerHTML = 'Curator: <strong>' + esc(d.author_name) + '</strong>';
-    } else {
-      curator.innerHTML = 'Curator: <span class="todo">owner_todo</span>';
-    }
-  } else {
-    curator.innerHTML = 'by <strong>' + esc(d.author_name || '') + '</strong>';
-  }
+  // Hero curator line removed — the Details sidebar already carries
+  // the Curator row (renamed from "Owner"), so duplicating it under
+  // the h1 was visual noise.
 
   const pills = document.getElementById('hero-pills');
   const pillBits = [];
@@ -999,6 +1089,49 @@
   if (d.version) pillBits.push(`<span class="pill ver">${verLabel}</span>`);
   if (d.updated_at) pillBits.push(`<span class="pill muted">Updated ${esc(fmtRelative(d.updated_at))}</span>`);
   pills.innerHTML = pillBits.join('');
+
+  // ── Hero telemetry chip ───────────────────────────────────────────
+  // Identical funnel as the listing card chip — active · calls · trend
+  // on the left (time-bounded engagement, 30d), installed pinned right
+  // (passive adoption, all-time). Hidden when both stack_count and
+  // 30d invocations are zero. Heroicons solid inline so they recolour
+  // through the per-segment CSS rules above.
+  (function renderHeroTelemetry() {
+    const slot = document.getElementById('hero-telemetry');
+    if (!slot) return;
+    const tel = d.telemetry || {};
+    const stackCount = d.stack_count || 0;
+    const activeUsers = tel.distinct_users_30d || 0;
+    const calls = tel.invocations_30d || 0;
+    const trend = tel.trend_pct;
+    if (stackCount === 0 && calls === 0) { slot.hidden = true; return; }
+    const svg = (path) =>
+      `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="${path}"/></svg>`;
+    const ICON_USER = svg("M7.5 6a4.5 4.5 0 1 1 9 0 4.5 4.5 0 0 1-9 0ZM3.751 20.105a8.25 8.25 0 0 1 16.498 0 .75.75 0 0 1-.437.695A18.683 18.683 0 0 1 12 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 0 1-.437-.695Z");
+    const ICON_BOLT = svg("M14.615 1.595a.75.75 0 0 1 .359.852L12.982 9.75h7.268a.75.75 0 0 1 .548 1.262l-10.5 11.25a.75.75 0 0 1-1.272-.71l1.992-7.302H3.75a.75.75 0 0 1-.548-1.262l10.5-11.25a.75.75 0 0 1 .913-.143Z");
+    const ICON_STACK = svg("M5.566 4.657A4.505 4.505 0 0 1 6.75 4.5h10.5c.41 0 .806.055 1.183.157A3 3 0 0 0 15.75 3h-7.5a3 3 0 0 0-2.684 1.657ZM2.25 12a3 3 0 0 1 3-3h13.5a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3v-6ZM5.25 7.5c-.41 0-.806.055-1.184.157A3 3 0 0 1 6.75 6h10.5a3 3 0 0 1 2.683 1.657A4.505 4.505 0 0 0 18.75 7.5H5.25Z");
+    const ICON_TUP   = svg("M15.22 6.268a.75.75 0 0 1 .968-.432l5.942 2.28a.75.75 0 0 1 .431.97l-2.28 5.94a.75.75 0 1 1-1.4-.537l1.63-4.251-1.086.483a11.2 11.2 0 0 0-5.45 5.174.75.75 0 0 1-1.199.19L9 12.31l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75a.75.75 0 0 1 1.06 0l3.606 3.605a12.694 12.694 0 0 1 5.68-4.973l1.086-.484-4.251-1.631a.75.75 0 0 1-.432-.97Z");
+    const ICON_TDOWN = svg("M1.72 5.47a.75.75 0 0 1 1.06 0L9 11.69l3.756-3.756a.75.75 0 0 1 1.218.246l1.63 4.25 1.086-.483a11.2 11.2 0 0 1 5.45 5.174.75.75 0 0 1-1.199.19L17.34 13.79l-1.63 4.25a.75.75 0 0 1-1.218.246L11.07 14.97l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75-7.81-7.811a.75.75 0 0 1 0-1.06Z");
+    // Hero variant — all four segments inline, separated by `·`. The
+    // listing card splits installed off to the right via flex auto-
+    // margin (helps a crowded card visually parse the funnel) but
+    // the hero has plenty of horizontal real estate, so keeping
+    // installed adjacent to the rest reads as one coherent metadata
+    // strip instead of two disjoint groups.
+    const segs = [
+      `<span class="seg-active" title="${activeUsers} users invoked it in the last 30 days">${ICON_USER} ${fmtNum(activeUsers)} active</span>`,
+      `<span class="seg-calls" title="${calls} invocations in the last 30 days">${ICON_BOLT} ${fmtNum(calls)} calls</span>`,
+    ];
+    if (trend !== null && trend !== undefined) {
+      const up = trend >= 0;
+      const cls = up ? 'trend-up' : 'trend-down';
+      const icon = up ? ICON_TUP : ICON_TDOWN;
+      segs.push(`<span class="${cls}" title="Week-over-week change in invocations">${icon} ${Math.abs(Math.round(trend))}%</span>`);
+    }
+    segs.push(`<span class="seg-installed" title="Currently installed by ${stackCount} users">${ICON_STACK} ${fmtNum(stackCount)} installed</span>`);
+    slot.innerHTML = segs.join(' · ');
+    slot.hidden = false;
+  })();
 
   // Hero window — macOS-style frame around the cover photo. The titlebar
   // label carries the plugin's manifest_name; the body holds the cover
@@ -1041,6 +1174,31 @@
     removeBtn.hidden = !installed;
   }
   renderInstallState(!!d.installed);
+
+  // ── Cowork export link ────────────────────────────────────────────
+  // Curated plugins map cleanly to a served prefixed_name
+  // (<marketplace_id>-<plugin_name>); store-type plugins use store-<id>.
+  // Skill/agent flea entities are folded into the shared "flea" bundle
+  // and have no standalone per-plugin zip, so the button stays hidden
+  // for them. The endpoint 404s anything not in the caller's grant set.
+  (function wireCowork() {
+    const btn = document.getElementById('cowork-btn');
+    if (!btn) return;
+    let prefixed = null;
+    if (source === 'curated' && marketplaceId && pluginName) {
+      prefixed = `${marketplaceId}-${pluginName}`;
+    } else if (d.prefixed_name) {
+      prefixed = d.prefixed_name;
+    } else if (source === 'flea' && d.type === 'plugin' && entityId) {
+      prefixed = `store-${entityId}`;
+    }
+    if (!prefixed) return;
+    btn.href = `/marketplace/cowork/${encodeURIComponent(prefixed)}.zip`;
+    // Pin the saved filename client-side so a cached 304 (no
+    // Content-Disposition) can't reuse a stale download name.
+    btn.setAttribute('download', `${prefixed}.zip`);
+    btn.hidden = false;
+  })();
 
   // v32+ quarantine: when the entity is non-approved (only owner +
   // admin land here in that state — gated server-side), disable the
@@ -1113,7 +1271,7 @@
 
   installBtn.addEventListener('click', async () => {
     const r = await fetch(installURL, { method: 'POST' });
-    if (!r.ok) { alert('Add failed (' + r.status + ')'); return; }
+    if (!r.ok) { await alertModal('Add failed (' + r.status + ')'); return; }
     renderInstallState(true);
     setHintTitle('added');
     showHint();
@@ -1121,7 +1279,7 @@
 
   removeBtn.addEventListener('click', async () => {
     const r = await fetch(installURL, { method: 'DELETE' });
-    if (!r.ok) { alert('Remove failed (' + r.status + ')'); return; }
+    if (!r.ok) { await alertModal('Remove failed (' + r.status + ')'); return; }
     renderInstallState(false);
     setHintTitle('removed');
     showHint();
@@ -1140,11 +1298,11 @@
     const btn = document.getElementById(id);
     if (!btn || root.dataset.source !== 'flea' || !root.dataset.entityId) return;
     btn.addEventListener('click', async () => {
-      if (!confirm(opts.confirm)) return;
+      if (!(await confirmModal(opts.confirm))) return;
       const url = `/api/store/entities/${encodeURIComponent(root.dataset.entityId)}${opts.hard ? '?hard=true' : ''}`;
       const r = await fetch(url, { method: 'DELETE' });
       if (!r.ok) {
-        alert((opts.hard ? 'Hard delete' : 'Archive') + ' failed (' + r.status + ')');
+        await alertModal((opts.hard ? 'Hard delete' : 'Archive') + ' failed (' + r.status + ')');
         return;
       }
       window.location = '/marketplace?tab=flea';
@@ -1238,27 +1396,69 @@
   }
 
   // ── Details ─────────────────────────────────────────────────────
-  // Render only rows that have a real value — missing/null/owner_todo
-  // entries get hidden so the panel stays compact.
+  // v49 phase-7: unified scan order across plugin + skill/agent detail
+  // surfaces. Priority: identity (who) → life-stage (when) → telemetry
+  // (how used) → debug-tier (size). Slug field dropped — debug info,
+  // not user-facing.
+  //
+  // Render order:
+  //   1. Curator / Owner   — first scan signal (trust)
+  //   2. Released          — life-stage
+  //   3. Last used         — recency (higher priority than Active days)
+  //   4. Active days       — engagement consistency over 30d
+  //   5. Bundle size       — debug-tier
+  //
+  // Each row is conditional on data presence so the panel stays compact.
   const detailRows = [];
-  const slugVal = d.source === 'curated' ? d.marketplace_id : d.entity_id;
-  if (slugVal) {
-    detailRows.push(`<div class="row"><dt>Slug</dt><dd class="mono">${esc(slugVal)}</dd></div>`);
+
+  // 1. Curator/Owner. Curated → d.author_name (with owner_todo placeholder
+  // surfaced as visible reminder). Flea → d.owner_display (fullname from
+  // users.name → users.email → owner_username chain, populated by
+  // _resolve_owner_display in app/api/marketplace.py).
+  if (d.source === 'curated') {
+    if (d.author_name && d.author_name !== 'owner_todo') {
+      detailRows.push(`<div class="row"><dt>Curator</dt><dd>${esc(d.author_name)}</dd></div>`);
+    } else {
+      detailRows.push(`<div class="row"><dt>Curator</dt><dd><span class="todo">owner_todo</span></dd></div>`);
+    }
+  } else if (d.owner_display) {
+    detailRows.push(`<div class="row"><dt>Owner</dt><dd>${esc(d.owner_display)}</dd></div>`);
   }
+
+  // 2. Released.
   if (d.released_at) {
     detailRows.push(`<div class="row"><dt>Released</dt><dd>${esc(fmtRelative(d.released_at))}</dd></div>`);
   }
+
+  // 3-4. Telemetry-derived rows. Invocations + Users live in the hero
+  // chip; sidebar carries two derived signals only the daily series can
+  // give us. Last used first (recency), Active days second (consistency).
+  if (d.telemetry && Array.isArray(d.telemetry.daily_series)) {
+    const series = d.telemetry.daily_series;
+    const activeDays = series.filter(p => (p.invocations || 0) > 0).length;
+    if (activeDays > 0) {
+      // Last day with at least one invocation. Series is day-ascending,
+      // so the final non-zero entry is the latest active day.
+      let lastIso = null;
+      for (let i = series.length - 1; i >= 0; i--) {
+        if ((series[i].invocations || 0) > 0) { lastIso = series[i].day; break; }
+      }
+      if (lastIso) {
+        detailRows.push(
+          `<div class="row"><dt>Last used</dt><dd>${esc(fmtRelative(lastIso))}</dd></div>`
+        );
+      }
+      detailRows.push(
+        `<div class="row"><dt>Active days</dt><dd>${activeDays} of ${series.length}</dd></div>`
+      );
+    }
+  }
+
+  // 5. Bundle size.
   if (d.bundle_size != null) {
     detailRows.push(`<div class="row"><dt>Bundle size</dt><dd>${esc(fmtBytes(d.bundle_size))}</dd></div>`);
   }
-  // Owner: render real value when present; for curated keep the
-  // `owner_todo` placeholder visible as a reminder to wire up curator
-  // metadata (intentional — flea falls through silently).
-  if (d.author_name && d.author_name !== 'owner_todo') {
-    detailRows.push(`<div class="row"><dt>Owner</dt><dd>${esc(d.author_name)}</dd></div>`);
-  } else if (d.source === 'curated') {
-    detailRows.push(`<div class="row"><dt>Owner</dt><dd><span class="todo">owner_todo</span></dd></div>`);
-  }
+
   const detailsEl = document.getElementById('details-list');
   if (detailRows.length) {
     detailsEl.innerHTML = detailRows.join('');
@@ -1267,6 +1467,44 @@
   }
 
   // ── Internal structure ─────────────────────────────────────────
+  // Funnel chip on the inner skill/agent card — mirrors the marketplace
+  // listing card chip (same four segments, same icons, same gate). Inner
+  // items can't be installed standalone, so the "installed" segment reads
+  // the parent plugin's adoption count (curated stack_count or flea
+  // install_count, populated server-side as parent_stack_count).
+  const _innerSvg = (path) =>
+    `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="${path}"/></svg>`;
+  const INNER_ICON_STACK = _innerSvg("M5.566 4.657A4.505 4.505 0 0 1 6.75 4.5h10.5c.41 0 .806.055 1.183.157A3 3 0 0 0 15.75 3h-7.5a3 3 0 0 0-2.684 1.657ZM2.25 12a3 3 0 0 1 3-3h13.5a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3v-6ZM5.25 7.5c-.41 0-.806.055-1.184.157A3 3 0 0 1 6.75 6h10.5a3 3 0 0 1 2.683 1.657A4.505 4.505 0 0 0 18.75 7.5H5.25Z");
+  const INNER_ICON_USER  = _innerSvg("M7.5 6a4.5 4.5 0 1 1 9 0 4.5 4.5 0 0 1-9 0ZM3.751 20.105a8.25 8.25 0 0 1 16.498 0 .75.75 0 0 1-.437.695A18.683 18.683 0 0 1 12 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 0 1-.437-.695Z");
+  const INNER_ICON_BOLT  = _innerSvg("M14.615 1.595a.75.75 0 0 1 .359.852L12.982 9.75h7.268a.75.75 0 0 1 .548 1.262l-10.5 11.25a.75.75 0 0 1-1.272-.71l1.992-7.302H3.75a.75.75 0 0 1-.548-1.262l10.5-11.25a.75.75 0 0 1 .913-.143Z");
+  const INNER_ICON_TUP   = _innerSvg("M15.22 6.268a.75.75 0 0 1 .968-.432l5.942 2.28a.75.75 0 0 1 .431.97l-2.28 5.94a.75.75 0 1 1-1.4-.537l1.63-4.251-1.086.483a11.2 11.2 0 0 0-5.45 5.174.75.75 0 0 1-1.199.19L9 12.31l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75a.75.75 0 0 1 1.06 0l3.606 3.605a12.694 12.694 0 0 1 5.68-4.973l1.086-.484-4.251-1.631a.75.75 0 0 1-.432-.97Z");
+  const INNER_ICON_TDOWN = _innerSvg("M1.72 5.47a.75.75 0 0 1 1.06 0L9 11.69l3.756-3.756a.75.75 0 0 1 1.218.246l1.63 4.25 1.086-.483a11.2 11.2 0 0 1 5.45 5.174.75.75 0 0 1-1.199.19L17.34 13.79l-1.63 4.25a.75.75 0 0 1-1.218.246L11.07 14.97l-6.22 6.22a.75.75 0 1 1-1.06-1.06l6.75-6.75-7.81-7.811a.75.75 0 0 1 0-1.06Z");
+  function buildInnerCardChip(it) {
+    const stackCount = it.parent_stack_count || 0;
+    const activeUsers = it.distinct_users_30d || 0;
+    const calls = it.invocations_30d || 0;
+    const trend = it.trend_pct;
+    // Same gate as the listing card / hero chip — zero adoption AND
+    // zero 30d activity means brand-new bundle, don't visually penalise
+    // it with a "0 · 0 · 0" row.
+    if (stackCount === 0 && calls === 0) return '';
+    const leftSegs = [
+      `<span class="seg-active" title="${activeUsers} users invoked it in the last 30 days">${INNER_ICON_USER} ${fmtNum(activeUsers)} active</span>`,
+      `<span class="seg-calls" title="${calls} invocations in the last 30 days">${INNER_ICON_BOLT} ${fmtNum(calls)} calls</span>`,
+    ];
+    if (trend !== null && trend !== undefined) {
+      const up = trend >= 0;
+      const icon = up ? INNER_ICON_TUP : INNER_ICON_TDOWN;
+      const cls = up ? 'trend-up' : 'trend-down';
+      leftSegs.push(`<span class="${cls}" title="Week-over-week change in invocations">${icon} ${Math.abs(Math.round(trend))}%</span>`);
+    }
+    const installedSeg = `<span class="seg-installed" title="Parent plugin currently installed by ${stackCount} users">${INNER_ICON_STACK} ${fmtNum(stackCount)} installed</span>`;
+    return `<div class="inv-chip">
+      <span class="inv-chip-left">${leftSegs.join(' · ')}</span>
+      ${installedSeg}
+    </div>`;
+  }
+
   function buildCardSection(title, items, type) {
     if (!items || !items.length) return '';
     // Inner cards render the marketplace-metadata cover photo when present
@@ -1288,6 +1526,7 @@
           <span class="type-badge">${type}</span>
           <div class="name">${esc(it.name)}</div>
           <div class="desc">${esc(it.description || '')}</div>
+          ${buildInnerCardChip(it)}
         </div>
       </a>`;
     }).join('');

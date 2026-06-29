@@ -50,10 +50,10 @@ shouldn't shape org-wide context, etc.), mark it private:
   `<workspace>/.claude/agnes-sessions-private-skipped.txt`.
 - The Claude Code statusbar shows `🔒 agnes-private` while you are
   in a private session, so the marking is visible at a glance.
-- Marking before `capture-session` fires (the SessionStart hook that
-  queues the transcript) means the session never enters the upload
-  queue at all; marking after it fires is also safe — the push-side
-  re-check on the private list is the authoritative filter.
+- `agnes push` scans your Claude Code session folder and re-checks the
+  private list before uploading each transcript, so marking a session
+  private any time before its next push keeps it off the server. Uploads
+  that already completed are not undone — mark early if in doubt.
 
 ## Discovering tables — never enumerate from memory
 
@@ -82,22 +82,61 @@ and `agnes init` will overwrite local edits — put personal notes into
 `null` for `remote` rows. When `null`, treat the table as potentially large
 and use `agnes snapshot create --estimate` to size-check before fetching.
 
-{% if marketplaces -%}
-## Agnes Marketplace — plugins available to you
+## Agnes Marketplace — discovering and managing skills, agents, plugins
 
-These plugins reach Claude Code through the per-user **`agnes`** marketplace
-served by this server (an aggregated, RBAC-filtered view of the upstream
-marketplaces below). When you install or invoke one of these plugins inside
-Claude Code, address it as `<plugin>@agnes` regardless of which upstream it
-came from — e.g. `claude plugin install <plugin>@agnes`. The
-`agnes refresh-marketplace` command (run by the SessionStart hook every
-session) keeps the local clone in sync.
+The marketplace has two sections:
 
-Upstream marketplaces folded into your `agnes` view:
-{% for mp in marketplaces -%}
-- **{{ mp.name }}** ({{ mp.slug }}): {{ mp.plugins | map(attribute="name") | join(", ") }}
-{% endfor %}
-{% endif -%}
+- **Curated** — vetted by your org; admins control RBAC visibility
+- **Flea Market** — open community uploads anyone can publish (admin-approved)
+
+When the user asks "is there a skill/agent for X?" or "what's available for Y?",
+**always check the marketplace** before assuming nothing exists — new items are
+published continuously and your training data does not cover them. Never
+enumerate from memory; the CLI is the source of truth for what exists and
+what's in your stack.
+
+### Discovery
+
+```
+# Search across Curated + Flea Market (RBAC-filtered server-side)
+agnes marketplace search -q "pdf"
+agnes marketplace search --type skill           # restrict by type
+agnes marketplace search --source curated       # restrict by source
+agnes marketplace search --json                 # machine-readable for scripts
+
+# Full details — use cases, contents, install command, examples
+agnes marketplace detail <id>
+agnes marketplace detail --json <id>            # raw payload
+```
+
+ID format:
+- Curated → `marketplace_id/plugin_name` (contains `/`)
+- Flea Market → UUID (no `/`)
+
+### Managing your stack
+
+```
+# What's currently in my stack? (authoritative — read live, do not cache)
+agnes my-stack show
+
+# Add or remove (works for both Curated and Flea Market by ID)
+agnes marketplace add <id>
+agnes marketplace remove <id>
+```
+
+After `add` / `remove`, the user must run `/update-agnes-plugins` inside
+Claude Code to apply the change to the running session — no restart needed.
+
+### Notes on behaviour
+
+- System plugins (admin-pinned) cannot be removed — the API returns 409.
+- Flea Market items must be admin-approved before they're installable.
+- Skills and agents from the Flea Market are bundled into a synthetic plugin
+  when served to Claude Code; you invoke them the same way as plugin-shipped
+  skills.
+- Plugins served to Claude Code are addressed as `<plugin>@agnes`
+  (e.g. `claude plugin install <plugin>@agnes`). The SessionStart hook runs
+  `agnes refresh-marketplace --check` to detect upstream changes.
 
 ## Remote Queries (BigQuery) — when data isn't on the laptop
 
@@ -140,16 +179,16 @@ query_mode of <table>  ├─ materialized → agnes query (parquet was synced b
                                               → agnes snapshot create <table> --select ... --where ... --as <name>
                                                 then agnes query "SELECT ... FROM <name>"
                                           - join with a local table
-                                              → agnes query --register-bq "alias=BQ_SQL" --sql "..."
+                                              → agnes snapshot create <remote-table> --select ... --where ... --as <name>,
+                                                then agnes query "SELECT ... FROM <local_table> JOIN <name> ..."
 ```
 
-### Three patterns for `query_mode: "remote"` tables
+### Two patterns for `query_mode: "remote"` tables
 
 | Pattern | Tool | Use when |
 |---------|------|----------|
-| **`agnes snapshot create`** (preferred) | materializes a filtered subset locally → query the snapshot | repeated questions on same slice |
+| **`agnes snapshot create`** (preferred) | materializes a filtered subset locally → query the snapshot | repeated questions on same slice, OR joining a remote table with a local one (snapshot the remote side, join locally) |
 | **`agnes query --remote`** | one-shot, server-side execution against BigQuery (works for BASE TABLE rows directly + VIEW/MATERIALIZED_VIEW rows via the BQ jobs API; cost-guarded by a 5 GiB scan cap configurable in /admin/server-config) | single aggregate / cheap probe |
-| **`agnes query --register-bq`** | hybrid joins between local snapshots and ad-hoc BQ subqueries | crossing local + remote |
 
 ### Common mistakes — avoid on first try
 
@@ -215,21 +254,31 @@ If the question is time-sensitive (e.g. "today's orders"), assume any snapshot o
 
 ### Hybrid query example — local + remote in one query
 
-`agnes query --register-bq` lets a single SQL statement join a local table with an ad-hoc BQ subquery. The BQ subquery runs first (server-side), result registered as a DuckDB view, then the joined query runs locally.
+To join a local table with remote BigQuery data: `agnes snapshot create` a
+filtered slice of the remote table, then query the local join. Snapshot the
+remote side aggressively (WHERE + only the columns you need) so the cached
+parquet stays under ~100 MB; the join itself runs locally over the snapshot
++ the existing local table.
 
 ```
-agnes query \
-  --register-bq "traffic=SELECT date, country, SUM(views) AS views \
-                 FROM \`prj.web_analytics.sessions\` \
-                 WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) \
-                 GROUP BY 1, 2" \
-  --sql "SELECT o.date, o.country, o.revenue, t.views, o.revenue / NULLIF(t.views,0) AS rev_per_view \
-         FROM orders o \
-         JOIN traffic t ON o.date = t.date AND o.country = t.country \
-         ORDER BY 1 DESC"
+# 1. snapshot the remote side, narrow + aggregated
+agnes snapshot create web_sessions \
+    --select date,country,views \
+    --where "date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)" \
+    --as traffic
+
+# 2. local join (orders is a local table, traffic is the snapshot from step 1)
+agnes query "SELECT o.date, o.country, o.revenue, t.views,
+                    o.revenue / NULLIF(t.views, 0) AS rev_per_view
+             FROM orders o
+             JOIN traffic t ON o.date = t.date AND o.country = t.country
+             ORDER BY 1 DESC"
 ```
 
-The BQ subquery MUST contain `WHERE` and/or `GROUP BY` to keep the registered result manageable (target: under 500K rows, well under 100 MB). Multiple `--register-bq` flags can compose multiple BQ sources. For complex SQL, use `--stdin` mode (`echo '{"register_bq":{...},"sql":"..."}' | agnes query --stdin`).
+If the remote side is too big to snapshot even after filtering, push the
+whole join server-side: `agnes query --remote "<SQL>"` runs on the server
+where local tables and remote tables are already in the same DuckDB
+session.
 
 ### BigQuery SQL flavor for `--where`
 
@@ -244,22 +293,12 @@ Source-typed `bigquery` tables use BigQuery dialect, not DuckDB:
 
 ### When the table you want isn't in `agnes catalog`
 
-The table may exist in BigQuery but not be registered with Agnes yet. Two options:
-
-1. **Ad-hoc one-shot** — register a BQ subquery as a view inline, no admin needed
-   if the agnes server SA has BQ access:
-   ```
-   agnes query --register-bq "live=SELECT * FROM \`project.dataset.table\` WHERE date >= '...' LIMIT 1000" \
-            --sql "SELECT * FROM live"
-   ```
-2. **Ask admin to register** the table with `query_mode: "remote"` so it shows up
-   in `agnes catalog` and supports `agnes snapshot create` / `agnes query --remote`. This is the
-   right path for any table you'll query repeatedly.
+The table may exist in BigQuery but not be registered with Agnes yet. Tell the user the table isn't registered and ask an admin to register it with `query_mode: "remote"` so it shows up in `agnes catalog` and supports `agnes snapshot create` / `agnes query --remote`. Direct `bq."<dataset>"."<table>"` paths are registry-gated server-side (403 `bq_path_not_registered`) — there's no analyst-side workaround for an unregistered table; registration is the right path.
 
 ### Deeper guidance
 
-For the full protocol, including hybrid-query examples, snapshot hygiene, and
-when NOT to use `agnes snapshot create`, run:
+For the full protocol, including snapshot hygiene and when NOT to use
+`agnes snapshot create`, run:
 
 ```
 agnes skills show agnes-data-querying

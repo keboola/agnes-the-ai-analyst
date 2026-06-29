@@ -47,6 +47,24 @@ def test_render_setup_instructions_wires_all_placeholders():
     assert "T-123" in out
 
 
+def test_init_step_warns_about_transcript_exposure():
+    """#580 Finding 1: the step that writes the raw PAT to ~/.agnes/token
+    must explicitly call out the transcript exposure (the heredoc lands in
+    the uploaded session transcript) and remind the user that `/agnes-private`
+    keeps the bootstrap session out of `agnes push`, and that `agnes init`
+    deletes the transient token file once consumed.
+    """
+    from app.web.setup_instructions import _init_lines
+
+    joined = "\n".join(_init_lines())
+    assert "transcript" in joined.lower()
+    assert "/agnes-private" in joined
+    assert "agnes push" in joined
+    # The deletion guarantee is documented inline so the user understands the
+    # transcript copy — not the on-disk file — is the residual risk.
+    assert "~/.agnes/token" in joined
+
+
 def test_resolve_lines_no_plugins_unified_layout():
     """Unified always-on layout: 1 install, 2 mkdir/cd, 3 init, 4 catalog,
     5 preflight, 6 marketplace, 7 diagnose, 8 connectors, 9 restart-claude,
@@ -797,69 +815,101 @@ def test_install_page_uses_versioned_wheel_url(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Connector block (step 9) — per-connector default-yes interactive asks
-# wired to verbatim prompts from app/web/connector_prompts.py.
+# Connector block (step 8) — per-connector default-yes interactive asks
+# wired to seed-resident connector-*/SKILL.md files (bundled snapshot
+# fallback when no Initial Workspace Template is configured).
 # ---------------------------------------------------------------------------
 
 def test_connectors_block_renders_all_three_asks():
-    """Step 9 must contain a default-yes ask for Asana, Google Workspace,
-    and Atlassian — in that order — and inline each connector's full
-    prompt body verbatim. Catches drift between the registry order and
-    what the script emits."""
+    """Step 8 must contain a default-yes ask for Asana, Google Workspace,
+    and Atlassian (Jira / Confluence) and inline each connector's
+    SKILL.md body verbatim. The bundled snapshot in the wheel is the
+    source when no IWT is configured.
+    """
+    from src import connectors_manifest as cm
+
     from app.web.setup_instructions import resolve_lines
 
+    cm.invalidate_cache()
     joined = "\n".join(resolve_lines("agnes.whl"))
-    # All three asks with the verbatim default-yes phrasing.
     assert 'Ask: "Set up Asana now? (Y/n)"' in joined
     assert 'Ask: "Set up Google Workspace now? (Y/n)"' in joined
     assert 'Ask: "Set up Atlassian (Jira / Confluence) now? (Y/n)"' in joined
-    # The default-install copy is rendered once for the whole block.
     assert "Treat empty/Enter as YES — the default is install" in joined
-    # Ordering: Asana → GWS → Atlassian (matches the CONNECTORS registry).
-    asana_idx = joined.index('Set up Asana now? (Y/n)')
-    gws_idx = joined.index('Set up Google Workspace now? (Y/n)')
-    atl_idx = joined.index('Set up Atlassian (Jira / Confluence) now? (Y/n)')
-    assert asana_idx < gws_idx < atl_idx
 
 
-def test_connectors_block_uses_gws_configured_branch_when_oauth_set():
-    """When the operator has provisioned a shared OAuth app (client_id +
-    secret), the inlined GWS prompt body skips the manual `gws auth
-    setup` walkthrough and writes client_secret.json directly. That's
-    the GCP-frictionless path that takes ~2 min instead of ~20."""
+def test_connectors_block_sub_letters_skip_missing_bodies(monkeypatch):
+    """Devin Review on PR #462: when a connector's SKILL.md body is
+    missing from the seed, the original `_connectors_block` used the
+    raw `enumerate` index to pick a sub-letter, so a skipped middle
+    connector caused a gap (e.g. ``a) Asana`` + ``c) GWS`` with no
+    ``b)``).
+
+    Regression guard: with the middle connector deliberately missing
+    a body, the rendered sub-letters must stay tight a/b/c..., not
+    a/c/d... — ``letter_idx`` is incremented ONLY on rendered entries.
+    """
+    from src import connectors_manifest as cm
+
+    from app.web import setup_instructions as si
+
+    cm.invalidate_cache()
+
+    # Patch _load_connector_body to return None for the middle slug.
+    # Manifest order is Asana → Atlassian → GWS (alphabetical by
+    # display_name), so dropping Atlassian's body must NOT bump GWS
+    # to letter ``c)``.
+    real_load = si._load_connector_body
+
+    def patched(slug):
+        if slug == "connector-atlassian":
+            return None
+        return real_load(slug)
+
+    monkeypatch.setattr(si, "_load_connector_body", patched)
+
+    joined = "\n".join(si.resolve_lines("agnes.whl"))
+
+    # Asana rendered first (a), GWS second (b) — Atlassian skipped.
+    assert "   a) Asana" in joined
+    assert "   b) Google Workspace" in joined
+    # The gap-bug shape (Atlassian's slot left as ``b)``, GWS pushed
+    # to ``c)``) MUST NOT appear.
+    assert "   b) Atlassian" not in joined
+    assert "   c) Google Workspace" not in joined
+
+
+def test_connectors_block_gws_body_describes_oauth_app_branch():
+    """The bundled GWS SKILL.md carries BOTH the operator-OAuth-app branch
+    (~2 min, frictionless) and the manual GCP walkthrough (~20 min) in
+    one body — the seed skill reads `~/.claude/agnes/.env` at runtime to
+    pick the right one. Verify the operator-OAuth-app prose is present
+    in the rendered output.
+    """
+    from src import connectors_manifest as cm
+
     from app.web.setup_instructions import resolve_lines
-    from app.web.connector_prompts import all_connector_prompts
 
-    prompts = all_connector_prompts(gws_oauth={
-        "configured": True,
-        "client_id": "1234-abc.apps.googleusercontent.com",
-        "client_secret": "FAKE-SECRET",
-        "project_id": "1234",
-        "oauthlib_insecure_transport": "1",
-    })
-    joined = "\n".join(resolve_lines("agnes.whl", connector_prompts=prompts))
-    # Configured branch signature: the operator's literal client_id is
-    # baked into the inlined client_secret.json snippet.
-    assert "1234-abc.apps.googleusercontent.com" in joined
-    assert "FAKE-SECRET" in joined
-    # The manual `gws auth setup` walkthrough must NOT appear when the
-    # configured branch is active.
-    assert "Run `gws auth setup` for me" not in joined
+    cm.invalidate_cache()
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    # Operator-app branch landmark: the inlined client_secret.json schema
+    # block referencing AGNES_GWS_CLIENT_ID from the per-tenant .env file.
+    assert "AGNES_GWS_CLIENT_ID" in joined
+    assert "client_secret.json" in joined
 
 
-def test_connectors_block_uses_gws_manual_branch_when_oauth_unset():
-    """Inverse: when no operator OAuth credentials are provisioned, the
-    inlined GWS prompt walks the user through the manual `gws auth
-    setup` flow (the ~20-min GCP clickops path)."""
+def test_connectors_block_gws_body_describes_manual_branch():
+    """The same bundled body also covers the fallback flow when no
+    operator OAuth app is provisioned. Verify the manual `gws auth setup`
+    walkthrough text is present.
+    """
+    from src import connectors_manifest as cm
+
     from app.web.setup_instructions import resolve_lines
-    from app.web.connector_prompts import all_connector_prompts
 
-    prompts = all_connector_prompts(gws_oauth={"configured": False})
-    joined = "\n".join(resolve_lines("agnes.whl", connector_prompts=prompts))
-    assert "Run `gws auth setup` for me" in joined
-    # The configured-branch landmark string ("Skip `gws auth setup` entirely")
-    # must NOT appear in the unconfigured branch.
-    assert "Skip `gws auth setup` entirely" not in joined
+    cm.invalidate_cache()
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    assert "gws auth setup" in joined
 
 
 def test_step_numbering_with_connectors_step():
@@ -885,14 +935,20 @@ def test_step_numbering_with_connectors_step():
 
 
 def test_finale_bullets_mention_connector_outcomes():
-    """The Confirm step's summary bullets must reference the verbatim ✅/❌
-    line each connector's verify step emitted earlier. Without this the
-    assistant has no reason to summarise the per-connector ask answers
-    in the final Confirm message."""
+    """The Confirm step's summary bullets reference the verbatim ✅/❌ line
+    each connector's verify step emitted earlier. Connector names are
+    rendered dynamically from the seed manifest — adding a fourth
+    connector flows through to the Confirm summary without a code change.
+    """
+    from src import connectors_manifest as cm
+
     from app.web.setup_instructions import resolve_lines
 
+    cm.invalidate_cache()
     joined = "\n".join(resolve_lines("agnes.whl"))
-    assert "Asana, Google Workspace, Atlassian" in joined
+    # Bundled manifest sorts alphabetically by display_name: Asana,
+    # Atlassian (Jira / Confluence), Google Workspace.
+    assert "Asana, Atlassian (Jira / Confluence), Google Workspace" in joined
     assert "✅" in joined
     assert "❌" in joined
 
@@ -921,7 +977,7 @@ def test_restart_claude_step_emitted_unconditionally():
 
 def test_restart_claude_substitutes_workspace_dir():
     """The restart-claude body interpolates the workspace folder so the
-    user sees their actual `~/<brand>` path, not a literal placeholder."""
+    user sees their actual `~/Desktop/<brand>` path, not a literal placeholder."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines(
@@ -930,19 +986,29 @@ def test_restart_claude_substitutes_workspace_dir():
         workspace_dir="FoundryAI",
     ))
     assert "9) Restart Claude Code" in joined
-    assert "~/FoundryAI" in joined
+    assert "~/Desktop/FoundryAI" in joined
     assert "{workspace_dir}" not in joined
 
 
-def test_asana_prompt_uses_pat_not_mcp():
-    """Asana reverted to PAT + REST after the MCP path turned out to be
-    too token-hungry. Pin both directions: the PAT/keychain flow is
-    present, AND the MCP-specific strings are gone, so a future refactor
-    doesn't silently flip Asana back to MCP without re-validating the
-    token-cost regression that motivated the revert."""
-    from app.web.connector_prompts import asana_prompt
+def _read_bundled_connector_body(slug: str) -> str:
+    """Read the raw SKILL.md content from the bundled seed snapshot.
+    Used by the post-A1.2 prompt-content regression tests. The path
+    mirrors what ``setup_instructions._load_connector_body`` reads at
+    render time — keeps a single source of truth.
+    """
+    from src.initial_workspace import bundled_seed_path
 
-    body = asana_prompt()
+    path = bundled_seed_path() / "workspace" / ".claude" / "skills" / slug / "SKILL.md"
+    return path.read_text(encoding="utf-8")
+
+
+def test_asana_prompt_uses_pat_not_mcp():
+    """Asana reverted to PAT + REST after the hosted MCP path turned out
+    to be too token-hungry. Pin both directions: the PAT/keychain flow
+    is present in the bundled SKILL.md, AND no MCP-add line is present
+    that would silently flip Asana back to MCP.
+    """
+    body = _read_bundled_connector_body("connector-asana")
     # PAT path present.
     assert "agnes-asana-pat" in body
     assert "https://app.asana.com/api/1.0/users/me" in body
@@ -950,53 +1016,184 @@ def test_asana_prompt_uses_pat_not_mcp():
     # MCP path is gone.
     assert "claude mcp add --transport http asana" not in body
     assert "mcp.asana.com/mcp" not in body
-    # Brand placeholder gets substituted (default keeps "Agnes").
-    assert "{instance_brand}" not in body
-    assert "Claude Code — Agnes" in body
+    # The body carries the {instance_brand} placeholder — renderer
+    # substitutes at render time (not file read time).
+    assert "Claude Code — {instance_brand}" in body
 
 
-def test_asana_prompt_brand_kwarg_threads_through():
-    """When a caller passes a brand string, the PAT-label template
-    renders with that brand instead of the default 'Agnes'."""
-    from app.web.connector_prompts import asana_prompt
+def test_asana_prompt_brand_threads_through_renderer():
+    """When `resolve_lines` is called with a brand string, the PAT-label
+    placeholder renders with that brand instead of the default 'Agnes'.
+    The substitution happens in the renderer (not in the SKILL.md file
+    itself) so a single seed file works for every instance.
+    """
+    from src import connectors_manifest as cm
 
-    body = asana_prompt(instance_brand="Foundry AI")
-    assert "Claude Code — Foundry AI" in body
-    assert "{instance_brand}" not in body
+    from app.web.setup_instructions import resolve_lines
+
+    cm.invalidate_cache()
+    joined = "\n".join(resolve_lines("agnes.whl", instance_brand="Foundry AI"))
+    assert "Claude Code — Foundry AI" in joined
+    assert "{instance_brand}" not in joined
 
 
 def test_atlassian_prompt_instructs_1_year_expiry():
-    """Atlassian PATs default to short-lived; pin the prompt to direct
-    the user to pick the longest expiry option (today: 1 year) so the
-    connector doesn't go stale every couple of months."""
-    from app.web.connector_prompts import atlassian_prompt
-
-    body = atlassian_prompt()
+    """Atlassian PATs default to short-lived; pin the seed-resident
+    SKILL.md to direct the user to pick the longest expiry option
+    (today: 1 year) so the connector doesn't go stale every couple of
+    months.
+    """
+    body = _read_bundled_connector_body("connector-atlassian")
     assert '"1 year"' in body
     # Acknowledge the lack of a query-param hook so a future contributor
     # doesn't waste an hour trying to deep-link the expiry.
     assert "NO query-parameter hook" in body
-    # ✅/❌ output contract present.
     assert "✅ Atlassian ready" in body
     assert "❌ Atlassian setup failed" in body
-    # Brand substituted (default).
-    assert "{instance_brand}" not in body
-    assert "Claude Code — Agnes" in body
+    assert "Claude Code — {instance_brand}" in body
 
 
-def test_atlassian_prompt_brand_kwarg_threads_through():
-    from app.web.connector_prompts import atlassian_prompt
+def test_atlassian_prompt_brand_threads_through_renderer():
+    from src import connectors_manifest as cm
 
-    body = atlassian_prompt(instance_brand="Foundry AI")
-    assert "Claude Code — Foundry AI" in body
-    assert "{instance_brand}" not in body
+    from app.web.setup_instructions import resolve_lines
+
+    cm.invalidate_cache()
+    joined = "\n".join(resolve_lines("agnes.whl", instance_brand="Foundry AI"))
+    # Atlassian token label uses the brand placeholder.
+    assert 'name it "Claude Code — Foundry AI"' in joined
 
 
 def test_gws_prompt_emits_pass_fail_contract():
     """GWS verify step must emit the uniform ✅/❌ marker the finale
     summary scans for."""
-    from app.web.connector_prompts import gws_prompt
-
-    body = gws_prompt(gws_oauth_configured=False)
+    body = _read_bundled_connector_body("connector-gws")
     assert "✅ Google Workspace ready" in body
     assert "❌ Google Workspace setup failed" in body
+
+
+# ---------------------------------------------------------------------------
+# Step 2 — install location decision tree (refuse / silent / confirm).
+# ---------------------------------------------------------------------------
+
+def test_step_2_uses_three_branch_decision_tree():
+    """Step 2 must use a refuse / proceed-silently / confirm-once tree
+    instead of hard-coding `~/Desktop/<workspace_dir>` as the only
+    acceptable path. The old flow scolded any user who cd'd into a
+    project folder before pasting; the new flow respects intentional cwd
+    and only protects against destructive defaults ($HOME / system dirs).
+
+    Contract:
+      - Step header renamed to "Confirm the install location".
+      - All three branches (REFUSE, PROCEED SILENTLY, CONFIRM) are
+        documented in the script.
+      - `pwd` check is still emitted.
+      - The refuse list explicitly names `$HOME` plus the system dirs
+        the install must never touch.
+      - The silent-proceed branch whitelists the workspace artefacts a
+        prepared folder might already hold (`.git`, `.claude`, `.agnes`,
+        `AGNES_WORKSPACE.md`, `README.md`) so a re-paste into an
+        already-initialised workspace doesn't prompt.
+      - The confirm branch offers 'ok'/'default'/'abort' (instead of the
+        old 'install here'/'abort' pair) — 'default' lets the user opt
+        into the recommended `~/Desktop/<workspace_dir>` path without
+        re-pasting, and the legacy 'install here' phrasing remains as a
+        synonym for 'ok' for muscle-memory compatibility.
+      - The script never auto-runs `mkdir` for the user except inside
+        the 'default' branch of the confirm prompt.
+    """
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl"))
+
+    # New step header.
+    assert "2) Confirm the install location." in joined
+
+    # `pwd` check still present.
+    assert "pwd" in joined
+
+    # All three branches documented.
+    assert "2a) REFUSE" in joined
+    assert "2b) PROCEED SILENTLY" in joined
+    assert "2c) CONFIRM" in joined
+
+    # Refuse list explicitly names $HOME + the system paths.
+    for path in ("$HOME", "/tmp", "/etc", "/usr", "/var", "/opt", "/root"):
+        assert path in joined, f"refuse list missing {path!r}"
+
+    # Silent-proceed whitelist contains the workspace artefacts.
+    for artefact in (".git", ".claude", ".agnes", "AGNES_WORKSPACE.md", "README.md"):
+        assert artefact in joined, f"silent-proceed whitelist missing {artefact!r}"
+
+    # Confirm prompt offers the new three-way decision.
+    assert "'ok'" in joined
+    assert "'default'" in joined
+    assert "'abort'" in joined
+
+    # Legacy 'install here' phrasing kept as an 'ok' synonym (muscle memory).
+    assert "'install here'" in joined
+
+    # The 'default' branch is the only place mkdir runs automatically.
+    assert "mkdir -p ~/Desktop/Agnes && cd ~/Desktop/Agnes" in joined
+
+    # No auto-mkdir from the very-old flow.
+    assert 'mkdir -p "$HOME/Agnes"' not in joined
+    assert 'New-Item -ItemType Directory -Force -Path "$HOME\\Agnes"' not in joined
+    assert "Set-Location \"$HOME\\Agnes\"" not in joined
+
+
+def test_step_2_substitutes_custom_brand_and_workspace_dir():
+    """Brand + workspace_dir threading: every visible reference resolves
+    against the operator's configured values, no placeholders leak."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines(
+        "agnes.whl",
+        instance_brand="Foundry AI",
+        workspace_dir="FoundryAI",
+    ))
+    assert "2) Confirm the install location." in joined
+    # Default path threads through both the silent-proceed reference and
+    # the confirm-prompt 'default' branch.
+    assert "~/Desktop/FoundryAI" in joined
+    assert "mkdir -p ~/Desktop/FoundryAI && cd ~/Desktop/FoundryAI" in joined
+    # Brand surfaces in the refuse + confirm copy.
+    assert "I won't install Foundry AI" in joined
+    assert "I'll install Foundry AI in <pwd>" in joined
+    # No placeholders survive.
+    assert "{workspace_dir}" not in joined
+    assert "{instance_brand}" not in joined
+
+
+def test_step_2_refuse_branch_lists_home_and_system_paths():
+    """REFUSE must explicitly enumerate $HOME plus the system dirs.
+    Without this list a model might decide an OS path is 'fine' and
+    install into /etc or /root, scattering files where they don't belong."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    # All paths the refuse line claims to block must appear in the
+    # rendered script so the AI follower can match against pwd output.
+    for path in (
+        "$HOME", "/tmp", "/etc", "/usr", "/var",
+        "/opt", "/root", "/bin", "/sbin", "/boot", "/sys", "/proc",
+    ):
+        assert path in joined, f"refuse path {path!r} missing"
+
+
+def test_step_9_restart_references_install_dir_not_hardcoded():
+    """Step 9 must describe the restart cwd as the directory confirmed
+    in step 2 (mentioning the default path) rather than a bare hardcoded
+    `~/{workspace_dir}`. The phrasing keeps the user-flow connection
+    visible across step 2's three branches and step 9's restart cue."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    assert "9) Restart Claude Code" in joined
+    # Wording references the step-2 confirmation.
+    assert "install dir confirmed in step 2" in joined
+    # Default path still mentioned as the expected baseline.
+    assert "~/Desktop/Agnes" in joined
+    # Step 9 still mentions 'install here' as the legacy synonym so
+    # users who learned the old flow recognise it.
+    assert "'install here'" in joined

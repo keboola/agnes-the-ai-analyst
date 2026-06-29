@@ -1,9 +1,10 @@
 """Single entry point for BigQuery access — config resolution, client construction,
 DuckDB-extension session, and Google-API error translation.
 
-See docs/superpowers/specs/2026-04-29-issue-134-bq-access-unify-design.md for the
-full design rationale.
+See docs/archive/superpowers/specs/2026-04-29-issue-134-bq-access-unify-design.md
+for the full design rationale.
 """
+
 from __future__ import annotations
 
 import functools
@@ -12,7 +13,7 @@ import threading
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Callable, Iterator, Literal
+from typing import Callable, Iterator, List, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class BqProjects:
     instance.yaml `data_source.bigquery.project`; locked to a single project per instance
     until table_registry grows a per-table source_project column. See spec "Non-goals".
     """
+
     billing: str
     data: str
 
@@ -37,19 +39,19 @@ class BqAccessError(Exception):
     """
 
     HTTP_STATUS = {
-        "not_configured":          500,  # admin/config bug — page on-call
-        "bq_lib_missing":          500,  # deployment bug
-        "auth_failed":             502,  # GCP metadata server unreachable
+        "not_configured": 500,  # admin/config bug — page on-call
+        "bq_lib_missing": 500,  # deployment bug
+        "auth_failed": 502,  # GCP metadata server unreachable
         "cross_project_forbidden": 502,  # SA lacks serviceusage.services.use on billing project
-        "bq_forbidden":            502,  # other Forbidden from BQ
-        "bq_bad_request":          400,  # 400 from BQ when caller flagged it as client-derived
-        "bq_upstream_error":       502,  # all other upstream BQ failures
+        "bq_forbidden": 502,  # other Forbidden from BQ
+        "bq_bad_request": 400,  # 400 from BQ when caller flagged it as client-derived
+        "bq_upstream_error": 502,  # all other upstream BQ failures
         # `responseTooLarge` is a BQ refusal whose root cause is query shape
         # (the user asked for too many rows back inline), not auth or syntax.
         # 400 with a specific actionable hint instead of the generic
         # bq_bad_request / bq_upstream_error mappings, which surfaced the
         # raw BQ message and gave operators no path forward.
-        "bq_response_too_large":   400,
+        "bq_response_too_large": 400,
     }
 
     def __init__(self, kind: str, message: str, details: dict | None = None):
@@ -121,7 +123,13 @@ def translate_bq_error(
       6. BadRequest, bad_request_status='upstream_error'
                                           -> bq_upstream_error (HTTP 502)
       7. GoogleAPICallError (other)       -> bq_upstream_error
-      8. Anything else                    -> RE-RAISED unchanged (don't swallow programmer errors)
+      8. 'not found' / 'notfound' in str(e).lower()
+                                          -> bq_upstream_error (HTTP 502); BQ
+                                             reason=notFound — referenced dataset/
+                                             table/job missing or location mismatch.
+                                             NB: 'does not exist' is NOT matched
+                                             (DuckDB-native catalog wording → re-raise).
+      9. Anything else                    -> RE-RAISED unchanged (don't swallow programmer errors)
 
     The `responseTooLarge` mapping (4) sits ahead of the generic BadRequest
     cases on purpose: BQ surfaces this failure mode as a 400 with a
@@ -211,18 +219,63 @@ def translate_bq_error(
             return BqAccessError("bq_bad_request", msg)
         return BqAccessError("bq_upstream_error", msg)
 
+    # BQ reason=notFound (HTTP 404): a referenced dataset / table / job doesn't
+    # exist, or the request location doesn't match the resource's. Documented
+    # wording always carries the 'Not found:' prefix; the bare reason token
+    # surfaces as '[notFound]' (camelCase, no space) on some transports — match
+    # both. Pre-fix these fell through to the re-raise below and surfaced as a
+    # bare HTTP 500 on /api/v2/sample (FAI-22). NB: deliberately NOT matching
+    # 'does not exist' (that's DuckDB-native catalog wording — let those
+    # re-raise as genuine bugs).
+    if "not found" in msg_lower or "notfound" in msg_lower:
+        return BqAccessError("bq_upstream_error", msg)
+
     # Don't swallow programmer errors / unknown exceptions
     raise e
+
+
+def _vault_credentials():
+    """Return google-auth Credentials from the vault SA JSON, or None if absent.
+
+    Mirrors the same vault path used by ``connectors.bigquery.auth._fetch_vault_sa_token``
+    so the Python ``bigquery.Client`` path honours vault keys the same way as the
+    DuckDB BQ extension path.  Returns None silently when the vault entry is missing.
+    """
+    try:
+        from app.datasource_secrets import datasource_secret  # noqa: PLC0415
+        from google.oauth2 import service_account  # type: ignore  # noqa: PLC0415
+        from google.auth.transport.requests import Request as _GAuthRequest  # type: ignore  # noqa: PLC0415
+
+        sa_json = datasource_secret("BIGQUERY_SERVICE_ACCOUNT_JSON")
+        if not sa_json:
+            return None
+        import json as _json  # noqa: PLC0415
+
+        info = _json.loads(sa_json)
+        creds = service_account.Credentials.from_service_account_info(
+            info,
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+        creds.refresh(_GAuthRequest())
+        return creds
+    except Exception:
+        return None
 
 
 def _default_client_factory(projects: BqProjects):
     """Real BigQuery client construction. Raises BqAccessError on import / auth / config issues.
 
-    `bigquery.Client(...)` resolves Application Default Credentials at construction
+    Resolution order matches ``connectors.bigquery.auth.get_metadata_token``:
+    1. ``GOOGLE_APPLICATION_CREDENTIALS`` / ADC — resolved by ``bigquery.Client()`` default.
+    2. Vault ``BIGQUERY_SERVICE_ACCOUNT_JSON`` — tried when ADC fails, so operators who
+       store a SA JSON via the admin UI get full Python-client coverage (discover_tables,
+       test-connection) in addition to the DuckDB-extension path.
+
+    ``bigquery.Client(...)`` resolves Application Default Credentials at construction
     time; in environments without ADC (CI without service-account key, dev laptop
     that hasn't run `gcloud auth application-default login`) it raises
-    `google.auth.exceptions.DefaultCredentialsError` synchronously. Translate to
-    typed `BqAccessError(auth_failed)` so endpoints surface a structured 502 with
+    ``google.auth.exceptions.DefaultCredentialsError`` synchronously. Translate to
+    typed ``BqAccessError(auth_failed)`` so endpoints surface a structured 502 with
     a helpful hint instead of a raw stack trace.
     """
     try:
@@ -237,27 +290,40 @@ def _default_client_factory(projects: BqProjects):
 
     try:
         from google.auth import exceptions as gauth_exc  # type: ignore
+
         auth_error_types: tuple = (gauth_exc.DefaultCredentialsError,)
     except ImportError:
         auth_error_types = ()
 
+    client_opts = ClientOptions(quota_project_id=projects.billing)
     try:
         return bigquery.Client(
             project=projects.billing,
-            client_options=ClientOptions(quota_project_id=projects.billing),
+            client_options=client_opts,
         )
-    except auth_error_types as e:
-        raise BqAccessError(
-            "auth_failed",
-            f"GCP credentials unavailable: {e}",
-            details={
-                "original": str(e),
-                "hint": (
-                    "Run `gcloud auth application-default login` for local dev, or set "
-                    "GOOGLE_APPLICATION_CREDENTIALS to a service-account key in the deployment."
-                ),
-            },
+    except auth_error_types:
+        pass  # ADC unavailable — try vault next
+
+    vault_creds = _vault_credentials()
+    if vault_creds is not None:
+        logger.info("BQ Python client: using vault BIGQUERY_SERVICE_ACCOUNT_JSON")
+        return bigquery.Client(
+            project=projects.billing,
+            credentials=vault_creds,
+            client_options=client_opts,
         )
+
+    raise BqAccessError(
+        "auth_failed",
+        "GCP credentials unavailable: no ADC and no vault BIGQUERY_SERVICE_ACCOUNT_JSON",
+        details={
+            "hint": (
+                "Run `gcloud auth application-default login` for local dev, set "
+                "GOOGLE_APPLICATION_CREDENTIALS to a service-account key, or paste "
+                "a service-account JSON via Admin → Datasource Credentials."
+            ),
+        },
+    )
 
 
 def _default_pool_size() -> int:
@@ -295,8 +361,8 @@ def _build_fresh_bq_session():
 
     Used internally by the pool; also used directly when pooling is disabled.
     """
-    import duckdb  # type: ignore
     from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+    from src.duckdb_conn import _open_duckdb
 
     try:
         token = get_metadata_token()
@@ -307,13 +373,11 @@ def _build_fresh_bq_session():
             details={"original": str(e)},
         )
 
-    conn = duckdb.connect(":memory:")
+    conn = _open_duckdb(":memory:")
     try:
         conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
         escaped = token.replace("'", "''")
-        conn.execute(
-            f"CREATE OR REPLACE SECRET bq_s (TYPE bigquery, ACCESS_TOKEN '{escaped}')"
-        )
+        conn.execute(f"CREATE OR REPLACE SECRET bq_s (TYPE bigquery, ACCESS_TOKEN '{escaped}')")
     except Exception as e:
         # Build failed — must close the half-initialised conn, otherwise it
         # leaks across the pool's lifetime.
@@ -340,12 +404,11 @@ def _refresh_bq_secret(conn) -> None:
     fallback will catch genuinely-broken entries.
     """
     from connectors.bigquery.auth import get_metadata_token
+
     try:
         token = get_metadata_token()
         escaped = token.replace("'", "''")
-        conn.execute(
-            f"CREATE OR REPLACE SECRET bq_s (TYPE bigquery, ACCESS_TOKEN '{escaped}')"
-        )
+        conn.execute(f"CREATE OR REPLACE SECRET bq_s (TYPE bigquery, ACCESS_TOKEN '{escaped}')")
     except Exception as e:
         # Bubble up so the pool drops this entry and rebuilds.
         raise BqAccessError(
@@ -484,11 +547,24 @@ def _default_duckdb_session_factory(projects: BqProjects):
 def apply_bq_session_settings(conn) -> None:
     """Apply per-session DuckDB BigQuery-extension settings from instance config.
 
-    Currently sets ``bq_query_timeout_ms`` from
-    ``data_source.bigquery.query_timeout_ms``. The extension default is 90 s,
-    which is too tight for analyst-scale queries against view-backed BQ
-    datasets — bumping the default to 600 s here. Sentinel ``0`` (or a
-    non-numeric / unparseable value) leaves the extension default in place.
+    Two unrelated concerns share this function because both must fire on
+    every BQ session — initial creation AND every pool acquire (see the
+    re-apply call from ``_default_duckdb_session_factory``'s acquire path):
+
+    1. **Core DuckDB resource caps (unconditional)** — ``memory_limit=2GB``,
+       ``threads=2``, ``preserve_insertion_order=false``. The default
+       ``memory_limit`` is 80 % of host RAM, which on a 4 GiB cgroup
+       container resolves to ~3.2 GiB of buffer pool — enough to OOM-kill
+       uvicorn during materialize. See ``connectors/keboola/extractor.py``
+       module-level comment for the empirical trace. These run uniformly,
+       regardless of any opt-out below.
+
+    2. **BQ extension setting (conditional on instance config)** —
+       ``bq_query_timeout_ms`` from ``data_source.bigquery.query_timeout_ms``.
+       The extension default is 90 s, which is too tight for analyst-scale
+       queries against view-backed BQ datasets — bumping the default to
+       600 s here. Sentinel ``0`` (or a non-numeric / unparseable value)
+       leaves the extension default in place.
 
     Call AFTER ``LOAD bigquery`` on every DuckDB session that touches BQ:
     BqAccess's session factory, the standalone extractor in
@@ -502,6 +578,27 @@ def apply_bq_session_settings(conn) -> None:
     intended value was higher. The applied value is verified via
     ``current_setting('bq_query_timeout_ms')``; a mismatch is also logged.
     """
+    # Resource caps run UNCONDITIONALLY, before any early-exit on the
+    # extension-setting branch below — if instance_config is unavailable
+    # or the operator opted out of the BQ timeout, we still need the
+    # memory cap on this pool entry. Otherwise an entry that took the
+    # opt-out path stays at DuckDB's 80%-of-host default and re-opens
+    # the OOM window the cap was supposed to close. See #431 follow-up.
+    for stmt in (
+        "SET memory_limit='2GB'",
+        "SET threads=2",
+        "SET preserve_insertion_order=false",
+    ):
+        try:
+            conn.execute(stmt)
+        except Exception as e:
+            logger.warning(
+                "apply_bq_session_settings: %s failed (%s); pool entry will "
+                "run with DuckDB defaults — re-check pool config",
+                stmt,
+                e,
+            )
+
     try:
         from app.instance_config import get_value
     except Exception as e:
@@ -512,14 +609,16 @@ def apply_bq_session_settings(conn) -> None:
         )
         return
     raw = get_value(
-        "data_source", "bigquery", "query_timeout_ms", default=600_000,
+        "data_source",
+        "bigquery",
+        "query_timeout_ms",
+        default=600_000,
     )
     try:
         ms = int(raw) if raw is not None else 0
     except (TypeError, ValueError):
         logger.warning(
-            "apply_bq_session_settings: query_timeout_ms=%r is not an int; "
-            "extension default (90 s) will apply",
+            "apply_bq_session_settings: query_timeout_ms=%r is not an int; extension default (90 s) will apply",
             raw,
         )
         return
@@ -545,15 +644,14 @@ def apply_bq_session_settings(conn) -> None:
             "extension default (90 s) will apply. Likely cause: BigQuery "
             "extension not loaded on this connection, or the installed "
             "extension version does not support this setting.",
-            ms, e,
+            ms,
+            e,
         )
         return
     # Verify the setting actually landed — protects against silent ignores
     # the extension might do in some failure modes.
     try:
-        result = conn.execute(
-            "SELECT current_setting('bq_query_timeout_ms')"
-        ).fetchone()
+        result = conn.execute("SELECT current_setting('bq_query_timeout_ms')").fetchone()
         actual = int(result[0]) if result and result[0] is not None else None
     except Exception as e:
         logger.warning(
@@ -566,11 +664,13 @@ def apply_bq_session_settings(conn) -> None:
         logger.warning(
             "apply_bq_session_settings: requested bq_query_timeout_ms=%d but "
             "current_setting reports %r — extension may have ignored the SET",
-            ms, actual,
+            ms,
+            actual,
         )
     else:
         logger.debug(
-            "apply_bq_session_settings: bq_query_timeout_ms=%d applied", ms,
+            "apply_bq_session_settings: bq_query_timeout_ms=%d applied",
+            ms,
         )
 
 
@@ -625,9 +725,11 @@ def _fetch_bq_columns_full_impl(bq, dataset: str, table: str) -> list[dict]:
     if not bq.projects.data:
         bq.client()  # raises BqAccessError(not_configured)
 
-    if not (validate_quoted_identifier(bq.projects.data, "BQ project")
-            and validate_quoted_identifier(dataset, "BQ dataset")
-            and validate_quoted_identifier(table, "BQ source_table")):
+    if not (
+        validate_quoted_identifier(bq.projects.data, "BQ project")
+        and validate_quoted_identifier(dataset, "BQ dataset")
+        and validate_quoted_identifier(table, "BQ source_table")
+    ):
         raise ValueError("unsafe BQ identifier in registry — refusing to query")
 
     bq_sql = (
@@ -666,7 +768,10 @@ def fetch_bq_columns_full(bq, dataset: str, table: str) -> list[dict] | None:
     except Exception as e:
         logger.warning(
             "BQ COLUMNS fetch failed for %s.%s.%s: %s",
-            bq.projects.data, dataset, table, e,
+            bq.projects.data,
+            dataset,
+            table,
+            e,
         )
         return None
 
@@ -698,6 +803,7 @@ def get_bq_access() -> BqAccess:
         return BqAccess(BqProjects(billing=env_project, data=env_project))
 
     from app.instance_config import get_value
+
     billing = (get_value("data_source", "bigquery", "billing_project", default="") or "").strip()
     data = (get_value("data_source", "bigquery", "project", default="") or "").strip()
 
@@ -738,3 +844,74 @@ def get_bq_access() -> BqAccess:
         billing = data
 
     return BqAccess(BqProjects(billing=billing, data=data))
+
+
+def validate_bigquery_startup_config() -> List[str]:
+    """Surface common config gaps that only fail at first BQ call (not at boot).
+
+    Returns a list of warning strings (empty when nothing notable). Caller
+    typically logs each at WARNING and continues — startup never blocks on
+    config quality issues, only on hard schema problems.
+
+    Checks (in order, each independent):
+
+    1. Cross-project setup (``project`` ≠ ``billing_project``) without
+       ``location`` set. The region-scoped metadata path
+       (``_fetch_via_table_storage`` in metadata.py) falls back to
+       ``client.get_dataset()`` per-table on every cache refresh when
+       ``location`` is unset, which works for some IAM shapes but silently
+       fails with ``"provider returned no data"`` for others (the
+       on-disk symptom from issue #343). Setting
+       ``data_source.bigquery.location`` to the dataset's region makes the
+       fast path deterministic.
+
+    2. ``billing_project`` defaulted to ``project`` while the two values
+       suggest a cross-project setup (project name contains "data" or
+       "dataview", billing name contains "ai" or "foundryai" — heuristic).
+       Almost-always-wrong combo: pre-fix the SA on ``project`` lacks
+       ``serviceusage.services.use`` and every query 502s. We can't be
+       sure, so we warn rather than reject.
+
+    Lives in this module (not app/main.py) so the SDK / CLI / scripts that
+    use ``BqAccess`` outside the FastAPI process can call it too.
+    """
+    warnings: List[str] = []
+    try:
+        from app.instance_config import get_value
+    except Exception:
+        return warnings  # config layer not available — likely test harness
+    project = (get_value("data_source", "bigquery", "project") or "").strip()
+    billing = (get_value("data_source", "bigquery", "billing_project") or "").strip()
+    location = (get_value("data_source", "bigquery", "location") or "").strip()
+    if not project:
+        return warnings  # BQ not configured — nothing to check
+    effective_billing = billing or project
+    if effective_billing != project and not location:
+        warnings.append(
+            f"data_source.bigquery.project={project!r} differs from "
+            f"billing_project={effective_billing!r} (cross-project setup) "
+            f"but data_source.bigquery.location is not set. The metadata "
+            f"cache will fall back to per-table REST dataset.get() and may "
+            f"silently return 'provider returned no data' for some IAM "
+            f"shapes. Set data_source.bigquery.location (e.g. 'us-central1' "
+            f"or 'EU') to the region where the dataset lives — see issue "
+            f"#343."
+        )
+    if not billing and project:
+        # Heuristic detection of the common cross-project mistake: data
+        # project named like a warehouse, project the SA actually lives in
+        # named like the app. The user typically wants billing_project to
+        # equal the SA's home project.
+        proj_low = project.lower()
+        warehouse_like = any(s in proj_low for s in ("dataview", "warehouse", "datalake", "-dw-", "-data-"))
+        if warehouse_like:
+            warnings.append(
+                f"data_source.bigquery.project={project!r} looks like a "
+                f"shared data warehouse but billing_project is unset, so "
+                f"jobs will bill to {project!r}. If the service account "
+                f"doesn't have serviceusage.services.use on {project!r}, "
+                f"every query will fail with 403. Set "
+                f"data_source.bigquery.billing_project to the SA's home "
+                f"project — see issue #343."
+            )
+    return warnings

@@ -270,6 +270,57 @@ def test_local_name_inside_backtick_path_does_not_trip_cross_source(
     assert "test-prj.dataset.orders" in rewritten
 
 
+def test_full_backtick_path_only_wraps_in_bigquery_query(seeded_registry, monkeypatch):
+    """Issue #363: user SQL uses only a full backtick BQ path
+    (`<proj>.<dataset>.<table>`) — no bare catalog name, no bq.ds.tbl.
+    Pre-fix: name_lookups and direct_paths both empty → Skip 1 fires →
+    original backtick SQL reaches analytics.execute() → DuckDB parser error
+    "syntax error at or near `"".
+    Post-fix: has_backtick_paths detects the pattern → Skip 1 does NOT fire
+    → SQL is wrapped in bigquery_query() and BQ executes it natively.
+    """
+    from app.api.query import _rewrite_user_sql_for_bigquery_query
+    _register_bq_remote(seeded_registry, table_id="bq.fin.ue", name="ue",
+                        bucket="fin", source_table="ue")
+    _set_bq_project(monkeypatch, "test-prj")
+
+    user_sql = (
+        "SELECT COUNT(*) FROM `test-prj.fin.ue` WHERE event_date = DATE '2026-05-15'"
+    )
+    rewritten, did_rewrite = _rewrite_user_sql_for_bigquery_query(
+        user_sql, seeded_registry,
+    )
+
+    assert did_rewrite is True
+    assert "bigquery_query(" in rewritten
+    # The backtick path is already BQ-native — preserved verbatim inside the wrap.
+    assert "`test-prj.fin.ue`" in rewritten
+    # Original backtick SQL must not be sent raw to DuckDB's local parser.
+    assert rewritten != user_sql
+
+
+def test_full_backtick_path_only_unregistered_table_still_wraps(
+    seeded_registry, monkeypatch,
+):
+    """Backtick-only SQL whose path happens NOT to be registered still gets
+    wrapped — the guardrail upstream (_bq_guardrail_inputs pass 3) is the
+    RBAC gate; the rewriter's job is only to avoid sending backtick syntax
+    to DuckDB locally. An unregistered-path error from BQ is surfaced cleanly
+    rather than a local "syntax error at or near `"".
+    """
+    from app.api.query import _rewrite_user_sql_for_bigquery_query
+    _set_bq_project(monkeypatch, "test-prj")
+
+    user_sql = "SELECT * FROM `test-prj.some_ds.some_tbl` LIMIT 5"
+    rewritten, did_rewrite = _rewrite_user_sql_for_bigquery_query(
+        user_sql, seeded_registry,
+    )
+
+    assert did_rewrite is True
+    assert "bigquery_query(" in rewritten
+    assert "test-prj.some_ds.some_tbl" in rewritten
+
+
 def test_no_bq_tables_passes_through(seeded_registry, monkeypatch):
     """User SQL referencing only local-source tables → no rewrite,
     no log spam, original SQL returned."""
@@ -737,3 +788,49 @@ def test_endpoint_does_not_fall_back_on_non_parse_errors(
     # the runtime error message; we just need to confirm no fallback.
     assert r.status_code in (400, 500, 502)
     assert len(calls["sqls"]) == 1, "must not retry on non-parse error"
+
+
+def test_endpoint_backtick_only_path_wraps_not_local_parse(
+    seeded_app, stub_bq_for_endpoint, monkeypatch,
+):
+    """Issue #363 regression: SQL using only a full backtick BQ path must
+    be wrapped in bigquery_query() before reaching analytics.execute() —
+    NOT passed raw to the local DuckDB instance that would reject the
+    backtick syntax with "syntax error at or near `"".
+    """
+    _register_bq_remote_row("ue", "fin", "ue")
+
+    captured = {"sql": None}
+
+    class _StubAnalytics:
+        description = [("cnt",)]
+        def execute(self, sql, *args, **kwargs):
+            captured["sql"] = sql
+            class _R:
+                def fetchmany(self, _n):
+                    return [(42,)]
+            return _R()
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "app.api.query.get_analytics_db_readonly",
+        lambda: _StubAnalytics(),
+        raising=False,
+    )
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        json={"sql": "SELECT COUNT(*) FROM `test-data-prj.fin.ue` WHERE x = 1"},
+        headers=_auth(token),
+    )
+    assert r.status_code == 200, r.json()
+    sent = captured["sql"]
+    assert sent is not None
+    assert "bigquery_query(" in sent, (
+        f"backtick-path SQL must be wrapped in bigquery_query(); got: {sent!r}"
+    )
+    # The backtick path survives verbatim inside the wrapper.
+    assert "test-data-prj.fin.ue" in sent

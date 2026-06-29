@@ -18,6 +18,10 @@ services:
     environment:
       - DATA_DIR=/data
       - LOCAL_DEV_MODE=1
+      # Explicit DEBUG=0 keeps the auth bypass but skips the debug toolbar,
+      # whose per-request instrumentation can peg CPU on heavy HTML pages.
+      # Set DEBUG=1 here if you want the toolbar back.
+      - DEBUG=0
       - LOCAL_DEV_USER_EMAIL=dev@localhost
       # LOCAL_DEV_GROUPS — JSON array of {id, name} mocking session.google_groups.
       # Bare passthrough from the shell; scripts/run-local-dev.sh seeds a sensible

@@ -214,6 +214,39 @@ class TestTranslateBqError:
         )
         assert result.kind == "bq_bad_request"
 
+    @pytest.mark.parametrize("msg", [
+        # official docs sample
+        "Not Found: Dataset myproject:foo",
+        # dataset + location variant (the FAI-22 shape, neutralized)
+        "Binder Error: Query execution failed: Not found: "
+        "Dataset my-proj:my_dataset was not found in location US",
+        # table-level not-found + location
+        "404 Not found: Table my-proj:my_dataset.my_table was not found in location us-east1",
+        # bare reason token without the 'Not found:' prefix (camelCase [notFound])
+        "BigQuery error: dataset missing [notFound]",
+    ])
+    def test_duckdb_native_not_found_classified_via_string_match(self, msg):
+        """BQ 'dataset/table/job not found' (reason=notFound, HTTP 404) arrives
+        as a DuckDB-native BinderException (the BQ extension's C++ HTTP layer)
+        with no 403/400/'bad request' marker — pre-fix it fell through to the
+        bare re-raise and surfaced as HTTP 500 on /api/v2/sample. Must classify
+        as bq_upstream_error (502). Covers the documented variants: 'Not found:
+        Dataset/Table', the 'was not found in location' suffix, and the bare
+        [notFound] reason token."""
+        from connectors.bigquery.access import translate_bq_error
+        e = Exception(msg)
+        result = translate_bq_error(e, self.projects, bad_request_status="upstream_error")
+        assert result.kind == "bq_upstream_error"
+
+    def test_duckdb_catalog_does_not_exist_still_reraises(self):
+        """'does not exist' is DuckDB-native catalog wording (e.g. a local view
+        typo), NOT a BQ notFound reason — must re-raise as a genuine bug, not
+        masquerade as bq_upstream_error. Guards against over-broad matching."""
+        from connectors.bigquery.access import translate_bq_error
+        e = RuntimeError("Catalog Error: Table with name foo does not exist")
+        with pytest.raises(RuntimeError, match="does not exist"):
+            translate_bq_error(e, self.projects, bad_request_status="upstream_error")
+
 
 class TestDefaultClientFactory:
     def test_constructs_client_with_billing_project_as_quota(self, monkeypatch):
@@ -772,3 +805,57 @@ class TestBqSessionPool:
         )
         with bq.duckdb_session() as conn:
             assert conn is sentinel
+
+
+# ---- apply_bq_session_settings resource caps (#431 follow-up / #432) -------
+
+class TestApplyBqSessionSettings:
+    def test_apply_bq_session_settings_applies_resource_caps(self):
+        """``apply_bq_session_settings`` must apply the three core DuckDB
+        resource caps UNCONDITIONALLY — before the BQ-extension-setting
+        early-exit and on every pool acquire. The caps are core DuckDB, so
+        this works hermetically on a plain in-memory conn with no BQ
+        extension loaded (the BQ-only ``bq_query_timeout_ms`` SET logs and
+        does not raise, which this test tolerates).
+        """
+        import duckdb
+        from connectors.bigquery.access import apply_bq_session_settings
+
+        conn = duckdb.connect(":memory:")
+        try:
+            # Capture the default memory_limit BEFORE applying the caps — the
+            # DuckDB default is 80% of host RAM, meaningfully larger than the
+            # 2 GiB cap. Proving BEFORE != AFTER is the regression guard for
+            # the "caps run before the extension early-exit" lift.
+            before = conn.execute(
+                "SELECT current_setting('memory_limit')"
+            ).fetchone()[0]
+
+            apply_bq_session_settings(conn)
+
+            threads = conn.execute(
+                "SELECT current_setting('threads')"
+            ).fetchone()[0]
+            assert int(threads) == 2
+
+            preserve = conn.execute(
+                "SELECT current_setting('preserve_insertion_order')"
+            ).fetchone()[0]
+            assert preserve in (False, "false")
+
+            after = conn.execute(
+                "SELECT current_setting('memory_limit')"
+            ).fetchone()[0]
+            # Normalized/banded assertion: '2GB' -> '1.8 GiB'. An exact
+            # string compare would false-fail. The band check (≤ 2 GiB) is
+            # what pins correctness — we deliberately don't assert
+            # `before != after` because on a host with ~2.5 GB RAM, DuckDB's
+            # 80%-of-RAM default rounds to the same 2 GB cap as the explicit
+            # SET, making the two values identical even though the SET ran
+            # (Devin Review on #591). `before` is captured purely for the
+            # diagnostic on the band assertion's failure message, not for
+            # change detection.
+            assert "GiB" in after, (before, after)
+            assert float(after.split()[0]) <= 2.0, (before, after)
+        finally:
+            conn.close()

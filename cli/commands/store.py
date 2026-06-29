@@ -1,10 +1,9 @@
-"""`agnes store {list,show,install,uninstall,upload,delete}` — community
-marketplace browse/install over the REST API.
+"""`agnes store {upload,update,delete,mine}` — Flea Market creator-side ops.
 
-Mirrors the /store web UI for analyst CLI workflows. Listing + filters are
-the read paths; install/uninstall/upload/delete are the write paths. All
-commands authenticate via the configured PAT (see ``cli auth``); the
-endpoints are gated by ``get_current_user`` server-side.
+For browsing and installing marketplace items use ``agnes marketplace``.
+These commands cover the creator workflow: publish, update, remove, and
+download your own entries. All commands authenticate via the configured PAT
+(see ``cli auth``); endpoints are gated by ``get_current_user`` server-side.
 """
 
 from __future__ import annotations
@@ -18,98 +17,14 @@ import typer
 from cli.v2_client import (
     V2ClientError,
     api_delete,
-    api_get_json,
     api_get_stream,
     api_post_json,
     api_post_multipart,
     api_put_multipart,
 )
 
-store_app = typer.Typer(help="Community Store — browse, install, upload skills/agents/plugins")
+store_app = typer.Typer(help="Flea Market — upload and manage your own skills/agents/plugins")
 
-
-@store_app.command("list")
-def list_entities(
-    type: Optional[str] = typer.Option(None, "--type", help="skill | agent | plugin"),
-    category: Optional[str] = typer.Option(None, "--category"),
-    search: Optional[str] = typer.Option(None, "--search", "-q"),
-    owner: Optional[str] = typer.Option(None, "--owner", help="Filter by owner user_id"),
-    limit: int = typer.Option(24, "--limit", min=1, max=100),
-    skip: int = typer.Option(0, "--skip", min=0),
-    json_out: bool = typer.Option(False, "--json", help="Emit raw JSON instead of a table"),
-):
-    """List Store entities with optional filters."""
-    params: dict = {"limit": limit, "skip": skip}
-    if type:
-        params["type"] = type
-    if category:
-        params["category"] = category
-    if search:
-        params["search"] = search
-    if owner:
-        params["owner"] = owner
-    try:
-        body = api_get_json("/api/store/entities", **params)
-    except V2ClientError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(1)
-    if json_out:
-        typer.echo(json.dumps(body, indent=2))
-        return
-    items = body.get("items", [])
-    total = body.get("total", 0)
-    typer.echo(f"{total} entit(y) total — showing {len(items)} (skip={skip}):")
-    for it in items:
-        typer.echo(
-            f"  [{it['type']:6s}] {it['name']:24s} by {it['owner_username']:20s} "
-            f"installs={it['install_count']:<4d} v{it['version']}  id={it['id']}"
-        )
-
-
-@store_app.command("show")
-def show_entity(
-    entity_id: str = typer.Argument(...),
-    json_out: bool = typer.Option(False, "--json"),
-):
-    """Show a Store entity's full metadata."""
-    try:
-        body = api_get_json(f"/api/store/entities/{entity_id}")
-    except V2ClientError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(1)
-    if json_out:
-        typer.echo(json.dumps(body, indent=2))
-        return
-    typer.echo(f"{body['name']} ({body['type']}) v{body['version']}")
-    typer.echo(f"  by {body['owner_username']} ({body.get('owner_display_name') or '?'})")
-    typer.echo(f"  invocation: {body['invocation_name']}")
-    if body.get("description"):
-        typer.echo(f"  description: {body['description']}")
-    typer.echo(f"  installs: {body['install_count']}, size: {body['file_size']} bytes")
-    if body.get("video_url"):
-        typer.echo(f"  video: {body['video_url']}")
-
-
-@store_app.command("install")
-def install_entity(entity_id: str = typer.Argument(...)):
-    """Install a Store entity into your `/marketplace.zip` view."""
-    try:
-        body = api_post_json(f"/api/store/entities/{entity_id}/install", {})
-    except V2ClientError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(1)
-    typer.echo(f"Installed: entity_id={body['entity_id']}")
-
-
-@store_app.command("uninstall")
-def uninstall_entity(entity_id: str = typer.Argument(...)):
-    """Uninstall a Store entity from your view."""
-    try:
-        body = api_delete(f"/api/store/entities/{entity_id}/install")
-    except V2ClientError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(1)
-    typer.echo(f"Uninstalled: entity_id={body.get('entity_id', entity_id)}")
 
 
 @store_app.command("upload")
@@ -121,7 +36,7 @@ def upload_entity(
     category: Optional[str] = typer.Option(None, "--category"),
     video_url: Optional[str] = typer.Option(None, "--video-url"),
 ):
-    """Upload a Store entity from a local ZIP file."""
+    """Upload a Flea Market entity from a local ZIP file."""
     files = {
         "file": (zip_path.name, zip_path.read_bytes(), "application/zip"),
     }
@@ -150,7 +65,7 @@ def delete_entity(
     entity_id: str = typer.Argument(...),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ):
-    """Delete a Store entity (owner or admin only)."""
+    """Delete a Flea Market entity (owner or admin only)."""
     if not yes:
         confirm = typer.confirm(f"Delete entity {entity_id}?")
         if not confirm:
@@ -178,7 +93,7 @@ def update_entity(
         help="Replace the plugin tree with this new ZIP",
     ),
 ):
-    """In-place edit a Store entity. Owner or admin only.
+    """In-place edit a Flea Market entity. Owner or admin only.
 
     Server-side authorization (PUT /api/store/entities/{id}) admits the
     owner OR any member of the Admin group; CLI doesn't enforce, the
@@ -237,7 +152,7 @@ def pull_my_entities(
         help="Instead of saving the ZIP, unpack it into this directory.",
     ),
 ):
-    """Download a bundle of every Store entity you own (created).
+    """Download a bundle of every Flea Market entity you own (created).
 
     Server-side this is the same ``GET /api/store/bundle.zip`` endpoint
     that `agnes admin store pull` uses, scoped to the caller via
@@ -273,3 +188,34 @@ def pull_my_entities(
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
     typer.echo(f"Wrote {size:,} bytes → {out}")
+
+
+@store_app.command("rate")
+def rate_entity(
+    entity_id: str = typer.Argument(...),
+    vote: int = typer.Option(
+        ..., "--vote", "-v",
+        help="1 = thumbs up, -1 = thumbs down, 0 = clear your vote",
+    ),
+):
+    """Rate a Flea Market entity thumbs up/down (#398).
+
+    Casts, changes, or clears your single vote on an entity. Prints the
+    updated ``{up, down, my_vote}`` tally. Server-side gated by
+    ``get_current_user``.
+
+    Example: ``agnes store rate <entity_id> --vote -1`` (thumbs down).
+    """
+    if vote not in (1, -1, 0):
+        typer.echo("vote must be 1, -1, or 0", err=True)
+        raise typer.Exit(1)
+    try:
+        body = api_post_json(
+            f"/api/store/entities/{entity_id}/rate", {"vote": vote}
+        )
+    except V2ClientError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+    typer.echo(
+        f"up={body['up']} down={body['down']} my_vote={body['my_vote']}"
+    )

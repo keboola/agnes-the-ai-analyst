@@ -30,6 +30,14 @@ logger = logging.getLogger(__name__)
 # serve the user, but admins can still want it for forensics. Excludes
 # `approved` (live entity, never purge), `overridden` (admin already
 # decided to publish), and `pending_*` (still in review).
+#
+# Inline-tier failures on the upload path are hard-rejected and never
+# create rows here. The only writer of `blocked_inline` post-v30 is
+# `admin_rescan_store_submission` — an admin-initiated rescan that
+# re-fails inline produces a `blocked_inline` row pointing at the
+# already-quarantined bundle. Sweeping these here matches operator
+# expectation: an admin Rescan should not cause a previously-purged
+# bundle to outlive its TTL just because the verdict changed.
 TERMINAL_BLOCKED_STATUSES = (
     "blocked_inline",
     "blocked_llm",

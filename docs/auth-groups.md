@@ -83,8 +83,12 @@ What the OAuth callback does with the list returned by `fetch_user_groups`:
    replaced (DELETE + INSERT for `source='google_sync'` rows) so a removed
    Workspace membership disappears immediately. Admin-added memberships
    (`source='admin'`) are preserved — Google sync only touches its own
-   rows. Memberships are refreshed on every Google sign-in; a user's
-   stale memberships persist until their next login.
+   rows. Memberships refresh on every Google sign-in **and** on demand
+   via `POST /auth/refresh-groups` (CLI: `agnes auth refresh-groups`),
+   which reuses the same write path so a CLI / PAT-only user who just
+   got added to a new Workspace group doesn't have to re-sign-in on the
+   dashboard to see their access. Both paths run through
+   `app.auth.group_sync.apply_user_groups` so policy stays single-sourced.
 
 **Read-only admin UI on Google-managed rows.** The admin UI hides the
 Edit / Delete affordances on rows owned by Google sync

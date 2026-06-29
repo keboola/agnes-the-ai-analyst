@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import time
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -16,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
+import connectors.keboola.storage_api as sapi
 from connectors.keboola.storage_api import (
     FILE_TYPE_CSV,
     FILE_TYPE_PARQUET,
@@ -23,6 +25,7 @@ from connectors.keboola.storage_api import (
     KeboolaStorageClient,
     StorageApiError,
     get_temp_root,
+    sweep_orphaned_scratch,
 )
 
 
@@ -46,13 +49,53 @@ class TestExportFilter:
             "changed_since": "2026-04-01",
         })
         params = f.to_export_params()
-        assert params["whereFilters"] == [
-            {"column": "status", "operator": "eq", "values": ["open"]}
-        ]
+        # whereFilters must be emitted as Keboola's indexed form fields, not
+        # a nested list — `requests` form-encodes the latter into a single
+        # stringified-dict scalar that Keboola rejects ("should be an array").
+        assert params["whereFilters[0][column]"] == "status"
+        assert params["whereFilters[0][operator]"] == "eq"
+        assert params["whereFilters[0][values][0]"] == "open"
+        assert "whereFilters" not in params  # never the raw nested form
         # Storage API takes columns as comma-joined string, not array — the
         # `kbcstorage` SDK does the same join, so match its wire format.
         assert params["columns"] == "id,status"
         assert params["changedSince"] == "2026-04-01"
+
+    def test_where_filters_multiple_filters_and_values_indexed(self):
+        # Multi-filter, multi-value spec must index each filter and each value
+        # so Keboola's PHP-array form parser reconstructs the full structure.
+        f = ExportFilter.from_dict({
+            "where_filters": [
+                {"column": "job_created_at", "operator": "ge", "values": ["2025-12-18"]},
+                {"column": "status", "operator": "in", "values": ["open", "done"]},
+            ],
+        })
+        params = f.to_export_params()
+        assert params["whereFilters[0][column]"] == "job_created_at"
+        assert params["whereFilters[0][operator]"] == "ge"
+        assert params["whereFilters[0][values][0]"] == "2025-12-18"
+        assert params["whereFilters[1][column]"] == "status"
+        assert params["whereFilters[1][operator]"] == "in"
+        assert params["whereFilters[1][values][0]"] == "open"
+        assert params["whereFilters[1][values][1]"] == "done"
+
+    def test_where_filters_form_encode_roundtrip(self):
+        # The actual wire body must carry the indexed keys, not a stringified
+        # Python dict — this is the regression that made job_created_at
+        # filtering silently return 0 rows / 400 on the materialized path.
+        f = ExportFilter.from_dict({
+            "where_filters": [
+                {"column": "job_created_at", "operator": "ge", "values": ["2025-12-18"]},
+            ],
+        })
+        body = requests.models.RequestEncodingMixin._encode_params(
+            f.to_export_params()
+        )
+        assert "whereFilters%5B0%5D%5Bcolumn%5D=job_created_at" in body
+        assert "whereFilters%5B0%5D%5Boperator%5D=ge" in body
+        assert "whereFilters%5B0%5D%5Bvalues%5D%5B0%5D=2025-12-18" in body
+        # The broken form stringified the dict — make sure that never recurs.
+        assert "%27column%27" not in body  # no url-encoded "'column'"
 
     def test_where_filter_missing_keys_raises_with_context(self):
         f = ExportFilter.from_dict({
@@ -520,6 +563,82 @@ class TestParquetPath:
         assert dest.read_bytes() == b"PAR1\x00\x00\x00binary"
 
 
+# ---- sweep_orphaned_scratch ------------------------------------------------
+
+class TestSweepOrphanedScratch:
+    """Orphaned ``kbc-export-*`` staging dirs are left behind only when a
+    sync worker is hard-killed (SIGKILL/OOM/auto-upgrade container recreate)
+    mid-export, so ``TemporaryDirectory.__exit__`` never ran. The sweep
+    reclaims them on the next sync; age-gating protects an in-flight export.
+    """
+
+    def _mk_dir(self, parent: Path, name: str, age_seconds: float) -> Path:
+        d = parent / name
+        d.mkdir()
+        (d / "slice0.parquet").write_bytes(b"PAR1junk")
+        old = time.time() - age_seconds
+        import os as _os
+        _os.utime(d, (old, old))
+        return d
+
+    def test_removes_old_scratch_dirs(self, tmp_path):
+        old = self._mk_dir(tmp_path, "kbc-export-foo-abc123", age_seconds=7200)
+        removed = sweep_orphaned_scratch(root=str(tmp_path), max_age_seconds=3600)
+        assert removed == 1
+        assert not old.exists()
+
+    def test_removes_old_slice_dirs(self, tmp_path):
+        """`kbc-slice-*` dirs (the sliced-CSV download path in
+        `_download_sliced`) orphan on the same hard-kill and are swept too."""
+        old = self._mk_dir(tmp_path, "kbc-slice-xyz789", age_seconds=7200)
+        removed = sweep_orphaned_scratch(root=str(tmp_path), max_age_seconds=3600)
+        assert removed == 1
+        assert not old.exists()
+
+    def test_keeps_fresh_scratch_dir(self, tmp_path):
+        """A dir younger than the threshold may belong to a concurrent
+        in-flight export — never sweep it."""
+        fresh = self._mk_dir(tmp_path, "kbc-export-bar-def456", age_seconds=10)
+        removed = sweep_orphaned_scratch(root=str(tmp_path), max_age_seconds=3600)
+        assert removed == 0
+        assert fresh.exists()
+
+    def test_ignores_non_scratch_entries(self, tmp_path):
+        """Only ``kbc-export-*`` dirs are swept; unrelated files/dirs in the
+        temp root (the data disk also holds extracts/, state/, etc.) are
+        never touched even when old."""
+        keep_dir = self._mk_dir(tmp_path, "extracts", age_seconds=7200)
+        keep_file = tmp_path / "kbc-export-not-a-dir.txt"
+        keep_file.write_text("x")
+        old_file = time.time() - 7200
+        import os as _os
+        _os.utime(keep_file, (old_file, old_file))
+
+        removed = sweep_orphaned_scratch(root=str(tmp_path), max_age_seconds=3600)
+        assert removed == 0
+        assert keep_dir.exists()
+        assert keep_file.exists()
+
+    def test_none_root_is_noop(self):
+        """No temp root configured (AGNES_TEMP_DIR unset) → nothing to sweep."""
+        assert sweep_orphaned_scratch(root=None, max_age_seconds=3600) == 0
+
+    def test_missing_root_is_noop(self, tmp_path):
+        assert sweep_orphaned_scratch(
+            root=str(tmp_path / "does-not-exist"), max_age_seconds=3600
+        ) == 0
+
+    def test_max_age_from_env_default(self, tmp_path, monkeypatch):
+        """Threshold falls back to AGNES_SCRATCH_MAX_AGE_SEC when not passed."""
+        monkeypatch.setenv("AGNES_SCRATCH_MAX_AGE_SEC", "100")
+        old = self._mk_dir(tmp_path, "kbc-export-baz-ghi789", age_seconds=200)
+        fresh = self._mk_dir(tmp_path, "kbc-export-qux-jkl012", age_seconds=10)
+        removed = sweep_orphaned_scratch(root=str(tmp_path))
+        assert removed == 1
+        assert not old.exists()
+        assert fresh.exists()
+
+
 # ---- get_table_info --------------------------------------------------------
 
 class TestGetTableInfo:
@@ -560,3 +679,102 @@ class TestGetTableInfo:
         import pytest
         with pytest.raises(StorageApiError):
             client.get_table_info("missing.table")
+
+
+# ---- _download_single disk-space pre-flight (#431 / #432) ------------------
+
+def _streaming_resp(*, headers, chunks):
+    """Build a MagicMock that behaves like a streaming ``requests`` response
+    used as a context manager: ``with session.get(...) as r``."""
+    resp = MagicMock()
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    resp.raise_for_status = MagicMock()
+    # Real dict so ``r.headers.get('Content-Length')`` returns the literal
+    # value (or None) we control — a bare MagicMock would return a MagicMock
+    # and silently fall through the pre-flight via the int() TypeError path.
+    resp.headers = dict(headers)
+    resp.iter_content = MagicMock(return_value=list(chunks))
+    return resp
+
+
+class TestDownloadDiskPreflight:
+    @pytest.mark.parametrize(
+        "gunzip_on_read, free, should_raise",
+        [
+            # expected_bytes = 1e9. non-gunzip needs 1.25x = 1.25e9;
+            # gunzip needs 5x = 5e9. free=2e9 clears the 1.25x bar but
+            # not the 5x bar -> pins the multiplier branch.
+            (False, 2_000_000_000, False),
+            (True, 2_000_000_000, True),
+            # tiny free always fails, both branches.
+            (False, 100, True),
+            (True, 100, True),
+        ],
+    )
+    def test_multiplier_branch(self, tmp_path, gunzip_on_read, free, should_raise):
+        sess = MagicMock()
+        resp = _streaming_resp(
+            headers={"Content-Length": "1000000000"},
+            chunks=[b"PAR1payload"],
+        )
+        sess.get.return_value = resp
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        dest = tmp_path / "out.parquet"
+
+        fake_usage = MagicMock(return_value=MagicMock(free=free))
+        with patch.object(sapi.shutil, "disk_usage", fake_usage):
+            if should_raise:
+                with pytest.raises(StorageApiError, match="insufficient disk space"):
+                    c._download_single(
+                        "https://signed/x", dest, gunzip_on_read=gunzip_on_read
+                    )
+                # The raise must fire BEFORE the write loop.
+                resp.iter_content.assert_not_called()
+                assert not dest.exists()
+            else:
+                c._download_single(
+                    "https://signed/x", dest, gunzip_on_read=gunzip_on_read
+                )
+                resp.iter_content.assert_called()
+                assert dest.exists()
+
+    def test_raises_storage_api_error_when_free_below_needed(self, tmp_path):
+        """Insufficient free space -> StorageApiError raised BEFORE the write
+        loop (iter_content never touched)."""
+        sess = MagicMock()
+        resp = _streaming_resp(
+            headers={"Content-Length": "1000000000"},
+            chunks=[b"PAR1payload"],
+        )
+        sess.get.return_value = resp
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        dest = tmp_path / "out.parquet"
+
+        with patch.object(
+            sapi.shutil, "disk_usage", return_value=MagicMock(free=100)
+        ):
+            with pytest.raises(StorageApiError, match="insufficient disk space"):
+                c._download_single(
+                    "https://signed/x", dest, gunzip_on_read=False
+                )
+        resp.iter_content.assert_not_called()
+        assert not dest.exists()
+
+    def test_absent_content_length_falls_through(self, tmp_path):
+        """No Content-Length header -> the whole pre-flight block is skipped:
+        no exception, the file is written, and shutil.disk_usage is never
+        called."""
+        sess = MagicMock()
+        resp = _streaming_resp(headers={}, chunks=[b"PAR1data"])
+        sess.get.return_value = resp
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        dest = tmp_path / "out.parquet"
+
+        fake_usage = MagicMock()
+        with patch.object(sapi.shutil, "disk_usage", fake_usage):
+            c._download_single("https://signed/x", dest, gunzip_on_read=False)
+
+        assert dest.exists()
+        assert dest.read_bytes() == b"PAR1data"
+        fake_usage.assert_not_called()

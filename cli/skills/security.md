@@ -57,7 +57,7 @@ User scripts run in an isolated subprocess with:
 ## JWT tokens
 
 - Session tokens: issued on interactive login (`agnes login`), valid 24 hours.
-- For long-lived CLI / CI use, create a Personal Access Token via the UI (`/tokens` → New token) or CLI (`agnes auth token create`).
+- For long-lived CLI / CI use, create a Personal Access Token via the UI (`/me/profile` → New token) or CLI (`agnes auth token create`).
 - PATs are revocable and auditable; session tokens are not.
 - Claims: `sub` (user_id), `email`, `typ`, `exp`, `jti`. **No `role` claim** — admin status derives from `user_group_members` at request time via `app.auth.access.is_user_admin`.
 - Set `JWT_SECRET_KEY` in `.env` (min 32 chars).

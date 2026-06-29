@@ -1,13 +1,12 @@
-{% extends "base.html" %}
+{% extends "base_page.html" %}
 {% block title %}Store submissions — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
+{% set page_hero_eyebrow = "Agent Experience" %}
+{% set page_hero_title = "Flea Submissions" %}
+{% set page_hero_subtitle = "Plugin / skill / agent submissions awaiting review." %}
+
+{% block head_extra %}
 <style>
-  /* Width + padding come from .page-shell (style-custom.css) — same
-     1280px container as /dashboard, /marketplace, /admin/* peers. */
-  .subs-title { margin: 0 0 8px 0; font-size: 22px; font-weight: 600; }
-  .subs-help { color: var(--text-secondary, #6b7280); font-size: 13px; margin-bottom: 20px; }
-  .subs-help code { background: var(--border-light, #f3f4f6); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
 
   .subs-form {
     display: grid;
@@ -22,16 +21,10 @@
     border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
     background: var(--surface, #fff); color: var(--text, #111827);
   }
-  .subs-form .submit-btn {
-    padding: 7px 14px; border-radius: 6px;
-    background: var(--text, #111827); color: var(--surface, #fff);
-    border: 1px solid var(--text, #111827); font-size: 13px; cursor: pointer;
-  }
-  .subs-form .reset-btn {
-    padding: 7px 14px; border-radius: 6px;
-    background: var(--surface, #fff); color: var(--text, #111827);
-    border: 1px solid var(--border, #e5e7eb); font-size: 13px; text-decoration: none;
-  }
+  /* `.submit-btn` / `.reset-btn` rules deleted — form actions render
+     via `ds.button(variant='primary'|'secondary')` carrying canonical
+     .btn family. Visual delta: Apply was custom-black, now canonical
+     green primary. */
 
   .subs-status-chips { margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
   .subs-status-chips a {
@@ -128,7 +121,12 @@
     color: var(--text-secondary, #6b7280); font-size: 13px;
   }
 </style>
+{% endblock %}
 
+{% block page %}
+{# Design-system component macros — form Apply/Reset buttons render via
+   `ds.button` (auto-imported by base_ds). Status filter chips, status
+   badges, .subs-table stay page-local. #}
 {% set base_qs %}
 {%- if status_filter %}status={{ status_filter }}&{% endif -%}
 {%- if submitter_filter %}submitter={{ submitter_filter }}&{% endif -%}
@@ -165,18 +163,7 @@
   {%- if b is none -%}—{%- elif b < 1024 -%}{{ b }} B{%- elif b < 1048576 -%}{{ "%.1f"|format(b / 1024) }} KB{%- else -%}{{ "%.1f"|format(b / 1048576) }} MB{%- endif -%}
 {%- endmacro %}
 
-<div class="subs-page page-shell">
-  <h1 class="subs-title">Store submissions</h1>
-  <p class="subs-help">
-    Every upload to <code>/api/store/entities</code> writes one row here. Inline
-    checks (manifest, static security, quality+templating) run synchronously;
-    the LLM security review runs in the background and flips
-    <code>pending_llm → approved</code> or <code>blocked_llm</code>. Click a
-    row to see the full check breakdown. Override a blocked submission to
-    force-publish (audit trail captured), retry a <code>review_error</code>,
-    or delete spam outright. See <code>docs/STORE_GUARDRAILS.md</code>.
-  </p>
-
+<div class="subs-page">
   <form class="subs-form" method="get" action="/admin/store/submissions">
     {# Preserve status filter when submitting other filters. #}
     {% if status_filter %}<input type="hidden" name="status" value="{{ status_filter }}">{% endif %}
@@ -206,8 +193,9 @@
         {% endfor %}
       </select>
     </div>
-    <button class="submit-btn" type="submit">Apply</button>
-    <a class="reset-btn" href="/admin/store/submissions">Reset</a>
+    {{ ds.button('Apply', variant='primary', type='submit') }}
+    {{ ds.button('Reset', variant='secondary',
+                 href='/admin/store/submissions') }}
   </form>
 
   {% if submitter_filter %}
@@ -225,6 +213,14 @@
     <a href="/admin/store/submissions{% if _common %}?{{ _common[:-1] }}{% endif %}" class="{{ 'active' if not status_filter else '' }}">All</a>
     {% set _pending = "pending_llm,pending_inline" %}
     <a href="/admin/store/submissions?{{ _common }}status={{ _pending }}" class="{{ 'active' if status_filter == _pending else '' }}">Pending</a>
+    {# Inline failures on the upload path are hard-rejected and create
+       no rows — the only producer of `blocked_inline` post-v30 is the
+       admin Rescan flow, which re-runs inline checks against an
+       already-quarantined bundle. Include it here so an admin who
+       triggers a rescan sees the result in their default queue
+       instead of having to scroll to 'All'. Legacy `blocked_inline`
+       rows from pre-v30 instances also surface here, which is fine —
+       same actionable state. #}
     {% set _needs = "blocked_inline,blocked_llm,review_error" %}
     <a href="/admin/store/submissions?{{ _common }}status={{ _needs }}" class="{{ 'active' if status_filter == _needs else '' }}">Needs review</a>
     <a href="/admin/store/submissions?{{ _common }}status=approved" class="{{ 'active' if status_filter == 'approved' else '' }}">Approved</a>
@@ -252,7 +248,7 @@
       <tbody>
         {% for s in items %}
         <tr data-href="/admin/store/submissions/{{ s.id }}">
-          <td class="ts">{{ s.created_at.strftime("%Y-%m-%d %H:%M:%S") if s.created_at else "" }}</td>
+          <td class="ts">{% if s.created_at %}<time datetime="{{ s.created_at.isoformat() }}">{{ s.created_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time>{% endif %}</td>
           <td class="submitter">
             {# Filter-by-submitter link. stopPropagation in JS so row click is suppressed when clicking the email. #}
             <a href="?{{ base_qs }}submitter={{ s.submitter_id }}" data-noprop="1">{{ s.submitter_email or s.submitter_id }}</a>

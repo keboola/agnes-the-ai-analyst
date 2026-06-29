@@ -1,5 +1,9 @@
 name: Release
 
+# Optional Artifact Registry mirror (Cloud Run consumers): set repo vars
+#   AR_LOCATION (e.g. europe-west1), AR_PROJECT, AR_REPO
+# and secret GCP_SA_KEY (SA with artifactregistry.writer). Absent → skipped.
+
 on:
   push:
     branches:
@@ -24,10 +28,14 @@ on:
 permissions:
   contents: write
   packages: write
-  # `issues: write` lets the smoke-test job's rollback step open a
-  # GitHub issue alerting operators when an auto-rollback fires. Without
-  # this, the `gh issue create` call hits 403 and the `|| echo` fallback
-  # silently swallows it — operators see :stable revert with no alert.
+  # issues: write — explicitly granted at workflow scope so the
+  # rollback-on-smoke-fail job (which calls rollback.yml via workflow_call)
+  # can open a tracking issue when an auto-rollback fires. Reusable-
+  # workflow permissions are bounded by the caller's GITHUB_TOKEN scope,
+  # so removing this line would silently 403 rollback.yml's gh issue
+  # create step (the || echo fallback would swallow the failure, leaving
+  # :stable reverted with no operator alert). Keep in sync with the
+  # rollback-on-smoke-fail job-level permissions below.
   issues: write
 
 # When a developer pushes a brand-new branch with code changes, GitHub fires
@@ -43,46 +51,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    # Skip the `create` event for tags — those are owned by keboola-deploy.yml
-    # and shouldn't double-build here. Branch creates DO run.
-    if: github.event_name != 'create' || github.event.ref_type == 'branch'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Install dependencies
-        run: uv pip install --system ".[dev]"
-
-      - name: Lint with ruff
-        run: |
-          pip install ruff
-          ruff check . || true
-        continue-on-error: true  # Don't block on pre-existing lint issues; can tighten later
-
-      - name: Type check with mypy
-        run: |
-          pip install mypy
-          mypy src/ app/ cli/ connectors/ --ignore-missing-imports --no-error-summary || true
-        continue-on-error: true  # Don't block on mypy initially, can tighten later
-
-      - name: Run tests
-        # `-n auto` parallelises across runner CPU cores; matches ci.yml.
-        # Single-threaded was taking 15-20 min and frequently tripping
-        # branch-protection waits on the parallel CI workflow.
-        run: pytest tests/ -v --tb=short -n auto
-        env:
-          TESTING: "1"
-
+  # Tests + lint live in `ci.yml` (the sharded `test-shard` matrix and the
+  # `lint` job). `release.yml` is the image-build pipeline only — it no
+  # longer re-runs the suite, which previously meant the full ~10 min test
+  # job ran twice on every push to main/feature branches.
+  #
+  # Tradeoff: `build-and-push` no longer has `needs: test`, so on a push to
+  # `main` the `:stable` image publishes *concurrently* with `ci.yml`'s
+  # tests on the merge commit — not gated behind them. What still protects
+  # `main`: (1) branch protection requires `ci.yml`'s `test` + `docker-build`
+  # to pass before a PR can merge, so merged code was tested at PR time;
+  # (2) the smoke-test + auto-rollback job below catches a critically broken
+  # `:stable`. A post-merge test failure on the merge commit itself (rare —
+  # flaky test or merge skew) would not block the image; that is the
+  # accepted cost of not running the suite twice. `build-and-push` is gated
+  # only by its own `if:` below.
   build-and-push:
-    needs: test
     # Publish on:
     #   - any push (main → :stable-* / non-main → :dev-* + :dev-<slug>);
     #   - branch creation (a fresh branch off main with no extra commits
@@ -91,17 +75,28 @@ jobs:
     #     can deploy main's exact state without manually changing code);
     #   - manual workflow_dispatch.
     # Tag creates are excluded — `keboola-deploy.yml` owns tag pushes.
+    # `*-autopilot` branches are excluded: they are short-lived per-issue PR
+    # branches that no VM pins to, so a `:dev-<slug>` image is pure waste —
+    # and worse, each force-push (rebase / review fix) cancels the prior run
+    # (`cancel-in-progress`), leaving a cancelled check-run that shows as a red
+    # `build-and-push` on the PR. That check is NOT a required status check
+    # (only `test` + `docker-build` are), so the red is cosmetic — but it
+    # makes every autopilot PR look broken. Skipping the dev-image build for
+    # these branches keeps them visually clean without touching main, real
+    # dev branches, or the merge gate.
     if: |
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'create' && github.event.ref_type == 'branch')
+      !endsWith(github.ref, '-autopilot') && (
+        github.event_name == 'push' ||
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'create' && github.event.ref_type == 'branch')
+      )
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.meta.outputs.versioned_tag }}
       version: ${{ steps.meta.outputs.version }}
       channel: ${{ steps.meta.outputs.channel }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -206,6 +201,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve AR mirror config
+        id: armirror
+        run: |
+          if [ -n "${{ vars.AR_LOCATION }}" ] && [ -n "${{ vars.AR_PROJECT }}" ] && [ -n "${{ vars.AR_REPO }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Authenticate to Google Cloud (Artifact Registry mirror)
+        id: gcp_auth
+        if: steps.armirror.outputs.enabled == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          token_format: access_token
+
+      - name: Log in to Artifact Registry
+        if: steps.gcp_auth.outcome == 'success'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ vars.AR_LOCATION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.gcp_auth.outputs.access_token }}
+
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
@@ -221,23 +241,23 @@ jobs:
             ghcr.io/${{ github.repository }}:sha-${{ steps.meta.outputs.short_sha }}
             ${{ steps.meta.outputs.channel == 'dev' && format('ghcr.io/{0}:dev-{1}', github.repository, steps.meta.outputs.branch_slug) || '' }}
             ${{ steps.meta.outputs.channel == 'dev' && steps.meta.outputs.user_prefix != '' && format('ghcr.io/{0}:dev-{1}-latest', github.repository, steps.meta.outputs.user_prefix) || '' }}
+            ${{ steps.armirror.outputs.enabled == 'true' && format('{0}-docker.pkg.dev/{1}/{2}/agnes:{3}', vars.AR_LOCATION, vars.AR_PROJECT, vars.AR_REPO, steps.meta.outputs.channel) || '' }}
+            ${{ steps.armirror.outputs.enabled == 'true' && format('{0}-docker.pkg.dev/{1}/{2}/agnes:{3}', vars.AR_LOCATION, vars.AR_PROJECT, vars.AR_REPO, steps.meta.outputs.versioned_tag) || '' }}
 
   smoke-test:
     needs: build-and-push
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
 
-      # Required for the rollback step's `docker push` to GHCR. The
-      # `build-and-push` job logs in for itself; this job needs its own
-      # login since GitHub Actions tokens are scoped per-job. Without it,
-      # the rollback hits "unauthenticated: User cannot be authenticated
-      # with the token provided" and silently leaves :stable pointing at
-      # the broken image (real incident: PR #137 / 4ec5ff44).
+      # Required so `Start Agnes from built image` can pull the just-built
+      # private GHCR image. The `build-and-push` job logs in for itself;
+      # this job needs its own login since GitHub Actions tokens are scoped
+      # per-job.
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
@@ -258,44 +278,6 @@ jobs:
       - name: Run smoke tests
         run: bash scripts/smoke-test.sh http://localhost:8000
 
-      - name: Automatic rollback on failure
-        if: failure()
-        env:
-          # Required for the `gh issue create` call below — without GH_TOKEN
-          # the gh CLI fails the auth check and the issue creation falls
-          # through the `|| echo` fallback, so an operator never sees the
-          # rollback alert.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          IMAGE_TAG="${{ needs.build-and-push.outputs.image_tag }}"
-          VERSION="${{ needs.build-and-push.outputs.version }}"
-          DEPRECATED_TAG="deprecated-${VERSION}"
-          REPO="ghcr.io/${{ github.repository }}"
-
-          echo "Smoke test failed — initiating rollback"
-
-          # Tag the current (failed) image as :deprecated-YYYY.MM.N
-          docker pull "${REPO}:${IMAGE_TAG}"
-          docker tag "${REPO}:${IMAGE_TAG}" "${REPO}:${DEPRECATED_TAG}"
-          docker push "${REPO}:${DEPRECATED_TAG}"
-          echo "Tagged failed image as ${REPO}:${DEPRECATED_TAG}"
-
-          # Revert :stable to the previous known-good image
-          PREV_TAG=$(git tag -l "stable-*" --sort=-version:refname | head -2 | tail -1)
-          if [ -n "$PREV_TAG" ]; then
-            docker pull "${REPO}:${PREV_TAG}"
-            docker tag "${REPO}:${PREV_TAG}" "${REPO}:stable"
-            docker push "${REPO}:stable"
-            echo "Reverted :stable to ${PREV_TAG}"
-          else
-            echo "WARNING: No previous stable tag found — cannot revert :stable automatically"
-          fi
-
-          # Create a GitHub issue alerting about the failure
-          ISSUE_TITLE="Smoke test failure — rollback to ${PREV_TAG:-unknown}"
-          ISSUE_BODY="## Automatic Rollback Report\n\nThe smoke test for image \`${IMAGE_TAG}\` failed.\n\n- **Failed image**: \`${REPO}:${IMAGE_TAG}\`\n- **Deprecated tag**: \`${REPO}:${DEPRECATED_TAG}\`\n- **Rolled back to**: \`${PREV_TAG:-N/A}\`\n- **Commit**: \`${{ github.sha }}\`\n- **Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\nPlease investigate and fix before re-deploying."
-          gh issue create --title "$ISSUE_TITLE" --body "$(echo -e "$ISSUE_BODY")" --label "bug" || echo "Failed to create GitHub issue (gh CLI may not be available)"
-
       - name: Collect logs on failure
         if: failure()
         run: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml logs > smoke-test-logs.txt
@@ -310,6 +292,17 @@ jobs:
       - name: Teardown
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml down -v
+
+  rollback-on-smoke-fail:
+    needs: [build-and-push, smoke-test]
+    if: failure() && needs.smoke-test.result == 'failure'
+    uses: ./.github/workflows/rollback.yml
+    with:
+      failed_image_tag: ${{ needs.build-and-push.outputs.image_tag }}
+    permissions:
+      contents: read
+      packages: write
+      issues: write
 
   # Reproduces the deploy shape that broke agnes-development on 2026-04-29:
   # the production stack uses docker-compose.host-mount.yml to bind-mount /data
@@ -326,7 +319,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Pre-create /data with root-owned subdirs (mimics fresh GCE PD)
         run: |

@@ -3,10 +3,11 @@
 where_filters is JSON-encoded on write, decoded on read (matching the
 pattern used for primary_key). Other fields are scalar pass-through.
 """
+
 import duckdb
 import pytest
 
-from src.db import _V26_TO_V27_MIGRATIONS
+from src.db import _V26_TO_V27_MIGRATIONS, _V50_TO_V51_MIGRATIONS
 from src.repositories.table_registry import TableRegistryRepository
 
 
@@ -28,6 +29,12 @@ def repo(tmp_path):
     )
     for sql in _V26_TO_V27_MIGRATIONS:
         conn.execute(sql)
+    for sql in _V50_TO_V51_MIGRATIONS:
+        conn.execute(sql)
+    # v74 (#607): server_only distribution flag — register() now writes it.
+    conn.execute("ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS server_only BOOLEAN DEFAULT false")
+    # v79: named source connections — register() now writes connection_id.
+    conn.execute("ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS connection_id VARCHAR")
     return TableRegistryRepository(conn)
 
 
@@ -104,14 +111,22 @@ def test_register_no_optional_fields_leaves_them_null(repo):
 
 def test_register_upsert_overwrites_v26_fields(repo):
     repo.register(
-        id="in.c-crm.activity", name="activity",
-        source_type="keboola", bucket="in.c-crm", source_table="activity",
-        sync_strategy="incremental", incremental_window_days=1,
+        id="in.c-crm.activity",
+        name="activity",
+        source_type="keboola",
+        bucket="in.c-crm",
+        source_table="activity",
+        sync_strategy="incremental",
+        incremental_window_days=1,
     )
     repo.register(
-        id="in.c-crm.activity", name="activity",
-        source_type="keboola", bucket="in.c-crm", source_table="activity",
-        sync_strategy="incremental", incremental_window_days=7,
+        id="in.c-crm.activity",
+        name="activity",
+        source_type="keboola",
+        bucket="in.c-crm",
+        source_table="activity",
+        sync_strategy="incremental",
+        incremental_window_days=7,
         max_history_days=90,
     )
     got = repo.get("in.c-crm.activity")

@@ -172,7 +172,9 @@ class TestQuery:
     def test_query_no_db(self, tmp_config):
         result = runner.invoke(app, ["query", "SELECT 1"])
         assert result.exit_code == 1
-        assert "not found" in result.output
+        # Guidance now leads with the no-download --remote path.
+        assert "--remote" in result.output
+        assert "agnes pull" in result.output
 
     def test_query_with_db(self, tmp_config):
         import duckdb
@@ -268,17 +270,6 @@ class TestAdminCommands:
         with patch("cli.commands.admin.api_get", return_value=mock_resp):
             result = runner.invoke(app, ["admin", "list-tables"])
             assert result.exit_code == 1
-
-
-class TestQueryHybrid:
-    def test_register_bq_flag_help(self):
-        result = runner.invoke(app, ["query", "--help"])
-        assert result.exit_code == 0
-        # Rich/Typer may insert ANSI escape codes within option names,
-        # so check for the parts separately
-        assert "register" in result.output
-        assert "bq" in result.output
-        assert "BigQuery" in result.output
 
 
 class TestCatalogMetrics:

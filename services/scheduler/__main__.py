@@ -25,6 +25,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from typing import Optional
 
 import httpx
 
@@ -71,39 +72,46 @@ def _get_auth_token() -> str:
 # --- Env parsing ------------------------------------------------------------
 
 _DEFAULTS = {
-    "SCHEDULER_DATA_REFRESH_INTERVAL": 15 * 60,   # seconds
+    "SCHEDULER_DATA_REFRESH_INTERVAL": 15 * 60,  # seconds
     "SCHEDULER_HEALTH_CHECK_INTERVAL": 5 * 60,
-    "SCHEDULER_SCRIPT_RUN_INTERVAL":   1 * 60,
-    "SCHEDULER_TICK_SECONDS":          30,
+    "SCHEDULER_SCRIPT_RUN_INTERVAL": 1 * 60,
+    "SCHEDULER_TICK_SECONDS": 30,
     # LLM pipeline cadences (#176, #179 review). Defaults preserve the
     # 10m / 15m / 17m coprime offset so the three jobs don't fire on the
     # same tick and stack their API + DB load. The verification-detector
     # default (900s) is also the source of truth for the health-check
     # staleness grace window in app/api/health.py — single env var drives
     # both, so an operator changing the cadence moves both.
-    "SCHEDULER_SESSION_COLLECTOR_INTERVAL":     10 * 60,
+    "SCHEDULER_SESSION_COLLECTOR_INTERVAL": 10 * 60,
     # Drives the verification session-processor cadence AND the
     # health-check staleness grace window in app/api/health.py
     # (single env var → both, so an operator changing the cadence moves
     # both). Name retained post session-pipeline refactor for operator
     # compatibility — existing docker-compose env files keep working.
     "SCHEDULER_VERIFICATION_DETECTOR_INTERVAL": 15 * 60,
-    "SCHEDULER_USAGE_PROCESSOR_INTERVAL":       10 * 60,
-    "SCHEDULER_CORPORATE_MEMORY_INTERVAL":      17 * 60,
+    "SCHEDULER_USAGE_PROCESSOR_INTERVAL": 10 * 60,
+    "SCHEDULER_CORPORATE_MEMORY_INTERVAL": 17 * 60,
     # BigQuery metadata refresh: walks remote registry rows and updates the
     # persistent ``bq_metadata_cache``. Default 4 h — long enough that the
     # cumulative BQ jobs API cost stays negligible on a typical 10–50-table
     # registry, short enough that operator-edited tables show real numbers
-    # within an analyst's working day. Hot reads of ``/api/v2/catalog`` go
-    # to DuckDB, never to BQ, so this can be tuned freely without touching
-    # request-path latency.
-    "SCHEDULER_BQ_METADATA_REFRESH_INTERVAL":   4 * 60 * 60,
+    # within an analyst's working day.
+    "SCHEDULER_BQ_METADATA_REFRESH_INTERVAL": 4 * 60 * 60,
     # Pause between scheduler startup and the first tick. Keeps the
     # scheduler from synchronising its "Table never synced, marking as
-    # due" burst with the app's own startup cache_warmup (which writes
-    # heavily to the system DB for several seconds). Set to 0 to disable
-    # — useful in tests that need deterministic-fast first-tick.
-    "SCHEDULER_STARTUP_GRACE_SECONDS":          60,
+    # due" burst with the app's own startup cache_warmup. Set to 0 to
+    # disable — useful in tests that need deterministic-fast first-tick.
+    "SCHEDULER_STARTUP_GRACE_SECONDS": 60,
+    # Daily prune of usage_events older than USAGE_EVENTS_RETENTION_DAYS
+    # (default 0 = forever). Rollups are not pruned.
+    "SCHEDULER_USAGE_PRUNE_INTERVAL": 86400,
+    # Jira self-healing pair (parity with the legacy Data Broker
+    # jira-sla-poll.timer / jira-consistency.timer). Defaults match the
+    # systemd-unit cadence from connectors/jira/systemd/. Both endpoints
+    # short-circuit when JIRA_* env vars are unset, so customers without
+    # Jira ingest pay no cost for these jobs running on the default schedule.
+    "SCHEDULER_JIRA_SLA_POLL_INTERVAL": 15 * 60,
+    "SCHEDULER_JIRA_CONSISTENCY_INTERVAL": 30 * 60,
 }
 
 
@@ -168,6 +176,69 @@ def _seconds_to_schedule(seconds: int) -> str:
     return f"every {minutes}m"
 
 
+_IW_SYNC_SCHEDULE_DEFAULT = "daily 03:30"
+
+# Sentinel distinguishing "key absent / YAML null" (use the default) from an
+# explicit empty string (admin cleared → disable). get_value collapses both a
+# missing key and a null value to its `default`, so we pass this unique object
+# and only a real "" value read back from YAML reaches the disable branch.
+_IW_SCHEDULE_UNSET = object()
+
+
+def _iw_sync_schedule() -> Optional[str]:
+    """Resolve the Initial Workspace Template nightly auto-sync cadence
+    (#622 Slice 3 PR-B).
+
+    Read order:
+      1. ``SCHEDULER_INITIAL_WORKSPACE_SCHEDULE`` env override
+      2. instance.yaml ``initial_workspace.sync_schedule``
+      3. default ``daily 03:30`` (offset from the marketplaces job at 03:00
+         so the two nightly git-clone bursts don't stack)
+
+    Returns ``None`` when the admin has explicitly cleared the schedule
+    (``sync_schedule: ""`` in the overlay) — the documented "leave empty to
+    disable auto-sync" contract — and ``build_jobs`` then omits the nightly
+    job entirely. A key that is absent or null is treated as "never
+    configured" and falls back to the default, so existing instances keep
+    auto-sync on.
+
+    Any non-empty value that fails ``is_valid_schedule`` falls back to the
+    default — defensive, matching ``_seconds_to_schedule``'s posture — so a
+    typo in the env / YAML never produces a schedule string ``is_table_due``
+    would silently ignore. ``build_jobs`` runs once at container start, so a
+    UI edit to ``sync_schedule`` takes effect only on the next scheduler
+    restart.
+    """
+    from src.scheduler import is_valid_schedule
+
+    raw = os.environ.get("SCHEDULER_INITIAL_WORKSPACE_SCHEDULE", "").strip()
+    if not raw:
+        try:
+            from app.instance_config import get_value
+
+            yaml_val = get_value("initial_workspace", "sync_schedule", default=_IW_SCHEDULE_UNSET)
+            if yaml_val is _IW_SCHEDULE_UNSET:
+                # Key absent or null → never explicitly configured.
+                return _IW_SYNC_SCHEDULE_DEFAULT
+            raw = (yaml_val or "").strip() if isinstance(yaml_val, str) else ""
+            if not raw:
+                # Explicitly set to empty → admin disabled auto-sync.
+                return None
+        except Exception:
+            logger.exception("scheduler: failed to read initial_workspace.sync_schedule")
+            return _IW_SYNC_SCHEDULE_DEFAULT
+
+    if raw and is_valid_schedule(raw):
+        return raw
+    if raw:
+        logger.warning(
+            "scheduler: invalid initial_workspace sync_schedule %r — falling back to %r",
+            raw,
+            _IW_SYNC_SCHEDULE_DEFAULT,
+        )
+    return _IW_SYNC_SCHEDULE_DEFAULT
+
+
 def resolved_tick_seconds() -> int:
     """Read + validate SCHEDULER_TICK_SECONDS in isolation (test helper)."""
     return _read_positive_int("SCHEDULER_TICK_SECONDS")
@@ -203,9 +274,13 @@ def resolved_bq_metadata_initial_offset_seconds(rng=None) -> int:
     ``rng`` injectable for deterministic tests.
     """
     import random as _random
-    cap = int(os.environ.get(
-        "SCHEDULER_BQ_METADATA_INITIAL_OFFSET_MAX_SECONDS", "900",
-    ))
+
+    cap = int(
+        os.environ.get(
+            "SCHEDULER_BQ_METADATA_INITIAL_OFFSET_MAX_SECONDS",
+            "900",
+        )
+    )
     if cap <= 0:
         return 0
     r = rng or _random.Random()
@@ -219,26 +294,29 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
     Marketplaces stays hardcoded — promoting it to env is out of #77 scope.
     """
     refresh = _read_positive_int("SCHEDULER_DATA_REFRESH_INTERVAL")
-    health  = _read_positive_int("SCHEDULER_HEALTH_CHECK_INTERVAL")
+    health = _read_positive_int("SCHEDULER_HEALTH_CHECK_INTERVAL")
     scripts = _read_positive_int("SCHEDULER_SCRIPT_RUN_INTERVAL")
-    sess    = _read_positive_int("SCHEDULER_SESSION_COLLECTOR_INTERVAL")
-    verify  = _read_positive_int("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL")
-    usage   = _read_positive_int("SCHEDULER_USAGE_PROCESSOR_INTERVAL")
+    sess = _read_positive_int("SCHEDULER_SESSION_COLLECTOR_INTERVAL")
+    verify = _read_positive_int("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL")
+    usage = _read_positive_int("SCHEDULER_USAGE_PROCESSOR_INTERVAL")
     corpmem = _read_positive_int("SCHEDULER_CORPORATE_MEMORY_INTERVAL")
-    bqmeta  = _read_positive_int("SCHEDULER_BQ_METADATA_REFRESH_INTERVAL")
-    tick    = _read_positive_int("SCHEDULER_TICK_SECONDS")
-    smallest = min(refresh, health, scripts, sess, verify, usage, corpmem, bqmeta)
+    bqmeta = _read_positive_int("SCHEDULER_BQ_METADATA_REFRESH_INTERVAL")
+    usageprune = _read_positive_int("SCHEDULER_USAGE_PRUNE_INTERVAL")
+    jirasla = _read_positive_int("SCHEDULER_JIRA_SLA_POLL_INTERVAL")
+    jiraconsis = _read_positive_int("SCHEDULER_JIRA_CONSISTENCY_INTERVAL")
+    tick = _read_positive_int("SCHEDULER_TICK_SECONDS")
+    smallest = min(refresh, health, scripts, sess, verify, usage, corpmem, bqmeta, usageprune, jirasla, jiraconsis)
     if tick > smallest:
         raise ValueError(
             f"SCHEDULER_TICK_SECONDS={tick} must be <= the smallest job "
             f"interval ({smallest}s) so jobs don't consistently miss their "
             f"cadence by up to one tick"
         )
-    return [
-        ("data-refresh",          _seconds_to_schedule(refresh), "/api/sync/trigger",                    "POST", 120),
-        ("health-check",          _seconds_to_schedule(health),  "/api/health",                          "GET",   30),
-        ("script-runner",         _seconds_to_schedule(scripts), "/api/scripts/run-due",                 "POST", 600),
-        ("marketplaces",          "daily 03:00",                 "/api/marketplaces/sync-all",           "POST", 900),
+    jobs: list[tuple[str, str, str, str, int]] = [
+        ("data-refresh", _seconds_to_schedule(refresh), "/api/sync/trigger", "POST", 120),
+        ("health-check", _seconds_to_schedule(health), "/api/health", "GET", 30),
+        ("script-runner", _seconds_to_schedule(scripts), "/api/scripts/run-due", "POST", 600),
+        ("marketplaces", "daily 03:00", "/api/marketplaces/sync-all", "POST", 900),
         # LLM pipeline (#176, #179 review). Cadences are deliberately offset
         # (10m / 15m / 17m by default — all coprime modulo the 30s tick) so
         # the three LLM-driven jobs don't fire on the same tick and stack
@@ -246,22 +324,32 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # without a code change; the verification-detector cadence is the
         # single source of truth for the health-check staleness grace
         # window in app/api/health.py (which uses 2x the cadence).
-        ("session-collector",     _seconds_to_schedule(sess),    "/api/admin/run-session-collector",     "POST", 300),
+        ("session-collector", _seconds_to_schedule(sess), "/api/admin/run-session-collector", "POST", 300),
         # session-pipeline processors — independent loops, each invoked on
         # its own cadence via the parametrized run-session-processor endpoint.
         # Adding a third processor in the future is one line here + one entry
         # in services/session_processors/__init__.py registry.
-        ("session-processor:verification", _seconds_to_schedule(verify),
-            "/api/admin/run-session-processor?processor=verification", "POST", 900),
-        ("session-processor:usage",        _seconds_to_schedule(usage),
-            "/api/admin/run-session-processor?processor=usage",        "POST", 300),
-        ("corporate-memory",      _seconds_to_schedule(corpmem), "/api/admin/run-corporate-memory",      "POST", 900),
+        (
+            "session-processor:verification",
+            _seconds_to_schedule(verify),
+            "/api/admin/run-session-processor?processor=verification",
+            "POST",
+            900,
+        ),
+        (
+            "session-processor:usage",
+            _seconds_to_schedule(usage),
+            "/api/admin/run-session-processor?processor=usage",
+            "POST",
+            300,
+        ),
+        ("corporate-memory", _seconds_to_schedule(corpmem), "/api/admin/run-corporate-memory", "POST", 900),
         # v30: TTL purge of blocked-bundle bytes. Cheap (just rmtree
         # + UPDATE), runs once daily at 04:00 UTC so the spike is
         # visible in audit_log without competing with the marketplaces
         # job at 03:00. Endpoint reads guardrails.blocked_bundle_ttl_days
         # from instance.yaml and short-circuits when set to 0.
-        ("store-blocked-purge",   "daily 04:00",                 "/api/admin/run-blocked-purge",         "POST", 600),
+        ("store-blocked-purge", "daily 04:00", "/api/admin/run-blocked-purge", "POST", 600),
         # Stuck-review reaper (#7). A submission stays at
         # status='pending_llm' until the BackgroundTasks worker writes
         # a verdict. If the worker crashes, the row sits forever. Run
@@ -269,16 +357,54 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         # than guardrails.stuck_review_grace_seconds (default 1800)
         # to review_error so admin can retry. Cheap (one indexed
         # SELECT + N small UPDATEs); short timeout sufficient.
-        ("store-reap-stuck-reviews", "every 15m",                 "/api/admin/run-reap-stuck-reviews",   "POST", 60),
+        ("store-reap-stuck-reviews", "every 15m", "/api/admin/run-reap-stuck-reviews", "POST", 60),
         # BigQuery metadata refresh — keeps ``bq_metadata_cache`` warm so
         # ``GET /api/v2/catalog`` never has to call BQ at request time.
-        # 30-min timeout is generous; on a 10-table dev registry the
-        # observed full refresh ran in ~7 min when two view-backed rows
-        # took 7 min each. Bounded concurrency
-        # (``AGNES_BQ_METADATA_REFRESH_CONCURRENCY``, default 4) caps the
-        # tail.
-        ("bq-metadata-refresh",   _seconds_to_schedule(bqmeta),  "/api/admin/run-bq-metadata-refresh",   "POST", 1800),
+        ("bq-metadata-refresh", _seconds_to_schedule(bqmeta), "/api/admin/run-bq-metadata-refresh", "POST", 1800),
+        # Usage event retention pruning. Reads USAGE_EVENTS_RETENTION_DAYS
+        # on the server side; short-circuits when unset or 0. Runs daily
+        # (default 86400s). Rollup tables untouched.
+        ("usage-prune", _seconds_to_schedule(usageprune), "/api/admin/usage/prune", "POST", 60),
+        # Jira self-healing pair (parity with the legacy Data Broker
+        # ``jira-sla-poll.timer`` and ``jira-consistency.timer`` systemd
+        # units). Both endpoints short-circuit when the JIRA_* env vars
+        # are not set, so a customer without Jira ingest pays nothing
+        # for these scheduler entries.
+        #
+        # poll-sla: refreshes elapsed_millis + status on open tickets
+        # whose snapshot would otherwise stagnate between webhooks.
+        # consistency-check: compares Jira API ↔ raw JSON ↔ parquet and
+        # backfills small gaps left behind by missed webhooks. The
+        # ``--max-age-days 30`` default in the endpoint matches the
+        # cadence: 30 min cadence × 30-day window keeps the cost
+        # bounded while catching realistic drift.
+        ("jira-sla-poll", _seconds_to_schedule(jirasla), "/api/admin/run-jira-sla-poll", "POST", 900),
+        (
+            "jira-consistency-check",
+            _seconds_to_schedule(jiraconsis),
+            "/api/admin/run-jira-consistency-check",
+            "POST",
+            1800,
+        ),
     ]
+
+    # Initial Workspace Template nightly auto-sync (#622 Slice 3 PR-B).
+    # Endpoint self-gates: returns 200 {skipped:true} when no IWT repo is
+    # registered, so this job is a no-op on instances without one. Default
+    # 03:30 offsets from the marketplaces job (03:00) so the two nightly
+    # git-clone bursts don't stack. Configurable via
+    # SCHEDULER_INITIAL_WORKSPACE_SCHEDULE or instance.yaml
+    # initial_workspace.sync_schedule; an explicitly cleared schedule
+    # (_iw_sync_schedule() -> None) omits the job entirely. Inserted right
+    # after marketplaces (index 4) to keep the nightly git-clone jobs grouped.
+    iw_sched = _iw_sync_schedule()
+    if iw_sched is not None:
+        jobs.insert(
+            4,
+            ("initial-workspace", iw_sched, "/api/admin/initial-workspace/sync-if-configured", "POST", 900),
+        )
+    return jobs
+
 
 _running = True
 
@@ -311,6 +437,7 @@ def _call_api(endpoint: str, method: str, timeout_sec: int) -> bool:
         logger.error(f"Job {endpoint} failed: {e}")
         try:
             from src.observability import get_posthog
+
             get_posthog().capture_exception(
                 e,
                 distinct_id="system",
@@ -332,7 +459,11 @@ def run():
     logger.info(
         "Scheduler started. API_URL=%s, %d jobs, tick=%ds, "
         "startup_grace=%ds, bq_metadata_initial_offset=%ds. Schedules: %s",
-        API_URL, len(jobs), tick, grace, bqmeta_offset,
+        API_URL,
+        len(jobs),
+        tick,
+        grace,
+        bqmeta_offset,
         {name: schedule for name, schedule, *_ in jobs},
     )
 
@@ -357,9 +488,8 @@ def run():
     # synchronising their refresh ticks against one another.
     if bqmeta_offset > 0:
         from datetime import timedelta as _td
-        offset_ago = (
-            datetime.now(timezone.utc) - _td(seconds=bqmeta_offset)
-        ).isoformat()
+
+        offset_ago = (datetime.now(timezone.utc) - _td(seconds=bqmeta_offset)).isoformat()
         last_run["bq-metadata-refresh"] = offset_ago
 
     # Per-tick concurrency: one thread per job slot, so a 900s verification
@@ -387,8 +517,15 @@ def run():
                 in_flight.add(name)
             logger.info("Running job: %s (%s)", name, schedule)
             executor.submit(
-                _run_job, name, endpoint, method, timeout_sec, now_iso,
-                last_run, in_flight, in_flight_lock,
+                _run_job,
+                name,
+                endpoint,
+                method,
+                timeout_sec,
+                now_iso,
+                last_run,
+                in_flight,
+                in_flight_lock,
             )
         time.sleep(tick)
 

@@ -19,19 +19,26 @@ check function. The aggregator at the bottom of `health_check_detailed`
 treats `info` as non-promoting.
 """
 
+import asyncio
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
-
-from fastapi import APIRouter, Depends, Query
 import duckdb
+from fastapi import APIRouter, Depends, Query
 
 from app.auth.dependencies import _get_db, get_current_user
+from app.secrets_vault import vault_key_configured
 from src.db import SCHEMA_VERSION, get_system_db
-from src.repositories.sync_state import SyncStateRepository
+from src.repositories import (
+    session_processor_state_repo,
+    sync_state_repo,
+    users_repo,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["health"])
 
@@ -67,6 +74,7 @@ def _check_bq_billing_project() -> dict | None:
 
     try:
         from connectors.bigquery.access import get_bq_access
+
         bq = get_bq_access()
         billing = bq.projects.billing
         data = bq.projects.data
@@ -134,7 +142,7 @@ def _stuck_file_grace_seconds() -> int:
     return 4 * _verification_detector_grace_seconds()
 
 
-def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
+def _check_session_pipeline() -> dict:
     """Detect a stuck session pipeline: jsonls land but never get processed.
 
     Heuristic (#176):
@@ -174,14 +182,9 @@ def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
 
     # Look up the most recent processed_at for the verification processor.
     try:
-        row = conn.execute(
-            "SELECT MAX(processed_at) FROM session_processor_state WHERE processor_name = ?",
-            ["verification"],
-        ).fetchone()
+        last_processed = session_processor_state_repo().max_processed_at("verification")
     except Exception as e:
         return {"status": "unknown", "detail": f"could not query session_processor_state: {e}"}
-
-    last_processed = row[0] if row else None
 
     grace_seconds = _verification_detector_grace_seconds()
 
@@ -198,16 +201,15 @@ def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
             }
         return {"status": "ok", "session_files": len(session_files)}
 
-    # Both available — compare. session_processor_state.processed_at is
-    # stored as DuckDB TIMESTAMP (naive). DuckDB converts tz-aware writes
-    # to local time before storing, so the only safe interpretation is
-    # local-naive on read. Compute the lag against `datetime.now()` (also
-    # local-naive) and only convert to epoch via the OS's local timezone
-    # mapping at the comparison boundary.
-    now_local_naive = datetime.now()
+    # Both available — compare. `session_processor_state.processed_at` is
+    # stored as DuckDB TIMESTAMP (naive). The DuckDB connection helper
+    # (`src.db._open_duckdb`) pins the session timezone to UTC, so the
+    # naive read is UTC-clock. Compare against UTC-naive `now` to keep
+    # both sides on the same axis.
+    now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
     if hasattr(last_processed, "tzinfo") and last_processed.tzinfo is not None:
         last_processed = last_processed.replace(tzinfo=None)
-    proc_age_seconds = (now_local_naive - last_processed).total_seconds()
+    proc_age_seconds = (now_utc_naive - last_processed).total_seconds()
     file_age_seconds = time_now() - latest_session_mtime
 
     # File is newer than the last processed_at by more than grace_seconds.
@@ -231,13 +233,7 @@ def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
     # (for processor_name='verification') and surfacing it once it's older
     # than _stuck_file_grace_seconds.
     try:
-        processed = {
-            row[0]
-            for row in conn.execute(
-                "SELECT session_file FROM session_processor_state WHERE processor_name = ?",
-                ["verification"],
-            ).fetchall()
-        }
+        processed = session_processor_state_repo().processed_session_files("verification")
     except Exception as e:
         # Don't fail the health check on this enrichment.
         logger.debug("FIFO check: could not read session_processor_state: %s", e)
@@ -290,6 +286,7 @@ def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
 def time_now() -> float:
     """Wall-clock seconds since epoch — separated out for test seam parity."""
     import time as _t
+
     return _t.time()
 
 
@@ -314,9 +311,7 @@ def _check_db_schema() -> dict:
     """
     try:
         conn = get_system_db()
-        row = conn.execute(
-            "SELECT version FROM schema_version ORDER BY applied_at DESC LIMIT 1"
-        ).fetchone()
+        row = conn.execute("SELECT version FROM schema_version ORDER BY applied_at DESC LIMIT 1").fetchone()
         if row is None:
             return {"db_schema": "mismatch", "detail": "no schema_version row found"}
         current_version = row[0]
@@ -328,14 +323,49 @@ def _check_db_schema() -> dict:
         return {"db_schema": "unreachable", "detail": str(e)}
 
 
+# The liveness probe (`/api/health`) is hit every few seconds by the LB, the
+# compose healthcheck, and the on-VM watchdog. Re-running the schema `SELECT`
+# on every probe serializes it behind any in-flight orchestrator rebuild
+# (which writes `sync_state` on the same system connection) — the probe then
+# times out and the watchdog fires a false `HEALTH: not 200`. The schema only
+# changes at startup migration, so memoize the result for a short TTL.
+_SCHEMA_CACHE_TTL = 30.0  # seconds
+_schema_cache: dict | None = None
+_schema_cache_at: float = 0.0
+
+
+def _cached_db_schema() -> dict:
+    """`_check_db_schema()` memoized for `_SCHEMA_CACHE_TTL` seconds.
+
+    Transient `unreachable` results are never cached so a momentarily-busy DB
+    recovers to `ok` on the next probe rather than pinning a stale failure.
+    """
+    global _schema_cache, _schema_cache_at
+    now = time.monotonic()
+    cached = _schema_cache
+    if cached is not None and (now - _schema_cache_at) < _SCHEMA_CACHE_TTL:
+        return cached
+    result = _check_db_schema()
+    if result.get("db_schema") != "unreachable":
+        _schema_cache = result
+        _schema_cache_at = now
+    return result
+
+
 @router.get("/api/health")
 async def health_check():
-    """Minimal health check for load balancers / compose healthcheck. No auth required."""
-    schema_check = _check_db_schema()
+    """Minimal health check for load balancers / compose healthcheck. No auth required.
+
+    The schema read is offloaded to a worker thread (`get_system_db()` hands
+    out a cursor-per-call, so this is thread-safe) and memoized — see
+    `_cached_db_schema` — so a probe never blocks the event loop on DB
+    contention during an orchestrator rebuild.
+    """
+    schema_check = await asyncio.to_thread(_cached_db_schema)
     status = "ok"
     if schema_check["db_schema"] != "ok":
         status = "unhealthy"
-    return {"status": status, **schema_check}
+    return {"status": status, "vault_key_configured": vault_key_configured(), **schema_check}
 
 
 @router.get("/api/health/detailed")
@@ -376,7 +406,7 @@ async def health_check_detailed(
 
     # Sync state summary
     try:
-        repo = SyncStateRepository(conn)
+        repo = sync_state_repo()
         all_states = repo.get_all_states()
         total_tables = len(all_states)
         total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
@@ -387,8 +417,9 @@ async def health_check_detailed(
             if last:
                 try:
                     # Handle both tz-aware and tz-naive datetimes from DuckDB
-                    if hasattr(last, 'tzinfo') and last.tzinfo is None:
+                    if hasattr(last, "tzinfo") and last.tzinfo is None:
                         from datetime import timezone as tz
+
                         last = last.replace(tzinfo=tz.utc)
                     if (now - last).total_seconds() > 86400:
                         stale.append(s["table_id"])
@@ -405,7 +436,7 @@ async def health_check_detailed(
 
     # User count
     try:
-        user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        user_count = users_repo().count_all()
         checks["users"] = {"status": "ok", "count": user_count}
     except Exception as e:
         checks["users"] = {"status": "error", "detail": str(e)}
@@ -418,28 +449,57 @@ async def health_check_detailed(
     # Session pipeline (#176): warn when uploaded jsonls aren't getting
     # processed by the verification-detector cadence.
     try:
-        checks["session_pipeline"] = _check_session_pipeline(conn)
+        checks["session_pipeline"] = _check_session_pipeline()
     except Exception as e:
         checks["session_pipeline"] = {"status": "unknown", "detail": str(e)}
 
-    # Aggregate to overall status. `info` and `unknown` surface in the
-    # response but never escalate the headline (issue #178). `warning`
-    # promotes to `degraded`; `error` (or a schema mismatch when the
-    # caller asked for it) promotes to `unhealthy`.
-    overall = "healthy"
-    for check in checks.values():
-        if check.get("status") == "error":
-            overall = "unhealthy"
-            break
-        if check.get("status") == "warning":
-            overall = "degraded"
-    # Schema mismatch only escalates when the caller asked for the check
+    # Per-check audience tagging (issue #345 B): which checks does an
+    # analyst care about vs. which are operator-only? An analyst seeing
+    # `Overall: degraded` because the scheduler is behind on session
+    # extraction has no way to act on it — the warning is real, but it's
+    # not their warning. ``audience`` lets clients compute a role-aware
+    # headline without dropping checks from the response payload.
+    _AUDIENCE = {
+        "duckdb_state": "analyst",  # query path; visible everywhere
+        "db_schema": "operator",  # schema migration sanity
+        "data": "operator",  # stale tables — admin scheduler
+        "users": "operator",  # admin-side ops only
+        "bq_config": "operator",  # cluster-level config
+        "session_pipeline": "operator",  # admin-driven cadence
+    }
+    for name, check in checks.items():
+        check.setdefault("audience", _AUDIENCE.get(name, "operator"))
+
+    def _aggregate(items) -> str:
+        out = "healthy"
+        for check in items:
+            if check.get("status") == "error":
+                return "unhealthy"
+            if check.get("status") == "warning":
+                out = "degraded"
+        return out
+
+    # Schema mismatch escalates only when the caller asked for the check
     # — otherwise the absent key is treated as "not asserted".
-    if "db_schema" in checks and checks["db_schema"].get("db_schema") != "ok":
-        overall = "unhealthy"
+    def _apply_schema_escalation(status: str) -> str:
+        if "db_schema" in checks and checks["db_schema"].get("db_schema") != "ok":
+            return "unhealthy"
+        return status
+
+    overall = _apply_schema_escalation(_aggregate(checks.values()))
+    overall_analyst = _aggregate(c for c in checks.values() if c.get("audience") == "analyst")
+    # db_schema is audience=operator, so it never escalates the analyst
+    # headline — that's the intent.
+
+    # Caller role surface: clients pick the headline they should display
+    # based on their own privilege. Admins/operators see ``overall``;
+    # analysts see ``overall_analyst`` and an optional flag to opt in.
+    caller_role = "admin" if _user.get("is_admin") else "analyst"
 
     return {
         "status": overall,
+        "overall_analyst": overall_analyst,
+        "caller_role": caller_role,
         "version": os.environ.get("AGNES_VERSION", "dev"),
         "channel": os.environ.get("RELEASE_CHANNEL", "dev"),
         "image_tag": os.environ.get("AGNES_TAG", "unknown"),
@@ -471,6 +531,7 @@ async def debug_throw(
     """
     if os.environ.get("DEBUG", "").strip().lower() not in ("1", "true", "yes", "on"):
         from fastapi import HTTPException
+
         raise HTTPException(status_code=404)
 
     types = {
@@ -491,7 +552,5 @@ async def version_info():
         "version": os.environ.get("AGNES_VERSION", "dev"),
         "channel": os.environ.get("RELEASE_CHANNEL", "dev"),
         "image_tag": os.environ.get("AGNES_TAG", "unknown"),
-        "commit_sha": os.environ.get("AGNES_COMMIT_SHA", "unknown"),
-        "schema_version": SCHEMA_VERSION,
         "deployed_at": _DEPLOYED_AT,
     }

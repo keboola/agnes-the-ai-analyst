@@ -73,6 +73,10 @@ def test_init_writes_expected_files(tmp_path, monkeypatch):
     assert (tmp_path / "AGNES_WORKSPACE.md").exists()
     # run_pull always creates the analytics.duckdb file (load-bearing).
     assert (tmp_path / "user" / "duckdb" / "analytics.duckdb").exists()
+    # init anchors the workspace root in config so `agnes push` (and its
+    # SessionEnd hook) can find the Claude Code session folder.
+    from cli.config import get_workspace_root
+    assert get_workspace_root() == str(tmp_path.resolve())
 
 
 def test_init_no_dead_dirs_zero_grants(tmp_path, monkeypatch):
@@ -154,6 +158,54 @@ def test_init_force_backs_up_existing_claude_md(tmp_path, monkeypatch):
     assert "must survive reinit" in backups[0].read_text()
     # The summary line names the backup so the operator can find it.
     assert "Backed up" in r.output, r.output
+
+
+def test_init_deletes_bootstrap_token_file(tmp_path, monkeypatch):
+    """#580 Finding 1: `agnes init` clears the transient `~/.agnes/token`
+    once it has consumed it — the raw PAT must not linger in a plaintext
+    file at the default umask after init. The authoritative copy lives in
+    ~/.config/agnes/token.json (0o600).
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+    api_get = _make_api_get()
+    monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.api_get", api_get, raising=False)
+
+    # Simulate the setup-prompt bootstrap: PAT written to ~/.agnes/token.
+    bootstrap_dir = home / ".agnes"
+    bootstrap_dir.mkdir()
+    token_file = bootstrap_dir / "token"
+    token_file.write_text("eyJ-bootstrap-pat\n", encoding="utf-8")
+
+    result = runner.invoke(init_app, [
+        "--server-url", "http://x",
+        "--token-file", str(token_file),
+        "--workspace", str(tmp_path / "ws"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert not token_file.exists(), "~/.agnes/token should be deleted after init"
+
+
+def test_init_succeeds_when_bootstrap_token_absent(tmp_path, monkeypatch):
+    """The bootstrap-token cleanup is best-effort: init must still succeed
+    when ~/.agnes/token was never created (e.g. --token / AGNES_TOKEN path)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+    api_get = _make_api_get()
+    monkeypatch.setattr("cli.commands.init.api_get", api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.api_get", api_get, raising=False)
+
+    result = runner.invoke(init_app, [
+        "--server-url", "http://x",
+        "--token", "inline-pat",
+        "--workspace", str(tmp_path / "ws"),
+    ])
+    assert result.exit_code == 0, result.output
 
 
 def test_init_partial_state_friendly_exit(tmp_path, monkeypatch):

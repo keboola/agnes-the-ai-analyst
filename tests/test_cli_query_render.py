@@ -1,13 +1,15 @@
 """CLI commands route BQ-typed errors through the shared renderer.
 
-Three CLI paths surface BQ errors today:
+Two CLI paths surface BQ errors today:
 - `agnes query --remote` (cli/commands/query.py:_query_remote → /api/query)
-- `agnes query --register-bq` (cli/commands/query.py:_query_hybrid via
-  RemoteQueryError, which wraps server-side BqAccessError)
 - `agnes snapshot create` / `agnes schema` / etc. (cli/v2_client.V2ClientError → v2 endpoints)
 
 After the refactor they all call cli.error_render.render_error so analyst
 output is consistent and structured. Closes part of #160 §4.7.3.
+
+The third assertion below covers `RemoteQueryError.details`, which is now
+exercised only via the server-side `/api/query/hybrid` endpoint
+(`app/api/query_hybrid.py`) — the client CLI no longer wraps it.
 """
 from __future__ import annotations
 
@@ -53,8 +55,9 @@ def test_v2_client_error_drops_truncation_for_dicts():
 
 
 def test_remote_query_error_carries_details():
-    """`RemoteQueryError` already has a `details` field. Verify the type's
-    surface so cli/commands/query.py:_query_hybrid can rely on it."""
+    """`RemoteQueryError` carries a structured `details` field. Verify the
+    type's surface so `app/api/query_hybrid.py` (the only remaining caller)
+    can rely on it."""
     from src.remote_query import RemoteQueryError
 
     err = RemoteQueryError(

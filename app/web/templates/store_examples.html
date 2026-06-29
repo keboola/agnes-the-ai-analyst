@@ -1,0 +1,341 @@
+{% extends "base_ds.html" %}
+{% block title %}Submission examples — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block head_extra %}
+<style>
+  .examples-page { max-width: 980px; }
+  .examples-page h1 {
+    font-size: 26px; font-weight: 700; margin: 0 0 6px;
+    color: var(--text-primary, #111827);
+  }
+  .examples-page .sub {
+    font-size: 14px; color: var(--text-secondary, #6b7280);
+    margin-bottom: 24px; line-height: 1.55;
+  }
+  .ex-section {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 10px;
+    padding: 20px 22px;
+    margin-bottom: 18px;
+  }
+  .ex-section h2 {
+    margin: 0 0 4px; font-size: 17px; font-weight: 600;
+    color: var(--text-primary, #111827);
+  }
+  .ex-section .why {
+    font-size: 13px; color: var(--text-secondary, #6b7280);
+    margin-bottom: 12px; line-height: 1.6;
+  }
+  .ex-block {
+    font-family: var(--font-mono); font-size: 12.5px;
+    background: #f6f8fa;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    padding: 12px 14px;
+    line-height: 1.5;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #1f2937;
+  }
+  .ex-label {
+    display: inline-block; font-size: 11px; font-weight: 600;
+    padding: 2px 8px; border-radius: 4px;
+    background: rgba(16, 185, 129, 0.12); color: #047857;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+  .ex-label.bad { background: rgba(220, 38, 38, 0.10); color: #b91c1c; }
+  .ex-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 720px) { .ex-compare { grid-template-columns: 1fr; } }
+  .ex-tips {
+    background: var(--background, #f9fafb);
+    border-left: 3px solid var(--ds-primary);
+    padding: 10px 14px; border-radius: 4px;
+    font-size: 13px; margin-top: 12px; line-height: 1.55;
+  }
+  .ex-tips strong { color: var(--text-primary, #111827); }
+  .top-actions { margin-bottom: 16px; }
+  .top-actions a {
+    color: var(--ds-primary); text-decoration: none;
+    font-size: 13px;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="examples-page">
+  <div class="top-actions">
+    <a href="/store/new">← Back to upload</a>
+  </div>
+
+  <h1>Submission examples</h1>
+  <p class="sub">
+    Each component (plugin, agent, skill, command) needs a description
+    that names the trigger condition AND the action. Skills are the
+    strictest case because Claude reads the description verbatim when
+    deciding whether to invoke the skill. Examples below show the
+    minimum bar plus what a strong submission looks like.
+  </p>
+
+  <!-- ───── Why these limits ───────────────────────────────────────── -->
+  <div class="ex-section">
+    <h2>Why these limits?</h2>
+    <div class="why">
+      Descriptions that are too short don't give the assistant enough
+      to go on. Below is the minimum bar plus what a well-written
+      submission usually looks like.
+    </div>
+    <table style="width:100%; border-collapse: collapse; font-size: 13px;">
+      <thead>
+        <tr style="background: var(--background, #f9fafb); text-align: left;">
+          <th style="padding: 8px 10px; border-bottom: 1px solid var(--border, #e5e7eb);">Field</th>
+          <th style="padding: 8px 10px; border-bottom: 1px solid var(--border, #e5e7eb);">Minimum</th>
+          <th style="padding: 8px 10px; border-bottom: 1px solid var(--border, #e5e7eb);">Recommended</th>
+          <th style="padding: 8px 10px; border-bottom: 1px solid var(--border, #e5e7eb);">What it does</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td style="padding: 8px 10px; border-bottom: 1px solid var(--border, #e5e7eb);">Skill / agent / plugin description</td>
+          <td style="padding: 8px 10px; border-bottom: 1px solid var(--border, #e5e7eb);"><strong>{{ guardrail.min_description_chars|default(60) }} chars</strong> · {{ guardrail.min_distinct_words|default(5) }} distinct words</td>
+          <td style="padding: 8px 10px; border-bottom: 1px solid var(--border, #e5e7eb);">120–220 chars (one full sentence)</td>
+          <td style="padding: 8px 10px; border-bottom: 1px solid var(--border, #e5e7eb);">Tells the assistant when to use the component and what it does. Showed on the marketplace tile so others can pick it.</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 10px; border-bottom: 1px solid var(--border, #e5e7eb);">Command description</td>
+          <td style="padding: 8px 10px; border-bottom: 1px solid var(--border, #e5e7eb);"><strong>{{ guardrail.min_command_description_chars|default(25) }} chars</strong> · {{ guardrail.min_distinct_words|default(5) }} distinct words</td>
+          <td style="padding: 8px 10px; border-bottom: 1px solid var(--border, #e5e7eb);">40–100 chars</td>
+          <td style="padding: 8px 10px; border-bottom: 1px solid var(--border, #e5e7eb);">Commands are one-verb actions ("run tests", "format code"). A short clear sentence is enough.</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 10px;">Skill / agent content body</td>
+          <td style="padding: 8px 10px;"><strong>{{ guardrail.min_body_chars|default(200) }} chars</strong></td>
+          <td style="padding: 8px 10px;">500–2000 chars</td>
+          <td style="padding: 8px 10px;">The body explains what the component does once used: inputs it expects, outputs it produces, edge cases. The minimum is a "one paragraph" floor that catches stubs.</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="ex-tips" style="margin-top: 12px;">
+      <strong>Two-step review.</strong> First we check length and word
+      count to catch placeholders like <code>TODO</code> or
+      <code>description</code>. Submissions that pass the length check
+      then go to a substantive reviewer that judges whether the
+      description is genuinely useful or just padded filler that hit
+      the character count by accident.
+    </div>
+  </div>
+
+  <!-- ───── Skill ──────────────────────────────────────────────────── -->
+  <div class="ex-section" id="skill">
+    <h2>Skill</h2>
+    <div class="why">
+      <code>skills/&lt;name&gt;/SKILL.md</code> with YAML frontmatter and a
+      body. The frontmatter <code>description</code> IS the trigger
+      string Claude reads; the body explains how the skill works once
+      invoked.
+    </div>
+
+    <div class="ex-compare">
+      <div>
+        <span class="ex-label bad">Rejected</span>
+<pre class="ex-block">---
+name: code-review
+description: A reviewer skill
+---
+
+Reviews code.
+</pre>
+        <div class="ex-tips">
+          <strong>Why it fails:</strong> description is 15 chars
+          (floor 60), restates the name, body is 13 chars
+          (floor 200). Claude can't decide when to invoke it.
+        </div>
+      </div>
+      <div>
+        <span class="ex-label">Passes</span>
+<pre class="ex-block">---
+name: code-review
+description: Use when reviewing pull requests to flag missing tests,
+  weak assertions, brittle implementation-coupled tests, and edge
+  cases the implementation forgot.
+---
+
+# Code review skill
+
+Run this skill against the diff of an open pull request. It walks
+the changed files and surfaces three categories of issues:
+
+1. **Missing tests** — new functions / endpoints / migrations
+   without corresponding test coverage.
+2. **Weak assertions** — tests that exist but only assert truthy
+   values, status codes, or shape without verifying the actual
+   behavior contract.
+3. **Brittle coupling** — tests that depend on private state,
+   internal call counts, or implementation details that will break
+   on refactor without catching real regressions.
+
+## Inputs
+
+The skill expects to be invoked from a git repo with a PR branch
+checked out. It reads `git diff <base>..HEAD` to scope the review.
+
+## Output
+
+Markdown comment grouped by file, with line refs and one fix
+suggestion per finding.
+</pre>
+        <div class="ex-tips">
+          <strong>Why it passes:</strong> description names WHEN (PR
+          review) and WHAT it does, body explains inputs/outputs.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ───── Agent ──────────────────────────────────────────────────── -->
+  <div class="ex-section" id="agent">
+    <h2>Agent</h2>
+    <div class="why">
+      Single <code>.md</code> file with YAML frontmatter. The
+      <code>description</code> drives dispatch — when a parent agent
+      decides which subagent to spawn, this is the string it reads.
+    </div>
+
+    <div class="ex-compare">
+      <div>
+        <span class="ex-label bad">Rejected</span>
+<pre class="ex-block">---
+name: debugger
+description: A debugger
+---
+
+Helps with debugging.
+</pre>
+        <div class="ex-tips">
+          <strong>Why it fails:</strong> description is 11 chars
+          (floor 60), body is 22 chars (floor 200), neither names a
+          dispatch criterion.
+        </div>
+      </div>
+      <div>
+        <span class="ex-label">Passes</span>
+<pre class="ex-block">---
+name: debugger
+description: Diagnoses test failures, runtime errors, and unexpected
+  behavior. Use when a build is failing, a stack trace lands in the
+  conversation, or the user describes a symptom without a known
+  root cause.
+---
+
+# Debugger subagent
+
+Triage flow:
+
+1. Reproduce the failure deterministically (capture the exact
+   command + working directory + relevant env).
+2. Reduce — strip the case down to the smallest input that still
+   fails. Confirm the reduction reproduces.
+3. Bisect or trace, depending on whether the regression is recent
+   or the behavior was never correct.
+4. Propose ONE root-cause hypothesis and a minimal fix. Don't
+   shotgun-fix multiple symptoms.
+
+Report the hypothesis + fix path back to the dispatcher; do not
+apply the fix yourself unless explicitly asked.
+</pre>
+        <div class="ex-tips">
+          <strong>Why it passes:</strong> description names WHAT it
+          does (diagnose) AND WHEN to dispatch (test failures, stack
+          traces, symptoms).
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ───── Plugin ─────────────────────────────────────────────────── -->
+  <div class="ex-section" id="plugin">
+    <h2>Plugin</h2>
+    <div class="why">
+      <code>.claude-plugin/plugin.json</code> at the bundle root. The
+      <code>description</code> is the marketplace tile copy — first
+      thing a user sees when browsing.
+    </div>
+
+    <div class="ex-compare">
+      <div>
+        <span class="ex-label bad">Rejected</span>
+<pre class="ex-block">{
+  "name": "review-tools",
+  "description": "Tools for code review",
+  "version": "0.1.0"
+}
+</pre>
+        <div class="ex-tips">
+          <strong>Why it fails:</strong> 20 chars (floor 60),
+          generic enough to apply to any plugin.
+        </div>
+      </div>
+      <div>
+        <span class="ex-label">Passes</span>
+<pre class="ex-block">{
+  "name": "review-tools",
+  "description": "Code review automation: PR diff analysis, test
+  coverage gaps, and a configurable rule pack for Rails / Python /
+  TypeScript projects.",
+  "version": "0.1.0"
+}
+</pre>
+        <div class="ex-tips">
+          <strong>Why it passes:</strong> names the audience (PR
+          reviewers), the value (gaps + rule pack), and the scope
+          (3 named languages).
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ───── Command ────────────────────────────────────────────────── -->
+  <div class="ex-section" id="command">
+    <h2>Command</h2>
+    <div class="why">
+      <code>commands/&lt;name&gt;.md</code>. Shown in <code>/help</code>
+      and slash-command lists. Lower 20-char floor since commands tend
+      to be one-verb actions.
+    </div>
+
+    <div class="ex-compare">
+      <div>
+        <span class="ex-label bad">Rejected</span>
+<pre class="ex-block">---
+name: run-tests
+description: Runs tests
+---
+</pre>
+        <div class="ex-tips">
+          <strong>Why it fails:</strong> 10 chars (floor 25),
+          restates the name.
+        </div>
+      </div>
+      <div>
+        <span class="ex-label">Passes</span>
+<pre class="ex-block">---
+name: run-tests
+description: Run the project test suite and print failures grouped
+  by file with the first 5 lines of the traceback inline.
+---
+</pre>
+        <div class="ex-tips">
+          <strong>Why it passes:</strong> states the action, the
+          shape of the output, and the trimming behavior.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="top-actions" style="margin-top: 20px;">
+    <a href="/store/new">← Back to upload</a>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,594 @@
+    <!-- window.AgnesTime — local-tz timestamp hydrator for <time datetime> tags.
+         See app/web/static/js/datetime.js and the design spec at
+         docs/superpowers/specs/2026-05-26-frontend-timezone-fix-design.md. -->
+    <script src="{{ static_url('js/datetime.js') }}" defer></script>
+    <!-- window.AgnesIdentity — shared avatar initials + stable color hash, so
+         the user circle renders identically across /admin/users, /admin/adoption,
+         etc. See app/web/static/js/identity.js. -->
+    <script src="{{ static_url('js/identity.js') }}" defer></script>
+    <!-- window.confirmModal / alertModal / promptModal — design-system
+         replacements for native confirm()/alert()/prompt() (#497 §1).
+         Defined here alongside the other end-of-<body> app globals (e.g.
+         showUndoToast below). The page's content block parses before this
+         loads, so by contract modals are only ever called from
+         event handlers (click/change/keydown/DOMContentLoaded) — never at
+         top-level parse time — by which point the globals are defined. -->
+    <script src="{{ static_url('js/modal.js') }}"></script>
+    <script>
+      // v54 global undo-toast — surfaced by admin delete handlers. The
+      // toast carries an Undo button that POSTs to a restore URL, so
+      // soft-deleted resources can be brought back inside the dwell
+      // window (default 10s). Click Undo → POST + onSuccess() (typically
+      // a list refresh) — then the toast closes.
+      window.showUndoToast = function (message, restoreUrl, onSuccess, dwellMs) {
+        const dwell = dwellMs || 10000;
+        let el = document.getElementById('agnes-undo-toast');
+        if (!el) {
+          el = document.createElement('div');
+          el.id = 'agnes-undo-toast';
+          el.style.cssText =
+            'position:fixed; bottom:24px; right:24px; padding:12px 16px; ' +
+            'background:#202124; color:#fff; border-radius:8px; ' +
+            'box-shadow:0 6px 20px rgba(0,0,0,.25); font-size:13px; ' +
+            'z-index:3000; display:flex; align-items:center; gap:12px;';
+          document.body.appendChild(el);
+        }
+        el.innerHTML = '';
+        const msg = document.createElement('span');
+        msg.textContent = message;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = 'Undo';
+        btn.style.cssText =
+          'background:transparent; color:#7dd3fc; border:1px solid #38bdf8; ' +
+          'border-radius:6px; padding:4px 10px; cursor:pointer; ' +
+          'font-weight:600; font-size:12px;';
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.textContent = '×';
+        close.setAttribute('aria-label', 'Dismiss');
+        close.style.cssText =
+          'background:transparent; color:#9ca3af; border:none; cursor:pointer; ' +
+          'font-size:16px; padding:0 4px;';
+        el.appendChild(msg);
+        el.appendChild(btn);
+        el.appendChild(close);
+        el.style.display = 'flex';
+        const dismiss = () => { el.style.display = 'none'; };
+        const timer = setTimeout(dismiss, dwell);
+        close.addEventListener('click', () => { clearTimeout(timer); dismiss(); });
+        btn.addEventListener('click', async () => {
+          clearTimeout(timer);
+          btn.disabled = true;
+          btn.textContent = 'Restoring…';
+          try {
+            const r = await fetch(restoreUrl, {
+              method: 'POST', credentials: 'same-origin',
+            });
+            if (!r.ok) {
+              const d = await r.json().catch(() => ({}));
+              msg.textContent = 'Undo failed: ' + (d.detail || r.statusText);
+              btn.textContent = 'Undo';
+              btn.disabled = false;
+              return;
+            }
+            dismiss();
+            if (typeof onSuccess === 'function') {
+              try { onSuccess(); } catch (_) { /* swallow */ }
+            }
+          } catch (e) {
+            msg.textContent = 'Network error: ' + e.message;
+            btn.textContent = 'Undo';
+            btn.disabled = false;
+          }
+        });
+      };
+
+      // Global Escape → close topmost visible modal. Inspects three
+      // common modal patterns used across the app:
+      //   * `.modal-overlay`         (admin_tables)
+      //   * `#xyzModal` flex/block   (admin_corporate_memory inline divs)
+      //   * `.modal` open via class  (catalog, marketplace)
+      // Picks the one with the highest computed z-index so nested
+      // modal-on-modal flows close the inner one first. opt-out per
+      // element via `data-no-esc-close="1"`.
+      (function () {
+        function _visibleModals() {
+          const out = [];
+          document.querySelectorAll(
+            '.modal-overlay, [id$="Modal"], .modal.is-open'
+          ).forEach((el) => {
+            if (el.dataset.noEscClose === '1') return;
+            const cs = window.getComputedStyle(el);
+            if (cs.display === 'none' || cs.visibility === 'hidden') return;
+            // Ignore elements that don't actually paint (no width/height).
+            const r = el.getBoundingClientRect();
+            if (!r.width || !r.height) return;
+            out.push({ el, z: parseInt(cs.zIndex, 10) || 0 });
+          });
+          return out;
+        }
+        function _closeTopmost() {
+          const modals = _visibleModals();
+          if (!modals.length) return false;
+          modals.sort((a, b) => b.z - a.z);
+          const target = modals[0].el;
+          // Preferred path: a `data-close-handler` attribute names the
+          // page-specific close function (e.g. data-close-handler=
+          // "closeEditDataPackageModal"). Falls back to flipping the
+          // inline display style — works for both flex+block conventions.
+          const fn = target.dataset.closeHandler;
+          if (fn && typeof window[fn] === 'function') {
+            try { window[fn](); return true; } catch (_) { /* fall through */ }
+          }
+          target.style.display = 'none';
+          target.classList.remove('is-open', 'active');
+          return true;
+        }
+        document.addEventListener('keydown', (e) => {
+          if (e.key !== 'Escape') return;
+          // Skip when typing in an input/textarea/contenteditable so Escape
+          // can blur native inputs without closing the surrounding modal.
+          const t = e.target;
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+                    t.isContentEditable)) {
+            t.blur();
+            return;
+          }
+          if (_closeTopmost()) e.preventDefault();
+        });
+      })();
+
+      // v51 palette swatches — hydrate every `.cf-palette-row` element
+      // with 8 design-system color buttons; clicking a swatch sets the
+      // adjacent native `<input type="color">` (id = .data-target) and
+      // marks the swatch active. Free-form picker still works as before.
+      (function () {
+        const PALETTE = [
+          '#0EA5B5', // teal
+          '#2563EB', // blue
+          '#7C3AED', // violet
+          '#DB2777', // pink
+          '#DC2626', // red
+          '#D97706', // amber
+          '#059669', // emerald
+          '#475569', // slate
+        ];
+        function _hydrate(row) {
+          if (row.dataset.hydrated === '1') return;
+          row.dataset.hydrated = '1';
+          const targetId = row.dataset.target;
+          if (!targetId) return;
+          PALETTE.forEach((hex) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'cf-swatch';
+            btn.style.background = hex;
+            btn.dataset.hex = hex;
+            btn.title = hex;
+            btn.addEventListener('click', () => {
+              const input = document.getElementById(targetId);
+              if (input) {
+                input.value = hex;
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+              row.querySelectorAll('.cf-swatch').forEach((s) =>
+                s.classList.toggle('is-active', s === btn)
+              );
+            });
+            row.appendChild(btn);
+          });
+          // Reflect any pre-set color value on the input back onto the
+          // swatch row so the user sees which palette entry matches.
+          const input = document.getElementById(targetId);
+          if (input) {
+            // v54: visible hex chip beside the picker — Safari + Firefox
+            // hide the value entirely inside the native swatch; this
+            // gives admins a copy-able read of what's actually stored.
+            // Sits in-flow after the input so it doesn't fight the
+            // modal layout.
+            let hexChip = input.parentElement
+              ? input.parentElement.querySelector('.cf-hex-chip[data-for="' + targetId + '"]')
+              : null;
+            if (!hexChip && input.parentElement) {
+              hexChip = document.createElement('code');
+              hexChip.className = 'cf-hex-chip';
+              hexChip.dataset.for = targetId;
+              hexChip.style.cssText =
+                'display:inline-block; margin-top:4px; padding:1px 8px; ' +
+                'font-size:11px; font-family:ui-monospace, Menlo, monospace; ' +
+                'color:var(--text-secondary, #5f6368); background:rgba(0,0,0,0.04); ' +
+                'border-radius:4px;';
+              input.insertAdjacentElement('afterend', hexChip);
+            }
+            const sync = () => {
+              const cur = (input.value || '').toLowerCase();
+              row.querySelectorAll('.cf-swatch').forEach((s) =>
+                s.classList.toggle('is-active', s.dataset.hex.toLowerCase() === cur)
+              );
+              if (hexChip) hexChip.textContent = cur;
+            };
+            input.addEventListener('change', sync);
+            input.addEventListener('input', sync);
+            sync();
+          }
+        }
+        function _hydrateAll() {
+          document.querySelectorAll('.cf-palette-row').forEach(_hydrate);
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', _hydrateAll);
+        } else {
+          _hydrateAll();
+        }
+        // Re-hydrate on demand — modal templates already exist at page
+        // load (display:none), so this catches any future dynamically
+        // injected modal too.
+        const obs = new MutationObserver(_hydrateAll);
+        obs.observe(document.body, { childList: true, subtree: true });
+      })();
+
+      // v54 admin-nav keyboard shortcuts — Vim-style two-key ``g <x>``
+      // sequences for the admin landing pages. Only fires when:
+      //   * caller is admin (the gated nav is rendered)
+      //   * user isn't typing into an input/textarea/contenteditable
+      //   * no modal is currently visible (Esc handler would conflict)
+      // First ``g`` starts a 1s window for the second key; outside the
+      // window the prefix resets. Hint chip surfaces briefly on the
+      // first key to teach the shortcut on the fly.
+      (function () {
+        // Admin-only — short-circuit if the nav isn't there.
+        if (!document.getElementById('adminNavMenu')) return;
+        const MAP = {
+          't': '/admin/tables',          // (data packages)
+          'a': '/admin/access',           // resource access
+          'm': '/admin/corporate-memory', // (memory)
+          'u': '/admin/users',
+          'g': '/admin/groups',
+          's': '/admin/server-config',
+          'l': '/admin/activity',         // (log)
+          'c': '/admin/marketplaces',     // (curated)
+          'k': '/admin/tokens',           // (keys/tokens)
+          'r': '/admin/store/submissions', // (review queue)
+        };
+        let pending = false;
+        let pendingTimer = null;
+        let hintEl = null;
+        function _showHint() {
+          if (!hintEl) {
+            hintEl = document.createElement('div');
+            hintEl.style.cssText =
+              'position:fixed; bottom:24px; left:24px; padding:6px 12px; ' +
+              'background:#202124; color:#fff; border-radius:6px; ' +
+              'font-family:ui-monospace, Menlo, monospace; font-size:12px; ' +
+              'box-shadow:0 4px 12px rgba(0,0,0,.2); z-index:3000;';
+            document.body.appendChild(hintEl);
+          }
+          hintEl.textContent = 'g … (t a m u g s l c k r)';
+          hintEl.style.display = 'block';
+        }
+        function _hideHint() {
+          if (hintEl) hintEl.style.display = 'none';
+        }
+        function _resetPending() {
+          pending = false;
+          if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+          _hideHint();
+        }
+        document.addEventListener('keydown', (e) => {
+          // Ignore modifier-key shortcuts (Cmd-T, Ctrl-T etc.) so we don't
+          // hijack browser-native bindings.
+          if (e.metaKey || e.ctrlKey || e.altKey) return;
+          const t = e.target;
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+                    t.isContentEditable)) return;
+          // Skip when any modal is visible — the Esc handler should win there.
+          const anyModalOpen = Array.from(document.querySelectorAll(
+            '.modal-overlay, [id$="Modal"], .modal.is-open'
+          )).some((el) => {
+            const cs = window.getComputedStyle(el);
+            return cs.display !== 'none' && cs.visibility !== 'hidden';
+          });
+          if (anyModalOpen) return;
+          const k = e.key.toLowerCase();
+          if (!pending && k === 'g') {
+            pending = true;
+            _showHint();
+            pendingTimer = setTimeout(_resetPending, 1000);
+            return;
+          }
+          if (pending) {
+            const target = MAP[k];
+            _resetPending();
+            if (target) {
+              e.preventDefault();
+              window.location.href = target;
+            }
+          }
+        });
+      })();
+
+      // v55 admin command palette — Cmd/Ctrl-K opens a fuzzy-search
+      // overlay over the same set of routes the admin nav exposes,
+      // plus a few common actions. Admin-only (gated on adminNavMenu
+      // presence). Esc to close; arrows + Enter to navigate; the same
+      // typing-into-input safeguards as the g+letter handler.
+      (function () {
+        if (!document.getElementById('adminNavMenu')) return;
+        const ITEMS = [
+          { label: 'Tables / Data packages',      hint: 'admin · g t',  href: '/admin/tables' },
+          { label: 'Resource access',             hint: 'admin · g a',  href: '/admin/access' },
+          { label: 'Corporate Memory',            hint: 'admin · g m',  href: '/admin/corporate-memory' },
+          { label: 'Memory · Review queue',       hint: 'admin',        href: '/admin/corporate-memory#review' },
+          { label: 'Memory · All items',          hint: 'admin',        href: '/admin/corporate-memory#all' },
+          { label: 'Memory · Domains',            hint: 'admin',        href: '/admin/corporate-memory#domains' },
+          { label: 'Memory · Audit log',          hint: 'admin',        href: '/admin/corporate-memory#audit' },
+          { label: 'Users',                       hint: 'admin · g u',  href: '/admin/users' },
+          { label: 'Groups',                      hint: 'admin · g g',  href: '/admin/groups' },
+          { label: 'Server config',               hint: 'admin · g s',  href: '/admin/server-config' },
+          { label: 'Database backend',            hint: 'admin · g d',  href: '/admin/database' },
+          { label: 'Activity / Audit log',        hint: 'admin · g l',  href: '/admin/activity' },
+          { label: 'Telemetry',                   hint: 'admin',        href: '/admin/telemetry' },
+          { label: 'Sessions',                    hint: 'admin',        href: '/admin/sessions' },
+          { label: 'Curated Marketplaces',        hint: 'admin · g c',  href: '/admin/marketplaces' },
+          { label: 'Studio · Data package',       hint: 'authoring',    href: '/admin/studio/data-package' },
+          { label: 'Studio · MCP connection',     hint: 'authoring',    href: '/admin/studio/mcp' },
+          { label: 'Studio · Marketplace',        hint: 'authoring',    href: '/admin/studio/marketplace' },
+          { label: 'Studio · Corporate memory',   hint: 'authoring',    href: '/admin/studio/corporate-memory' },
+          { label: 'Studio · Suggestions queue',  hint: 'admin',        href: '/admin/studio/suggestions' },
+          { label: 'Tokens',                      hint: 'admin · g k',  href: '/admin/tokens' },
+          { label: 'Flea Submissions',            hint: 'admin · g r',  href: '/admin/store/submissions' },
+          { label: 'Prompts',                     hint: 'admin',        href: '/admin/prompts' },
+          { label: '— User-facing —',             hint: 'separator',    href: null },
+          { label: 'Catalog',                     hint: 'user',         href: '/catalog' },
+          { label: 'Catalog · Browse',            hint: 'user',         href: '/catalog#browse' },
+          { label: 'Catalog · My Stack',          hint: 'user',         href: '/catalog#my' },
+          { label: 'Catalog · Recipes',           hint: 'user',         href: '/catalog#recipes' },
+          { label: 'Corporate memory',            hint: 'user',         href: '/corporate-memory' },
+          { label: 'Memory mining (my consent)',  hint: 'privacy',      href: '/me/memory-mining' },
+          { label: 'Marketplace',                 hint: 'user',         href: '/marketplace' },
+          { label: 'Activity (mine)',             hint: 'user',         href: '/me/activity' },
+        ];
+
+        let overlay = null;
+        let input = null;
+        let list = null;
+        let activeIdx = 0;
+        let filtered = ITEMS.filter((it) => it.href);  // skip separators initially
+
+        function _build() {
+          overlay = document.createElement('div');
+          overlay.id = 'adminCmdkOverlay';
+          overlay.setAttribute('role', 'dialog');
+          overlay.setAttribute('aria-label', 'Admin command palette');
+          overlay.style.cssText = (
+            'position:fixed; inset:0; background:rgba(0,0,0,.4); ' +
+            'z-index:5000; display:none; align-items:flex-start; ' +
+            'justify-content:center; padding-top:14vh;'
+          );
+          overlay.innerHTML = (
+            '<div style="background:var(--surface,#fff); width:min(640px,90vw); ' +
+            '            border-radius:12px; border:1px solid var(--border,#e5e7eb); ' +
+            '            box-shadow:0 24px 48px rgba(0,0,0,.18); overflow:hidden;">' +
+            '  <input type="search" id="adminCmdkInput" ' +
+            '         placeholder="Search admin pages and actions…" ' +
+            '         autocomplete="off" spellcheck="false" ' +
+            '         style="width:100%; padding:14px 16px; border:0; ' +
+            '                border-bottom:1px solid var(--border,#e5e7eb); ' +
+            '                font: 14px ui-sans-serif, system-ui; outline:none;">' +
+            '  <ul id="adminCmdkList" role="listbox" ' +
+            '      style="margin:0; padding:6px 0; max-height:50vh; overflow-y:auto; ' +
+            '             list-style:none; font:13px ui-sans-serif, system-ui;"></ul>' +
+            '  <div style="padding:8px 14px; border-top:1px solid var(--border,#e5e7eb); ' +
+            '              color:var(--text-secondary,#6b7280); font:11px ui-monospace, monospace; ' +
+            '              display:flex; justify-content:space-between;">' +
+            '    <span>↑↓ navigate · Enter open · Esc close</span>' +
+            '    <span>Cmd/Ctrl-K to toggle</span>' +
+            '  </div>' +
+            '</div>'
+          );
+          document.body.appendChild(overlay);
+          input = overlay.querySelector('#adminCmdkInput');
+          list = overlay.querySelector('#adminCmdkList');
+
+          input.addEventListener('input', () => { _render(input.value); });
+          input.addEventListener('keydown', _onKey);
+          // Click on backdrop closes; clicks inside the panel don't bubble up here.
+          overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) _close();
+          });
+        }
+
+        function _matchScore(q, label) {
+          // Tiny scoring: every query char must appear in order. Earlier
+          // matches score higher; consecutive-match streaks score higher.
+          // No fancy library — keeps this dependency-free.
+          if (!q) return 1;
+          const ql = q.toLowerCase();
+          const ll = label.toLowerCase();
+          let qi = 0, score = 0, streak = 0;
+          for (let li = 0; li < ll.length && qi < ql.length; li++) {
+            if (ll[li] === ql[qi]) {
+              qi++;
+              streak++;
+              score += 1 + streak;
+            } else {
+              streak = 0;
+            }
+          }
+          return qi === ql.length ? score / (1 + ll.length / 20) : 0;
+        }
+
+        function _render(query) {
+          const q = (query || '').trim();
+          const scored = ITEMS
+            .filter((it) => it.href)
+            .map((it) => ({ it, s: _matchScore(q, it.label + ' ' + (it.hint || '')) }))
+            .filter((x) => x.s > 0)
+            .sort((a, b) => b.s - a.s)
+            .slice(0, 30);
+          filtered = scored.map((x) => x.it);
+          activeIdx = 0;
+          if (!filtered.length) {
+            list.innerHTML = (
+              '<li style="padding:14px 16px; color:var(--text-secondary,#6b7280);">' +
+              'No matches.</li>'
+            );
+            return;
+          }
+          list.innerHTML = filtered.map((it, i) => (
+            '<li role="option" data-idx="' + i + '" ' +
+            '    style="padding:8px 16px; cursor:pointer; display:flex; ' +
+            '           justify-content:space-between; align-items:baseline; ' +
+            '           gap:12px;' +
+            (i === activeIdx ? ' background:var(--ds-primary-light);' : '') +
+            '">' +
+            '  <span>' + _esc(it.label) + '</span>' +
+            '  <span style="color:var(--text-secondary,#6b7280); font:11px ui-monospace, monospace;">' +
+            _esc(it.hint || '') + '</span>' +
+            '</li>'
+          )).join('');
+          list.querySelectorAll('li[data-idx]').forEach((li) => {
+            li.addEventListener('mousemove', () => {
+              const i = parseInt(li.dataset.idx, 10);
+              if (i !== activeIdx) { activeIdx = i; _highlight(); }
+            });
+            li.addEventListener('click', () => {
+              const i = parseInt(li.dataset.idx, 10);
+              _goto(filtered[i]);
+            });
+          });
+        }
+
+        function _highlight() {
+          list.querySelectorAll('li[data-idx]').forEach((li, i) => {
+            li.style.background = (i === activeIdx)
+              ? 'var(--ds-primary-light)' : '';
+          });
+          const active = list.querySelector('li[data-idx="' + activeIdx + '"]');
+          if (active && active.scrollIntoView) {
+            active.scrollIntoView({ block: 'nearest' });
+          }
+        }
+
+        function _onKey(e) {
+          if (e.key === 'Escape') { e.preventDefault(); _close(); return; }
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (!filtered.length) return;
+            activeIdx = (activeIdx + 1) % filtered.length;
+            _highlight();
+            return;
+          }
+          if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (!filtered.length) return;
+            activeIdx = (activeIdx - 1 + filtered.length) % filtered.length;
+            _highlight();
+            return;
+          }
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            if (!filtered.length) return;
+            _goto(filtered[activeIdx]);
+          }
+        }
+
+        function _goto(item) {
+          if (!item || !item.href) return;
+          _close();
+          window.location.href = item.href;
+        }
+
+        function _open() {
+          if (!overlay) _build();
+          overlay.style.display = 'flex';
+          input.value = '';
+          _render('');
+          // Focus on next frame so Cmd/Ctrl-K's own keyup doesn't blur it.
+          requestAnimationFrame(() => input.focus());
+        }
+
+        function _close() {
+          if (overlay) overlay.style.display = 'none';
+        }
+
+        function _esc(s) {
+          return String(s == null ? '' : s).replace(/[&<>"']/g,
+            (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+
+        document.addEventListener('keydown', (e) => {
+          if (!(e.metaKey || e.ctrlKey)) return;
+          if (e.key !== 'k' && e.key !== 'K') return;
+          // Don't fight typing in an input *unless* the palette is the
+          // input — then Cmd-K acts as toggle-off.
+          const t = e.target;
+          const insidePalette = overlay && overlay.contains(t);
+          if (!insidePalette && t && (
+                t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+                t.isContentEditable)) return;
+          e.preventDefault();
+          if (overlay && overlay.style.display === 'flex') _close();
+          else _open();
+        });
+      })();
+
+      // v55 stack-tabs digit shortcuts — `1` = first tab, `2` = second,
+      // etc. Hot-wired on any page that renders a `.stack-tabs` strip
+      // (currently /catalog + /corporate-memory). No-op when typing in
+      // inputs, when modifiers are held, or when a modal is open.
+      (function () {
+        const tabs = document.querySelectorAll('.stack-tabs button[data-tab]');
+        if (!tabs.length) return;
+        document.addEventListener('keydown', (e) => {
+          if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+          const t = e.target;
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+                    t.isContentEditable)) return;
+          const anyModalOpen = Array.from(document.querySelectorAll(
+            '.modal-overlay, [id$="Modal"], .modal.is-open'
+          )).some((el) => {
+            const cs = window.getComputedStyle(el);
+            return cs.display !== 'none' && cs.visibility !== 'hidden';
+          });
+          if (anyModalOpen) return;
+          const k = e.key;
+          if (!/^[1-9]$/.test(k)) return;
+          const idx = parseInt(k, 10) - 1;
+          if (idx >= tabs.length) return;
+          e.preventDefault();
+          tabs[idx].click();
+          tabs[idx].focus();
+        });
+      })();
+
+      // Persist each admin-nav <details data-section=...> open/closed
+      // state in localStorage so reopening the dropdown restores the
+      // sections the admin last had collapsed. Sections default open
+      // when no entry exists (matches Jinja's `open` attribute).
+      (function () {
+        const KEY = 'agnes-admin-nav-collapsed-sections';
+        let collapsed = new Set();
+        try {
+          const raw = localStorage.getItem(KEY);
+          if (raw) collapsed = new Set(JSON.parse(raw));
+        } catch (_) { /* corrupt JSON or storage disabled — fall back to defaults */ }
+
+        function _persist() {
+          try { localStorage.setItem(KEY, JSON.stringify(Array.from(collapsed))); }
+          catch (_) { /* storage full / private mode — silently no-op */ }
+        }
+
+        document.querySelectorAll('details.app-nav-menu-group[data-section]')
+          .forEach((det) => {
+            const name = det.dataset.section;
+            if (collapsed.has(name)) det.open = false;
+            det.addEventListener('toggle', () => {
+              if (det.open) collapsed.delete(name);
+              else collapsed.add(name);
+              _persist();
+            });
+          });
+      })();
+    </script>

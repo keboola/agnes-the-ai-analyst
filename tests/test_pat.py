@@ -285,7 +285,7 @@ def test_pat_cannot_create_pat(fresh_db):
     assert resp.status_code == 403
 
 
-# NOTE: test_profile_page_redirects_to_tokens removed — /profile no longer
+# NOTE: test_profile_page_redirects_to_tokens removed — /me/profile no longer
 # redirects to /tokens; it renders a real profile page including Google
 # Workspace groups (cherry-pick of Zdeněk's 4f7e4cd). The /tokens render
 # checks (My tokens title, new-token-btn) survive in the test_admin_tokens_ui

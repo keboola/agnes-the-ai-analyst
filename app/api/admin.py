@@ -5,10 +5,10 @@ which checks Admin user_group membership for both OAuth session and PAT
 callers via the same ``_user_group_ids`` lookup.
 """
 
+import json
 import logging
 import os
 import threading
-import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -18,11 +18,19 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.repositories.table_registry import TableRegistryRepository
-from src.repositories.audit import AuditRepository
 from src.identifier_validation import (
     is_safe_identifier as _is_safe_identifier,
     is_safe_quoted_identifier as _is_safe_quoted_identifier,
+)
+
+from src.repositories import (
+    audit_repo,
+    knowledge_repo,
+    store_entities_repo,
+    store_submissions_repo,
+    sync_state_repo,
+    table_registry_repo,
+    user_store_installs_repo,
 )
 from src.sql_safe import is_safe_project_id as _is_safe_project_id
 from src.scheduler import is_valid_schedule
@@ -63,9 +71,9 @@ def _get_processor_run_lock(name: str) -> threading.Lock:
 
 
 # SSRF protection: reject private/internal URLs for keboola_url
-import ipaddress as _ipaddress
-import socket as _socket
-from urllib.parse import urlparse as _urlparse
+import ipaddress as _ipaddress  # noqa: E402
+import socket as _socket  # noqa: E402
+from urllib.parse import urlparse as _urlparse  # noqa: E402
 
 
 def _validate_url_not_private(url: str, field_name: str = "url") -> None:
@@ -128,12 +136,12 @@ def _unescape_shell_quoting(s: str | None) -> str | None:
     SENTINEL = "\x00"
     return (
         s.replace("\\\\", SENTINEL)
-         .replace("\\n", "\n")
-         .replace("\\r", "\r")
-         .replace("\\t", "\t")
-         .replace("\\'", "'")
-         .replace('\\"', '"')
-         .replace(SENTINEL, "\\")
+        .replace("\\n", "\n")
+        .replace("\\r", "\r")
+        .replace("\\t", "\t")
+        .replace("\\'", "'")
+        .replace('\\"', '"')
+        .replace(SENTINEL, "\\")
     )
 
 
@@ -168,6 +176,7 @@ def _normalize_primary_key(v):
 # Devin ANALYSIS_0001 on PR #141 5f649a4 review.
 _URL_BEARING_FIELDS: tuple[tuple[str, ...], ...] = (
     ("data_source", "keboola", "stack_url"),
+    ("marketplace", "curators_url"),
 )
 
 
@@ -219,11 +228,7 @@ def _validate_materialize_section(sections: Dict[str, Dict[str, Any]]) -> None:
     if ttl < _LOCK_TTL_MIN or ttl > _LOCK_TTL_MAX:
         raise HTTPException(
             status_code=422,
-            detail=(
-                f"materialize.lock_ttl_seconds must be between "
-                f"{_LOCK_TTL_MIN} and {_LOCK_TTL_MAX} "
-                f"(got {ttl})"
-            ),
+            detail=(f"materialize.lock_ttl_seconds must be between {_LOCK_TTL_MIN} and {_LOCK_TTL_MAX} (got {ttl})"),
         )
 
 
@@ -257,6 +262,8 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "desktop",
     "corporate_memory",
     "materialize",
+    "guardrails",
+    "marketplace",
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -290,11 +297,73 @@ _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
 # don't need to touch admin_server_config.html.
 _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
     "instance": {
-        # No commonly-missing instance-level fields. The example YAML's
-        # `name`/`subtitle` are always populated by `agnes setup` so they
-        # render via the populated path; nothing to surface here.
+        # UI theme — flips `<html data-theme="...">` so the
+        # design-system tokens (`--ds-*`) switch palettes via CSS
+        # without any markup change. Resolved by
+        # `app/instance_config.py::get_instance_theme()`.
+        "theme": {
+            "kind": "select",
+            "options": ["blue", "navy"],
+            "default": "blue",
+            "hint": (
+                "Page-hero colour scheme. `blue` (default) uses the "
+                "brand-blue hero + blue CTAs. `navy` opts into the "
+                "darker palette with the dark navy hero gradient + "
+                "mint-green CTAs and eyebrow accents."
+            ),
+        },
+        # Operator-injected HTML/JS blocks rendered into base.html.
+        # `kind: array` renders as a JSON textarea in the admin UI
+        # (per admin_server_config.html:702-708 — arrays fall back to
+        # the JSON path); the hint documents the per-item shape so the
+        # operator knows what to paste. Resolved by
+        # `app/instance_config.py::get_custom_scripts()`.
+        "custom_scripts": {
+            "kind": "array",
+            "hint": (
+                "Operator-injected HTML/JS blocks rendered into base.html. "
+                "Each entry: {name: str, enabled: bool, placement: "
+                "head_start|head_end|body_end, html: str}. Used for feedback "
+                "widgets (Marker.io), analytics (GTM, PostHog), error capture "
+                "(Sentry). Rendered with | safe — admin trust boundary. Review "
+                "third-party widget privacy posture before enabling (most "
+                "capture session data). Restart required after save."
+            ),
+        },
+        # Operator-authored Support HTML rendered inside the welcome
+        # hero on /home, below the operator-owned Overview footnotes.
+        # Resolved by `app/instance_config.py::get_instance_support()`.
+        # Typical content: a one-line invitation pointing at a chat
+        # space, mailing list, or internal runbook. Empty value =
+        # block hidden (OSS stays vendor-neutral).
+        "support": {
+            "kind": "string",
+            "hint": (
+                "HTML body rendered inside the welcome hero's Support "
+                "block on /home (mint-accent panel below the Overview "
+                "footnotes). Typically a one-line invitation linking to "
+                "a chat space, mailing list, or runbook — e.g. "
+                "'<p><strong>Need help?</strong> Drop into our "
+                '<a href="https://chat.example.com/room/xxx">Support</a> '
+                "chat space.</p>'. Rendered with | safe — admin trust "
+                "boundary (link target is operator-controlled). Empty "
+                "value hides the block."
+            ),
+        },
     },
     "data_source": {
+        "type": {
+            "kind": "select",
+            "options": ["keboola", "bigquery", "local", "csv"],
+            "default": "local",
+            "hint": (
+                "Active data source connector. "
+                "`keboola` — pulls tables from Keboola Storage API (configure stack_url + token below). "
+                "`bigquery` — queries BigQuery remotely via the DuckDB BQ extension (configure bigquery block below). "
+                "`local` — CSV/parquet files placed directly in the data directory. "
+                "`csv` — alias for local."
+            ),
+        },
         "bigquery": {
             "kind": "object",
             "hint": "BigQuery connection knobs (read more in docs/DEPLOYMENT.md)",
@@ -426,10 +495,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
         },
         "token": {
             "kind": "secret",
-            "hint": (
-                "JWT bearer token. Use ${OPENMETADATA_TOKEN} env-var reference "
-                "(don't paste secret directly)."
-            ),
+            "hint": ("JWT bearer token. Use ${OPENMETADATA_TOKEN} env-var reference (don't paste secret directly)."),
         },
         "cache_ttl_seconds": {
             "kind": "int",
@@ -498,10 +564,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
         },
         "sources": {
             "kind": "object",
-            "hint": (
-                "Knowledge-source ingestion. Each source has its own enabled "
-                "flag + base confidence."
-            ),
+            "hint": ("Knowledge-source ingestion. Each source has its own enabled flag + base confidence."),
             "fields": {
                 "claude_local_md": {
                     "kind": "object",
@@ -532,10 +595,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                                 "confirmation",
                                 "unprompted_definition",
                             ],
-                            "hint": (
-                                "Which extraction patterns to detect. Each entry "
-                                "is a detection-type tag."
-                            ),
+                            "hint": ("Which extraction patterns to detect. Each entry is a detection-type tag."),
                         },
                     },
                 },
@@ -619,10 +679,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                                 "user_verification": 0.40,
                                 "default": 0.0,
                             },
-                            "hint": (
-                                "Per-source minimum confidence — items never decay "
-                                "below this floor."
-                            ),
+                            "hint": ("Per-source minimum confidence — items never decay below this floor."),
                         },
                     },
                 },
@@ -652,10 +709,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                         "metrics": ["churn", "MRR", "ARR", "NPS", "CAC", "LTV"],
                         "products": ["Platform", "API", "Dashboard"],
                     },
-                    "hint": (
-                        "Domain-entity vocabulary. Key = domain category; value = "
-                        "canonical names list."
-                    ),
+                    "hint": ("Domain-entity vocabulary. Key = domain category; value = canonical names list."),
                 },
             },
         },
@@ -664,9 +718,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             "key_kind": "string",
             "value_kind": "array",
             "value_item_kind": "string",
-            "hint": (
-                "Per-domain admin emails. Key = domain name; value = email list."
-            ),
+            "hint": ("Per-domain admin emails. Key = domain name; value = email list."),
         },
         "domains": {
             "kind": "array",
@@ -679,10 +731,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "operations",
                 "infrastructure",
             ],
-            "hint": (
-                "Knowledge domains analysts can target. Each must match a key "
-                "in domain_owners."
-            ),
+            "hint": ("Knowledge domains analysts can target. Each must match a key in domain_owners."),
         },
     },
     # materialize — file-lock TTL for the concurrent-materialize safety net.
@@ -699,6 +748,114 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "Default 86400 (24 h). Min 60, max 604800 (7 days). "
                 "Lower only if you know materializes never exceed the new value "
                 "and your host regularly hard-kills processes."
+            ),
+        },
+    },
+    "guardrails": {
+        "min_description_chars": {
+            "kind": "int",
+            "default": 60,
+            "hint": (
+                "Minimum character floor for skill / agent / plugin "
+                "descriptions on flea-market uploads (the inline content "
+                "guardrail). Real-world Claude skill descriptions cluster "
+                "150–220 chars; the default 60 is the bottom of the bar "
+                "to catch placeholders. Bump to 100+ to push submitters "
+                "closer to the ecosystem norm. Min 1."
+            ),
+        },
+        "min_command_description_chars": {
+            "kind": "int",
+            "default": 25,
+            "hint": (
+                "Minimum character floor for slash-command descriptions. "
+                "Tighter than skills because commands are one-verb "
+                'actions ("run tests", "format code"). Default 25. Min 1.'
+            ),
+        },
+        "min_distinct_words": {
+            "kind": "int",
+            "default": 5,
+            "hint": (
+                "Minimum number of DISTINCT words in any description "
+                "string. Defends against padding-only descriptions like "
+                '"description description description" that hit the '
+                "character count but say nothing. Default 5. Min 1."
+            ),
+        },
+        "min_body_chars": {
+            "kind": "int",
+            "default": 200,
+            "hint": (
+                "Minimum body-content floor for skill / agent files "
+                "(the markdown after the YAML frontmatter). Real skill "
+                "bodies run 500–2000 chars; the default 200 is a "
+                '"one paragraph" floor that catches stubs. Min 1.'
+            ),
+        },
+        "enabled": {
+            "kind": "bool",
+            "default": True,
+            "hint": (
+                "Master kill-switch for the LLM guardrail tier. When "
+                "False (or when ANTHROPIC_API_KEY / LLM_API_KEY is "
+                "absent), uploads still run the inline mechanical "
+                "checks but skip the LLM security + content-quality "
+                "review and auto-approve. Default True."
+            ),
+        },
+        "review_model": {
+            "kind": "select",
+            "default": "haiku",
+            "options": ["haiku", "sonnet", "opus"],
+            "hint": (
+                "Anthropic model tier for the LLM security + content "
+                "review. Haiku is the cheapest and fastest; Sonnet / "
+                "Opus catch subtler prompt-injection + vague descriptions "
+                "at proportionally higher per-upload cost."
+            ),
+        },
+        "blocked_quota_per_day": {
+            "kind": "int",
+            "default": 50,
+            "hint": (
+                "Per-submitter cap on `blocked_llm` + `review_error` "
+                "rows in the trailing 24h. Bounds the worst case where "
+                "a bot loops on bundles that survive inline checks but "
+                "trip the async LLM reviewer. Inline failures are "
+                "hard-rejected upstream (no row, not counted). 0 "
+                "disables the quota. Default 50."
+            ),
+        },
+        "blocked_bundle_ttl_days": {
+            "kind": "int",
+            "default": 30,
+            "hint": (
+                "How many days to keep a blocked bundle's bytes on disk. "
+                "The submission row + sha256 + size always survive; only "
+                "the bytes get removed. 0 disables the purge entirely. "
+                "Default 30."
+            ),
+        },
+        "stuck_review_grace_seconds": {
+            "kind": "int",
+            "default": 1800,
+            "hint": (
+                "How long a submission may stay at `status='pending_llm'` "
+                "before the reaper flips it to `review_error`. Default "
+                "1800 (30 min) comfortably exceeds Sonnet / Opus p99 "
+                "wall time. 0 disables the reaper."
+            ),
+        },
+    },
+    "marketplace": {
+        "curators_url": {
+            "kind": "string",
+            "hint": (
+                "URL the 'See all curators →' link on /marketplace points to "
+                "(e.g. an internal wiki page listing curators accountable for "
+                "the curated marketplace). Empty → the link is hidden. "
+                "Validated against private-IP allowlist on save (SSRF guard)."
             ),
         },
     },
@@ -827,24 +984,30 @@ def _diff_dicts(before: dict, after: dict, path: str = "") -> List[Dict[str, Any
         # values when a section is replaced wholesale.
         elif b_is_dict != a_is_dict:
             if _is_secret_key(key):
-                changes.append({
-                    "path": new_path,
-                    "before": _mask(b_val),
-                    "after": _mask(a_val),
-                })
+                changes.append(
+                    {
+                        "path": new_path,
+                        "before": _mask(b_val),
+                        "after": _mask(a_val),
+                    }
+                )
             else:
-                changes.append({
-                    "path": new_path,
-                    "before": _redact(b_val, key) if b_is_dict else b_val,
-                    "after": _redact(a_val, key) if a_is_dict else a_val,
-                })
+                changes.append(
+                    {
+                        "path": new_path,
+                        "before": _redact(b_val, key) if b_is_dict else b_val,
+                        "after": _redact(a_val, key) if a_is_dict else a_val,
+                    }
+                )
         elif b_val != a_val:
             if _is_secret_key(key):
-                changes.append({
-                    "path": new_path,
-                    "before": _mask(b_val),
-                    "after": _mask(a_val),
-                })
+                changes.append(
+                    {
+                        "path": new_path,
+                        "before": _mask(b_val),
+                        "after": _mask(a_val),
+                    }
+                )
             else:
                 changes.append({"path": new_path, "before": b_val, "after": a_val})
     return changes
@@ -877,6 +1040,7 @@ def _load_current_instance_yaml() -> dict:
     never sees a different view than the rest of the running app.
     """
     from app.instance_config import load_instance_config
+
     return load_instance_config()
 
 
@@ -888,6 +1052,7 @@ def _public_view(config: dict) -> dict:
     rendered HTML / browser DevTools.
     """
     import copy
+
     return _redact(copy.deepcopy(config))
 
 
@@ -898,6 +1063,7 @@ class ServerConfigUpdateRequest(BaseModel):
     else is rejected with 400. `confirm_danger` must be true if the patch
     touches any danger-zone section (auth.*, server.*).
     """
+
     sections: Dict[str, Dict[str, Any]] = Field(
         default_factory=dict,
         description="Per-section patch dict (e.g. {'instance': {'name': 'X'}})",
@@ -1011,8 +1177,7 @@ async def update_server_config(
     if unknown:
         raise HTTPException(
             status_code=400,
-            detail=f"unknown section(s): {', '.join(unknown)}. "
-                   f"Editable: {', '.join(_EDITABLE_SECTIONS)}",
+            detail=f"unknown section(s): {', '.join(unknown)}. Editable: {', '.join(_EDITABLE_SECTIONS)}",
         )
 
     # Danger-zone gate. The UI shows a confirmation dialog before posting
@@ -1039,8 +1204,7 @@ async def update_server_config(
     # the GET payload could otherwise overwrite real overlay secrets with
     # the placeholder shown in the form.
     scrubbed_sections: Dict[str, Dict[str, Any]] = {
-        section: _strip_redacted_sentinels(patch, section)
-        for section, patch in request.sections.items()
+        section: _strip_redacted_sentinels(patch, section) for section, patch in request.sections.items()
     }
 
     # Serialize read-modify-write across concurrent admin saves. Without the
@@ -1051,6 +1215,7 @@ async def update_server_config(
     # local snapshots.
     from app.instance_config import reset_cache
     from app.secrets import _state_dir
+
     config_path = _state_dir() / "instance.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1104,7 +1269,7 @@ async def update_server_config(
                 raise HTTPException(
                     status_code=500,
                     detail=f"refusing to overwrite corrupt overlay at {config_path} ({e}); "
-                           "back up and remove the file, or fix it by hand",
+                    "back up and remove the file, or fix it by hand",
                 ) from e
         for section, patch in scrubbed_sections.items():
             if section not in _EDITABLE_SECTIONS:
@@ -1125,8 +1290,7 @@ async def update_server_config(
         tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
         tmp_path.write_text(yaml.dump(overlay_payload, default_flow_style=False, sort_keys=False))
         os.replace(tmp_path, config_path)
-        logger.info("server-config: wrote %d section(s) to %s",
-                    len(request.sections), config_path)
+        logger.info("server-config: wrote %d section(s) to %s", len(request.sections), config_path)
 
         # Invalidate cached instance config so subsequent reads pick up the
         # change. Hot-reload of running modules (auth providers, SMTP client)
@@ -1141,7 +1305,7 @@ async def update_server_config(
     # fields changed so the operator's intent (touched the page, hit
     # save) is auditable.
     diff = _diff_dicts(before, after)
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="instance_config.update",
         resource="instance.yaml",
@@ -1187,25 +1351,27 @@ _VALID_SOURCE_TYPES: tuple[str, ...] = ("keboola", "bigquery", "jira", "local")
 # ServerConfigUpdateRequest) when extending — the registry payloads don't
 # currently carry credentials, but ConfigureRequest does (`keboola_token`)
 # and could be routed through this sanitizer in the future.
-_SECRET_FIELDS: frozenset = frozenset({
-    # ConfigureRequest — POST /api/admin/configure carries Keboola creds.
-    "keboola_token",
-    # Generic names that have appeared in earlier iterations of admin
-    # request bodies and could resurface — keep them masked defensively.
-    "api_token",
-    "auth_token",
-    "bot_token",
-    "client_secret",
-    "google_client_secret",
-    "google_oauth_client_secret",
-    "password",
-    "smtp_password",
-    "webapp_secret_key",
-    "bot_secret",
-    # Marketplace PATs (private repos) — see src/marketplace.py.
-    "marketplace_token",
-    "marketplace_pat",
-})
+_SECRET_FIELDS: frozenset = frozenset(
+    {
+        # ConfigureRequest — POST /api/admin/configure carries Keboola creds.
+        "keboola_token",
+        # Generic names that have appeared in earlier iterations of admin
+        # request bodies and could resurface — keep them masked defensively.
+        "api_token",
+        "auth_token",
+        "bot_token",
+        "client_secret",
+        "google_client_secret",
+        "google_oauth_client_secret",
+        "password",
+        "smtp_password",
+        "webapp_secret_key",
+        "bot_secret",
+        # Marketplace PATs (private repos) — see src/marketplace.py.
+        "marketplace_token",
+        "marketplace_pat",
+    }
+)
 
 
 def _sanitize_for_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1239,7 +1405,7 @@ _BACKTICK_REJECTION_MESSAGE = (
     "source_query uses BigQuery-native backtick identifiers (e.g. "
     "`project.dataset.table`), but the materialize path runs the SQL "
     "through DuckDB's BigQuery extension which uses DuckDB-flavor "
-    "identifiers. Rewrite to DuckDB syntax: bq.\"dataset\".\"table\" "
+    'identifiers. Rewrite to DuckDB syntax: bq."dataset"."table" '
     "(with the attached catalog alias `bq` plus double-quoted dataset/"
     "table). The instance is configured with the data project, so you "
     "don't need to repeat it in the FROM clause."
@@ -1300,6 +1466,53 @@ class RegisterTableRequest(BaseModel):
     partition_by: Optional[str] = None
     partition_granularity: Optional[str] = None
     initial_load_chunk_days: Optional[int] = None
+    # v51 — fully-qualified BigQuery path. When set on a BigQuery row,
+    # the extractor uses ``project.dataset.table`` from this field instead
+    # of constructing the path from ``bucket`` + ``source_table`` against
+    # the globally-attached project. Decouples UX/RBAC ``bucket`` label
+    # from physical BQ dataset (issue #343). Format ``project.dataset.table``;
+    # validated by ``connectors.bigquery.extractor.parse_bq_fqn``.
+    bq_fqn: Optional[str] = Field(
+        default=None,
+        description=(
+            "Fully-qualified BigQuery path (``project.dataset.table``). "
+            "Only applies to source_type='bigquery'. When set, overrides "
+            "the legacy bucket+source_table path construction. Use this "
+            "to register a table whose BQ dataset name differs from the "
+            "Agnes ``bucket`` label (issue #343)."
+        ),
+    )
+    # v74 (#607) — distribution flag decoupled from query_mode. When true the
+    # table is kept server-side & queryable via `agnes query --remote`, but
+    # `agnes pull` does NOT download its parquet (the manifest still lists it
+    # for catalog discovery + RBAC). Only meaningful for query_mode IN
+    # ('local', 'materialized'); the model_validator below rejects it paired
+    # with query_mode='remote' (no server-stored parquet to suppress).
+    server_only: bool = Field(
+        default=False,
+        description=(
+            "Keep the table server-side & queryable via `agnes query "
+            "--remote`, but exclude its parquet from `agnes pull` download. "
+            "Only valid for query_mode='local'/'materialized'; rejected with "
+            "query_mode='remote'. Default false leaves distribution unchanged."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_server_only_query_mode(self):
+        """``server_only`` is a *distribution* suppressor — it only makes
+        sense when there IS a server-stored parquet to suppress. A
+        ``query_mode='remote'`` row has none (every query goes live to the
+        upstream source), so ``server_only=true`` there is incoherent.
+        Reject it explicitly rather than silently ignore so the admin sees
+        the conflict at register/update time (issue #607)."""
+        if self.server_only and self.query_mode == "remote":
+            raise ValueError(
+                "server_only=true is only valid for query_mode='local' or "
+                "'materialized' (a 'remote' table has no server-stored parquet "
+                "to suppress from agnes pull)"
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_mode_query_coherence(self):
@@ -1313,9 +1526,7 @@ class RegisterTableRequest(BaseModel):
         """
         sq = (self.source_query or "").strip() or None
         if self.query_mode != "materialized" and sq:
-            raise ValueError(
-                "source_query is only valid when query_mode='materialized'"
-            )
+            raise ValueError("source_query is only valid when query_mode='materialized'")
         # BigQuery materialized auto-generates a full-table-dump SQL from
         # `bucket`+`source_table` when source_query is omitted (see
         # `register_table` BQ branch). Keboola materialized: a NULL
@@ -1324,20 +1535,30 @@ class RegisterTableRequest(BaseModel):
         # filter, see `connectors/keboola/storage_api.py:ExportFilter`).
         # Other source_types (e.g. jira) don't support materialized mode
         # and require an explicit source_query if the operator opts in.
-        if (
-            self.query_mode == "materialized"
-            and not sq
-            and self.source_type not in ("bigquery", "keboola")
-        ):
+        if self.query_mode == "materialized" and not sq and self.source_type not in ("bigquery", "keboola"):
             raise ValueError(
-                f"query_mode='materialized' for source_type='{self.source_type}' "
-                "requires a non-empty source_query"
+                f"query_mode='materialized' for source_type='{self.source_type}' requires a non-empty source_query"
             )
         # Backtick guard stays for non-materialized rows (DuckDB-flavor SQL
         # contract); materialized SQL is BigQuery-native and MUST allow
         # backticks for dashed identifiers (e.g. `prj-org.dataset.table`).
         if self.query_mode != "materialized" and sq and "`" in sq:
             raise ValueError(_BACKTICK_REJECTION_MESSAGE)
+        # Keboola materialized source_query must be a JSON filter spec, not SQL.
+        # The extractor uses the Storage API with structured filters (columns,
+        # whereFilters, changedSince) — DuckDB SQL belongs on BigQuery rows.
+        if self.query_mode == "materialized" and self.source_type == "keboola" and sq:
+            if sq.upper().startswith(("SELECT", "WITH")):
+                raise ValueError(
+                    "Keboola materialized source_query must be a JSON filter spec "
+                    "(columns/whereFilters/changedSince), not SQL. "
+                    "Use null for full-table export, or set query_mode='local' "
+                    "for DuckDB-based Keboola pulls."
+                )
+            try:
+                json.loads(sq)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Keboola materialized source_query must be valid JSON: {e}") from e
         # Normalise: stash the trimmed-or-None form so the persisted column
         # never carries surrounding whitespace or empty-string sentinels.
         self.source_query = sq
@@ -1364,9 +1585,7 @@ class RegisterTableRequest(BaseModel):
         if v in (None, ""):
             return v
         if v not in _VALID_SOURCE_TYPES:
-            raise ValueError(
-                f"source_type must be one of {sorted(_VALID_SOURCE_TYPES)}, got {v!r}"
-            )
+            raise ValueError(f"source_type must be one of {sorted(_VALID_SOURCE_TYPES)}, got {v!r}")
         return v
 
     @field_validator("sync_schedule", mode="before")
@@ -1381,7 +1600,8 @@ class RegisterTableRequest(BaseModel):
         if not is_valid_schedule(v):
             raise ValueError(
                 f"sync_schedule must be 'every Nm' / 'every Nh' / "
-                f"'daily HH:MM[,HH:MM,...]', got {v!r}"
+                f"'daily HH:MM[,HH:MM,...]' / 'cron <min hour dom month dow>' "
+                f"(e.g. 'cron 0 5 7 * *'), got {v!r}"
             )
         return v
 
@@ -1399,9 +1619,7 @@ class RegisterTableRequest(BaseModel):
             return "full_refresh"
         allowed = {"full_refresh", "incremental", "partitioned"}
         if v not in allowed:
-            raise ValueError(
-                f"sync_strategy must be one of {sorted(allowed)}, got {v!r}"
-            )
+            raise ValueError(f"sync_strategy must be one of {sorted(allowed)}, got {v!r}")
         return v
 
     @field_validator("partition_granularity", mode="before")
@@ -1411,9 +1629,7 @@ class RegisterTableRequest(BaseModel):
             return v
         allowed = {"day", "month", "year"}
         if v not in allowed:
-            raise ValueError(
-                f"partition_granularity must be one of {sorted(allowed)}, got {v!r}"
-            )
+            raise ValueError(f"partition_granularity must be one of {sorted(allowed)}, got {v!r}")
         return v
 
     @field_validator("where_filters", mode="before")
@@ -1432,6 +1648,7 @@ class RegisterTableRequest(BaseModel):
         if v in (None, "", []):
             return None
         from connectors.keboola.where_filters import parse_filters, InvalidFilterError
+
         try:
             return parse_filters(v)
         except InvalidFilterError as e:
@@ -1462,9 +1679,7 @@ class RegisterTableRequest(BaseModel):
         """
         if self.sync_strategy == "partitioned":
             if not self.partition_by:
-                raise ValueError(
-                    "sync_strategy='partitioned' requires partition_by to be set"
-                )
+                raise ValueError("sync_strategy='partitioned' requires partition_by to be set")
             if self.query_mode == "remote":
                 raise ValueError(
                     "sync_strategy='partitioned' is incompatible with query_mode='remote' "
@@ -1505,7 +1720,9 @@ class RegisterTableRequest(BaseModel):
 
 
 def _generate_materialized_source_query(
-    bucket: str, source_table: str, project_id: str,
+    bucket: str,
+    source_table: str,
+    project_id: str,
 ) -> str:
     """Build the canonical full-table-dump source_query for a materialized
     BQ row when admin only supplies dataset + table. The result is
@@ -1529,6 +1746,53 @@ def _generate_materialized_source_query(
     return f"SELECT * FROM `{project_id}.{bucket}.{source_table}`"
 
 
+def _normalize_bq_source_table(req: "RegisterTableRequest") -> None:
+    """Collapse a pasted FQN in ``source_table`` to the bare table name.
+
+    BigQuery table names cannot contain dots, so a dotted ``source_table``
+    is always a pasted path (``dataset.table`` or ``project.dataset.table``),
+    never a real table name. Stored verbatim, the extractor composes
+    ``project.bucket.source_table`` and produces a doubled path that fails to
+    register on every sync. Mutates the request in place when the dotted
+    value is unambiguous (its dataset component equals ``bucket``); raises
+    HTTPException(400) when it contradicts ``bucket`` or points at a foreign
+    project (that's what ``bq_fqn`` is for).
+    """
+    st = req.source_table or ""
+    if "." not in st:
+        return
+    parts = st.split(".")
+    bucket = req.bucket or ""
+    if len(parts) == 2 and parts[0] == bucket and parts[1]:
+        bare = parts[1]
+    elif len(parts) == 3 and parts[1] == bucket and parts[2]:
+        from app.instance_config import get_value
+
+        project_id = get_value("data_source", "bigquery", "project", default="") or ""
+        if project_id and parts[0] != project_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"bigquery: source_table {st!r} points at project "
+                    f"{parts[0]!r} but this instance is configured for "
+                    f"{project_id!r} — for cross-project tables use the "
+                    "bq_fqn field"
+                ),
+            )
+        bare = parts[2]
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"bigquery: source_table {st!r} looks like a fully-qualified "
+                f"path but does not match bucket {req.bucket!r} — put the BQ "
+                "dataset in 'bucket' and the bare table name in 'source_table'"
+            ),
+        )
+    logger.info("normalized dotted BQ source_table %r -> %r", st, bare)
+    req.source_table = bare
+
+
 def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     """Enforce BQ-specific shape on a register/precheck request.
 
@@ -1548,6 +1812,7 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     Raises HTTPException(422) for missing required fields and
     HTTPException(400) for unsafe identifiers / bogus project_id.
     """
+    _normalize_bq_source_table(req)
     if req.query_mode == "materialized":
         # Materialized BQ rows: the SQL body replaces dataset+table refs.
         # source_query may be empty if admin supplied bucket+source_table —
@@ -1563,6 +1828,7 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
                 ),
             )
         from app.instance_config import get_value
+
         project_id = get_value("data_source", "bigquery", "project", default="") or ""
         if not project_id:
             raise HTTPException(
@@ -1597,7 +1863,9 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
                     ),
                 )
             req.source_query = _generate_materialized_source_query(
-                req.bucket, req.source_table, project_id,
+                req.bucket,
+                req.source_table,
+                project_id,
             )
 
         # Phase C: profile_after_sync is now inert (Pydantic field marked
@@ -1672,6 +1940,7 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     # we surface a config issue at registration rather than at first
     # rebuild, where the operator no longer has a request to look at.
     from app.instance_config import get_value
+
     project_id = get_value("data_source", "bigquery", "project", default="")
     if not project_id:
         raise HTTPException(
@@ -1695,16 +1964,33 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     # Phase C: profile_after_sync is now inert (deprecated, not read by the
     # runtime); no longer force-set here.
     req.query_mode = "remote"
+    # v74 (#607) — re-assert the server_only ↔ query_mode invariant AFTER the
+    # coercion above. The Pydantic validator ran against the caller's
+    # pre-coercion query_mode (often the 'local' default), so a BQ live
+    # registration with server_only=true would otherwise slip past it and
+    # persist the exact incoherent state it exists to reject.
+    if req.server_only:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "server_only=true is only valid for query_mode='local' or "
+                "'materialized' — a live BigQuery registration is coerced to "
+                "query_mode='remote', which has no server-stored parquet to "
+                "suppress from agnes pull"
+            ),
+        )
 
 
 # Source types that don't depend on a `data_source.<name>.*` block — they
 # get their data through a different ingestion path (e.g. Jira via
 # webhooks). Registrations against these types are allowed regardless of
 # the configured primary `data_source.type`.
-_SOURCE_TYPES_INDEPENDENT_OF_DATA_SOURCE: frozenset[str] = frozenset({
-    "jira",
-    "local",
-})
+_SOURCE_TYPES_INDEPENDENT_OF_DATA_SOURCE: frozenset[str] = frozenset(
+    {
+        "jira",
+        "local",
+    }
+)
 
 
 def _validate_source_type_configured(source_type: Optional[str]) -> None:
@@ -1798,10 +2084,7 @@ class UpdateTableRequest(BaseModel):
     profile_after_sync: Optional[bool] = Field(
         default=None,
         deprecated=True,
-        description=(
-            "DEPRECATED: not consumed by the runtime. See "
-            "RegisterTableRequest.profile_after_sync."
-        ),
+        description=("DEPRECATED: not consumed by the runtime. See RegisterTableRequest.profile_after_sync."),
     )
     # v26 — same fields as RegisterTableRequest, all optional. The PUT
     # handler overlays the body on the existing row and re-runs the
@@ -1814,6 +2097,15 @@ class UpdateTableRequest(BaseModel):
     partition_by: Optional[str] = None
     partition_granularity: Optional[str] = None
     initial_load_chunk_days: Optional[int] = None
+    # v51 — see RegisterTableRequest.bq_fqn. PUT lets an admin add or
+    # clear bq_fqn on an existing row (cleared via explicit `null`,
+    # per the PUT shape contract documented on the handler below).
+    bq_fqn: Optional[str] = None
+    # v74 (#607) — distribution flag. PUT lets an admin toggle it on/off.
+    # The query_mode='remote' conflict is enforced against the *merged*
+    # record in the update_table handler (the PUT body alone may omit
+    # query_mode, so it can't be validated here in isolation).
+    server_only: Optional[bool] = None
 
     @field_validator("sync_strategy", mode="before")
     @classmethod
@@ -1822,9 +2114,7 @@ class UpdateTableRequest(BaseModel):
             return v
         allowed = {"full_refresh", "incremental", "partitioned"}
         if v not in allowed:
-            raise ValueError(
-                f"sync_strategy must be one of {sorted(allowed)}, got {v!r}"
-            )
+            raise ValueError(f"sync_strategy must be one of {sorted(allowed)}, got {v!r}")
         return v
 
     @field_validator("partition_granularity", mode="before")
@@ -1834,9 +2124,7 @@ class UpdateTableRequest(BaseModel):
             return v
         allowed = {"day", "month", "year"}
         if v not in allowed:
-            raise ValueError(
-                f"partition_granularity must be one of {sorted(allowed)}, got {v!r}"
-            )
+            raise ValueError(f"partition_granularity must be one of {sorted(allowed)}, got {v!r}")
         return v
 
     @field_validator("where_filters", mode="before")
@@ -1845,6 +2133,7 @@ class UpdateTableRequest(BaseModel):
         if v in (None, "", []):
             return None
         from connectors.keboola.where_filters import parse_filters, InvalidFilterError
+
         try:
             return parse_filters(v)
         except InvalidFilterError as e:
@@ -1883,31 +2172,16 @@ class UpdateTableRequest(BaseModel):
 
         # Operator explicitly sent source_query as empty/whitespace while
         # claiming materialized — typo / bad form data, reject.
-        if (
-            self.query_mode == "materialized"
-            and sq_raw is not None
-            and not sq
-        ):
-            raise ValueError(
-                "query_mode='materialized' requires a non-empty source_query"
-            )
+        if self.query_mode == "materialized" and sq_raw is not None and not sq:
+            raise ValueError("query_mode='materialized' requires a non-empty source_query")
 
         # source_query only makes sense with materialized mode. Allow None
         # (omitted) to flow through; only reject when explicitly set with
         # the wrong mode.
-        if (
-            self.query_mode is not None
-            and self.query_mode != "materialized"
-            and sq
-        ):
-            raise ValueError(
-                "source_query is only valid when query_mode='materialized'"
-            )
+        if self.query_mode is not None and self.query_mode != "materialized" and sq:
+            raise ValueError("source_query is only valid when query_mode='materialized'")
         if self.query_mode is None and sq:
-            raise ValueError(
-                "source_query requires query_mode='materialized' to be set "
-                "in the same request"
-            )
+            raise ValueError("source_query requires query_mode='materialized' to be set in the same request")
 
         # Normalise: drop whitespace-only strings to None so the persisted
         # column is clean. Don't touch when source_query was None to begin
@@ -1943,7 +2217,8 @@ class UpdateTableRequest(BaseModel):
         if not is_valid_schedule(v):
             raise ValueError(
                 f"sync_schedule must be 'every Nm' / 'every Nh' / "
-                f"'daily HH:MM[,HH:MM,...]', got {v!r}"
+                f"'daily HH:MM[,HH:MM,...]' / 'cron <min hour dom month dow>' "
+                f"(e.g. 'cron 0 5 7 * *'), got {v!r}"
             )
         return v
 
@@ -1977,16 +2252,20 @@ async def discover_tables(
     """
     try:
         from app.instance_config import get_data_source_type
+
         source_type = get_data_source_type()
 
         if source_type == "keboola":
             from connectors.keboola.client import KeboolaClient
             from app.instance_config import get_value
+
             url = get_value("data_source", "keboola", "stack_url", default="")
             token_env = get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN")
             token = os.environ.get(token_env, "") if token_env else ""
             if not token:
-                token = os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
+                from app.datasource_secrets import datasource_secret
+
+                token = datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
             client = KeboolaClient(token=token, url=url)
             tables = client.discover_all_tables()
             return {"tables": tables, "count": len(tables), "source": "keboola"}
@@ -2032,10 +2311,12 @@ def _discover_bigquery(dataset: Optional[str]) -> Dict[str, Any]:
         if dataset is None:
             datasets = []
             for ds in client.list_datasets():
-                datasets.append({
-                    "dataset_id": ds.dataset_id,
-                    "full_id": f"{ds.project}.{ds.dataset_id}",
-                })
+                datasets.append(
+                    {
+                        "dataset_id": ds.dataset_id,
+                        "full_id": f"{ds.project}.{ds.dataset_id}",
+                    }
+                )
             return {
                 "datasets": sorted(datasets, key=lambda d: d["dataset_id"]),
                 "count": len(datasets),
@@ -2049,11 +2330,13 @@ def _discover_bigquery(dataset: Optional[str]) -> Dict[str, Any]:
         # passed through with their raw type so the operator can decide.
         tables = []
         for t in client.list_tables(dataset):
-            tables.append({
-                "table_id": t.table_id,
-                "table_type": t.table_type,
-                "full_id": f"{t.project}.{t.dataset_id}.{t.table_id}",
-            })
+            tables.append(
+                {
+                    "table_id": t.table_id,
+                    "table_type": t.table_type,
+                    "full_id": f"{t.project}.{t.dataset_id}.{t.table_id}",
+                }
+            )
         return {
             "tables": sorted(tables, key=lambda t: t["table_id"]),
             "count": len(tables),
@@ -2085,29 +2368,39 @@ async def list_registry(
     scheduler logs. None for rows that have never errored or have already
     recovered (status='ok'); the per-row error message string otherwise.
     """
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     tables = repo.list_all()
 
-    # Single batched read of sync_state errors — avoid N+1 GETs against
+    # Single batched read of sync_state — avoid N+1 GETs against
     # `sync_state` for large registries. The sync_state row is keyed on
     # `table_id` which mirrors `table_registry.name` (see comment in
     # _run_materialized_pass / _build_manifest_for_user about name vs id).
+    # One query covers both error message (only when status='error') and
+    # last_sync timestamp so operators can see both staleness and failure.
     error_by_name: Dict[str, Optional[str]] = {}
+    sync_by_name: Dict[str, Optional[str]] = {}
     try:
-        rows = conn.execute(
-            "SELECT table_id, error FROM sync_state "
-            "WHERE status = 'error' AND error IS NOT NULL AND error <> ''"
-        ).fetchall()
-        error_by_name = {r[0]: r[1] for r in rows}
+        rows = sync_state_repo().get_all_states()
+        for row in rows:
+            tid = row.get("table_id")
+            status = row.get("status")
+            error = row.get("error")
+            ls = row.get("last_sync")
+            err = error if (status == "error" and error) else None
+            if err:
+                error_by_name[tid] = err
+            if ls:
+                sync_by_name[tid] = str(ls)[:16]  # "YYYY-MM-DD HH:MM"
     except Exception:
         # Defensive: if sync_state is unreadable for any reason, the
         # registry response still serializes — operators just lose the
-        # last_sync_error column on this call.
-        logger.exception("Failed to read sync_state errors for registry")
+        # enriched columns on this call.
+        logger.exception("Failed to read sync_state for registry")
 
     for t in tables:
         # Sync_state.table_id == table_registry.name by convention.
         t["last_sync_error"] = error_by_name.get(t.get("name"))
+        t["last_sync_display"] = sync_by_name.get(t.get("name"))
 
     return {"tables": tables, "count": len(tables)}
 
@@ -2175,7 +2468,8 @@ def _materialize_bigquery_extract_bg() -> None:
     if errors:
         logger.error(
             "BQ post-register background materialize completed with %d error(s): %s",
-            len(errors), errors,
+            len(errors),
+            errors,
         )
 
 
@@ -2251,7 +2545,8 @@ def _run_bigquery_materialize_with_timeout(
         if errors:
             logger.error(
                 "BQ post-register rebuild reported %d error(s): %s",
-                len(errors), errors,
+                len(errors),
+                errors,
             )
             return {"status": "errors", "errors": errors}
         return {"status": "ok"}
@@ -2314,10 +2609,22 @@ def register_table(
     log entry on success.
     """
     from fastapi.responses import JSONResponse
+
     if not request.name or not request.name.strip():
         raise HTTPException(status_code=422, detail="Table name cannot be empty")
-    repo = TableRegistryRepository(conn)
+    import re as _re
+
+    repo = table_registry_repo()
     table_id = request.name.strip().lower().replace(" ", "_")
+
+    if not _re.fullmatch(r"[a-z_][a-z0-9_]*", table_id):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Table name produces unsafe identifier '{table_id}'. "
+                "Use only letters, digits, and underscores — no hyphens or special characters."
+            ),
+        )
 
     if repo.get(table_id):
         raise HTTPException(status_code=409, detail=f"Table '{table_id}' already registered")
@@ -2357,6 +2664,23 @@ def register_table(
     # deprecated and inert at the runtime layer. The DB column keeps its
     # schema default; the registry response no longer reflects request
     # values for this flag.
+    # v51 — validate bq_fqn upfront. The extractor would catch a malformed
+    # value at next rebuild and skip the row, but failing at register time
+    # gives the admin a clean 422 with the specific complaint instead of
+    # a silent "table registered but never materialized" state.
+    if request.bq_fqn is not None and request.source_type != "bigquery":
+        raise HTTPException(
+            status_code=422,
+            detail="bq_fqn only applies to source_type='bigquery'",
+        )
+    if request.bq_fqn is not None:
+        from connectors.bigquery.extractor import parse_bq_fqn
+
+        try:
+            parse_bq_fqn(request.bq_fqn)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
     repo.register(
         id=table_id,
         name=request.name,
@@ -2380,10 +2704,12 @@ def register_table(
         partition_by=request.partition_by,
         partition_granularity=request.partition_granularity,
         initial_load_chunk_days=request.initial_load_chunk_days,
+        bq_fqn=request.bq_fqn,
+        server_only=request.server_only,
     )
 
     # Audit entry — masked params; description kept raw (it's documentation).
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="register_table",
         resource=table_id,
@@ -2391,6 +2717,7 @@ def register_table(
     )
 
     from app.api.v2_catalog import invalidate_for_table
+
     invalidate_for_table(table_id)
 
     if not is_bigquery:
@@ -2480,6 +2807,7 @@ class PrecheckResponse(BaseModel):
     returns a plain dict for backwards compatibility with the rest of the
     admin API which doesn't use response_model.
     """
+
     ok: bool
     table: Dict[str, Any]
 
@@ -2563,13 +2891,11 @@ def register_table_precheck(
     except ImportError as e:
         raise HTTPException(
             status_code=500,
-            detail=(
-                "google-cloud-bigquery not installed; install the bigquery "
-                f"extras to use BQ precheck ({e})"
-            ),
+            detail=(f"google-cloud-bigquery not installed; install the bigquery extras to use BQ precheck ({e})"),
         ) from e
 
     from app.instance_config import get_value
+
     project_id = get_value("data_source", "bigquery", "project", default="")
     dataset = (request.bucket or "").strip()
     source_table = (request.source_table or "").strip()
@@ -2584,8 +2910,7 @@ def register_table_precheck(
         raise HTTPException(
             status_code=403,
             detail=(
-                f"BigQuery access denied for {fq}: {e}. "
-                "Service account needs bigquery.metadata.get on the dataset."
+                f"BigQuery access denied for {fq}: {e}. Service account needs bigquery.metadata.get on the dataset."
             ),
         ) from e
     except Exception as e:
@@ -2594,10 +2919,7 @@ def register_table_precheck(
         # config without us guessing the right HTTP code.
         raise HTTPException(status_code=400, detail=f"BigQuery precheck failed for {fq}: {e}") from e
 
-    columns = [
-        {"name": f.name, "type": f.field_type}
-        for f in (bq_table.schema or [])
-    ]
+    columns = [{"name": f.name, "type": f.field_type} for f in (bq_table.schema or [])]
     return {
         "ok": True,
         "table": {
@@ -2628,7 +2950,7 @@ async def update_table(
     up changes (e.g. a renamed dataset) without waiting for the next
     scheduled sync.
     """
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     existing = repo.get(table_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Table not found")
@@ -2667,6 +2989,41 @@ async def update_table(
         merged.update(updates)
         merged.pop("id", None)  # avoid duplicate id kwarg
 
+        # v52 + v56: per-table docs fields (sample_questions /
+        # things_to_know / pairs_well_with + grain / platforms /
+        # partition_col / history / gotchas) live on table_registry
+        # but have their own PATCH /registry/{id}/docs endpoint.
+        # ``repo.register()`` doesn't know them; stripping here keeps
+        # the read-modify-write loop the PUT handler relies on
+        # (existing → merged → register) from blowing up with
+        # TypeError when the docs columns are populated.
+        for _docs_key in (
+            "sample_questions",
+            "things_to_know",
+            "pairs_well_with",
+            "grain",
+            "platforms",
+            "partition_col",
+            "history",
+            "gotchas",
+        ):
+            merged.pop(_docs_key, None)
+
+        # v74 (#607) — validate the server_only ↔ query_mode invariant
+        # against the *merged* record (the PUT body may toggle either field
+        # independently). server_only=true is only coherent for a row with a
+        # server-stored parquet (local / materialized); a 'remote' row has
+        # none. Mirror the RegisterTableRequest validator at PUT time.
+        if merged.get("server_only") and merged.get("query_mode") == "remote":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "server_only=true is only valid for query_mode='local' or "
+                    "'materialized' (a 'remote' table has no server-stored "
+                    "parquet to suppress from agnes pull)"
+                ),
+            )
+
         # When switching the merged record away from materialized mode, drop
         # the stale source_query — the request validator can't clear it via
         # the `if v is not None` filter above. Without this, a remote/local
@@ -2674,19 +3031,17 @@ async def update_table(
         if merged.get("query_mode") != "materialized":
             merged["source_query"] = None
 
-        # Cross-source coherence: query_mode='materialized' requires a
-        # non-empty source_query for ALL source types, not just BigQuery.
-        # BQ rows without source_query can be server-generated from
-        # bucket+source_table (handled by _validate_bigquery_register_payload
-        # via the synthetic RegisterTableRequest below). Non-BQ rows (e.g.
-        # Keboola) still require an explicit source_query at PUT time.
+        # Cross-source coherence: query_mode='materialized' + source_query rules:
+        # - bigquery: null OK — server-generates source_query from bucket+source_table.
+        # - keboola:  null OK — null means full-table export (valid at registration too;
+        #             see RegisterTableRequest validator which guards only non-empty sq).
+        # - all others: require an explicit non-empty source_query.
         if merged.get("query_mode") == "materialized":
             sq = merged.get("source_query")
             if not sq or not str(sq).strip():
-                # BQ rows: let _validate_bigquery_register_payload generate
-                # source_query from bucket+source_table (falls through below).
-                # Non-BQ rows: no server-generate fallback; raise 422.
-                if merged.get("source_type") != "bigquery":
+                # BQ and Keboola both allow null/empty source_query — fall through.
+                # All other source types require an explicit source_query; raise 422.
+                if merged.get("source_type") not in ("bigquery", "keboola"):
                     raise HTTPException(
                         status_code=422,
                         detail=(
@@ -2702,6 +3057,30 @@ async def update_table(
             # admin SQL through the BQ jobs API using BQ-native syntax, which
             # requires backticks for dashed project/dataset identifiers.
             # Non-materialized rows still reject backticks in the model validator.
+
+            # Keboola materialized: source_query must be a JSON filter spec,
+            # not SQL. Validate after the non-empty check above so we know sq
+            # is a non-empty string here.
+            if merged.get("source_type") == "keboola":
+                _sq = str(merged.get("source_query", "") or "").strip()
+                if _sq.upper().startswith(("SELECT", "WITH")):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            "Keboola materialized source_query must be a JSON "
+                            "filter spec (columns/whereFilters/changedSince), "
+                            "not SQL. Use null for full-table export, or set "
+                            "query_mode='local' for DuckDB-based Keboola pulls."
+                        ),
+                    )
+                if _sq:
+                    try:
+                        json.loads(_sq)
+                    except json.JSONDecodeError as _e:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"Keboola materialized source_query must be valid JSON: {_e}",
+                        ) from _e
 
         if merged.get("source_type") == "bigquery":
             # Reuse the register-time validator. It mutates the request to
@@ -2721,15 +3100,44 @@ async def update_table(
                 folder=merged.get("folder"),
                 sync_strategy=merged.get("sync_strategy") or "full_refresh",
                 sync_schedule=merged.get("sync_schedule"),
+                # v74 (#607) — carry server_only into the synthetic so the
+                # validator's post-coercion check fires when this PUT lands
+                # the row in 'remote' mode; the merged-record check above
+                # only saw the pre-coercion query_mode.
+                server_only=bool(merged.get("server_only") or False),
             )
             _validate_bigquery_register_payload(synthetic)
             merged["query_mode"] = synthetic.query_mode
             merged["profile_after_sync"] = synthetic.profile_after_sync
             merged["source_query"] = synthetic.source_query
+            # FQN normalization mutates source_table the same way the
+            # validator coerces query_mode — copy it back so the persisted
+            # row carries the bare table name, not the pasted path.
+            merged["source_table"] = synthetic.source_table
+
+            # v51 — same bq_fqn validation as register-table. PUT can both
+            # add a fresh bq_fqn or update an existing one; in either case
+            # malformed values should reject at PUT time, not silently
+            # land in the DB and break the next rebuild.
+            if merged.get("bq_fqn"):
+                from connectors.bigquery.extractor import parse_bq_fqn
+
+                try:
+                    parse_bq_fqn(merged["bq_fqn"])
+                except ValueError as e:
+                    raise HTTPException(status_code=422, detail=str(e))
+        else:
+            # Non-BQ row carrying bq_fqn is nonsensical — reject the same
+            # way register-table does.
+            if merged.get("bq_fqn"):
+                raise HTTPException(
+                    status_code=422,
+                    detail="bq_fqn only applies to source_type='bigquery'",
+                )
 
         repo.register(id=table_id, **merged)
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="update_table",
         resource=table_id,
@@ -2746,9 +3154,114 @@ async def update_table(
         background.add_task(_materialize_bigquery_extract_bg)
 
     from app.api.v2_catalog import invalidate_for_table
+
     invalidate_for_table(table_id)
 
     return {"id": table_id, "updated": list(updates.keys())}
+
+
+class _GotchaItem(BaseModel):
+    """v56: a single gotcha entry. ``key=True`` marks the first one as
+    the "Key gotcha" rendered distinctly by the package detail page."""
+
+    key: bool = False
+    body: str
+
+
+class TableDocsRequest(BaseModel):
+    """Per-table docs surface — v52 (sample_questions / things_to_know /
+    pairs_well_with) extended in v56 with structured fields (grain /
+    platforms / partition_col / history / gotchas) for the
+    /catalog/p/<slug> package detail page rewrite.
+
+    All fields optional. Sending `[]` for a list clears it; sending
+    `""` for a scalar clears it; omitting leaves it untouched
+    (Optional-is-no-op contract).
+    """
+
+    # v52 fields.
+    sample_questions: Optional[List[str]] = None
+    things_to_know: Optional[str] = None
+    pairs_well_with: Optional[List[str]] = None
+    # v56 fields.
+    grain: Optional[str] = None
+    platforms: Optional[List[str]] = None
+    partition_col: Optional[str] = None
+    history: Optional[str] = None
+    gotchas: Optional[List[_GotchaItem]] = None
+
+    @field_validator("platforms")
+    @classmethod
+    def _check_platforms(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        if len(v) > 8:
+            raise ValueError("platforms: max 8 entries")
+        return v
+
+    @field_validator("gotchas")
+    @classmethod
+    def _check_gotchas(cls, v):
+        if v is None:
+            return None
+        if len(v) > 8:
+            raise ValueError("gotchas: max 8 entries")
+        return v
+
+
+@router.patch("/registry/{table_id}/docs")
+async def update_table_docs(
+    table_id: str,
+    payload: TableDocsRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Write the admin-authored per-table docs read by /catalog/t/<id>
+    and (for the v56 structured fields) by the per-table extended
+    section on /catalog/p/<slug>. Separated from PUT /registry/{id} so
+    admins can flip these fields without re-submitting the whole big
+    registration payload."""
+    repo = table_registry_repo()
+    if not repo.get(table_id):
+        raise HTTPException(status_code=404, detail="table_not_found")
+    # Empty-string ``things_to_know`` clears; explicit `[]` clears lists.
+    clear_things = payload.things_to_know == ""
+    clear_questions = payload.sample_questions == []
+    clear_pairs = payload.pairs_well_with == []
+    # v56 ``gotchas`` Pydantic models → list of dicts for the repo (JSON
+    # serializer handles plain dicts; we'd lose the validator if we
+    # passed _GotchaItem instances through).
+    gotchas_payload = [g.model_dump() for g in payload.gotchas] if payload.gotchas is not None else None
+    repo.update_docs(
+        table_id,
+        sample_questions=(None if clear_questions else payload.sample_questions),
+        things_to_know=(None if clear_things else payload.things_to_know),
+        pairs_well_with=(None if clear_pairs else payload.pairs_well_with),
+        clear_sample_questions=clear_questions,
+        clear_things_to_know=clear_things,
+        clear_pairs_well_with=clear_pairs,
+        # v56 — same Optional-is-no-op contract.
+        grain=payload.grain,
+        platforms=payload.platforms,
+        partition_col=payload.partition_col,
+        history=payload.history,
+        gotchas=gotchas_payload,
+    )
+    # Echo the fresh state so the admin client can re-render without a
+    # second GET. Lets the test suite (and the eventual admin UI) inspect
+    # what landed in DB.
+    fresh = repo.get(table_id) or {}
+    return {
+        "id": table_id,
+        "sample_questions": fresh.get("sample_questions") or [],
+        "things_to_know": fresh.get("things_to_know"),
+        "pairs_well_with": fresh.get("pairs_well_with") or [],
+        "grain": fresh.get("grain"),
+        "platforms": fresh.get("platforms") or [],
+        "partition_col": fresh.get("partition_col"),
+        "history": fresh.get("history"),
+        "gotchas": fresh.get("gotchas") or [],
+    }
 
 
 @router.delete("/registry/{table_id}", status_code=204)
@@ -2772,7 +3285,7 @@ async def unregister_table(
     resurrect a master view from the leftover parquet (E2E sub-agent
     finding 2026-05-01).
     """
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     existing = repo.get(table_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Table not found")
@@ -2807,13 +3320,15 @@ async def unregister_table(
                     candidate.unlink()
                     logger.info(
                         "Removed materialized parquet for unregistered table %s: %s",
-                        table_id, candidate,
+                        table_id,
+                        candidate,
                     )
         except Exception as e:
             logger.warning(
                 "Failed to remove materialized parquet for %s: %s — registry row is "
                 "still dropped; clean up the file manually if it lingers",
-                table_id, e,
+                table_id,
+                e,
             )
 
     # Clear sync_state for any source/mode (a row that was synced at any
@@ -2822,28 +3337,31 @@ async def unregister_table(
     # advertised the dropped table to `agnes pull` because sync_state was
     # never cleaned up, and analysts kept getting it through the manifest.
     try:
-        conn.execute("DELETE FROM sync_state WHERE table_id = ?", [name])
-        conn.execute("DELETE FROM sync_history WHERE table_id = ?", [name])
+        sync_state_repo().clear_for_table(name)
     except Exception as e:
         logger.warning(
             "Failed to clear sync_state for unregistered table %s: %s — "
             "manifest may still advertise the dropped row to agnes pull",
-            table_id, e,
+            table_id,
+            e,
         )
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="unregister_table",
         resource=table_id,
-        params=_sanitize_for_audit({
-            "name": existing.get("name"),
-            "source_type": existing.get("source_type"),
-            "bucket": existing.get("bucket"),
-            "source_table": existing.get("source_table"),
-        }),
+        params=_sanitize_for_audit(
+            {
+                "name": existing.get("name"),
+                "source_type": existing.get("source_type"),
+                "bucket": existing.get("bucket"),
+                "source_table": existing.get("source_table"),
+            }
+        ),
     )
 
     from app.api.v2_catalog import invalidate_for_table
+
     invalidate_for_table(table_id)
 
     if was_bigquery:
@@ -2868,10 +3386,13 @@ async def configure_instance(
     # Validate credentials if provided
     if request.data_source == "keboola":
         if not request.keboola_token or not request.keboola_url:
-            raise HTTPException(status_code=400, detail="keboola_token and keboola_url are required for Keboola data source")
+            raise HTTPException(
+                status_code=400, detail="keboola_token and keboola_url are required for Keboola data source"
+            )
         _validate_url_not_private(request.keboola_url, field_name="keboola_url")
         try:
             from connectors.keboola.client import KeboolaClient
+
             client = KeboolaClient(token=request.keboola_token, url=request.keboola_url)
             client.test_connection()
         except Exception as e:
@@ -2896,6 +3417,7 @@ async def configure_instance(
     # 2. Patch only the sections this endpoint touches.
     # 3. Write the narrow overlay back atomically (tmp + os.replace).
     from app.secrets import _state_dir
+
     config_path = _state_dir() / "instance.yaml"
 
     # Same serialization + corrupt-overlay handling as POST /server-config.
@@ -2909,7 +3431,7 @@ async def configure_instance(
                 raise HTTPException(
                     status_code=500,
                     detail=f"refusing to overwrite corrupt overlay at {config_path} ({e}); "
-                           "back up and remove the file, or fix it by hand",
+                    "back up and remove the file, or fix it by hand",
                 ) from e
 
         # Merge instance settings into the overlay only — never seed from the
@@ -2978,6 +3500,7 @@ async def configure_instance(
         # secrets to /data/state/.env_overlay here while the app reads
         # from /data-state/.env_overlay — silent loss on next restart.
         from app.secrets import _state_dir
+
         overlay_path = _state_dir() / ".env_overlay"
         overlay_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -2990,9 +3513,7 @@ async def configure_instance(
                     existing_overlay[k.strip()] = v.strip()
         existing_overlay.update(secrets_to_persist)
 
-        overlay_path.write_text(
-            "\n".join(f"{k}={v}" for k, v in existing_overlay.items()) + "\n"
-        )
+        overlay_path.write_text("\n".join(f"{k}={v}" for k, v in existing_overlay.items()) + "\n")
         try:
             overlay_path.chmod(0o600)
         except OSError:
@@ -3007,6 +3528,7 @@ async def configure_instance(
     # Use the public helper (matches `/api/admin/server-config`); reaching
     # into the private global silently breaks if the cache layout changes.
     from app.instance_config import reset_cache
+
     reset_cache()
 
     return {
@@ -3038,7 +3560,8 @@ def _split_keboola_table_id(full_id: str, fallback_name: str = "") -> tuple[str,
 
 
 def _build_keboola_discovery_plan(
-    conn: duckdb.DuckDBPyConnection, discovered: list[dict],
+    conn: duckdb.DuckDBPyConnection,
+    discovered: list[dict],
 ) -> dict:
     """Inspect ``discovered`` (output of ``KeboolaClient.discover_all_tables``)
     against the live registry and bucket every entry into one of:
@@ -3069,7 +3592,7 @@ def _build_keboola_discovery_plan(
     in ``_discover_and_register_tables`` and there was no way to see
     what would change without writing.
     """
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     # Pre-load all keboola rows once so the name-collision lookup
     # below is O(1) per discovered entry. Falls back to per-id
     # `repo.get(...)` calls when list_all isn't available — keeps
@@ -3079,9 +3602,7 @@ def _build_keboola_discovery_plan(
         all_rows = [r for r in repo.list_all() if r.get("source_type") == "keboola"]
     except AttributeError:
         all_rows = []
-    by_name: dict[str, dict] = {
-        (r.get("name") or "").strip().lower(): r for r in all_rows
-    }
+    by_name: dict[str, dict] = {(r.get("name") or "").strip().lower(): r for r in all_rows}
 
     plan = {"new": [], "existing_match": [], "existing_drift": [], "invalid": []}
     for table in discovered:
@@ -3090,11 +3611,13 @@ def _build_keboola_discovery_plan(
         # → underscores. Stable across discovery runs.
         table_id = full_id.lower().replace(".", "_").replace(" ", "_")
         if not table_id:
-            plan["invalid"].append({
-                "table_id": "",
-                "full_id": full_id,
-                "reason": "empty id from discovery payload",
-            })
+            plan["invalid"].append(
+                {
+                    "table_id": "",
+                    "full_id": full_id,
+                    "reason": "empty id from discovery payload",
+                }
+            )
             continue
 
         # Prefer Keboola's authoritative `bucket_id` (separate field in
@@ -3123,26 +3646,30 @@ def _build_keboola_discovery_plan(
             if ex_bucket == bucket and ex_source_table == source_table:
                 plan["existing_match"].append(entry)
             else:
-                plan["existing_drift"].append({
-                    **entry,
-                    "registry_bucket": ex_bucket,
-                    "registry_source_table": ex_source_table,
-                    "registry_id": existing.get("id"),
-                    "drift_kind": "same_id_diff_coords",
-                })
+                plan["existing_drift"].append(
+                    {
+                        **entry,
+                        "registry_bucket": ex_bucket,
+                        "registry_source_table": ex_source_table,
+                        "registry_id": existing.get("id"),
+                        "drift_kind": "same_id_diff_coords",
+                    }
+                )
             continue
 
         # No row at this id. Look for a name collision (admin
         # registered the same logical table under a different id).
         name_match = by_name.get(name.lower()) if name else None
         if name_match is not None:
-            plan["existing_drift"].append({
-                **entry,
-                "registry_bucket": name_match.get("bucket") or "",
-                "registry_source_table": name_match.get("source_table") or "",
-                "registry_id": name_match.get("id"),
-                "drift_kind": "name_collision",
-            })
+            plan["existing_drift"].append(
+                {
+                    **entry,
+                    "registry_bucket": name_match.get("bucket") or "",
+                    "registry_source_table": name_match.get("source_table") or "",
+                    "registry_id": name_match.get("id"),
+                    "drift_kind": "name_collision",
+                }
+            )
             continue
 
         plan["new"].append(entry)
@@ -3184,12 +3711,15 @@ def _discover_and_register_tables(
         }
 
     from connectors.keboola.client import KeboolaClient
+
     # Read from data_source.keboola (matches what /api/admin/configure writes)
     url = get_value("data_source", "keboola", "stack_url", default="")
     token_env = get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN")
     token = os.environ.get(token_env, "") if token_env else ""
     if not token:
-        token = os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
+        from app.datasource_secrets import datasource_secret
+
+        token = datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
 
     client = KeboolaClient(token=token, url=url)
     discovered = client.discover_all_tables()
@@ -3199,8 +3729,7 @@ def _discover_and_register_tables(
         {
             "table_id": e["table_id"],
             "discovery": {"bucket": e["bucket"], "source_table": e["source_table"]},
-            "registry":  {"bucket": e["registry_bucket"],
-                           "source_table": e["registry_source_table"]},
+            "registry": {"bucket": e["registry_bucket"], "source_table": e["registry_source_table"]},
         }
         for e in plan["existing_drift"]
     ]
@@ -3219,7 +3748,7 @@ def _discover_and_register_tables(
             "dry_run": True,
         }
 
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     registered = 0
     errors = 0
     table_names = []
@@ -3292,7 +3821,9 @@ async def discover_and_register(
     """
     try:
         result = _discover_and_register_tables(
-            conn, user.get("email", "admin"), dry_run=dry_run,
+            conn,
+            user.get("email", "admin"),
+            dry_run=dry_run,
         )
         return result
     except Exception as e:
@@ -3347,7 +3878,7 @@ def run_session_collector(
     if job_error is not None:
         audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="run_session_collector",
         resource="job:session-collector",
@@ -3386,10 +3917,7 @@ def run_session_processor(
     if proc is None:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Unknown processor '{processor}'. "
-                f"Known: {', '.join(list_processor_names())}"
-            ),
+            detail=(f"Unknown processor '{processor}'. Known: {', '.join(list_processor_names())}"),
         )
 
     # Reject overlapping invocations of the same processor (PR #232 review).
@@ -3407,6 +3935,18 @@ def run_session_processor(
     job_error: Optional[Exception] = None
     try:
         stats = _run_processor(job_conn, proc)
+        # Rebuild daily rollups after a successful usage run so the
+        # marketplace / admin dashboards see fresh aggregates. Runs on the
+        # same connection while it's still open; incremental (last-7-days)
+        # so it's cheap. Kept here (not in runner.py) to stay
+        # processor-agnostic at the framework level.
+        if processor == "usage" and stats.get("errors", 0) == 0:
+            from services.session_processors.usage_lib import rebuild_rollups
+
+            try:
+                rebuild_rollups(job_conn)
+            except Exception as rollup_exc:
+                logger.warning("usage rollup rebuild failed: %s", rollup_exc)
     except Exception as e:
         # Capture and re-raise after audit so an unhandled runner error
         # (DuckDB lock, network blip, unexpected SDK type) still leaves a
@@ -3433,7 +3973,7 @@ def run_session_processor(
     if job_error is not None:
         audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action=f"run_session_processor:{processor}",
         resource=f"job:session-processor:{processor}",
@@ -3478,13 +4018,16 @@ def run_corporate_memory(
     audit_params: dict = {
         "items_new": stats.get("items_new", 0),
         "items_filtered": stats.get("items_filtered", 0),
+        "items_db_inserted": stats.get("items_db_inserted", 0),
+        "items_db_updated": stats.get("items_db_updated", 0),
+        "items_db_errors": stats.get("items_db_errors", 0),
         "errors": len(stats.get("errors", [])),
         "skipped": stats.get("skipped", False),
     }
     if job_error is not None:
         audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="run_corporate_memory",
         resource="job:corporate-memory",
@@ -3494,7 +4037,233 @@ def run_corporate_memory(
     if job_error is not None:
         raise HTTPException(status_code=500, detail=audit_params["unhandled_error"])
 
-    return {"ok": not stats.get("errors"), "details": stats}
+    return {
+        "ok": not stats.get("errors") and stats.get("items_db_errors", 0) == 0,
+        "details": stats,
+    }
+
+
+@router.post("/run-knowledge-migration")
+def run_knowledge_migration(
+    user: dict = Depends(require_admin),
+):
+    """Retroactively import knowledge items from knowledge.json into the DB.
+
+    One-time migration for instances where collect_all() ran before v0.71.60
+    (which added the DB sync step). Idempotent — items already in the DB are
+    skipped. Remove this endpoint after all instances have been migrated.
+    """
+    data_dir = Path(os.environ.get("DATA_DIR", "./data"))
+    knowledge_file = data_dir / "corporate-memory" / "knowledge.json"
+
+    try:
+        knowledge_data = json.loads(knowledge_file.read_text())
+    except FileNotFoundError:
+        knowledge_data = []
+    except (json.JSONDecodeError, OSError) as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read knowledge.json: {e}")
+
+    if isinstance(knowledge_data, dict) and "items" in knowledge_data:
+        knowledge_data = list(knowledge_data["items"].values())
+    elif not isinstance(knowledge_data, list):
+        raise HTTPException(status_code=500, detail="knowledge.json has unexpected format")
+
+    count = 0
+    repo = knowledge_repo()
+    for item in knowledge_data:
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("id", "")
+        if not item_id:
+            continue
+        if repo.get_by_id(item_id):
+            continue
+        # Validate domain slug before INSERT to avoid a partial commit: create()
+        # does the INSERT first, then resolves the slug; if the slug is unknown
+        # it raises ValueError after the row is already committed, leaving an
+        # orphaned item that can never be re-migrated. Resolve upfront instead.
+        domain_slug = item.get("domain")
+        if domain_slug and not repo._resolve_domain_slug(domain_slug):
+            domain_slug = None
+        repo.create(
+            id=item_id,
+            title=item.get("title", ""),
+            content=item.get("content", ""),
+            category=item.get("category", ""),
+            source_user=item.get("source_user"),
+            tags=item.get("tags"),
+            status=item.get("status", "pending"),
+            confidence=item.get("confidence"),
+            domain=domain_slug,
+            entities=item.get("entities"),
+            source_type=item.get("source_type", "claude_local_md"),
+            source_ref=item.get("source_ref"),
+            sensitivity=item.get("sensitivity", "internal"),
+            is_personal=item.get("is_personal", False),
+        )
+        count += 1
+
+    audit_repo().log(
+        user_id=user.get("id"),
+        action="run_knowledge_migration",
+        resource="job:knowledge-migration",
+        params={"knowledge_imported": count},
+    )
+
+    return {"ok": True, "knowledge_imported": count}
+
+
+# ---------------------------------------------------------------------------
+# Jira self-healing endpoints — driven by the scheduler
+#
+# Parity with the legacy Data Broker ``jira-sla-poll.timer`` /
+# ``jira-consistency.timer`` systemd units, but invoked from the in-cluster
+# scheduler container instead of host systemd. Both endpoints
+# short-circuit with ``{"status": "skipped", "reason":
+# "jira_not_configured"}`` when the ``JIRA_*`` env vars are unset — a
+# customer without Jira ingest pays nothing for the default scheduler
+# entries.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/run-jira-sla-poll")
+def run_jira_sla_poll(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Refresh SLA + status fields for open Jira tickets.
+
+    Webhooks update tickets on activity. Tickets that sit idle for hours
+    don't fire webhooks; their ``elapsed_millis`` ages out, and SLA
+    breaches go undetected. This job polls every open ticket with SLA
+    data and re-fetches the live values from the Jira API. Self-heals
+    stale ``status`` / ``resolution`` fields on the same pass — tickets
+    closed during a webhook outage get corrected.
+
+    Cadence: every 15 min by default (SCHEDULER_JIRA_SLA_POLL_INTERVAL).
+    Skipped gracefully when JIRA_SLA_* env vars aren't set.
+    """
+    from connectors.jira.scripts.poll_sla import run as _run_poll_sla
+
+    stats: dict = {}
+    job_error: Optional[Exception] = None
+    try:
+        stats = _run_poll_sla(dry_run=False)
+    except ValueError as e:
+        # Raised by load_config() when JIRA_SLA_* env vars are missing.
+        # Scheduler-driven endpoints prefer a 200 skip over a 500 — the
+        # operator sees the no-op in audit_log without alert noise.
+        audit_repo().log(
+            user_id=user.get("id"),
+            action="run_jira_sla_poll",
+            resource="job:jira-sla-poll",
+            params={"status": "skipped", "reason": str(e)[:200]},
+        )
+        return {"status": "skipped", "reason": "jira_not_configured", "detail": str(e)}
+    except Exception as e:
+        # Mirror run_corporate_memory: capture any other unhandled error so
+        # audit_log + /admin/scheduler-runs reflect the failure. Re-raised
+        # below after the audit row is written. Without this branch, a
+        # network timeout / DuckDB lock / JSON-parse failure here would
+        # 500 silently — operator wouldn't see the failure in the
+        # scheduler-runs surface.
+        job_error = e
+
+    audit_params: dict = {
+        "open_issues": stats.get("open_issues", 0),
+        "updated": stats.get("updated", 0),
+        "healed": stats.get("healed", 0),
+        "skipped": stats.get("skipped", 0),
+        "failed": stats.get("failed", 0),
+        "elapsed_sec": round(float(stats.get("elapsed_sec", 0.0)), 2),
+    }
+    if job_error is not None:
+        audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
+
+    audit_repo().log(
+        user_id=user.get("id"),
+        action="run_jira_sla_poll",
+        resource="job:jira-sla-poll",
+        params=audit_params,
+    )
+
+    if job_error is not None:
+        raise HTTPException(status_code=500, detail=audit_params["unhandled_error"])
+
+    return {"ok": stats.get("failed", 0) == 0, "details": stats}
+
+
+@router.post("/run-jira-consistency-check")
+def run_jira_consistency_check(
+    max_age_days: int = 30,
+    auto_fix: bool = True,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Validate Jira parquet against the Jira API and backfill small gaps.
+
+    Compares three sources: Jira API (ground truth), raw JSON, and
+    parquet. Auto-fixes small webhook-loss gaps (≤10 issues); larger
+    gaps are reported and require manual review.
+
+    Cadence: every 30 min by default (SCHEDULER_JIRA_CONSISTENCY_INTERVAL).
+    Default ``max_age_days=30`` keeps the routine cost bounded; an
+    operator triggering a deeper validation passes a larger value.
+    """
+    from connectors.jira.scripts.consistency_check import (
+        Config,
+        JiraConsistencyChecker,
+    )
+
+    try:
+        config = Config.from_env()
+    except (ValueError, KeyError) as e:
+        audit_repo().log(
+            user_id=user.get("id"),
+            action="run_jira_consistency_check",
+            resource="job:jira-consistency-check",
+            params={"status": "skipped", "reason": str(e)[:200]},
+        )
+        return {"status": "skipped", "reason": "jira_not_configured", "detail": str(e)}
+
+    report: dict = {}
+    job_error: Optional[Exception] = None
+    try:
+        checker = JiraConsistencyChecker(config)
+        report = checker.run_check(
+            max_age_days=max_age_days,
+            auto_fix=auto_fix,
+            dry_run=False,
+        )
+    except Exception as e:
+        # Mirror run_corporate_memory: capture any unhandled error so
+        # audit_log + /admin/scheduler-runs reflect the failure. Re-raised
+        # below after the audit row is written. Without this branch a Jira
+        # API outage or DuckDB lock during the parquet compare would 500
+        # silently — operator wouldn't see the failure in scheduler-runs.
+        job_error = e
+
+    audit_params: dict = {
+        "max_age_days": max_age_days,
+        "auto_fix": auto_fix,
+        "status": report.get("status"),
+        "alert_level": report.get("alert_level"),
+    }
+    if job_error is not None:
+        audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
+
+    audit_repo().log(
+        user_id=user.get("id"),
+        action="run_jira_consistency_check",
+        resource="job:jira-consistency-check",
+        params=audit_params,
+    )
+
+    if job_error is not None:
+        raise HTTPException(status_code=500, detail=audit_params["unhandled_error"])
+
+    ok = report.get("status") == "success" and report.get("alert_level") != "ERROR"
+    return {"ok": ok, "details": report}
 
 
 # ---------------------------------------------------------------------------
@@ -3507,7 +4276,7 @@ def run_corporate_memory(
 # runs surfaces.
 # ---------------------------------------------------------------------------
 
-import shutil as _shutil
+import shutil as _shutil  # noqa: E402
 
 
 @router.get("/store/submissions")
@@ -3532,7 +4301,6 @@ async def admin_list_store_submissions(
     ``plugin``. ``name`` and ``version`` are case-insensitive substrings.
     ``limit`` clamped to [1, 500].
     """
-    from src.repositories.store_submissions import StoreSubmissionsRepository
 
     statuses = None
     if status:
@@ -3556,7 +4324,7 @@ async def admin_list_store_submissions(
         statuses = None
 
     try:
-        items, total = StoreSubmissionsRepository(conn).list_for_admin(
+        items, total = store_submissions_repo().list_for_admin(
             status=statuses,
             submitter_id=submitter or None,
             type_=type or None,
@@ -3565,7 +4333,8 @@ async def admin_list_store_submissions(
             sort_by=sort or None,
             sort_order=order or None,
             lifecycle=lifecycle,
-            limit=limit, skip=skip,
+            limit=limit,
+            skip=skip,
         )
     except ValueError as e:
         # Sort key whitelist rejection (#23) — surface as 400 so the UI
@@ -3583,9 +4352,7 @@ async def admin_get_store_submission(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    from src.repositories.store_submissions import StoreSubmissionsRepository
-
-    sub = StoreSubmissionsRepository(conn).get(submission_id)
+    sub = store_submissions_repo().get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
     return sub
@@ -3609,14 +4376,12 @@ async def admin_override_store_submission(
     captures who, why, and the verdict that was overridden so the next
     time this submission shows up, the trail is intact.
     """
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
 
-    subs = StoreSubmissionsRepository(conn)
+    subs = store_submissions_repo()
     sub = subs.get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
-    if sub["status"] not in {"blocked_inline", "blocked_llm", "review_error"}:
+    if sub["status"] not in {"blocked_inline", "blocked_llm", "review_error", "pending_llm"}:
         raise HTTPException(
             status_code=409,
             detail=f"cannot_override_status:{sub['status']}",
@@ -3634,9 +4399,61 @@ async def admin_override_store_submission(
         )
 
     subs.set_override(submission_id, admin_user_id=user["id"], reason=body.reason)
-    StoreEntitiesRepository(conn).set_visibility(entity_id, "approved")
+    ents_repo = store_entities_repo()
+    ents_repo.set_visibility(entity_id, "approved")
 
-    AuditRepository(conn).log(
+    # Mirror the runner's deferred-promotion path. An override on a
+    # v2+ edit/restore must promote the overridden version + swap the
+    # on-disk live bundle, otherwise the entity stays at the prior
+    # approved version and installers keep receiving stale bytes the
+    # admin just told us to replace. For an initial v1 submission
+    # (no prior approved) the version_no already matches — the loop
+    # just no-ops and we skip promotion harmlessly.
+    entity_row = ents_repo.get(entity_id) or {}
+    promoted_to: Optional[int] = None
+    # Look up THIS submission's version entry by submission_id, NOT
+    # by hash. Hash-based lookup breaks when the user re-uploads
+    # byte-identical bundles (e.g. v2 same content as v1): the loop
+    # picks the FIRST history entry with that hash (always v1, n=1),
+    # so target_version_no lands at 1 instead of the actual new
+    # entry's n. The forward-only `target > current` guard then
+    # skips the promote, leaving the entity stuck at v1. Surfaced
+    # live on a development deployment.
+    from app.api.store import _version_no_for_submission
+
+    target_version_no: Optional[int] = _version_no_for_submission(
+        entity_row,
+        submission_id,
+    )
+    # Forward-only: refuse to promote backwards. An admin overriding a
+    # stale v2 submission when v3 is already approved + live must NOT
+    # demote the live bundle back to v2's bytes. Override flips the
+    # row's status + visibility regardless; only the version-promote
+    # is gated. Forward (target > current) is the only motion the
+    # publish-gate model is designed to express.
+    if target_version_no is not None and target_version_no > int(entity_row.get("version_no") or 0):
+        # Atomic helper: swap live bundle first, then update the DB.
+        # Eliminates the "DB promoted but live still on prior bytes"
+        # window. If the helper returns None (source missing / swap
+        # failed) the row's status + visibility are still flipped
+        # above — admin can re-trigger via /rescan once the bundle
+        # is recovered.
+        from app.api.store import promote_to_version
+
+        promoted_to = promote_to_version(
+            entity_id,
+            target_version_no,
+            ents_repo,
+        )
+        if promoted_to is not None:
+            # Re-read after promotion so attribution picks up the
+            # new version's name/type if a rename was bundled in.
+            entity_row = ents_repo.get(entity_id) or entity_row
+
+    # v46: attribution lookup is live — the next UsageProcessor tick
+    # preloads the newly-approved entity by name.
+
+    audit_repo().log(
         user_id=user["id"],
         action="store.submission.overridden",
         resource=f"store_submission:{submission_id}",
@@ -3646,6 +4463,7 @@ async def admin_override_store_submission(
             "prior_status": sub["status"],
             "prior_findings": sub.get("llm_findings"),
             "prior_inline": sub.get("inline_checks"),
+            "promoted_to_version_no": promoted_to,
         },
         result="ok",
     )
@@ -3680,19 +4498,24 @@ async def admin_rescan_store_submission(
     whose bundle was rolled back (no ``entity_id``) cannot be rescanned —
     nothing to scan.
     """
-    from app.api.store import _plugin_dir
+    from app.api.store import (
+        _plugin_dir,
+        _submission_plugin_dir,
+        _version_no_for_submission,
+    )
     from src.db import get_system_db
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
     from src.store_guardrails import run_inline_checks
     from src.store_guardrails.runner import (
         default_api_key_loader,
         default_model_loader,
         run_llm_review,
     )
-    from app.instance_config import get_guardrails_enabled
+    from app.instance_config import (
+        get_guardrails_enabled,
+        get_guardrails_llm_provider_ready,
+    )
 
-    subs = StoreSubmissionsRepository(conn)
+    subs = store_submissions_repo()
     sub = subs.get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
@@ -3700,29 +4523,39 @@ async def admin_rescan_store_submission(
     if not entity_id:
         raise HTTPException(status_code=409, detail="cannot_rescan_without_entity")
 
-    plugin_dir = _plugin_dir(entity_id)
+    ents = store_entities_repo()
+    entity = ents.get(entity_id)
+    # Rescan the bundle this submission represents — not live. See the
+    # equivalent fix in /retry for the full reasoning. Same fall-back
+    # to live for legacy rows that never seeded a versions/v<N>/plugin/.
+    target_n = _version_no_for_submission(entity or {}, submission_id)
+    if target_n is not None:
+        plugin_dir = _submission_plugin_dir(entity_id, target_n)
+        if not plugin_dir.exists():
+            plugin_dir = _plugin_dir(entity_id)
+    else:
+        plugin_dir = _plugin_dir(entity_id)
     if not plugin_dir.exists():
         raise HTTPException(status_code=410, detail="bundle_missing")
 
-    ents = StoreEntitiesRepository(conn)
-    entity = ents.get(entity_id)
     description = (entity or {}).get("description")
 
     inline = run_inline_checks(
-        plugin_dir, type_=sub["type"], description=description,
+        plugin_dir,
+        type_=sub["type"],
+        description=description,
     )
 
     if not inline.passed:
         # Re-failed inline. Hide the entity (was approved or pending);
         # admin can either fix the bundle (PUT to recreate) or override.
-        subs.conn.execute(
-            "UPDATE store_submissions SET inline_checks = ?, llm_findings = NULL, "
-            "status = 'blocked_inline', updated_at = current_timestamp "
-            "WHERE id = ?",
-            [__import__("json").dumps(inline.to_response_dict()), submission_id],
+        subs.set_inline_result(
+            submission_id,
+            inline_checks=inline.to_response_dict(),
+            status="blocked_inline",
         )
         ents.set_visibility(entity_id, "hidden")
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=user["id"],
             action="store.submission.rescan",
             resource=f"store_submission:{submission_id}",
@@ -3730,27 +4563,51 @@ async def admin_rescan_store_submission(
         )
         return {"ok": True, "submission_id": submission_id, "status": "blocked_inline"}
 
-    # Inline passes — schedule LLM if enabled, else auto-approve.
-    guardrails_on = get_guardrails_enabled()
-    new_status = "pending_llm" if guardrails_on else "approved"
-    subs.conn.execute(
-        "UPDATE store_submissions SET inline_checks = ?, llm_findings = NULL, "
-        "status = ?, updated_at = current_timestamp "
-        "WHERE id = ?",
-        [__import__("json").dumps(inline.to_response_dict()), new_status, submission_id],
+    # Inline passes. Three-state matrix:
+    #   - intent False           → auto-approve (operator opt-out)
+    #   - intent True + ready    → pending_llm, schedule LLM
+    #   - intent True + not-ready → pending_llm, DO NOT schedule (admin
+    #     retries from the same endpoint after providing credentials)
+    guardrails_enabled = get_guardrails_enabled()
+    provider_ready = get_guardrails_llm_provider_ready()
+    hold_for_review = guardrails_enabled
+    schedule_async_llm = guardrails_enabled and provider_ready
+    guardrails_on = hold_for_review  # retained for audit-log compat
+    new_status = "pending_llm" if hold_for_review else "approved"
+    subs.set_inline_result(
+        submission_id,
+        inline_checks=inline.to_response_dict(),
+        status=new_status,
     )
-    if guardrails_on:
+    if hold_for_review:
         ents.set_visibility(entity_id, "pending")
     else:
         ents.set_visibility(entity_id, "approved")
-    AuditRepository(conn).log(
+        # Guardrails explicitly disabled — immediately live. Promote
+        # the rescanned submission's version forward (same atomic
+        # helper the create / update / restore inline-promote paths
+        # use). Pre-fix this branch flipped visibility but never
+        # called promote_to_version, so a rescan that re-approved a
+        # non-current v2+ left the entity stuck at the prior version.
+        # Surfaced by adversarial review of PR #330.
+        from app.api.store import promote_to_version
+
+        entity_row = ents.get(entity_id) or {}
+        if target_n is not None and target_n > int(entity_row.get("version_no") or 0):
+            promote_to_version(entity_id, target_n, ents)
+        # v46: attribution lookup is live — no explicit refresh needed.
+    audit_repo().log(
         user_id=user["id"],
         action="store.submission.rescan",
         resource=f"store_submission:{submission_id}",
-        params={"entity_id": entity_id, "outcome": new_status,
-                "guardrails_enabled": guardrails_on},
+        params={
+            "entity_id": entity_id,
+            "outcome": new_status,
+            "guardrails_enabled": guardrails_on,
+            "provider_ready": provider_ready,
+        },
     )
-    if guardrails_on:
+    if schedule_async_llm:
         background.add_task(
             run_llm_review,
             submission_id,
@@ -3769,40 +4626,69 @@ async def admin_retry_store_submission(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Re-queue the LLM review for a submission stuck in ``review_error``.
+    """Re-queue the LLM review for a submission.
+
+    Eligible statuses:
+      * ``review_error`` — LLM call failed, admin retrying after the
+        underlying issue (rate limit, timeout, transient outage) clears.
+      * ``blocked_llm`` — admin disagrees with the prior verdict; rerun
+        from a clean slate (review rules may have shifted since).
+      * ``pending_llm`` — submission was held when the LLM provider had
+        no credentials in env (fail-CLOSED matrix: intent True + not
+        ready). Admin sets the key and re-fires from here.
 
     Only valid when the original submission's plugin tree is still on
     disk — for inline-blocked rows the bundle was deleted at POST time.
     """
-    from app.api.store import _plugin_dir
+    from app.api.store import (
+        _plugin_dir,
+        _submission_plugin_dir,
+        _version_no_for_submission,
+    )
     from src.db import get_system_db
-    from src.repositories.store_submissions import StoreSubmissionsRepository
     from src.store_guardrails.runner import (
         default_api_key_loader,
         default_model_loader,
         run_llm_review,
     )
 
-    subs = StoreSubmissionsRepository(conn)
+    subs = store_submissions_repo()
     sub = subs.get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
-    if sub["status"] not in {"review_error", "blocked_llm"}:
+    if sub["status"] not in {"review_error", "blocked_llm", "pending_llm"}:
         raise HTTPException(
-            status_code=409, detail=f"cannot_retry_status:{sub['status']}",
+            status_code=409,
+            detail=f"cannot_retry_status:{sub['status']}",
         )
     entity_id = sub.get("entity_id")
     if not entity_id:
         raise HTTPException(
-            status_code=409, detail="cannot_retry_without_entity",
+            status_code=409,
+            detail="cannot_retry_without_entity",
         )
 
-    plugin_dir = _plugin_dir(entity_id)
+    # Review the STAGED version's bytes — not live. For a v2+ edit
+    # held at pending_llm or blocked_llm, live `plugin/` still holds
+    # the prior approved version. Reviewing live would produce a
+    # verdict against the wrong bytes; the runner's hash-match
+    # promotion would then advance the entity to staged bytes that
+    # were never actually reviewed.
+    ent = store_entities_repo().get(entity_id) or {}
+    target_n = _version_no_for_submission(ent, submission_id)
+    if target_n is not None:
+        plugin_dir = _submission_plugin_dir(entity_id, target_n)
+        # Fall back to live for legacy pre-v37 rows where the version
+        # dir was never seeded.
+        if not plugin_dir.exists():
+            plugin_dir = _plugin_dir(entity_id)
+    else:
+        plugin_dir = _plugin_dir(entity_id)
     if not plugin_dir.exists():
         raise HTTPException(status_code=410, detail="bundle_missing")
 
     subs.update_status(submission_id, status="pending_llm")
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user["id"],
         action="store.submission.retry",
         resource=f"store_submission:{submission_id}",
@@ -3819,7 +4705,7 @@ async def admin_retry_store_submission(
     return {"ok": True, "submission_id": submission_id, "status": "pending_llm"}
 
 
-@router.delete("/store/submissions/{submission_id}")
+@router.delete("/store/submissions/{submission_id}", status_code=204)
 async def admin_delete_store_submission(
     submission_id: str,
     user: dict = Depends(require_admin),
@@ -3832,23 +4718,20 @@ async def admin_delete_store_submission(
     triage needs the evidence trail later.
     """
     from app.api.store import _entity_dir
-    from src.repositories.store_entities import StoreEntitiesRepository
-    from src.repositories.store_submissions import StoreSubmissionsRepository
-    from src.repositories.user_store_installs import UserStoreInstallsRepository
 
-    subs = StoreSubmissionsRepository(conn)
+    subs = store_submissions_repo()
     sub = subs.get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
 
     entity_id = sub.get("entity_id")
     if entity_id:
-        UserStoreInstallsRepository(conn).delete_all_for_entity(entity_id)
-        StoreEntitiesRepository(conn).delete(entity_id)
+        user_store_installs_repo().delete_all_for_entity(entity_id)
+        store_entities_repo().delete(entity_id)
         _shutil.rmtree(_entity_dir(entity_id), ignore_errors=True)
-    conn.execute("DELETE FROM store_submissions WHERE id = ?", [submission_id])
+    subs.delete(submission_id)
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user["id"],
         action="store.submission.deleted",
         resource=f"store_submission:{submission_id}",
@@ -3859,14 +4742,13 @@ async def admin_delete_store_submission(
             "status": sub.get("status"),
         },
     )
-    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
 # v30: download blocked bundle for forensic inspection
 # ---------------------------------------------------------------------------
 
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse  # noqa: E402
 
 
 @router.get("/store/submissions/{submission_id}/bundle.zip")
@@ -3885,22 +4767,37 @@ async def admin_download_store_submission_bundle(
     import io as _io
     import zipfile as _zipfile
     from pathlib import Path as _P
-    from app.api.store import _plugin_dir as _sp_plugin_dir
+    from app.api.store import (
+        _plugin_dir as _sp_plugin_dir,
+        _submission_plugin_dir,
+        _version_no_for_submission,
+    )
 
-    from src.repositories.store_submissions import StoreSubmissionsRepository
-
-    sub = StoreSubmissionsRepository(conn).get(submission_id)
+    sub = store_submissions_repo().get(submission_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="submission_not_found")
     entity_id = sub.get("entity_id")
     if not entity_id:
         raise HTTPException(status_code=410, detail="bundle_purged_or_missing")
 
-    plugin_dir = _sp_plugin_dir(entity_id)
+    # Resolve the STAGED bundle this submission represents, not live.
+    # Under deferred promotion, live `plugin/` holds the prior approved
+    # version — so for a blocked v2 row, live shows v1's safe bytes
+    # while the staged v2 bytes (the actual risky upload the admin is
+    # reviewing) sit in `versions/v2/plugin/`. Falls back to live for
+    # legacy rows that never seeded a versions/ dir.
+    ent = store_entities_repo().get(entity_id) or {}
+    target_n = _version_no_for_submission(ent, submission_id)
+    if target_n is not None:
+        plugin_dir = _submission_plugin_dir(entity_id, target_n)
+        if not plugin_dir.exists():
+            plugin_dir = _sp_plugin_dir(entity_id)
+    else:
+        plugin_dir = _sp_plugin_dir(entity_id)
     if not plugin_dir.exists():
         raise HTTPException(status_code=410, detail="bundle_missing")
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user["id"],
         action="store.submission.bundle_downloaded",
         resource=f"store_submission:{submission_id}",
@@ -3948,12 +4845,11 @@ async def run_blocked_purge(
     ttl = get_guardrails_blocked_bundle_ttl_days()
     result = purge_blocked_bundles(conn, ttl_days=ttl)
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="run_blocked_purge",
         resource="job:store-blocked-purge",
-        params={"ttl_days": ttl, "purged": result.get("purged", 0),
-                "skipped": result.get("skipped", False)},
+        params={"ttl_days": ttl, "purged": result.get("purged", 0), "skipped": result.get("skipped", False)},
     )
     return {"ok": True, "details": result}
 
@@ -3961,7 +4857,6 @@ async def run_blocked_purge(
 @router.post("/run-reap-stuck-reviews")
 async def run_reap_stuck_reviews(
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Trigger the stuck-review reaper.
 
@@ -3970,19 +4865,23 @@ async def run_reap_stuck_reviews(
     demand if a worker crash is suspected. Flips any
     ``status='pending_llm'`` row older than the configured grace to
     ``review_error`` so the queue stops growing indefinitely.
+
+    No DuckDB ``conn`` dependency: the reaper resolves the submissions
+    repo from the factory so it flips rows on whichever backend holds
+    them. Injecting a DuckDB ``conn`` here was the bug that made the
+    reaper a silent no-op on Postgres-backed instances — the rows live
+    in PG, the conn pointed at an empty local DuckDB.
     """
     from app.instance_config import get_guardrails_stuck_review_grace_seconds
     from src.store_guardrails.reaper import reap_stuck_llm_reviews
 
     grace = get_guardrails_stuck_review_grace_seconds()
-    result = reap_stuck_llm_reviews(conn, grace_seconds=grace)
+    result = reap_stuck_llm_reviews(grace_seconds=grace)
 
-    AuditRepository(conn).log(
+    audit_repo().log(
         user_id=user.get("id"),
         action="run_reap_stuck_reviews",
         resource="job:store-reap-stuck-reviews",
-        params={"grace_seconds": grace,
-                "reaped": result.get("reaped", 0),
-                "skipped": result.get("skipped", False)},
+        params={"grace_seconds": grace, "reaped": result.get("reaped", 0), "skipped": result.get("skipped", False)},
     )
     return {"ok": True, "details": result}

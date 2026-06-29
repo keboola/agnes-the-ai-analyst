@@ -1,31 +1,26 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 
 {% block title %}Home — {{ instance_name or "AI Data Analyst" }}{% endblock %}
 
-{% block content %}
+{% block head_extra %}
 {% include "_page_chrome.html" %}
 <style>
 .home-mock {
-    --hp-primary: #0073D1;
-    --hp-primary-dark: #0056A3;
-    --hp-primary-light: #E6F3FC;
-    --hp-border: #E5E7EB;
-    --hp-border-light: #F3F4F6;
-    --hp-text-primary: #111827;
-    --hp-text-secondary: #6B7280;
-    color: var(--hp-text-primary);
+    /* Design-system scope — tokens live globally in
+       app/web/static/css/design-tokens.css. */
+    color: var(--ds-text-primary);
     font-size: 14px;
     line-height: 1.5;
 }
 .home-mock * { box-sizing: border-box; }
 
 .home-mock .hero {
-    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+    background: linear-gradient(135deg, var(--ds-primary) 0%, var(--ds-primary-dark) 100%);
     color: white;
     border-radius: 16px;
     padding: 38px 40px;
     margin-bottom: 22px;
-    box-shadow: 0 8px 24px rgba(0, 86, 163, 0.18);
+    box-shadow: 0 8px 24px rgba(31, 138, 94, 0.18);
 }
 .home-mock .hero .eyebrow {
     font-size: 11px;
@@ -49,13 +44,28 @@
     max-width: 680px;
     line-height: 1.6;
 }
+/* Inline `<code>` chips inside the blue welcome hero — mirror the
+   .install-hero rule on the not-onboarded view (amber-on-dark-navy,
+   ≈9:1 contrast). Previous inline `style="background: rgba(255,255,
+   255,0.12)..."` rendered as a near-invisible faint-white pill on the
+   blue gradient, with inherited white text on top — low contrast +
+   the chip silhouette merged into the hero. */
+.home-mock .hero code {
+    background: rgba(15, 23, 42, 0.75);
+    color: #FBBF24;
+    border: 1px solid rgba(251, 191, 36, 0.30);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+    font-size: 12.5px;
+}
 
 .home-mock .section-label {
     font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.6px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     margin: 30px 0 12px;
 }
 
@@ -67,7 +77,7 @@
 }
 .home-mock .quick-card {
     background: white;
-    border: 1px solid var(--hp-border);
+    border: 1px solid var(--ds-border);
     border-radius: 12px;
     padding: 22px;
     text-decoration: none;
@@ -78,8 +88,8 @@
     transition: border-color .15s, box-shadow .15s;
 }
 .home-mock .quick-card:hover {
-    border-color: var(--hp-primary);
-    box-shadow: 0 4px 12px rgba(0, 115, 209, 0.10);
+    border-color: var(--ds-primary);
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--ds-primary) 10%, transparent);
 }
 .home-mock .quick-card .ico {
     font-size: 22px;
@@ -88,15 +98,20 @@
 .home-mock .quick-card .ttl {
     font-size: 15px;
     font-weight: 600;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
 }
 .home-mock .quick-card .desc {
     font-size: 13px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     line-height: 1.55;
 }
 </style>
+{% endblock %}
 
+{% block content %}
+{# quick-card grid renders via `ds.panel(href=..., klass='quick-card')`
+   (ds auto-imported by base_ds). Per router.py this template is a kept
+   fallback; /home serves home_not_onboarded.html. #}
 <div class="home-mock">
     {% set display_name = (user.name or (user.email or "").split("@")[0] or "back") %}
 
@@ -104,7 +119,7 @@
         <div class="eyebrow">Welcome back, {{ display_name }}</div>
         <h1>You're all set up</h1>
         <p>
-            Open Claude Code in any project under <code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: ui-monospace, 'SF Mono', Consolas, monospace; font-size: 12.5px;">~/{{ workspace_dir }}/Projects/</code>
+            Open Claude Code in any project under <code>~/Desktop/{{ workspace_dir }}/Projects/</code>
             and start a session — your data and plugins are already synced. Use the cards below to jump into the parts of {{ instance_brand }} you need.
         </p>
     </div>
@@ -112,38 +127,38 @@
     <div class="section-label">Quick links</div>
 
     <div class="quick-grid">
-        <a class="quick-card" href="/dashboard">
+        {% call ds.panel(href='/dashboard', klass='quick-card') %}
             <span class="ico">&#x1F4CA;</span>
             <div class="ttl">Dashboard</div>
             <div class="desc">Sync state, table inventory, recent activity.</div>
-        </a>
-        <a class="quick-card" href="/catalog">
+        {% endcall %}
+        {% call ds.panel(href='/catalog', klass='quick-card') %}
             <span class="ico">&#x1F4DA;</span>
             <div class="ttl">Catalog</div>
             <div class="desc">Browse tables, schema, and metric definitions.</div>
-        </a>
-        {# Activity Center + Corporate Memory both admin-only — parity
-           with the top-nav gating (Memory link hidden for non-admin in
-           _app_header.html, /corporate-memory route is `require_admin`,
-           same for the active /home not-onboarded view). #}
+        {% endcall %}
+        {# Curated Memory is user-facing — the /corporate-memory route runs
+           on get_current_user, so the card shows for everyone, matching
+           its primary-nav placement next to Data Packages. #}
+        {% call ds.panel(href='/corporate-memory', klass='quick-card') %}
+            <span class="ico">&#x1F9E0;</span>
+            <div class="ttl">Curated Memory</div>
+            <div class="desc">Shared analyst knowledge and prior solutions.</div>
+        {% endcall %}
+        {# Activity Center admin-only — parity with the top-nav gating. #}
         {% if is_admin %}
-        <a class="quick-card" href="/activity-center">
+        {% call ds.panel(href='/activity-center', klass='quick-card') %}
             <span class="ico">&#x1F4C8;</span>
             <div class="ttl">Activity Center</div>
             <div class="desc">Per-user analytics on {{ instance_brand }} adoption.</div>
-        </a>
-        <a class="quick-card" href="/corporate-memory">
-            <span class="ico">&#x1F9E0;</span>
-            <div class="ttl">Corporate Memory</div>
-            <div class="desc">Shared analyst knowledge and prior solutions.</div>
-        </a>
+        {% endcall %}
         {% endif %}
         {% if is_admin %}
-        <a class="quick-card" href="/admin/server-config">
+        {% call ds.panel(href='/admin/server-config', klass='quick-card') %}
             <span class="ico">&#x2699;&#xFE0F;</span>
             <div class="ttl">Admin</div>
             <div class="desc">Server configuration, RBAC, marketplaces.</div>
-        </a>
+        {% endcall %}
         {% endif %}
     </div>
 </div>

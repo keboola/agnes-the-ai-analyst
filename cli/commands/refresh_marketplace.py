@@ -10,11 +10,13 @@ Three call paths share the same code:
     inside Claude Code so the user sees install/update progress in the
     transcript.
   - `agnes refresh-marketplace --check` — SessionStart hook context.
-    Lightweight detector: `git fetch` only (no reset, no plugin
-    install/update side effects), compares local `HEAD` vs `FETCH_HEAD`,
-    emits a Claude Code hook JSON message pointing the user at
-    `/update-agnes-plugins` when there are remote changes. Silent
-    otherwise.
+    Lightweight detector: `git ls-remote origin HEAD` only (no fetch,
+    no reset, no plugin install/update side effects), compares the
+    remote HEAD SHA against the local `HEAD` SHA, emits a Claude Code
+    hook JSON message pointing the user at `/update-agnes-plugins`
+    when they differ. Silent otherwise. ls-remote is ~0.5–1 s vs ~8 s
+    for fetch — matters because every Claude Code session start in
+    every workspace fires this hook.
 
 Reconcile (default + --bootstrap paths) is version-aware (install
 missing / update on version diff / skip on match). Server-side stack
@@ -53,18 +55,46 @@ refresh_marketplace_app = typer.Typer(
 _CREDENTIAL_HELPER = '!f() { printf "username=x\\npassword=%s\\n" "$AGNES_TOKEN"; }; f'
 
 
+def _claude_base_cmd() -> Optional[list[str]]:
+    """Resolve how to launch the `claude` CLI, or None when it's not on PATH.
+
+    Returns the argv prefix every `claude …` subprocess call should splat in
+    front of its arguments. On POSIX (and for a native `.exe`/no-extension
+    binary on Windows) that's just ``[exe]``. On Windows, npm installs
+    `claude` as a `.cmd`/`.bat` shim, and those cannot be launched via
+    CreateProcess (shell=False) even given their fully-resolved path — they
+    must be routed through `cmd.exe`, so we return ``["cmd", "/c", exe]``.
+
+    A bare ``["claude", …]`` argv (the pre-fix behavior) crashes on Windows
+    with FileNotFoundError [WinError 2]: CreateProcess doesn't apply PATHEXT
+    to a bare name, so the `.cmd` shim is never found. `shutil.which` finds
+    the resolved path (fixing the PATHEXT half), but launching that `.cmd`
+    directly still fails — hence the `cmd /c` wrapper.
+
+    None signals "claude not installed"; callers map that to their existing
+    claude-missing semantics rather than crashing.
+    """
+    exe = shutil.which("claude")
+    if exe is None:
+        return None
+    if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
+        return ["cmd", "/c", exe]
+    return [exe]
+
+
 @refresh_marketplace_app.callback(invoke_without_command=True)
 def refresh_marketplace(
     check: bool = typer.Option(
         False, "--check",
         help=(
-            "Detect-only mode for the SessionStart hook. Runs `git fetch` "
-            "and compares local HEAD with remote FETCH_HEAD. When they "
-            "differ, emits a Claude Code hook JSON message hinting the "
-            "user at `/update-agnes-plugins`. No `git reset`, no plugin "
-            "install/update side effects — fast, invisible when nothing "
-            "changed, fully recoverable interactively via the slash "
-            "command."
+            "Detect-only mode for the SessionStart hook. Runs "
+            "`git ls-remote origin HEAD` and compares the returned SHA "
+            "with local HEAD. When they differ, emits a Claude Code "
+            "hook JSON message hinting the user at "
+            "`/update-agnes-plugins`. No `git fetch`, no `git reset`, "
+            "no plugin install/update side effects — fast, invisible "
+            "when nothing changed, fully recoverable interactively "
+            "via the slash command."
         ),
     ),
     bootstrap: bool = typer.Option(
@@ -73,7 +103,10 @@ def refresh_marketplace(
             "If no marketplace clone exists yet, clone it and register the "
             "local path with Claude Code. Used by the install flow as a "
             "one-liner replacement for an inline `git clone` + chmod + "
-            "`claude plugin marketplace add` sequence."
+            "`claude plugin marketplace add` sequence. Marketplace URL "
+            "defaults to {server_host}/marketplace.git/; override via the "
+            "AGNES_MARKETPLACE_URL env var when the marketplace lives on "
+            "a different host than the API."
         ),
     ),
 ):
@@ -128,15 +161,19 @@ def refresh_marketplace(
 
     # --check: lightweight detector. Don't fetch+reset, don't reconcile
     # plugins — that's the slash command's job. Just check whether the
-    # remote has new content and tell the user if so.
+    # remote has new content and tell the user if so. `git ls-remote`
+    # fetches one line of text (the remote HEAD ref) instead of all
+    # git objects — ~0.5–1 s vs ~8 s for `git fetch`.
     if check:
-        if not _git_fetch_only(token):
+        remote_sha = _remote_head_sha(token)
+        if remote_sha is None:
             raise typer.Exit(1)
-        if _has_remote_changes():
+        local_sha = _local_head_sha()
+        if local_sha is not None and local_sha != remote_sha:
             _emit_check_hook_message()
         raise typer.Exit(0)
 
-    events: dict[str, list[str]] = {"installed": [], "updated": []}
+    events: dict[str, list[str]] = {"installed": [], "updated": [], "enabled": []}
 
     if not _git_fetch_and_reset(token):
         raise typer.Exit(1)
@@ -153,7 +190,7 @@ def refresh_marketplace(
 
     _reconcile_with_manifest(events=events, installed_pre=installed_pre)
 
-    if events["installed"] or events["updated"]:
+    if events["installed"] or events["updated"] or events["enabled"]:
         typer.echo(
             "\nRun `/reload-plugins` in Claude Code to load the "
             "new/updated plugins into the running session — no restart needed."
@@ -170,19 +207,49 @@ def _bootstrap_clone(token: str) -> bool:
     in plaintext at `.git/config` (refreshes use the credential helper).
     Returns False on any failure.
     """
-    server_url = get_server_url()
-    if not server_url:
-        typer.echo("error: no server URL configured; run `agnes init` first.", err=True)
-        return False
+    # Marketplace URL resolution (issue #345 A):
+    # 1. `AGNES_MARKETPLACE_URL` env var — explicit override for deployments
+    #    that serve the marketplace from a different host than the API
+    #    (reverse-proxy split, CDN-fronted marketplace, etc.). Must be a
+    #    full base URL including scheme, ending at the `/marketplace.git/`
+    #    path or its equivalent on the operator's deployment.
+    # 2. Fallback to ``{scheme}://{server_host}/marketplace.git/`` derived
+    #    from the workspace's bootstrapped server URL.
+    marketplace_base = os.environ.get("AGNES_MARKETPLACE_URL", "").strip()
+    if marketplace_base:
+        parsed = urlparse(marketplace_base)
+        if not parsed.scheme or not parsed.hostname:
+            typer.echo(
+                f"error: AGNES_MARKETPLACE_URL={marketplace_base!r} is not a full URL "
+                "(expected scheme://host[:port]/marketplace.git/).",
+                err=True,
+            )
+            return False
+        # Normalize: ensure trailing slash so urljoin-style consumers don't drop the path.
+        clean_url = marketplace_base if marketplace_base.endswith("/") else marketplace_base + "/"
+        scheme = parsed.scheme
+        # Re-inject the PAT into the env-supplied URL so the clone authenticates.
+        host_with_port = parsed.netloc.split("@", 1)[-1]
+        path = parsed.path if parsed.path else "/marketplace.git/"
+        if not path.endswith("/"):
+            path += "/"
+        auth_url = f"{scheme}://x:{token}@{host_with_port}{path}"
+    else:
+        server_url = get_server_url()
+        if not server_url:
+            typer.echo("error: no server URL configured; run `agnes init` first.", err=True)
+            return False
 
-    parsed = urlparse(server_url)
-    if not parsed.hostname:
-        typer.echo(f"error: server URL has no hostname: {server_url!r}", err=True)
-        return False
-    server_host = parsed.hostname
-    if parsed.port:
-        server_host = f"{server_host}:{parsed.port}"
-    scheme = parsed.scheme or "https"
+        parsed = urlparse(server_url)
+        if not parsed.hostname:
+            typer.echo(f"error: server URL has no hostname: {server_url!r}", err=True)
+            return False
+        server_host = parsed.hostname
+        if parsed.port:
+            server_host = f"{server_host}:{parsed.port}"
+        scheme = parsed.scheme or "https"
+        auth_url = f"{scheme}://x:{token}@{server_host}/marketplace.git/"
+        clean_url = f"{scheme}://{server_host}/marketplace.git/"
 
     # Stale dir without a `.git/` subdir means an interrupted prior install;
     # remove it so the fresh clone has somewhere to land.
@@ -194,9 +261,6 @@ def _bootstrap_clone(token: str) -> bool:
             return False
 
     CLONE_DIR.parent.mkdir(parents=True, exist_ok=True)
-
-    auth_url = f"{scheme}://x:{token}@{server_host}/marketplace.git/"
-    clean_url = f"{scheme}://{server_host}/marketplace.git/"
 
     typer.echo(f"Cloning marketplace from {clean_url} into {CLONE_DIR}...")
 
@@ -235,6 +299,8 @@ def _bootstrap_clone(token: str) -> bool:
         except OSError:
             pass
 
+    _chmod_clone_sh_files()
+
     if not _register_clone_with_claude(CLONE_DIR):
         return False
 
@@ -255,10 +321,11 @@ def _register_clone_with_claude(clone_dir: Path) -> bool:
     caller exit non-zero with the actual `add` stderr, which is the signal
     the operator needs to fix their machine state.
     """
-    if shutil.which("claude") is None:
+    base = _claude_base_cmd()
+    if base is None:
         return True
     add = subprocess.run(
-        ["claude", "plugin", "marketplace", "add", str(clone_dir)],
+        [*base, "plugin", "marketplace", "add", str(clone_dir)],
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     if add.returncode != 0:
@@ -284,11 +351,12 @@ def _claude_marketplace_is_registered() -> bool:
     that as "not registered" and run the add path, which is the correct
     fail-safe (worst case: a redundant add that itself errors out cleanly).
     """
-    if shutil.which("claude") is None:
+    base = _claude_base_cmd()
+    if base is None:
         return False
     try:
         result = subprocess.run(
-            ["claude", "plugin", "marketplace", "list"],
+            [*base, "plugin", "marketplace", "list"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         )
     except FileNotFoundError:
@@ -322,7 +390,7 @@ def _ensure_marketplace_registered() -> bool:
     registration was already in place OR `claude` is not on PATH (the
     latter matches `_register_clone_with_claude`'s soft-pass behavior).
     """
-    if shutil.which("claude") is None:
+    if _claude_base_cmd() is None:
         return True
     if _claude_marketplace_is_registered():
         return True
@@ -366,27 +434,86 @@ def _git_fetch_only(token: str) -> bool:
     return True
 
 
-def _has_remote_changes() -> bool:
-    """Return True iff local HEAD differs from remote FETCH_HEAD.
+def _remote_head_sha(token: str) -> Optional[str]:
+    """Return the remote `HEAD` SHA via `git ls-remote`, or None on failure.
 
-    Caller must have already run `git fetch origin`. Any rev-parse failure
-    (missing FETCH_HEAD, broken repo) is treated as "no detectable changes"
-    so the hook stays quiet rather than surfacing a misleading hint.
+    `ls-remote` returns one line of text per ref (`<sha>\\tHEAD`); no git
+    objects are transferred — orders of magnitude cheaper than a full
+    `git fetch` for the SessionStart-hook detector path. Same PAT wiring
+    as `_git_fetch_only`: token in env, never on argv. Surfaces stderr
+    on failure so auth/network errors aren't swallowed silently — the
+    `--check` caller turns failure into exit 1.
+    """
+    env = {**os.environ, "AGNES_TOKEN": token}
+    cmd = [
+        "git",
+        "-c", f"credential.helper={_CREDENTIAL_HELPER}",
+        "-C", str(CLONE_DIR),
+        "ls-remote", "origin", "HEAD",
+    ]
+    try:
+        result = subprocess.run(
+            cmd, env=env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", check=False,
+        )
+    except FileNotFoundError:
+        typer.echo("error: `git` not found in PATH; cannot check marketplace.", err=True)
+        return None
+    if result.returncode != 0:
+        if result.stdout:
+            typer.echo(result.stdout, err=True)
+        if result.stderr:
+            typer.echo(result.stderr, err=True)
+        return None
+    first_line = result.stdout.strip().splitlines()[:1]
+    if not first_line:
+        return None
+    sha = first_line[0].split()[0].strip()
+    return sha or None
+
+
+def _local_head_sha() -> Optional[str]:
+    """Return the local `HEAD` SHA, or None on any rev-parse failure.
+
+    None means "can't determine local state" — the `--check` caller
+    treats that as "stay silent" rather than emitting a misleading
+    updates-available hint built on a missing left-hand side.
     """
     try:
-        local = subprocess.run(
+        result = subprocess.run(
             ["git", "-C", str(CLONE_DIR), "rev-parse", "HEAD"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         )
-        remote = subprocess.run(
-            ["git", "-C", str(CLONE_DIR), "rev-parse", "FETCH_HEAD"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-        )
     except FileNotFoundError:
-        return False
-    if local.returncode != 0 or remote.returncode != 0:
-        return False
-    return local.stdout.strip() != remote.stdout.strip()
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
+def _chmod_clone_sh_files() -> None:
+    """Add execute bit to every `.sh` under CLONE_DIR.
+
+    Git's checkout doesn't always preserve the file-mode bit (filemode=false
+    repos, archive extractions, FUSE/NFS mounts with filemode detection
+    disabled), and Claude Code's later `plugin install` copies the files
+    into the workspace `.claude/hooks/` AS-IS, so hooks that lost the +x
+    bit here would fire with Permission denied. Fixing at the source
+    (marketplace clone) means every downstream plugin install gets
+    executable hooks for free.
+
+    Called from both `_bootstrap_clone` (after the initial `git clone`)
+    and `_git_fetch_and_reset` (after every `git reset --hard FETCH_HEAD`
+    on subsequent refreshes) so a version bump that touches a `.sh`
+    can't silently strip the bit. Best-effort: no-op on Windows NTFS,
+    swallows per-file errors.
+    """
+    for sh in CLONE_DIR.rglob("*.sh"):
+        try:
+            sh.chmod(sh.stat().st_mode | 0o111)
+        except OSError:
+            pass
 
 
 def _git_fetch_and_reset(token: str) -> bool:
@@ -395,6 +522,11 @@ def _git_fetch_and_reset(token: str) -> bool:
     Not `pull --ff-only`: the marketplace bare repo on the server rebuilds
     as a fresh orphan commit on every content change, so two snapshots
     have unrelated histories and fast-forward is impossible.
+
+    After a successful reset, re-applies the `.sh` execute bit across the
+    clone — `git reset --hard` overwrites working-tree files according to
+    the repo's `core.filemode` setting, and on systems where that is
+    `false` the bit gets stripped silently.
     """
     if not _git_fetch_only(token):
         return False
@@ -410,6 +542,8 @@ def _git_fetch_and_reset(token: str) -> bool:
             typer.echo(reset.stderr, err=True)
         return False
 
+    _chmod_clone_sh_files()
+
     if reset.stdout:
         typer.echo(reset.stdout.rstrip())
     return True
@@ -417,7 +551,8 @@ def _git_fetch_and_reset(token: str) -> bool:
 
 def _claude_marketplace_update() -> None:
     """Tell Claude Code to re-read the marketplace clone. Soft-fail if `claude` is missing."""
-    if shutil.which("claude") is None:
+    base = _claude_base_cmd()
+    if base is None:
         typer.echo(
             "warn: `claude` not in PATH — git fetch succeeded, but Claude Code "
             "won't see the changes until the next session start.",
@@ -425,7 +560,7 @@ def _claude_marketplace_update() -> None:
         )
         return
     result = subprocess.run(
-        ["claude", "plugin", "marketplace", "update", MARKETPLACE_NAME],
+        [*base, "plugin", "marketplace", "update", MARKETPLACE_NAME],
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     if result.returncode != 0:
@@ -459,7 +594,8 @@ def _reconcile_with_manifest(
     Don't auto-uninstall plugins that disappeared from the manifest — a
     transient empty manifest from the server would wipe the user's stack.
     """
-    if shutil.which("claude") is None:
+    base = _claude_base_cmd()
+    if base is None:
         return
 
     manifest = _read_marketplace_plugin_versions()
@@ -483,10 +619,6 @@ def _reconcile_with_manifest(
         elif installed_version != manifest_version:
             to_update.append(name)
 
-    if not to_install and not to_update:
-        typer.echo(f"All {len(manifest)} Agnes-stack plugin(s) up to date.")
-        return
-
     if to_install:
         typer.echo(f"Installing {len(to_install)} new plugin(s): " + ", ".join(to_install))
     if to_update:
@@ -495,7 +627,7 @@ def _reconcile_with_manifest(
     for name in to_install:
         target = f"{name}@{MARKETPLACE_NAME}"
         result = subprocess.run(
-            ["claude", "plugin", "install", target, "--scope", "project"],
+            [*base, "plugin", "install", target, "--scope", "project"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         )
         if result.returncode != 0:
@@ -513,7 +645,7 @@ def _reconcile_with_manifest(
     for name in to_update:
         target = f"{name}@{MARKETPLACE_NAME}"
         result = subprocess.run(
-            ["claude", "plugin", "update", target, "--scope", "project"],
+            [*base, "plugin", "update", target, "--scope", "project"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         )
         if result.returncode != 0:
@@ -527,6 +659,16 @@ def _reconcile_with_manifest(
         events["updated"].append(name)
         if result.stdout:
             typer.echo(result.stdout.rstrip())
+
+    # Whether anything was installed or updated above, the workspace
+    # settings.json must end up with `enabledPlugins["<name>@agnes"]: true`
+    # for every plugin in the stack — `claude plugin install` does not do
+    # this on its own, and a fresh refresh on a workspace where the user
+    # manually `claude plugin disable`-d a stack plugin must re-enable it.
+    _enable_plugins_in_workspace_settings(manifest, events=events)
+
+    if not to_install and not to_update and not events["enabled"]:
+        typer.echo(f"All {len(manifest)} Agnes-stack plugin(s) up to date.")
 
 
 def _emit_check_hook_message() -> None:
@@ -588,11 +730,12 @@ def _list_installed_agnes_plugins_in_cwd() -> Optional[dict[str, str]]:
     `projectPath == cwd` so plugins from sibling workspaces don't get
     counted. None on any structured-answer failure.
     """
-    if shutil.which("claude") is None:
+    base = _claude_base_cmd()
+    if base is None:
         return None
     try:
         result = subprocess.run(
-            ["claude", "plugin", "list", "--json"],
+            [*base, "plugin", "list", "--json"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         )
     except FileNotFoundError:
@@ -630,3 +773,84 @@ def _list_installed_agnes_plugins_in_cwd() -> Optional[dict[str, str]]:
         if name:
             versions[name] = version
     return versions
+
+
+def _enable_plugins_in_workspace_settings(
+    manifest: dict[str, str],
+    *,
+    events: dict[str, list[str]],
+) -> None:
+    """Ensure workspace `.claude/settings.json` has `enabledPlugins` entries
+    for every plugin in the user's stack manifest.
+
+    `claude plugin install --scope project` only writes the global plugin
+    registry (`~/.claude/plugins/installed_plugins.json`); it does NOT add
+    the plugin to the workspace `enabledPlugins` map, so Claude Code treats
+    every stack plugin as disabled until something explicitly enables it.
+    This helper closes that gap: after install/update, we write
+    `"<name>@agnes": true` for each manifest entry directly into the
+    workspace settings.
+
+    Stack-as-source-of-truth: a locally `claude plugin disable`-d plugin
+    that still appears in the user's stack gets re-enabled. To permanently
+    exclude a plugin, remove it from the stack (`agnes marketplace remove`)
+    rather than relying on local disable, which is ephemeral between
+    refreshes.
+
+    Runs unconditionally — `refresh-marketplace` is a runtime command, so
+    the Initial Workspace Template sentinel (`override: true`) does not
+    apply here. The sentinel governs init-time skip only; runtime CLI
+    keeps workspaces in sync with the user's current stack regardless of
+    how the workspace was originally seeded.
+
+    Idempotent: writes only when at least one plugin actually changed
+    state (missing/false → true). No write when everything is already
+    enabled, so this is safe to call on every refresh without churning
+    mtime or polluting git diffs in workspace repos.
+    """
+    workspace = Path.cwd()
+    settings_path = workspace / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if settings_path.exists():
+        try:
+            cfg = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            typer.echo(
+                f"warn: {settings_path} is not valid JSON; skipping plugin enable.",
+                err=True,
+            )
+            return
+        if not isinstance(cfg, dict):
+            typer.echo(
+                f"warn: {settings_path} top-level is not an object; skipping plugin enable.",
+                err=True,
+            )
+            return
+    else:
+        cfg = {}
+
+    enabled = cfg.setdefault("enabledPlugins", {})
+    if not isinstance(enabled, dict):
+        typer.echo(
+            f"warn: {settings_path} `enabledPlugins` is not an object; skipping plugin enable.",
+            err=True,
+        )
+        return
+
+    changed: list[str] = []
+    for name in manifest:
+        key = f"{name}@{MARKETPLACE_NAME}"
+        if enabled.get(key) is not True:
+            enabled[key] = True
+            changed.append(name)
+
+    if not changed:
+        return
+
+    settings_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    events["enabled"].extend(sorted(changed))
+    typer.echo(
+        f"Enabled {len(changed)} plugin(s) in workspace settings: "
+        + ", ".join(sorted(changed))
+    )

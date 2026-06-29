@@ -1,0 +1,1610 @@
+"""ChatManager tests — Task 5.1: create_session (+ 5.2: attach/send/cancel/crash).
+
+Uses asyncio.run() per the project convention (no pytest-asyncio required).
+See tests/test_chat_subprocess_provider.py for precedent.
+"""
+
+import asyncio
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import duckdb
+import pytest
+
+from src.db import _ensure_schema
+from tests.chat_fakes import FakeHandle, FakeWS
+
+from app.chat.config import ChatConfig
+from app.chat.manager import ChatManager, SinkEntry
+from app.chat.persistence import ChatRepository
+from app.chat.types import SessionState, Surface
+from app.chat.workdir import WorkdirManager
+
+
+def _make_workdir_mgr(tmp_path: Path, repo: ChatRepository) -> WorkdirManager:
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    (bundled / "CLAUDE.md").write_text("d")
+    return WorkdirManager(
+        data_dir=tmp_path / "data",
+        repo=repo,
+        bundled_template_dir=bundled,
+        server_url="https://example",
+        agnes_version="0.55.0",
+        get_marketplace_sha=lambda: "sha-1",
+        get_template_status=lambda: None,
+    )
+
+
+@pytest.fixture
+def manager(tmp_path: Path) -> ChatManager:
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    provider = MagicMock()
+    provider.spawn = AsyncMock()
+    return ChatManager(
+        provider=provider,
+        workdir_mgr=workdir_mgr,
+        repo=repo,
+        config=ChatConfig(enabled=True, concurrency_per_user=2),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task 5.1 tests
+# ---------------------------------------------------------------------------
+
+
+def test_create_session_persists(manager: ChatManager):
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        assert s.id.startswith("chat_")
+        assert s.surface == Surface.WEB
+
+    asyncio.run(_run())
+
+
+def test_create_session_web_archives_prior_empty(manager: ChatManager):
+    """Clicking '+ New chat' repeatedly should never accumulate orphan
+    Untitled-chat rows. create_session on the WEB surface soft-archives
+    every empty session this user has, except the just-created one."""
+
+    async def _run():
+        a = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        b = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        # `a` has zero messages → should be archived by `b`'s create.
+        ar = manager._repo.get_session(a.id)
+        br = manager._repo.get_session(b.id)
+        assert ar is not None and ar.archived is True
+        assert br is not None and br.archived is False
+
+    asyncio.run(_run())
+
+
+def test_create_session_web_does_not_archive_sessions_with_messages(
+    manager: ChatManager,
+):
+    async def _run():
+        a = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        manager._repo.append_message(session_id=a.id, role="user", content="hi")
+        _ = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ar = manager._repo.get_session(a.id)
+        assert ar is not None and ar.archived is False
+
+    asyncio.run(_run())
+
+
+def test_create_session_slack_dm_does_not_run_empty_gc(manager: ChatManager):
+    """The empty-session GC is web-only — Slack DM/thread surfaces
+    de-dupe via channel/thread id at the manager layer and their
+    "empty" sessions are intentionally kept for re-attach."""
+
+    async def _run():
+        # First Slack DM session, no messages.
+        a = await manager.create_session(
+            user_email="u@x",
+            surface=Surface.SLACK_DM,
+            slack_channel_id="C1",
+        )
+        # Create a WEB session for the same user — must not touch `a`.
+        _ = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ar = manager._repo.get_session(a.id)
+        assert ar is not None and ar.archived is False
+
+    asyncio.run(_run())
+
+
+def test_create_session_disabled_raises(manager: ChatManager):
+    """create_session raises RuntimeError when chat.enabled is False."""
+    disabled_mgr = ChatManager(
+        provider=manager._provider,
+        workdir_mgr=manager._workdir_mgr,
+        repo=manager._repo,
+        config=ChatConfig(enabled=False),
+    )
+
+    async def _run():
+        with pytest.raises(RuntimeError, match="chat.enabled is false"):
+            await disabled_mgr.create_session(user_email="u@x", surface=Surface.WEB)
+
+    asyncio.run(_run())
+
+
+# FakeHandle and FakeWS live in tests/chat_fakes (imported above).
+
+# ---------------------------------------------------------------------------
+# Task 5.2 tests
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_sets_agnes_server_not_agnes_api(manager: ChatManager, tmp_path, monkeypatch):
+    """The runner env must carry AGNES_SERVER (the var the CLI reads) sourced
+    from SERVER_URL — not the dead AGNES_API the CLI ignores."""
+    monkeypatch.setenv("SERVER_URL", "https://chat.example.com")
+    monkeypatch.setattr("app.auth.access.mint_session_jwt", lambda *a, **k: "tok")
+
+    captured = {}
+
+    async def fake_spawn(**kw):
+        captured.update(kw)
+        return FakeHandle()
+
+    manager._provider.spawn = fake_spawn
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        sess = manager._repo.get_session(s.id)
+        await manager._spawn_runner(sess, tmp_path)
+
+    asyncio.run(_run())
+
+    env = captured["env"]
+    assert env["AGNES_SERVER"] == "https://chat.example.com"
+    assert "AGNES_API" not in env
+    assert env["AGNES_TOKEN"] == "tok"
+
+
+def test_attach_pumps_tokens_to_ws(manager: ChatManager):
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        handle.emit({"type": "token", "text": "Hi"})
+        await asyncio.sleep(0.05)
+        assert {"type": "token", "text": "Hi"} in ws.sent
+
+        await manager.kill(s.id, reason="test_done")
+        handle.emit_eof()
+        await attach_task
+
+    asyncio.run(_run())
+
+
+def test_send_writes_to_stdin(manager: ChatManager):
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        await manager.send_user_message(s.id, "hello")
+        assert any(b'"hello"' in b for b in handle._stdin_buf)
+        await manager.kill(s.id, reason="test_done")
+        handle.emit_eof()
+        await attach_task
+
+    asyncio.run(_run())
+
+
+def test_cancel_emits_synthetic_tool_result(manager: ChatManager):
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        handle.emit({"type": "tool_call", "tool": "run_query", "args": {}})
+        await asyncio.sleep(0.05)
+        await manager.cancel(s.id)
+        await asyncio.sleep(0.05)
+        cancelled = [m for m in ws.sent if m.get("type") == "cancelled"]
+        assert cancelled, "expected a {'type': 'cancelled'} frame after cancel"
+        # Synthetic tool_result must be emitted before the `cancelled` frame
+        # so the agent sees the cancellation in its conversation history.
+        synthetic = [
+            m
+            for m in ws.sent
+            if m.get("type") == "tool_result"
+            and isinstance(m.get("result"), dict)
+            and m["result"].get("cancelled") is True
+        ]
+        assert synthetic, f"expected synthetic tool_result with cancelled=true; got {ws.sent}"
+        # And it must be persisted so crash-respawn replay sees it too.
+        msgs = manager._repo.list_messages(s.id)
+        persisted_cancels = [
+            m
+            for m in msgs
+            if m.tool_calls and any(isinstance(tc, dict) and tc.get("cancelled") is True for tc in m.tool_calls)
+        ]
+        assert persisted_cancels, "expected persisted cancel marker in chat_messages"
+        await manager.kill(s.id, reason="test_done")
+        handle.emit_eof()
+        await attach_task
+
+    asyncio.run(_run())
+
+
+def test_crash_respawns_with_notice(manager: ChatManager):
+    async def _run():
+        handles = [FakeHandle(), FakeHandle()]
+        spawn_calls = iter(handles)
+
+        async def fake_spawn(**kw):
+            return next(spawn_calls)
+
+        manager._provider.spawn = fake_spawn
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        # Simulate crash by signalling EOF and non-zero exit
+        handles[0].emit_eof()
+        handles[0].killed = True  # makes wait() return 137 immediately
+        await asyncio.sleep(0.1)
+        crashed = [m for m in ws.sent if m.get("type") == "error" and m.get("kind") == "subprocess_crashed"]
+        assert crashed, "expected crash notice"
+        ready = [m for m in ws.sent if m.get("type") == "ready"]
+        assert ready, "expected ready frame after respawn"
+
+        await manager.kill(s.id, reason="test_done")
+        handles[1].emit_eof()
+        await attach_task
+
+    asyncio.run(_run())
+
+
+def test_send_user_message_rejects_when_rate_limit_exceeded(tmp_path):
+    """Per-user sliding-window rate limit: more than rate_messages_per_hour
+    messages within the last hour from one user gets refused.
+    """
+    from datetime import datetime, timezone
+
+    from app.chat.manager import LiveSession
+    from app.chat.types import SessionState
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    provider = MagicMock()
+    provider.spawn = AsyncMock()
+    cfg = ChatConfig(
+        enabled=True,
+        concurrency_per_user=5,
+        rate_messages_per_hour=3,
+        daily_anthropic_spend_usd=10**6,
+        max_session_tokens=10**9,
+    )
+    mgr = ChatManager(
+        provider=provider,
+        workdir_mgr=workdir_mgr,
+        repo=repo,
+        config=cfg,
+    )
+
+    async def _run():
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        mgr._live[s.id] = LiveSession(
+            chat_id=s.id,
+            user_email="u@x",
+            state=SessionState.ACTIVE,
+            handle=FakeHandle(),
+            started_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
+            sinks=[SinkEntry(participant_email="u@x", sink=ws)],
+        )
+        # 3 messages allowed
+        for i in range(3):
+            await mgr.send_user_message(s.id, f"msg{i}")
+        # 4th gets refused
+        with pytest.raises(RuntimeError, match="rate_limit_exceeded"):
+            await mgr.send_user_message(s.id, "msg3")
+        kinds = [c.args[0].get("kind") for c in ws.send_json.call_args_list]
+        assert "rate_limit" in kinds
+
+    asyncio.run(_run())
+
+
+def test_send_user_message_rejects_when_session_tokens_exhausted(tmp_path):
+    """send_user_message must refuse new turns when the session's cumulative
+    tokens exceed ChatConfig.max_session_tokens.
+
+    Before this knob was wired the value lived only in instance.yaml.
+    """
+    from datetime import datetime, timezone
+
+    from app.chat.manager import LiveSession
+    from app.chat.types import SessionState
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    provider = MagicMock()
+    provider.spawn = AsyncMock()
+    cfg = ChatConfig(
+        enabled=True,
+        concurrency_per_user=5,
+        max_session_tokens=100,
+        daily_anthropic_spend_usd=10**6,  # disable daily cap
+    )
+    mgr = ChatManager(
+        provider=provider,
+        workdir_mgr=workdir_mgr,
+        repo=repo,
+        config=cfg,
+    )
+
+    async def _run():
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        # Stuff history past the cap.
+        for _ in range(3):
+            repo.append_message(
+                session_id=s.id,
+                role="assistant",
+                content="x",
+                tokens_in=30,
+                tokens_out=30,
+                model="fake",
+            )
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        mgr._live[s.id] = LiveSession(
+            chat_id=s.id,
+            user_email="u@x",
+            state=SessionState.ACTIVE,
+            handle=FakeHandle(),
+            started_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
+            sinks=[SinkEntry(participant_email="u@x", sink=ws)],
+        )
+        with pytest.raises(RuntimeError, match="max_session_tokens_exhausted"):
+            await mgr.send_user_message(s.id, "next")
+        # Refusal frame surfaced to the WS.
+        kinds = [c.args[0].get("kind") for c in ws.send_json.call_args_list]
+        assert "max_session_tokens" in kinds
+
+    asyncio.run(_run())
+
+
+def test_idle_reaper_kills_sessions_older_than_max_session_seconds(tmp_path):
+    """Sessions that exceed ChatConfig.max_session_seconds get killed by the
+    idle reaper independently of idle TTL.
+
+    Before this knob was wired the value lived only in instance.yaml — operators
+    set it and nothing happened.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.chat.manager import LiveSession
+    from app.chat.types import SessionState
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    provider = MagicMock()
+    provider.spawn = AsyncMock()
+    cfg = ChatConfig(
+        enabled=True,
+        concurrency_per_user=5,
+        # Pin a tiny wallclock cap so the test is fast and deterministic.
+        max_session_seconds=1,
+        idle_ttl_seconds=10**9,  # disable idle path
+        # Deliberately the DEFAULT pause policy: max_session_seconds is a hard
+        # ceiling and must KILL even when on_detach="pause" — pausing would
+        # re-trip on every post-resume sweep (infinite pause/resume loop,
+        # PR #605 review finding).
+        on_detach="pause",
+    )
+    mgr = ChatManager(
+        provider=provider,
+        workdir_mgr=workdir_mgr,
+        repo=repo,
+        config=cfg,
+    )
+
+    async def _run():
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        now = datetime.now(timezone.utc)
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        # Inject an "old" live session — active_seconds_accum already past the cap.
+        # No sinks: with no attached browser the reaper kills outright (no pause).
+        live = LiveSession(
+            chat_id=s.id,
+            user_email="u@x",
+            state=SessionState.ACTIVE,
+            handle=None,
+            started_at=now - timedelta(seconds=5),
+            last_activity=now,
+            sinks=[],
+        )
+        # Set accumulated active time past max_session_seconds=1 so the reaper fires.
+        live.active_seconds_accum = 5.0
+        mgr._live[s.id] = live
+
+        await mgr._reap_once()  # single sweep; no sleep loop
+        assert s.id not in mgr._live, "expected stale session to be killed"
+        # Killed for real — not paused: no sandbox refs left to resume from.
+        row = repo.get_session(s.id)
+        assert row.sandbox_paused_at is None and row.sandbox_id is None
+
+    asyncio.run(_run())
+
+
+def test_crash_respawn_does_not_accumulate_pump_tasks(manager: ChatManager):
+    """Each respawn must replace (not append to) the per-session pump task.
+
+    Pre-fix: every crash respawn created a new pump task and pushed it onto
+    ``live.tasks`` while leaving the old (already-exited) one on the list.
+    After N crashes the manager held N+1 pump tasks of which only the
+    latest read from the live handle — a leak; tests can also see it
+    grow unboundedly.
+    """
+
+    async def _run():
+        handles = [FakeHandle(), FakeHandle(), FakeHandle()]
+        spawn_calls = iter(handles)
+
+        async def fake_spawn(**kw):
+            return next(spawn_calls)
+
+        manager._provider.spawn = fake_spawn
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        live = manager._live[s.id]
+        initial_tasks = list(live.tasks)
+        assert len(initial_tasks) == 2  # pump + wait
+        assert live.current_pump is not None
+        assert live.current_pump in initial_tasks
+
+        # First crash → respawn
+        handles[0].emit_eof()
+        handles[0].killed = True
+        await asyncio.sleep(0.1)
+        # After respawn, still exactly two tasks (one wait + one pump),
+        # not three.  current_pump points at the NEW pump.
+        post_crash_tasks = [t for t in live.tasks if not t.done()]
+        assert len(post_crash_tasks) == 2, f"expected 2 live tasks after crash respawn, got {len(post_crash_tasks)}"
+        assert live.current_pump is not None
+        assert live.current_pump in post_crash_tasks
+
+        # Second crash → respawn again
+        handles[1].emit_eof()
+        handles[1].killed = True
+        await asyncio.sleep(0.1)
+        post_crash2_tasks = [t for t in live.tasks if not t.done()]
+        assert len(post_crash2_tasks) == 2, f"expected 2 live tasks after 2nd respawn, got {len(post_crash2_tasks)}"
+
+        # Cleanup
+        try:
+            await manager.kill(s.id, reason="test_done")
+        except Exception:
+            pass
+        for h in handles:
+            h.emit_eof()
+        try:
+            await asyncio.wait_for(attach_task, timeout=1.0)
+        except asyncio.TimeoutError:
+            attach_task.cancel()
+
+    asyncio.run(_run())
+
+
+def test_daily_tokens_cached_per_user(tmp_path):
+    """daily_anthropic_tokens is called at most once per 60-second window.
+
+    Two consecutive send_user_message calls for the same user must hit the
+    repo only once — the second resolves from the in-instance TTL cache.
+    """
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+
+    from app.chat.manager import LiveSession
+    from app.chat.types import SessionState
+
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    provider = MagicMock()
+    provider.spawn = AsyncMock()
+    cfg = ChatConfig(
+        enabled=True,
+        concurrency_per_user=5,
+        daily_anthropic_spend_usd=10**6,  # effectively unlimited
+        max_session_tokens=10**9,
+        rate_messages_per_hour=10**6,
+    )
+    mgr = ChatManager(
+        provider=provider,
+        workdir_mgr=workdir_mgr,
+        repo=repo,
+        config=cfg,
+    )
+
+    async def _run():
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        mgr._live[s.id] = LiveSession(
+            chat_id=s.id,
+            user_email="u@x",
+            state=SessionState.ACTIVE,
+            handle=FakeHandle(),
+            started_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
+            sinks=[SinkEntry(participant_email="u@x", sink=ws)],
+        )
+        with patch.object(repo, "daily_anthropic_tokens", wraps=repo.daily_anthropic_tokens) as mock_fn:
+            await mgr.send_user_message(s.id, "msg1")
+            await mgr.send_user_message(s.id, "msg2")
+            # Both calls should have used the cache; repo method called exactly once.
+            assert mock_fn.call_count == 1, (
+                f"expected daily_anthropic_tokens called once (cached); got {mock_fn.call_count}"
+            )
+
+    asyncio.run(_run())
+
+
+def test_double_crash_dies_after_three(manager: ChatManager):
+    handles = [FakeHandle(), FakeHandle(), FakeHandle(), FakeHandle()]
+    spawn_calls = iter(handles)
+
+    async def fake_spawn(**kw):
+        return next(spawn_calls)
+
+    manager._provider.spawn = fake_spawn
+
+    async def go():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(manager.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        # First crash → respawn
+        handles[0].emit_eof()
+        handles[0].killed = True
+        await asyncio.sleep(0.1)
+        # Second crash → respawn
+        handles[1].emit_eof()
+        handles[1].killed = True
+        await asyncio.sleep(0.1)
+        # Third crash → DEAD
+        handles[2].emit_eof()
+        handles[2].killed = True
+        await asyncio.sleep(0.1)
+        # Should have three crashed notices, at least three ready notices
+        crashed = [m for m in ws.sent if m.get("type") == "error" and m.get("kind") == "subprocess_crashed"]
+        ready = [m for m in ws.sent if m.get("type") == "ready"]
+        assert len(crashed) == 3, f"expected 3 crash notices, got {len(crashed)}"
+        # First ready is the initial; respawns add 2 more
+        assert len(ready) >= 3, f"expected >=3 ready, got {len(ready)}"
+        # Session should now be DEAD
+        live = manager._live.get(s.id)
+        assert live is None or live.state == SessionState.DEAD
+
+        # Cleanup
+        try:
+            await manager.kill(s.id, reason="test_done")
+        except Exception:
+            pass
+        for h in handles[:3]:
+            h.emit_eof()
+        try:
+            await asyncio.wait_for(attach_task, timeout=1.0)
+        except asyncio.TimeoutError:
+            attach_task.cancel()
+
+    asyncio.run(go())
+
+
+def test_active_count_for_user_matches_private(monkeypatch):
+    from types import SimpleNamespace
+    from app.chat.manager import ChatManager
+    from app.chat.types import SessionState
+
+    mgr = ChatManager.__new__(ChatManager)  # bypass __init__; we set only _live
+    mgr._live = {
+        "a": SimpleNamespace(user_email="x@e.com", state=SessionState.ACTIVE),
+        "b": SimpleNamespace(user_email="x@e.com", state=SessionState.IDLE),
+        "c": SimpleNamespace(user_email="y@e.com", state=SessionState.ACTIVE),
+        "d": SimpleNamespace(user_email="x@e.com", state=SessionState.DEAD),
+    }
+    assert mgr.active_count_for_user("x@e.com") == 2
+    assert mgr.active_count_for_user("x@e.com") == mgr._active_count_for_user("x@e.com")
+
+
+# ---------------------------------------------------------------------------
+# Task 7 tests: per-turn frame buffer — mid-turn sink replay + partial save
+# ---------------------------------------------------------------------------
+
+
+def _attach_fake_live_with_fake_handle(mgr: ChatManager, chat_id: str, user_email: str, sink):
+    """Insert a LiveSession with FakeHandle (has emit/readline) and one sink."""
+    from datetime import datetime, timezone
+    from app.chat.manager import LiveSession
+
+    handle = FakeHandle()
+    live = LiveSession(
+        chat_id=chat_id,
+        user_email=user_email,
+        state=SessionState.ACTIVE,
+        handle=handle,
+        started_at=datetime.now(timezone.utc),
+        last_activity=datetime.now(timezone.utc),
+        sinks=[SinkEntry(participant_email=user_email, sink=sink)],
+    )
+    mgr._live[chat_id] = live
+    return live
+
+
+def test_midturn_sink_gets_buffered_frames_replayed(manager: ChatManager):
+    """A sink added mid-turn receives the buffered token frames exactly once;
+    ws1 does not receive duplicates."""
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", ws1)
+
+        # Simulate a user message to set turn_in_flight=True, turn_buffer cleared
+        await manager.send_user_message(s.id, "hello")
+
+        # Pump two token frames (no assistant_message yet)
+        pump_task = asyncio.create_task(manager._pump_subprocess_to_ws(live))
+        live.handle.emit({"type": "token", "text": "Hel"})
+        live.handle.emit({"type": "token", "text": "lo"})
+        await asyncio.sleep(0.05)  # let pump process frames
+
+        # Now add ws2 mid-turn — must see the two buffered token frames
+        ws2 = FakeWS()
+        await manager.add_sink(s.id, ws2, "u@x")
+
+        token_frames_ws2 = [f for f in ws2.sent if f.get("type") == "token"]
+        assert len(token_frames_ws2) == 2, f"ws2 should see 2 buffered token frames, got {token_frames_ws2}"
+
+        # ws1 must NOT see duplicates: still exactly 2 tokens (already received before add_sink)
+        token_frames_ws1 = [f for f in ws1.sent if f.get("type") == "token"]
+        assert len(token_frames_ws1) == 2, f"ws1 should see 2 tokens without duplicates, got {token_frames_ws1}"
+
+        # Cleanup
+        pump_task.cancel()
+        try:
+            await pump_task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_run())
+
+
+def test_turn_buffer_cleared_after_assistant_message(manager: ChatManager):
+    """After a full turn completes (assistant_message frame), a newly added
+    sink must NOT receive any token replay."""
+
+    async def _run():
+        from tests.chat_fakes import FakeWS
+
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", ws1)
+
+        await manager.send_user_message(s.id, "hello")
+
+        # Pump token + assistant_message (full turn)
+        pump_task = asyncio.create_task(manager._pump_subprocess_to_ws(live))
+        live.handle.emit({"type": "token", "text": "Hi"})
+        live.handle.emit(
+            {
+                "type": "assistant_message",
+                "content": "Hi",
+                "tokens_in": 1,
+                "tokens_out": 1,
+            }
+        )
+        await asyncio.sleep(0.05)
+
+        # Add a sink after the turn completed — should see no token replay
+        ws2 = FakeWS()
+        await manager.add_sink(s.id, ws2, "u@x")
+
+        token_frames_ws2 = [f for f in ws2.sent if f.get("type") == "token"]
+        assert len(token_frames_ws2) == 0, (
+            f"buffer should be cleared after assistant_message; ws2 got {token_frames_ws2}"
+        )
+        assert not live.turn_in_flight, "turn_in_flight should be False after assistant_message"
+        assert live.turn_buffer == [], "turn_buffer should be empty after assistant_message"
+
+        pump_task.cancel()
+        try:
+            await pump_task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_run())
+
+
+def test_kill_midturn_persists_partial_assistant_message(manager: ChatManager):
+    """kill() mid-turn must persist accumulated token text as an interrupted
+    assistant message with tool_calls=[{interrupted: True, reason: ...}]."""
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", ws)
+
+        await manager.send_user_message(s.id, "hello")
+
+        # Pump two token frames — no assistant_message (mid-turn)
+        pump_task = asyncio.create_task(manager._pump_subprocess_to_ws(live))
+        live.handle.emit({"type": "token", "text": "Hel"})
+        live.handle.emit({"type": "token", "text": "lo"})
+        await asyncio.sleep(0.05)
+
+        # Kill mid-turn
+        await manager.kill(s.id, reason="idle_ttl")
+
+        pump_task.cancel()
+        try:
+            await pump_task
+        except asyncio.CancelledError:
+            pass
+
+        msgs = manager._repo.list_messages(s.id)
+        assistant_rows = [m for m in msgs if m.role == "assistant"]
+        assert assistant_rows, "expected at least one assistant row after kill mid-turn"
+        partial = assistant_rows[-1]
+        assert partial.content == "Hello", f"expected 'Hello' content, got {partial.content!r}"
+        assert partial.tool_calls is not None, "expected tool_calls metadata"
+        interrupted = [tc for tc in partial.tool_calls if isinstance(tc, dict) and tc.get("interrupted") is True]
+        assert interrupted, f"expected interrupted=True in tool_calls, got {partial.tool_calls}"
+        assert interrupted[0].get("reason") == "idle_ttl"
+
+    asyncio.run(_run())
+
+
+def test_kill_between_turns_persists_nothing_extra(manager: ChatManager):
+    """kill() after a completed turn must NOT add an extra interrupted row."""
+
+    async def _run():
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        live = _attach_fake_live_with_fake_handle(manager, s.id, "u@x", ws)
+
+        await manager.send_user_message(s.id, "hello")
+
+        # Complete a full turn
+        pump_task = asyncio.create_task(manager._pump_subprocess_to_ws(live))
+        live.handle.emit(
+            {
+                "type": "assistant_message",
+                "content": "A",
+                "tokens_in": 1,
+                "tokens_out": 1,
+            }
+        )
+        await asyncio.sleep(0.05)
+
+        # Kill between turns (buffer should be empty)
+        await manager.kill(s.id, reason="test_done")
+
+        pump_task.cancel()
+        try:
+            await pump_task
+        except asyncio.CancelledError:
+            pass
+
+        msgs = manager._repo.list_messages(s.id)
+        assistant_rows = [m for m in msgs if m.role == "assistant"]
+        assert len(assistant_rows) == 1, f"expected exactly 1 assistant row, got {len(assistant_rows)}"
+        # No interrupted marker
+        if assistant_rows[0].tool_calls:
+            interrupted = [
+                tc for tc in assistant_rows[0].tool_calls if isinstance(tc, dict) and tc.get("interrupted") is True
+            ]
+            assert not interrupted, "no interrupted marker expected after full turn"
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Task 8 tests: manager owns session lifecycle — detach/linger/pause/resume
+# ---------------------------------------------------------------------------
+
+from tests.chat_fakes import FakeProvider  # noqa: E402
+
+
+def _make_pause_manager(tmp_path, linger_seconds=0):
+    """ChatManager with FakeProvider and on_detach='pause'."""
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    provider = FakeProvider()
+    return ChatManager(
+        provider=provider,
+        workdir_mgr=workdir_mgr,
+        repo=repo,
+        config=ChatConfig(
+            enabled=True,
+            concurrency_per_user=5,
+            on_detach="pause",
+            detach_linger_seconds=linger_seconds,
+            paused_ttl_seconds=7 * 24 * 3600,
+            idle_ttl_seconds=10**9,
+        ),
+    )
+
+
+def _make_kill_manager(tmp_path):
+    conn = duckdb.connect(":memory:")
+    _ensure_schema(conn)
+    repo = ChatRepository(conn)
+    workdir_mgr = _make_workdir_mgr(tmp_path, repo)
+    provider = FakeProvider()
+    return ChatManager(
+        provider=provider,
+        workdir_mgr=workdir_mgr,
+        repo=repo,
+        config=ChatConfig(
+            enabled=True,
+            concurrency_per_user=5,
+            on_detach="kill",
+            detach_linger_seconds=0,
+            paused_ttl_seconds=7 * 24 * 3600,
+            idle_ttl_seconds=10**9,
+        ),
+    )
+
+
+def monkeypatch_workdir(mgr: ChatManager) -> None:
+    """Bypass the real WorkdirManager filesystem operations for testing."""
+    import unittest.mock as mock
+
+    mgr._workdir_mgr.ensure_user_workdir = mock.MagicMock()
+    mgr._workdir_mgr.prepare_session_dir = mock.MagicMock(return_value=Path("/tmp/fake-session-dir"))
+
+
+def test_detach_last_sink_does_not_kill(tmp_path):
+    """With on_detach='pause', removing the last sink must NOT kill the session;
+    it stays in _live with state ACTIVE through the linger window."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=999)
+        monkeypatch_workdir(mgr)
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        assert s.id in mgr._live
+        await mgr.detach_sink(s.id, ws)
+        await asyncio.sleep(0.05)
+        # Session must still be alive (linger window is 999 s)
+        assert s.id in mgr._live, "session killed immediately on detach — expected linger"
+        live = mgr._live[s.id]
+        assert live.state == SessionState.ACTIVE
+        # Cleanup
+        await mgr.kill(s.id, reason="test_done")
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_linger_then_pause_persists_refs(tmp_path):
+    """linger_seconds=0: provider.pause called, repo row has sandbox refs, state PAUSED."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        await mgr.detach_sink(s.id, ws)
+        await asyncio.sleep(0.15)  # linger=0, pause should have fired
+        # Provider should have paused the sandbox
+        assert provider.paused, "expected sandbox to be paused in provider"
+        # Repo row should reflect the pause
+        session = mgr._repo.get_session(s.id)
+        assert session is not None
+        assert session.sandbox_id is not None
+        assert session.runner_pid is not None
+        assert session.sandbox_paused_at is not None
+        # Live entry state should be PAUSED
+        live = mgr._live.get(s.id)
+        assert live is None or live.state == SessionState.PAUSED
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_reattach_during_linger_cancels_pause(tmp_path):
+    """A new sink arriving inside the linger window must cancel the pause task."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=999)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
+        await asyncio.sleep(0.05)
+        await mgr.detach_sink(s.id, ws1)
+        await asyncio.sleep(0.02)  # inside linger window
+        # Re-attach before linger expires
+        ws2 = FakeWS()
+        await mgr.add_sink(s.id, ws2, "u@x")
+        await asyncio.sleep(0.05)
+        # Pause must NOT have been called
+        assert not provider.paused, "pause should not fire when sink returned during linger"
+        live = mgr._live.get(s.id)
+        assert live is not None and live.state == SessionState.ACTIVE
+
+        await mgr.kill(s.id, reason="test_done")
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_pause_waits_for_inflight_turn(tmp_path):
+    """When turn_in_flight is True, _linger_then_pause waits for it to clear."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        live = mgr._live[s.id]
+        # Mark a turn in flight before detaching
+        live.turn_in_flight = True
+        await mgr.detach_sink(s.id, ws)
+        await asyncio.sleep(0.15)  # linger=0 but turn still in flight
+        # Pause should NOT have fired yet
+        assert not provider.paused, "pause should wait for in-flight turn"
+        # Simulate turn completing
+        live.turn_in_flight = False
+        await asyncio.sleep(0.15)
+        # Now pause should fire
+        assert provider.paused, "expected pause after turn_in_flight cleared"
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_linger_bails_when_runner_dies_during_inflight_turn(tmp_path):
+    """Regression — Devin Review BUG_0001 follow-up on #605.
+
+    If a runner dies (3× crash → SessionState.DEAD) while a turn is
+    in-flight and no sink is attached, `_linger_then_pause` used to spin
+    forever on `while live.turn_in_flight` (no pump alive to clear it)
+    and the `_live` entry leaked (the reaper skips DEAD sessions). The
+    fix adds a state check inside the spin so the linger task bails out
+    cleanly when the session has died."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        live = mgr._live[s.id]
+        # Set up: turn in flight, no sinks, runner declared DEAD
+        # (the 3× crash terminal state — _wait_for_exit_and_respawn sets
+        # this without ever emitting a `done` frame to clear the flag).
+        live.turn_in_flight = True
+        await mgr.detach_sink(s.id, ws)
+        live.state = SessionState.DEAD
+        # The linger task should bail out promptly rather than spinning
+        # forever waiting for the turn to "complete." We grant it a few
+        # tick cycles to notice the state transition.
+        await asyncio.sleep(0.2)
+        assert live.linger_task is None or live.linger_task.done(), (
+            "linger task must complete (not spin) when runner died "
+            "mid-turn with no sinks attached"
+        )
+        # And no pause was issued (state was already DEAD, not ACTIVE).
+        assert not provider.paused, "DEAD session must not be paused"
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_attach_to_paused_resumes_same_handle(tmp_path):
+    """attach() to a PAUSED live session resumes it; state becomes ACTIVE,
+    paused_at cleared, and the pump delivers frames to the new sink."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
+        await asyncio.sleep(0.05)
+        await mgr.detach_sink(s.id, ws1)
+        await asyncio.sleep(0.15)  # let pause fire
+        assert provider.paused
+
+        # Re-attach: should resume
+        ws2 = FakeWS()
+        attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
+        await asyncio.sleep(0.1)
+        live = mgr._live.get(s.id)
+        assert live is not None
+        assert live.state == SessionState.ACTIVE
+        session = mgr._repo.get_session(s.id)
+        assert session.sandbox_paused_at is None
+
+        # Emit a frame and verify ws2 receives it
+        live.handle.emit({"type": "token", "text": "hi"})
+        await asyncio.sleep(0.05)
+        token_frames = [f for f in ws2.sent if f.get("type") == "token"]
+        assert token_frames, "resumed session should deliver frames to new sink"
+
+        await mgr.kill(s.id, reason="test_done")
+        for t in [attach_task, attach_task2]:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    asyncio.run(_run())
+
+
+def test_attach_to_live_session_does_not_spawn_second_runner(tmp_path):
+    """attach() to an already-ACTIVE session must not spawn a new handle."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=999)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        attach_task1 = asyncio.create_task(mgr.attach(s.id, ws1))
+        await asyncio.sleep(0.05)
+        assert len(provider.spawned) == 1
+
+        ws2 = FakeWS()
+        attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
+        await asyncio.sleep(0.05)
+        assert len(provider.spawned) == 1, "second attach must NOT spawn another runner"
+
+        await mgr.kill(s.id, reason="test_done")
+        for t in [attach_task1, attach_task2]:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    asyncio.run(_run())
+
+
+def test_resume_failure_falls_back_to_fresh_spawn(tmp_path):
+    """When provider.resume raises, clear_sandbox_ref + fresh spawn + state ACTIVE."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
+        await asyncio.sleep(0.05)
+        await mgr.detach_sink(s.id, ws1)
+        await asyncio.sleep(0.15)  # pause fires
+        assert provider.paused
+        # Make resume fail
+        provider.fail_resume = True
+
+        ws2 = FakeWS()
+        attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
+        await asyncio.sleep(0.2)
+        live = mgr._live.get(s.id)
+        assert live is not None
+        assert live.state == SessionState.ACTIVE, "should fall back to fresh spawn"
+        assert len(provider.spawned) == 2, "expected a second spawn on resume failure"
+        session = mgr._repo.get_session(s.id)
+        assert session.sandbox_paused_at is None
+
+        await mgr.kill(s.id, reason="test_done")
+        for t in [attach_task, attach_task2]:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    asyncio.run(_run())
+
+
+def test_send_user_message_resumes_paused_session(tmp_path):
+    """send_user_message to a PAUSED session resumes it first (Slack path)."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
+        await asyncio.sleep(0.05)
+        await mgr.detach_sink(s.id, ws1)
+        await asyncio.sleep(0.15)  # pause fires
+        assert provider.paused
+
+        # send_user_message should resume first
+        await mgr.send_user_message(s.id, "hello after pause")
+        live = mgr._live.get(s.id)
+        assert live is not None
+        assert live.state == SessionState.ACTIVE
+
+        await mgr.kill(s.id, reason="test_done")
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_attach_after_restart_resumes_from_repo_row(tmp_path):
+    """Post-restart: _live cleared, but repo row has sandbox refs — attach resumes."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws1 = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws1))
+        await asyncio.sleep(0.05)
+        await mgr.detach_sink(s.id, ws1)
+        await asyncio.sleep(0.15)  # pause fires, refs persisted in repo
+        assert provider.paused
+
+        # Simulate server restart: clear in-memory _live
+        mgr._live.clear()
+
+        # Re-attach must resume purely from repo row
+        ws2 = FakeWS()
+        attach_task2 = asyncio.create_task(mgr.attach(s.id, ws2))
+        await asyncio.sleep(0.15)
+        live = mgr._live.get(s.id)
+        assert live is not None
+        assert live.state == SessionState.ACTIVE
+
+        await mgr.kill(s.id, reason="test_done")
+        for t in [attach_task, attach_task2]:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    asyncio.run(_run())
+
+
+def test_on_detach_kill_preserves_legacy_behavior(tmp_path):
+    """on_detach='kill': last-sink detach must kill the session immediately."""
+
+    async def _run():
+        mgr = _make_kill_manager(tmp_path)
+        monkeypatch_workdir(mgr)
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        await mgr.detach_sink(s.id, ws)
+        await asyncio.sleep(0.1)
+        assert s.id not in mgr._live, "on_detach=kill: session should be dead after detach"
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Task 9 tests: reaper pauses, paused-TTL GC, active-time cap, shutdown pauses
+# ---------------------------------------------------------------------------
+
+
+def test_idle_ttl_pauses_instead_of_kills(tmp_path):
+    """Reaper on an idle ACTIVE session with no sinks → PAUSED, sandbox alive in provider."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        live = mgr._live[s.id]
+        # Empty sinks without triggering linger
+        live.sinks = []
+        # Force last_activity into the past
+        from datetime import datetime as _dt, timedelta, timezone as _tz
+
+        live.last_activity = _dt.now(_tz.utc) - timedelta(seconds=1)
+
+        # Patch config to use idle_ttl=0 for fast reap
+        original_config = mgr._config
+
+        class _PatchedConfig:
+            def __getattr__(self, name):
+                if name == "idle_ttl_seconds":
+                    return 0
+                return getattr(original_config, name)
+
+        mgr._config = _PatchedConfig()
+        await mgr._reap_once()
+        mgr._config = original_config
+
+        live = mgr._live.get(s.id)
+        assert live is None or live.state == SessionState.PAUSED
+        assert provider.paused, "sandbox must be in provider.paused after idle reaper"
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_paused_ttl_really_kills(tmp_path):
+    """Repo row paused before cutoff → provider.destroy called + sandbox refs cleared."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        await mgr.detach_sink(s.id, ws)
+        await asyncio.sleep(0.15)  # pause fires
+        assert provider.paused
+
+        # Push sandbox_paused_at into the past past the TTL
+        from datetime import datetime as _dt, timedelta, timezone as _tz
+
+        mgr._repo.set_sandbox_paused_at(
+            s.id,
+            _dt.now(_tz.utc) - timedelta(seconds=mgr._config.paused_ttl_seconds + 1),
+        )
+        # Clear _live so it tests the repo-row-only path
+        mgr._live.clear()
+
+        await mgr._reap_once()
+
+        session = mgr._repo.get_session(s.id)
+        assert session.sandbox_id is None, "sandbox ref must be cleared after paused-TTL GC"
+        assert session.runner_pid is None
+        assert session.sandbox_paused_at is None
+        assert provider.destroyed, "provider.destroy must be called for expired paused sandbox"
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_max_session_seconds_counts_active_time_only(tmp_path):
+    """max_session_seconds uses accumulated active time; pause stops the clock."""
+
+    async def _run():
+        import time as _time
+
+        mgr = _make_pause_manager(tmp_path, linger_seconds=0)
+        monkeypatch_workdir(mgr)
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        live = mgr._live[s.id]
+        # 1 hour accumulated, currently paused (active_since barely recent)
+        live.active_seconds_accum = 3600.0
+        live.active_since = _time.monotonic() - 10  # only 10 s since last resume
+        live.state = SessionState.PAUSED  # pause stops the clock
+
+        # max_session_seconds=4h: total active ≈ 1h 10s ≪ 4h → should NOT reap
+        original_config = mgr._config
+
+        class _PatchedConfig:
+            def __getattr__(self, name):
+                if name == "max_session_seconds":
+                    return 4 * 3600
+                if name == "idle_ttl_seconds":
+                    return 10**9  # disable idle path
+                return getattr(original_config, name)
+
+        mgr._config = _PatchedConfig()
+        await mgr._reap_once()
+        assert s.id in mgr._live, "paused session with only ~1h active time must not be reaped at 4h cap"
+
+        # Now exceed the cap
+        live.active_seconds_accum = 4 * 3600 + 1
+        await mgr._reap_once()
+        remaining = mgr._live.get(s.id)
+        assert remaining is None or remaining.state in (
+            SessionState.DEAD,
+            SessionState.PAUSED,
+        ), "session past active cap must be killed or paused"
+
+        mgr._config = original_config
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_shutdown_pauses_active_sessions(tmp_path):
+    """shutdown() with on_detach='pause' pauses ACTIVE sessions instead of killing."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=999)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        assert s.id in mgr._live
+
+        await mgr.shutdown()
+
+        assert provider.paused, "shutdown with on_detach=pause should pause active sandboxes"
+        session = mgr._repo.get_session(s.id)
+        assert session.sandbox_paused_at is not None, "sandbox_paused_at must be set after shutdown-pause"
+
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+def test_keepalive_heartbeat_extends_timeout_while_sinks_attached(tmp_path):
+    """The reaper tick calls provider.keepalive for ACTIVE sessions with sinks."""
+
+    async def _run():
+        mgr = _make_pause_manager(tmp_path, linger_seconds=999)
+        monkeypatch_workdir(mgr)
+        provider = mgr._provider
+        s = await mgr.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        attach_task = asyncio.create_task(mgr.attach(s.id, ws))
+        await asyncio.sleep(0.05)
+        live = mgr._live.get(s.id)
+        assert live is not None and live.sinks  # has a sink
+
+        await mgr._reap_once()
+        assert provider.keepalive_calls, "keepalive should be called for ACTIVE session with sinks"
+
+        await mgr.kill(s.id, reason="test_done")
+        attach_task.cancel()
+        try:
+            await attach_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# PR #605 review regressions (Devin findings)
+# ---------------------------------------------------------------------------
+
+
+def test_seat_sink_does_not_replay_persisted_history(manager: ChatManager):
+    """The primary WS must NOT receive persisted messages on attach — the web
+    client already loaded them via REST; replaying duplicates every bubble.
+    Only the in-progress turn buffer (+ ready) goes over the wire."""
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        manager._repo.append_message(session_id=s.id, role="user", content="q?")
+        manager._repo.append_message(session_id=s.id, role="assistant", content="a!")
+        ws = FakeWS()
+        await manager.attach(s.id, ws)
+        types = [f.get("type") for f in ws.sent]
+        assert "assistant_message" not in types
+        assert "user_msg" not in types
+        assert types[-1] == "ready"
+        await manager.kill(s.id, reason="test_done")
+
+    asyncio.run(_run())
+
+
+def test_broadcast_dead_sink_sweep_triggers_detach_policy(manager: ChatManager):
+    """When _broadcast's dead-sink removal empties live.sinks, the on-detach
+    policy must fire (linger task scheduled) — a joiner whose socket died
+    without a clean detach must not leave the session ownerless until the
+    idle reaper."""
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        await manager.attach(s.id, ws)
+        live = manager._live[s.id]
+        assert live.linger_task is None
+
+        class DeadSink:
+            async def send_json(self, data):
+                raise RuntimeError("socket gone")
+
+            async def close(self):
+                pass
+
+        live.sinks = [SinkEntry(participant_email="u@x", sink=DeadSink())]
+        await manager._broadcast(live, {"type": "token", "text": "x"})
+        assert not live.sinks
+        assert live.linger_task is not None
+        await manager.kill(s.id, reason="test_done")
+
+    asyncio.run(_run())
+
+
+def test_resume_from_row_co_session_uses_ephemeral_dir(manager: ChatManager, monkeypatch):
+    """Cold-start resume of a co-session must rebuild the ephemeral
+    grant-intersection workspace (SR-6), not a personal one — the
+    crash-respawn path re-uploads the workspace from session_dir."""
+
+    async def _run():
+        s = await manager.create_session(user_email="owner@x", surface=Surface.WEB)
+        manager._repo._conn.execute(
+            "UPDATE chat_sessions SET is_co_session = TRUE WHERE id = ?", [s.id]
+        )
+        manager._repo.add_session_participant(
+            session_id=s.id, user_email="owner@x", user_id="u1", role="owner"
+        )
+        manager._repo.add_session_participant(
+            session_id=s.id, user_email="peer@x", user_id="u2", role="collaborator"
+        )
+        manager._repo.set_sandbox_ref(s.id, sandbox_id="sbx-co", runner_pid=42)
+
+        handle = FakeHandle()
+        manager._provider.resume = AsyncMock(return_value=handle)
+        monkeypatch.setattr(
+            "src.grant_intersection.compute_grant_intersection",
+            lambda emails, conn: {},
+        )
+        eph = MagicMock(return_value=Path("/tmp/eph-dir"))
+        personal = MagicMock()
+        monkeypatch.setattr(manager._workdir_mgr, "prepare_ephemeral_session_dir", eph)
+        monkeypatch.setattr(manager._workdir_mgr, "prepare_session_dir", personal)
+
+        session = manager._repo.get_session(s.id)
+        live = await manager._resume_from_row(session)
+        assert live is not None
+        eph.assert_called_once()
+        personal.assert_not_called()
+        assert sorted(live.participant_emails) == ["owner@x", "peer@x"]
+        await manager.kill(s.id, reason="test_done")
+
+    asyncio.run(_run())
+
+
+def test_crash_respawn_refreshes_sandbox_refs(manager: ChatManager):
+    """A crash-respawn must persist the NEW sandbox's refs — otherwise a later
+    pause/resume reconnects the dead sandbox and silently loses the agent's
+    in-memory context (PR #605 review finding)."""
+
+    async def _run():
+        h1, h2 = FakeHandle(), FakeHandle()
+        h1.sandbox_id, h2.sandbox_id = "sbx-old", "sbx-new"
+        manager._provider.spawn = AsyncMock(side_effect=[h1, h2])
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        await manager.attach(s.id, ws)
+        assert manager._repo.get_session(s.id).sandbox_id == "sbx-old"
+
+        # Crash: first handle exits non-zero → _wait_for_exit_and_respawn
+        # spawns h2 and must refresh the persisted refs.
+        h1.exit_code = 1
+        h1.killed = True  # FakeHandle.wait() returns once killed flips
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if manager._live[s.id].handle is h2:
+                break
+        row = manager._repo.get_session(s.id)
+        assert row.sandbox_id == "sbx-new"
+        assert row.runner_pid == h2.pid
+        await manager.kill(s.id, reason="test_done")
+
+    asyncio.run(_run())
+
+
+def test_reaper_gcs_dead_sessions(manager: ChatManager):
+    """DEAD entries (3x-crash leftovers) must be GC'd by the reaper — the
+    crash path marks state=DEAD without popping _live, and the reaper used
+    to skip non-ACTIVE/IDLE states, leaking one entry per crashed session."""
+
+    async def _run():
+        handle = FakeHandle()
+        manager._provider.spawn = AsyncMock(return_value=handle)
+        s = await manager.create_session(user_email="u@x", surface=Surface.WEB)
+        ws = FakeWS()
+        await manager.attach(s.id, ws)
+        manager._live[s.id].state = SessionState.DEAD
+        await manager._reap_once()
+        assert s.id not in manager._live
+
+    asyncio.run(_run())

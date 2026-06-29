@@ -1,33 +1,31 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 
 {% block title %}Advanced setup — {{ instance_name or "AI Data Analyst" }}{% endblock %}
 
-{% block content %}
+{% block head_extra %}
 {% include "_page_chrome.html" %}
 <style>
 .advanced-mock {
-    --hp-primary: #0073D1;
-    --hp-primary-dark: #0056A3;
-    --hp-primary-light: #E6F3FC;
-    --hp-border: #E5E7EB;
-    --hp-border-light: #F3F4F6;
-    --hp-text-primary: #111827;
-    --hp-text-secondary: #6B7280;
-    --hp-text-muted: #9CA3AF;
-    --hp-font-mono: ui-monospace, "SF Mono", Consolas, monospace;
-    color: var(--hp-text-primary);
+    /* Design-system scope — tokens live globally in
+       app/web/static/css/design-tokens.css. */
+    color: var(--ds-text-primary);
     font-size: 14px;
     line-height: 1.55;
 }
 .advanced-mock * { box-sizing: border-box; }
 
 .advanced-mock .ad-hero {
-    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+    /* Same dimensions as `.page-header--hero` so /setup-advanced lines
+       up with every other page hero; green gradient comes from the
+       redesign palette via `--ds-*` tokens. Container provides the
+       max-width + gutters. */
+    background: linear-gradient(135deg, var(--ds-primary) 0%, var(--ds-primary-dark) 100%);
     color: white;
-    border-radius: 16px;
-    padding: 32px 36px;
-    margin-bottom: 22px;
-    box-shadow: 0 8px 24px rgba(0, 86, 163, 0.18);
+    border-radius: 14px;
+    padding: 28px 32px 24px;
+    margin: 0 0 var(--space-5);
+    box-sizing: border-box;
+    box-shadow: 0 4px 16px rgba(31, 138, 94, 0.2);
 }
 .advanced-mock .ad-hero .eyebrow {
     font-size: 11px;
@@ -56,7 +54,7 @@
 
 .advanced-mock .ad-toc {
     background: white;
-    border: 1px solid var(--hp-border);
+    border: 1px solid var(--ds-border);
     border-radius: 12px;
     padding: 16px 22px;
     margin-bottom: 22px;
@@ -66,7 +64,7 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.6px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     margin-bottom: 10px;
 }
 .advanced-mock .ad-toc ol {
@@ -81,12 +79,12 @@
 .advanced-mock .ad-toc ol { counter-reset: ad-toc; }
 .advanced-mock .ad-toc ol li::before {
     content: counter(ad-toc) ". ";
-    color: var(--hp-text-muted);
+    color: var(--ds-text-muted);
     margin-right: 4px;
     font-variant-numeric: tabular-nums;
 }
 .advanced-mock .ad-toc a {
-    color: var(--hp-primary);
+    color: var(--ds-primary);
     text-decoration: none;
     font-size: 13px;
     font-weight: 500;
@@ -95,7 +93,7 @@
 
 .advanced-mock .ad-section {
     background: white;
-    border: 1px solid var(--hp-border);
+    border: 1px solid var(--ds-border);
     border-radius: 12px;
     padding: 22px 26px;
     margin-bottom: 18px;
@@ -104,24 +102,24 @@
 .advanced-mock .ad-section h2 {
     font-size: 16px;
     font-weight: 600;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     margin-bottom: 6px;
 }
 .advanced-mock .ad-section .ad-lead {
     font-size: 13px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     margin-bottom: 14px;
 }
 .advanced-mock .ad-section h3 {
     font-size: 13px;
     font-weight: 600;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     margin-top: 14px;
     margin-bottom: 6px;
 }
 .advanced-mock .ad-section p {
     font-size: 13px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
     margin-bottom: 8px;
     line-height: 1.6;
 }
@@ -129,7 +127,7 @@
 .advanced-mock .ad-section ol {
     padding-left: 22px;
     margin-bottom: 10px;
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
 }
 .advanced-mock .ad-section li {
     margin-bottom: 4px;
@@ -137,22 +135,22 @@
     font-size: 13px;
 }
 .advanced-mock .ad-section code {
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 11.5px;
-    background: var(--hp-border-light);
+    background: var(--ds-border-light);
     padding: 1px 5px;
     border-radius: 3px;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
 }
 .advanced-mock .ad-section a {
-    color: var(--hp-primary);
+    color: var(--ds-primary);
 }
 .advanced-mock .ad-section pre {
     background: #0F172A;
     color: #E2E8F0;
     border-radius: 8px;
     padding: 12px 14px;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 12px;
     line-height: 1.55;
     overflow-x: auto;
@@ -170,13 +168,13 @@
 
 .advanced-mock kbd {
     background: white;
-    border: 1px solid var(--hp-border);
+    border: 1px solid var(--ds-border);
     border-bottom-width: 2px;
     border-radius: 4px;
     padding: 1px 6px;
     font-size: 11px;
-    font-family: var(--hp-font-mono);
-    color: var(--hp-text-primary);
+    font-family: var(--ds-font-mono);
+    color: var(--ds-text-primary);
 }
 
 .advanced-mock table.ad-table {
@@ -189,22 +187,22 @@
 .advanced-mock table.ad-table td {
     text-align: left;
     padding: 8px 10px;
-    border-bottom: 1px solid var(--hp-border-light);
+    border-bottom: 1px solid var(--ds-border-light);
     vertical-align: top;
 }
 .advanced-mock table.ad-table th {
-    background: var(--hp-border-light);
+    background: var(--ds-border-light);
     font-weight: 600;
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
     font-size: 11.5px;
     text-transform: uppercase;
     letter-spacing: 0.4px;
 }
 .advanced-mock table.ad-table td {
-    color: var(--hp-text-secondary);
+    color: var(--ds-text-secondary);
 }
 .advanced-mock table.ad-table td strong {
-    color: var(--hp-text-primary);
+    color: var(--ds-text-primary);
 }
 
 .advanced-mock .ad-warn {
@@ -222,7 +220,7 @@
 
 .advanced-mock .plugin-cmd {
     display: inline-block;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 11.5px;
     background: #0F172A;
     color: #FBBF24;
@@ -232,7 +230,7 @@
     word-break: break-all;
 }
 .advanced-mock .plugin-copy {
-    background: var(--hp-primary);
+    background: var(--ds-primary);
     color: white;
     border: none;
     border-radius: 4px;
@@ -243,7 +241,7 @@
     font-family: inherit;
     vertical-align: middle;
 }
-.advanced-mock .plugin-copy:hover { background: var(--hp-primary-dark); }
+.advanced-mock .plugin-copy:hover { background: var(--ds-primary-dark); }
 .advanced-mock .plugin-copy.copied { background: #047857; }
 
 .advanced-mock .plugin-prompt-row {
@@ -262,7 +260,7 @@
     color: inherit;
     padding: 0;
     border-radius: 0;
-    font-family: var(--hp-font-mono);
+    font-family: var(--ds-font-mono);
     font-size: 11.5px;
     line-height: 1.55;
     white-space: pre-wrap;
@@ -278,7 +276,9 @@
     background: rgba(255, 255, 255, 0.20);
 }
 </style>
+{% endblock %}
 
+{% block content %}
 <div class="advanced-mock">
 
     <div class="ad-hero">
@@ -291,7 +291,8 @@
         <h2>On this page</h2>
         <ol>
             <li><a href="#vscode">VS Code as your workspace</a></li>
-            <li><a href="#workspace">~/{{ workspace_dir }} workspace anatomy</a></li>
+            <li><a href="#claude-app">Claude Desktop &amp; claude.ai</a></li>
+            <li><a href="#workspace">~/Desktop/{{ workspace_dir }} workspace anatomy</a></li>
             <li><a href="#projects">Project workflows</a></li>
             <li><a href="#plugins">Recommended plugins</a></li>
             <li><a href="#second-opinions">Multi-model second opinions</a></li>
@@ -307,7 +308,7 @@
 
         <h3>Recommended layout</h3>
         <ul>
-            <li>Open <code>~/{{ workspace_dir }}</code>: <strong>File → Open Folder…</strong> → select <code>~/{{ workspace_dir }}</code>.</li>
+            <li>Open <code>~/Desktop/{{ workspace_dir }}</code>: <strong>File → Open Folder…</strong> → select <code>~/Desktop/{{ workspace_dir }}</code>.</li>
             <li>Open the built-in terminal: <kbd>Cmd</kbd>+<kbd>&#96;</kbd> on macOS, <kbd>Ctrl</kbd>+<kbd>&#96;</kbd> on Windows/Linux.</li>
             <li>Move terminal into the editor area: right-click the terminal tab → <strong>"Move Terminal into Editor Area"</strong>. Now it fills the main panel.</li>
             <li>Split into more terminals: <kbd>Cmd</kbd>+<kbd>\</kbd> (or <kbd>Ctrl</kbd>+<kbd>\</kbd>) splits side-by-side. One for your Claude conversation, one for diffs/output, optional third for parallel work.</li>
@@ -323,10 +324,25 @@
         </ul>
     </section>
 
+    <section class="ad-section" id="claude-app">
+        <h2>1b. Claude Desktop &amp; claude.ai</h2>
+        <p class="ad-lead">{{ instance_brand }}'s plugin marketplace also works from Claude Desktop and claude.ai — same plugins, same RBAC, no terminal required. Useful when you're already inside Claude for chat and want one-click access to your team's curated tools.</p>
+
+        <p>Two channels share the same RBAC-filtered marketplace feed:</p>
+        <ul>
+            <li><strong>Git smart-HTTP</strong> — preferred. Register once with <code>/plugin marketplace add</code>; Claude owns the clone/fetch cycle from then on.</li>
+            <li><strong>ZIP download</strong> — fallback for environments where the git path can't reach the server (private-CA TLS, restrictive proxies). A SessionStart hook unpacks the served bundle into <code>./marketplace/</code> on each session start.</li>
+        </ul>
+
+        <p>The exact registration commands (URL, PAT, hook setup) are baked into the clipboard payload at <a href="/setup">/setup</a> — that page detects your platform and chooses the right channel automatically. The setup script also installs the bundled hooks that keep the marketplace + session telemetry in sync between Claude Desktop and the central catalog.</p>
+
+        <p class="ad-lead" style="margin-top: 14px;">When to prefer the terminal anyway: large refactors, anything that touches files outside of <code>~/Desktop/{{ workspace_dir }}</code>, or workflows that need Claude Code's CLI-only features (auto-mode, YOLO, custom hooks). Claude Desktop and claude.ai are best for short-form chat with read-only / well-scoped tools.</p>
+    </section>
+
     <section class="ad-section" id="workspace">
-        <h2>2. <code>~/{{ workspace_dir }}</code> workspace anatomy</h2>
+        <h2>2. <code>~/Desktop/{{ workspace_dir }}</code> workspace anatomy</h2>
         <p class="ad-lead">Your workspace was created by <code>agnes init</code> and the bundled {{ instance_brand }} plugin. Here's what each folder is for.</p>
-<pre>~/{{ workspace_dir }}/
+<pre>~/Desktop/{{ workspace_dir }}/
 ├── .claude/
 │   ├── skills/      # Reusable workflow templates Claude follows
 │   ├── rules/       # Behavioral rules injected into every message
@@ -347,11 +363,11 @@
 
     <section class="ad-section" id="projects">
         <h2>3. Project workflows</h2>
-        <p class="ad-lead">Every piece of work lives in a project folder. Always start Claude from the <code>~/{{ workspace_dir }}</code> root — the welcome menu and prompt-history logging both depend on it.</p>
+        <p class="ad-lead">Every piece of work lives in a project folder. Always start Claude from the <code>~/Desktop/{{ workspace_dir }}</code> root — the welcome menu and prompt-history logging both depend on it.</p>
 
         <h3>Daily startup</h3>
         <ol>
-            <li>Open terminal in <code>~/{{ workspace_dir }}</code>.</li>
+            <li>Open terminal in <code>~/Desktop/{{ workspace_dir }}</code>.</li>
             <li>Type <code>claude</code> (or <code>yolo</code>).</li>
             <li>The agnes-welcome menu shows recent projects ranked by activity. Pick a number, type a name, or describe what you want.</li>
         </ol>
@@ -361,11 +377,11 @@
         <ul>
             <li><em>"Create a new project called 'website redesign' under work"</em> — Claude scaffolds folders, initializes Git, drops in a CLAUDE.md.</li>
             <li><em>"Switch to the quarterly review project"</em> — Claude <code>cd</code>s and loads project context.</li>
-            <li><em>"Go back to {{ instance_brand }} root"</em> — returns to <code>~/{{ workspace_dir }}</code>.</li>
+            <li><em>"Go back to {{ instance_brand }} root"</em> — returns to <code>~/Desktop/{{ workspace_dir }}</code>.</li>
         </ul>
 
         <h3>Why this matters</h3>
-        <p>The agnes-welcome hook fires only when Claude starts in <code>~/{{ workspace_dir }}</code>. Prompt-history logging uses <code>$PWD</code> to route prompts to the right project's history. Launch Claude from inside a project folder and you skip both.</p>
+        <p>The agnes-welcome hook fires only when Claude starts in <code>~/Desktop/{{ workspace_dir }}</code>. Prompt-history logging uses <code>$PWD</code> to route prompts to the right project's history. Launch Claude from inside a project folder and you skip both.</p>
     </section>
 
     <section class="ad-section" id="plugins">
@@ -509,7 +525,7 @@
         <p class="ad-lead">Pick whichever you can run today.</p>
 
         <h3>A. Create a project plan (no services needed)</h3>
-        <p>Paste this into Claude Code at the <code>~/{{ workspace_dir }}</code> root:</p>
+        <p>Paste this into Claude Code at the <code>~/Desktop/{{ workspace_dir }}</code> root:</p>
 <pre>Create a new project called "Q4 strategy review" under work. Then enter plan mode and draft a 6-week project plan covering: stakeholder interviews, current-state analysis, gap identification, recommendations, and stakeholder review. Save the plan to docs/plans/.</pre>
 
         <h3>B. Process your emails (requires Google Workspace connected)</h3>
@@ -532,13 +548,14 @@
         <h3>One-shot YOLO</h3>
         <p>Run with the flag once: <code>claude --dangerously-skip-permissions</code>. Useful for trusted batch operations.</p>
 
-        <h3>Persistent YOLO via alias</h3>
+        <h3>Persistent YOLO via shell function</h3>
+        <p>Drops into <code>~/Desktop/{{ workspace_dir }}</code> and launches Claude in one word. Shell function (not alias) so arguments forward through.</p>
         <p>macOS / Linux (zsh):</p>
-<pre>echo 'alias yolo="claude --dangerously-skip-permissions"' &gt;&gt; ~/.zshrc &amp;&amp; source ~/.zshrc</pre>
+<pre>echo 'yolo() { cd ~/Desktop/{{ workspace_dir }} &amp;&amp; claude --dangerously-skip-permissions "$@"; }' &gt;&gt; ~/.zshrc &amp;&amp; source ~/.zshrc</pre>
         <p>Windows PowerShell:</p>
 <pre>if (!(Test-Path $PROFILE)) { New-Item $PROFILE -Force }
-Add-Content $PROFILE 'function yolo { claude --dangerously-skip-permissions @args }'</pre>
-        <p>Now <code>yolo</code> launches Claude in YOLO mode. The reference <code>~/.claude/settings.local.json</code> ships with safe defaults (read freely, run common dev tools, gate destructive ops). Customize as you learn what you trust.</p>
+Add-Content $PROFILE '', 'function yolo { Push-Location "$env:USERPROFILE\Desktop\{{ workspace_dir }}"; claude --dangerously-skip-permissions @args }'</pre>
+        <p>Now <code>yolo</code> launches Claude in YOLO mode from your workspace. The reference <code>~/.claude/settings.local.json</code> ships with safe defaults (read freely, run common dev tools, gate destructive ops). Customize as you learn what you trust.</p>
     </section>
 
     <section class="ad-section" id="tips">

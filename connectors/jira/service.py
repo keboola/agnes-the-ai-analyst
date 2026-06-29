@@ -23,6 +23,15 @@ from connectors.jira.validation import is_valid_issue_key, safe_join_under
 logger = logging.getLogger(__name__)
 
 
+class JiraFetchError(Exception):
+    """Raised by Jira fetch helpers when the API returns an auth (401/403)
+    or server (5xx) error. Callers that overlay the result onto cached
+    issue JSON (save_issue, backfill processors) MUST catch this and
+    skip the overlay; otherwise a transient outage silently wipes
+    existing parquet rows for that issue.
+    """
+
+
 class _JiraConfig:
     """Jira configuration from environment variables."""
     JIRA_DOMAIN = os.environ.get("JIRA_DOMAIN", "")
@@ -118,7 +127,7 @@ class JiraService:
         Fetch complete issue data from Jira.
 
         Args:
-            issue_key: Issue key (e.g., "KSP-123")
+            issue_key: Issue key (e.g., "PROJ-123")
 
         Returns:
             Issue data dict or None if fetch failed
@@ -208,14 +217,28 @@ class JiraService:
         """
         Fetch remote links for an issue from Jira.
 
-        Args:
-            issue_key: Issue key (e.g., "KSP-123")
-
-        Returns:
-            List of remote link dicts, empty list on failure
+        Returns the list of remote links on 200; an empty list on 404
+        (issue legitimately has no remote links). Raises JiraFetchError
+        on ANY other status code or on httpx.RequestError, so callers
+        that overlay this onto cached issue data can skip the overlay
+        instead of wiping existing rows. Critically, 429 rate limits
+        also raise — silently returning [] there would re-trigger the
+        same wipe bug (a webhook burst hitting Jira's rate limiter is
+        the most likely production scenario).
         """
+        # Unconfigured-service case: per the new contract, callers
+        # interpret `[]` as "issue legitimately has no remote links"
+        # and `JiraFetchError` as "fetch failed, preserve existing
+        # rows". Silently returning `[]` here would overlay an empty
+        # list onto cached issue JSON and wipe existing parquet rows
+        # the next time a webhook fires while creds happen to be
+        # missing — the exact regression this PR closes for the 401
+        # / 429 / 5xx paths. Raise instead so the overlay site skips.
         if not self.is_configured():
-            return []
+            raise JiraFetchError(
+                f"Remote-links fetch for {issue_key} failed: "
+                "Jira service not configured (missing API credentials)"
+            )
 
         url = f"{self.base_url}/issue/{issue_key}/remotelink"
 
@@ -226,21 +249,34 @@ class JiraService:
                     auth=self.auth,
                     headers={"Accept": "application/json"},
                 )
-
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 404:
-                return []
-            else:
-                logger.warning(
-                    f"Failed to fetch remote links for {issue_key}: "
-                    f"{response.status_code}"
-                )
-                return []
-
         except httpx.RequestError as e:
-            logger.warning(f"Request error fetching remote links for {issue_key}: {e}")
+            raise JiraFetchError(
+                f"Remote-links fetch for {issue_key} failed: connection — {e}"
+            ) from e
+
+        if response.status_code == 200:
+            return response.json()
+        if response.status_code == 404:
             return []
+        if response.status_code in (401, 403):
+            raise JiraFetchError(
+                f"Remote-links fetch for {issue_key} failed: auth error "
+                f"({response.status_code}) — token may be expired/revoked"
+            )
+        if response.status_code == 429:
+            raise JiraFetchError(
+                f"Remote-links fetch for {issue_key} failed: rate limited "
+                f"(429) — retry later"
+            )
+        if response.status_code >= 500:
+            raise JiraFetchError(
+                f"Remote-links fetch for {issue_key} failed: server error "
+                f"({response.status_code})"
+            )
+        raise JiraFetchError(
+            f"Remote-links fetch for {issue_key} failed: unexpected status "
+            f"{response.status_code}"
+        )
 
     def save_issue(self, issue_data: dict[str, Any]) -> Path | None:
         """
@@ -276,10 +312,19 @@ class JiraService:
         # Add metadata
         issue_data["_synced_at"] = datetime.now(timezone.utc).isoformat()
 
-        # Fetch and embed remote links for Parquet transform
+        # Overlay-skip guard: if fetch_remote_links raises (auth/server failure),
+        # leave the _remote_links key ABSENT. transform_remote_links treats absent key
+        # as "no fresh data, preserve existing parquet rows". A present-but-empty list
+        # would be interpreted as "this issue has no remote links — wipe existing".
         issue_key_for_links = issue_data.get("key")
         if issue_key_for_links:
-            issue_data["_remote_links"] = self.fetch_remote_links(issue_key_for_links)
+            try:
+                issue_data["_remote_links"] = self.fetch_remote_links(issue_key_for_links)
+            except JiraFetchError as e:
+                logger.warning(
+                    f"Skipping _remote_links overlay for {issue_key_for_links}: {e}. "
+                    f"Existing parquet rows will be preserved."
+                )
 
         # Overlay SLA fields from JSM service account (personal token lacks permissions)
         sla_fields = self.fetch_sla_fields(issue_key)

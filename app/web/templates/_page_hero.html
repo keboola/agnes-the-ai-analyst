@@ -1,0 +1,20 @@
+{# Canonical hero header for content pages. Usage:
+
+       {% set page_hero_eyebrow  = "Users & Access" %}
+       {% set page_hero_title    = "Users" %}
+       {% set page_hero_subtitle = "Manage analyst accounts and group membership." %}
+       {% include "_page_hero.html" %}
+
+   `eyebrow` + `subtitle` are optional; `title` is required (the block is
+   a no-op without one). Optional `page_hero_class` adds a page-specific
+   class to the section. CSS lives at `.page-header--hero` in
+   style-custom.css. #}
+{% if page_hero_title %}
+<section class="page-header page-header--hero{% if page_hero_class %} {{ page_hero_class }}{% endif %}">
+    <div class="page-header__main">
+        {% if page_hero_eyebrow %}<div class="page-header__eyebrow">{{ page_hero_eyebrow }}</div>{% endif %}
+        <h1 class="page-header__title">{{ page_hero_title }}</h1>
+        {% if page_hero_subtitle %}<p class="page-header__subtitle">{{ page_hero_subtitle | safe }}</p>{% endif %}
+    </div>
+</section>
+{% endif %}

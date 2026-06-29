@@ -20,9 +20,21 @@ the OAuth callback; ``add_member`` / ``remove_member`` cover admin actions.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Optional
 
 import duckdb
+
+# Same-user concurrent logins both rewrite the user's google_sync rows. The
+# shared singleton connection (get_system_db) gives each request its own
+# cursor with an independent transaction, but DuckDB uses optimistic
+# concurrency: two transactions deleting the same (user_id, source) tuples
+# don't block — the loser raises a TransactionException ("Conflict on tuple
+# deletion!"). Retry a few times so a racing login isn't silently dropped by
+# the fail-soft OAuth caller. Postgres serializes these via row locks, so its
+# sibling needs no retry.
+_SYNC_CONFLICT_RETRIES = 3
+_SYNC_CONFLICT_BACKOFF_S = 0.05
 
 
 class UserGroupMembersRepository:
@@ -122,24 +134,65 @@ class UserGroupMembersRepository:
         INSERTs one row per ``group_ids``. Admin and system_seed rows are
         untouched. Called from the OAuth callback on every login so the
         membership reflects the current Cloud Identity state.
+
+        Wrapped in a single transaction so concurrent readers never observe
+        the post-DELETE / pre-INSERT window where the user has *no*
+        google_sync groups. ``get_system_db()`` hands every caller a cursor
+        on one shared connection, so a non-atomic rebuild leaks an empty
+        intermediate state to anything reading membership mid-refresh — e.g.
+        the marketplace git endpoint resolving a user's served plugin set,
+        which would transiently drop every plugin granted via a google_sync
+        group until the re-INSERTs commit. Mirrors the PG repo's
+        ``self._engine.begin()`` atomicity (cross-engine parity).
+
+        Retries on a DuckDB write-write conflict (see ``_SYNC_CONFLICT_*``)
+        so two concurrent logins for the same user don't lose a refresh.
         """
-        self.conn.execute(
-            "DELETE FROM user_group_members WHERE user_id = ? AND source = 'google_sync'",
-            [user_id],
-        )
-        for group_id in group_ids:
+        last_err: Optional[duckdb.Error] = None
+        for attempt in range(_SYNC_CONFLICT_RETRIES):
             try:
+                self.conn.execute("BEGIN")
                 self.conn.execute(
-                    """INSERT INTO user_group_members
-                       (user_id, group_id, source, added_by)
-                       VALUES (?, ?, 'google_sync', ?)""",
-                    [user_id, group_id, added_by],
+                    "DELETE FROM user_group_members "
+                    "WHERE user_id = ? AND source = 'google_sync'",
+                    [user_id],
                 )
-            except duckdb.ConstraintException:
-                # Admin or system_seed row already present for this pair —
-                # leave it alone, the user is already a member through a
-                # higher-priority source.
-                pass
+                for group_id in group_ids:
+                    # ON CONFLICT DO NOTHING: an Admin / system_seed row may
+                    # already own this (user_id, group_id) pair — the user is
+                    # a member through a higher-priority source, leave it.
+                    # Using the conflict clause instead of catching
+                    # ConstraintException keeps the surrounding transaction
+                    # alive (a raised constraint error would otherwise abort
+                    # it). Matches PG.
+                    self.conn.execute(
+                        """INSERT INTO user_group_members
+                           (user_id, group_id, source, added_by)
+                           VALUES (?, ?, 'google_sync', ?)
+                           ON CONFLICT (user_id, group_id) DO NOTHING""",
+                        [user_id, group_id, added_by],
+                    )
+                self.conn.execute("COMMIT")
+                return
+            except duckdb.TransactionException as e:
+                # Lost an optimistic-concurrency race with a concurrent
+                # same-user login. Roll back (best-effort — the txn may
+                # already be aborted) and retry with a short backoff.
+                self._safe_rollback()
+                last_err = e
+                time.sleep(_SYNC_CONFLICT_BACKOFF_S * (attempt + 1))
+            except Exception:
+                self._safe_rollback()
+                raise
+        # Exhausted retries — surface the last conflict to the caller.
+        if last_err is not None:
+            raise last_err
+
+    def _safe_rollback(self) -> None:
+        try:
+            self.conn.execute("ROLLBACK")
+        except Exception:
+            pass
 
     def remove_user_from_all_groups(self, user_id: str) -> int:
         """Hard delete every membership for a user. Used on user deletion.
@@ -159,6 +212,73 @@ class UserGroupMembersRepository:
             [group_id],
         ).fetchone()
         return int(row[0]) if row else 0
+
+    def delete_all_for_group(self, group_id: str) -> int:
+        """Drop every membership row pointing at ``group_id``.
+
+        Used by group-delete cascade in ``app/api/access.py`` so a group
+        row's removal doesn't leave dangling membership rows.
+        """
+        rows = self.conn.execute(
+            "DELETE FROM user_group_members WHERE group_id = ? RETURNING 1",
+            [group_id],
+        ).fetchall()
+        return len(rows)
+
+    def list_groups_with_meta_for_user(self, user_id: str) -> List[Dict[str, Any]]:
+        """Return groups the user is in joined with the groups table.
+
+        Each row: ``{group_id, id, name, description, is_system,
+        created_by, source, added_at}`` (``id`` aliases ``group_id`` for
+        callers that key off the group's own id). Powers the user-detail
+        endpoints in ``app.api.users`` and the ``/me/profile`` page that
+        need the membership graph + group metadata in a single round-trip.
+        """
+        rows = self.conn.execute(
+            """SELECT g.id, g.name, g.description, g.is_system, g.created_by,
+                      m.source, m.added_at
+               FROM user_group_members m
+               JOIN user_groups g ON g.id = m.group_id
+               WHERE m.user_id = ?
+               ORDER BY g.is_system DESC, g.name""",
+            [user_id],
+        ).fetchall()
+        return [
+            {
+                "group_id": r[0],
+                "id": r[0],
+                "name": r[1],
+                "description": r[2],
+                "is_system": bool(r[3]),
+                "created_by": r[4],
+                "source": r[5],
+                "added_at": r[6],
+            }
+            for r in rows
+        ]
+
+    def list_google_sync_groups_for_user(self, user_id: str) -> List[Dict[str, Any]]:
+        """Return the user's ``source='google_sync'`` groups for the
+        refetch-groups dry-run diff.
+
+        Each row: ``{name, external_id}``. ``user_groups`` may not carry an
+        ``external_id`` column on every schema (Postgres has none) — probe
+        ``information_schema`` and SELECT it only if present, else NULL.
+        """
+        has_ext = self.conn.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'user_groups' AND column_name = 'external_id'"
+        ).fetchone()
+        select_ext = "g.external_id" if has_ext else "NULL"
+        rows = self.conn.execute(
+            f"""SELECT g.name, {select_ext} AS external_id
+                  FROM user_group_members m
+                  JOIN user_groups g ON g.id = m.group_id
+                 WHERE m.user_id = ? AND m.source = 'google_sync'
+                 ORDER BY g.name""",
+            [user_id],
+        ).fetchall()
+        return [{"name": r[0], "external_id": r[1]} for r in rows]
 
     def has_any_google_sync_membership(self, user_id: str) -> bool:
         """Whether the user has any prior `source='google_sync'` row.

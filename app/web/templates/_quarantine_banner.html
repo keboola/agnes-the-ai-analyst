@@ -18,7 +18,21 @@
    approved earlier — only the rendering location changed.
 #}
 
-{% if entity.visibility_status != 'approved' and (is_owner or is_admin) %}
+{# Gate widened for failure surfacing: under deferred promotion
+   (v37+), a v2+ edit can leave the entity approved at the prior
+   version while the latest submission landed in `review_error` /
+   `blocked_llm` / `blocked_inline`. The original
+   `visibility_status != 'approved'` gate silently hid those
+   failures from the owner. Render the banner whenever EITHER the
+   entity itself is non-approved OR the latest submission carries
+   a *failure* verdict the owner needs to see. Pending edits keep
+   the original behavior — Edit button locks instead, no banner. #}
+{% if (is_owner or is_admin) and (
+        entity.visibility_status != 'approved'
+        or (quarantine_sub and quarantine_sub.status in [
+            'blocked_inline', 'blocked_llm', 'review_error',
+        ])
+    ) %}
 <style>
   .vis-banner {
     margin: 12px 0 16px 0;
@@ -69,6 +83,16 @@
     {% endif %}
 
   {% elif st == 'blocked_inline' %}
+    {% set _is_edit_review = entity.visibility_status == 'approved' %}
+    {% if _is_edit_review %}
+    <h3>⚠ Latest edit failed automated checks</h3>
+    <div>
+      Your latest edit failed at least one automated check. The
+      previously approved version (v{{ entity.version_no }}) keeps
+      serving to existing installers. Fix the issues below and
+      re-upload, or wait for an admin to resolve the quarantine.
+    </div>
+    {% else %}
     <h3>⚠ Quarantined — automated checks failed</h3>
     <div>
       Your submission failed at least one automated check and has been
@@ -77,6 +101,7 @@
       re-upload to retry, or wait for an admin to resolve the
       quarantine.
     </div>
+    {% endif %}
     {% if sub and sub.inline_checks %}
       {% set ic = sub.inline_checks %}
       {% if ic.manifest and ic.manifest.issues %}
@@ -94,35 +119,78 @@
         {% endif %}
       </ul>
       {% endif %}
+      {% if ic.content and ic.content.issues %}
+        {% include "_content_findings.html" with context %}
+      {% endif %}
     {% endif %}
 
   {% elif st == 'blocked_llm' %}
-    <h3>⚠ Quarantined — security review flagged risk</h3>
+    {% set _is_edit_review = entity.visibility_status == 'approved' %}
+    {% if _is_edit_review %}
+    <h3>⚠ Latest edit failed review</h3>
     <div>
-      The security reviewer flagged this submission. It is hidden from
-      the public Store and from every other user; nobody can install
-      it. Address the findings below and re-upload, or wait for an
-      admin to resolve the quarantine.
+      The reviewer flagged your latest edit for security risk and/or
+      weak component descriptions. The previously approved version
+      (v{{ entity.version_no }}) keeps serving to existing installers.
+      Address the findings below and re-upload, or wait for an admin
+      to resolve the quarantine.
     </div>
+    {% else %}
+    <h3>⚠ Quarantined — review flagged issues</h3>
+    <div>
+      The reviewer flagged this submission for security risk and/or
+      weak component descriptions. It is hidden from the public Store
+      and from every other user; nobody can install it. Address the
+      findings below and re-upload, or wait for an admin to resolve
+      the quarantine.
+    </div>
+    {% endif %}
     {% if sub and sub.llm_findings %}
       {% if sub.llm_findings.summary %}
       <div style="margin-top: 6px;"><em>{{ sub.llm_findings.summary }}</em></div>
       {% endif %}
       {% if sub.llm_findings.findings %}
+      <div style="margin-top: 8px; font-weight: 600;">Security findings</div>
       <ul>
         {% for f in sub.llm_findings.findings[:6] %}
         <li>[{{ f.severity }}] <code>{{ f.file }}</code> — {{ f.explanation }}</li>
         {% endfor %}
       </ul>
       {% endif %}
+      {% if sub.llm_findings.content_quality and sub.llm_findings.content_quality.issues %}
+      <div style="margin-top: 10px; font-weight: 600;">Description quality — reviewer suggestions</div>
+      <ul>
+        {% for issue in sub.llm_findings.content_quality.issues[:8] %}
+        <li>
+          <code>{{ issue.file }}</code> — {{ issue.issue }}
+          {% if issue.hint %}
+          <div style="margin: 4px 0 0 0; font-size: 12px; opacity: 0.85;">
+            <strong>Rewrite:</strong> {{ issue.hint }}
+          </div>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
     {% endif %}
 
   {% elif st == 'review_error' %}
+    {% set _is_edit_review = entity.visibility_status == 'approved' %}
+    {% if _is_edit_review %}
+    <h3>⚠ Latest edit failed review</h3>
+    <div>
+      The security reviewer couldn't complete its check on your latest
+      edit. The previously approved version (v{{ entity.version_no }})
+      keeps serving to existing installers. No action needed from you —
+      an admin will retry.
+    </div>
+    {% else %}
     <h3>⚠ Under review — security check errored</h3>
     <div>
       The security reviewer couldn't complete its check. The submission
       stays hidden until an admin retries. No action needed from you.
     </div>
+    {% endif %}
     {% if sub and sub.llm_findings and sub.llm_findings.error %}
       <div style="margin-top: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-word;">
         Error: {{ sub.llm_findings.error }}
@@ -187,6 +255,15 @@
       </ul>
       {% endif %}
     {% endif %}
+  {% endif %}
+
+  {# How-to-fix panel — render once below the per-tier findings whenever
+     content-quality issues exist on either tier. Same guidance regardless
+     of whether the inline mechanical check or the LLM substantive check
+     rejected the submission. #}
+  {% if sub and ((sub.inline_checks and sub.inline_checks.content and sub.inline_checks.content.issues)
+                 or (sub.llm_findings and sub.llm_findings.content_quality and sub.llm_findings.content_quality.issues)) %}
+    {% include "_content_howto_fix.html" with context %}
   {% endif %}
 
   {% if is_admin and sub %}

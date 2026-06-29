@@ -25,7 +25,6 @@ if sys.platform == "win32":
         pass
 
 from cli.commands.auth import auth_app
-from cli.commands.capture_session import capture_session_app
 from cli.commands.init import init_app
 from cli.commands.mark_private import mark_private_app
 from cli.commands.onboarded import onboarded_app
@@ -33,6 +32,7 @@ from cli.commands.pull import pull_app
 from cli.commands.push import push_app
 from cli.commands.refresh_marketplace import refresh_marketplace_app
 from cli.commands.statusline import statusline_app
+from cli.commands.update_workspace import update_workspace_app
 from cli.commands.query import query_command
 from cli.commands.status import status_app
 from cli.commands.admin import admin_app
@@ -50,6 +50,11 @@ from cli.commands.snapshot import snapshot_app
 from cli.commands.disk_info import disk_info_app
 from cli.commands.store import store_app
 from cli.commands.my_stack import my_stack_app
+from cli.commands.marketplace import marketplace_app
+from cli.commands.stack import stack_app
+from cli.commands.mcp import mcp_app
+from cli.commands.docs import docs_app
+from cli.commands.collections import collections_app
 
 
 def _cli_version() -> str:
@@ -101,16 +106,70 @@ def _root(
 
 
 def _maybe_warn_outdated() -> None:
-    """Hit /cli/latest on the configured server (cached 24h) and emit a
-    one-line stderr warning if the installed CLI is older. Never raises."""
+    """Hit /cli/latest on the configured server (cached 24h). On version
+    drift, offer the one-time interactive upgrade prompt (TTY only,
+    #617); if that doesn't handle it (declined, skipped, non-TTY,
+    bypassed), emit the one-line out-of-date banner as before. Never
+    raises."""
     try:
         from cli.config import get_server_url
         from cli.update_check import check, format_outdated_notice
+        from cli.upgrade_prompt import maybe_prompt_and_upgrade
+
         info = check(get_server_url())
         if info and info.is_outdated():
-            typer.echo(format_outdated_notice(info), err=True)
+            # The interactive prompt re-execs on accept (never returns) or
+            # returns True when it handled the drift; on any other path it
+            # returns False and we fall back to the banner.
+            if not maybe_prompt_and_upgrade(info):
+                typer.echo(format_outdated_notice(info), err=True)
     except Exception:
         pass  # best-effort: never fail a command on the probe
+    _maybe_warn_upgrade_failures()
+
+
+def _command_is_quiet() -> bool:
+    """True if the current invocation passed --quiet (the SessionStart hook
+    path). The root callback runs for every command, but the silent
+    self-upgrade-failure warning must only surface on NON-quiet commands —
+    so quiet hooks stay quiet. We inspect argv rather than the parsed
+    options because the root callback fires before per-command parsing."""
+    return "--quiet" in sys.argv[1:]
+
+
+def _maybe_warn_upgrade_failures() -> None:
+    """Surface repeated SILENT self-upgrade failures (#478).
+
+    The SessionStart hook runs `agnes self-upgrade --quiet 2>/dev/null
+    || true`, so its failures are invisible. `agnes self-upgrade` records
+    each outcome in `$AGNES_CONFIG_DIR/upgrade_status.json`; once N attempts
+    in a row have failed, the NEXT non-quiet `agnes` command warns once.
+
+    Skipped entirely:
+    - under `--quiet` (keeps the SessionStart hook silent), and
+    - while a self-upgrade subprocess is running (the recursion sentinel),
+      so the smoke-test `agnes --version` never emits the warning.
+
+    Best-effort: never raises."""
+    try:
+        import os
+
+        if os.environ.get("AGNES_SELF_UPGRADE_IN_PROGRESS") == "1":
+            return
+        if _command_is_quiet():
+            return
+        from cli.upgrade_status import (
+            format_failure_notice,
+            mark_warned,
+            should_warn,
+        )
+
+        if should_warn():
+            typer.echo(format_failure_notice(), err=True)
+            mark_warned()  # warn once per failure level — don't spam
+    except Exception:
+        pass  # best-effort: never fail a command on the status probe
+
 
 # Register subcommands
 app.add_typer(auth_app, name="auth")
@@ -118,9 +177,9 @@ app.add_typer(init_app, name="init")
 app.add_typer(onboarded_app, name="onboarded")
 app.add_typer(pull_app, name="pull")
 app.add_typer(push_app, name="push")
-app.add_typer(capture_session_app, name="capture-session")
 app.add_typer(mark_private_app, name="mark-private")
 app.add_typer(statusline_app, name="statusline")
+app.add_typer(update_workspace_app, name="update-workspace")
 app.add_typer(refresh_marketplace_app, name="refresh-marketplace")
 app.command("query")(query_command)
 app.add_typer(status_app, name="status")
@@ -128,6 +187,12 @@ app.add_typer(admin_app, name="admin")
 app.add_typer(diagnose_app, name="diagnose")
 app.add_typer(skills_app, name="skills")
 app.add_typer(self_upgrade_app, name="self-upgrade")
+# Hidden verb alias: `agnes self-update` resolves to the SAME callback as
+# `agnes self-upgrade` (issue #617 asked for `self-update`; `self-upgrade`
+# stays canonical and is what the out-of-date banner recommends). Both
+# point at the one `self_upgrade_app` Typer, so they are byte-for-byte the
+# same implementation — idempotent, no divergence.
+app.add_typer(self_upgrade_app, name="self-update", hidden=True)
 app.add_typer(setup_app, name="setup")
 app.add_typer(server_app, name="server")
 app.add_typer(explore_app, name="explore")
@@ -142,12 +207,18 @@ app.add_typer(snapshot_app, name="snapshot")
 app.add_typer(disk_info_app, name="disk-info")
 app.add_typer(store_app, name="store")
 app.add_typer(my_stack_app, name="my-stack")
+app.add_typer(marketplace_app, name="marketplace")
+app.add_typer(stack_app, name="stack")
+app.add_typer(mcp_app, name="mcp")
+app.add_typer(docs_app, name="docs")
+app.add_typer(collections_app, name="collections")
 
 
 def _capture_cli_exception(exc: BaseException, kind: str) -> None:
     """Best-effort PostHog forward for CLI-level errors. No-op when off."""
     try:
         from src.observability import get_posthog
+
         argv = sys.argv[1:]
         command = argv[0] if argv else "<no-command>"
         get_posthog().capture_exception(
@@ -184,7 +255,8 @@ def main() -> None:
     traceback to the analyst's terminal. Now: one clean line + a hint,
     return code 1.
     """
-    from cli.client import AgnesTransportError, _log_traceback, _LOG_FILE
+    from cli.client import AgnesTransportError, _log_traceback
+
     try:
         app()
     except AgnesTransportError as exc:
@@ -201,8 +273,7 @@ def main() -> None:
         _capture_cli_exception(exc, kind="unhandled")
         log = _log_traceback(exc, context="unhandled at CLI top-level")
         typer.echo(
-            f"Error: internal CLI error ({type(exc).__name__}). "
-            f"Full traceback logged to {log}.",
+            f"Error: internal CLI error ({type(exc).__name__}). Full traceback logged to {log}.",
             err=True,
         )
         sys.exit(1)

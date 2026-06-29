@@ -77,6 +77,43 @@ def pull(
 
     workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
 
+    # Legacy-hook nudge (#478): workspaces bootstrapped by the OLD server
+    # flow (a `collect_session` / `server/scripts/` SessionEnd hook, no
+    # `agnes init` hooks) never invoke `agnes self-upgrade`, so their CLI
+    # drifts stale forever. Emit ONE stderr line pointing the analyst at
+    # `agnes init`. We do NOT auto-migrate — the analyst owns when their
+    # hook layout changes. Suppressed under --quiet (the SessionStart hook
+    # path, kept silent) and --json (machine-readable output). Best-effort:
+    # a malformed settings.json must never abort the pull.
+    if not (quiet or as_json):
+        try:
+            from cli.lib.hooks import workspace_has_legacy_hooks
+            if workspace_has_legacy_hooks(workspace):
+                typer.echo(
+                    "This workspace uses an outdated hook layout — "
+                    "run `agnes init` to enable auto-update.",
+                    err=True,
+                )
+        except Exception:
+            pass
+
+    # Lazy TTL sweep (#407): drop any `--ttl` snapshots whose expiry has
+    # elapsed before refreshing. Best-effort and fully wrapped — a sweep
+    # failure (locking quirk, permissions) must NEVER block a pull, which is
+    # the load-bearing SessionStart hook. Skip under --dry-run (no disk
+    # writes anywhere) and --json (machine-readable output stays clean).
+    if not dry_run:
+        try:
+            from cli.snapshot_meta import sweep_expired_snapshots
+
+            swept = sweep_expired_snapshots(workspace / "user" / "snapshots")
+            if swept and not (quiet or as_json):
+                for name in swept:
+                    typer.echo(f"swept expired snapshot: {name}", err=True)
+        except Exception:
+            # Intentionally swallowed — see the comment above.
+            pass
+
     # Show progress unless quiet (SessionStart hooks) or json (machine-
     # readable output where Rich's terminal-control sequences would be
     # garbage in the consumer's parser).
@@ -107,11 +144,18 @@ def pull(
     if as_json:
         typer.echo(json.dumps({
             "tables_updated": result.tables_updated,
+            "tables_removed": result.tables_removed,
             "parquets_total": result.parquets_total,
             "rules_count": result.rules_count,
             "duration_s": round(result.duration_s, 3),
             "errors": result.errors,
         }))
+        # #596 — a per-table / per-stage failure must surface as a non-zero
+        # exit even on the machine-readable path. Emit the JSON dict first
+        # (the consumer parses `errors`), THEN exit 1 so a wrapping script's
+        # `set -e` / `||` reacts to the failure.
+        if result.errors:
+            raise typer.Exit(1)
         return
 
     if quiet:
@@ -123,10 +167,103 @@ def pull(
         if result.errors:
             for e in result.errors:
                 typer.echo(f"warn: {e}", err=True)
+            # #596 — even in the silent SessionStart-hook path, a table that
+            # failed to land must exit non-zero so the canonical hook's
+            # trailing `|| true` is what swallows it (a deliberate operator
+            # choice), not a hidden exit 0 that hides data loss.
+            raise typer.Exit(1)
         return
 
-    typer.echo(f"Updated {result.tables_updated} tables ({result.parquets_total} total).")
+    # Surface tables_removed alongside tables_updated so an operator who
+    # dropped a data package from their stack sees the prune count in the
+    # primary summary line — not just buried in the per-type status block
+    # below. Pruning is a security-relevant op (revokes local query access);
+    # silent removals were the Devin Review finding on #594.
+    if result.tables_removed:
+        typer.echo(
+            f"Updated {result.tables_updated} tables, removed "
+            f"{result.tables_removed} ({result.parquets_total} total)."
+        )
+    else:
+        typer.echo(
+            f"Updated {result.tables_updated} tables ({result.parquets_total} total)."
+        )
     typer.echo(f"Rules: {result.rules_count}.")
+
+    # v49 (Task 8.12): per-type status block surfaced from `SyncReport`.
+    # The new per-type sync loop in ``cli/lib/pull_sync.py`` reports
+    # added/updated/removed counts for direct_tables, data_packages, and
+    # memory_domains; rendering them here lets the operator see at a
+    # glance what changed without trawling debug logs. Skipped when the
+    # manifest predates v49 (no `stack_sync` on PullResult) so older
+    # servers still produce the legacy two-line output.
+    stack = getattr(result, "stack_sync", None)
+    if stack is not None:
+        _emit_stack_sync_block(stack)
+
     if result.errors:
         for e in result.errors:
             typer.echo(f"warn: {e}", err=True)
+        # #596 — a partial pull (any table failed to land) must exit non-zero
+        # so manual invocation and CI both see the failure instead of a
+        # success-looking exit 0 that silently hides missing tables.
+        raise typer.Exit(1)
+
+
+def _emit_stack_sync_block(stack) -> None:
+    """Print the v49 per-type ``SyncReport`` summary.
+
+    Format mirrors the rest of `agnes pull`'s output: plain text, one
+    line per type. Lines are emitted only when something changed for
+    that type — a clean idempotent pull stays as quiet as before
+    (just the legacy "Updated 0 tables …" header).
+
+    Layout::
+
+        Stack sync:
+          marketplace_plugins: ✓ 0 changes
+          data_packages:       2 added, 1 updated, 0 removed
+          memory_domains:      ✓ 0 changes
+          direct_tables:       ✓ 0 changes
+
+    Invariant violations (if any) surface as a trailing warning so a
+    drifted disk state isn't silently swept under the rug.
+    """
+    # Tolerate either dataclass shape (real ``SyncReport``) or test
+    # doubles supplying a duck-typed object with .direct_tables etc.
+    def _line(label: str, rep) -> str:
+        added = getattr(rep, "added", 0)
+        updated = getattr(rep, "updated", 0)
+        removed = getattr(rep, "removed", 0)
+        if not (added or updated or removed):
+            return f"  {label:<22} ✓ 0 changes"
+        parts = []
+        if added:
+            parts.append(f"{added} added")
+        if updated:
+            parts.append(f"{updated} updated")
+        if removed:
+            parts.append(f"{removed} removed")
+        return f"  {label:<22} {', '.join(parts)}"
+
+    direct = getattr(stack, "direct_tables", None)
+    pkgs = getattr(stack, "data_packages", None)
+    mem = getattr(stack, "memory_domains", None)
+    if direct is None and pkgs is None and mem is None:
+        return
+
+    typer.echo("Stack sync:")
+    if direct is not None:
+        typer.echo(_line("direct_tables:", direct))
+    if pkgs is not None:
+        typer.echo(_line("data_packages:", pkgs))
+    if mem is not None:
+        typer.echo(_line("memory_domains:", mem))
+
+    violations = getattr(stack, "invariant_violations", []) or []
+    if violations:
+        typer.echo(
+            f"warn: {len(violations)} stack invariant violation"
+            f"{'s' if len(violations) != 1 else ''} — see logs.",
+            err=True,
+        )

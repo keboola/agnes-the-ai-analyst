@@ -42,13 +42,13 @@ from typing import Any, Iterable, List
 import duckdb
 
 from app.auth.access import _user_group_ids
-from app.resource_types import ResourceType
 from app.utils import get_marketplaces_dir, get_store_dir
-from src.repositories.user_curated_subscriptions import (
-    UserCuratedSubscriptionsRepository,
+from src.repositories import (
+    marketplace_plugins_repo,
+    user_curated_subscriptions_repo,
+    user_groups_repo,
+    user_store_installs_repo,
 )
-from src.repositories.user_store_installs import UserStoreInstallsRepository
-from src.store_naming import suffixed_name
 
 
 def _resolve_raw(raw: Any) -> dict:
@@ -138,26 +138,25 @@ def resolve_allowed_plugins(
     # groups. If two groups grant the same plugin, it still appears
     # once. Admin is treated as a regular group — admins get only the
     # plugins their groups have been granted.
+    #
+    # Reads must go through the repo factory rather than raw SQL on the
+    # DuckDB-typed ``conn`` parameter — on Postgres-backed deployments
+    # ``marketplace_plugins`` / ``resource_grants`` / ``marketplace_registry``
+    # rows live in PG; a raw ``conn.execute`` would hit the empty DuckDB
+    # tables and silently exclude every plugin from the served set. The
+    # symptom was missing plugins for users whose groups hadn't changed
+    # (i.e. it wasn't stale Google sync) — the JOIN simply returned 0
+    # rows because it was running against an empty DuckDB. The repo's
+    # PG mirror runs the same logical JOIN against the live engine.
     group_ids = _user_group_ids(user_id, conn) if user_id else set()
     if not group_ids:
         return []
-    placeholders = ",".join(["?"] * len(group_ids))
-    sql = (
-        "SELECT DISTINCT mp.marketplace_id, mp.name, mp.version, mp.raw "
-        "FROM resource_grants rg "
-        "JOIN marketplace_plugins mp "
-        "  ON mp.marketplace_id || '/' || mp.name = rg.resource_id "
-        "JOIN marketplace_registry mr ON mr.id = mp.marketplace_id "
-        f"WHERE rg.group_id IN ({placeholders}) "
-        "  AND rg.resource_type = ? "
-        "ORDER BY mr.registered_at, mp.name"
-    )
-    rows = conn.execute(
-        sql, [*group_ids, ResourceType.MARKETPLACE_PLUGIN.value],
-    ).fetchall()
+    rows = marketplace_plugins_repo().list_granted_for_groups(group_ids)
 
     result: List[dict] = []
-    for marketplace_id, name, version, raw in rows:
+    for row in rows:
+        marketplace_id = row["marketplace_id"]
+        name = row["name"]
         slug = marketplace_id  # registry.id IS the slug (see src/marketplace.py)
         plugin_dir = root / slug / "plugins" / name
         result.append(
@@ -167,8 +166,8 @@ def resolve_allowed_plugins(
                 "original_name": name,
                 "prefixed_name": _prefixed_name(slug, name),
                 "manifest_name": resolve_manifest_name(plugin_dir, fallback=name),
-                "version": version,
-                "raw": _resolve_raw(raw),
+                "version": row.get("version"),
+                "raw": _resolve_raw(row.get("raw")),
                 "plugin_dir": plugin_dir,
             }
         )
@@ -181,15 +180,21 @@ marketplace. ``is_valid_slug`` in ``src/marketplace.py`` rejects any admin
 marketplace registering ``store`` as its slug, so collisions with admin
 content are impossible."""
 
-BUNDLE_PLUGIN_NAME = "agnes-store-bundle"
+BUNDLE_PLUGIN_NAME = "flea"
 """Synth plugin that wraps every Store-installed skill and agent for a user
 into a single Claude Code plugin. Skill / agent uploads share this single
 plugin in the served marketplace; only ``type='plugin'`` Store entities
-materialize as their own plugin entry. See ``resolve_user_marketplace``."""
+materialize as their own plugin entry. See ``resolve_user_marketplace``.
 
-BUNDLE_PREFIXED_NAME = "store-bundle"
+v49 phase-4: renamed from ``agnes-store-bundle`` to ``flea``. Clean cut —
+``usage_events`` rows whose JSONL was written before the rename stay
+attributed as ``source='builtin'``; no legacy-prefix fallback in the
+attribution layer (``services/session_processors/usage_lib.py``)."""
+
+BUNDLE_PREFIXED_NAME = "flea"
 """On-disk directory name in the served ZIP / git tree for the bundle plugin.
-Lives under ``plugins/store-bundle/...``."""
+Lives under ``plugins/flea/...``. v49 phase-4: renamed from ``store-bundle``
+for parity with the manifest plugin name."""
 
 BUNDLE_DESCRIPTION = "Skills and agents you've installed from the Agnes Store"
 
@@ -284,7 +289,10 @@ def resolve_user_marketplace(
     # Model B (v28+): RBAC grant is only eligibility — the user must explicitly
     # subscribe via /marketplace for a curated plugin to enter their served set.
     # Pre-v28 the filter was (rbac ∖ opt_outs); now it's (rbac ∩ subscriptions).
-    subs = UserCuratedSubscriptionsRepository(conn).subscribed_set(user_id)
+    # Reads through the repo factory so subscriptions resolve correctly on
+    # the active backend (PG / DuckDB) — same rationale as
+    # ``resolve_allowed_plugins`` above.
+    subs = user_curated_subscriptions_repo().subscribed_set(user_id)
     admin = [
         p for p in admin
         if (p["marketplace_id"], p["original_name"]) in subs
@@ -293,7 +301,7 @@ def resolve_user_marketplace(
         p["source"] = "marketplace"
 
     store_root = get_store_dir()
-    installs = UserStoreInstallsRepository(conn).list_for_user(user_id)
+    installs = user_store_installs_repo().list_for_user(user_id)
     store_plugin_entries: List[dict] = []
     bundle_rows: List[dict] = []
     for row in installs:
@@ -307,7 +315,13 @@ def resolve_user_marketplace(
         entity_id = row["id"]
         owner_username = row["owner_username"]
         original_name = row["name"]
-        manifest_name = suffixed_name(original_name, owner_username)
+        # v49 phase-3: stored synthetic_name from store_entities is the
+        # canonical value baked into the on-disk plugin tree
+        # (frontmatter name, plugin.json `name`). Reading it from DB
+        # keeps the served manifest in lockstep with whatever the upload
+        # / edit / archive paths last wrote. The column is NOT NULL +
+        # explicitly selected by ``list_for_user``.
+        manifest_name = row["synthetic_name"]
         plugin_dir = store_root / entity_id / "plugin"
         store_plugin_entries.append(
             {
@@ -385,13 +399,11 @@ def resolve_user_groups(
     group_ids = _user_group_ids(user_id, conn)
     if not group_ids:
         return []
-    placeholders = ",".join(["?"] * len(group_ids))
-    rows = conn.execute(
-        f"SELECT name FROM user_groups "
-        f"WHERE id IN ({placeholders}) ORDER BY name",
-        list(group_ids),
-    ).fetchall()
-    return [r[0] for r in rows]
+    # Repo factory routes to the active backend (PG / DuckDB) — same
+    # rationale as ``resolve_allowed_plugins``: raw SQL on the
+    # DuckDB-typed ``conn`` would return [] on Postgres deployments
+    # because the ``user_groups`` rows live in PG.
+    return user_groups_repo().list_names_by_ids(group_ids)
 
 
 def _sha256_file(path: Path) -> str:

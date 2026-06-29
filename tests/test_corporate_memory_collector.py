@@ -243,3 +243,172 @@ class TestCollectAllSkipsWhenNoChanges:
         ):
             stats = collector.collect_all(dry_run=True)
             assert stats["skipped"] is True
+
+
+# ---------------------------------------------------------------------------
+# DB sync tests — Step 11 of collect_all
+# ---------------------------------------------------------------------------
+
+def _make_collect_all_env(tmp_path, monkeypatch, llm_response: dict):
+    """Set up a minimal collect_all environment with a changed CLAUDE.local.md,
+    a mocked LLM extractor, and returns the collector module + patched paths.
+
+    The LLM mock returns ``llm_response`` for every extract_json call
+    (catalog refresh AND sensitivity check).  Callers that need to control
+    the sensitivity result independently should patch check_sensitivity
+    themselves.
+    """
+    from services.corporate_memory import collector
+
+    home = tmp_path / "home"
+    home.mkdir()
+    user_dir = home / "alice"
+    user_dir.mkdir()
+    (user_dir / "CLAUDE.local.md").write_text("# tip\n- use indexes")
+
+    knowledge_file = tmp_path / "knowledge.json"
+    user_hashes_file = tmp_path / "user_hashes.json"
+    # No stored hashes → change detected on first run.
+
+    monkeypatch.setattr(collector, "HOME_BASE", home)
+    monkeypatch.setattr(collector, "KNOWLEDGE_FILE", knowledge_file)
+    monkeypatch.setattr(collector, "USER_HASHES_FILE", user_hashes_file)
+    monkeypatch.setattr(
+        collector,
+        "CORPORATE_MEMORY_DIR",
+        tmp_path,
+    )
+
+    mock_extractor = MockLLMProvider(llm_response)
+    monkeypatch.setattr(
+        collector,
+        "create_extractor",
+        lambda *a, **kw: mock_extractor,
+    )
+    # Patch the overlay-aware loader so no real instance.yaml is needed.
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config",
+        lambda: {},
+        raising=False,
+    )
+    # Patch create_extractor_from_env_or_config used inside collect_all.
+    monkeypatch.setattr(
+        "connectors.llm.create_extractor_from_env_or_config",
+        lambda *a, **kw: mock_extractor,
+        raising=False,
+    )
+    return collector
+
+
+class TestCollectAllDbSync:
+    """Step 11: collect_all must persist items into knowledge_items via knowledge_repo()."""
+
+    _ITEM_RESPONSE = {
+        "items": [
+            {
+                "existing_id": None,
+                "title": "Use indexes",
+                "content": "Always add indexes for frequent query columns.",
+                "category": "performance",
+                "tags": ["sql", "indexes"],
+                "source_users": ["alice"],
+            }
+        ]
+    }
+
+    def _make_mock_repo(self):
+        """Return a mock repo where get_by_id returns None (item is new)."""
+        repo = MagicMock()
+        repo.get_by_id.return_value = None
+        return repo
+
+    def test_inserts_new_items_into_db(self, tmp_path, monkeypatch):
+        """Stats show items_db_inserted==1 and repo.create() was called."""
+        collector = _make_collect_all_env(tmp_path, monkeypatch, self._ITEM_RESPONSE)
+
+        mock_repo = self._make_mock_repo()
+        with (
+            patch.object(collector, "check_sensitivity", return_value=True),
+            patch("src.repositories.knowledge_repo", return_value=mock_repo),
+        ):
+            stats = collector.collect_all(dry_run=False)
+
+        assert stats["items_db_inserted"] == 1
+        assert stats["items_db_updated"] == 0
+        assert stats["items_db_errors"] == 0
+        mock_repo.create.assert_called_once()
+        call_kwargs = mock_repo.create.call_args
+        assert call_kwargs.kwargs["title"] == "Use indexes"
+
+    def test_updates_existing_items_in_db(self, tmp_path, monkeypatch):
+        """When an item already exists in DB, repo.update() is called instead."""
+        collector = _make_collect_all_env(tmp_path, monkeypatch, self._ITEM_RESPONSE)
+
+        existing_item = {"id": "km_someexisting", "title": "Old Title"}
+        mock_repo = MagicMock()
+        mock_repo.get_by_id.return_value = existing_item
+
+        with (
+            patch.object(collector, "check_sensitivity", return_value=True),
+            patch("src.repositories.knowledge_repo", return_value=mock_repo),
+        ):
+            stats = collector.collect_all(dry_run=False)
+
+        assert stats["items_db_updated"] == 1
+        assert stats["items_db_inserted"] == 0
+        assert stats["items_db_errors"] == 0
+        mock_repo.update.assert_called_once()
+
+    def test_dry_run_does_not_write_db(self, tmp_path, monkeypatch):
+        """dry_run=True must skip Step 11 entirely; repo is never called."""
+        collector = _make_collect_all_env(tmp_path, monkeypatch, self._ITEM_RESPONSE)
+
+        mock_repo = self._make_mock_repo()
+        with (
+            patch.object(collector, "check_sensitivity", return_value=True),
+            patch("src.repositories.knowledge_repo", return_value=mock_repo),
+        ):
+            stats = collector.collect_all(dry_run=True)
+
+        mock_repo.create.assert_not_called()
+        mock_repo.update.assert_not_called()
+        # DB keys are still present with zero values (stats shape is consistent).
+        assert stats["items_db_inserted"] == 0
+        assert stats["items_db_updated"] == 0
+        assert stats["items_db_errors"] == 0
+
+    def test_per_item_db_error_counted(self, tmp_path, monkeypatch):
+        """When repo.create() raises, error is counted and not propagated."""
+        collector = _make_collect_all_env(tmp_path, monkeypatch, self._ITEM_RESPONSE)
+
+        mock_repo = MagicMock()
+        mock_repo.get_by_id.return_value = None
+        mock_repo.create.side_effect = RuntimeError("DuckDB locked")
+
+        with (
+            patch.object(collector, "check_sensitivity", return_value=True),
+            patch("src.repositories.knowledge_repo", return_value=mock_repo),
+        ):
+            # Must NOT raise even though create() raises.
+            stats = collector.collect_all(dry_run=False)
+
+        assert stats["items_db_errors"] == 1
+        assert stats["items_db_inserted"] == 0
+
+    def test_stats_always_include_db_keys(self, tmp_path, monkeypatch):
+        """All three DB stat keys must be present even on a skipped run."""
+        from services.corporate_memory import collector
+
+        # Skipped run: no CLAUDE.local.md files at all.
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        monkeypatch.setattr(collector, "HOME_BASE", empty_home)
+        monkeypatch.setattr(collector, "KNOWLEDGE_FILE", tmp_path / "knowledge.json")
+        monkeypatch.setattr(collector, "USER_HASHES_FILE", tmp_path / "user_hashes.json")
+
+        stats = collector.collect_all(dry_run=False)
+
+        assert stats["skipped"] is True
+        assert "items_db_inserted" in stats
+        assert "items_db_updated" in stats
+        assert "items_db_errors" in stats

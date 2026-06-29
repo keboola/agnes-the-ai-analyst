@@ -1,11 +1,19 @@
-"""Sync a user's Google Workspace group membership at OAuth callback.
+"""Sync a user's Google Workspace group membership.
 
-Called from `app/auth/providers/google.py`. Uses keyless Domain-Wide
-Delegation: the VM service account signs the impersonation JWT via the IAM
-``signJwt`` API (no private key on disk), then exchanges that JWT for a
-short-lived OAuth token scoped to ``admin.directory.group.readonly``. The
-Admin SDK ``groups.list?userKey=`` endpoint returns the user's static AND
-dynamic group memberships in one call.
+``fetch_user_groups`` is the read primitive: keyless Domain-Wide Delegation
+fetches the user's Workspace groups via the Admin SDK. ``apply_user_groups``
+combines that fetch with the same prefix-filter + system-group-mapping +
+``user_group_members`` write the OAuth callback performs, so any caller —
+the browser OAuth callback in ``app/auth/providers/google.py``, the
+``POST /auth/refresh-groups`` endpoint, etc. — refreshes the snapshot the
+same way.
+
+Uses keyless Domain-Wide Delegation: the VM service account signs the
+impersonation JWT via the IAM ``signJwt`` API (no private key on disk),
+then exchanges that JWT for a short-lived OAuth token scoped to
+``admin.directory.group.readonly``. The Admin SDK ``groups.list?userKey=``
+endpoint returns the user's static AND dynamic group memberships in one
+call.
 
 Required GCP setup (one-off):
 
@@ -37,6 +45,7 @@ import logging
 import os
 import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
 from typing import List
 
 logger = logging.getLogger(__name__)
@@ -168,3 +177,182 @@ def _fetch_real(email: str) -> List[str]:
         return []
 
     return groups
+
+
+# Env vars driving prefix filter + system-group mapping. Read per-call so
+# operators can flip them via env without restarting the process; matches
+# the OAuth callback's historical behavior.
+PREFIX_ENV = "AGNES_GOOGLE_GROUP_PREFIX"
+ADMIN_EMAIL_ENV = "AGNES_GROUP_ADMIN_EMAIL"
+EVERYONE_EMAIL_ENV = "AGNES_GROUP_EVERYONE_EMAIL"
+
+
+@dataclass
+class SyncResult:
+    """Outcome of an ``apply_user_groups`` call.
+
+    Attributes:
+      fetched: every group email returned by the Admin SDK (lowercased).
+      relevant: subset that survived the prefix filter (lowercased).
+      denied: True iff prefix is configured, fetch was non-empty, and
+        zero groups matched the prefix. Caller decides what to do
+        (OAuth callback redirects; refresh endpoint returns 403).
+      soft_failed: True iff the Admin SDK returned an empty list. The
+        OAuth callback treats this as "no change" rather than wiping the
+        snapshot, since a transient API error and a genuinely-zero-groups
+        user are indistinguishable. ``apply_user_groups`` mirrors that:
+        no writes happen in this case.
+      applied: True iff ``replace_google_sync_groups`` wrote rows. False
+        when ``soft_failed`` or ``denied``.
+    """
+
+    fetched: List[str] = field(default_factory=list)
+    relevant: List[str] = field(default_factory=list)
+    denied: bool = False
+    soft_failed: bool = False
+    applied: bool = False
+
+
+def apply_user_groups(user_id: str, email: str, conn) -> SyncResult:
+    """Refresh this user's ``source='google_sync'`` group memberships.
+
+    Same write path as the OAuth callback: fetch via DWD, apply prefix
+    filter + admin/everyone mapping, then ``replace_google_sync_groups``.
+    Splits out so the OAuth callback and the post-login refresh
+    endpoint share one implementation. Fail-soft: any internal error
+    (Admin SDK fetch, repo write, group ensure) is logged and returns a
+    ``soft_failed=True`` result rather than raising — callers can treat
+    the call as a no-op.
+
+    Outcomes (mutually exclusive on a single call):
+
+    - ``applied=True`` — fetch succeeded, write path ran. The user's
+      ``source='google_sync'`` membership set now reflects ``relevant``
+      (with admin/everyone mapping applied).
+    - ``denied=True`` — fetch returned a non-empty set but the prefix
+      filter dropped all of them. Existing rows are **NOT** cleared
+      (prefix mismatches may be transient — Admin SDK lag, operator
+      typo in ``PREFIX_ENV``); caller decides whether to act on it.
+      OAuth callback turns this into a ``/login?error=not_in_allowed_group``
+      redirect; refresh endpoint surfaces ``denied=True`` in the response.
+    - ``soft_failed=True`` — fetch raised, fetch returned empty (Admin
+      SDK quota / propagation), or the write path raised (DB lock /
+      transient PG outage). Existing rows preserved.
+
+    ``conn`` is accepted for backwards compatibility with the OAuth
+    callback's pre-extraction signature, but the function routes its
+    own reads/writes through the ``user_groups_repo()`` /
+    ``user_group_members_repo()`` factory pair — so it respects the
+    active state backend regardless of which engine ``conn`` happens
+    to point at. The refresh endpoint relies on this for correct
+    diff-computation on Postgres deploys (see PR #520 Devin review).
+
+    The user-create / fanout side of the OAuth callback is NOT here —
+    callers that need to mint a user run that themselves; this function
+    assumes ``user_id`` already exists.
+    """
+    del conn  # unused — see docstring (backend selection via repo factories)
+    from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
+    from src.repositories import (
+        user_group_members_repo,
+        user_groups_repo,
+    )
+
+    result = SyncResult()
+
+    prefix = os.environ.get(PREFIX_ENV, "").strip().lower()
+    admin_email = os.environ.get(ADMIN_EMAIL_ENV, "").strip().lower()
+    everyone_email = os.environ.get(EVERYONE_EMAIL_ENV, "").strip().lower()
+
+    try:
+        group_emails = fetch_user_groups(email)
+    except Exception as e:  # noqa: BLE001 - fail-soft by design
+        logger.warning("Group fetch raised for %s: %s", email, e)
+        result.soft_failed = True
+        return result
+
+    if not group_emails:
+        logger.info(
+            "Google group sync for %s: empty result, "
+            "preserving existing memberships",
+            email,
+        )
+        result.soft_failed = True
+        return result
+
+    fetched = [g.lower() for g in group_emails]
+    result.fetched = fetched
+
+    if prefix:
+        relevant = [g for g in fetched if g.startswith(prefix)]
+    else:
+        relevant = list(fetched)
+    result.relevant = relevant
+
+    if prefix and not relevant:
+        # No matching groups → caller has lost their prefix-policy fit. We
+        # do NOT clear the existing `source='google_sync'` rows here: the
+        # OAuth callback turns this into a `/login?error=not_in_allowed_group`
+        # redirect (user can't sign in, so RBAC state is moot), and the
+        # refresh endpoint surfaces `denied=True` so the operator can act
+        # on it. Aggressively wiping their RBAC on a transient prefix
+        # mismatch (e.g. Admin SDK lag, operator typo in the prefix env
+        # var) would risk locking the user out of work they own. Operators
+        # who need the strict policy can run the prefix-cleanup admin path.
+        logger.info(
+            "Google group sync for %s denied: no group with prefix %r in %s",
+            email, prefix, fetched,
+        )
+        result.denied = True
+        return result
+
+    # Group-ensure + write block. The OAuth callback's outermost handler
+    # turns any uncaught exception here into `/login?error=oauth_failed`
+    # — the user can't sign in at all — and the refresh endpoint turns
+    # it into HTTP 500. The pre-extraction OAuth callback wrapped the
+    # whole sync in a single `try/except Exception as sync_err` that
+    # swallowed errors and let the user proceed with stale groups.
+    # We preserve that fail-soft contract here so the docstring promise
+    # ("any internal error is logged and returns soft_failed=True") and
+    # the OAuth callback's "apply_user_groups never raises" comment stay
+    # honest after the extraction. A transient `ug_repo.ensure()` /
+    # `get_by_name()` hiccup (DuckDB write lock, PG connection drop)
+    # downgrades to soft-fail rather than locking the user out.
+    try:
+        ug_repo = user_groups_repo()
+        members_repo = user_group_members_repo()
+
+        group_ids: list[str] = []
+        for email_addr in relevant:
+            if admin_email and email_addr == admin_email:
+                sys_admin = ug_repo.get_by_name(SYSTEM_ADMIN_GROUP)
+                if sys_admin:
+                    group_ids.append(sys_admin["id"])
+                continue
+            if everyone_email and email_addr == everyone_email:
+                sys_everyone = ug_repo.get_by_name(SYSTEM_EVERYONE_GROUP)
+                if sys_everyone:
+                    group_ids.append(sys_everyone["id"])
+                continue
+            # Regular synced group: name = full email. ``ensure()`` is
+            # get-or-create-by-name and stamps created_by='system:google-sync'
+            # on first create.
+            g = ug_repo.ensure(email_addr)
+            group_ids.append(g["id"])
+
+        members_repo.replace_google_sync_groups(
+            user_id, group_ids, added_by="system:google-sync",
+        )
+    except Exception as e:  # noqa: BLE001 - fail-soft by design
+        logger.warning("Group write failed for %s: %s", email, e)
+        result.soft_failed = True
+        return result
+
+    result.applied = True
+    logger.info(
+        "Google group sync for %s: %d group(s) "
+        "(filtered from %d fetched, prefix=%r) [%s]",
+        email, len(group_ids), len(fetched), prefix,
+        ", ".join(relevant),
+    )
+    return result

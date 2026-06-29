@@ -24,7 +24,11 @@ from services.verification_detector.detector import (
     _generate_id,
     extract_verifications,
 )
-from src.repositories.knowledge import KnowledgeRepository
+
+from src.repositories import (
+    knowledge_repo,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +46,9 @@ class VerificationProcessor:
         username: str,
         session_key: str,
         conn: duckdb.DuckDBPyConnection,
+        **kwargs: object,
     ) -> ProcessorResult:
-        repo = KnowledgeRepository(conn)
+        repo = knowledge_repo()
         session_id = f"session-{session_path.stem}-{username}"
 
         turns = parse_jsonl(session_path)
@@ -81,7 +86,7 @@ class VerificationProcessor:
 
             # Confidence is computed in code from (source_type, detection_type).
             # The LLM is not trusted to set its own credibility — see Q3 in
-            # docs/pd-ps-comments.md and the ADR.
+            # docs/archive/pd-ps-comments.md and the ADR.
             detection_type = v.get("detection_type")
             try:
                 confidence_value = compute_confidence("user_verification", detection_type)
@@ -126,7 +131,8 @@ class VerificationProcessor:
             except Exception as e:
                 logger.warning(
                     "Duplicate-candidate detection failed for %s: %s",
-                    item_id, e,
+                    item_id,
+                    e,
                 )
 
             # Run contradiction detection inline. Failure of the LLM
@@ -140,12 +146,15 @@ class VerificationProcessor:
             except Exception as e:
                 logger.warning(
                     "Unexpected error during contradiction check for %s: %s",
-                    item_id, e,
+                    item_id,
+                    e,
                 )
 
         logger.info(
             "Processed %s: %d verifications, %d items created",
-            session_key, len(verifications), items_created,
+            session_key,
+            len(verifications),
+            items_created,
         )
         return ProcessorResult(items_count=items_created)
 

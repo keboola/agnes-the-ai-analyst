@@ -1,7 +1,7 @@
-{% extends "base.html" %}
-{% block title %}Server config — {{ config.INSTANCE_NAME }}{% endblock %}
+{% extends "base_ds.html" %}
+{% block title %}Instance settings — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
+{% block head_extra %}
 {# Server configuration editor — instance.yaml fields grouped by section.
 
    Page-shell only: GET /api/admin/server-config feeds the form (with
@@ -9,20 +9,103 @@
    "danger-zone" sections (auth, server) get a confirmation dialog before
    the request is sent. Saves trigger the restart banner — hot-reload is
    out of scope for #91. #}
+{# Design-system component macros — the 5 static modal action buttons
+   (Cancel/Save/Close/Cancel/Yes-save) render via `ds.button`. The
+   JS-string-template buttons further down (array/map remove/add,
+   section save, BigQuery/Keboola test, sync/edit/delete) use the
+   canonical `.btn .btn-*` class names directly because Jinja macros
+   can't reach inside `<script>` template literals. All buttons across
+   the page now route through the canonical `.btn-*` family in
+   style-custom.css; the page-local `.cfg-btn` rule is gone. #}
 <style>
-  .container:has(.cfg-page) { max-width: none; padding: 24px 16px; }
-  .cfg-page { max-width: 1100px; margin: 0 auto; padding: 0; }
-  .cfg-toolbar {
-    display: flex; justify-content: space-between; align-items: center;
-    gap: 16px; margin-bottom: 16px; flex-wrap: wrap;
-  }
-  .cfg-title { margin: 0; font-size: 22px; font-weight: 600; }
-  .cfg-subtitle { color: var(--text-secondary, #6b7280); font-size: 13px; margin-top: 4px; }
+  .cfg-page { max-width: 1260px; margin: 0 auto; padding: 0; }
+  /* Hero subtitle is unconstrained here — page is wide and the text is long */
+  .cfg-page .page-header--hero .page-header__subtitle { max-width: none; }
 
+  /* Two-column layout: sticky sidenav + scrollable content */
+  .cfg-body {
+    display: grid;
+    grid-template-columns: 216px 1fr;
+    gap: 0 24px;
+    align-items: start;
+    margin-top: 24px;
+  }
+  /* Column wrapper — standalone white card, fully rounded */
+  .cfg-sidenav-col {
+    background: #fff;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    padding: 0 0 16px;
+    align-self: stretch;
+  }
+  .cfg-sidenav {
+    position: sticky;
+    top: 68px;
+    max-height: calc(100vh - 88px);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    padding: 12px 0 8px;
+  }
+  /* Group label — visually non-clickable: all-caps, muted, no cursor affordance */
+  .cfg-sidenav-label {
+    display: block;
+    padding: 16px 16px 5px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted, #9ca3af);
+    cursor: default;
+    user-select: none;
+    line-height: 1;
+  }
+  .cfg-sidenav-label:first-child { padding-top: 4px; }
+  .cfg-sidenav-label.is-danger { color: #dc2626; }
+  /* Nav links — clearly clickable */
+  .cfg-sidenav a {
+    display: block;
+    padding: 7px 16px 7px 14px;
+    border-left: 2px solid transparent;
+    font-size: 13px;
+    font-family: var(--font-primary, 'Inter', system-ui, sans-serif);
+    color: var(--text-primary, #1a253c);
+    text-decoration: none;
+    line-height: 1.5;
+    cursor: pointer;
+    transition: background .12s, color .12s, border-color .12s;
+  }
+  .cfg-sidenav a:hover {
+    background: var(--background, #f5f7fa);
+    color: var(--text-primary, #1a253c);
+  }
+  .cfg-sidenav a.is-active {
+    border-left-color: var(--ds-primary, #0073d1);
+    background: var(--ds-primary-light, rgba(0,115,209,.08));
+    color: var(--ds-primary, #0073d1);
+    font-weight: 500;
+  }
+  /* Danger links: default dark, hover = subtle grey (distinct from active red) */
+  .cfg-sidenav a.sidenav-danger { color: var(--text-primary, #1a253c); }
+  .cfg-sidenav a.sidenav-danger:hover { background: var(--background, #f5f7fa); color: #991b1b; }
+  .cfg-sidenav a.sidenav-danger.is-active {
+    border-left-color: #dc2626;
+    background: #fee2e2;
+    color: #dc2626;
+  }
+  /* main content column */
+  .cfg-main { }
+  /* ensure sections don't hide under the sticky app header on scroll */
+  .cfg-section { scroll-margin-top: 80px; }
   .cfg-banner {
     padding: 12px 16px; border-radius: 8px;
     background: #fffbeb; border: 1px solid #fcd34d; color: #92400e;
-    font-size: 13px; margin-bottom: 16px; display: none;
+    font-size: 13px; display: none;
+    /* Sticky just below the app header so save confirmations / errors are
+       always visible regardless of scroll position. z-index stays below
+       modals (1000+) but above section content. */
+    position: sticky; top: 72px; z-index: 90;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
   }
   .cfg-banner.is-visible { display: block; }
   .cfg-banner.success { background: #ecfdf5; border-color: #34d399; color: #065f46; }
@@ -47,13 +130,6 @@
   .cfg-section h3 {
     margin: 0; font-size: 15px; font-weight: 600;
   }
-  .cfg-section h3 .danger-pill {
-    display: inline-block; margin-left: 10px;
-    padding: 2px 8px; border-radius: 999px;
-    background: #b91c1c; color: #fff;
-    font-size: 10px; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.6px; vertical-align: 2px;
-  }
   .cfg-section .section-help {
     font-size: 12px; color: var(--text-secondary, #6b7280); margin-top: 4px;
   }
@@ -67,7 +143,7 @@
 
   .cfg-field { display: grid; grid-template-columns: 220px 1fr; gap: 12px; align-items: start; margin-bottom: 14px; }
   .cfg-field:last-child { margin-bottom: 0; }
-  .cfg-field label { font-size: 13px; color: var(--text-primary, #111827); font-weight: 500; padding-top: 8px; }
+  .cfg-field label, .cfg-field .cfg-field-label { font-size: 13px; color: var(--text-primary, #111827); font-weight: 500; padding-top: 8px; }
   .cfg-field .field-help { font-size: 11px; color: var(--text-secondary, #6b7280); margin-top: 4px; }
   .cfg-field input[type="text"],
   .cfg-field input[type="password"],
@@ -84,27 +160,15 @@
   }
   .cfg-field textarea { resize: vertical; min-height: 80px; font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace); font-size: 12px; }
   .cfg-field input:focus, .cfg-field select:focus, .cfg-field textarea:focus {
-    outline: 2px solid var(--primary, #6366f1); outline-offset: -1px;
+    outline: 2px solid var(--ds-primary, #6366f1); outline-offset: -1px;
   }
   .cfg-field input.is-secret { font-family: var(--font-mono, ui-monospace, monospace); }
-  .cfg-field .secret-pill {
-    display: inline-block; margin-left: 8px;
-    padding: 1px 6px; border-radius: 4px;
-    background: #f3f4f6; color: #6b7280;
-    font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
-  }
-
-  .cfg-btn {
-    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-    cursor: pointer; transition: all 0.15s;
-  }
-  .cfg-btn:hover { background: var(--border-light, #f9fafb); }
-  .cfg-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
-  .cfg-btn.primary:hover { filter: brightness(1.05); }
-  .cfg-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
-  .cfg-btn.danger:hover { filter: brightness(1.05); }
-  .cfg-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  /* `.cfg-btn` family removed — all buttons on this page now render through
+     the canonical `.btn` / `.btn-primary` / `.btn-secondary` / `.btn-danger`
+     rules in style-custom.css. Static modal buttons use the `ds.button`
+     macro; JS-string-template buttons emit the canonical class names
+     directly (`btn btn-secondary`, `btn btn-primary`, `btn btn-danger`,
+     plus `btn-sm btn--icon` for the small × array/map remove buttons). */
 
   .cfg-loading { padding: 32px 16px; text-align: center; color: var(--text-secondary, #6b7280); font-size: 13px; }
 
@@ -121,6 +185,34 @@
     background: var(--background, #fafafa);
   }
   .cfg-field.is-unset .field-help { font-style: italic; }
+
+  /* Stacked label-above-input fields used by the Cloud chat + Slack-secrets
+     sections (and previously by the Initial Workspace register modal, now on
+     its own page). Moved here from the deleted #iw-modal scoped <style> when
+     the IWT UI relocated (#622 Slice 3 PR-B). */
+  .iw-form-field { display: block; margin-bottom: 14px; }
+  .iw-form-field label {
+    display: block; font-size: 13px; font-weight: 500;
+    color: var(--text-primary, #111827); margin-bottom: 4px;
+  }
+  .iw-form-field label .iw-optional {
+    font-weight: 400; font-size: 11px; color: var(--text-secondary, #9ca3af);
+    margin-left: 4px;
+  }
+  .iw-form-field input {
+    width: 100%; box-sizing: border-box;
+    padding: 8px 10px; border-radius: 6px;
+    border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff); font-size: 13px;
+    font-family: inherit;
+  }
+  .iw-form-field input:focus {
+    outline: none; border-color: var(--ds-primary, #6366f1);
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+  }
+  .iw-form-field .field-help {
+    font-size: 11px; color: var(--text-secondary, #6b7280); margin-top: 4px;
+  }
   .cfg-divider {
     border: 0;
     border-top: 1px dashed var(--border, #e5e7eb);
@@ -135,20 +227,8 @@
     letter-spacing: 0.05em;
   }
 
-  /* Confirmation modal — danger-zone gate */
-  .modal-backdrop {
-    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
-    display: none; align-items: center; justify-content: center; z-index: 1000;
-    padding: 16px;
-  }
-  .modal-backdrop.is-open { display: flex; }
-  .modal-card {
-    background: var(--surface, #fff); border-radius: 12px;
-    padding: 24px; width: 100%; max-width: 520px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
-  }
-  .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
-  .modal-card p.sub { margin: 0 0 12px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  /* Confirmation modals use the canonical .modal-* (style-custom.css);
+     only the page-specific diff display below stays local. */
   .modal-card .diff-list {
     background: var(--border-light, #f9fafb); border-radius: 8px;
     padding: 10px 14px; font-family: var(--font-mono, ui-monospace, monospace);
@@ -157,33 +237,166 @@
   .modal-card .diff-row { padding: 4px 0; border-bottom: 1px dashed var(--border, #e5e7eb); }
   .modal-card .diff-row:last-child { border-bottom: none; }
   .modal-card .diff-row .path { color: #b91c1c; font-weight: 600; }
-  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
-</style>
 
+  /* Vault hint in Data source section */
+  .ds-vault-hint {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 10px 14px; border-radius: 8px; font-size: 13px; line-height: 1.5;
+    text-decoration: none;
+  }
+  .ds-vault-hint--ready {
+    background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d;
+  }
+  .ds-vault-hint--ready:hover { background: #dcfce7; }
+  .ds-vault-hint--ready strong { color: #15803d; }
+  .ds-vault-hint--info {
+    background: var(--background, #f9fafb); border: 1px solid var(--border, #e5e7eb);
+    color: var(--text-secondary, #6b7280);
+  }
+  .ds-vault-hint--info a { color: var(--ds-primary, #6366f1); }
+  .ds-vault-hint--info code {
+    font-size: 12px; background: var(--border-light, #f3f4f6);
+    padding: 1px 4px; border-radius: 3px; color: var(--text-primary, #111827);
+  }
+  .ds-vault-hint-icon { flex-shrink: 0; font-size: 15px; margin-top: 1px; }
+</style>
+{% endblock %}
+
+{% block content %}
 <div class="cfg-page" data-page="server-config">
-  <div class="cfg-toolbar">
-    <div>
-      <h2 class="cfg-title">Server configuration</h2>
-      <div class="cfg-subtitle">Edits land in <code>instance.yaml</code>. Save triggers an app restart (~10s downtime). Secret values are masked here — re-enter them to change.</div>
-    </div>
-  </div>
+  {% set page_hero_eyebrow = "Server" %}
+  {% set page_hero_title = "Instance settings" %}
+  {% set page_hero_subtitle = "Edits land in <code style=&quot;color:#fff;background:rgba(255,255,255,0.15);padding:1px 6px;border-radius:4px&quot;>instance.yaml</code>. Save triggers an app restart (~10s downtime). Secret values are masked here — re-enter them to change." %}
+  {% include "_page_hero.html" %}
 
   <div id="cfg-banner" class="cfg-banner" role="status" aria-live="polite"></div>
 
-  <div id="cfg-loading" class="cfg-loading">Loading current configuration…</div>
-  <div id="cfg-sections" hidden></div>
-</div>
+  <div class="cfg-body">
+    <div class="cfg-sidenav-col">
+      <nav id="cfg-sidenav" class="cfg-sidenav" aria-label="Section navigation"></nav>
+    </div>
+
+    <div class="cfg-main">
+      <div id="cfg-loading" class="cfg-loading">Loading current configuration…</div>
+      <!-- General + Integrations sections (rendered by JS from instance.yaml) -->
+      <div id="cfg-sections" hidden></div>
+
+  <!--
+    Initial Workspace Template — MOVED to its own page (#622 Slice 3 PR-B).
+    Stub kept so /admin/server-config#iw-section deep-links still work.
+  -->
+  <section class="cfg-section" id="iw-section">
+    <header>
+      <div>
+        <h3>Initial Workspace Template</h3>
+        <div class="section-help">
+          Moved to its own page:
+          <a href="/admin/initial-workspace">/admin/initial-workspace</a>.
+          Register / sync / delete the template repo and review prompt
+          bindings there.
+        </div>
+      </div>
+    </header>
+  </section>
+
+  <!-- Cloud chat — bespoke panel (not part of instance.yaml).
+       ANTHROPIC_API_KEY / E2B_API_KEY via /admin/chat/secrets. -->
+  <section class="cfg-section" id="chat-section">
+    <header>
+      <div>
+        <h3>Cloud chat</h3>
+        <div class="section-help">
+          The cloud-hosted chat needs <code>ANTHROPIC_API_KEY</code> and
+          (for the E2B sandbox provider) <code>E2B_API_KEY</code> in the
+          server environment, plus a strong <code>JWT_SECRET_KEY</code>.
+          Missing or invalid keys leave chat disabled. Set the keys here
+          (stored in the server's env-overlay, never echoed back) and use
+          <strong>Test keys</strong> to confirm they actually work. A server
+          restart is required after setting keys for chat to start.
+        </div>
+      </div>
+    </header>
+    <div class="section-body">
+      <div id="chat-readiness-status" class="cfg-loading">Loading…</div>
+      <div class="iw-form-field">
+        <label for="chat-e2b-key">E2B_API_KEY</label>
+        <input type="password" id="chat-e2b-key"
+               placeholder="e2b_••• (leave blank to keep existing)" autocomplete="off">
+      </div>
+      <div class="iw-form-field">
+        <label for="chat-anthropic-key">ANTHROPIC_API_KEY</label>
+        <input type="password" id="chat-anthropic-key"
+               placeholder="sk-ant-••• (leave blank to keep existing)" autocomplete="off">
+      </div>
+    </div>
+    <div class="section-actions">
+      <button type="button" class="btn btn-primary" id="chat-save-btn">Save keys</button>
+      <button type="button" class="btn btn-secondary" id="chat-test-btn">Test keys</button>
+      <span class="chat-test-result" hidden style="margin-left: 8px; font-size: 13px;"></span>
+    </div>
+  </section>
+
+  <!-- Slack bot secrets — bespoke panel (not part of instance.yaml).
+       Presence/source from /admin/slack-secrets, writes via PUT /admin/slack-secrets/{name}. -->
+  <section class="cfg-section" id="slack-secrets-section">
+    <header>
+      <div>
+        <h3>Slack bot secrets</h3>
+        <div class="section-help">
+          Tokens for the Slack bot, stored encrypted in the server vault.
+          Environment variables (e.g. set via Terraform) always take
+          precedence — a token shown as <code>env</code> can't be changed
+          here. Storing a token requires <code>AGNES_VAULT_KEY</code> on the
+          server.
+        </div>
+      </div>
+    </header>
+    <div class="section-body">
+      <div id="slack-secrets-status" class="cfg-loading">Loading…</div>
+      <div class="iw-form-field">
+        <label for="slack-bot-token">SLACK_BOT_TOKEN</label>
+        <input type="password" id="slack-bot-token" data-secret="SLACK_BOT_TOKEN"
+               placeholder="(leave blank to keep existing)" autocomplete="off">
+      </div>
+      <div class="iw-form-field">
+        <label for="slack-app-token">SLACK_APP_TOKEN</label>
+        <input type="password" id="slack-app-token" data-secret="SLACK_APP_TOKEN"
+               placeholder="(leave blank to keep existing)" autocomplete="off">
+      </div>
+      <div class="iw-form-field">
+        <label for="slack-signing-secret">SLACK_SIGNING_SECRET</label>
+        <input type="password" id="slack-signing-secret" data-secret="SLACK_SIGNING_SECRET"
+               placeholder="(leave blank to keep existing)" autocomplete="off">
+      </div>
+    </div>
+    <div class="section-actions">
+      <button type="button" class="btn btn-primary" id="slack-secrets-save-btn">Save secrets</button>
+    </div>
+  </section>
+
+      <!-- Danger zone sections (auth, server) rendered separately so bespoke sections above sit before them -->
+      <div id="cfg-sections-danger" hidden></div>
+      <!-- Tail: sections not in any known group (e.g. marketplace) — rendered last, no danger styling -->
+      <div id="cfg-sections-tail" hidden></div>
+    </div><!-- /.cfg-main -->
+  </div><!-- /.cfg-body -->
+</div><!-- /.cfg-page -->
+
+<!-- Initial Workspace Template modals MOVED to /admin/initial-workspace
+     (#622 Slice 3 PR-B). The register/edit + sync-result modals and the
+     .iw-form-field styles live on that page now. -->
 
 <!-- Danger-zone confirmation modal -->
 <div class="modal-backdrop" id="danger-modal" role="dialog" aria-modal="true" aria-labelledby="danger-title">
-  <div class="modal-card">
+  <div class="modal-card" style="max-width: 520px;">
     <h3 id="danger-title">Confirm danger-zone change</h3>
     <p class="sub" id="danger-sub"></p>
     <div class="diff-list" id="danger-diff"></div>
     <p class="sub"><strong>Save anyway?</strong> An app restart is required for the change to take effect.</p>
     <div class="modal-actions">
-      <button class="cfg-btn" data-close-modal="danger-modal">Cancel</button>
-      <button class="cfg-btn danger" id="danger-confirm-btn">Yes, save</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="danger-modal"') }}
+      {{ ds.button('Yes, save', variant='danger', id='danger-confirm-btn') }}
     </div>
   </div>
 </div>
@@ -222,14 +435,29 @@ const SECTION_META = {
     title: "Materialize",
     help: "Concurrency safety net for the materialize path. Controls the file-lock TTL used to detect and reclaim stale locks from hard-killed processes.",
   },
+  guardrails: {
+    title: "Flea-market guardrails",
+    help: "Per-component content quality thresholds for store uploads. Lower the min-* knobs to relax the bar; raise to push submitters toward longer, more useful descriptions. The LLM tier (review_model + enabled) governs the second-stage substantive review.",
+  },
+  marketplace: {
+    title: "Marketplace",
+    help: "Curated marketplace settings — e.g. the 'See all curators' link URL.",
+  },
 };
 const DANGER_SECTIONS = new Set(["auth", "server"]);
 
 // ── Banner ─────────────────────────────────────────────────────────────
+let _bannerTimer = null;
 function showBanner(msg, kind) {
   const el = document.getElementById("cfg-banner");
   el.textContent = msg;
   el.className = "cfg-banner is-visible" + (kind ? " " + kind : "");
+  // Auto-dismiss success (and neutral) banners after 4 s; leave errors
+  // visible until the next action so the operator can read them.
+  clearTimeout(_bannerTimer);
+  if (kind !== "error") {
+    _bannerTimer = setTimeout(hideBanner, 4000);
+  }
 }
 function hideBanner() {
   document.getElementById("cfg-banner").className = "cfg-banner";
@@ -379,14 +607,15 @@ function renderArrayField(section, pathSegments, label, value, spec, depth) {
   // `data-array-collect="1"` marks the wrapper so collectSection can pick
   // it up as a single unit (otherwise the per-row inputs would each emit
   // their own patch leaf and clobber each other).
+  const baseId = `f_${section}_${dottedKey.replace(/\W/g, "_")}`;
   const rows = items.map((item, idx) => `
     <div class="array-row" data-array-row="${idx}" style="display: flex; gap: 6px; margin-bottom: 4px;">
-      <input type="text" class="array-item-input" data-array-item="${idx}" value="${escHtml(item == null ? "" : String(item))}" style="flex: 1;">
-      <button type="button" class="cfg-btn" data-array-remove="${idx}" title="Remove this item">×</button>
+      <input type="text" id="${baseId}_${idx}" name="${baseId}_${idx}" class="array-item-input" data-array-item="${idx}" value="${escHtml(item == null ? "" : String(item))}" aria-label="${escHtml(label)} item ${idx + 1}" style="flex: 1;">
+      <button type="button" class="btn btn-secondary btn-sm btn--icon" data-array-remove="${idx}" title="Remove this item">×</button>
     </div>`).join("");
   return `
     <div class="cfg-field nested-field" style="margin-left: ${indent}px;">
-      <label>${arrow}${escHtml(label)}</label>
+      <div class="cfg-field-label">${arrow}${escHtml(label)}</div>
       <div>
         <div class="array-container"
              data-section="${section}"
@@ -395,7 +624,7 @@ function renderArrayField(section, pathSegments, label, value, spec, depth) {
              data-array-collect="1"
              data-item-kind="${escHtml(itemKind)}">
           <div class="array-rows">${rows}</div>
-          <button type="button" class="cfg-btn" data-array-add="1" data-item-kind="${escHtml(itemKind)}">+ Add item</button>
+          <button type="button" class="btn btn-secondary" data-array-add="1" data-item-kind="${escHtml(itemKind)}">+ Add item</button>
         </div>
         ${hintBlock}
       </div>
@@ -424,6 +653,7 @@ function renderMapField(section, pathSegments, label, value, spec, depth) {
   const hintBlock = spec.hint
     ? `<div class="field-help">${escHtml(spec.hint)}</div>`
     : "";
+  const mapBaseId = `f_${section}_${dottedKey.replace(/\W/g, "_")}`;
   const renderRow = (k, v, idx) => {
     if (valueKind === "array") {
       // Map<string, array<scalar>> — value column is itself a comma-separated
@@ -433,9 +663,9 @@ function renderMapField(section, pathSegments, label, value, spec, depth) {
       const items = Array.isArray(v) ? v.join(", ") : "";
       return `
         <div class="map-row" data-map-row="${idx}" style="display: grid; grid-template-columns: minmax(160px, 1fr) 2fr auto; gap: 6px; margin-bottom: 4px;">
-          <input type="text" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key">
-          <input type="text" class="map-value-input" data-map-value="${idx}" value="${escHtml(items)}" placeholder="comma,separated,values">
-          <button type="button" class="cfg-btn" data-map-remove="${idx}" title="Remove this row">×</button>
+          <input type="text" id="${mapBaseId}_k${idx}" name="${mapBaseId}_k${idx}" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key" aria-label="${escHtml(label)} key ${idx + 1}">
+          <input type="text" id="${mapBaseId}_v${idx}" name="${mapBaseId}_v${idx}" class="map-value-input" data-map-value="${idx}" value="${escHtml(items)}" placeholder="comma,separated,values" aria-label="${escHtml(label)} value ${idx + 1}">
+          <button type="button" class="btn btn-secondary btn-sm btn--icon" data-map-remove="${idx}" title="Remove this row">×</button>
         </div>`;
     }
     // Scalar value column.
@@ -443,15 +673,15 @@ function renderMapField(section, pathSegments, label, value, spec, depth) {
     const stepAttr = valueKind === "float" ? ' step="any"' : "";
     return `
       <div class="map-row" data-map-row="${idx}" style="display: grid; grid-template-columns: minmax(160px, 1fr) 1fr auto; gap: 6px; margin-bottom: 4px;">
-        <input type="text" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key">
-        <input type="${inputType}"${stepAttr} class="map-value-input" data-map-value="${idx}" value="${escHtml(v == null ? "" : String(v))}" placeholder="value">
-        <button type="button" class="cfg-btn" data-map-remove="${idx}" title="Remove this row">×</button>
+        <input type="text" id="${mapBaseId}_k${idx}" name="${mapBaseId}_k${idx}" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key" aria-label="${escHtml(label)} key ${idx + 1}">
+        <input type="${inputType}"${stepAttr} id="${mapBaseId}_v${idx}" name="${mapBaseId}_v${idx}" class="map-value-input" data-map-value="${idx}" value="${escHtml(v == null ? "" : String(v))}" placeholder="value" aria-label="${escHtml(label)} value ${idx + 1}">
+        <button type="button" class="btn btn-secondary btn-sm btn--icon" data-map-remove="${idx}" title="Remove this row">×</button>
       </div>`;
   };
   const rows = Object.entries(obj).map(([k, v], idx) => renderRow(k, v, idx)).join("");
   return `
     <div class="cfg-field nested-field" style="margin-left: ${indent}px;">
-      <label>${arrow}${escHtml(label)}</label>
+      <div class="cfg-field-label">${arrow}${escHtml(label)}</div>
       <div>
         <div class="map-container"
              data-section="${section}"
@@ -461,7 +691,7 @@ function renderMapField(section, pathSegments, label, value, spec, depth) {
              data-value-kind="${escHtml(valueKind)}"
              data-value-item-kind="${escHtml(valueItemKind)}">
           <div class="map-rows">${rows}</div>
-          <button type="button" class="cfg-btn" data-map-add="1" data-value-kind="${escHtml(valueKind)}">+ Add row</button>
+          <button type="button" class="btn btn-secondary" data-map-add="1" data-value-kind="${escHtml(valueKind)}">+ Add row</button>
         </div>
         ${hintBlock}
       </div>
@@ -500,7 +730,7 @@ function renderNestedField(section, pathSegments, label, value, spec, depth) {
   const fieldId = `f_${section}_${dottedKey.replace(/\W/g, "_")}`;
   const wrapperClass = "cfg-field nested-field" + (isUnset ? " is-unset" : "");
   const arrow = depth > 0 ? "↳ " : "";
-  const secretPill = isSecret ? '<span class="secret-pill">secret</span>' : "";
+  const secretPill = isSecret ? '<span class="badge">secret</span>' : "";
   const hintBlock = spec.hint
     ? `<div class="field-help">${escHtml(spec.hint)}</div>`
     : "";
@@ -573,7 +803,7 @@ function renderNestedField(section, pathSegments, label, value, spec, depth) {
 
     return `
       <div class="cfg-field nested-field nested-parent" style="margin-left: ${indent}px;">
-        <label>${arrow}${escHtml(label)}</label>
+        <div class="cfg-field-label">${arrow}${escHtml(label)}</div>
         <div>${hintBlock || `<div class="field-help">Nested structured fields below.</div>`}</div>
       </div>
       ${populatedHtml}${unsetHtml}${fallbackHtml}`;
@@ -639,7 +869,7 @@ function renderSection(section, payload, knownForSection) {
   // placeholders (.is-unset).
   const meta = SECTION_META[section] || { title: section, help: "" };
   const isDanger = DANGER_SECTIONS.has(section);
-  const danger = isDanger ? '<span class="danger-pill">danger</span>' : "";
+  const danger = isDanger ? '<span class="badge badge--danger">danger</span>' : "";
   const populatedKeys = Object.keys(payload || {}).sort();
   const known = knownForSection || {};
   const populatedSet = new Set(populatedKeys);
@@ -699,38 +929,142 @@ function renderSection(section, payload, knownForSection) {
       <div class="section-body">
         ${fieldsHtml}
         ${bootstrap}
+        ${section === "data_source" ? '<div id="ds-vault-hint" style="margin-top:14px"></div>' : ""}
       </div>
       <div class="section-actions">
-        <button class="cfg-btn primary" data-action="save-section" data-section="${section}">Save ${escHtml(meta.title.toLowerCase())}</button>
+        <button class="btn btn-primary" data-action="save-section" data-section="${section}">Save ${escHtml(meta.title.toLowerCase())}</button>
         ${section === "data_source" ? `
-        <button class="cfg-btn" data-action="test-bigquery" type="button">Test BigQuery connection</button>
+        <button class="btn btn-secondary" data-action="test-bigquery" type="button">Test BigQuery connection</button>
         <span class="bq-test-result" data-section="${section}" hidden style="margin-left: 1ex;"></span>
+        <button class="btn btn-secondary" data-action="test-keboola" type="button" style="margin-left: 8px;">Test Keboola connection</button>
+        <span class="kbc-test-result" data-section="${section}" hidden style="margin-left: 1ex;"></span>
         ` : ""}
       </div>
     </section>`;
 }
 
+const SECTION_GROUPS = [
+  { label: "General",      sections: ["instance", "data_source", "email", "theme"] },
+  { label: "Integrations", sections: ["telegram", "jira", "ai", "openmetadata", "desktop", "corporate_memory", "materialize", "guardrails", "marketplace"] },
+  { label: "Services",     sections: [], bespoke: [
+    { id: "chat-section",          title: "Cloud chat" },
+    { id: "slack-secrets-section", title: "Slack bot secrets" },
+  ]},
+  { label: "Danger zone",  sections: ["auth", "server"], isDanger: true },
+];
+
+function buildSidenav(sections) {
+  const nav = document.getElementById("cfg-sidenav");
+  if (!nav) return;
+
+  const present = new Set(sections);
+  const html = [];
+
+  SECTION_GROUPS.forEach(group => {
+    const groupSections = group.sections.filter(s => present.has(s));
+    const bespoke = group.bespoke || [];
+    if (!groupSections.length && !bespoke.length) return;
+    html.push(`<span class="cfg-sidenav-label${group.isDanger ? " is-danger" : ""}">${group.label}</span>`);
+    groupSections.forEach(s => {
+      const meta = SECTION_META[s] || { title: s };
+      html.push(`<a href="#cfg-s-${s}" class="${group.isDanger ? "sidenav-danger" : ""}" data-nav-section="${s}">${meta.title}</a>`);
+      present.delete(s);
+    });
+    bespoke.forEach(b => {
+      html.push(`<a href="#${b.id}" data-bespoke-section="${b.id}">${b.title}</a>`);
+    });
+  });
+
+  // Any sections not covered by a group (fallback)
+  present.forEach(s => {
+    const meta = SECTION_META[s] || { title: s };
+    html.push(`<a href="#cfg-s-${s}" data-nav-section="${s}">${meta.title}</a>`);
+  });
+
+  nav.innerHTML = html.join("");
+
+  // Build a key→element map — sections live in either cfg-sections or cfg-sections-danger.
+  const sectionEls = new Map();
+  sections.forEach(s => {
+    const el = document.querySelector(`section.cfg-section[data-section="${s}"]`);
+    if (el) { el.id = `cfg-s-${s}`; sectionEls.set(s, el); }
+  });
+
+  // Active state is set only on explicit nav click — no scroll tracking.
+  nav.querySelectorAll("a").forEach(a => {
+    a.addEventListener("click", e => {
+      e.preventDefault();
+      nav.querySelectorAll("a").forEach(x => x.classList.remove("is-active"));
+      a.classList.add("is-active");
+      const el = a.dataset.navSection
+        ? sectionEls.get(a.dataset.navSection)
+        : a.dataset.bespokeSection
+          ? document.getElementById(a.dataset.bespokeSection)
+          : null;
+      if (el) {
+        const top = el.getBoundingClientRect().top + window.scrollY - 80;
+        window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+      }
+    });
+  });
+}
+
 function renderAll(data) {
   const wrap = document.getElementById("cfg-sections");
-  const sections = data.editable_sections || Object.keys(data.sections || {});
+  const dangerWrap = document.getElementById("cfg-sections-danger");
+  const tailWrap = document.getElementById("cfg-sections-tail");
+  const apiSections = data.editable_sections || Object.keys(data.sections || {});
+  // Sort sections to match sidebar group order (General → Integrations → Danger zone → tail)
+  const groupOrder = SECTION_GROUPS.flatMap(g => g.sections);
+  const sections = [...apiSections].sort((a, b) => {
+    const ia = groupOrder.indexOf(a), ib = groupOrder.indexOf(b);
+    return (ia === -1 ? 9999 : ia) - (ib === -1 ? 9999 : ib);
+  });
   const known = data.known_fields || {};
-  wrap.innerHTML = sections.map(s => renderSection(s, data.sections[s] || {}, known[s] || {})).join("");
+
+  const mainGroupSet = new Set(SECTION_GROUPS.filter(g => !g.isDanger).flatMap(g => g.sections));
+  const dangerGroupSet = new Set(SECTION_GROUPS.find(g => g.isDanger)?.sections || []);
+  const mainSections   = sections.filter(s => mainGroupSet.has(s));
+  const dangerSections = sections.filter(s => dangerGroupSet.has(s));
+  const tailSections   = sections.filter(s => !mainGroupSet.has(s) && !dangerGroupSet.has(s));
+
+  wrap.innerHTML       = mainSections.map(s => renderSection(s, data.sections[s] || {}, known[s] || {})).join("");
+  dangerWrap.innerHTML = dangerSections.map(s => renderSection(s, data.sections[s] || {}, known[s] || {})).join("");
+  tailWrap.innerHTML   = tailSections.map(s => renderSection(s, data.sections[s] || {}, known[s] || {})).join("");
+
   document.getElementById("cfg-loading").style.display = "none";
   wrap.hidden = false;
+  if (dangerSections.length) dangerWrap.hidden = false;
+  if (tailSections.length) tailWrap.hidden = false;
+  buildSidenav(sections);
 
-  wrap.querySelectorAll('[data-action="save-section"]').forEach(btn =>
-    btn.addEventListener("click", () => onSaveSection(btn.dataset.section)));
+  // Hash-based deep-link: /admin/server-config#cfg-s-data_source scrolls to
+  // that section after sections are rendered (anchors don't exist before this
+  // point so the browser's native scroll-to-hash fires too early). Links from
+  // other pages (e.g. the Keboola not-configured banner) use this.
+  if (window.location.hash) {
+    // Guard against SyntaxError: window.location.hash is user-controlled and
+    // may not be a valid CSS selector (e.g. #:foo or #test[bar).
+    try {
+      const target = document.querySelector(window.location.hash);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (_) { /* invalid hash — ignore */ }
+  }
 
-  // Issue #160 §4.9: Test BigQuery connection — admin probe to verify the
-  // saved data_source.bigquery config is reachable WITHOUT having to
-  // ssh to the VM or wait for an analyst's failed query.
-  wrap.querySelectorAll('[data-action="test-bigquery"]').forEach(btn =>
-    btn.addEventListener("click", () => onTestBigQuery(btn)));
+  // Wire buttons in all three wrappers.
+  [wrap, dangerWrap, tailWrap].forEach(w => {
+    w.querySelectorAll('[data-action="save-section"]').forEach(btn =>
+      btn.addEventListener("click", () => onSaveSection(btn.dataset.section)));
+    w.querySelectorAll('[data-action="test-bigquery"]').forEach(btn =>
+      btn.addEventListener("click", () => onTestBigQuery(btn)));
+    w.querySelectorAll('[data-action="test-keboola"]').forEach(btn =>
+      btn.addEventListener("click", () => onTestKeboola(btn)));
+  });
 
   // Wire array-of-scalars + map-of-scalars add/remove buttons via event
-  // delegation on the wrapper. Re-attaching after every renderAll() is
+  // delegation on all wrappers. Re-attaching after every renderAll() is
   // fine because we replace innerHTML wholesale on each load.
-  wrap.addEventListener("click", (e) => {
+  [wrap, dangerWrap, tailWrap].forEach(w => w.addEventListener("click", (e) => {
     const target = e.target;
     if (!(target instanceof Element)) return;
     // Add an array row.
@@ -746,7 +1080,7 @@ function renderAll(data) {
       div.style.gap = "6px";
       div.style.marginBottom = "4px";
       div.innerHTML = `<input type="text" class="array-item-input" data-array-item="${idx}" value="" style="flex: 1;">
-        <button type="button" class="cfg-btn" data-array-remove="${idx}" title="Remove this item">×</button>`;
+        <button type="button" class="btn btn-secondary btn-sm btn--icon" data-array-remove="${idx}" title="Remove this item">×</button>`;
       rows.appendChild(div);
       const inp = div.querySelector('input');
       if (inp) inp.focus();
@@ -779,7 +1113,7 @@ function renderAll(data) {
       const stepAttr = valueKind === "float" ? ' step="any"' : "";
       div.innerHTML = `<input type="text" class="map-key-input" data-map-key="${idx}" value="" placeholder="key">
         <input type="${inputType}"${stepAttr} class="map-value-input" data-map-value="${idx}" value="" placeholder="${valuePlaceholder}">
-        <button type="button" class="cfg-btn" data-map-remove="${idx}" title="Remove this row">×</button>`;
+        <button type="button" class="btn btn-secondary btn-sm btn--icon" data-map-remove="${idx}" title="Remove this row">×</button>`;
       rows.appendChild(div);
       const inp = div.querySelector('input');
       if (inp) inp.focus();
@@ -791,7 +1125,7 @@ function renderAll(data) {
       if (row) row.remove();
       return;
     }
-  });
+  }));
 }
 
 // Recursively strip secret-keyed leaves whose value is the redaction sentinel
@@ -1039,6 +1373,39 @@ async function onTestBigQuery(btn) {
   }
 }
 
+// ── Keboola test connection ────────────────────────────────────────────
+async function onTestKeboola(btn) {
+  const resultEl = btn.parentElement.querySelector(".kbc-test-result");
+  resultEl.hidden = false;
+  resultEl.textContent = "Testing…";
+  resultEl.style.color = "";
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/admin/keboola/test-connection", {
+      method: "POST",
+      credentials: "include",
+    });
+    if (r.ok) {
+      const body = await r.json();
+      resultEl.textContent = `✓ ok (${body.elapsed_ms} ms; ${body.bucket_count} bucket${body.bucket_count !== 1 ? "s" : ""})`;
+      resultEl.style.color = "#2a8c4a";
+    } else {
+      let body;
+      try { body = await r.json(); } catch (_) { body = await r.text(); }
+      const detail = body && typeof body === "object" ? body.detail : body;
+      const kind = detail && typeof detail === "object" ? (detail.kind || "error") : "error";
+      const hint = detail && typeof detail === "object" ? (detail.hint || detail.message || "") : String(detail);
+      resultEl.textContent = `✗ ${kind}${hint ? " — " + hint : ""}`;
+      resultEl.style.color = "#c0392b";
+    }
+  } catch (e) {
+    resultEl.textContent = `✗ network error — ${e.message}`;
+    resultEl.style.color = "#c0392b";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ── Save flow ─────────────────────────────────────────────────────────
 async function onSaveSection(section) {
   hideBanner();
@@ -1135,11 +1502,247 @@ async function loadConfig() {
     if (!r.ok) throw new Error("HTTP " + r.status);
     original = await r.json();
     renderAll(original);
+    loadDsVaultHint();
   } catch (e) {
     document.getElementById("cfg-loading").textContent = "Failed to load config: " + e.message;
   }
 }
 
+async function loadDsVaultHint() {
+  const el = document.getElementById("ds-vault-hint");
+  if (!el) return;
+  try {
+    const r = await fetch("/api/health", { credentials: "include" });
+    if (!r.ok) return;
+    const data = await r.json();
+    const vaultConfigured = data.vault_key_configured === true;
+    if (vaultConfigured) {
+      el.innerHTML = `<a href="/admin/datasource-credentials" class="ds-vault-hint ds-vault-hint--ready">
+        <span class="ds-vault-hint-icon">&#128274;</span>
+        <span>Credentials can also be managed via the encrypted vault &rarr; <strong>Manage datasource credentials</strong></span>
+      </a>`;
+    } else {
+      el.innerHTML = `<div class="ds-vault-hint ds-vault-hint--info">
+        <span class="ds-vault-hint-icon">&#128161;</span>
+        <span>Credentials can be stored in an encrypted vault instead of config files.
+        Set <code>AGNES_VAULT_KEY</code> on the server to enable the
+        <a href="/admin/datasource-credentials">vault credential manager</a>.</span>
+      </div>`;
+    }
+  } catch (_) { /* non-critical */ }
+}
+
 loadConfig();
+
+// ════════════════════════════════════════════════════════════════════════
+// Cloud chat readiness — secret presence + live key test. Dedicated
+// lifecycle like Initial Workspace: the keys are env-var secrets routed to
+// the .env_overlay via /admin/chat/secrets, not part of the instance.yaml
+// form save.
+// ════════════════════════════════════════════════════════════════════════
+
+const CHAT_API = "/admin/chat";
+
+function chatBadge(set, required) {
+  if (set) return '<span style="color: #2a8c4a;">✓ set</span>';
+  return required
+    ? '<span style="color: #c0392b;">✗ missing (required)</span>'
+    : '<span style="color: #888;">— not set</span>';
+}
+
+async function chatReadinessLoad() {
+  const el = document.getElementById("chat-readiness-status");
+  if (!el) return;
+  try {
+    const r = await fetch(CHAT_API + "/readiness", { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const s = await r.json();
+    const rows = [
+      ["ANTHROPIC_API_KEY", s.secrets.anthropic_api_key],
+      ["E2B_API_KEY", s.secrets.e2b_api_key],
+      ["JWT_SECRET_KEY", s.secrets.jwt_secret_key],
+      ["e2b_template_id", s.secrets.e2b_template_id],
+    ];
+    const overall = !s.enabled
+      ? '<span style="color: #888;">chat disabled in instance.yaml</span>'
+      : (s.ready
+          ? '<span style="color: #2a8c4a;">✓ ready</span>'
+          : '<span style="color: #c0392b;">✗ not ready — missing ' + escHtml(s.missing.join(", ")) + '</span>');
+    el.className = "";
+    el.innerHTML =
+      '<div style="margin-bottom: 8px;"><strong>Status:</strong> ' + overall + '</div>' +
+      '<ul style="list-style: none; padding: 0; margin: 0;">' +
+      rows.map(([name, v]) =>
+        `<li style="padding: 2px 0;"><code>${escHtml(name)}</code> — ${chatBadge(v.set, v.required)}</li>`
+      ).join("") +
+      '</ul>';
+  } catch (e) {
+    el.className = "";
+    el.innerHTML = '<span style="color: #c0392b;">Failed to load readiness: ' + escHtml(e.message) + '</span>';
+  }
+}
+
+async function chatSaveSecrets(btn) {
+  const e2b = document.getElementById("chat-e2b-key").value.trim();
+  const anth = document.getElementById("chat-anthropic-key").value.trim();
+  if (!e2b && !anth) {
+    showBanner("Enter at least one key to save.", "error");
+    return;
+  }
+  const payload = {};
+  if (e2b) payload.e2b_api_key = e2b;
+  if (anth) payload.anthropic_api_key = anth;
+  btn.disabled = true;
+  try {
+    const r = await fetch(CHAT_API + "/secrets", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const body = await r.json();
+    // Clear the inputs so the secret doesn't linger in the DOM.
+    document.getElementById("chat-e2b-key").value = "";
+    document.getElementById("chat-anthropic-key").value = "";
+    showBanner("Saved " + body.changed.join(", ") + ". Restart the server to activate chat.", "success");
+    chatReadinessLoad();
+  } catch (e) {
+    showBanner("Failed to save keys: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function chatTestSecrets(btn) {
+  const resultEl = document.querySelector("#chat-section .chat-test-result");
+  resultEl.hidden = false;
+  resultEl.textContent = "Testing…";
+  resultEl.style.color = "";
+  btn.disabled = true;
+  try {
+    const r = await fetch(CHAT_API + "/secrets/test", { method: "POST", credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const b = await r.json();
+    const fmt = (label, x) => `${x.ok ? "✓" : "✗"} ${label}: ${x.detail}`;
+    resultEl.innerHTML =
+      '<div>' + escHtml(fmt("E2B", b.e2b_api_key)) + '</div>' +
+      '<div>' + escHtml(fmt("Anthropic", b.anthropic_api_key)) + '</div>';
+    resultEl.style.color = (b.e2b_api_key.ok && b.anthropic_api_key.ok) ? "#2a8c4a" : "#c0392b";
+  } catch (e) {
+    resultEl.textContent = "✗ " + e.message;
+    resultEl.style.color = "#c0392b";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById("chat-save-btn").addEventListener("click", (e) => chatSaveSecrets(e.currentTarget));
+document.getElementById("chat-test-btn").addEventListener("click", (e) => chatTestSecrets(e.currentTarget));
+chatReadinessLoad();
+
+// ════════════════════════════════════════════════════════════════════════
+// Slack bot secrets — vault-backed server-wide tokens. Same lifecycle as the
+// Cloud chat keys: presence/source from GET /admin/slack-secrets, write-only
+// rotation via PUT /admin/slack-secrets/{name}. Cookie-session auth
+// (credentials: "include"), same showBanner() feedback.
+// ════════════════════════════════════════════════════════════════════════
+
+const SLACK_SECRETS_API = "/api/admin/slack-secrets";
+const SLACK_SECRET_INPUTS = [
+  "slack-bot-token",
+  "slack-app-token",
+  "slack-signing-secret",
+];
+
+function slackSourceBadge(source) {
+  if (source === "env") return '<span style="color: #888;">env (from environment, locked)</span>';
+  if (source === "vault") return '<span style="color: #2a8c4a;">✓ vault</span>';
+  return '<span style="color: #888;">— unset</span>';
+}
+
+async function slackSecretsLoad() {
+  const el = document.getElementById("slack-secrets-status");
+  if (!el) return;
+  try {
+    const r = await fetch(SLACK_SECRETS_API, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const s = await r.json();
+    el.className = "";
+    el.innerHTML =
+      '<ul style="list-style: none; padding: 0; margin: 0;">' +
+      (s.secrets || []).map((row) => {
+        // Only vault-stored tokens can be cleared from the UI: env tokens are
+        // owned by the environment, unset tokens have nothing to clear.
+        const clear = row.source === "vault"
+          ? ` <button type="button" class="btn btn-secondary btn-sm" data-slack-clear="${escHtml(row.name)}" style="margin-left: 6px;">Clear</button>`
+          : "";
+        return `<li style="padding: 2px 0;"><code>${escHtml(row.name)}</code> — ${slackSourceBadge(row.source)}${clear}</li>`;
+      }).join("") +
+      '</ul>';
+    el.querySelectorAll("[data-slack-clear]").forEach((btn) =>
+      btn.addEventListener("click", (e) => slackSecretClear(e.currentTarget))
+    );
+  } catch (e) {
+    el.className = "";
+    el.innerHTML = '<span style="color: #c0392b;">Failed to load Slack secrets: ' + escHtml(e.message) + '</span>';
+  }
+}
+
+async function slackSecretClear(btn) {
+  const name = btn.dataset.slackClear;
+  btn.disabled = true;
+  try {
+    const r = await fetch(SLACK_SECRETS_API + "/" + encodeURIComponent(name), {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    showBanner("Cleared " + name + ".", "success");
+  } catch (e) {
+    showBanner("Failed to clear " + name + ": " + e.message, "error");
+  } finally {
+    slackSecretsLoad();
+  }
+}
+
+async function slackSecretsSave(btn) {
+  const entered = SLACK_SECRET_INPUTS
+    .map((id) => document.getElementById(id))
+    .filter((inp) => inp && inp.value.trim())
+    .map((inp) => ({ inp, name: inp.dataset.secret, value: inp.value.trim() }));
+  if (entered.length === 0) {
+    showBanner("No secret entered.", "error");
+    return;
+  }
+  btn.disabled = true;
+  const saved = [];
+  try {
+    for (const { inp, name, value } of entered) {
+      const r = await fetch(SLACK_SECRETS_API + "/" + encodeURIComponent(name), {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value }),
+      });
+      if (r.status === 409) {
+        showBanner("AGNES_VAULT_KEY is not configured on the server — cannot store Slack secrets.", "error");
+        return;
+      }
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      inp.value = "";  // don't let the secret linger in the DOM
+      saved.push(name);
+    }
+    showBanner("Saved " + saved.join(", ") + ".", "success");
+  } catch (e) {
+    showBanner("Failed to save Slack secrets: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+    slackSecretsLoad();
+  }
+}
+
+document.getElementById("slack-secrets-save-btn").addEventListener("click", (e) => slackSecretsSave(e.currentTarget));
+slackSecretsLoad();
 </script>
 {% endblock %}

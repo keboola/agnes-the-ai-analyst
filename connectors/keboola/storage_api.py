@@ -94,6 +94,85 @@ def get_temp_root() -> Optional[str]:
     return root
 
 
+# Prefixes shared with the ``tempfile.TemporaryDirectory(prefix=...)`` calls
+# that stage data under the temp root: ``kbc-export-`` (the per-export dirs in
+# connectors/keboola/extractor.py — materialize_query + legacy extract) and
+# ``kbc-slice-`` (the per-call sliced-CSV download dir in
+# ``_download_sliced`` below). Anything under the temp root with one of these
+# prefixes is extractor-owned staging scratch.
+_SCRATCH_PREFIXES = ("kbc-export-", "kbc-slice-")
+
+
+def sweep_orphaned_scratch(
+    root: Optional[str] = None,
+    max_age_seconds: Optional[float] = None,
+) -> int:
+    """Remove orphaned ``kbc-export-*`` / ``kbc-slice-*`` staging dirs and
+    return the count.
+
+    A staging dir is created via ``tempfile.TemporaryDirectory`` (the
+    ``kbc-export-`` dirs in ``connectors/keboola/extractor.py`` and the
+    ``kbc-slice-`` dir in ``_download_sliced`` below), whose ``__exit__``
+    removes it on
+    *any* normal return — including the ENOSPC / disk-full exception path.
+    The only way a dir survives is a **hard kill** (SIGKILL / OOM / the
+    auto-upgrade ``docker compose up -d`` recreating the container mid-sync —
+    the documented orphan-maker, see ``app/api/sync.py``), where ``__exit__``
+    never runs. Without a sweep these accumulate on the data disk until it
+    fills and *every* subsequent sync fails on ENOSPC — a self-reinforcing
+    failure that otherwise needs a manual ``rm`` to break.
+
+    Age-gated: a dir whose mtime is within ``max_age_seconds`` is left alone
+    so a concurrent in-flight export (e.g. another container) is never swept
+    out from under itself. Threshold defaults to ``AGNES_SCRATCH_MAX_AGE_SEC``
+    (1h) — comfortably longer than any single table export.
+
+    ``root`` defaults to :func:`get_temp_root`; ``None`` (AGNES_TEMP_DIR unset)
+    is a no-op since the system ``/tmp`` is cleared on reboot anyway.
+    """
+    if root is None:
+        root = get_temp_root()
+    if not root:
+        return 0
+    if max_age_seconds is None:
+        max_age_seconds = float(
+            os.environ.get("AGNES_SCRATCH_MAX_AGE_SEC", "3600")
+        )
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return 0
+    now = time.time()
+    removed = 0
+    for entry in entries:
+        if not entry.name.startswith(_SCRATCH_PREFIXES):
+            continue
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        try:
+            age = now - entry.stat().st_mtime
+        except OSError:
+            continue
+        if age < max_age_seconds:
+            continue
+        try:
+            shutil.rmtree(entry.path)
+            removed += 1
+            logger.info(
+                "Swept orphaned scratch dir %s (age %.0fs >= %.0fs threshold)",
+                entry.name, age, max_age_seconds,
+            )
+        except OSError as e:
+            logger.warning(
+                "Failed to sweep orphaned scratch %s: %s", entry.path, e
+            )
+    if removed:
+        logger.info(
+            "Orphaned-scratch sweep removed %d dir(s) from %s", removed, root
+        )
+    return removed
+
+
 FILE_TYPE_CSV = "csv"
 FILE_TYPE_PARQUET = "parquet"
 _VALID_FILE_TYPES = {FILE_TYPE_CSV, FILE_TYPE_PARQUET}
@@ -178,7 +257,21 @@ class ExportFilter:
                     )
                 if not isinstance(f["values"], list):
                     raise ValueError(f"where_filters[{i}].values must be a list")
-            params["whereFilters"] = self.where_filters
+            # Flatten into Keboola's indexed form-field convention. The
+            # request is form-encoded (`_post` posts `data=params`), and
+            # `requests` stringifies a nested list-of-dicts into a single
+            # `whereFilters={'column': ...}` scalar — Keboola then rejects it
+            # with "whereFilters should be an array, but parameter contains:
+            # 'values'" (or silently returns the full table). Emitting one
+            # scalar param per leaf (`whereFilters[i][column]`,
+            # `whereFilters[i][operator]`, `whereFilters[i][values][j]`)
+            # matches the PHP/Symfony array form-parsing the Storage API
+            # expects — the same shape the `kbcstorage` SDK sends.
+            for i, f in enumerate(self.where_filters):
+                params[f"whereFilters[{i}][column]"] = f["column"]
+                params[f"whereFilters[{i}][operator]"] = f["operator"]
+                for j, v in enumerate(f["values"]):
+                    params[f"whereFilters[{i}][values][{j}]"] = v
         if self.columns:
             params["columns"] = ",".join(self.columns)
         if self.changed_since:
@@ -344,9 +437,11 @@ class KeboolaStorageClient:
         """Download a Storage API file (single or sliced) to `dest_path`.
 
         Backend variants:
-        - **AWS / Azure**: signed HTTPS URL in `file_info["url"]` (S3
-          presigned / SAS). Sliced manifest entries are signed HTTPS too.
-          Plain HTTP GET works.
+        - **AWS**: signed HTTPS URL in `file_info["url"]` (S3 presigned).
+          Sliced manifest entries are signed HTTPS too. Plain HTTP GET works.
+        - **Azure**: ``file_info["url"]`` is a signed HTTPS manifest URL.
+          Per-slice URLs in the manifest use the ``azure://`` scheme and
+          require a SAS token from ``file_info["absCredentials"]``.
         - **GCP**: `file_info["url"]` is a signed HTTPS URL for the
           single-file case. For sliced exports, the manifest at `url`
           lists per-slice paths as `gs://<bucket>/<key>` (NOT signed) —
@@ -383,11 +478,16 @@ class KeboolaStorageClient:
 
         if is_sliced:
             # GCP sliced manifests carry `gs://` URIs that need an OAuth
-            # bearer; AWS / Azure carry signed HTTPS URLs that work
-            # without auth. The presence of `gcsCredentials` in the file
-            # detail signals a GCP backend.
+            # bearer; Azure carry `azure://` URIs that need a SAS token
+            # from absCredentials; AWS carry signed HTTPS URLs that need
+            # no extra auth.
             gcs_token = (file_info.get("gcsCredentials") or {}).get("access_token")
-            self._download_sliced(url, dest_path, gcs_token=gcs_token)
+            abs_credentials = file_info.get("absCredentials") or {}
+            self._download_sliced(
+                url, dest_path,
+                gcs_token=gcs_token,
+                abs_credentials=abs_credentials,
+            )
         else:
             self._download_single(url, dest_path, gunzip_on_read=is_gzipped)
         return dest_path
@@ -412,6 +512,42 @@ class KeboolaStorageClient:
             headers=extra_headers,
         ) as r:
             r.raise_for_status()
+
+            # Pre-flight disk-space check. Storage API's signed-URL
+            # response carries ``Content-Length`` (compressed transfer
+            # size for gzipped exports). Demand 5× headroom for gunzip
+            # cases (decompressed dest typically 3-5× the wire bytes)
+            # and 1.25× otherwise (for the ``.part`` + atomic rename
+            # window). Skipping the check when ``Content-Length`` is
+            # absent (proxies sometimes strip it) means mid-write
+            # ``OSError 28`` is still possible; the common case fails
+            # fast with an actionable message instead of leaving an
+            # orphan ``.part`` + a half-written destination behind
+            # AND triggering the Python traceback retention path that
+            # held a multi-GiB response buffer in every retained frame
+            # on small dev containers (cascaded into a cgroup OOM via
+            # ``connectors/keboola/extractor.py`` consolidation
+            # connection — see the matching DuckDB-side cap there).
+            content_length = r.headers.get("Content-Length")
+            if content_length is not None:
+                try:
+                    expected_bytes = int(content_length)
+                except (TypeError, ValueError):
+                    expected_bytes = None
+                if expected_bytes is not None and expected_bytes > 0:
+                    headroom_mult = 5 if gunzip_on_read else 1.25
+                    needed = int(expected_bytes * headroom_mult)
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    free = shutil.disk_usage(dest_path.parent).free
+                    if free < needed:
+                        raise StorageApiError(
+                            f"insufficient disk space at {dest_path.parent}: "
+                            f"have {free:,} B free, need >= {needed:,} B "
+                            f"({headroom_mult}x the {expected_bytes:,} B "
+                            f"download for gunzip_on_read={gunzip_on_read}). "
+                            f"Free space before retrying.",
+                        )
+
             tmp = dest_path.with_suffix(dest_path.suffix + ".part")
             try:
                 with open(tmp, "wb") as fh:
@@ -449,8 +585,48 @@ class KeboolaStorageClient:
             f"/o/{quote(key, safe='')}?alt=media"
         )
 
+    @staticmethod
+    def _azure_to_https(azure_url: str, abs_credentials: dict) -> str:
+        """Rewrite ``azure://<account>.blob.core.windows.net/<container>/<blob>``
+        to an HTTPS URL with the SAS token from ``absCredentials`` appended.
+
+        Keboola's Azure-backed projects return ``azure://`` scheme URIs in
+        sliced-export manifests instead of pre-signed HTTPS SAS URLs.
+        ``absCredentials.SASConnectionString`` carries the SAS token needed
+        to authenticate the download — parse it out and append as a query
+        string so the standard ``requests`` session can handle the download
+        without an Azure SDK dependency.
+
+        If ``absCredentials`` is absent or empty the HTTPS URL is returned
+        without a SAS token; the download will likely fail with 403, but the
+        schema error is avoided and the caller can surface a cleaner message.
+        """
+        if not azure_url.startswith("azure://"):
+            raise ValueError(f"_azure_to_https expects azure://; got {azure_url!r}")
+        https_url = "https://" + azure_url[len("azure://"):]
+
+        # Extract SAS token from SASConnectionString.
+        # Format: "BlobEndpoint=https://...;SharedAccessSignature=sv=2020-..."
+        sas_connection = abs_credentials.get("SASConnectionString", "") or ""
+        sas_token = ""
+        for part in sas_connection.split(";"):
+            if part.startswith("SharedAccessSignature="):
+                sas_token = part[len("SharedAccessSignature="):]
+                break
+
+        if sas_token:
+            sep = "&" if "?" in https_url else "?"
+            https_url = f"{https_url}{sep}{sas_token}"
+
+        return https_url
+
     def _download_sliced(
-        self, manifest_url: str, dest_path: Path, *, gcs_token: Optional[str] = None
+        self,
+        manifest_url: str,
+        dest_path: Path,
+        *,
+        gcs_token: Optional[str] = None,
+        abs_credentials: Optional[dict] = None,
     ) -> None:
         """Sliced exports: the file detail's `url` points at a JSON manifest
         whose `entries[].url` lists per-slice locations. Download each slice
@@ -487,10 +663,10 @@ class KeboolaStorageClient:
                         body=entry,
                     )
                 sp = Path(tmpdir) / f"slice-{i:05d}"
-                # GCP backend: rewrite gs:// to GCS REST + bearer auth.
-                # The OAuth token comes from the file_detail's
-                # `gcsCredentials.access_token` (passed as `gcs_token`
-                # arg).
+                # Backend-specific URL rewriting:
+                # - GCP: gs:// → GCS REST + OAuth bearer from gcsCredentials
+                # - Azure: azure:// → HTTPS + SAS token from absCredentials
+                # - AWS: signed HTTPS already — no rewrite needed
                 if surl.startswith("gs://"):
                     if not gcs_token:
                         raise StorageApiError(
@@ -499,6 +675,9 @@ class KeboolaStorageClient:
                         )
                     surl = self._gs_to_https(surl)
                     extra_headers = {"Authorization": f"Bearer {gcs_token}"}
+                elif surl.startswith("azure://"):
+                    surl = self._azure_to_https(surl, abs_credentials)
+                    extra_headers = None
                 else:
                     extra_headers = None
                 # Slices may individually be gzipped — same heuristic as
@@ -593,6 +772,7 @@ class KeboolaStorageClient:
                 "use download_file for the single-file case"
             )
         gcs_token = (file_info.get("gcsCredentials") or {}).get("access_token")
+        abs_credentials = file_info.get("absCredentials") or {}
         m = self.session.get(url, timeout=_DEFAULT_SLICE_DOWNLOAD_TIMEOUT_SEC)
         m.raise_for_status()
         manifest = m.json()
@@ -611,8 +791,10 @@ class KeboolaStorageClient:
                     f"slice {i} missing 'url': {str(entry)[:200]}",
                     body=entry,
                 )
-            # Reuse the same gs:// rewrite + bearer + per-slice gz
-            # heuristics used by the concat path.
+            # Backend-specific URL rewriting:
+            # - GCP: gs:// → GCS REST + OAuth bearer from gcsCredentials
+            # - Azure: azure:// → HTTPS + SAS token from absCredentials
+            # - AWS: signed HTTPS already — no rewrite needed
             if surl.startswith("gs://"):
                 if not gcs_token:
                     raise StorageApiError(
@@ -621,6 +803,9 @@ class KeboolaStorageClient:
                     )
                 surl = self._gs_to_https(surl)
                 extra_headers = {"Authorization": f"Bearer {gcs_token}"}
+            elif surl.startswith("azure://"):
+                surl = self._azure_to_https(surl, abs_credentials)
+                extra_headers = None
             else:
                 extra_headers = None
             gz = ".gz" in surl.split("?")[0].rsplit("/", 1)[-1]

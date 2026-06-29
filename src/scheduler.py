@@ -9,11 +9,17 @@ Schedule formats:
     "every 1h"             - every hour
     "daily 05:00"          - once per day at 05:00 UTC
     "daily 07:00,13:00,18:00" - multiple times per day (UTC)
+    "cron 0 5 7 * *"       - standard 5-field cron, UTC (minute hour
+                             day-of-month month day-of-week). Supports
+                             ``*``, comma lists (``1,15``), ranges
+                             (``9-17``), and steps (``*/15``). day-of-week
+                             is 0-6 (0 = Sunday). e.g. ``cron 0 5 * * 1``
+                             = 05:00 UTC every Monday.
 """
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -23,6 +29,15 @@ INTERVAL_PATTERN = re.compile(r"^every (\d+)([mh])$")
 
 # Pattern: "daily 05:00", "daily 17:30", "daily 07:00,13:00,18:00"
 DAILY_PATTERN = re.compile(r"^daily ([\d:,]+)$")
+
+# Pattern: "cron <5-field expr>". The explicit ``cron `` prefix
+# disambiguates from ``every`` / ``daily`` and avoids parser ambiguity
+# with a bare 5-field string.
+CRON_PATTERN = re.compile(r"^cron (.+)$")
+
+# (min, max) range per cron field, in field order:
+# minute, hour, day-of-month, month, day-of-week.
+_CRON_FIELD_RANGES = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 6))
 
 
 def parse_interval_minutes(schedule: str) -> Optional[int]:
@@ -83,9 +98,7 @@ def is_table_due(
         elapsed_minutes = (now - last_sync).total_seconds() / 60
         due = elapsed_minutes >= interval_minutes
         if due:
-            logger.debug(
-                f"Interval schedule: {elapsed_minutes:.0f}m elapsed >= {interval_minutes}m interval"
-            )
+            logger.debug(f"Interval schedule: {elapsed_minutes:.0f}m elapsed >= {interval_minutes}m interval")
         return due
 
     # Check daily schedule: "daily HH:MM" or "daily HH:MM,HH:MM,..."
@@ -97,6 +110,15 @@ def is_table_due(
             logger.warning(f"Invalid daily schedule times: {schedule}")
             return False
         return _is_daily_due(last_sync, now, target_times)
+
+    # Check cron schedule: "cron <minute hour dom month dow>"
+    cron_match = CRON_PATTERN.match(schedule)
+    if cron_match:
+        fields = _parse_cron_fields(cron_match.group(1))
+        if fields is None:
+            logger.warning(f"Invalid cron schedule: {schedule}")
+            return False
+        return _is_cron_due(last_sync, now, fields)
 
     logger.warning(f"Unknown schedule format: {schedule}")
     return False
@@ -131,9 +153,7 @@ def _is_daily_due(
     Returns True if ANY of the target times is due.
     """
     for target_hour, target_minute in target_times:
-        today_target = now.replace(
-            hour=target_hour, minute=target_minute, second=0, microsecond=0
-        )
+        today_target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
 
         if now >= today_target and last_sync < today_target:
             logger.debug(
@@ -142,6 +162,148 @@ def _is_daily_due(
             )
             return True
 
+    return False
+
+
+def _parse_cron_field(spec: str, lo: int, hi: int) -> Optional[set[int]]:
+    """Expand a single cron field into the set of values it matches.
+
+    Supports ``*``, comma lists (``a,b``), ranges (``a-b``), and steps
+    (``*/n`` or ``a-b/n``). Returns None if the field is malformed or any
+    value falls outside ``[lo, hi]``.
+    """
+    values: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            return None
+
+        # Optional step: "<base>/<step>"
+        step = 1
+        if "/" in part:
+            base, _, step_str = part.partition("/")
+            if not step_str.isdigit():
+                return None
+            step = int(step_str)
+            if step <= 0:
+                return None
+        else:
+            base = part
+
+        # Resolve the base into a [start, end] inclusive span.
+        if base == "*":
+            start, end = lo, hi
+        elif "-" in base:
+            start_str, _, end_str = base.partition("-")
+            if not (start_str.isdigit() and end_str.isdigit()):
+                return None
+            start, end = int(start_str), int(end_str)
+            if start > end:
+                return None
+        else:
+            if not base.isdigit():
+                return None
+            start = end = int(base)
+
+        if start < lo or end > hi:
+            return None
+
+        values.update(range(start, end + 1, step))
+
+    return values or None
+
+
+def _parse_cron_fields(expr: str) -> Optional[list[set[int]]]:
+    """Parse a 5-field cron expression into per-field value sets.
+
+    Field order: minute, hour, day-of-month, month, day-of-week. Returns
+    None for any expression that does not have exactly 5 well-formed,
+    in-range fields.
+    """
+    parts = expr.split()
+    if len(parts) != len(_CRON_FIELD_RANGES):
+        return None
+    fields: list[set[int]] = []
+    for spec, (lo, hi) in zip(parts, _CRON_FIELD_RANGES):
+        values = _parse_cron_field(spec, lo, hi)
+        if values is None:
+            return None
+        fields.append(values)
+    return fields
+
+
+def _cron_date_matches(d: date, fields: list[set[int]]) -> bool:
+    """Return True iff date ``d`` matches the cron day-of-month / month /
+    day-of-week fields.
+
+    Standard cron day-of-month / day-of-week semantics are NOT OR-combined
+    here: both restrictions must hold (the common case has one of them as
+    ``*``, which always matches). ``weekday()`` returns 0=Monday..6=Sunday;
+    cron uses 0=Sunday..6=Saturday, so we remap with ``(weekday()+1) % 7``.
+    """
+    _, _, dom_set, month_set, dow_set = fields
+    cron_dow = (d.weekday() + 1) % 7
+    return d.day in dom_set and d.month in month_set and cron_dow in dow_set
+
+
+def _is_cron_due(
+    last_sync: datetime,
+    now: datetime,
+    fields: list[set[int]],
+) -> bool:
+    """Check whether a cron occurrence falls in the half-open window
+    ``(last_sync, now]``.
+
+    Mirrors the ``_is_daily_due`` catch-up contract: a missed occurrence
+    fires on the next tick after it passed. The search walks DAYS backward
+    from ``now``: on the first day matching the date fields it takes the
+    latest in-day (hour, minute) candidate that is ``<= now`` and compares
+    it against ``last_sync``. Earlier days only hold earlier occurrences,
+    so that single comparison decides — no minute-by-minute scan.
+
+    The walk is bounded to 8 years of days. The longest gap between two
+    consecutive fires of a valid 5-field cron is a Feb-29 schedule (4
+    years; 8 absorbs the skipped-century corner), so the bound cannot skip
+    a real occurrence — unlike the previous 32-day minute-walk cap, which
+    silently missed e.g. ``cron 0 0 31 * *`` across the Jan 31 → Mar 31
+    59-day gap.
+    """
+    if now <= last_sync:
+        return False
+
+    minute_set, hour_set = fields[0], fields[1]
+    # Minute resolution: cron never fires on sub-minute boundaries.
+    cap = now.replace(second=0, microsecond=0)
+    day = cap.date()
+    for _ in range(8 * 366):
+        if _cron_date_matches(day, fields):
+            # Latest candidate on this day that is <= cap. For any day
+            # before today the first (max hour, max minute) combo wins
+            # immediately; on today the loop skips still-future slots.
+            occurrence = None
+            for hour in sorted(hour_set, reverse=True):
+                for minute in sorted(minute_set, reverse=True):
+                    cand = datetime.combine(day, time(hour, minute), tzinfo=now.tzinfo)
+                    if cand <= cap:
+                        occurrence = cand
+                        break
+                if occurrence is not None:
+                    break
+            if occurrence is not None:
+                if occurrence > last_sync:
+                    logger.debug(
+                        "Cron schedule: occurrence at %s in window (%s, %s] -> due",
+                        occurrence.isoformat(),
+                        last_sync.isoformat(),
+                        now.isoformat(),
+                    )
+                    return True
+                # The most recent occurrence predates the window; earlier
+                # days are earlier still — nothing new fired.
+                return False
+        if day <= last_sync.date():
+            return False
+        day -= timedelta(days=1)
     return False
 
 
@@ -180,11 +342,16 @@ def is_valid_schedule(schedule: Optional[str]) -> bool:
         the rate limit on the next ``/api/sync/trigger`` tick)
       - ``"daily HH:MM"`` (24-h, UTC) optionally comma-separated:
         ``"daily 07:00,13:00"``
+      - ``"cron <5-field expr>"`` (UTC): standard minute/hour/day-of-month/
+        month/day-of-week cron with ``*``, comma lists, ranges, and steps.
+        Each field is validated against its range (minute 0-59, hour 0-23,
+        day-of-month 1-31, month 1-12, day-of-week 0-6).
 
     Anything else — including ``None``, empty string, or a parseable-looking
-    but out-of-range value (``"daily 25:00"``) — returns False. Pydantic
-    validators on the admin API call this to reject malformed input with
-    422 instead of accepting it and silently no-op'ing later.
+    but out-of-range value (``"daily 25:00"`` or ``"cron 99 5 7 * *"``) —
+    returns False. Pydantic validators on the admin API call this to reject
+    malformed input with 422 instead of accepting it and silently
+    no-op'ing later.
     """
     if not schedule or not isinstance(schedule, str):
         return False
@@ -192,9 +359,12 @@ def is_valid_schedule(schedule: Optional[str]) -> bool:
     if interval is not None:
         return interval >= 0
     match = DAILY_PATTERN.match(schedule)
-    if not match:
-        return False
-    return bool(_parse_daily_times(match.group(1)))
+    if match:
+        return bool(_parse_daily_times(match.group(1)))
+    cron_match = CRON_PATTERN.match(schedule)
+    if cron_match:
+        return _parse_cron_fields(cron_match.group(1)) is not None
+    return False
 
 
 def filter_due_tables(

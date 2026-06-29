@@ -15,6 +15,8 @@ import uuid
 
 import pytest
 
+from tests._template_assertions import assert_element, ElementNotFound
+
 
 @pytest.fixture
 def fresh_db(monkeypatch):
@@ -74,115 +76,184 @@ def test_home_not_onboarded_user_sees_setup_view(fresh_db):
     assert "setupClaudeBtn" in body  # primary one-click CTA from shared partial
 
 
-def test_home_onboarded_user_sees_nav_hub(fresh_db):
-    """A TRUE-onboarded user gets the post-onboarding view, identifiable by
-    the 'Welcome back' hero, the 'Step 1 & Step 2 done' completion badge,
-    the offboard control, and the absence of the inline Step 1 / Step 2
-    install commands. Step 3 (auto-mode), connectors, and the rest stay
-    visible — they remain useful after onboarding."""
+def test_home_not_onboarded_hero_title_html_renders_unescaped(fresh_db, monkeypatch):
+    """Regression: PR #375's `{% set _brand = instance_brand | e %}` +
+    `{% set hero_title_html = _brand ~ \"…<span>…\" %}` Jinja idiom silently
+    escaped the literal `<span class=\"accent\">` because `Markup ~ str`
+    autoescapes the str operand. The `| safe` in `_home_hero_intro.html`
+    can't undo that — by then the chars are already `&lt;span&gt;`.
+
+    Pin: the rendered hero title MUST contain the LITERAL `<span class=\"accent\">`
+    tag (so the accent styling applies) AND must NOT contain the escaped
+    `&lt;span` variant. Operator-controlled `instance_brand` must still
+    be autoescaped — covered by `test_home_not_onboarded_hero_title_html_escapes_brand`.
+    """
+    monkeypatch.setenv("AGNES_INSTANCE_BRAND", "Acme")
     from src.db import get_system_db, close_system_db
 
-    conn = get_system_db()
-    try:
-        _, sess = _make_user_and_session(conn, onboarded=True)
-    finally:
-        conn.close()
-        close_system_db()
-
-    c = _client()
-    resp = c.get("/home", cookies={"access_token": sess})
-    assert resp.status_code == 200
-    body = resp.text
-    assert "Welcome back" in body
-    # Banner copy updated when the explicit "create workspace folder"
-    # step was inserted between auto-mode and install-Agnes — completion
-    # badge now spans Steps 1-4 (install Claude Code, auto-mode, mkdir
-    # workspace, install Agnes from Claude Code).
-    assert "Steps 1&#8211;4 done" in body or "Steps 1–4 done" in body
-    assert "Mark me as offboarded" in body  # offboard control visible
-    # All four inline install-blocks are hidden post-onboarding — the
-    # labels rendered inside the install-block divs go away.
-    assert "Step 1 — install Claude Code" not in body
-    assert "Step 2 — turn on auto-mode" not in body
-    assert "Step 3 — create your workspace folder" not in body
-    assert "Step 4 — install" not in body
-
-
-def test_connectors_render_flat_when_onboarded_by_default(fresh_db):
-    """Connect-your-tools section must NOT auto-collapse on the
-    server-side `users.onboarded=TRUE` flip. It renders flat (in <details
-    open>) by default; only an explicit user click on the in-hero
-    "Minimize setup view" toggle (persisted in localStorage, not server)
-    activates the collapsed bar layout.
-
-    Auto-mode used to be a peer `setup-collapsible` section
-    (`data-section="step3"`) outside the install-hero. It moved into the
-    install-hero as Step 2 of the install flow (so users enable it
-    BEFORE Step 3's ~20-command install runs), and the standalone
-    outside-hero copy was dropped to avoid duplicating reference
-    content. Onboarded users no longer see the auto-mode block at all —
-    consistent with Step 1 + Step 3 also hiding post-onboarding."""
-    from src.db import get_system_db, close_system_db
-
-    conn = get_system_db()
-    try:
-        _, sess = _make_user_and_session(conn, onboarded=True)
-    finally:
-        conn.close()
-        close_system_db()
-
-    c = _client()
-    resp = c.get("/home", cookies={"access_token": sess})
-    assert resp.status_code == 200
-    body = resp.text
-    # Auto-mode no longer renders for onboarded users — both the
-    # in-hero install-block and the legacy outside-hero `<details>`
-    # reference card are gated `{% if not onboarded %}` / removed.
-    assert 'class="automode-card"' not in body
-    assert 'data-section="step3"' not in body
-    assert "Step 2 — turn on auto-mode" not in body
-    # Connect-your-tools section is still flat-open by default.
-    assert 'class="connector-tiles"' in body
-    assert 'class="setup-collapsible" data-section="connectors" open' in body
-    # Server-rendered HTML never carries the data-setup-minimized
-    # attribute on the .home-mock root — that's a client-side
-    # localStorage decision applied via JS on load. The token still
-    # appears in inline CSS selectors and the JS body, which is fine.
-    assert '<div class="home-mock" data-setup-minimized' not in body
-    assert 'class="home-mock"\n' in body or '<div class="home-mock">' in body
-
-
-def test_minimize_toggle_visible_only_when_onboarded(fresh_db):
-    """The "Minimize setup view" toggle markup is rendered for onboarded
-    users (so they can opt into the collapsed view) and absent for
-    not-onboarded users (where the install steps already dominate)."""
-    from src.db import get_system_db, close_system_db
-
-    # Not-onboarded → no toggle button.
     conn = get_system_db()
     try:
         _, sess = _make_user_and_session(conn, onboarded=False)
     finally:
         conn.close()
         close_system_db()
-    c = _client()
-    resp = c.get("/home", cookies={"access_token": sess})
-    assert resp.status_code == 200
-    assert '<button id="setupMinimizeToggle"' not in resp.text
-    assert 'class="setup-minimize"' not in resp.text
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    assert "Acme is your team's <span class=\"accent\">AI workspace.</span>" in body
+    assert "&lt;span class=" not in body, (
+        "literal `<span>` chars are HTML-encoded — the Markup~str concat "
+        "anti-pattern is back; use `{% set hero_title_html %}…{% endset %}` "
+        "block form instead."
+    )
 
-    # Onboarded → toggle button rendered inside the install-hero.
+
+def test_home_not_onboarded_hero_title_html_escapes_brand(fresh_db, monkeypatch):
+    """XSS guard: operator-set `instance_brand` must be autoescaped before
+    being spliced into the hero title (which contains literal HTML the
+    partial renders with `| safe`). The previous `instance_brand | e` +
+    `~` concat got this right at the cost of breaking literal HTML — the
+    new `{% set %}…{% endset %}` block must preserve the escape guarantee."""
+    monkeypatch.setenv("AGNES_INSTANCE_BRAND", "<script>alert(1)</script>EvilCo")
+    from src.db import get_system_db, close_system_db
+
     conn = get_system_db()
     try:
-        _, sess2 = _make_user_and_session(conn, email="b@example.com", onboarded=True)
+        _, sess = _make_user_and_session(conn, onboarded=False)
     finally:
         conn.close()
         close_system_db()
-    c2 = _client()
-    resp2 = c2.get("/home", cookies={"access_token": sess2})
-    assert resp2.status_code == 200
-    assert '<button id="setupMinimizeToggle"' in resp2.text
-    assert 'class="setup-minimize"' in resp2.text
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;EvilCo" in body
+    assert "<script>alert(1)</script>EvilCo" not in body
+
+
+def test_home_onboarded_user_sees_nav_hub(fresh_db):
+    """A TRUE-onboarded user gets the post-onboarding view: the blue
+    install-hero is gone entirely (no welcome banner, no completion
+    badge, no inline step commands), the offboard escape strip is the
+    only setup-flow remnant rendered, and the rest of /home (connector
+    tiles, news, etc.) stays. PR #289 collapsed the dual-state hero
+    into a single not-onboarded-only render — pre-PR the onboarded
+    branch reused the same `.install-hero` shell with welcome copy
+    and a "Steps 1–4 done" badge."""
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn, onboarded=True)
+    finally:
+        conn.close()
+        close_system_db()
+
+    c = _client()
+    resp = c.get("/home", cookies={"access_token": sess})
+    assert resp.status_code == 200
+    body = resp.text
+    # Install hero entirely absent for onboarded users.
+    with pytest.raises(ElementNotFound):
+        assert_element(body, "div", class_="install-hero")
+    # Offboard escape strip + its button replace the in-hero self-mark control.
+    assert_element(body, "div", class_="offboard-strip")
+    assert "Mark me as offboarded" in body
+    # All six inline install-blocks are hidden post-onboarding — the
+    # labels rendered inside the install-block divs go away. Labels
+    # tracked with the CEO-mock-parity 6-step rename (Step 3 inserted
+    # as "Open a terminal", Step 6 added as the optional shortcut
+    # alias; the old Step 3 became Step 4).
+    assert "Step 1 — Install Claude Code on your computer" not in body
+    assert "Step 2 — Pick a folder for" not in body
+    assert "Step 3 — Open a terminal inside that folder" not in body
+    assert "Step 4 — Launch Claude with auto-approve on" not in body
+    assert "Step 5 — Get the install script" not in body
+    assert "Step 6 — Optional: create a one-word shortcut" not in body
+
+
+def test_connectors_section_removed_from_home(fresh_db):
+    """The dedicated `<details data-section="connectors">` block was
+    dropped from `/home` — the install-hero's Step 4 clipboard payload
+    (rendered via `_claude_setup_instructions.jinja` inside the manual
+    fallback) already inlines the same Asana / GWS / Atlassian prompts
+    from `app/web/connector_prompts.py` via
+    `app/web/setup_instructions.py::_connectors_block`. Showing them
+    twice on the same page was duplicate UX. The lead paragraph in the
+    install-hero now mentions the connectors briefly so users still see
+    the benefit before they hit the install.
+
+    Co-asserts the auto-mode block removal that this test originally
+    pinned — onboarded users still see neither the connectors block
+    nor the legacy auto-mode peer section."""
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn, onboarded=True)
+    finally:
+        conn.close()
+        close_system_db()
+
+    c = _client()
+    resp = c.get("/home", cookies={"access_token": sess})
+    assert resp.status_code == 200
+    body = resp.text
+    # Auto-mode peer section still gone (legacy guard, not regressed).
+    assert 'class="automode-card"' not in body
+    assert 'data-section="step3"' not in body
+    assert "Step 4 — Launch Claude with auto-approve on" not in body
+    # Dedicated connectors block is gone from /home in BOTH states.
+    assert 'class="connector-tiles"' not in body
+    assert 'data-section="connectors"' not in body
+    # Server-rendered HTML never carries the data-setup-minimized
+    # attribute on the .home-mock root — that's a client-side
+    # localStorage decision applied via JS on load.
+    # attribute-presence semantics — not class-equality
+    assert '<div class="home-mock" data-setup-minimized' not in body
+    assert 'class="home-mock"\n' in body or '<div class="home-mock">' in body
+
+    # Not-onboarded path: same — the section disappears regardless of
+    # state. Lead-paragraph still surfaces the connector names so users
+    # know the benefit exists before they kick off the install.
+    conn = get_system_db()
+    try:
+        _, sess2 = _make_user_and_session(
+            conn, email="not-onboarded@example.com", onboarded=False
+        )
+    finally:
+        conn.close()
+        close_system_db()
+    body2 = _client().get("/home", cookies={"access_token": sess2}).text
+    assert 'class="connector-tiles"' not in body2
+    assert 'data-section="connectors"' not in body2
+    # The install-prompt's finale step lists the configured connectors
+    # by display_name — sourced from the seed manifest. Bundled snapshot
+    # ships Asana, Atlassian (Jira / Confluence), Google Workspace (the
+    # alphabetical sort order ``load_manifest`` enforces).
+    assert "Asana, Atlassian (Jira / Confluence), Google Workspace" in body2
+
+
+def test_minimize_toggle_no_longer_rendered(fresh_db):
+    """The "Minimize setup view" toggle used to live inside the
+    onboarded-branch of the install-hero. PR #289 hides the hero
+    entirely once `users.onboarded=true`, so the minimize toggle
+    has no rendering site anymore — verify the markup is absent
+    from both states. (The localStorage `agnes_home_setup_minimized`
+    flag and its applyMinimize() JS handler stay in the page so a
+    stale flag from a pre-PR session no-ops cleanly.)"""
+    from src.db import get_system_db, close_system_db
+
+    for onboarded in (False, True):
+        conn = get_system_db()
+        try:
+            _, sess = _make_user_and_session(
+                conn, email=f"user-{onboarded}@example.com", onboarded=onboarded
+            )
+        finally:
+            conn.close()
+            close_system_db()
+        c = _client()
+        resp = c.get("/home", cookies={"access_token": sess})
+        assert resp.status_code == 200
+        with pytest.raises(ElementNotFound):
+            assert_element(resp.text, "button", attrs={"id": "setupMinimizeToggle"})
+        assert 'class="setup-minimize"' not in resp.text
 
 
 def test_home_no_auto_transition_after_post_until_reload(fresh_db):
@@ -213,8 +284,109 @@ def test_home_no_auto_transition_after_post_until_reload(fresh_db):
     assert flip.status_code == 200
 
     post = c.get("/home", cookies={"access_token": sess})
-    assert "Welcome back" in post.text  # nav hub view
+    # PR #289: hero disappears entirely; offboard strip is the
+    # only setup-flow remnant. Use either as the nav-hub view marker.
+    assert_element(post.text, "div", class_="offboard-strip")
     assert 'class="install-block"' not in post.text
+
+
+def test_home_reads_onboarded_through_repo_factory_not_raw_duckdb(fresh_db, monkeypatch):
+    """/home must read `onboarded` through `users_repo()`, not a raw
+    `conn.execute` against DuckDB.
+
+    Regression: on a Postgres-backed instance (db-state-machine CLOUD /
+    SIDE_CAR state) POST /api/me/onboarded writes the flag to Postgres via
+    `users_repo()`, but /home was reading it back with a raw DuckDB query
+    on the request `conn`. The DuckDB row stays frozen at its pre-migration
+    value, so the "Mark me as onboarded" button flips Postgres yet /home
+    renders the setup view forever — independent of any browser cache.
+
+    Simulate the split without a live Postgres: the DuckDB row says
+    onboarded=FALSE, but the repo factory reports TRUE (the real backend).
+    /home must honor the repo (show the nav hub), proving it no longer
+    reads the stale raw-DuckDB value."""
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        uid, sess = _make_user_and_session(conn, onboarded=False)
+    finally:
+        conn.close()
+        close_system_db()
+
+    import app.web.router as router
+
+    class _FakeUsersRepo:
+        def get_by_id(self, user_id):
+            # Mirrors the active (e.g. Postgres) backend's truth, which
+            # diverges from the stale DuckDB row.
+            return {"id": user_id, "email": "u@example.com", "onboarded": True}
+
+    monkeypatch.setattr(router, "users_repo", lambda: _FakeUsersRepo())
+
+    resp = _client().get("/home", cookies={"access_token": sess})
+    assert resp.status_code == 200
+    # Honors the repo (onboarded=True) → nav-hub view, not the stale
+    # DuckDB FALSE → setup view.
+    assert_element(resp.text, "div", class_="offboard-strip")
+    assert 'class="install-block"' not in resp.text
+
+
+def test_home_cowork_card_links_to_me_cowork(fresh_db):
+    """The /home Cowork surface card carries real upload instructions and now
+    points at /me/ai-connector for the per-plugin download list (the list + the
+    package guideline were relocated there so there is a single home for them).
+    Pin: the placeholder badge is gone, the inline download list is no longer
+    on /home, and the card links to /me/ai-connector."""
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn, onboarded=False)
+    finally:
+        conn.close()
+        close_system_db()
+
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    # Placeholder removed.
+    assert "INSTRUCTIONS NEEDED" not in body
+    # The inline plugin list moved to /me/ai-connector; /home links there instead.
+    assert 'id="cowork-plugin-list"' not in body
+    assert 'href="/me/ai-connector"' in body
+
+
+def test_home_powershell_shortcut_guards_against_missing_profile_newline(fresh_db):
+    """FAI-51: the Windows PowerShell shortcut appended the `function`
+    definition to `$PROFILE` via `Add-Content` with no leading newline.
+    `Add-Content` only adds a trailing line terminator — so if the user's
+    existing profile didn't end in a newline (e.g. a trailing
+    `$PSStyle.FileInfo.Directory = "...`"` line), the function got glued
+    onto the previous line:
+
+        $PSStyle.FileInfo.Directory = "`e[34m"function foundryai { ... }
+
+    which throws `ParserError: Unexpected token 'function'` on every new
+    shell. The fix prefixes the appended value with an empty array element
+    (`Add-Content $PROFILE '', 'function ...'`) so Add-Content always
+    starts the function on its own line, regardless of the profile's
+    trailing-newline state — while keeping the single-quoted body so
+    `$env:USERPROFILE` is written verbatim, not expanded at append time.
+    """
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn, onboarded=False)
+    finally:
+        conn.close()
+        close_system_db()
+
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    # The bare-concatenation form (the bug) must be gone…
+    assert "Add-Content $PROFILE 'function " not in body
+    # …and both the auto-mode and yolo-mode Windows snippets must use the
+    # newline-guarded array form.
+    assert body.count("Add-Content $PROFILE '', 'function ") == 2
 
 
 # ── GWS Email-admin button render tests (admin_email knob coverage) ────────
@@ -241,12 +413,15 @@ def test_home_hides_email_admin_button_when_admin_email_unset(fresh_db, monkeypa
     assert "mailto:?" not in body  # specifically, no broken empty mailto
 
 
-def test_home_shows_email_admin_button_when_admin_email_set_and_gws_unconfigured(
-    fresh_db, monkeypatch,
-):
-    """When admin_email is set AND gws_oauth is unconfigured, the mailto
-    link renders. (Both conditions required — see template guard
-    ``{% if not gws_oauth.configured and instance_admin_email %}``.)"""
+def test_home_no_longer_shows_email_admin_button(fresh_db, monkeypatch):
+    """The Email-admin mailto CTA used to live inside the /home GWS
+    connector tile. With the dedicated `<details data-section="connectors">`
+    block removed (see test_connectors_section_removed_from_home above),
+    the button has no rendering site even when admin_email is set + GWS
+    is unconfigured. The escalation path lives inside the install
+    script's GWS step now — Claude prompts the user with the admin
+    email when the connector setup hits an OAuth gating wall, so the
+    affordance moves to the surface where it's actually useful."""
     monkeypatch.setenv("AGNES_INSTANCE_ADMIN_EMAIL", "ops@example.com")
     monkeypatch.delenv("AGNES_GWS_CLIENT_ID", raising=False)
     monkeypatch.delenv("AGNES_GWS_CLIENT_SECRET", raising=False)
@@ -258,8 +433,8 @@ def test_home_shows_email_admin_button_when_admin_email_set_and_gws_unconfigured
         conn.close()
         close_system_db()
     body = _client().get("/home", cookies={"access_token": sess}).text
-    assert "Email admin" in body
-    assert "mailto:ops@example.com" in body
+    assert "Email admin" not in body
+    assert 'mailto:ops@example.com' not in body
 
 
 def test_home_hides_email_admin_button_when_gws_configured(fresh_db, monkeypatch):
@@ -280,22 +455,118 @@ def test_home_hides_email_admin_button_when_gws_configured(fresh_db, monkeypatch
     assert "Email admin" not in body
 
 
-def test_home_renders_connector_prompts_from_shared_module(fresh_db):
-    """Single source of truth check: the prompt text the /home tiles
-    paste must equal the strings ``app/web/connector_prompts.py`` returns.
-    The same strings are also inlined into the setup script's step 9, so
-    if they ever drift the two surfaces would tell users to do different
-    things — this test catches that early."""
-    import html as _html
+# `test_home_renders_connector_prompts_from_shared_module` was dropped here
+# alongside the removal of the /home `<details data-section="connectors">`
+# block. The test pinned source-of-truth parity between the home tile
+# `<code id="*-prompt">` blocks and `app/web/connector_prompts.py`. With the
+# tiles gone, the only surface left for those strings is the install-hero's
+# Step 4 clipboard payload (rendered via `_claude_setup_instructions.jinja`
+# from `setup_instructions_lines`, which is built in
+# `app/web/setup_instructions.py::_connectors_block` calling the same
+# `connector_prompts.py` functions). One surface, no drift risk → the
+# parity test is redundant. If a second surface ever re-renders these
+# prompts, restore a parity test scoped to that new consumer.
+
+
+# ── Setup section header + Overview + Usage modes ────────────────────────
+
+
+def test_setup_section_renders_for_not_onboarded(fresh_db):
+    """Not-onboarded users land on /home and see the setup section
+    header (eyebrow + heading + lede) floating above the install hero
+    card. The dismissible Getting Started shortcut block has been
+    removed — its two links lived only as in-page jumps and duplicated
+    the install-hero + /setup-advanced affordances already present on
+    the page. Onboarded users see neither header nor install hero so
+    the page reads as a hub, not a setup screen."""
+    from src.db import get_system_db, close_system_db
+
+    # Not-onboarded: setup header + install hero both render.
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(
+            conn, email="setup-not-onboarded@example.com", onboarded=False
+        )
+    finally:
+        conn.close()
+        close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    # Header floats above the card with the design spec eyebrow + h2.
+    assert_element(body, "div", class_="setup-section-header")
+    assert ">First time here<" in body
+    assert "Set up" in body and "on your machine" in body
+    # Install hero card sits below the header.
+    assert_element(body, "div", class_="install-hero")
+    # Getting Started shortcut block is gone.
+    assert "home-getting-started" not in body
+    assert "agnes_home_gs_dismissed" not in body
+
+    # Onboarded: install hero (and the setup header above it) are gone.
+    conn = get_system_db()
+    try:
+        _, sess2 = _make_user_and_session(
+            conn, email="setup-onboarded@example.com", onboarded=True
+        )
+    finally:
+        conn.close()
+        close_system_db()
+    body2 = _client().get("/home", cookies={"access_token": sess2}).text
+    with pytest.raises(ElementNotFound):
+        assert_element(body2, "div", class_="install-hero")
+    with pytest.raises(ElementNotFound):
+        assert_element(body2, "div", class_="setup-section-header")
+
+
+def test_step2_windows_command_is_single_line(fresh_db):
+    """FAI-50 regression: Step 2 "Pick a folder" Windows/PowerShell command
+    must be ONE physical line so a single paste both creates the folder and
+    `cd`s into it. Previously it was two newline-separated statements; on
+    paste, the embedded newline submitted only the first line (`New-Item`)
+    and left `Set-Location` unsent in the PowerShell input buffer — the
+    shell never entered the new folder. The two statements are joined with
+    `;` (works in Windows PowerShell 5.1 and pwsh 7; `&&` would parse-fail
+    on 5.1), mirroring the macOS/Linux tab's single-line `mkdir … && cd …`."""
     import re
 
     from src.db import get_system_db, close_system_db
-    from app.web.connector_prompts import (
-        asana_prompt, gws_prompt, atlassian_prompt,
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(
+            conn, email="fai50-step2@example.com", onboarded=False
+        )
+    finally:
+        conn.close()
+        close_system_db()
+
+    body = _client().get("/home", cookies={"access_token": sess}).text
+
+    m = re.search(
+        r'id="install-cmd-mkdir-windows">(.*?)</span>', body, re.DOTALL
     )
-    from app.instance_config import (
-        get_gws_oauth_credentials, get_instance_admin_email,
-    )
+    assert m, "Step 2 Windows command span not found"
+    cmd = m.group(1)
+
+    # Both statements present, joined by a semicolon on one line.
+    assert "New-Item -ItemType Directory" in cmd
+    assert "Set-Location" in cmd
+    assert "| Out-Null; Set-Location" in cmd
+    # The regression guard: no newline anywhere inside the command — a
+    # multi-line paste is exactly what broke PowerShell execution.
+    assert "\n" not in cmd.strip()
+
+
+def test_welcome_footnotes_render_overview_when_set(fresh_db, monkeypatch):
+    """Setting `AGNES_INSTANCE_OVERVIEW` (mirrors `instance.overview`
+    yaml) injects raw HTML into the welcome-hero footnotes via the
+    same `| safe` filter as the previous standalone Overview
+    section. The marker text MUST appear inside
+    `.home-hero-footnotes`, and the legacy `<section class="home-overview">`
+    wrapper MUST stay absent — the operator-owned body now lives
+    inside the welcome card, not as a separate section between the
+    walkthrough and surfaces grid."""
+    monkeypatch.setenv("AGNES_INSTANCE_OVERVIEW", "<p>OVERVIEW_TEST_MARKER</p>")
+    from src.db import get_system_db, close_system_db
 
     conn = get_system_db()
     try:
@@ -303,33 +574,87 @@ def test_home_renders_connector_prompts_from_shared_module(fresh_db):
     finally:
         conn.close()
         close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    with pytest.raises(ElementNotFound):
+        assert_element(body, "section", class_="home-overview")
+    assert_element(body, "div", class_="home-hero-footnotes")
+    assert "OVERVIEW_TEST_MARKER" in body
 
-    c = _client()
-    body = c.get("/home", cookies={"access_token": sess}).text
 
-    # Resolve the same gws_oauth dict the route uses so the parity check
-    # exercises whichever branch (configured / manual) is active in the
-    # current test environment.
-    gws = get_gws_oauth_credentials()
-    expected_gws = gws_prompt(
-        gws_oauth_configured=bool(gws.get("configured")),
-        gws_client_id=str(gws.get("client_id") or ""),
-        gws_client_secret=str(gws.get("client_secret") or ""),
-        gws_project_id=str(gws.get("project_id") or ""),
-        oauthlib_insecure_transport=str(gws.get("oauthlib_insecure_transport") or "1"),
-        instance_admin_email=get_instance_admin_email(),
-    )
+def test_welcome_footnotes_hidden_when_overview_unset(fresh_db, monkeypatch):
+    """Default empty `instance.overview` (no env override) hides the
+    welcome-hero footnotes entirely so the OSS ships without a
+    stray empty footnotes block in the welcome card."""
+    monkeypatch.delenv("AGNES_INSTANCE_OVERVIEW", raising=False)
+    from src.db import get_system_db, close_system_db
 
-    for slug, expected in (
-        ("asana", asana_prompt()),
-        ("gws", expected_gws),
-        ("jira", atlassian_prompt()),
-    ):
-        m = re.search(rf'<code id="{slug}-prompt">(.*?)</code>', body, re.DOTALL)
-        assert m, f"{slug}-prompt block missing from /home"
-        actual = _html.unescape(m.group(1))
-        assert actual == expected, (
-            f"{slug}-prompt body diverged from connector_prompts module — "
-            f"the home tile and setup script will paste different text. "
-            f"len(home)={len(actual)} len(module)={len(expected)}"
-        )
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    with pytest.raises(ElementNotFound):
+        assert_element(body, "div", class_="home-hero-footnotes")
+
+
+def test_welcome_support_renders_when_set(fresh_db, monkeypatch):
+    """Setting `AGNES_INSTANCE_SUPPORT` (mirrors `instance.support`
+    yaml) injects raw HTML into the mint-accent Support callout
+    inside the welcome hero. The marker text MUST appear inside
+    `.home-hero-support-body`. Separate field from
+    `instance.overview` so support/help pointers can be updated
+    independently from the operator's product framing."""
+    monkeypatch.setenv("AGNES_INSTANCE_SUPPORT", "<p>SUPPORT_TEST_MARKER</p>")
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    assert_element(body, "div", class_="home-hero-support")
+    assert "SUPPORT_TEST_MARKER" in body
+
+
+def test_welcome_support_hidden_when_unset(fresh_db, monkeypatch):
+    """Default empty `instance.support` (no env override) hides the
+    Support callout entirely so the OSS ships without a stray
+    empty mint panel in the welcome card."""
+    monkeypatch.delenv("AGNES_INSTANCE_SUPPORT", raising=False)
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    with pytest.raises(ElementNotFound):
+        assert_element(body, "div", class_="home-hero-support")
+
+
+def test_welcome_support_independent_of_overview(fresh_db, monkeypatch):
+    """The Support callout MUST render even when `instance.overview`
+    is empty — the two fields are independent. Catches a regression
+    where the Support gate was accidentally wired to
+    INSTANCE_OVERVIEW instead of INSTANCE_SUPPORT."""
+    monkeypatch.delenv("AGNES_INSTANCE_OVERVIEW", raising=False)
+    monkeypatch.setenv("AGNES_INSTANCE_SUPPORT", "<p>SUPPORT_ONLY_MARKER</p>")
+    from src.db import get_system_db, close_system_db
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn)
+    finally:
+        conn.close()
+        close_system_db()
+    body = _client().get("/home", cookies={"access_token": sess}).text
+    with pytest.raises(ElementNotFound):
+        assert_element(body, "div", class_="home-hero-footnotes")
+    assert_element(body, "div", class_="home-hero-support")
+    assert "SUPPORT_ONLY_MARKER" in body

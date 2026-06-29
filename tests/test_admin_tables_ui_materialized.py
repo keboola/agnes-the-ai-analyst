@@ -85,13 +85,17 @@ def test_admin_tables_renders_two_question_radio_form(seeded_app, bq_instance):
     assert "Milestone 2" not in html
     assert "issue #108" not in html
 
-    # Phase E: form fields are inside the BQ tab content area.
-    bq_tab_content = html[html.index('id="tab-content-bigquery"'):]
-    bq_tab_end = bq_tab_content.index('</section>')
-    bq_section = bq_tab_content[:bq_tab_end]
-    assert 'name="bqAccessMode"' in bq_section
-    assert 'id="bqDataset"' in bq_section
-    assert 'id="bqSourceQuery"' in bq_section
+    # Package-centric rewrite: connector tabs were dropped. The BQ
+    # register modal stays in DOM as a top-level overlay reachable from
+    # the `+ Register new table ▾` action-bar dropdown. Anchor the
+    # field-scope check on the modal id instead of the deleted
+    # tab-content section.
+    bq_modal_start = html.index('id="registerBqModal"')
+    bq_modal_end = html.index('</div>\n            </div>', bq_modal_start)
+    bq_modal = html[bq_modal_start:bq_modal_end]
+    assert 'name="bqAccessMode"' in bq_modal
+    assert 'id="bqDataset"' in bq_modal
+    assert 'id="bqSourceQuery"' in bq_modal
 
 
 def test_edit_modal_has_bq_parity_fields(seeded_app, bq_instance):
@@ -172,8 +176,14 @@ def test_keboola_register_form_has_three_question_radio(seeded_app, monkeypatch)
         token = seeded_app["admin_token"]
         r = c.get("/admin/tables", headers=_auth(token))
         html = r.text
-        kb_tab = html[html.index('id="tab-content-keboola"'):]
-        kb_tab = kb_tab[:kb_tab.index('</section>')]
+        # Package-centric rewrite: anchor on the Keboola register modal id
+        # (the connector tab that used to wrap this form is gone).
+        kb_modal_start = html.index('id="registerKeboolaModal"')
+        # The modal's outer wrapper closes via "</div>\n            </div>"
+        # (modal -> modal-overlay). Use a generous slice + sanity-bound it
+        # to the next modal-overlay id so we don't bleed into editKeboolaModal.
+        next_modal_idx = html.find('id="editKeboolaModal"', kb_modal_start)
+        kb_tab = html[kb_modal_start:next_modal_idx] if next_modal_idx > 0 else html[kb_modal_start:]
 
         # All three radios present.
         assert 'name="kbSyncMode"' in kb_tab
@@ -209,8 +219,8 @@ def test_keboola_register_form_has_three_question_radio(seeded_app, monkeypatch)
 
 
 def test_keboola_register_payload_maps_to_materialized(seeded_app, monkeypatch):
-    """The form's whole-table mode posts query_mode='materialized' with
-    a synthetic SELECT * SQL — same pattern as BQ Synced/Whole."""
+    """The form's whole-table mode posts query_mode='materialized' — Keboola
+    materialized uses bucket/source_table (no SQL source_query)."""
     fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
     monkeypatch.setattr(
         "app.instance_config.load_instance_config",
@@ -229,7 +239,8 @@ def test_keboola_register_payload_maps_to_materialized(seeded_app, monkeypatch):
                 "name": "orders",
                 "source_type": "keboola",
                 "query_mode": "materialized",
-                "source_query": 'SELECT * FROM kbc."in.c-sales"."orders"',
+                "bucket": "in.c-sales",
+                "source_table": "orders",
                 "sync_schedule": "every 6h",
             },
         )
@@ -274,20 +285,19 @@ def test_keboola_edit_modal_parity(seeded_app, monkeypatch):
         reset_cache()
 
 
-def test_bq_edit_modal_inside_tab_content_bigquery(seeded_app, bq_instance):
-    """C2: BQ Edit modal physically lives inside <section id='tab-content-bigquery'>
-    so the modal+form share the tab's DOM scope. Mirror of Phase E's BQ Register
-    modal placement."""
+def test_bq_edit_modal_renders_as_dom_overlay(seeded_app, bq_instance):
+    """Package-centric rewrite: the connector tab that used to wrap
+    #editBqModal was dropped, but the modal itself stays in DOM as a
+    top-level overlay reachable from the per-row Edit affordance. Old
+    shared #editModal still exists but carries no BQ-specific fields."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     r = c.get("/admin/tables", headers=_auth(token))
     html = r.text
-    bq_section_start = html.index('id="tab-content-bigquery"')
-    bq_section_end = html.index('</section>', bq_section_start)
-    bq_section = html[bq_section_start:bq_section_end]
-    assert 'id="editBqModal"' in bq_section
-    assert 'id="editBqDataset"' in bq_section
-    assert 'id="editBqSourceQuery"' in bq_section
+    # BQ edit modal is in the DOM (as a top-level overlay now).
+    assert 'id="editBqModal"' in html
+    assert 'id="editBqDataset"' in html
+    assert 'id="editBqSourceQuery"' in html
     # Old shared #editModal either gone or only carries non-BQ fields.
     if 'id="editModal"' in html:
         edit_modal_start = html.index('id="editModal"')
@@ -298,11 +308,13 @@ def test_bq_edit_modal_inside_tab_content_bigquery(seeded_app, bq_instance):
         assert 'id="editBqDataset"' not in edit_modal  # BQ fields aren't here anymore
 
 
-def test_keboola_discover_buttons_hidden_on_bigquery_instance(seeded_app, monkeypatch):
-    """C1: Discover/List/Use-as-base buttons in the Keboola tab are
-    UI-hidden when the instance's data_source.type isn't keboola, because
-    /api/admin/discover-tables routes by instance type and would return
-    BQ data on a BQ instance."""
+def test_keboola_discover_buttons_disabled_on_bigquery_instance(seeded_app, monkeypatch):
+    """C1 / #405: Discover/List/Use-as-base buttons in the Keboola tab render
+    DISABLED with an explanatory tooltip (rather than being hidden) when the
+    instance's data_source.type isn't keboola. /api/admin/discover-tables
+    routes by instance type and would return BQ data on a BQ instance, so the
+    buttons must stay inert — `disabled` (no onclick) guarantees that while
+    still telling the admin why."""
     fake_cfg = {"data_source": {"type": "bigquery", "bigquery": {"project": "p"}}}
     monkeypatch.setattr(
         "app.instance_config.load_instance_config",
@@ -318,10 +330,18 @@ def test_keboola_discover_buttons_hidden_on_bigquery_instance(seeded_app, monkey
         # Inputs stay (manual entry works).
         assert 'id="kbBucket"' in html
         assert 'id="kbSourceTable"' in html
-        # Buttons hidden.
-        assert "discoverKeboolaBuckets" not in html
-        assert "discoverKeboolaTables" not in html
-        assert "prefillFromKeboolaTable" not in html
+        # #405: the buttons now render (visible) but disabled, carrying a
+        # tooltip that explains Keboola isn't connected.
+        assert 'data-tooltip="Keboola not connected' in html
+        # The functional guarantee that actually matters: no live call sites
+        # on a non-keboola instance, so a click can never reach
+        # /api/admin/discover-tables. Match the actual CALL SITES, not the
+        # function definitions or JS comments that reference the names
+        # verbatim (#347 moved several helpers out from under the keboola
+        # Jinja guard, so they're defined as dead code on every instance).
+        assert 'onclick="discoverKeboolaBuckets(' not in html
+        assert 'onclick="discoverKeboolaTables(' not in html
+        assert 'onclick="prefillFromKeboolaTable(' not in html
     finally:
         reset_cache()
 
@@ -345,6 +365,26 @@ def test_keboola_discover_buttons_visible_on_keboola_instance(seeded_app, monkey
         assert "prefillFromKeboolaTable" in html
     finally:
         reset_cache()
+
+
+def test_keboola_test_connection_button_in_register_and_edit_modals(seeded_app):
+    """#402: the Keboola register & edit modals expose a Test-connection
+    button wired to the existing /api/admin/keboola/test-connection probe,
+    with an inline result element and a self-contained onTestKeboola handler."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    html = c.get("/admin/tables", headers=_auth(token)).text
+    # Button rendered in BOTH modal footers (register + edit).
+    assert html.count('onclick="onTestKeboola(this)"') >= 2
+    assert "Test connection" in html
+    # Inline result element + handler defined + hits the existing endpoint.
+    assert 'class="kbc-test-result"' in html
+    assert "function onTestKeboola(" in html
+    assert "/api/admin/keboola/test-connection" in html
+    # #402 follow-up (Devin BUG-0001/0003): both modal-open paths clear the
+    # test-result badge so a stale "ok" can't linger over a reopened blank form.
+    assert "kbcResult.hidden = true" in html
+    assert "editKbcResult.hidden = true" in html
 
 
 def test_admin_tables_keboola_branch_unchanged(seeded_app, monkeypatch):

@@ -2,7 +2,6 @@
 
 import logging
 import os
-from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -26,10 +25,34 @@ def reset_cache() -> None:
     _instance_config = None
     try:
         from connectors.bigquery.access import get_bq_access
+
         get_bq_access.cache_clear()
     except Exception:
         # Connectors module not loaded yet, or BQ deps missing — both fine.
         pass
+
+
+def get_database_config() -> dict:
+    """Return ``{backend: "...", url: "..."}`` from the state machine.
+
+    Centralised so future callers don't reach into src.db_state_machine
+    directly. Cache invalidation via reset_database_cache() after
+    /api/admin/db/migrate success.
+    """
+    from src.db_state_machine import read_backend_state
+
+    state, url = read_backend_state()
+    return {"backend": state.value, "url": url}
+
+
+def reset_database_cache() -> None:
+    """No-op for now — get_database_config reads fresh each call.
+
+    Exposed as a public API so future caching (if added) has a single
+    invalidation point. Called by app/api/db_state.py after a successful
+    backend flip.
+    """
+    pass
 
 
 def _deep_merge(base: dict, patch: dict) -> dict:
@@ -81,6 +104,7 @@ def load_instance_config() -> dict:
     base: dict = {}
     try:
         from config.loader import load_instance_config as _load
+
         base = _load() or {}
         logger.info("Loaded instance.yaml base from config/")
     except Exception as e:
@@ -108,11 +132,13 @@ def load_instance_config() -> dict:
     # ``/data-state/instance.yaml``; reading from ``/data/state/...`` here
     # would silently load stale config from the regenerable data disk.
     from app.secrets import _state_dir
+
     overlay_path = _state_dir() / "instance.yaml"
     if overlay_path.exists():
         try:
             overlay = yaml.safe_load(overlay_path.read_text()) or {}
             from config.loader import _resolve_env_refs
+
             overlay = _resolve_env_refs(overlay)
             base = _deep_merge(base, overlay)
             logger.info("Merged overlay from %s", overlay_path)
@@ -120,7 +146,8 @@ def load_instance_config() -> dict:
             logger.exception(
                 "instance.yaml overlay at %s is corrupt — falling back to "
                 "static base config; saves through the editor will refuse "
-                "until the file is repaired", overlay_path,
+                "until the file is repaired",
+                overlay_path,
             )
 
     _instance_config = base
@@ -145,6 +172,21 @@ def get_data_source_type() -> str:
     return os.environ.get("DATA_SOURCE", get_value("data_source", "type", default="local"))
 
 
+def get_slack_transport() -> str:
+    """Inbound Slack transport for this instance: "http" (default) | "socket".
+
+    Resolution: ``SLACK_TRANSPORT`` env (Terraform-friendly, overrides
+    everything) > ``chat.slack.transport`` in instance.yaml > default
+    ``"http"``. Unknown values fall back to ``"http"`` so a typo never
+    starts a dead Socket Mode WS. Mirrors :func:`get_data_source_type`.
+    """
+    raw = os.environ.get("SLACK_TRANSPORT") or get_value("chat", "slack", "transport", default="http")
+    value = (raw or "http").strip().lower()
+    if value not in ("http", "socket"):
+        return "http"
+    return value
+
+
 def get_home_route() -> str:
     """Path that ``/`` redirects to for an authenticated user.
 
@@ -158,13 +200,28 @@ def get_home_route() -> str:
     Validated to start with ``/`` and not ``//`` so a misconfigured
     value can't pivot the root redirect to an external host.
     """
-    raw = os.environ.get("AGNES_HOME_ROUTE") or get_value(
-        "instance", "home_route", default="/dashboard"
-    )
+    raw = os.environ.get("AGNES_HOME_ROUTE") or get_value("instance", "home_route", default="/dashboard")
     route = (raw or "").strip()
     if not route.startswith("/") or route.startswith("//"):
         return "/dashboard"
     return route
+
+
+def get_public_url() -> str:
+    """Absolute base URL of this instance (scheme + host, no trailing slash).
+
+    Resolution order: ``PUBLIC_URL`` env var (Terraform-friendly, overrides
+    everything) > ``server.public_url`` in instance.yaml > ``""`` (unset).
+    The env-overrides-yaml shape mirrors :func:`get_home_route`.
+
+    Needed by surfaces that have no inbound HTTP request to derive the host
+    from — notably the Slack bot, which runs over Socket Mode and must mint
+    *absolute* ``/slack/bind`` magic links and ``/chat`` deep links. Callers
+    fall back to a root-relative path when this is empty, so an unset value
+    degrades gracefully rather than crashing.
+    """
+    raw = os.environ.get("PUBLIC_URL") or get_value("server", "public_url", default="")
+    return (raw or "").strip().rstrip("/")
 
 
 def get_gws_oauth_credentials() -> dict:
@@ -196,18 +253,28 @@ def get_gws_oauth_credentials() -> dict:
     Both id and secret must be set for the configured branch to engage;
     a half-configured instance falls back to manual setup with a warning.
     """
-    cid = os.environ.get("AGNES_GWS_CLIENT_ID") or get_value(
-        "instance", "gws", "client_id", default=""
+    # Resolution order: env > vault (admin UI) > instance.yaml > ""
+    # Lazy import keeps app.datasource_secrets out of the module-level import
+    # graph (avoids circular import via src.repositories at startup).
+    try:
+        from app.datasource_secrets import datasource_secret as _ds_secret
+    except Exception:
+        _ds_secret = lambda _n: None  # noqa: E731
+
+    cid = (
+        os.environ.get("AGNES_GWS_CLIENT_ID")
+        or _ds_secret("AGNES_GWS_CLIENT_ID")
+        or get_value("instance", "gws", "client_id", default="")
     )
-    secret = os.environ.get("AGNES_GWS_CLIENT_SECRET") or get_value(
-        "instance", "gws", "client_secret", default=""
+    secret = (
+        os.environ.get("AGNES_GWS_CLIENT_SECRET")
+        or _ds_secret("AGNES_GWS_CLIENT_SECRET")
+        or get_value("instance", "gws", "client_secret", default="")
     )
     insecure = os.environ.get("AGNES_GWS_OAUTHLIB_INSECURE_TRANSPORT") or get_value(
         "instance", "gws", "oauthlib_insecure_transport", default="1"
     )
-    project_id = os.environ.get("AGNES_GWS_PROJECT_ID") or get_value(
-        "instance", "gws", "project_id", default=""
-    )
+    project_id = os.environ.get("AGNES_GWS_PROJECT_ID") or get_value("instance", "gws", "project_id", default="")
     cid = (cid or "").strip()
     secret = (secret or "").strip()
     project_id = (project_id or "").strip()
@@ -228,6 +295,40 @@ def get_gws_oauth_credentials() -> dict:
     }
 
 
+def get_instance_theme() -> str:
+    """Active UI theme for this instance — drives the `data-theme`
+    attribute on `<html>` so the design-system token set
+    (`--ds-*`) flips between palettes without touching markup.
+
+    Values:
+      - ``blue``   — current default. Brand-blue hero gradient,
+                     blue CTAs, translucent-white eyebrow.
+      - ``navy``   — darker palette opted into via server config.
+                     Dark navy hero gradient, mint-green CTAs +
+                     eyebrow accents.
+      - ``dark``   — full dark surface palette (navy-tinted dark
+                     stack, pale-ink text); see ``[data-theme="dark"]``
+                     in ``design-tokens.css``.
+      - ``auto``   — light by default, flips to the ``dark`` palette
+                     when the user's OS prefers dark (resolved
+                     client-side in ``_theme_resolve.html``).
+
+    Resolution: ``AGNES_INSTANCE_THEME`` env var
+    (Terraform-friendly) > ``instance.theme`` in instance.yaml >
+    default ``"blue"``. Unrecognised values fall back to ``"blue"``
+    so a typo doesn't silently break every page.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_THEME")
+    if raw is None:
+        raw = get_value("instance", "theme", default="blue")
+    if not isinstance(raw, str):
+        return "blue"
+    value = raw.strip().lower()
+    if value not in ("navy", "blue", "dark", "auto"):
+        return "blue"
+    return value
+
+
 def get_home_automode_visibility() -> bool:
     """Whether /home renders the "Step 3 — turn on auto-accept mode"
     install-block. Auto-accept mode is the recommended middle ground
@@ -245,6 +346,32 @@ def get_home_automode_visibility() -> bool:
     raw = os.environ.get("AGNES_HOME_SHOW_AUTOMODE")
     if raw is None:
         raw = get_value("instance", "home", "show_automode", default=True)
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
+
+
+def get_home_status_frame_visibility() -> bool:
+    """Whether /home renders the homepage status frame (Last sync,
+    Sessions, Prompts, Tokens, Projects).
+
+    The template ALSO gates rendering on ``users.onboarded`` so a
+    fresh user sees a clean install-hero before the all-zero stat
+    cards. This helper is the operator-level master switch; the
+    onboarding gate is a UX coherence rule layered on top.
+
+    Cautious-rollout instances that would rather not expose token
+    counters to analysts yet can disable with
+    ``AGNES_HOME_SHOW_STATUS_FRAME=0`` (or
+    ``instance.home.show_status_frame: false`` in YAML).
+
+    Resolution: env var > ``instance.home.show_status_frame`` YAML > True.
+    Shape mirrors :func:`get_home_automode_visibility` so Terraform
+    overrides land the same way.
+    """
+    raw = os.environ.get("AGNES_HOME_SHOW_STATUS_FRAME")
+    if raw is None:
+        raw = get_value("instance", "home", "show_status_frame", default=True)
     if isinstance(raw, bool):
         return raw
     return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
@@ -278,6 +405,168 @@ def get_instance_brand() -> str:
     return value or "Agnes"
 
 
+def get_instance_logo_svg() -> str:
+    """Raw inline ``<svg>`` markup rendered into the header brand slot
+    (``_app_header.html``). When non-empty, replaces the text brand in
+    the header — typical use is a lockup that already contains the
+    brand wordmark. When empty, the header falls back to
+    :func:`get_instance_name` as text.
+
+    Resolution: ``AGNES_INSTANCE_LOGO_SVG`` env > ``instance.logo_svg``
+    YAML > ``""``. Mirrors :func:`get_instance_brand` so Terraform env
+    overrides work the same way.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_LOGO_SVG")
+    if raw is None:
+        raw = get_value("instance", "logo_svg", default="")
+    return (raw or "").strip()
+
+
+def get_instance_overview() -> str:
+    """Operator-authored Overview body rendered on ``/home``. Markdown is
+    NOT auto-converted — operators paste HTML (matches the existing
+    ``news_intro`` ``| safe`` filter). Empty default = section hidden,
+    keeping the OSS vendor-neutral when an instance ships without
+    operator-specific framing.
+
+    Resolution: ``AGNES_INSTANCE_OVERVIEW`` env > ``instance.overview``
+    YAML > ``""``. Mirrors :func:`get_instance_logo_svg`.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_OVERVIEW")
+    if raw is None:
+        raw = get_value("instance", "overview", default="")
+    return (raw or "").strip()
+
+
+def get_instance_support() -> str:
+    """Operator-authored Support body rendered inside the welcome hero
+    on ``/home``. Same ``| safe``-filter shape as
+    :func:`get_instance_overview` — operators paste HTML. Distinct
+    config field so help/chat pointers can be updated independently
+    from the product framing in ``instance.overview``.
+
+    Typical content: a one-line invitation pointing at a chat space
+    (Google Chat / Slack / Teams), a mailing list, or an internal
+    runbook. Empty default = block hidden, keeping the OSS
+    vendor-neutral when an instance ships without an operator-defined
+    support channel.
+
+    Resolution: ``AGNES_INSTANCE_SUPPORT`` env > ``instance.support``
+    YAML > ``""``. Mirrors :func:`get_instance_overview`.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_SUPPORT")
+    if raw is None:
+        raw = get_value("instance", "support", default="")
+    return (raw or "").strip()
+
+
+_CUSTOM_SCRIPT_PLACEMENTS = ("head_start", "head_end", "body_end")
+
+
+def _custom_script_enabled(value) -> bool:
+    """Coerce the per-entry ``enabled`` field tolerant of YAML's many
+    truthiness shapes.
+
+    Operators hand-editing YAML (or pasting blocks from another source)
+    can land ``enabled: "false"`` (quoted string), ``enabled: 0``, or
+    ``enabled: no`` rather than the boolean ``false``. ``bool("false")``
+    is ``True`` in Python, so a naive truth check silently keeps the
+    script live — a footgun for what's meant to be a kill switch on
+    admin-injected JS. Missing / ``None`` → live (default-on, matches
+    the registered field shape).
+    """
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "false", "no", "0", "off")
+    return bool(value)
+
+
+def get_custom_scripts() -> list[dict]:
+    """Operator-injected HTML/JS blocks rendered by ``base.html``.
+
+    Reads ``instance.custom_scripts`` from instance.yaml — a list of
+    dicts ``{name, enabled, placement, html}``. Each block lands in one
+    of three template slots:
+
+    - ``head_start`` — first thing in ``<head>``, before any CSS/JS
+      (rare; GTM dataLayer init).
+    - ``head_end`` — last thing in ``<head>`` (default; analytics +
+      feedback widgets like Marker.io, Sentry, Hotjar).
+    - ``body_end`` — just before ``</body>`` (vendors that explicitly
+      ask for bottom placement).
+
+    Trust boundary: admin-only. ``instance.yaml`` is written through
+    ``/api/admin/server-config`` (gated by ``require_admin``) and the
+    rendered HTML is interpolated with ``| safe``, exactly mirroring
+    ``instance.logo_svg`` / ``instance.overview``.
+
+    Normalization:
+    - Drop entries whose ``enabled`` resolves to false via
+      :func:`_custom_script_enabled` (handles quoted strings, 0/1, etc.
+      — not just the Python ``False`` singleton).
+    - Drop entries whose ``html`` strips to empty.
+    - Default missing ``name`` to "" and missing ``placement`` to
+      "head_end".
+    - Drop entries whose ``placement`` isn't in the allowlist, with a
+      logged warning naming the offending block — admin sees the
+      mistake instead of the server crashing.
+
+    No env-var override: the structure is a list of objects, which
+    doesn't round-trip cleanly through env vars; deployment-time
+    injection happens by writing the YAML from the deploy script.
+
+    Returns ``[]`` when YAML omits the key — empty by default keeps the
+    OSS vendor-neutral.
+    """
+    raw = get_value("instance", "custom_scripts", default=None)
+    if not raw:
+        return []
+    if not isinstance(raw, list):
+        logger.warning(
+            "instance.custom_scripts must be a list, got %s — ignoring",
+            type(raw).__name__,
+        )
+        return []
+    out: list[dict] = []
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            logger.warning(
+                "instance.custom_scripts[%d] must be a dict, got %s — skipping",
+                idx,
+                type(entry).__name__,
+            )
+            continue
+        if not _custom_script_enabled(entry.get("enabled")):
+            continue
+        html = (entry.get("html") or "").strip()
+        if not html:
+            continue
+        placement = (entry.get("placement") or "head_end").strip()
+        if placement not in _CUSTOM_SCRIPT_PLACEMENTS:
+            logger.warning(
+                "instance.custom_scripts[%d] (name=%r) has unknown placement %r — must be one of %s — skipping",
+                idx,
+                entry.get("name", ""),
+                placement,
+                ", ".join(_CUSTOM_SCRIPT_PLACEMENTS),
+            )
+            continue
+        out.append(
+            {
+                "name": str(entry.get("name") or ""),
+                "enabled": True,
+                "placement": placement,
+                "html": html,
+            }
+        )
+    return out
+
+
 def get_workspace_dir_name() -> str:
     """Filesystem-safe folder name for the analyst's local workspace
     (``~/<workspace_dir_name>``). Defaults to :func:`get_instance_brand`
@@ -297,6 +586,7 @@ def get_workspace_dir_name() -> str:
     if explicit:
         return explicit
     import re
+
     derived = re.sub(r"[^A-Za-z0-9]", "", get_instance_brand())
     return derived or "Agnes"
 
@@ -315,6 +605,25 @@ def get_instance_admin_email() -> str:
     raw = os.environ.get("AGNES_INSTANCE_ADMIN_EMAIL")
     if raw is None:
         raw = get_value("instance", "admin_email", default="")
+    return (raw or "").strip()
+
+
+def get_infra_repo_url() -> str:
+    """Optional URL of the infrastructure/provisioning repository for this
+    instance (e.g. the Terraform repo that deployed the VM). Used by the
+    built-in ``agnes-operator`` marketplace plugin to give the operator's
+    Claude a concrete pointer to where they manage infra for this instance.
+
+    Empty string by default — the OSS distribution ships vendor-neutral;
+    an operator sets this so the operator plugin can name the real infra
+    repo without hardcoding anything in shipped content.
+
+    Resolution: ``AGNES_INFRA_REPO_URL`` env > ``instance.infra_repo_url``
+    YAML > ``""`` (unset). Mirrors :func:`get_instance_admin_email` shape.
+    """
+    raw = os.environ.get("AGNES_INFRA_REPO_URL")
+    if raw is None:
+        raw = get_value("instance", "infra_repo_url", default="")
     return (raw or "").strip()
 
 
@@ -399,12 +708,16 @@ def get_guardrails_review_model() -> str:
 
 
 def get_guardrails_blocked_quota_per_day() -> int:
-    """Per-submitter cap on `blocked_inline` rows in the trailing 24h.
+    """Per-submitter cap on `blocked_llm` + `review_error` rows in the
+    trailing 24h.
 
     Defaults to 50. Set to 0 in instance.yaml to disable the quota
-    entirely (useful for trusted single-tenant deployments). Bounds the
-    worst case where a bot loops on malformed ZIPs and fills disk +
-    the admin queue with noise.
+    entirely (useful for trusted single-tenant deployments). Bounds
+    the worst case where a bot loops on bundles that pass inline
+    checks but trip the async LLM reviewer. Inline failures are
+    hard-rejected upstream (no row created) and not counted here;
+    HTTP-level rate limiting + the
+    ``store.upload.security_blocked`` audit trail cover that path.
     """
     val = get_value("guardrails", "blocked_quota_per_day", default=50)
     try:
@@ -449,22 +762,89 @@ def get_guardrails_stuck_review_grace_seconds() -> int:
         return 1800
 
 
-def get_guardrails_enabled() -> bool:
-    """Master kill-switch for the guardrail pipeline.
+def get_guardrails_min_description_chars() -> int:
+    """Minimum character floor for skill / agent / plugin descriptions.
 
-    Defaults to True. Operators can disable by setting ``guardrails.enabled:
-    false`` in instance.yaml — useful for local development against the
-    UI without burning Anthropic tokens. Inline checks always run; this
-    flag only gates the LLM step (and skips the pending → approved hold).
-
-    Auto-fallback: when the YAML says enabled but no ANTHROPIC_API_KEY /
-    LLM_API_KEY is set in the environment, behave as disabled. This
-    keeps the test suite + first-boot operator experience sane — uploads
-    auto-approve until the operator wires up an LLM provider rather than
-    silently piling up in ``review_error``.
+    Reads ``guardrails.min_description_chars`` (default 60). Set the
+    floor low (e.g. 30) to relax the inline content check; set high
+    (e.g. 120) to push submitters closer to the Claude-skill-ecosystem
+    norm of 150–220 chars per description.
     """
-    if not bool(get_value("guardrails", "enabled", default=True)):
-        return False
+    val = get_value("guardrails", "min_description_chars", default=60)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return 60
+
+
+def get_guardrails_min_command_description_chars() -> int:
+    """Minimum character floor for slash-command descriptions.
+
+    Reads ``guardrails.min_command_description_chars`` (default 25).
+    Commands are typically one-verb actions — kept tighter than skills.
+    """
+    val = get_value("guardrails", "min_command_description_chars", default=25)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return 25
+
+
+def get_guardrails_min_distinct_words() -> int:
+    """Minimum distinct-word count for any description string.
+
+    Reads ``guardrails.min_distinct_words`` (default 5). Defends against
+    "padding hits the char count but says nothing" cases like
+    `"description description description description"`.
+    """
+    val = get_value("guardrails", "min_distinct_words", default=5)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return 5
+
+
+def get_guardrails_min_body_chars() -> int:
+    """Minimum body-content floor for skill / agent files.
+
+    Reads ``guardrails.min_body_chars`` (default 200). Body = the
+    markdown after the YAML frontmatter. 200 chars is a "one paragraph"
+    floor that catches stubs; real skill bodies run 500–2000 chars.
+    """
+    val = get_value("guardrails", "min_body_chars", default=200)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return 200
+
+
+def get_guardrails_enabled() -> bool:
+    """Operator's stated intent for the guardrail pipeline.
+
+    Reads ``guardrails.enabled`` from instance.yaml. Defaults to True.
+    Operators can explicitly disable by setting ``guardrails.enabled:
+    false`` — useful for local development against the UI without
+    burning Anthropic tokens.
+
+    Note: this returns intent ONLY. Whether the LLM provider has
+    working credentials is a separate concern — see
+    :func:`get_guardrails_llm_provider_ready`. The two are kept apart
+    so callers can implement fail-CLOSED behavior: hold submissions at
+    ``pending_llm`` (instead of silently auto-approving) when intent is
+    True but credentials are missing.
+    """
+    return bool(get_value("guardrails", "enabled", default=True))
+
+
+def get_guardrails_llm_provider_ready() -> bool:
+    """Whether the LLM provider has credentials present in the
+    environment.
+
+    Independent from :func:`get_guardrails_enabled` (operator intent).
+    A False return here when intent is True is a misconfiguration —
+    the caller should hold submissions at ``pending_llm`` and surface
+    a loud boot-time warning rather than silently auto-approving.
+    """
     if os.environ.get("ANTHROPIC_API_KEY", "").strip():
         return True
     if os.environ.get("LLM_API_KEY", "").strip():

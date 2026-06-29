@@ -1,16 +1,12 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Setup local agent — {{ config.INSTANCE_NAME }}</title>
-    {% if not config.THEME_FONT_URL %}
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    {% endif %}
-    <link rel="stylesheet" href="{{ url_for('static', filename='style-custom.css') }}">
-    <style>
+{% extends "base_ds.html" %}
+
+{% block title %}Setup local agent — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block head_extra %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
         /* ── Header (shared visual style with dashboard.html) ── */
         .header {
             background: var(--surface);
@@ -32,7 +28,7 @@
         }
         .header-logo { display: inline-flex; align-items: center; text-decoration: none; color: inherit; }
         .header-logo svg { display: block; }
-        a.header-logo:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
+        a.header-logo:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 2px; border-radius: 4px; }
         .header-subtitle {
             font-size: 11px;
             font-weight: 500;
@@ -55,8 +51,8 @@
             width: 36px;
             height: 36px;
             border-radius: 50%;
-            background: var(--primary-light);
-            color: var(--primary);
+            background: var(--ds-primary-light);
+            color: var(--ds-primary);
             font-size: 13px;
             font-weight: 600;
             display: flex;
@@ -104,35 +100,9 @@
             padding: 28px 32px 48px;
         }
 
-        /* ── Hero ── */
-        .hero {
-            background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
-            border-radius: 12px;
-            padding: 32px 36px;
-            margin-bottom: 24px;
-            box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
-            color: white;
-        }
-        .hero-eyebrow {
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-            color: rgba(255, 255, 255, 0.75);
-            margin-bottom: 10px;
-        }
-        .hero h1 {
-            font-size: 30px;
-            font-weight: 700;
-            margin: 0 0 8px 0;
-            color: white;
-            letter-spacing: -0.4px;
-        }
-        .hero-sub {
-            font-size: 14px;
-            color: rgba(255, 255, 255, 0.85);
-            line-height: 1.6;
-        }
+        /* Hero box + typography come from `.page-header--hero` in
+           style-custom.css. install.html only adds the hero-meta chip
+           row (version/server URL pills) below the canonical subtitle. */
         .hero-meta {
             display: flex;
             flex-wrap: wrap;
@@ -169,7 +139,7 @@
         .step-num {
             width: 26px;
             height: 26px;
-            background: var(--primary);
+            background: var(--ds-primary);
             color: white;
             border-radius: 50%;
             display: inline-flex;
@@ -262,7 +232,7 @@
         .auth-banner {
             background: var(--background);
             border: 1px solid var(--border);
-            border-left: 3px solid var(--primary);
+            border-left: 3px solid var(--ds-primary);
             border-radius: 8px;
             padding: 12px 16px;
             display: flex;
@@ -275,7 +245,7 @@
         }
         .auth-banner-text { line-height: 1.5; }
         .auth-banner a {
-            color: var(--primary);
+            color: var(--ds-primary);
             text-decoration: none;
             font-weight: 600;
             white-space: nowrap;
@@ -301,7 +271,7 @@
             font-size: 14px;
             font-weight: 600;
             color: #FFFFFF;
-            background: var(--primary);
+            background: var(--ds-primary);
             border: none;
             border-radius: 8px;
             padding: 12px 22px;
@@ -310,9 +280,9 @@
             margin-top: 4px;
         }
         .btn-oneclick:hover {
-            background: var(--primary-dark, #0056A3);
+            background: var(--ds-primary-dark, #0056A3);
             transform: translateY(-1px);
-            box-shadow: 0 4px 14px rgba(0, 115, 209, 0.25);
+            box-shadow: 0 4px 14px color-mix(in srgb, var(--ds-primary) 25%, transparent);
         }
         .btn-oneclick[disabled] {
             opacity: 0.7;
@@ -323,7 +293,7 @@
             background: var(--success, #10B77F);
         }
         .btn-oneclick:focus-visible {
-            outline: 2px solid var(--primary);
+            outline: 2px solid var(--ds-primary);
             outline-offset: 2px;
         }
         .oneclick-error {
@@ -403,7 +373,7 @@
             user-select: none;
         }
         .manual-aside > summary:focus-visible {
-            outline: 2px solid var(--primary);
+            outline: 2px solid var(--ds-primary);
             outline-offset: 2px;
             border-radius: 4px;
         }
@@ -469,12 +439,12 @@
             cursor: pointer;
         }
         .setup-fallback-actions button.primary {
-            background: var(--primary);
+            background: var(--ds-primary);
             color: #FFF;
-            border-color: var(--primary);
+            border-color: var(--ds-primary);
         }
 
-        /* ── Inline CTA link (Open /tokens etc.) ── */
+        /* ── Inline CTA link (Open /me/profile etc.) ── */
         .btn-cta {
             display: inline-flex;
             align-items: center;
@@ -482,8 +452,8 @@
             font-family: var(--font-primary);
             font-size: 13px;
             font-weight: 600;
-            color: var(--primary);
-            background: var(--primary-light);
+            color: var(--ds-primary);
+            background: var(--ds-primary-light);
             border: none;
             border-radius: 8px;
             padding: 8px 14px;
@@ -493,7 +463,7 @@
             margin-bottom: 14px;
         }
         .btn-cta:hover {
-            background: rgba(0, 115, 209, 0.18);
+            background: color-mix(in srgb, var(--ds-primary) 18%, transparent);
         }
 
         /* ── Collapsible manual install ── */
@@ -517,7 +487,7 @@
         }
         .manual-summary::-webkit-details-marker { display: none; }
         .manual-summary:focus-visible {
-            outline: 2px solid var(--primary);
+            outline: 2px solid var(--ds-primary);
             outline-offset: 2px;
         }
         .manual-summary-text {
@@ -559,7 +529,7 @@
         }
         .manual-body li:last-child { margin-bottom: 0; }
         .manual-body a {
-            color: var(--primary);
+            color: var(--ds-primary);
             text-decoration: none;
             font-family: var(--font-mono);
             font-size: 12px;
@@ -574,7 +544,7 @@
             color: var(--text-secondary);
         }
         .footer-link a {
-            color: var(--primary);
+            color: var(--ds-primary);
             text-decoration: none;
             font-weight: 500;
         }
@@ -614,8 +584,9 @@
         @media (max-width: 720px) {
             .header { padding: 0 16px; }
             .main { padding: 20px 16px 32px; }
-            .hero { padding: 24px 20px; }
-            .hero h1 { font-size: 22px; }
+            /* mobile hero shrink — canonical `.page-header--hero`
+               already has its own narrow-viewport rule; no override
+               needed here. */
             .card-header { padding: 18px 18px 0; }
             .card-body { padding: 14px 18px 20px; }
             .code-block {
@@ -633,7 +604,7 @@
         .setup-banner {
             background: var(--background, #f6f7f9);
             border: 1px solid var(--border, #e1e4e8);
-            border-left: 3px solid var(--primary, #0073D1);
+            border-left: 3px solid var(--ds-primary);
             border-radius: 8px;
             padding: 14px 18px;
             margin-bottom: 20px;
@@ -644,14 +615,10 @@
         .setup-banner > *:first-child { margin-top: 0; }
         .setup-banner > *:last-child { margin-bottom: 0; }
     </style>
-    {% include '_theme.html' %}
-</head>
-<body>
+{% endblock %}
 
-    <!-- ═══════════════ HEADER ═══════════════ -->
-    {% include '_app_header.html' %}
-
-    {% with messages = get_flashed_messages(with_categories=true) %}
+{% block layout %}
+{% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
     <div class="flash-messages">
         {% for category, message in messages %}
@@ -667,19 +634,21 @@
         {% if banner_html %}<div class="setup-banner">{{ banner_html | safe }}</div>{% endif %}
 
         <!-- ═══════════════ HERO ═══════════════ -->
-        <section class="hero">
-            <div class="hero-eyebrow">Getting started</div>
-            <h1>Install the {{ instance_brand or "Agnes" }} CLI on this machine</h1>
-            <p class="hero-sub">
-                Connect your terminal and Claude Code to this server. Copy the
-                one-liner below — it downloads and installs the CLI wheel,
-                then seeds your local config.
-            </p>
-            <div class="hero-meta">
-                <span class="hero-pill">{{ server_url }}</span>
-                {% if agnes_version and agnes_version != "dev" %}
-                <span class="hero-pill">v{{ agnes_version }}</span>
-                {% endif %}
+        <section class="page-header page-header--hero">
+            <div class="page-header__main">
+                <div class="page-header__eyebrow">Getting started</div>
+                <h1 class="page-header__title">Install the {{ instance_brand or "Agnes" }} CLI on this machine</h1>
+                <p class="page-header__subtitle">
+                    Connect your terminal and Claude Code to this server. Copy the
+                    one-liner below — it downloads and installs the CLI wheel,
+                    then seeds your local config.
+                </p>
+                <div class="hero-meta">
+                    <span class="hero-pill">{{ server_url }}</span>
+                    {% if agnes_version and agnes_version != "dev" %}
+                    <span class="hero-pill">v{{ agnes_version }}</span>
+                    {% endif %}
+                </div>
             </div>
         </section>
 
@@ -811,8 +780,8 @@
                     Tokens let the CLI, CI jobs, and Claude Code talk to the
                     server without a browser session.
                 </p>
-                <a href="/tokens" class="btn-cta">
-                    Open /tokens
+                <a href="/me/profile#tokens" class="btn-cta">
+                    Open /me/profile#tokens
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M5 12h14M13 5l7 7-7 7"/>
                     </svg>
@@ -934,8 +903,10 @@
     <footer class="footer">
         <p>&copy; {{ now().year if now is defined else 2024 }} {{ config.INSTANCE_COPYRIGHT or 'AI Data Analyst' }}</p>
     </footer>
+{% endblock %}
 
-    <script>
+{% block scripts %}
+<script>
     (function() {
         function copyToClipboard(text) {
             if (navigator.clipboard && window.isSecureContext) {
@@ -1037,7 +1008,7 @@
             try {
                 // Uniform PAT mint for everyone: scope=general,
                 // expires_in_days=90. The same `/auth/tokens` endpoint
-                // a user can already hit from the /tokens UI — no
+                // a user can already hit from the /me/profile UI — no
                 // role-locked endpoint, no per-role TTL clamp.
                 var tokenBody = { name: defaultTokenName(), expires_in_days: 90 };
                 var resp = await fetch('/auth/tokens', {
@@ -1086,12 +1057,10 @@
                     errEl.textContent = 'Setup failed: ' + (err && err.message ? err.message : err);
                     errEl.style.display = 'block';
                 } else {
-                    alert('Setup failed: ' + (err && err.message ? err.message : err));
+                    await alertModal('Setup failed: ' + (err && err.message ? err.message : err));
                 }
             }
         };
     })();
     </script>
-    {% include "_version_badge.html" %}
-</body>
-</html>
+{% endblock %}

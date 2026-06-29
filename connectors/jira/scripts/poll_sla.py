@@ -117,7 +117,9 @@ def find_open_issues_with_sla(parquet_dir: Path) -> list[str]:
         logger.error(f"Issues Parquet directory not found: {issues_dir}")
         return []
 
-    parquet_files = sorted(issues_dir.glob("*.parquet"))
+    # Recursive: matches both flat (<table>/<YYYY-MM>.parquet) and hive
+    # (<table>/month=<YYYY-MM>/data.parquet) Jira parquet layouts.
+    parquet_files = sorted(issues_dir.rglob("*.parquet"))
     if not parquet_files:
         logger.error(f"No Parquet files found in {issues_dir}")
         return []
@@ -262,6 +264,86 @@ def update_issue_sla(
     return "healed" if is_healed else "updated"
 
 
+def run(dry_run: bool = False, verbose: bool = False) -> dict:
+    """Poll open Jira tickets for fresh SLA data and self-heal stale status.
+
+    Programmatic entry point for the scheduler endpoint
+    ``/api/admin/run-jira-sla-poll``. Mirrors what ``main()`` does as a
+    CLI script, but returns a stats dict instead of calling ``sys.exit``.
+
+    Returns a dict with keys: ``open_issues``, ``updated``, ``healed``,
+    ``skipped``, ``failed``, ``elapsed_sec``, ``dry_run``. Raises
+    ``ValueError`` (from ``load_config``) when required ``JIRA_*`` env
+    vars are missing — callers handle that as "Jira not configured" and
+    skip the run.
+    """
+    if verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    config = load_config()
+    raw_dir = config["data_dir"]
+    parquet_dir = Path(os.environ.get("JIRA_PARQUET_DIR", "/data/src_data/parquet/jira"))
+    base_url = config["base_url"]
+    auth = (config["email"], config["api_token"])
+
+    open_issues = find_open_issues_with_sla(parquet_dir)
+
+    if not open_issues:
+        logger.info("No open issues with SLA data found")
+        return {
+            "open_issues": 0,
+            "updated": 0,
+            "healed": 0,
+            "skipped": 0,
+            "failed": 0,
+            "elapsed_sec": 0.0,
+            "dry_run": dry_run,
+        }
+
+    if dry_run:
+        logger.info(f"Dry run: would poll {len(open_issues)} open issues")
+        return {
+            "open_issues": len(open_issues),
+            "updated": 0,
+            "healed": 0,
+            "skipped": 0,
+            "failed": 0,
+            "elapsed_sec": 0.0,
+            "dry_run": True,
+        }
+
+    stats = {"updated": 0, "skipped": 0, "failed": 0, "healed": 0}
+    start_time = time.time()
+
+    for i, issue_key in enumerate(sorted(open_issues), 1):
+        logger.info(f"[{i}/{len(open_issues)}] Polling {issue_key}...")
+        result = update_issue_sla(issue_key, raw_dir, base_url, auth)
+        stats[result] += 1
+        time.sleep(0.5)  # gentle on the Jira API
+
+    elapsed = time.time() - start_time
+
+    logger.info("=" * 60)
+    logger.info("SLA polling completed!")
+    logger.info(f"Open issues polled: {len(open_issues)}")
+    logger.info(f"Updated (SLA only): {stats['updated']}")
+    logger.info(f"Healed (status corrected): {stats['healed']}")
+    logger.info(f"Skipped: {stats['skipped']}")
+    logger.info(f"Failed: {stats['failed']}")
+    logger.info(f"Time: {elapsed:.1f}s")
+    logger.info("=" * 60)
+
+    return {
+        "open_issues": len(open_issues),
+        "updated": stats["updated"],
+        "healed": stats["healed"],
+        "skipped": stats["skipped"],
+        "failed": stats["failed"],
+        "elapsed_sec": elapsed,
+        "dry_run": False,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Poll open Jira tickets for fresh SLA data",
@@ -276,56 +358,9 @@ def main():
         action="store_true",
         help="Enable debug logging",
     )
-
     args = parser.parse_args()
 
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-
-    config = load_config()
-    raw_dir = config["data_dir"]
-    parquet_dir = Path(os.environ.get("JIRA_PARQUET_DIR", "/data/src_data/parquet/jira"))
-    base_url = config["base_url"]
-    auth = (config["email"], config["api_token"])
-
-    # Find open issues with SLA data
-    open_issues = find_open_issues_with_sla(parquet_dir)
-
-    if not open_issues:
-        logger.info("No open issues with SLA data found")
-        return
-
-    if args.dry_run:
-        logger.info(f"Dry run: would poll {len(open_issues)} open issues:")
-        for key in sorted(open_issues):
-            logger.info(f"  {key}")
-        return
-
-    # Process each open issue
-    stats = {"updated": 0, "skipped": 0, "failed": 0, "healed": 0}
-    start_time = time.time()
-
-    for i, issue_key in enumerate(sorted(open_issues), 1):
-        logger.info(f"[{i}/{len(open_issues)}] Polling {issue_key}...")
-
-        result = update_issue_sla(issue_key, raw_dir, base_url, auth)
-        stats[result] += 1
-
-        # Brief pause between API calls to be respectful
-        time.sleep(0.5)
-
-    elapsed = time.time() - start_time
-
-    logger.info("=" * 60)
-    logger.info("SLA polling completed!")
-    logger.info(f"Open issues polled: {len(open_issues)}")
-    logger.info(f"Updated (SLA only): {stats['updated']}")
-    logger.info(f"Healed (status corrected): {stats['healed']}")
-    logger.info(f"Skipped: {stats['skipped']}")
-    logger.info(f"Failed: {stats['failed']}")
-    logger.info(f"Time: {elapsed:.1f}s")
-    logger.info("=" * 60)
-
+    stats = run(dry_run=args.dry_run, verbose=args.verbose)
     if stats["failed"] > 0:
         sys.exit(1)
 

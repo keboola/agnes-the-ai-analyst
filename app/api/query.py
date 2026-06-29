@@ -4,19 +4,32 @@ import contextlib
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 import duckdb
 
 from app.auth.access import is_user_admin
 from app.auth.dependencies import get_current_user, _get_db
+from app.auth.session_principal import SessionPrincipal
 from app.instance_config import get_value
+from connectors.internal.access import (
+    InternalAccessError,
+    execute_internal_query,
+    find_internal_refs,
+    is_internal_table,
+)
+
+from src.repositories import (
+    audit_repo,
+    table_registry_repo,
+)
+from src.audit_helpers import client_kind_from_user
 from src.db import get_analytics_db_readonly
 from src.rbac import get_accessible_tables
-from src.repositories.table_registry import TableRegistryRepository
 
 # Imported at module level so tests can monkeypatch via
 # `app.api.query._bq_dry_run_bytes` without resolving lazy imports inside
@@ -30,6 +43,71 @@ from connectors.bigquery.access import get_bq_access, BqAccessError
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/query", tags=["query"])
+
+# ---------------------------------------------------------------------------
+# Per-session BQ scan budget (Phase 12.3)
+# ---------------------------------------------------------------------------
+
+# In-memory counter: session_id → cumulative bytes scanned this session.
+# Keyed by chat session JWT claim ``chat_session_id`` (set by Task 13.1).
+# Resets on server restart (intentional — sessions are short-lived).
+_per_session_bq_bytes: dict[str, int] = {}
+
+_DEFAULT_PER_SESSION_BQ_BYTES = 20 * 1024**3  # 20 GiB
+
+
+def _maybe_charge_chat_session_bq_budget(request, scan_bytes: int) -> None:
+    """If the request was authenticated under a chat-scope JWT (claim stashed
+    on ``request.state.chat_session_id`` by ``app.auth.dependencies``), charge
+    ``scan_bytes`` against that chat session's per-session BigQuery budget.
+
+    Regular (non-chat) /api/query callers leave ``request.state.chat_session_id``
+    unset and silently skip this — they're already capped by the per-user
+    daily/concurrent BQ guards in v2_quota.
+    """
+    session_id = getattr(getattr(request, "state", None), "chat_session_id", None)
+    if not session_id:
+        return
+    cfg = None
+    try:
+        cfg = request.app.state.chat_config
+    except Exception:
+        cfg = None
+    limit_bytes = (
+        cfg.per_session_bq_scan_bytes if cfg is not None else _DEFAULT_PER_SESSION_BQ_BYTES
+    )
+    accumulate_session_bq_bytes(session_id, scan_bytes, limit_bytes=limit_bytes)
+
+
+def accumulate_session_bq_bytes(
+    session_id: str,
+    scan_bytes: int,
+    *,
+    limit_bytes: int = _DEFAULT_PER_SESSION_BQ_BYTES,
+) -> None:
+    """Accumulate ``scan_bytes`` for ``session_id`` and raise HTTPException
+    (400 / ``bq_budget_exhausted``) if the cumulative total exceeds
+    ``limit_bytes``.
+
+    Called from the BQ scan guard after the dry-run resolves ``total_bytes``.
+    Integration with the request auth path is deferred to Task 13.1 — that
+    task wires ``chat_session_id`` from the JWT into ``request.state`` so the
+    execute_query handler can pass it through here.
+    """
+    current = _per_session_bq_bytes.get(session_id, 0)
+    new_total = current + scan_bytes
+    _per_session_bq_bytes[session_id] = new_total
+    if limit_bytes > 0 and new_total > limit_bytes:
+        raise HTTPException(status_code=400, detail={
+            "reason": "bq_budget_exhausted",
+            "session_id": session_id,
+            "scan_bytes_cumulative": new_total,
+            "limit_bytes": limit_bytes,
+            "suggestion": (
+                "Per-session BigQuery scan budget exhausted. "
+                "Start a new chat session to reset the quota."
+            ),
+        })
 
 
 # Heuristic: did the BQ-side execution of a `bigquery_query()`-rewritten
@@ -74,6 +152,54 @@ def _looks_like_bq_rewrite_parse_error(exc: BaseException) -> bool:
     or a plain Python Exception."""
     msg = str(exc)
     return any(pat in msg for pat in _BQ_REWRITE_PARSE_ERROR_PATTERNS)
+
+
+def _hint_for_bq_bad_request(message: str) -> str:
+    """Pick the most useful one-line hint for a BigQuery `bad_request`
+    error message. The default "column doesn't exist" hint is correct
+    for ~half of BQ rejections (`Unrecognized name: foo`,
+    `Field foo not found in record`) but actively misleading when BQ
+    actually rejected on syntax (`Syntax error: Unexpected keyword
+    ROWS at [1:20]` — reserved-keyword alias without quoting,
+    extremely common because `rows` / `range` / `groups` / `window`
+    are all reserved). Branch on the BQ message to pick the right hint
+    rather than always blaming columns."""
+    msg = message.lower()
+    if "unexpected keyword" in msg or "syntax error" in msg:
+        # Plain text — this string is surfaced as JSON `hint:` and printed
+        # verbatim by the CLI. No markdown rendering, so avoid backtick
+        # quoting around BQ-style backtick identifiers (`\\\`` escape in
+        # a Python source literal renders the backslashes literally to
+        # the analyst — exactly the misleading shape this hint tries to
+        # fix).
+        return (
+            "BigQuery rejected this on SQL syntax. Most often this is a "
+            "reserved-keyword identifier used unquoted — e.g. "
+            "SELECT COUNT(*) AS rows fails because 'rows' is reserved. "
+            "Either rename the alias to a non-reserved word (AS row_count) "
+            "or backtick-quote it BQ-style (AS `rows` with literal "
+            "backticks around the identifier). For other syntax errors, "
+            "see the 'underlying' field below — it carries BigQuery's own "
+            "diagnostic with the error position."
+        )
+    if "unrecognized name" in msg or "not found inside" in msg or "field name" in msg:
+        return (
+            "BigQuery rejected this because a column referenced in "
+            "WHERE/SELECT/etc doesn't exist on the table. Verify with "
+            "`agnes schema <id>`."
+        )
+    if "table not found" in msg or "not found:" in msg:
+        return (
+            "BigQuery rejected this because the table reference doesn't "
+            "exist. Use a registered table id from `agnes catalog`, or "
+            "write a full backtick path like `` `<project>.<dataset>.<table>` ``."
+        )
+    return (
+        "BigQuery rejected this query during cost estimation. See the "
+        "`underlying` field for BigQuery's own diagnostic; common causes "
+        "are missing columns (verify with `agnes schema <id>`), "
+        "reserved-keyword aliases, or unregistered table paths."
+    )
 
 # Issue #160 §4.3.1 — direct `bq.<dataset>.<source_table>` references in user
 # SQL. Catalog token accepts both `bq` (the unquoted DuckDB-style name) and
@@ -135,11 +261,147 @@ class QueryResponse(BaseModel):
     rows: list
     row_count: int
     truncated: bool = False
+    # BigQuery dry-run scan estimate (bytes) for `query_mode='remote'`
+    # queries; ``None`` for local DuckDB queries (no BQ tables involved).
+    bytes_scanned: Optional[int] = None
+
+
+def _run_internal_query(
+    request: "QueryRequest",
+    user: dict,
+    conn: duckdb.DuckDBPyConnection,
+    t0: float,
+    internal_refs: list[str],
+) -> "QueryResponse":
+    """Execute a SELECT against system.duckdb under per-request RBAC views.
+
+    Builds a fresh read-only connection, materialises one TEMP VIEW per
+    referenced internal table with the appropriate row filter, runs the
+    user SQL, and writes an audit row. Errors are converted to 400 with
+    a hint that points at ``agnes catalog`` for the registered ids.
+    """
+    from src.db import _get_state_dir
+    system_db_path = str(_get_state_dir() / "system.duckdb")
+    # is_user_admin takes (user_id, conn) — passing the dict raises
+    # TypeError, which is exactly the regression review #278/1 caught.
+    # A SessionPrincipal has no .get("id") — treat co-session as non-admin
+    # for internal row-level filter. build_filter_clause expects a dict
+    # so pass a shim when user is a principal (mirrors v2_sample.py:131-137).
+    # The shim id "session.none" passes the safe-identifier regex but never
+    # matches a real user_id; the email local-part "session.none" similarly
+    # passes the username regex but matches no real session. Together the
+    # filter yields zero rows for every internal table — correct behaviour
+    # (co-sessions should not see any single user's internal rows).
+    if isinstance(user, SessionPrincipal):
+        is_admin = False
+        user = {"id": "session.none", "email": "session.none@internal"}
+    else:
+        is_admin = is_user_admin(user.get("id"), conn) if user.get("id") else False
+    try:
+        columns, rows, truncated = execute_internal_query(
+            system_db_path=system_db_path,
+            user=user,
+            is_admin=is_admin,
+            sql=request.sql,
+            limit=request.limit,
+        )
+    except InternalAccessError as exc:
+        raise HTTPException(status_code=400, detail=f"Internal query rejected: {exc}")
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=400, detail=f"DuckDB error: {exc}")
+
+    serializable = [
+        [str(v) if v is not None and not isinstance(v, (int, float, bool, str)) else v
+         for v in row]
+        for row in rows
+    ]
+    try:
+        audit_repo().log(
+            user_id=user.get("id"),
+            action="query.internal",
+            resource=("table:" + ",".join(internal_refs))[:256],
+            params={
+                "sql_preview": (request.sql or "")[:200],
+                "internal_tables": internal_refs,
+                "is_admin": is_admin,
+                "rows_returned": len(serializable),
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+            },
+            result="success",
+            client_kind=client_kind_from_user(user),
+        )
+    except Exception:
+        logger.exception("audit_log write failed for query.internal; continuing")
+    return QueryResponse(
+        columns=columns,
+        rows=serializable,
+        row_count=len(serializable),
+        truncated=truncated,
+    )
+
+
+def _first_table_from_sql(sql: str) -> Optional[str]:
+    """Extract the first identifier after FROM or JOIN for audit resource tagging.
+
+    Regex-based; best-effort. Returns None when no table reference is found.
+    Does not need to be accurate — it's only for audit diagnostics.
+    """
+    m = re.search(r'\b(?:from|join)\s+(["\`]?[\w.]+["\`]?)', sql, re.IGNORECASE)
+    if m:
+        return m.group(1).strip('"\'`')[:200]
+    return None
+
+
+# SQL keywords / functions rejected on every user-submitted query path. Shared
+# by `execute_query` (the /api/query handler) and `run_remote_select_to_arrow`
+# (the snapshot `from_query` materialize path) so the two surfaces can never
+# drift on what counts as a safe single-SELECT.
+_BLOCKED_SQL_TOKENS = [
+    "drop ", "delete ", "insert ", "update ", "alter ", "create ",
+    "copy ", "attach ", "detach ", "load ", "install ",
+    "export ", "import ", "pragma ", "call ",
+    # File access functions
+    "read_csv", "read_json", "read_parquet", "read_text",
+    "write_csv", "write_parquet", "read_blob", "read_ndjson",
+    "parquet_scan", "parquet_metadata", "parquet_schema",
+    "json_scan", "csv_scan",
+    "query_table", "iceberg_scan", "delta_scan",
+    # #160: bigquery_query() bypasses the registry / RBAC entirely
+    # (it runs an arbitrary BQ jobs API call against any reachable
+    # dataset). Wrap views created by the BQ extractor use it inside
+    # CREATE VIEW bodies, but those run via DuckDB's view resolution at
+    # query time — user-submitted SQL never contains the function name.
+    "bigquery_query",
+    "glob(", "list_files",
+    "'/", '"/', 'http://', 'https://', 's3://', 'gcs://',
+    # DuckDB metadata (leaks schema info regardless of RBAC)
+    "information_schema", "duckdb_tables", "duckdb_columns",
+    "duckdb_databases", "duckdb_settings", "duckdb_functions",
+    "duckdb_views", "duckdb_indexes", "duckdb_schemas",
+    "pragma_table_info", "pragma_storage_info",
+    # Relative path traversal
+    "'../", '"../',
+    # Multiple statements
+    ";",
+]
+
+
+def _assert_select_only(sql_lower: str) -> None:
+    """Raise HTTPException(400) unless ``sql_lower`` is a single SELECT/WITH
+    query free of the blocked keywords/functions. ``sql_lower`` MUST already
+    be ``.strip().lower()``-ed by the caller."""
+    if any(keyword in sql_lower for keyword in _BLOCKED_SQL_TOKENS):
+        raise HTTPException(status_code=400, detail="Only single SELECT queries are allowed")
+    # Accept any whitespace (newline, tab, space) after the keyword so
+    # multi-line SQL doesn't 400 on `SELECT\n  col, ...`.
+    if not re.match(r"^(select|with)\s", sql_lower):
+        raise HTTPException(status_code=400, detail="Query must start with SELECT or WITH")
 
 
 @router.post("", response_model=QueryResponse)
 def execute_query(
     request: QueryRequest,
+    http_request: Request,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -155,50 +417,51 @@ def execute_query(
     starve unrelated endpoints. See PR #188's CHANGELOG entry for the
     Tier 1 event-loop unblocking rollout.
     """
+    _t0 = time.monotonic()
     sql_lower = request.sql.strip().lower()
 
-    # Block everything except SELECT
-    blocked = [
-        "drop ", "delete ", "insert ", "update ", "alter ", "create ",
-        "copy ", "attach ", "detach ", "load ", "install ",
-        "export ", "import ", "pragma ", "call ",
-        # File access functions
-        "read_csv", "read_json", "read_parquet", "read_text",
-        "write_csv", "write_parquet", "read_blob", "read_ndjson",
-        "parquet_scan", "parquet_metadata", "parquet_schema",
-        "json_scan", "csv_scan",
-        "query_table", "iceberg_scan", "delta_scan",
-        # #160: bigquery_query() bypasses the registry / RBAC entirely
-        # (it runs an arbitrary BQ jobs API call against any reachable
-        # dataset). Wrap views created by the BQ extractor use it inside
-        # CREATE VIEW bodies, but those run via DuckDB's view resolution at
-        # query time — user-submitted SQL never contains the function name.
-        "bigquery_query",
-        "glob(", "list_files",
-        "'/", '"/','http://', 'https://', 's3://', 'gcs://',
-        # DuckDB metadata (leaks schema info regardless of RBAC)
-        "information_schema", "duckdb_tables", "duckdb_columns",
-        "duckdb_databases", "duckdb_settings", "duckdb_functions",
-        "duckdb_views", "duckdb_indexes", "duckdb_schemas",
-        "pragma_table_info", "pragma_storage_info",
-        # Relative path traversal
-        "'../", '"../',
-        # Multiple statements
-        ";",
-    ]
-    if any(keyword in sql_lower for keyword in blocked):
-        raise HTTPException(status_code=400, detail="Only single SELECT queries are allowed")
+    _assert_select_only(sql_lower)
 
-    # Accept any whitespace (newline, tab, space) after the keyword so
-    # multi-line SQL doesn't 400 on `SELECT\n  col, ...`.
-    import re as _re
-    if not _re.match(r"^(select|with)\s", sql_lower):
-        raise HTTPException(status_code=400, detail="Query must start with SELECT or WITH")
+    # ----- Internal-source short-circuit ----------------------------------
+    # SQL referencing one of the seeded internal tables (agnes_sessions,
+    # agnes_usage, agnes_audit) is executed against system.duckdb with a
+    # per-request RBAC view, not against analytics.duckdb. Mixing internal
+    # + BQ/local refs in one SQL is rejected — the two backends live in
+    # different DuckDB instances, joining across requires materialising
+    # one side and isn't worth the complexity in v1. The BQ guardrail
+    # logic doesn't apply (no BQ traffic), and the view-name RBAC check
+    # below doesn't either (internal tables don't live in analytics.duckdb
+    # at all).
+    internal_refs = find_internal_refs(request.sql)
+    if internal_refs:
+        if BQ_PATH.search(_mask_backticks(request.sql)) or _BACKTICK_FULL_PATH.search(request.sql):
+            raise HTTPException(
+                status_code=400,
+                detail="Internal tables can't be combined with `bq.*` paths in a "
+                       "single SELECT (v1 limitation).",
+            )
+        # Reject if user SQL also mentions any non-internal registry id —
+        # that would be a mixed query against analytics.duckdb views.
+        registry_rows = table_registry_repo().list_all()
+        for r in registry_rows:
+            rid = r.get("id") or ""
+            if not rid or is_internal_table(rid):
+                continue
+            if re.search(rf"\b{re.escape(rid)}\b", sql_lower):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Internal tables can't be joined with registered "
+                           f"table {rid!r} in a single SELECT (v1 limitation).",
+                )
+        return _run_internal_query(request, user, conn, _t0, internal_refs)
 
     # Get allowed tables for this user
     allowed = get_accessible_tables(user, conn)
 
     analytics = get_analytics_db_readonly()
+    # Track whether this query touched BQ-remote tables (set below in _bq_guardrail_inputs).
+    # Used for audit action selection (query.remote vs query.local) and bytes_scanned.
+    _dry_run_set: list = []
     try:
         if allowed is not None:  # None = admin, sees all
             # Get all views in analytics DB
@@ -214,7 +477,7 @@ def execute_query(
             # pre-existing class of name/id mismatch flagged across this
             # PR's BQ guardrail too).
             allowed_ids = set(allowed)
-            registry_rows = TableRegistryRepository(conn).list_all()
+            registry_rows = table_registry_repo().list_all()
             allowed_view_names = {
                 r["name"] for r in registry_rows
                 if r.get("name") and r.get("id") in allowed_ids
@@ -232,12 +495,17 @@ def execute_query(
             for table in forbidden:
                 pattern = r'\b' + re.escape(table.lower()) + r'\b'
                 if re.search(pattern, sql_lower_masked):
-                    raise HTTPException(status_code=403, detail=f"Access denied to table '{table}'")
+                    from src.rbac import table_not_in_stack_message
+                    raise HTTPException(
+                        status_code=403,
+                        detail=table_not_in_stack_message(table),
+                    )
 
         # ---- #160 BQ remote-row guardrail + RBAC patch -------------------
         dry_run_set, name_lookups, blocked_bq_path = _bq_guardrail_inputs(
             request.sql, sql_lower, conn, user, allowed,
         )
+        _dry_run_set = dry_run_set  # expose to outer scope for audit
         if blocked_bq_path is not None:
             raise HTTPException(status_code=403, detail=blocked_bq_path)
 
@@ -334,13 +602,20 @@ def execute_query(
             # Stays inside the `with quota.acquire(...)` block so the slot
             # release happens after record_bytes completes.
             if dry_run_set:
+                total_bq_bytes = sum(b for _, _, b in dry_run_set)
                 try:
                     _build_quota_tracker().record_bytes(
-                        user_id, sum(b for _, _, b in dry_run_set),
+                        user_id, total_bq_bytes,
                     )
                 except Exception:
                     # record_bytes is documented as never-raising; defensive guard.
                     logger.warning("quota record_bytes failed for user=%s", user_id)
+                # Charge the chat-session-scoped BQ scan budget when the
+                # request carries a chat JWT (request.state.chat_session_id
+                # set by app/auth/dependencies). Non-chat callers no-op.
+                # Raises HTTPException(400, bq_budget_exhausted) when the
+                # cumulative session bytes exceed ChatConfig.per_session_bq_scan_bytes.
+                _maybe_charge_chat_session_bq_budget(http_request, total_bq_bytes)
 
         # Convert to serializable types
         serializable_rows = []
@@ -349,13 +624,62 @@ def execute_query(
                 str(v) if v is not None and not isinstance(v, (int, float, bool, str)) else v
                 for v in row
             ])
-        return QueryResponse(
+        # bytes_scanned from _dry_run_set (pinned to entry 0 after _bq_quota_and_cap_guard).
+        # Computed before building the response so it can be surfaced to
+        # REST/CLI/MCP consumers; ``None`` for local queries (no BQ tables).
+        _bytes_scanned = sum(b for _, _, b in _dry_run_set) if _dry_run_set else None
+        response = QueryResponse(
             columns=columns,
             rows=serializable_rows,
             row_count=len(serializable_rows),
             truncated=truncated,
+            bytes_scanned=_bytes_scanned,
         )
-    except HTTPException:
+        # Determine action: remote when BQ tables were involved (_dry_run_set non-empty),
+        # local otherwise.
+        _action = "query.remote" if _dry_run_set else "query.local"
+        _first_table = _first_table_from_sql(request.sql)
+        _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
+        try:
+            audit_repo().log(
+                user_id=user.get("id"),
+                action=_action,
+                resource=_resource,
+                params={
+                    "sql_preview": (request.sql or "")[:200],
+                    # bytes_scanned / bytes_billed / bq_job_id: only available for
+                    # BQ-remote path. bytes_billed and bq_job_id are not yet surfaced
+                    # by the DuckDB BQ extension execute() path — deferred TODO.
+                    # bytes_scanned comes from the dry-run estimate (close approximation).
+                    "bytes_scanned": _bytes_scanned,
+                    "bytes_billed": None,   # deferred — BQ extension doesn't expose per-execute billing
+                    "bq_job_id": None,      # deferred — bigquery_query() path doesn't return a job id
+                    "rows_returned": len(serializable_rows),
+                    "duration_ms": int((time.monotonic() - _t0) * 1000),
+                },
+                result="success",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed for %s; continuing", _action)
+        return response
+    except HTTPException as exc:
+        _first_table = _first_table_from_sql(request.sql)
+        _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
+        _action_err = "query.remote" if _dry_run_set else "query.local"
+        try:
+            audit_repo().log(
+                user_id=user.get("id"),
+                action=_action_err,
+                resource=_resource,
+                params={"sql_preview": (request.sql or "")[:200],
+                        "error": str(exc.detail)[:200],
+                        "duration_ms": int((time.monotonic() - _t0) * 1000)},
+                result=f"error.{exc.status_code}",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed for query (error path); continuing")
         raise
     except Exception as e:
         # If DuckDB raised "Table … does not exist" for a referenced name,
@@ -371,6 +695,21 @@ def execute_query(
         # instead of DuckDB's bare error.
         msg = str(e)
         helpful = _materialized_hint_for_query_error(conn, request.sql, msg)
+        _first_table = _first_table_from_sql(request.sql)
+        _resource = (f"table:{_first_table}" if _first_table else "adhoc")[:256]
+        try:
+            audit_repo().log(
+                user_id=user.get("id"),
+                action="query.local",
+                resource=_resource,
+                params={"sql_preview": (request.sql or "")[:200],
+                        "error": msg[:200],
+                        "duration_ms": int((time.monotonic() - _t0) * 1000)},
+                result="error.400",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed for query (exception path); continuing")
         if helpful:
             raise HTTPException(status_code=400, detail=helpful)
         raise HTTPException(status_code=400, detail=f"Query error: {msg}")
@@ -400,7 +739,7 @@ def _materialized_hint_for_query_error(
     if "does not exist" not in el and "table with name" not in el:
         return None
     try:
-        repo = TableRegistryRepository(conn)
+        repo = table_registry_repo()
         rows = repo.list_all()
     except Exception:
         # Registry read failed for whatever reason — don't compound the
@@ -479,7 +818,7 @@ def _bq_guardrail_inputs(
       grant on the registered name (`bq_path_access_denied`). None when the
       RBAC check passes.
     """
-    repo = TableRegistryRepository(sys_conn)
+    repo = table_registry_repo()
 
     # 1. Bare-name pass: look up registered remote-BQ names that appear in
     # the user SQL as word-boundary tokens. Reuses the same regex shape as
@@ -802,7 +1141,7 @@ def _rewrite_user_sql_for_bigquery_query(
     seen_paths: set = set()
 
     try:
-        repo = TableRegistryRepository(conn)
+        repo = table_registry_repo()
         bq_rows = repo.list_by_source("bigquery")
         all_rows = repo.list_all()
     except Exception:
@@ -852,7 +1191,17 @@ def _rewrite_user_sql_for_bigquery_query(
         source_table_raw = m.group(2).strip('"')
         direct_paths.add((bucket_raw, source_table_raw))
 
-    if not name_lookups and not direct_paths:
+    # Issue #363: full backtick BQ paths (`<project>.<dataset>.<table>`) are
+    # already BQ-native syntax — DuckDB can't parse backtick quoting locally.
+    # When the user SQL uses only backtick paths (no bare names, no bq.ds.tbl),
+    # both name_lookups and direct_paths stay empty and Skip 1 fires, sending
+    # the backtick SQL to analytics.execute() → "syntax error at or near `"`.
+    # Detect them here so the SQL still gets wrapped in bigquery_query().
+    # _rewrite_bq_table_refs_to_native already preserves backtick segments
+    # verbatim (backtick-split pass 1), so no additional rewrite is needed.
+    has_backtick_paths = bool(_BACKTICK_FULL_PATH.search(user_sql))
+
+    if not name_lookups and not direct_paths and not has_backtick_paths:
         # Skip 1: no BQ tables referenced.
         return user_sql, False
 
@@ -949,30 +1298,26 @@ def _view_targets_in(dry_run_set: list) -> list[str]:
     if not dry_run_set:
         return []
     try:
-        from src.db import get_system_db
-        conn = get_system_db()
-        try:
-            pairs = [(b, t) for b, t, _ in dry_run_set]
-            # Build a parameterized OR of (bucket, source_table) pairs.
-            # DuckDB supports row-tuple IN but keeping it explicit OR
-            # avoids any version-specific syntax surprises.
-            where = " OR ".join(
-                "(tr.bucket = ? AND tr.source_table = ?)" for _ in pairs
-            )
-            params: list = []
-            for b, t in pairs:
-                params.extend([b, t])
-            sql_ = (
-                f"SELECT mc.table_id "
-                f"FROM bq_metadata_cache mc "
-                f"JOIN table_registry tr ON tr.id = mc.table_id "
-                f"WHERE mc.entity_type IN ('VIEW', 'MATERIALIZED VIEW') "
-                f"AND ({where})"
-            )
-            rows = conn.execute(sql_, params).fetchall()
-            return [r[0] for r in rows]
-        finally:
-            conn.close()
+        # Route through the repo factory (backend-agnostic): a raw JOIN on the
+        # always-DuckDB system connection comes back empty on a Postgres
+        # instance, so bq_metadata_cache / table_registry would be invisible and
+        # the VIEW hint would silently never fire.
+        from src.repositories import bq_metadata_cache_repo, table_registry_repo
+
+        wanted = {(b, t) for b, t, _ in dry_run_set}
+        target_ids = {
+            r["id"]
+            for r in table_registry_repo().list_all()
+            if (r.get("bucket"), r.get("source_table")) in wanted
+        }
+        if not target_ids:
+            return []
+        view_types = {"VIEW", "MATERIALIZED VIEW"}
+        return [
+            r["table_id"]
+            for r in bq_metadata_cache_repo().list_all()
+            if r.get("table_id") in target_ids and r.get("entity_type") in view_types
+        ]
     except Exception:
         return []
 
@@ -1127,14 +1472,17 @@ def _bq_quota_and_cap_guard(
                             "BigQuery rejected this query during cost "
                             "estimation."
                         ),
-                        "hint": (
-                            "Most often this means a column referenced "
-                            "in WHERE/SELECT/etc doesn't exist on the "
-                            "table — verify with `agnes schema <id>`. "
-                            "Otherwise: use a registered table name from "
-                            "`agnes catalog`, or write BQ-native SQL "
-                            "with full backtick paths."
-                        ),
+                        # Branch the hint on the actual BQ error class —
+                        # syntax errors (e.g. reserved-keyword aliases like
+                        # `AS rows`) deserve a different pointer than
+                        # column-not-found, which deserves a different one
+                        # than table-not-found. Pre-#NNN this was a single
+                        # hardcoded "column referenced doesn't exist" hint
+                        # that misled analysts whenever BQ actually rejected
+                        # on syntax. The first attempt's diagnostic
+                        # (rewritten SQL — has the real BQ position info)
+                        # is the more informative one to dispatch on.
+                        "hint": _hint_for_bq_bad_request(exc.message),
                         # Surface the FIRST attempt's diagnostic (rewritten
                         # SQL — has the real "Unrecognized name" / syntax
                         # info). Second attempt for catalog-id-only SQL
@@ -1201,3 +1549,130 @@ def _bq_quota_and_cap_guard(
             "limit": exc.limit,
             "retry_after_seconds": exc.retry_after_seconds,
         })
+
+
+def run_remote_select_to_arrow(conn, user, sql, bq, quota):
+    """Materialize a raw SELECT against BigQuery into an Arrow table (#616).
+
+    Backs the snapshot ``from_query`` mode used by ``agnes query --remote
+    --auto-snapshot``: the analyst has explicitly opted into materializing a
+    snapshot, so this path reuses the SAME validation as ``/api/query`` —
+    SELECT-only guard, per-user view RBAC, BQ registry-gating, and the
+    ``bigquery_query()`` rewrite for predicate pushdown — but deliberately
+    does NOT apply the ``remote_scan_too_large`` cap (the cap is exactly what
+    the analyst is bypassing). Daily-byte budget and concurrent-slot quotas
+    still apply via ``quota``.
+
+    Returns a ``pyarrow.Table`` of the FULL result. Raises:
+        HTTPException — on RBAC / registry / SELECT-only rejection (same
+            shapes as /api/query), surfaced by the v2_scan endpoint.
+        QuotaExceededError — daily-budget / concurrent-slot exhaustion.
+    """
+    sql_lower = (sql or "").strip().lower()
+    _assert_select_only(sql_lower)
+
+    # Internal-source SQL (agnes_sessions/usage/audit) isn't a BQ snapshot
+    # source — refuse rather than silently mis-route.
+    if find_internal_refs(sql):
+        raise HTTPException(
+            status_code=400,
+            detail="Internal tables cannot be snapshotted via --from-query.",
+        )
+
+    allowed = get_accessible_tables(user, conn)
+    analytics = get_analytics_db_readonly()
+    try:
+        if allowed is not None:  # None = admin, sees all
+            all_views = {row[0] for row in analytics.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
+            ).fetchall()}
+            allowed_ids = set(allowed)
+            registry_rows = table_registry_repo().list_all()
+            allowed_view_names = {
+                r["name"] for r in registry_rows
+                if r.get("name") and r.get("id") in allowed_ids
+            }
+            sql_lower_masked = _mask_backticks(sql_lower)
+            for table in all_views - allowed_view_names:
+                pattern = r'\b' + re.escape(table.lower()) + r'\b'
+                if re.search(pattern, sql_lower_masked):
+                    from src.rbac import table_not_in_stack_message
+                    raise HTTPException(
+                        status_code=403, detail=table_not_in_stack_message(table),
+                    )
+
+        dry_run_set, name_lookups, blocked_bq_path = _bq_guardrail_inputs(
+            sql, sql_lower, conn, user, allowed,
+        )
+        if blocked_bq_path is not None:
+            raise HTTPException(status_code=403, detail=blocked_bq_path)
+
+        user_id = user.get("email") or user.get("id") or "anon"
+        quota.check_daily_budget(user=user_id)
+        with quota.acquire(user=user_id):
+            # Dry-run the rewritten SQL purely to bill the user's daily byte
+            # quota — NO cap enforcement here (that's the whole point of the
+            # opt-in). Fail closed: without an estimate we cannot bill the
+            # daily byte budget, and proceeding at 0 cost would let an analyst
+            # bypass the budget via --auto-snapshot during a BQ dry-run outage.
+            # Mirror /api/query's `remote_estimate_failed` behavior.
+            total_bq_bytes = 0
+            if dry_run_set:
+                try:
+                    project = bq.projects.data
+                    rewritten = _rewrite_user_sql_for_bq_dry_run(
+                        sql, name_lookups, project,
+                    )
+                    total_bq_bytes = _bq_dry_run_bytes(bq, rewritten)
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "reason": "remote_estimate_failed",
+                            "message": (
+                                "BigQuery dry-run estimate failed; the scan "
+                                "cannot be billed against your daily budget, "
+                                "so the materialize is refused. Retry shortly."
+                            ),
+                        },
+                    ) from exc
+
+            execution_sql, did_rewrite = _rewrite_user_sql_for_bigquery_query(
+                sql, conn,
+            )
+            try:
+                try:
+                    table = analytics.execute(execution_sql).arrow()
+                except Exception as exc:
+                    if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
+                        table = analytics.execute(sql).arrow()
+                    else:
+                        raise
+            except HTTPException:
+                # Don't re-wrap structured rejections raised below (RBAC,
+                # SELECT-only, registry) — let them propagate.
+                raise
+            except Exception as exc:
+                # Map DuckDB execution errors (syntax error, missing table,
+                # type mismatch) to a structured 400 mirroring the normal
+                # /api/query path (`app/api/query.py` ~line 714) so the
+                # scan_endpoint caller surfaces a user-friendly error
+                # instead of a raw 500. Devin Review ANALYSIS_0003 on #620.
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "reason": "duckdb_execution_error",
+                        "message": str(exc),
+                    },
+                ) from exc
+
+            if dry_run_set and total_bq_bytes:
+                try:
+                    quota.record_bytes(user=user_id, n=total_bq_bytes)
+                except Exception:
+                    logger.warning("quota record_bytes failed for user=%s", user_id)
+        return table
+    finally:
+        analytics.close()

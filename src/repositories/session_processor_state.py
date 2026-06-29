@@ -61,6 +61,68 @@ class SessionProcessorStateRepository:
             [processor_name, session_file, username, now, items_count, file_hash],
         )
 
+    def delete_for_processors(self, processor_names: list[str]) -> int:
+        """DELETE every state row whose processor_name is in *processor_names*.
+        Returns the number of rows deleted. Empty input → 0 (no query).
+
+        Backs admin_usage.reprocess_usage, which wipes the 'usage' +
+        'marketplace_rollup_30d' processor state so the next scheduler tick
+        re-scans every JSONL. cursor.rowcount is unreliable on DuckDB, so we
+        count via RETURNING 1 + fetchall()."""
+        if not processor_names:
+            return 0
+        placeholders = ",".join("?" for _ in processor_names)
+        rows = self.conn.execute(
+            f"""DELETE FROM session_processor_state
+                WHERE processor_name IN ({placeholders})
+                RETURNING 1""",
+            list(processor_names),
+        ).fetchall()
+        return len(rows)
+
+    def max_processed_at(self, processor_name: str) -> "datetime | None":
+        """Most recent processed_at across all session rows for *processor_name*,
+        or None if the processor has no state rows. Backs the session-pipeline
+        health check in app/api/health.py."""
+        row = self.conn.execute(
+            "SELECT MAX(processed_at) FROM session_processor_state WHERE processor_name = ?",
+            [processor_name],
+        ).fetchone()
+        return row[0] if row else None
+
+    def processed_session_files(self, processor_name: str) -> "set[str]":
+        """The set of session_file values this processor has a state row for.
+        Backs the FIFO stuck-file check in app/api/health.py."""
+        rows = self.conn.execute(
+            "SELECT session_file FROM session_processor_state WHERE processor_name = ?",
+            [processor_name],
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def get_states_for_session_files(
+        self,
+        processor_name: str,
+        session_files: list[str],
+    ) -> "dict[str, dict]":
+        """For *processor_name*, return ``{session_file: {'processed_at': ...,
+        'items_extracted': ...}}`` for each of *session_files* that has a state
+        row. Empty input → ``{}``. Backs the pipeline-status enrichment in
+        app/api/me_stats.py."""
+        if not session_files:
+            return {}
+        placeholders = ",".join("?" for _ in session_files)
+        rows = self.conn.execute(
+            f"""SELECT session_file, processed_at, items_extracted
+                FROM session_processor_state
+                WHERE processor_name = ?
+                  AND session_file IN ({placeholders})""",
+            [processor_name, *session_files],
+        ).fetchall()
+        return {
+            r[0]: {"processed_at": r[1], "items_extracted": r[2]}
+            for r in rows
+        }
+
     def scan_unprocessed_for(
         self,
         processor_name: str,
@@ -119,13 +181,11 @@ class SessionProcessorStateRepository:
                     # rather than us silently dropping the file here.
                     results.append((username, jsonl_file))
                     continue
-                # Compare in naive-local: DuckDB TIMESTAMP strips tz on
-                # storage and converts tz-aware writes to local time before
-                # storing (see app/api/health.py:_check_session_pipeline for
-                # the same idiom). `datetime.fromtimestamp(epoch)` without
-                # `tz=` returns naive-local, matching processed_at after
-                # the optional tz strip below.
-                mtime = datetime.fromtimestamp(mtime_epoch)
+                # Compare in naive-UTC: the DuckDB connection helper
+                # (`src.db._open_duckdb`) pins the session timezone to UTC,
+                # so `processed_at` reads as UTC-clock-naive. Convert the
+                # file's epoch mtime to UTC-naive on the same axis.
+                mtime = datetime.fromtimestamp(mtime_epoch, tz=timezone.utc).replace(tzinfo=None)
                 if processed_at.tzinfo is not None:
                     processed_at = processed_at.replace(tzinfo=None)
                 if mtime > processed_at:

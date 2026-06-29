@@ -1,7 +1,7 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}Edit {{ entity.name | store_display_name }} — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
+{% block head_extra %}
 <style>
   .edit-back { font-size: 13px; color: var(--text-secondary, #6b7280); text-decoration: none; }
   .edit-back:hover { color: var(--text, #111827); text-decoration: underline; }
@@ -32,8 +32,8 @@
     cursor: pointer;
   }
   .file-drop input[type=file] { display: none; }
-  .file-drop:hover { border-color: var(--primary, #0073D1); background: #fff; }
-  .file-drop.is-dragover { border-color: var(--primary, #0073D1); background: #eff6ff; }
+  .file-drop:hover { border-color: var(--ds-primary); background: #fff; }
+  .file-drop.is-dragover { border-color: var(--ds-primary); background: #eff6ff; }
   .file-drop .icon { font-size: 24px; }
   .file-drop .file-info .label { font-size: 13px; font-weight: 500; }
   .file-drop .file-info .meta { font-size: 12px; color: var(--text-secondary, #6b7280); }
@@ -44,16 +44,6 @@
   }
 
   .actions { display: flex; gap: 8px; margin-top: 20px; align-items: center; }
-  .btn-primary {
-    padding: 8px 18px; border-radius: 6px; border: none;
-    background: var(--primary, #0073D1); color: white;
-    font-size: 14px; font-weight: 500; cursor: pointer;
-  }
-  .btn-primary:disabled { background: var(--border, #d1d5db); cursor: not-allowed; }
-  .btn-link {
-    padding: 8px 12px; color: var(--text-secondary, #6b7280); text-decoration: none;
-    font-size: 14px;
-  }
 
   .pending-banner {
     margin: 12px 0 16px 0; padding: 14px 18px; border-radius: 10px;
@@ -71,9 +61,37 @@
   .banner[hidden] { display: none !important; }
   .banner.error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
   .banner > span { white-space: pre-wrap; }
-</style>
 
-<div class="page-shell">
+  /* v49: matches the synthetic-name preview styling on store_upload.html
+     so upload + edit forms read identically. */
+  .name-row {
+    display: flex; align-items: stretch; gap: 10px; flex-wrap: wrap;
+  }
+  .name-row input[type=text] {
+    flex: 0 1 320px; min-width: 220px;
+  }
+  .invocation-preview {
+    flex: 1 1 320px; min-width: 0;
+    display: flex; align-items: center;
+    background: #1e1e2e; color: #cdd6f4;
+    border-radius: 6px; padding: 0 14px;
+    font-family: var(--font-mono, monospace); font-size: 13px;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  }
+  .invocation-preview .prompt {
+    color: #a6e3a1; user-select: none; margin-right: 2px;
+  }
+  .invocation-preview #synthetic-text {
+    overflow: hidden; text-overflow: ellipsis;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+{# Save submit + Cancel anchor render via `ds.button` (auto-imported by
+   base_ds). Bespoke file-picker buttons (#photo-pick, #zip-pick) stay
+   page-local — inline-form chrome with custom styling. #}
+<div>
   <p style="margin: 8px 0;">
     <a class="edit-back" href="/marketplace/flea/{{ entity.id }}">← Back to detail</a>
   </p>
@@ -96,15 +114,38 @@
 
   <form id="edit-form">
     <div class="field">
-      <label class="field-label" for="f-name">Display name</label>
-      <input id="f-name" name="name" type="text" value="{{ entity.name | store_display_name }}"
-             pattern="^[a-z][a-z0-9-]{0,63}$"
+      <label class="field-label" for="f-title">Title</label>
+      <input id="f-title" name="title" type="text" maxlength="100" required
+             value="{{ entity.title or '' }}"
+             data-user-edited="{{ 'true' if entity.title else 'false' }}"
              {% if pending_sub %}disabled{% endif %}>
+      <div class="field-help">Human-friendly name shown on marketplace cards.</div>
+    </div>
+
+    <div class="field">
+      <label class="field-label" for="f-name">Display name</label>
+      <div class="name-row">
+        <input id="f-name" name="name" type="text" value="{{ entity.name | store_display_name }}"
+               pattern="^[a-z][a-z0-9-]{0,63}$"
+               {% if pending_sub %}disabled{% endif %}>
+        <div class="invocation-preview" id="synthetic-preview" aria-live="polite">
+          <span class="prompt">/</span><span id="synthetic-text">{{ entity.synthetic_name or (entity.name ~ '-by-' ~ entity.owner_username) }}</span>
+        </div>
+      </div>
       <div class="field-help warn">
         ⚠ Changing the name renames the plugin slug for existing
         installers. They'll see the plugin renamed on their next sync
         and may need to re-add it to their stack.
       </div>
+    </div>
+
+    <div class="field">
+      <label class="field-label" for="f-tagline">Short description <span style="color:var(--text-secondary,#6b7280);font-weight:400;">(optional)</span></label>
+      <input id="f-tagline" name="tagline" type="text" maxlength="200"
+             value="{{ entity.tagline or '' }}"
+             placeholder="One-line summary shown alongside the entity name"
+             {% if pending_sub %}disabled{% endif %}>
+      <div id="tagline-counter" class="field-help" style="font-family: var(--font-mono); font-size: 12px;">0 / 200 max</div>
     </div>
 
     <div class="field">
@@ -173,9 +214,10 @@
     </div>
 
     <div class="actions">
-      <button type="submit" class="btn-primary" id="save-btn"
-              {% if pending_sub %}disabled{% endif %}>Save</button>
-      <a href="/marketplace/flea/{{ entity.id }}" class="btn-link">Cancel</a>
+      {{ ds.button('Save', variant='primary', type='submit', id='save-btn',
+                   disabled=pending_sub) }}
+      {{ ds.button('Cancel', variant='secondary',
+                   href='/marketplace/flea/' ~ entity.id) }}
     </div>
   </form>
 </div>
@@ -188,6 +230,7 @@ function showError(msg) {
   banner.className = 'banner error';
   bannerText.textContent = msg;
   banner.hidden = false;
+  banner.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 function clearBanner() { banner.hidden = true; }
 
@@ -195,12 +238,53 @@ function humanizeError(detail) {
   if (!detail) return 'Save failed.';
   if (typeof detail === 'object') {
     const code = detail.code || '';
-    if (code === 'submission_blocked') {
-      const lines = ['New version blocked by automated checks.'];
-      const inline = (detail.checks?.static_security?.findings) || [];
-      for (const f of inline.slice(0, 5)) {
+    const checks = detail.checks || {};
+
+    function appendFindings(lines, payload) {
+      const findings = (payload?.findings) || [];
+      for (const f of findings.slice(0, 5)) {
         lines.push('• ' + (f.file || '?') + ':' + (f.line || '?') + ' — ' + (f.reason || f.category || ''));
       }
+      if (findings.length > 5) lines.push('  …and ' + (findings.length - 5) + ' more.');
+    }
+    function appendManifest(lines, payload) {
+      const issues = (payload?.issues) || [];
+      for (const m of issues.slice(0, 5)) lines.push('• manifest: ' + m);
+      if (issues.length > 5) lines.push('  …and ' + (issues.length - 5) + ' more.');
+    }
+    function appendContent(lines, payload) {
+      const issues = (payload?.issues) || [];
+      for (const i of issues.slice(0, 5)) {
+        const where = i.component_type === 'submission'
+          ? 'Description on the form'
+          : ((i.component_type || 'component') + (i.name ? ' — ' + i.name : ''));
+        const code = (i.code || '').replace(/_/g, ' ');
+        lines.push('• ' + where + ' — ' + (i.field || 'description') + ' ' + code);
+      }
+      if (issues.length > 5) lines.push('  …and ' + (issues.length - 5) + ' more.');
+    }
+
+    if (code === 'validation_failed') {
+      const lines = ['New version needs fixing before it can be saved.'];
+      appendManifest(lines, checks.manifest);
+      appendContent(lines, checks.content);
+      lines.push('');
+      lines.push('Fix the issues above and try again. The previous version is still live.');
+      return lines.join('\n');
+    }
+    if (code === 'security_blocked') {
+      const lines = ['Save blocked: security review found risky patterns in the new bundle.'];
+      appendFindings(lines, checks.static_security);
+      lines.push('');
+      lines.push('Remove the flagged code/secrets and try again. The previous version stays live.');
+      return lines.join('\n');
+    }
+    if (code === 'submission_blocked') {
+      // Legacy server response (pre-cutover) — kept for one release.
+      const lines = ['New version blocked by automated checks.'];
+      appendFindings(lines, checks.static_security);
+      appendManifest(lines, checks.manifest);
+      appendContent(lines, checks.content);
       lines.push('');
       lines.push('Fix the issues and re-upload, or open the detail page to see the full report.');
       return lines.join('\n');
@@ -214,6 +298,9 @@ function humanizeError(detail) {
     if (code === 'conflict_owner_name') return 'You already have a plugin with that name.';
     if (code === 'conflict_global_suffix') return 'That name conflicts with another user\'s plugin slug.';
     if (code === 'invalid_name_format') return 'Name must be lowercase letters / digits / hyphens, starting with a letter.';
+    if (code === 'title_required') return 'Title is required.';
+    if (code === 'title_too_long') return 'Title is too long — max 100 characters.';
+    if (code === 'tagline_too_long') return 'Short description is too long — max 200 characters.';
     if (code) return 'Save failed: ' + code;
     try { return 'Save failed: ' + JSON.stringify(detail); } catch (_) { return 'Save failed.'; }
   }
@@ -255,6 +342,53 @@ wireDropZone(
   (f) => f.size > 5 * 1024 * 1024 ? 'Photo too large (max 5 MB).' : null,
 );
 
+// v49 phase-1 — Title, Tagline, synthetic preview wiring (mirrors
+// store_upload.html). Acronym dict + owner injected via template ctx.
+const TITLE_ACRONYMS = {{ title_acronyms|tojson if title_acronyms else "{}" }};
+const OWNER_USERNAME = {{ owner_username|tojson if owner_username else '""' }};
+const titleInput = document.getElementById('f-title');
+const taglineInput = document.getElementById('f-tagline');
+const taglineCounter = document.getElementById('tagline-counter');
+const fNameInput = document.getElementById('f-name');
+const syntheticText = document.getElementById('synthetic-text');
+
+function humanizeName(name) {
+  if (!name) return '';
+  const tokens = String(name).split('-').filter(Boolean);
+  return tokens.map(tok => {
+    const canonical = TITLE_ACRONYMS[tok.toLowerCase()];
+    if (canonical !== undefined) return canonical;
+    return tok.charAt(0).toUpperCase() + tok.slice(1).toLowerCase();
+  }).join(' ');
+}
+function updateSyntheticPreview() {
+  const name = (fNameInput.value || '').trim();
+  if (!name) {
+    syntheticText.textContent = 'your-name-by-' + (OWNER_USERNAME || 'you');
+  } else {
+    syntheticText.textContent = name + '-by-' + (OWNER_USERNAME || 'you');
+  }
+}
+function maybeAutoFillTitle() {
+  if (titleInput.dataset.userEdited === 'true') return;
+  const name = (fNameInput.value || '').trim();
+  titleInput.value = humanizeName(name);
+}
+function updateTaglineCounter() {
+  const len = (taglineInput.value || '').length;
+  taglineCounter.textContent = `${len} / 200 max`;
+}
+titleInput.addEventListener('input', () => {
+  titleInput.dataset.userEdited = titleInput.value.trim() ? 'true' : 'false';
+});
+fNameInput.addEventListener('input', () => {
+  updateSyntheticPreview();
+  maybeAutoFillTitle();
+});
+taglineInput.addEventListener('input', updateTaglineCounter);
+updateSyntheticPreview();
+updateTaglineCounter();
+
 document.getElementById('edit-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   clearBanner();
@@ -268,6 +402,13 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
     fd.append('description', document.getElementById('f-description').value);
     fd.append('category', document.getElementById('f-category').value);
     fd.append('video_url', document.getElementById('f-video').value);
+    // v49: title is required when present; always send so server can
+    // detect "no change" (same value) vs "user-cleared". Tagline sends
+    // empty string to clear.
+    const titleVal = titleInput.value.trim();
+    if (!titleVal) { showError('Title is required.'); saveBtn.disabled = false; saveBtn.textContent = 'Save'; return; }
+    fd.append('title', titleVal);
+    fd.append('tagline', taglineInput.value.trim());
     const zip = document.getElementById('zip').files[0];
     if (zip) fd.append('file', zip);
     const photo = document.getElementById('photo').files[0];

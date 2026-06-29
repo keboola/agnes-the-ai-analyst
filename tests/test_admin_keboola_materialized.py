@@ -28,7 +28,8 @@ def _keboola_instance(monkeypatch):
     reset_cache()
 
 
-def test_register_keboola_materialized_accepts_source_query(seeded_app):
+def test_register_keboola_materialized_accepts_json_filter_spec(seeded_app):
+    """Keboola materialized source_query must be a JSON filter spec, not SQL."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     auth = {"Authorization": f"Bearer {token}"}
@@ -39,7 +40,7 @@ def test_register_keboola_materialized_accepts_source_query(seeded_app):
             "name": "orders_recent",
             "source_type": "keboola",
             "query_mode": "materialized",
-            "source_query": "SELECT * FROM kbc.\"in.c-sales\".\"orders\" WHERE date > '2026-01-01'",
+            "source_query": '{"columns": ["order_id", "date"], "changedSince": "-7 days"}',
             "sync_schedule": "daily 03:00",
         },
     )
@@ -73,8 +74,7 @@ def test_register_keboola_materialized_accepts_missing_source_query(seeded_app):
 
 
 def test_register_keboola_materialized_skips_bucket_check(seeded_app):
-    """Materialized rows don't need bucket/source_table — the SELECT inlines
-    the references. Mirror of BQ materialized validator behavior."""
+    """Materialized rows don't need bucket/source_table. Mirror of BQ materialized validator behavior."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     auth = {"Authorization": f"Bearer {token}"}
@@ -85,8 +85,7 @@ def test_register_keboola_materialized_skips_bucket_check(seeded_app):
             "name": "x",
             "source_type": "keboola",
             "query_mode": "materialized",
-            "source_query": "SELECT 1",
-            # No bucket / source_table — must still succeed.
+            # No bucket / source_table / source_query — full-table export.
         },
     )
     assert r.status_code == 201, r.text
@@ -97,7 +96,7 @@ def test_update_keboola_materialized_clears_stale_source_query_on_mode_switch(se
     token = seeded_app["admin_token"]
     auth = {"Authorization": f"Bearer {token}"}
 
-    # Register materialized.
+    # Register materialized (no source_query = full-table export).
     r = c.post(
         "/api/admin/register-table",
         headers=auth,
@@ -105,7 +104,6 @@ def test_update_keboola_materialized_clears_stale_source_query_on_mode_switch(se
             "name": "x",
             "source_type": "keboola",
             "query_mode": "materialized",
-            "source_query": "SELECT 1",
         },
     )
     assert r.status_code == 201
@@ -129,12 +127,17 @@ def test_update_keboola_materialized_clears_stale_source_query_on_mode_switch(se
     assert row.get("source_query") in (None, "")
 
 
-def test_update_keboola_to_materialized_without_source_query_rejected(seeded_app):
-    """Devin finding 2026-05-01 (BUG_pr-review-job-58ae3148_0001):
-    PUT cannot persist a non-BQ materialized row without source_query.
-    Pre-fix, the validation only fired for source_type='bigquery' via the
-    synthetic RegisterTableRequest; Keboola rows could be flipped to
-    materialized with source_query=None and crash at the next sync tick."""
+def test_update_keboola_to_materialized_without_source_query_allowed(seeded_app):
+    """Keboola materialized with null source_query = full-table export; valid.
+
+    The Keboola extractor's materialize_query() explicitly handles null
+    source_query as a full-table export (see extractor.py:138 'if source_query:').
+    The PUT handler must not require source_query for Keboola materialized rows —
+    blocking this would prevent admins from updating any other field on a
+    Keboola materialized row that was registered without source_query.
+
+    Devin finding 2026-06-01 (BUG_pr-review-job-f5c4c30af9f647e2ac636b1a48361e65_0001).
+    """
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     auth = {"Authorization": f"Bearer {token}"}
@@ -153,15 +156,19 @@ def test_update_keboola_to_materialized_without_source_query_rejected(seeded_app
     )
     assert r.status_code == 201, r.text
 
-    # Try to flip to materialized WITHOUT shipping source_query.
+    # Flip to materialized WITHOUT source_query — valid (full-table export).
     r = c.put(
         "/api/admin/registry/kb_local",
         headers=auth,
         json={"query_mode": "materialized"},
     )
-    assert r.status_code == 422, r.text
-    body = r.json()
-    detail = body.get("detail", "")
-    if isinstance(detail, list):
-        detail = " ".join(str(d) for d in detail)
-    assert "source_query" in detail.lower(), body
+    assert r.status_code == 200, r.text
+
+    # Updating an unrelated field on an already-materialized row with null
+    # source_query must also succeed (the merged row keeps source_query=None).
+    r = c.put(
+        "/api/admin/registry/kb_local",
+        headers=auth,
+        json={"description": "updated description"},
+    )
+    assert r.status_code == 200, r.text

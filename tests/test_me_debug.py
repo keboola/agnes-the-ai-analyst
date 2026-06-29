@@ -1,14 +1,11 @@
-"""Tests for /me/debug self-diagnostic page.
+"""Tests for the /me/profile/refetch-groups POST endpoint.
 
-The page must:
+The GET /me/debug page no longer exists — its content was folded into
+/me/profile as a collapsible "Session & troubleshooting" section.
 
-- Be 404 (not 403) when ``AGNES_DEBUG_AUTH`` is unset / falsy. 404 makes
-  the route's existence undetectable in production.
-- Be 200 for any authenticated user when the flag is on; 401 when no
-  session cookie is presented.
-- Never echo the raw JWT — only decoded claims and a sha256 prefix.
-- Refetch endpoint must return the diff shape and perform zero database
-  writes (snapshot user_group_members before/after).
+The refetch-groups POST:
+- Must be 404 (not 403) when ``AGNES_DEBUG_AUTH`` is unset / falsy.
+- Must return the documented diff shape and perform zero database writes.
 """
 
 from __future__ import annotations
@@ -49,88 +46,6 @@ def _client():
 
 
 # ---------------------------------------------------------------------------
-# Gating
-# ---------------------------------------------------------------------------
-
-
-class TestGating:
-    @pytest.mark.parametrize("flag_value", ["", "0", "false", "False", "no", "off"])
-    def test_returns_404_when_flag_off(self, fresh_db, monkeypatch, flag_value):
-        """Falsy / unset flag must yield 404 (not 403)."""
-        if flag_value == "":
-            monkeypatch.delenv("AGNES_DEBUG_AUTH", raising=False)
-        else:
-            monkeypatch.setenv("AGNES_DEBUG_AUTH", flag_value)
-
-        from src.db import get_system_db, close_system_db
-        conn = get_system_db()
-        try:
-            _, sess = _make_user_and_session(conn)
-        finally:
-            conn.close()
-            close_system_db()
-
-        c = _client()
-        resp = c.get("/me/debug", cookies={"access_token": sess})
-        assert resp.status_code == 404
-
-    @pytest.mark.parametrize("flag_value", ["1", "true", "TRUE", "yes"])
-    def test_returns_200_for_authed_user_when_flag_on(self, fresh_db, monkeypatch, flag_value):
-        monkeypatch.setenv("AGNES_DEBUG_AUTH", flag_value)
-
-        from src.db import get_system_db, close_system_db
-        conn = get_system_db()
-        try:
-            _, sess = _make_user_and_session(conn)
-        finally:
-            conn.close()
-            close_system_db()
-
-        c = _client()
-        resp = c.get("/me/debug", cookies={"access_token": sess})
-        assert resp.status_code == 200, resp.text
-        assert "Auth debug" in resp.text
-
-    def test_redirects_to_login_when_unauthenticated(self, fresh_db, monkeypatch):
-        """Flag on, no cookie → get_current_user raises 401, the app's
-        global exception handler redirects HTML GETs to /login. Important:
-        the response must NOT be 404 (which would prove the gate runs
-        before auth and could leak existence to scanners) — it's 302 to
-        /login, same as any other authenticated page."""
-        monkeypatch.setenv("AGNES_DEBUG_AUTH", "true")
-        from fastapi.testclient import TestClient
-        from app.main import app
-        c = TestClient(app, follow_redirects=False)
-        resp = c.get("/me/debug")
-        assert resp.status_code == 302
-        assert "/login" in resp.headers.get("location", "")
-
-
-# ---------------------------------------------------------------------------
-# Data leakage guards
-# ---------------------------------------------------------------------------
-
-
-class TestNoSensitiveLeakage:
-    def test_raw_jwt_not_in_body(self, fresh_db, monkeypatch):
-        """The full session JWT must never appear in the rendered page —
-        only its decoded claims and a short fingerprint."""
-        monkeypatch.setenv("AGNES_DEBUG_AUTH", "true")
-        from src.db import get_system_db, close_system_db
-        conn = get_system_db()
-        try:
-            _, sess = _make_user_and_session(conn)
-        finally:
-            conn.close()
-            close_system_db()
-
-        c = _client()
-        resp = c.get("/me/debug", cookies={"access_token": sess})
-        assert resp.status_code == 200
-        assert sess not in resp.text, "raw JWT leaked into page body"
-
-
-# ---------------------------------------------------------------------------
 # Refetch endpoint — dry-run, zero DB writes
 # ---------------------------------------------------------------------------
 
@@ -147,7 +62,7 @@ class TestRefetchDryRun:
             close_system_db()
 
         c = _client()
-        resp = c.post("/me/debug/refetch-groups", cookies={"access_token": sess})
+        resp = c.post("/me/profile/refetch-groups", cookies={"access_token": sess})
         assert resp.status_code == 404
 
     def test_returns_diff_shape_and_does_not_write(self, fresh_db, monkeypatch):
@@ -173,7 +88,7 @@ class TestRefetchDryRun:
             close_system_db()
 
         c = _client()
-        resp = c.post("/me/debug/refetch-groups", cookies={"access_token": sess})
+        resp = c.post("/me/profile/refetch-groups", cookies={"access_token": sess})
         assert resp.status_code == 200, resp.text
         data = resp.json()
 
@@ -219,7 +134,7 @@ class TestRefetchDryRun:
             close_system_db()
 
         c = _client()
-        resp = c.post("/me/debug/refetch-groups", cookies={"access_token": sess})
+        resp = c.post("/me/profile/refetch-groups", cookies={"access_token": sess})
         assert resp.status_code == 200, resp.text
         data = resp.json()
         # On the keyless-DWD branch, fetch_user_groups returns [] on missing

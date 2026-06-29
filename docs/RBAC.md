@@ -59,20 +59,20 @@ Everything lives in `app/resource_types.py`. Three edits, one file:
        DATASET = "dataset"  # new
    ```
 
-2. Write a `list_blocks` delegate that projects the domain tables into the `(block → items)` shape the admin /access page consumes. Each item must include `resource_id` matching the path string written into `resource_grants`:
+2. Write a `list_blocks` delegate (no arguments) that reads through the `src.repositories` factory and projects the domain tables into the `(block → items)` shape the admin /access page consumes. Each item must include `resource_id` matching the path string written into `resource_grants`. Read through the factory — never a raw system-DB connection — so the projection hits the active backend (Postgres when configured) instead of the frozen DuckDB system file:
 
    ```python
-   def _dataset_blocks(conn) -> list[Block]:
-       rows = conn.execute(
-           "SELECT bucket, name, description FROM table_registry ORDER BY bucket, name"
-       ).fetchall()
+   def _dataset_blocks() -> list[Block]:
+       from src.repositories import table_registry_repo
+
        blocks: dict[str, Block] = {}
-       for bucket, name, desc in rows:
+       for row in table_registry_repo().list_all():
+           bucket = row.get("bucket") or "(no bucket)"
            block = blocks.setdefault(bucket, {"id": bucket, "name": bucket, "items": []})
            block["items"].append({
-               "resource_id": f"{bucket}.{name}",
-               "name": name,
-               "description": desc,
+               "resource_id": f"{bucket}.{row['name']}",
+               "name": row["name"],
+               "description": row.get("description"),
            })
        return list(blocks.values())
    ```
@@ -179,6 +179,19 @@ The v12→v13 migration is a single-step hard cutover. The Python helper `_v12_t
 No dual-write window. Either the schema is on v12 (old code) or v13 (new code).
 
 ---
+
+## Schema v49 — `requirement` enum + new resource types
+
+Schema v49 (unified Browse + My Stack for Data Packages and Memory):
+
+- `resource_grants` gains a `requirement VARCHAR DEFAULT 'available'` column. Enum: `'available'` | `'required'`. Applies to `data_package`, `memory_domain`, and `memory_item` grants. Per-group decision: same resource can be Required for Sales but Available for Engineering without duplicating the resource itself.
+- New resource types in `app.resource_types.ResourceType`:
+  - `DATA_PACKAGE` — admin-curated bundle of tables (`data_packages` table; M:N to `table_registry` via `data_package_tables`). Effective `TABLE` set for a user = `(direct TABLE grants) ∪ (tables in DATA_PACKAGE grants the user has)`.
+  - `MEMORY_ITEM` — per-group item-level Required override. Default for an item comes from `knowledge_items.is_required` flag; a `MEMORY_ITEM` grant flips that for the specified group.
+- `MEMORY_DOMAIN` grants migrated from slug strings to `memory_domains.id` references. Orphan grants (pointing at non-existent domains) preserved for admin cleanup.
+- Marketplace stays untouched — `marketplace_plugins.is_system` continues to control the mandatory tier for plugins.
+
+Effective Required = OR across grants. Any grant with `requirement='required'` wins for the user. Soft downgrade (`required → available` on `PUT /api/admin/grants/{id}`) eagerly materializes `user_stack_subscriptions` rows for every current group member in the same transaction so users don't silently lose the resource on next `agnes pull`.
 
 ## Schema v14 — FK constraints
 

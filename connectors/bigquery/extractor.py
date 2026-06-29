@@ -18,6 +18,21 @@ from typing import List, Dict, Any, Optional
 import duckdb
 
 from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+
+
+def _pin_session_utc(conn):
+    """Inline pin — see `src.duckdb_conn._open_duckdb` for the full
+    rationale. The BQ extractor opens its connections via
+    `duckdb.connect(...)` directly (not the helper) because every test
+    in `tests/test_bigquery_extractor*.py` patches
+    `connectors.bigquery.extractor.duckdb` to intercept calls; routing
+    through a different module would bypass the patch surface.
+    """
+    try:
+        conn.execute("SET GLOBAL TimeZone='UTC'")
+    except duckdb.Error:
+        pass
+    return conn
 from src.sql_safe import (
     validate_identifier as _validate_identifier,
     validate_project_id as _validate_project_id,
@@ -25,6 +40,116 @@ from src.sql_safe import (
 from src.identifier_validation import validate_identifier, validate_quoted_identifier
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# ``bq_metadata_cache`` stores the BQ INFORMATION_SCHEMA ``table_type`` value
+# refreshed every 4 h by the scheduler job. The cache uses the BQ-canonical
+# spelling ``MATERIALIZED VIEW`` (with a space), while the extractor loop
+# branches on ``MATERIALIZED_VIEW`` (underscore). We normalise here so the
+# existing branch logic does not change.
+_MATERIALIZED_VIEW_SPACE = "MATERIALIZED VIEW"
+_MATERIALIZED_VIEW_UNDER = "MATERIALIZED_VIEW"
+
+
+def _normalize_entity_type(raw: str | None) -> str | None:
+    """Normalise a cached entity_type value for use in the extractor loop.
+
+    BigQuery INFORMATION_SCHEMA returns ``MATERIALIZED VIEW`` (space); the
+    extractor loop branches on ``MATERIALIZED_VIEW`` (underscore). This
+    function converts the cached form to the extractor's expected form so
+    the VIEW branch still fires correctly. All other values pass through
+    unchanged.
+    """
+    if raw == _MATERIALIZED_VIEW_SPACE:
+        return _MATERIALIZED_VIEW_UNDER
+    return raw
+
+
+def bq_metadata_cache_repo():
+    """Thin shim so tests can monkeypatch ``connectors.bigquery.extractor.bq_metadata_cache_repo``.
+
+    Deferred import keeps the module importable in standalone / offline contexts
+    (no app layer, no system DB) — the import error only occurs when the
+    function is actually called.
+    """
+    from src.repositories import bq_metadata_cache_repo as _factory  # noqa: PLC0415
+
+    return _factory()
+
+
+def _get_cached_entity_type(table_id: str | None) -> str | None:
+    """Return a normalised entity_type from the metadata cache, or ``None``.
+
+    ``None`` means "cache miss or unavailable" — caller must fall back to
+    the live ``_detect_table_type`` BQ round-trip.  Any error (no system DB,
+    missing table, import failure) is absorbed and logged at DEBUG so the
+    standalone extractor path continues to work without app-layer imports.
+
+    The returned value is normalised via ``_normalize_entity_type``:
+    ``MATERIALIZED VIEW`` → ``MATERIALIZED_VIEW``.
+    """
+    if not table_id:
+        return None
+    try:
+        row = bq_metadata_cache_repo().get(table_id)
+    except Exception as exc:
+        logger.debug(
+            "bq_metadata_cache lookup skipped for %r (repo unavailable: %s) — "
+            "falling back to live entity-type detection",
+            table_id,
+            exc,
+        )
+        return None
+    if row is None:
+        return None
+    raw = row.get("entity_type")
+    if not raw:
+        return None
+    return _normalize_entity_type(raw)
+
+
+def parse_bq_fqn(value: Optional[str]) -> Optional[tuple]:
+    """Parse a ``project.dataset.table`` fully-qualified BigQuery name.
+
+    Returns ``(project, dataset, table)`` on success, ``None`` if ``value``
+    is empty / None, or raises ``ValueError`` with a descriptive message
+    if the string is non-empty but malformed (wrong segment count, empty
+    segments, or any segment that fails the BQ identifier validators).
+
+    Distinguishes "not set" (None / empty -> return None, caller falls
+    back to legacy bucket+source_table path) from "set but invalid" (raise
+    -> caller surfaces a registration error). Silently treating malformed
+    values as missing would let an admin typo land in the registry and
+    then rebuild against the legacy path, hiding the typo until query
+    time.
+    """
+    if not value:
+        return None
+    parts = value.split(".")
+    if len(parts) != 3 or not all(p for p in parts):
+        raise ValueError(
+            f"malformed bq_fqn {value!r}: expected exactly three non-empty "
+            f"segments 'project.dataset.table'"
+        )
+    project, dataset, table = parts
+    if not _validate_project_id(project):
+        raise ValueError(
+            f"malformed bq_fqn {value!r}: project {project!r} fails BQ "
+            f"project-id grammar"
+        )
+    if not validate_quoted_identifier(dataset, "BQ dataset"):
+        raise ValueError(
+            f"malformed bq_fqn {value!r}: dataset {dataset!r} fails BQ "
+            f"identifier grammar"
+        )
+    if not validate_quoted_identifier(table, "BQ table"):
+        raise ValueError(
+            f"malformed bq_fqn {value!r}: table {table!r} fails BQ "
+            f"identifier grammar"
+        )
+    return (project, dataset, table)
+
 
 # Serializes the body of `init_extract` across threads so two concurrent
 # materialize calls (e.g. the synchronous timeout-fallback BackgroundTask
@@ -245,6 +370,7 @@ def _detect_table_type(
     project: str,
     dataset: str,
     table: str,
+    billing_project: str | None = None,
 ) -> str | None:
     """Return BQ entity type for `project.dataset.table`.
 
@@ -252,18 +378,34 @@ def _detect_table_type(
     API — works on tables, views, and materialized views alike. Returns the
     value of INFORMATION_SCHEMA.TABLES.table_type ('BASE TABLE', 'VIEW',
     'MATERIALIZED_VIEW') or None if not found.
+
+    Args:
+        project: Data project (where the entity lives — appears in the
+            INFORMATION_SCHEMA FROM clause).
+        dataset, table: Identify the BQ entity.
+        billing_project: Project whose SA quota pays for the lookup job and
+            against which `serviceusage.services.use` is checked. When ``None``
+            (default), bills against ``project`` — fine for same-project
+            lookups. Cross-project callers MUST pass ``billing_project`` to
+            the extractor's billing project explicitly; the data-side SA
+            typically has only ``bigquery.dataViewer`` on ``project`` and lacks
+            ``serviceusage.services.use`` there, so reusing ``project`` for
+            billing 403s and the caller's broad ``except Exception`` silently
+            drops the row.
     """
+    if billing_project is None:
+        billing_project = project
     bq_sql = (
         f"SELECT table_type FROM `{project}.{dataset}.INFORMATION_SCHEMA.TABLES` "
         f"WHERE table_name = ? LIMIT 1"
     )
-    # Parameter-bind project (1st arg of bigquery_query), the inner BQ SQL
-    # (2nd arg), and the table-name predicate. This avoids the nested-quote
+    # Parameter-bind billing_project (1st arg of bigquery_query), the inner BQ
+    # SQL (2nd arg), and the table-name predicate. This avoids the nested-quote
     # bug where inline `'{table}'` would close the outer `bigquery_query('...')`
     # string. Note: bigquery_query forwards extra positional args as BQ query
     # parameters, bound positionally to the `?` placeholders inside `bq_sql`.
     duck_sql = "SELECT * FROM bigquery_query(?, ?, ?)"
-    row = conn.execute(duck_sql, [project, bq_sql, table]).fetchone()
+    row = conn.execute(duck_sql, [billing_project, bq_sql, table]).fetchone()
     return row[0] if row else None
 
 
@@ -384,7 +526,7 @@ def _persist_materialized_inner_view(
     safe_table = _escape_sql_string_literal(table_id)
     safe_path = _escape_sql_string_literal(str(parquet_path))
     try:
-        with duckdb.connect(str(extract_db_path), read_only=False) as ext_conn:
+        with _pin_session_utc(duckdb.connect(str(extract_db_path), read_only=False)) as ext_conn:
             _ensure_meta_table(ext_conn)
             # `_meta` has no UNIQUE on table_name (legacy schema), so we
             # do a manual delete-then-insert. Wrap in a transaction so
@@ -507,7 +649,7 @@ def _init_extract_locked(
         stats["errors"].append({"table": "<auth>", "error": str(e)})
         return stats
 
-    conn = duckdb.connect(str(tmp_db_path))
+    conn = _pin_session_utc(duckdb.connect(str(tmp_db_path)))
     try:
         # Install and load BigQuery extension
         try:
@@ -548,8 +690,35 @@ def _init_extract_locked(
                 continue
 
             table_name = tc["name"]
-            dataset = tc.get("bucket", "")
-            source_table = tc.get("source_table", table_name)
+            # v51: if ``bq_fqn`` is set on the registry row, it overrides the
+            # legacy bucket+source_table+project_id triplet. ``bq_fqn``
+            # decouples the UX/RBAC ``bucket`` label from the physical BQ
+            # dataset name (issue #343). Missing/empty bq_fqn falls back to
+            # the legacy path — backwards compat for pre-v51 registrations.
+            raw_fqn = tc.get("bq_fqn")
+            try:
+                parsed_fqn = parse_bq_fqn(raw_fqn)
+            except ValueError as e:
+                stats["errors"].append({"table": table_name, "error": str(e)})
+                continue
+            if parsed_fqn is not None:
+                fqn_project, dataset, source_table = parsed_fqn
+                # Cross-project bq_fqn: extractor ATTACHed `bq` against
+                # `project_id` (the overlay's data project). When
+                # bq_fqn.project differs, the BASE TABLE path via the bq
+                # alias would silently route to the wrong project. The
+                # VIEW path goes through ``bigquery_query(billing, …)``
+                # which takes its own billing arg, so cross-project works
+                # there — but BASE TABLE we skip with a clear warning
+                # rather than serve wrong-source data. Multi-ATTACH per
+                # distinct project is the proper fix (follow-up; see PR
+                # description).
+                cross_project = fqn_project != project_id
+            else:
+                dataset = tc.get("bucket", "")
+                source_table = tc.get("source_table", table_name)
+                fqn_project = project_id
+                cross_project = False
 
             # #81 Group D — refuse rows with unsafe identifiers. Same
             # rationale as the keboola extractor: registry is admin-controlled
@@ -573,10 +742,30 @@ def _init_extract_locked(
                 continue
 
             try:
-                entity_type = _detect_table_type(conn, project_id, dataset, source_table)
+                # Cross-project rows MUST bill against ``project_id`` (the
+                # extractor's billing project where the SA has
+                # ``serviceusage.services.use``). Passing ``fqn_project`` for
+                # both data + billing 403s on cross-project setups, the
+                # broad ``except Exception`` below silently drops the row,
+                # and the cross-project VIEW path at line ~696 never
+                # executes. (Same-project rows: ``fqn_project == project_id``
+                # so this is a no-op.)
+                table_id = tc.get("id")
+                entity_type = _get_cached_entity_type(table_id)
+                if entity_type is None:
+                    # _detect_table_type returns the raw BQ INFORMATION_SCHEMA
+                    # value ("MATERIALIZED VIEW" with a space); normalize it to
+                    # the underscore form the branch below expects, same as the
+                    # cached path.
+                    entity_type = _normalize_entity_type(
+                        _detect_table_type(
+                            conn, fqn_project, dataset, source_table,
+                            billing_project=project_id,
+                        )
+                    )
                 if entity_type is None:
                     raise RuntimeError(
-                        f"BQ entity {project_id}.{dataset}.{source_table} not found"
+                        f"BQ entity {fqn_project}.{dataset}.{source_table} not found"
                     )
 
                 # Issue #160: always create a master view for query_mode='remote'
@@ -588,6 +777,18 @@ def _init_extract_locked(
                 # logged + skipped, with NO _meta row, since orchestrator-side
                 # master-view creation requires a corresponding inner view.
                 if entity_type == "BASE TABLE":
+                    if cross_project:
+                        # bq_fqn points to a different project than the
+                        # ATTACH alias — see comment above. Skip with a
+                        # diagnostic instead of serving wrong-source data.
+                        logger.warning(
+                            "bq_fqn project mismatch for BASE TABLE %s: "
+                            "bq_fqn=%s, extractor ATTACHed to %s. Master "
+                            "view skipped — multi-ATTACH follow-up needed "
+                            "or register a same-project proxy view.",
+                            table_name, fqn_project, project_id,
+                        )
+                        continue
                     view_sql = (
                         f'CREATE OR REPLACE VIEW "{table_name}" AS '
                         f'SELECT * FROM bq."{dataset}"."{source_table}"'
@@ -595,12 +796,20 @@ def _init_extract_locked(
                     conn.execute(view_sql)
                 elif entity_type in ("VIEW", "MATERIALIZED_VIEW"):
                     # `dataset` and `source_table` are validated above by
-                    # validate_quoted_identifier; project_id is validated at
-                    # the entry boundary of init_extract (lines 152-160).
+                    # validate_quoted_identifier; ``fqn_project`` is either
+                    # the entry-validated ``project_id`` or comes from
+                    # ``parse_bq_fqn`` which re-validates the project
+                    # segment via ``_validate_project_id``.
                     # The .replace("'", "''") is defense-in-depth on the
                     # inline literal.
-                    bq_inner = f"SELECT * FROM `{project_id}.{dataset}.{source_table}`"
+                    bq_inner = f"SELECT * FROM `{fqn_project}.{dataset}.{source_table}`"
                     bq_inner_escaped = bq_inner.replace("'", "''")
+                    # Billing project stays ``project_id`` (the extractor's
+                    # ATTACH project) — that's the project whose SA quota
+                    # pays for the job. ``fqn_project`` is the data project
+                    # (where the table lives); ``bigquery_query`` reads
+                    # cross-project just fine when the SA on ``project_id``
+                    # has BQ Data Viewer on ``fqn_project``.
                     view_sql = (
                         f'CREATE OR REPLACE VIEW "{table_name}" AS '
                         f"SELECT * FROM bigquery_query('{project_id}', '{bq_inner_escaped}')"
@@ -615,7 +824,7 @@ def _init_extract_locked(
                         "Unverified BQ entity_type %r for %s.%s.%s — master view skipped. "
                         "Use `agnes snapshot create` for this row, or file an issue with "
                         "a repro to request native support.",
-                        entity_type, project_id, dataset, source_table,
+                        entity_type, fqn_project, dataset, source_table,
                     )
                     continue  # Do NOT insert _meta — no inner view to point at.
 
@@ -626,7 +835,7 @@ def _init_extract_locked(
                 stats["tables_registered"] += 1
                 logger.info(
                     "Registered remote view: %s -> %s.%s.%s (%s)",
-                    table_name, project_id, dataset, source_table, entity_type,
+                    table_name, fqn_project, dataset, source_table, entity_type,
                 )
             except Exception as e:
                 logger.error("Failed to register %s: %s", table_name, e)
@@ -786,6 +995,16 @@ def materialize_query(
             # extension loaded with a SECRET token; bigquery_query() reuses that
             # auth path against the billing_project for the jobs API call.
             with bq.duckdb_session() as conn:
+                # Memory caps (memory_limit=2GB, threads=2,
+                # preserve_insertion_order=false) are applied uniformly
+                # on every pool acquire by ``apply_bq_session_settings``
+                # — see that function in ``connectors/bigquery/access.py``
+                # for the rationale and the empirical 2 GiB trace.
+                # Previously the SETs lived inline here, which only
+                # mutated whichever pool entry was acquired for this
+                # materialize call — leaving the other ~3 pool entries
+                # at the 80%-of-host default and re-opening the OOM
+                # window for any analyst query that landed on them.
                 attached = {
                     r[0] for r in conn.execute(
                         "SELECT database_name FROM duckdb_databases()"

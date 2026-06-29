@@ -73,6 +73,11 @@ def install_claude_commands(workspace: Path) -> None:
 
     Always writes (overwrites) the managed command files; never touches
     other files the user may have under `.claude/commands/`. Idempotent.
+
+    Override-sentinel handling lives at the call site, not here. The
+    init-time caller (`cli/commands/init.py`, gated by `override_active`)
+    decides whether to skip this writer for admin-templated workspaces.
+    Future runtime callers can invoke us unconditionally.
     """
     commands_dir = workspace / ".claude" / "commands"
     commands_dir.mkdir(parents=True, exist_ok=True)

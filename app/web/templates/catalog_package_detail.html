@@ -1,0 +1,368 @@
+{% extends "base.html" %}
+
+{% block title %}{{ pkg.name }} — Data Packages — {{ config.INSTANCE_NAME or 'AI Data Analyst' }}{% endblock %}
+
+{% block head_extra %}
+<style>
+  .back-link {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: var(--text-secondary, #5f6368); text-decoration: none;
+    font-size: 13px; margin-bottom: 12px;
+  }
+  .back-link:hover { color: var(--ds-primary); }
+
+  /* ── Hero ─────────────────────────────────────────────────── */
+  .pkg-hero {
+    display: flex; gap: 16px; align-items: flex-start;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #eceff1);
+    border-radius: 12px;
+    padding: 20px 24px; margin-bottom: 16px;
+  }
+  .pkg-hero__icon {
+    width: 64px; height: 64px; border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 700; color: #fff;
+    flex-shrink: 0;
+  }
+  .pkg-hero__body { flex: 1; min-width: 0; }
+  .pkg-hero__title-row {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .pkg-hero__title-row h1 { margin: 0; font-size: 24px; letter-spacing: -0.3px; }
+
+  .pkg-badge {
+    display: inline-flex; align-items: center;
+    padding: 2px 8px; border-radius: 999px;
+    font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .pkg-badge--curated { background: #fef3c7; color: #92400e; }
+  .pkg-badge--new     { background: #dcfce7; color: #166534; }
+
+  .pkg-hero__owner {
+    margin-top: 4px;
+    font-size: 13px; color: var(--text-secondary, #5f6368);
+  }
+  .pkg-hero__desc {
+    margin: 8px 0 0;
+    color: var(--text-primary, #1A253C); font-size: 14px; line-height: 1.5;
+  }
+  .pkg-hero__meta {
+    margin-top: 10px;
+    font-size: 12px; color: var(--text-secondary, #5f6368);
+  }
+  .pkg-hero__tags {
+    display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px;
+  }
+  .pkg-tag {
+    display: inline-block; padding: 2px 8px;
+    background: var(--border-light, #f3f4f6);
+    border-radius: 6px; font-size: 11px; color: var(--text-primary);
+  }
+  .pkg-hero__actions { display: flex; gap: var(--space-2); align-self: flex-start; }
+  /* The Add / Remove / Edit / required-state hero buttons all render through
+     canonical .btn classes from style-custom.css (.btn-primary, .btn-danger,
+     .btn-secondary, .btn-required). No page-local overrides needed here. */
+
+  /* ── Sections ─────────────────────────────────────────────── */
+  /* .pkg-section sits on top of .ds-card (rendered by ds.panel) — base
+     surface/border/shadow comes from .ds-card; this rule overrides only
+     the radius (8 → 12, matches /catalog) and the 18×20 padding. */
+  .pkg-section {
+    border-radius: var(--radius-xl);
+    padding: 18px var(--space-5);
+    margin-bottom: 14px;
+  }
+  .pkg-section__title {
+    margin: 0 0 10px; font-size: 13px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text-secondary, #5f6368);
+  }
+  .pkg-prose {
+    color: var(--text-primary); font-size: 14px; line-height: 1.6;
+    white-space: pre-wrap;
+  }
+  .pkg-use-skip {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  }
+  @media (max-width: 720px) { .pkg-use-skip { grid-template-columns: 1fr; } }
+  .pkg-use-skip h3 {
+    margin: 0 0 6px; font-size: 13px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--text-secondary);
+  }
+  .pkg-use-skip ul { margin: 0; padding-left: 18px; }
+  .pkg-use-skip li { margin: 4px 0; line-height: 1.5; font-size: 14px; }
+
+  /* ── Tables collapsible ────────────────────────────────────── */
+  .pkg-table-row {
+    border: 1px solid var(--border, #eceff1);
+    border-radius: 10px; margin-bottom: 8px; background: var(--surface);
+  }
+  .pkg-table-row > summary {
+    list-style: none; cursor: pointer; padding: 12px 16px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .pkg-table-row > summary::-webkit-details-marker { display: none; }
+  .pkg-table-row > summary::before {
+    content: "▸"; color: var(--text-secondary); font-size: 10px;
+    transition: transform .12s ease;
+  }
+  .pkg-table-row[open] > summary::before { transform: rotate(90deg); }
+  .pkg-table-row__name { font-family: var(--font-mono); font-weight: 600; }
+  .pkg-table-row__desc {
+    flex: 1; min-width: 0;
+    color: var(--text-secondary); font-size: 12px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .qm-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .qm-local         { background: rgba(16, 183, 127, 0.14); color: #0e9b6a; }
+  .qm-remote        { background: color-mix(in srgb, var(--ds-primary) 12%, transparent); color: var(--ds-primary-dark); }
+  .qm-materialized  { background: rgba(124, 58, 237, 0.14); color: #6d28d9; }
+  .qm-internal      { background: #f3f4f6; color: #4b5563; }
+
+  .pkg-table-detail {
+    padding: 0 16px 14px 38px;
+    border-top: 1px dashed var(--border-light, #f0f0f0);
+  }
+  .pkg-table-detail dl { margin: 10px 0; display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; }
+  .pkg-table-detail dt { color: var(--text-secondary); font-size: 12px; }
+  .pkg-table-detail dd { margin: 0; font-size: 13px; line-height: 1.5; }
+  .pkg-gotcha {
+    padding: 8px 12px; border-radius: 6px; font-size: 13px; line-height: 1.5;
+    margin: 6px 0;
+    background: var(--border-light, #f3f4f6);
+  }
+  .pkg-gotcha[data-gotcha="key"] {
+    background: #fef3c7; border-left: 3px solid #f59e0b;
+  }
+  .pkg-gotcha__label {
+    display: inline-block; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    color: #92400e; margin-right: 8px;
+  }
+  .pkg-questions-list { margin: 8px 0 0; padding-left: 20px; }
+  .pkg-questions-list li { margin: 4px 0; font-size: 13px; line-height: 1.5; }
+
+  /* ── Package example-questions panel ───────────────────────── */
+  .pkg-questions__panel { padding-left: 0; list-style: none; }
+  .pkg-questions__panel li {
+    padding: 8px 12px; border: 1px solid var(--border-light, #f3f4f6);
+    border-radius: 8px; margin-bottom: 6px;
+    font-size: 14px; line-height: 1.5;
+    background: var(--background, #f9fafb);
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+{# Design-system component macros — 4 `.pkg-section` panels and hero
+   Add/Remove/Edit action buttons render via `ds.panel` and `ds.button`;
+   the mandated state uses canonical `.btn-required` (style-custom.css).
+   Bespoke `.pkg-hero` (gradient + icon-block layout) and `<details
+   class="pkg-table-row">` accordion stay page-local. #}
+{% import "_components.html" as ds %}
+<a class="back-link" href="/catalog">← All data packages</a>
+
+{# Initials fallback when no icon set, mirrors the card macro. #}
+{% set _name_parts = (pkg.name or '?').split() %}
+{% if _name_parts|length >= 2 %}
+  {% set _initials = (_name_parts[0][0] ~ _name_parts[1][0])|upper %}
+{% else %}
+  {% set _initials = (pkg.name or '?')[:2]|upper %}
+{% endif %}
+
+<div class="pkg-hero">
+  <div class="pkg-hero__icon" style="background: {{ pkg.color or 'var(--ds-primary)' }};">
+    {# Suppress Heroicons-style names (letter/digit/-/_ start) — show initials instead.
+       Mirrors _stack_card.html glyph guard; emoji/special chars pass through unchanged. #}
+    {% set _icon_str = (pkg.icon or '')|string %}
+    {% set _icon_first = _icon_str[:1] %}
+    {% if _icon_str and _icon_str|length <= 4 and _icon_first not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' %}{{ _icon_str }}{% else %}{{ _initials }}{% endif %}
+  </div>
+  <div class="pkg-hero__body">
+    <div class="pkg-hero__title-row">
+      <h1>{{ pkg.name }}</h1>
+      {% for b in badges %}
+      <span class="pkg-badge pkg-badge--{{ b }}" data-badge="{{ b }}">{{ b|capitalize }}</span>
+      {% endfor %}
+    </div>
+    {% if pkg.owner_name %}
+    <div class="pkg-hero__owner" data-owner>
+      Owned by <strong>{{ pkg.owner_name }}</strong>{% if pkg.owner_team %} · {{ pkg.owner_team }}{% endif %}
+    </div>
+    {% endif %}
+    {% if pkg.description %}
+    <p class="pkg-hero__desc">{{ pkg.description }}</p>
+    {% endif %}
+    <div class="pkg-hero__meta">
+      {{ tables|length }} table{{ 's' if tables|length != 1 else '' }}
+      {% if total_size_bytes %} · {{ total_size_display }}{% endif %}
+    </div>
+    {% if pkg.tags %}
+    <div class="pkg-hero__tags">
+      {% for t in pkg.tags %}<span class="pkg-tag">{{ t }}</span>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  <div class="pkg-hero__actions">
+    {% if effective_requirement == 'required' %}
+      <button class="btn btn-required" disabled
+              title="Required by your organization">In stack (required)</button>
+    {% elif in_stack %}
+      {{ ds.button('Remove from stack', variant='danger',
+                   type='button', id='pkg-remove-btn') }}
+    {% else %}
+      {{ ds.button('+ Add to stack', variant='primary',
+                   type='button', id='pkg-add-btn') }}
+    {% endif %}
+    {% if user.is_admin %}
+      {{ ds.button('Edit', variant='secondary',
+                   href='/admin/tables?edit_package=' ~ pkg.id,
+                   attrs='data-section-edit="package" title="Edit package metadata in admin"') }}
+    {% endif %}
+  </div>
+</div>
+
+{# ── What it is ──────────────────────────────────────────── #}
+{% if pkg.long_description %}
+{% call ds.panel(tag='section', klass='pkg-section',
+                 attrs='data-section="long-description"') %}
+  <h2 class="pkg-section__title">What it is</h2>
+  <div class="pkg-prose">{{ pkg.long_description }}</div>
+{% endcall %}
+{% endif %}
+
+{# ── Use it when / Skip it when ──────────────────────────── #}
+{% if pkg.when_to_use or pkg.when_not_to_use %}
+{% call ds.panel(tag='section', klass='pkg-section') %}
+  <div class="pkg-use-skip">
+    {% if pkg.when_to_use %}
+    <div data-section="use-it-when">
+      <h3>Use it when</h3>
+      <ul>{% for b in pkg.when_to_use %}<li>{{ b }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+    {% if pkg.when_not_to_use %}
+    <div data-section="skip-it-when">
+      <h3>Skip it when</h3>
+      <ul>{% for b in pkg.when_not_to_use %}<li>{{ b }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+  </div>
+{% endcall %}
+{% endif %}
+
+{# ── Tables in this package ─────────────────────────────── #}
+{% call ds.panel(tag='section', klass='pkg-section') %}
+  <h2 class="pkg-section__title">Tables in this package</h2>
+  {% if tables %}
+  {% for t in tables %}
+  <details class="pkg-table-row" data-table-id="{{ t.id }}">
+    <summary>
+      <span class="pkg-table-row__name"
+            role="link"
+            tabindex="0"
+            data-href="/catalog/t/{{ t.id }}"
+            onclick="event.stopPropagation(); window.location.href=this.dataset.href;"
+            onkeydown="if(event.key==='Enter'||event.key===' '){event.stopPropagation();event.preventDefault();window.location.href=this.dataset.href;}"
+            style="color: var(--ds-primary); text-decoration: none; cursor: pointer;">{{ t.name }}</span>
+      <span class="qm-badge qm-{{ t.query_mode or 'local' }}">{{ t.query_mode or 'local' }}</span>
+      {% if t.description %}
+      <span class="pkg-table-row__desc">{{ t.description }}</span>
+      {% endif %}
+      <span style="margin-left:auto; font-size:12px; color:var(--text-secondary);">
+        {{ t.last_sync_display or '—' }}{% if t.size_display %} · {{ t.size_display }}{% endif %}
+      </span>
+    </summary>
+    <div class="pkg-table-detail">
+      <dl>
+        {% if t.grain %}<dt>Grain</dt><dd>{{ t.grain }}</dd>{% endif %}
+        {% if t.platforms %}<dt>Platforms</dt><dd>{{ t.platforms|join(' · ') }}</dd>{% endif %}
+        {% if t.partition_col %}<dt>Partition</dt><dd><code>{{ t.partition_col }}</code></dd>{% endif %}
+        {% if t.history %}<dt>History</dt><dd>{{ t.history }}</dd>{% endif %}
+      </dl>
+      {% if t.gotchas %}
+      <div data-section="gotchas">
+        {% for g in t.gotchas %}
+        <div class="pkg-gotcha" {% if g.key %}data-gotcha="key"{% endif %}>
+          {% if g.key %}<span class="pkg-gotcha__label">Key gotcha</span>{% endif %}{{ g.body }}
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% if t.sample_questions %}
+      <div style="margin-top:10px;">
+        <div style="font-size:12px; color:var(--text-secondary); font-weight:600;">Try one of these:</div>
+        <ul class="pkg-questions-list">
+          {% for q in t.sample_questions %}<li>{{ q }}</li>{% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+      {% if not (t.grain or t.platforms or t.partition_col or t.history or t.gotchas or t.sample_questions) %}
+      <div style="color:var(--text-secondary); font-size:13px; font-style:italic; padding:8px 0;">
+        No extended documentation yet for this table.
+      </div>
+      {% endif %}
+    </div>
+  </details>
+  {% endfor %}
+  {% else %}
+  <div style="padding: 20px 0; text-align: center; color: var(--text-secondary, #5f6368);">
+    No tables in this package yet.
+  </div>
+  {% endif %}
+{% endcall %}
+
+{# ── Example questions you can ask Claude ────────────────── #}
+{% if pkg.example_questions %}
+{% call ds.panel(tag='section', klass='pkg-section') %}
+  <h2 class="pkg-section__title">Example questions you can ask Claude</h2>
+  <ol class="pkg-questions__panel">
+    {% for q in pkg.example_questions %}<li>{{ q }}</li>{% endfor %}
+  </ol>
+{% endcall %}
+{% endif %}
+
+<script>
+'use strict';
+(function() {
+  const pkgId = {{ pkg.id | tojson }};
+  const addBtn = document.getElementById('pkg-add-btn');
+  const removeBtn = document.getElementById('pkg-remove-btn');
+
+  async function call(method, url, body) {
+    const opts = { method: method, credentials: 'same-origin' };
+    if (body) {
+      opts.headers = { 'Content-Type': 'application/json' };
+      opts.body = JSON.stringify(body);
+    }
+    return fetch(url, opts);
+  }
+
+  if (addBtn) {
+    addBtn.addEventListener('click', async () => {
+      addBtn.disabled = true;
+      const r = await call('POST', '/api/stack/subscribe',
+        { resource_type: 'data_package', resource_id: pkgId });
+      if (r.ok) location.reload();
+      else { await alertModal('Failed to add to stack'); addBtn.disabled = false; }
+    });
+  }
+  if (removeBtn) {
+    removeBtn.addEventListener('click', async () => {
+      removeBtn.disabled = true;
+      const r = await call('DELETE',
+        '/api/stack/subscription/data_package/' + encodeURIComponent(pkgId));
+      if (r.ok || r.status === 204) location.reload();
+      else { await alertModal('Failed to remove from stack'); removeBtn.disabled = false; }
+    });
+  }
+})();
+</script>
+{% endblock %}

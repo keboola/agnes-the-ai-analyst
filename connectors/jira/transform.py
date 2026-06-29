@@ -19,6 +19,21 @@ import pyarrow.parquet as pq
 
 logger = logging.getLogger(__name__)
 
+# Parquet write options applied to every monthly chunk.
+# ZSTD offers better compression ratio than Snappy with comparable latency.
+# write_statistics=True enables column-level min/max stats used by DuckDB's
+# query planner for predicate push-down.  write_page_index=True adds a
+# per-column page index (data-page-level statistics) that further narrows
+# I/O when filtering on high-cardinality string columns such as issue_key.
+PARQUET_WRITE_OPTIONS: dict = {
+    "compression": "zstd",
+    "write_statistics": True,
+    "write_page_index": True,
+}
+
+# Hive partition directory name prefix used for all tables.
+HIVE_PARTITION_PREFIX = "month"
+
 
 # Custom field mapping (ID -> human readable name)
 # Verified against Jira field configuration (Feb 2026)
@@ -526,14 +541,32 @@ def transform_issuelinks(raw_issue: dict) -> list[dict]:
     return records
 
 
-def transform_remote_links(raw_issue: dict) -> list[dict]:
+def transform_remote_links(raw_issue: dict) -> list[dict] | None:
     """Extract and transform remote links from an issue.
 
-    Remote links are embedded in the raw issue JSON as `_remote_links`
-    by the fetch layer (jira_service.py / jira_backfill.py).
+    Returns:
+      - list[dict]: fresh records to upsert into parquet. May be empty,
+        meaning the issue legitimately has no remote links right now
+        (HTTP 200 with [] or HTTP 404 from the fetch).
+      - None: the _remote_links key was absent from raw_issue, which
+        signals that save_issue (or the equivalent backfill writer)
+        could not refresh remote links — typically a 401/403/5xx from
+        the Jira API. Callers MUST treat None as "skip the upsert";
+        overwriting with [] would delete existing parquet rows for
+        this issue.
+
+    The key shape is set by the writers (JiraService.save_issue,
+    JiraBackfiller, backfill_remote_links): present means the fetch
+    succeeded (200 or 404), absent means the fetch raised.
     """
     issue_key = raw_issue.get("key")
-    remote_links = raw_issue.get("_remote_links", [])
+    # Treat both absent key and explicit None as the "no fresh data" signal —
+    # absent is the contract from save_issue/backfill writers, None is the
+    # defensive case where a JSON edit or older buggy code stored an explicit
+    # null (would otherwise blow up on `for rl in None`).
+    remote_links = raw_issue.get("_remote_links")
+    if remote_links is None:
+        return None
 
     records = []
     for rl in remote_links:
@@ -551,6 +584,19 @@ def transform_remote_links(raw_issue: dict) -> list[dict]:
         )
 
     return records
+
+
+def write_hive_parquet(table: pa.Table, table_dir: Path, month_key: str) -> Path:
+    """Write a PyArrow table to the hive-partitioned layout.
+
+    Creates ``table_dir/month=<month_key>/data.parquet`` with ZSTD compression
+    and column statistics enabled.  Returns the path to the written file.
+    """
+    hive_dir = table_dir / f"{HIVE_PARTITION_PREFIX}={month_key}"
+    hive_dir.mkdir(parents=True, exist_ok=True)
+    dest = hive_dir / "data.parquet"
+    pq.write_table(table, dest, **PARQUET_WRITE_OPTIONS)
+    return dest
 
 
 def get_month_key(dt: datetime | None) -> str:
@@ -587,13 +633,15 @@ def transform_all(
     """
     Transform all raw Jira JSON files into monthly Parquet chunks.
 
-    Output structure:
+    Output structure (hive-partitioned layout):
         output_dir/
         ├── issues/
-        │   ├── 2025-01.parquet
-        │   └── 2026-02.parquet
+        │   ├── month=2025-01/
+        │   │   └── data.parquet
+        │   └── month=2026-02/
+        │       └── data.parquet
         ├── comments/
-        │   └── ...
+        │   └── month=YYYY-MM/data.parquet  ...
         ├── changelog/
         │   └── ...
         ├── attachments/
@@ -664,7 +712,15 @@ def transform_all(
 
             changelog_by_month[month_key].extend(transform_changelog(raw_issue))
             issuelinks_by_month[month_key].extend(transform_issuelinks(raw_issue))
-            remote_links_by_month[month_key].extend(transform_remote_links(raw_issue))
+            rl_records = transform_remote_links(raw_issue)
+            if rl_records is not None:
+                remote_links_by_month[month_key].extend(rl_records)
+            # else: _remote_links overlay was skipped (fetch failure). The batch
+            # rebuild writes monthly parquets from scratch, so this issue simply
+            # contributes no rows to the rebuild — it doesn't "preserve" anything.
+            # A re-run after the outage clears will repopulate. The incremental
+            # path (incremental_transform.py) is what genuinely preserves
+            # existing rows; batch mode is full-rebuild and not the hot path.
 
         except Exception as e:
             logger.error(f"Error processing {json_file}: {e}")
@@ -684,44 +740,44 @@ def transform_all(
         # Issues
         if issues_by_month[month_key]:
             table = apply_schema(pd.DataFrame(issues_by_month[month_key]), ISSUES_SCHEMA)
-            pq.write_table(table, output_dir / "issues" / f"{month_key}.parquet")
+            write_hive_parquet(table, output_dir / "issues", month_key)
             counts["issues"] += table.num_rows
-            logger.info(f"Saved {table.num_rows} issues to issues/{month_key}.parquet")
+            logger.info(f"Saved {table.num_rows} issues to issues/month={month_key}/data.parquet")
 
         # Comments
         if comments_by_month[month_key]:
             table = apply_schema(pd.DataFrame(comments_by_month[month_key]), COMMENTS_SCHEMA)
-            pq.write_table(table, output_dir / "comments" / f"{month_key}.parquet")
+            write_hive_parquet(table, output_dir / "comments", month_key)
             counts["comments"] += table.num_rows
-            logger.info(f"Saved {table.num_rows} comments to comments/{month_key}.parquet")
+            logger.info(f"Saved {table.num_rows} comments to comments/month={month_key}/data.parquet")
 
         # Attachments (metadata)
         if attachments_by_month[month_key]:
             table = apply_schema(pd.DataFrame(attachments_by_month[month_key]), ATTACHMENTS_SCHEMA)
-            pq.write_table(table, output_dir / "attachments" / f"{month_key}.parquet")
+            write_hive_parquet(table, output_dir / "attachments", month_key)
             counts["attachments"] += table.num_rows
-            logger.info(f"Saved {table.num_rows} attachments to attachments/{month_key}.parquet")
+            logger.info(f"Saved {table.num_rows} attachments to attachments/month={month_key}/data.parquet")
 
         # Changelog
         if changelog_by_month[month_key]:
             table = apply_schema(pd.DataFrame(changelog_by_month[month_key]), CHANGELOG_SCHEMA)
-            pq.write_table(table, output_dir / "changelog" / f"{month_key}.parquet")
+            write_hive_parquet(table, output_dir / "changelog", month_key)
             counts["changelog"] += table.num_rows
-            logger.info(f"Saved {table.num_rows} changelog entries to changelog/{month_key}.parquet")
+            logger.info(f"Saved {table.num_rows} changelog entries to changelog/month={month_key}/data.parquet")
 
         # Issue links
         if issuelinks_by_month[month_key]:
             table = apply_schema(pd.DataFrame(issuelinks_by_month[month_key]), ISSUELINKS_SCHEMA)
-            pq.write_table(table, output_dir / "issuelinks" / f"{month_key}.parquet")
+            write_hive_parquet(table, output_dir / "issuelinks", month_key)
             counts["issuelinks"] += table.num_rows
-            logger.info(f"Saved {table.num_rows} issue links to issuelinks/{month_key}.parquet")
+            logger.info(f"Saved {table.num_rows} issue links to issuelinks/month={month_key}/data.parquet")
 
         # Remote links
         if remote_links_by_month[month_key]:
             table = apply_schema(pd.DataFrame(remote_links_by_month[month_key]), REMOTE_LINKS_SCHEMA)
-            pq.write_table(table, output_dir / "remote_links" / f"{month_key}.parquet")
+            write_hive_parquet(table, output_dir / "remote_links", month_key)
             counts["remote_links"] += table.num_rows
-            logger.info(f"Saved {table.num_rows} remote links to remote_links/{month_key}.parquet")
+            logger.info(f"Saved {table.num_rows} remote links to remote_links/month={month_key}/data.parquet")
 
     logger.info(f"Created monthly chunks for {len(issues_by_month)} months")
     return counts

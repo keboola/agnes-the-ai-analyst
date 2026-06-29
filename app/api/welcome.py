@@ -17,9 +17,11 @@ from pydantic import BaseModel, Field
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.repositories.welcome_template import WelcomeTemplateRepository
 from src.welcome_template import build_context, compute_default_agent_prompt, render_agent_prompt_banner
 
+from src.repositories import (
+    welcome_template_repo,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -61,6 +63,21 @@ class TemplateGetResponse(BaseModel):
     default: str  # live default from setup_instructions.resolve_lines()
     updated_at: Optional[str] = None
     updated_by: Optional[str] = None
+    # #622: the prompt's source toggle. `"editor"` = DB override editable;
+    # `"git"` = bound to the IWT clone file (editor read-only). `source` is
+    # retained for backward-compat with the old grandfathered UI.
+    source: str = "local"
+    # Path inside the seed repo that owns this template (only set in git mode)
+    # so the admin UI can name the file in the banner.
+    seed_path: Optional[str] = None
+    source_mode: str = "editor"
+    git_path: Optional[str] = None
+
+
+# Path inside the seed repo for the install-prompt template. Lives here
+# as a constant so the admin UI's "edit in seed" banner and the GET/PUT/
+# DELETE gate use the same value.
+_SEED_PATH = "install-prompt/template.md.tmpl"
 
 
 class TemplatePutRequest(BaseModel):
@@ -77,14 +94,35 @@ async def admin_get_template(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    row = WelcomeTemplateRepository(conn).get()
+    # #622: the source toggle replaced the implicit seed_owns() read-only lock.
+    # git mode surfaces the bound IWT file (read-only); editor mode keeps the
+    # DB override editable even when an IWT repo is registered.
     server_url = str(request.base_url).rstrip("/")
+    meta = welcome_template_repo().get_meta()
     live_default = compute_default_agent_prompt(conn, user=user, server_url=server_url)
+
+    if meta["source_mode"] == "git":
+        from src.initial_workspace import resolve_prompt
+
+        git_content, _mode = resolve_prompt("install", conn)
+        return TemplateGetResponse(
+            content=git_content or "",
+            default=live_default,
+            updated_at=meta["updated_at"].isoformat() if meta["updated_at"] else None,
+            updated_by=meta["updated_by"],
+            source="seed",
+            seed_path=meta["git_path"] or _SEED_PATH,
+            source_mode="git",
+            git_path=meta["git_path"] or _SEED_PATH,
+        )
+
     return TemplateGetResponse(
-        content=row["content"],
+        content=meta["content"],
         default=live_default,
-        updated_at=row["updated_at"].isoformat() if row["updated_at"] else None,
-        updated_by=row["updated_by"],
+        updated_at=meta["updated_at"].isoformat() if meta["updated_at"] else None,
+        updated_by=meta["updated_by"],
+        source="local",
+        source_mode="editor",
     )
 
 
@@ -94,6 +132,23 @@ async def admin_put_template(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    # #622: the editor is always writable in editor mode. Saving is only
+    # refused in git mode, where the DB content is dead-code the install-prompt
+    # renderer would not consult (silent "where did my edit go" loss).
+    if welcome_template_repo().get_meta()["source_mode"] == "git":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "kind": "prompt_in_git_mode",
+                "hint": (
+                    "This prompt is in Git source mode (bound to the Initial "
+                    "Workspace Template repo). Switch to Editor override in "
+                    "/admin/prompts before saving, or edit the bound file in "
+                    "the repo + 'Sync now'."
+                ),
+            },
+        )
+
     # Validate with autoescape=False to match every runtime render path
     # (/setup page, preview endpoint, render_agent_prompt_banner). The
     # outer template applies escaping where needed via `| e`. StrictUndefined
@@ -124,7 +179,7 @@ async def admin_put_template(
             ),
         )
 
-    WelcomeTemplateRepository(conn).set(payload.content, updated_by=user["email"])
+    welcome_template_repo().set(payload.content, updated_by=user["email"])
     return {"status": "ok"}
 
 
@@ -133,7 +188,21 @@ async def admin_reset_template(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    WelcomeTemplateRepository(conn).reset(updated_by=user["email"])
+    # #622: reset allowed in editor mode; refused in git mode (no DB override
+    # to clear — the renderer reads the bound repo file).
+    if welcome_template_repo().get_meta()["source_mode"] == "git":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "kind": "prompt_in_git_mode",
+                "hint": (
+                    "This prompt is in Git source mode — there is no Editor "
+                    "override to reset. Switch to Editor override in "
+                    "/admin/prompts, or edit the bound repo file."
+                ),
+            },
+        )
+    welcome_template_repo().reset(updated_by=user["email"])
     return Response(status_code=204)
 
 

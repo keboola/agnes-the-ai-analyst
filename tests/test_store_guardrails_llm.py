@@ -165,6 +165,73 @@ class TestLlmReviewRunner:
         sub = StoreSubmissionsRepository(conn).get(sub_id)
         assert sub["status"] == "blocked_llm"
 
+    def test_content_quality_fail_blocks(self, conn, plugin_dir):
+        """Safe security verdict but content_quality.verdict=fail must still
+        block. The LLM substantive layer is a hard gate — descriptions that
+        clear the mechanical floor can still get flagged for vagueness."""
+        eid, sub_id = _seed_pending_submission(conn, plugin_dir)
+
+        verdict = {
+            "risk_level": "safe", "summary": "OK",
+            "findings": [],
+            "template_placeholders_found": 0,
+            "content_quality": {
+                "verdict": "fail",
+                "issues": [{
+                    "file": "skills/probe/SKILL.md",
+                    "field": "frontmatter.description",
+                    "issue": "describes WHAT the skill is, not WHEN to invoke it",
+                    "hint": "Rewrite as 'Use when reviewing PRs to flag missing tests.'",
+                }],
+            },
+            "reviewed_by_model": "claude-haiku-4-5-20251001",
+            "error": None,
+        }
+        with patch(
+            "src.store_guardrails.runner.llm_review.review_bundle",
+            return_value=verdict,
+        ):
+            run_llm_review(
+                sub_id, plugin_dir=plugin_dir,
+                conn_factory=_conn_factory(conn),
+                api_key_loader=lambda: "sk-test",
+                model_loader=lambda: "claude-haiku-4-5-20251001",
+            )
+
+        sub = StoreSubmissionsRepository(conn).get(sub_id)
+        assert sub["status"] == "blocked_llm"
+        # The content_quality verdict + issues persisted on the submission
+        # so the quarantine banner can render the rewrite hints.
+        assert sub["llm_findings"]["content_quality"]["verdict"] == "fail"
+        assert len(sub["llm_findings"]["content_quality"]["issues"]) == 1
+
+    def test_content_quality_missing_treated_as_pass(self, conn, plugin_dir):
+        """Backward compat — older recorded verdicts without content_quality
+        must not retroactively block. The wire format adds the field; absent
+        means pass."""
+        eid, sub_id = _seed_pending_submission(conn, plugin_dir)
+
+        verdict = {
+            "risk_level": "safe", "summary": "OK", "findings": [],
+            "template_placeholders_found": 0,
+            # content_quality intentionally absent
+            "reviewed_by_model": "claude-haiku-4-5-20251001",
+            "error": None,
+        }
+        with patch(
+            "src.store_guardrails.runner.llm_review.review_bundle",
+            return_value=verdict,
+        ):
+            run_llm_review(
+                sub_id, plugin_dir=plugin_dir,
+                conn_factory=_conn_factory(conn),
+                api_key_loader=lambda: "sk-test",
+                model_loader=lambda: "claude-haiku-4-5-20251001",
+            )
+
+        sub = StoreSubmissionsRepository(conn).get(sub_id)
+        assert sub["status"] == "approved"
+
     def test_medium_finding_with_safe_risk_passes(self, conn, plugin_dir):
         """Medium findings shouldn't block when overall risk is safe — that's
         the 'noise but no exploit' band the operator opted into when picking
@@ -381,3 +448,47 @@ class TestReviewBundleErrorTransport:
             assert SYSTEM_PROMPT not in user_payload, (
                 "SYSTEM_PROMPT must NOT be inlined into user content"
             )
+
+
+class TestNormalizeContentQualityVerdict:
+    """The verdict is an aggregate of the evidence — both directions
+    of the asymmetry collapsed in #277 LOW #2."""
+
+    def test_fail_with_no_issues_downgrades_to_pass(self):
+        from src.store_guardrails.llm_review import _normalize_content_quality
+        result = _normalize_content_quality({"verdict": "fail", "issues": []})
+        assert result["verdict"] == "pass"
+        assert result["issues"] == []
+
+    def test_pass_with_issues_promoted_to_fail(self):
+        # The #277 LOW #2 fix.
+        from src.store_guardrails.llm_review import _normalize_content_quality
+        result = _normalize_content_quality({
+            "verdict": "pass",
+            "issues": [{
+                "file": "skills/foo/SKILL.md",
+                "field": "frontmatter.description",
+                "issue": "vague",
+                "hint": "be specific",
+            }],
+        })
+        assert result["verdict"] == "fail"
+        assert len(result["issues"]) == 1
+        assert result["issues"][0]["issue"] == "vague"
+
+    def test_aligned_pass_with_no_issues_stays_pass(self):
+        from src.store_guardrails.llm_review import _normalize_content_quality
+        assert _normalize_content_quality({"verdict": "pass", "issues": []})["verdict"] == "pass"
+
+    def test_aligned_fail_with_issues_stays_fail(self):
+        from src.store_guardrails.llm_review import _normalize_content_quality
+        assert _normalize_content_quality({
+            "verdict": "fail",
+            "issues": [{"file": "x.md", "field": "f", "issue": "i", "hint": "h"}],
+        })["verdict"] == "fail"
+
+    def test_malformed_value_returns_safe_pass(self):
+        from src.store_guardrails.llm_review import _normalize_content_quality
+        assert _normalize_content_quality(None) == {"verdict": "pass", "issues": []}
+        assert _normalize_content_quality("garbage") == {"verdict": "pass", "issues": []}
+        assert _normalize_content_quality(42) == {"verdict": "pass", "issues": []}

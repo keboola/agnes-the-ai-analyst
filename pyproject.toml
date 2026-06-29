@@ -1,9 +1,9 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.53.1"
+version = "0.72.0"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
-license = "MIT"
+license = {file = "LICENSE"}
 readme = "README.md"
 
 dependencies = [
@@ -15,13 +15,13 @@ dependencies = [
     # Web framework (FastAPI)
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
-    "python-multipart>=0.0.27",
+    "python-multipart>=0.0.31",
     "jinja2>=3.1.0",
-    "starlette>=0.41.0",
+    "starlette>=1.3.1",
     # Authentication
     "PyJWT>=2.8.0",
     "itsdangerous>=2.1.0",
-    "authlib>=1.6.11",
+    "authlib>=1.6.12",
     "argon2-cffi>=23.1.0",
     # HTTP client. `h2` enables HTTP/2 multiplexing for the persistent
     # CLI client used by `agnes pull` (one TCP connection serves N
@@ -30,6 +30,11 @@ dependencies = [
     # extra is for performance, not correctness.
     "httpx>=0.27.0",
     "h2>=4.1.0",
+    # CA bundle (Mozilla roots). Transitively present via httpx, but
+    # app/api/cowork_bundle.py imports it directly to ship cacert.pem inside the
+    # Cowork ZIP so the pure-stdlib mcp_server.py/agnes.py verify TLS on Macs
+    # whose Python lacks a usable system CA store (CERTIFICATE_VERIFY_FAILED).
+    "certifi>=2024.2.2",
     # CLI
     "typer>=0.12.0",
     "rich>=13.0.0",
@@ -55,11 +60,23 @@ dependencies = [
     "matplotlib>=3.8.0",
     "numpy>=1.24.0",
     # Claude Code marketplace endpoint — pure-Python git server mounted in FastAPI
-    "dulwich>=0.22.0",
+    "dulwich>=1.2.5",
     "a2wsgi>=1.10.0",
     # In-process TTL cache for marketplace etag (transitively present via
     # google-auth, declared explicitly here because we depend on it directly).
     "cachetools>=5.3.0",
+    # Claude agent SDK for in-process chat sessions
+    "claude-agent-sdk>=0.2.87,<0.3.0",
+    # E2B Python SDK — cloud sandbox provider for chat runner. The chat
+    # runner (`app/chat/runner.py`) executes inside an E2B ephemeral
+    # microVM (`AsyncSandbox`); `app/chat/e2b_provider.py` adapts the SDK's
+    # background-command + filesystem APIs to our `SandboxProvider`
+    # Protocol. See `docs/cloud-chat.md` for operator setup.
+    # 2.0+ floor: the cloud chat runner relies on the `stdin=True` parameter
+    # on `sandbox.commands.run()` which was added in 2.0. On SDK 1.x the
+    # kwarg raises TypeError and every chat session stalls without an answer
+    # (Devin Review on #585).
+    "e2b>=2.0.0,<3.0.0",
     # Per-IP rate limiting on auth endpoints (#45). In-process counters by
     # default — fine for single-replica deploys. Multi-replica rollouts can
     # swap the storage backend via slowapi's `storage_uri` (Redis, Memcached).
@@ -78,7 +95,10 @@ dependencies = [
     # module (export-async + signed-URL download) which talks to Storage API
     # directly via `requests` — no SDK dependency on the data-path side. The
     # SDK stays for the metadata reads.
-    "kbcstorage>=0.9.0",
+    #
+    # NOTE: kbcstorage moved to the [server] extra below — see the rationale
+    # in [project.optional-dependencies].server. CLI wheels installed via
+    # `uv tool install` deliberately ship without it.
     "sse-starlette>=2.0",
     # Optional observability — pure-Python, no compilation. Lazily initialized
     # in src/observability/posthog_client.py and only emits events when
@@ -101,27 +121,117 @@ dependencies = [
     # a uniform API; OS releases the lock automatically on process exit (no
     # stale-lock detection required). Used by cli/lib/push_lock.py.
     "filelock>=3.13,<4",
+    # MCP (Model Context Protocol) server for Claude Desktop Cowork integration.
+    # `agnes mcp` starts a stdio subprocess that Claude Desktop connects to;
+    # the subprocess has full network access so tools like catalog/query can
+    # reach the Agnes server even though the Bash tool sandbox cannot.
+    # mcp>=1.0 ships FastMCP (mcp.server.fastmcp) — no separate fastmcp dep.
+    "mcp>=1.0",
+    # Transitive dependency hardened directly to dodge 5 dependabot advisories
+    # (4 high, 1 medium) flagged on urllib3<2.7.0: cross-origin sensitive
+    # header leak on proxied low-level redirects, decompression-bomb bypass
+    # + unbounded decompression chain on the streaming API, redirects-when-
+    # retries-disabled. The `[server]` extra below adds kbcstorage which
+    # transitively caps urllib3<2.0.0; `[tool.uv] override-dependencies`
+    # forces 2.7+ in workspace installs (Dockerfile + dev). Wheel consumers
+    # who install only the CLI (`uv tool install <wheel>`) get no kbcstorage
+    # and no conflict.
+    "urllib3>=2.7.0",
+    # Postgres-backed app state. SQLAlchemy 2.0 for `Mapped[]` typing, psycopg
+    # 3 (the `psycopg[binary]` package) as the modern sync+async driver, and
+    # Alembic for versioned schema migrations with first-class up/down
+    # support. Replaces the in-place v1..vN ladder in src/db.py for the
+    # state half of system.duckdb. DuckDB stays for analytics only.
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.1",
+    "alembic>=1.13",
 ]
 
 [project.optional-dependencies]
+# Server-side connectors. The CLI wheel does NOT need these — analysts who
+# `uv tool install` the wheel never reach a kbcstorage import. Splitting it
+# out keeps the wheel's METADATA `Requires-Dist` set free of the
+# `kbcstorage<=0.9.5 → urllib3<2.0.0` cap that conflicts with our
+# `urllib3>=2.7.0` security pin under any fresh resolver context (where
+# `[tool.uv] override-dependencies` does NOT apply — see comment on
+# [tool.uv] below). Server install pulls it in via Dockerfile's
+# `uv pip install --system --no-cache .[server]`.
+server = [
+    "kbcstorage>=0.9.0",
+    # FastAPI debug toolbar. Shipped in the single production image
+    # (build-once / promote-the-same-artifact): the image validated in dev is
+    # the exact one promoted to prod, differing only by the DEBUG env var.
+    # INERT in prod — the toolbar middleware is only mounted when DEBUG=1
+    # (app/main.py), which prod never sets; dev/staging do. Moved here from the
+    # `dev` extra so it lands in the Dockerfile's `.[server]` install.
+    "fastapi-debug-toolbar>=0.6.3",
+]
 observability = [
     # Already in base dependencies — listed here so operators who want to
     # be explicit can `pip install -e ".[observability]"` and signal intent.
     "posthog>=3.7.0",
 ]
+embeddings = [
+    # Self-hosted semantic embeddings for Collections retrieval (bge-small).
+    # HEAVY — pulls torch — so opt-in only; imported lazily in
+    # src/ingest/embeddings.py. Without it, retrieval runs lexical-only.
+    "sentence-transformers>=3.0",
+]
+docling = [
+    # Rich document parsing for Collections ingestion (PDF layout/tables,
+    # DOCX, PPTX, scans). HEAVY — pulls torch and ML models — so it is an
+    # opt-in extra, never a core/server dependency. Imported lazily inside
+    # src/ingest/text_extract.py (guarded); without it, ingestion falls back
+    # to the lightweight per-format extractors (txt/md/html; pdf via pypdf if
+    # present) and rejects formats it cannot read rather than crashing.
+    "docling>=2.0",
+]
+slack-socket = [
+    # Socket Mode (optional inbound transport). Imported lazily inside
+    # SocketModeDispatcher.start() — never at module top — so HTTP-only
+    # deployments need not install it. A missing import is a fail-closed
+    # gate at lifespan init (logs + disables Slack, never a dead WS).
+    "slack_sdk>=3.27",
+    # slack_sdk's SocketModeClient (the aiohttp variant imported in
+    # services/slack_bot/socket_mode_client.py) needs aiohttp at runtime;
+    # slack_sdk does NOT pull it in, so Socket Mode fail-closed with
+    # `ModuleNotFoundError: No module named 'aiohttp'` until it is declared here.
+    "aiohttp>=3.9",
+]
 dev = [
     "pytest>=9.0.0",
     "pytest-timeout>=2.0.0",
     "pytest-xdist>=3.0.0",
+    # pytest-split shards the suite across parallel CI jobs (`--splits N
+    # --group K`); see the `test-shard` matrix in `.github/workflows/ci.yml`.
+    # Balanced by the committed `.test_durations` file.
+    "pytest-split>=0.9.0",
     "faker>=24.0.0",
     # jsonschema validates the corporate-memory extraction-tool golden fixtures
     # under tests/test_corporate_memory_v1.py (extraction.json, correction.json,
     # confidence_calibration.json). Production code does not depend on it.
     "jsonschema>=4.0.0",
-    # FastAPI debug toolbar — gated behind DEBUG=1 env var in app/main.py.
-    # Provides per-request panels (headers, routes, timer, profiling, etc.)
-    # for local development. Never loaded in production (no DEBUG=1 there).
-    "fastapi-debug-toolbar>=0.6.3",
+    # NOTE: fastapi-debug-toolbar moved to the `server` extra (build-once —
+    # ships in the production image, inert unless DEBUG=1). See `server` above.
+    # Browser automation for the cloud-chat E2E suite (tests/e2e/test_chat_web.py).
+    # Pure-Python wheel; the Chromium binary is downloaded separately via
+    # `playwright install chromium --with-deps`. Imports are wrapped behind a
+    # try/except in tests/e2e/test_chat_web.py so a missing browser binary
+    # downgrades to a skip rather than an ImportError.
+    "playwright>=1.40.0",
+    # Postgres test infrastructure. `testcontainers` spins a real PG container
+    # in CI (highest fidelity, no system PG binary required). `pytest-postgresql`
+    # boots a local PG process via system binary for fast dev iteration. The
+    # `pg_engine` fixture in tests/db_pg/conftest.py picks one via
+    # AGNES_TEST_PG_BACKEND (container | embedded).
+    "testcontainers[postgres]>=4",
+    "pytest-postgresql>=6",
+    # Userland-bundled Postgres binary (no system-level install, no Docker)
+    # — the default test backend, picked automatically when neither a
+    # system `postgres` binary nor a working Docker socket is available.
+    # Ideal for laptop/sandbox dev environments where installing PG
+    # system-wide is not an option.
+    "pixeltable-pgserver>=0.5.1",
 ]
 
 [project.scripts]
@@ -134,17 +244,51 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["app", "src", "connectors", "cli", "services", "config"]
 
+# `src/_bundled_seed/` (markdown templates + connector skill files) ships
+# inside the wheel automatically because hatch packages every file under
+# the listed `src` directory, not just Python sources. No `force-include`
+# is needed — adding one duplicates the entries and causes hatch to
+# abort with "A second file is being added to the wheel archive at the
+# same path". Runtime resolution (operator-configured Initial Workspace
+# Template ALWAYS beats this bundle) lives in
+# `src/initial_workspace.py::resolve_seed_file`. See
+# `docs/seed-repo-contract.md` for the contract.
+
 [tool.ruff]
 line-length = 120
 target-version = "py313"
+
+[tool.ruff.lint.per-file-ignores]
+# main.py deliberately runs env/config setup before its imports — the
+# 80+ E402s are the file's design, not drift.
+"app/main.py" = ["E402"]
+# db.py has a single mid-file `import threading` that precedes the lock
+# singleton; extracting it would break the sequential read. Pre-existing.
+"src/db.py" = ["E402"]
+# router.py registers Jinja globals and filters between import blocks;
+# the mid-file import json + onboarding import are intentional ordering.
+"app/web/router.py" = ["E402"]
 
 [tool.uv]
 dev-dependencies = [
     "pytest>=9.0.0",
     "pytest-timeout>=2.0.0",
     "pytest-xdist>=3.0.0",
+    "pytest-split>=0.9.0",
     "faker>=24.0.0",
     "anthropic>=0.30.0",
     "openai>=1.30.0",
     "fastapi-debug-toolbar>=0.6.3",
+    "playwright>=1.40.0",
+    "testcontainers[postgres]>=4",
+    "pytest-postgresql>=6",
+    "pixeltable-pgserver>=0.5.1",
 ]
+# Override the urllib3<2.0.0 ceiling kbcstorage 0.9.5 declares (upstream
+# hasn't relaxed it as of 2026-05-12 but the SDK works fine against
+# urllib3 2.x in practice — we only use `Client` + `Tables` from it and
+# both go through `requests`, which natively supports both lines). Lets
+# the resolver pick a urllib3 line that closes Dependabot advisories
+# CVE-2024-37891 / CVE-2025-{xxx}. See `urllib3>=2.7.0` in [project]
+# dependencies above for the security rationale.
+override-dependencies = ["urllib3>=2.7.0"]

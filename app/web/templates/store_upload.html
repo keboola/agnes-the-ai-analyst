@@ -1,32 +1,14 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}Upload to Store — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
+{% block head_extra %}
 <style>
-  /* ── Container override ────────────────────────────────────────── */
-  /* Width + padding come from .page-shell (style-custom.css) — same
-     1280px container as /dashboard, /marketplace, /admin/* peers. */
-  .container:has(.upload-page) > main { margin: 0; padding: 0; }
+  /* Width + gutters come from the canonical `.container` /
+     `.container > main` rules in style-custom.css — no per-page override. */
 
-  /* ── Hero (mirrors /setup) ─────────────────────────────────────── */
-  .upload-hero {
-    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
-    border-radius: 12px;
-    padding: 32px 36px;
-    margin-bottom: 24px;
-    box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
-    color: white;
-  }
-  .upload-hero .eyebrow {
-    font-size: 11px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.8px; color: rgba(255, 255, 255, 0.75);
-    margin-bottom: 10px;
-  }
-  .upload-hero h1 {
-    font-size: 30px; font-weight: 700; margin: 0 0 8px;
-    color: #fff; letter-spacing: -0.4px;
-  }
-  .upload-hero .sub { font-size: 14px; color: rgba(255,255,255,0.85); line-height: 1.6; }
+  /* Hero box + typography come from the canonical `.page-header--hero`
+     rule in style-custom.css. store_upload.html only adds the `meta`
+     chip row below the canonical subtitle. */
   .upload-hero .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
   .upload-hero .pill {
     background: rgba(255,255,255,0.15); padding: 6px 12px;
@@ -42,7 +24,7 @@
     background: var(--border, #e5e7eb);
     transition: background 0.15s ease;
   }
-  .progress .seg.is-done { background: var(--primary, #0073D1); }
+  .progress .seg.is-done { background: var(--ds-primary); }
 
   /* ── Card (mirrors /setup) ─────────────────────────────────────── */
   .card {
@@ -57,7 +39,7 @@
   .card-body { padding: 16px 24px 24px; }
   .step-num {
     width: 26px; height: 26px;
-    background: var(--primary, #0073D1); color: #fff;
+    background: var(--ds-primary); color: #fff;
     border-radius: 50%; display: inline-flex; align-items: center;
     justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0;
   }
@@ -86,7 +68,7 @@
     width: 100%; padding: 10px 12px;
     border: 1px solid var(--border, #d1d5db); border-radius: 8px;
     font-size: 14px; font-family: var(--font-primary, inherit);
-    box-sizing: border-box; background: #fff;
+    box-sizing: border-box; background: var(--ds-surface);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
   .field textarea { min-height: 90px; resize: vertical; }
@@ -94,8 +76,8 @@
   .field input[type=url]:focus,
   .field textarea:focus,
   .field select:focus {
-    outline: none; border-color: var(--primary, #0073D1);
-    box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.12);
+    outline: none; border-color: var(--ds-primary);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ds-primary) 12%, transparent);
   }
 
   /* ── Type tiles (radio cards) ──────────────────────────────────── */
@@ -104,13 +86,13 @@
     cursor: pointer; padding: 14px 12px;
     border: 1px solid var(--border, #e5e7eb); border-radius: 10px;
     text-align: center; transition: all 0.15s ease;
-    background: #fff;
+    background: var(--ds-surface);
   }
   .type-tiles label:hover { border-color: #c7d2fe; }
   .type-tiles label.is-active {
-    border-color: var(--primary, #0073D1);
-    background: linear-gradient(180deg, rgba(0,115,209,0.06), rgba(0,115,209,0.02));
-    box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.12);
+    border-color: var(--ds-primary);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--ds-primary) 6%, transparent), color-mix(in srgb, var(--ds-primary) 2%, transparent));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ds-primary) 12%, transparent);
   }
   .type-tiles input[type=radio] { display: none; }
   .type-tiles .type-name {
@@ -126,34 +108,34 @@
     display: flex; align-items: center; gap: 12px;
     transition: all 0.15s ease;
   }
-  .file-drop:hover { border-color: var(--primary, #0073D1); background: #fff; }
+  .file-drop:hover { border-color: var(--ds-primary); background: var(--ds-surface); }
   .file-drop.is-dragover {
-    border-color: var(--primary, #0073D1); background: #fff;
-    box-shadow: 0 0 0 4px rgba(0, 115, 209, 0.15);
+    border-color: var(--ds-primary); background: var(--ds-surface);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--ds-primary) 15%, transparent);
     transform: scale(1.005);
   }
   .file-drop.has-file { border-style: solid; border-color: #10b981; background: #f0fdf4; }
   .file-drop .icon {
     width: 36px; height: 36px; border-radius: 8px;
-    background: rgba(0, 115, 209, 0.1); color: var(--primary, #0073D1);
+    background: color-mix(in srgb, var(--ds-primary) 10%, transparent); color: var(--ds-primary);
     display: flex; align-items: center; justify-content: center;
     flex-shrink: 0; font-size: 16px;
   }
   .file-drop.has-file .icon { background: rgba(16, 185, 129, 0.1); color: #10b981; }
   .file-drop .file-info { flex: 1; min-width: 0; }
   .file-drop .file-info .label { font-size: 13px; font-weight: 500; color: var(--text-primary, #111827); }
-  .file-drop .file-info .label .filename { color: var(--primary, #0073D1); margin-left: 6px; }
+  .file-drop .file-info .label .filename { color: var(--ds-primary); margin-left: 6px; }
   .file-drop.has-file .file-info .label { color: #047857; }
   .file-drop .file-info .meta { font-size: 12px; color: var(--text-secondary, #6b7280); margin-top: 2px; }
   .file-drop input[type=file] { display: none; }
   .file-drop button {
     appearance: none; padding: 7px 14px;
-    border: 1px solid var(--border, #d1d5db); background: #fff;
+    border: 1px solid var(--border, #d1d5db); background: var(--ds-surface);
     color: var(--text-primary, #111827); border-radius: 8px;
     font-size: 12px; font-weight: 500; cursor: pointer;
     flex-shrink: 0; font-family: var(--font-primary, inherit);
   }
-  .file-drop button:hover { border-color: var(--primary, #0073D1); color: var(--primary, #0073D1); }
+  .file-drop button:hover { border-color: var(--ds-primary); color: var(--ds-primary); }
 
   /* ── Doc list ──────────────────────────────────────────────────── */
   .doc-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
@@ -176,38 +158,10 @@
     font-size: 13px; cursor: pointer; align-self: flex-start;
     font-family: var(--font-primary, inherit);
   }
-  .doc-add:hover { border-color: var(--primary, #0073D1); color: var(--primary, #0073D1); }
+  .doc-add:hover { border-color: var(--ds-primary); color: var(--ds-primary); }
 
-  /* ── Buttons (mirror /setup primary CTA) ───────────────────────── */
+  /* ── Buttons ───────────────────────────────────────────────────── */
   .actions { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
-  .btn-primary {
-    display: inline-flex; align-items: center; gap: 8px;
-    font-family: var(--font-primary, inherit);
-    font-size: 14px; font-weight: 600; color: #fff;
-    background: var(--primary, #0073D1); border: none;
-    border-radius: 8px; padding: 11px 22px; cursor: pointer;
-    transition: all 0.15s ease;
-  }
-  .btn-primary:hover {
-    background: var(--primary-dark, #0056A3);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 14px rgba(0, 115, 209, 0.25);
-  }
-  .btn-primary:disabled { opacity: 0.7; cursor: wait; transform: none; box-shadow: none; }
-  .btn-secondary {
-    appearance: none; padding: 10px 18px;
-    border: 1px solid var(--border, #d1d5db); background: #fff;
-    color: var(--text-secondary, #6b7280); border-radius: 8px;
-    font-size: 14px; font-weight: 500; cursor: pointer;
-    font-family: var(--font-primary, inherit);
-    transition: all 0.15s ease;
-  }
-  .btn-secondary:hover { border-color: var(--primary, #0073D1); color: var(--primary, #0073D1); }
-  .btn-link {
-    color: var(--text-secondary, #6b7280); text-decoration: none;
-    font-size: 13px; padding: 10px 8px;
-  }
-  .btn-link:hover { color: var(--text-primary, #111827); }
 
   /* ── Status banner ─────────────────────────────────────────────── */
   /* `display: flex` on .banner overrides the user-agent default for the
@@ -229,19 +183,156 @@
   /* ── Step swap ─────────────────────────────────────────────────── */
   .step { display: none; }
   .step.is-active { display: block; }
-</style>
 
-<div class="upload-page page-shell">
-  <div class="upload-hero">
-    <div class="eyebrow">Store</div>
-    <h1>Upload an entity</h1>
-    <p class="sub">
-      Share a skill, agent, or plugin with everyone on this instance.
-      Display name will be suffixed with
-      <code style="background: rgba(255,255,255,0.18); padding: 1px 6px; border-radius: 4px; font-family: var(--font-mono); font-size: 12px;">-by-{{ session.user.email.split('@')[0] }}</code>
-      so it doesn't collide.
-    </p>
-  </div>
+  /* ── Description char counter + guidelines disclosure ──────────── */
+  .desc-counter {
+    margin-top: 4px; font-size: 12px;
+    color: var(--text-secondary, #6b7280);
+    font-family: var(--font-mono);
+  }
+  .desc-counter.ok { color: #16a34a; }
+  .desc-counter.warn { color: #b45309; }
+
+  /* v49 phase-1: name row pairs the editable kebab-case input with a
+     read-only dark "what Claude Code will see" preview. Visual language
+     matches the dark .invocation block on marketplace_item_detail.html
+     (Catppuccin Mocha #1e1e2e bg, #cdd6f4 fg, #a6e3a1 prompt) so the
+     two surfaces read as the same concept. No copy button here — this
+     is a live preview, not an artifact to copy. */
+  .name-row {
+    display: flex;
+    align-items: stretch;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .name-row input[type="text"] {
+    flex: 0 1 320px;
+    min-width: 220px;
+  }
+  .invocation-preview {
+    flex: 1 1 320px;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    background: #1e1e2e;
+    color: #cdd6f4;
+    border-radius: 8px;
+    padding: 0 14px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .invocation-preview .prompt {
+    color: #a6e3a1;
+    user-select: none;
+    margin-right: 2px;
+  }
+  .invocation-preview #synthetic-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .guidelines {
+    margin-bottom: 14px;
+    background: var(--background, #f9fafb);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 10px;
+    overflow: hidden;
+    /* base.html has a sticky top bar; scroll target needs headroom so
+       the chevron lands BELOW the bar, not behind it. */
+    scroll-margin-top: 80px;
+  }
+  .guidelines-toggle {
+    appearance: none; -webkit-appearance: none;
+    width: 100%; text-align: left;
+    cursor: pointer;
+    padding: 12px 14px;
+    border: 0; background: transparent;
+    font-size: 13px; font-weight: 600;
+    color: var(--text-primary, #111827);
+    font-family: inherit;
+    user-select: none;
+    display: flex; align-items: center; gap: 8px;
+    transition: background 0.12s ease;
+    /* Same headroom as the wrap so direct .scrollIntoView() on the
+       button clears the sticky page header. */
+    scroll-margin-top: 80px;
+  }
+  .guidelines-toggle:hover { background: color-mix(in srgb, var(--ds-primary) 6%, transparent); }
+  .guidelines-toggle::before {
+    content: "▸"; transition: transform 0.15s ease;
+    display: inline-block; color: var(--ds-primary); font-weight: 700;
+  }
+  .guidelines-toggle[aria-expanded="true"] {
+    background: color-mix(in srgb, var(--ds-primary) 8%, transparent);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+  }
+  .guidelines-toggle[aria-expanded="true"]::before { transform: rotate(90deg); }
+  .guidelines-body {
+    padding: 10px 14px 14px 30px; font-size: 13px;
+    color: var(--text-primary, #374151); line-height: 1.6;
+    background: #ffffff;
+  }
+  .guidelines-body[hidden] { display: none; }
+  .guidelines-body p { margin: 6px 0; }
+  .guidelines-body ul { margin: 4px 0; padding-left: 18px; }
+  .guidelines-body code {
+    background: var(--border-light, #eef2f7); padding: 1px 5px;
+    border-radius: 4px; font-size: 12px; color: var(--text-primary, #111827);
+  }
+
+  /* ── Component preview table ───────────────────────────────────── */
+  .comp-list {
+    margin-top: 12px; border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px; overflow: hidden;
+    font-size: 13px;
+  }
+  .comp-list-header {
+    background: var(--background, #f9fafb);
+    padding: 8px 12px; font-weight: 600; font-size: 12px;
+    color: var(--text-secondary, #6b7280); border-bottom: 1px solid var(--border, #e5e7eb);
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .comp-row {
+    padding: 8px 12px;
+    border-top: 1px solid var(--border, #e5e7eb);
+    display: flex; gap: 10px; align-items: flex-start;
+  }
+  .comp-row:first-of-type { border-top: none; }
+  .comp-dot {
+    flex-shrink: 0; width: 10px; height: 10px; border-radius: 50%;
+    margin-top: 6px;
+  }
+  .comp-dot.ok { background: #16a34a; }
+  .comp-dot.bad { background: #dc2626; }
+  .comp-text { flex: 1; min-width: 0; }
+  .comp-text .file {
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--text-primary, #111827);
+  }
+  .comp-text .type {
+    display: inline-block; margin-left: 6px; padding: 1px 6px;
+    border-radius: 4px; background: color-mix(in srgb, var(--ds-primary) 8%, transparent);
+    color: var(--ds-primary); font-size: 11px;
+  }
+  .comp-text .preview {
+    margin-top: 3px; color: var(--text-secondary, #6b7280); font-size: 12px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .comp-text .issue {
+    margin-top: 3px; color: #b91c1c; font-size: 12px;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="upload-page">
+  {% set page_hero_eyebrow = "Store" %}
+  {% set page_hero_title = "Upload an entity" %}
+  {% set page_hero_subtitle %}Share a skill, agent, or plugin with everyone on this instance. Display name will be suffixed with <code>-by-{{ session.user.email.split('@')[0] }}</code> so it doesn't collide.{% endset %}
+  {% set page_hero_class = "upload-hero" %}
+  {% include "_page_hero.html" %}
 
   <div class="progress">
     <div class="seg is-done" id="seg-1"></div>
@@ -250,6 +341,12 @@
 
   <div id="banner" class="banner error" hidden>
     <span class="ico">!</span><span id="banner-text"></span>
+  </div>
+  <div id="banner-actions" hidden style="margin: -10px 0 14px 0; font-size: 13px;">
+    <a href="/store/examples" target="_blank" rel="noopener"
+       style="color: var(--ds-primary); text-decoration: none; font-weight: 500;">
+      See submission examples ↗
+    </a>
   </div>
 
   <!-- ─── Step 1: Type + ZIP ──────────────────────────────────────── -->
@@ -262,6 +359,46 @@
       <div class="card-body">
         <p class="card-sub">Pick what you're uploading and the ZIP archive.
           The server validates the layout when you click <code>Next</code>.</p>
+
+        <div id="guidelines" class="guidelines">
+          <button type="button" class="guidelines-toggle" id="guidelines-toggle"
+                  aria-expanded="false" aria-controls="guidelines-body">
+            Before you upload — what passes review
+          </button>
+          <div class="guidelines-body" id="guidelines-body" hidden>
+            <p style="margin-top: 4px;">
+              Every component description (plugin, agents, skills, commands)
+              is the trigger string Claude reads to decide whether to invoke
+              it. Vague or missing descriptions get rejected even when the
+              code is fine.
+            </p>
+            <p><strong>The bar:</strong></p>
+            <ul>
+              <li>Each description ≥ <strong>{{ guardrail.min_description_chars|default(60) }} characters</strong> (commands ≥ {{ guardrail.min_command_description_chars|default(25) }}). Aim for one complete sentence — too short and the assistant can't tell when to use it.</li>
+              <li>At least {{ guardrail.min_distinct_words|default(5) }} distinct words</li>
+              <li>No <code>TODO</code> / <code>TBD</code> / template placeholders</li>
+              <li>Action-oriented, names the trigger condition</li>
+            </ul>
+            <p><strong>Patterns that work:</strong></p>
+            <ul>
+              <li><strong>Skills</strong>: <code>Use when &lt;trigger&gt; — &lt;what it does&gt;</code></li>
+              <li><strong>Agents</strong>: <code>&lt;What the agent does&gt;. Use for &lt;invocation context&gt;</code></li>
+              <li><strong>Plugins</strong>: one-sentence marketplace pitch</li>
+              <li><strong>Commands</strong>: one-verb summary of the action</li>
+            </ul>
+            <p style="margin-bottom: 4px;">
+              The reviewer also runs a substantive pass on descriptions
+              — generic ones ("a useful skill for working with data")
+              get flagged even when they clear the mechanical bar.
+            </p>
+            <p style="margin-top: 10px;">
+              <a href="/store/examples" target="_blank" rel="noopener"
+                 style="color: var(--ds-primary); text-decoration: none; font-weight: 500;">
+                See full examples ↗
+              </a>
+            </p>
+          </div>
+        </div>
 
         <div class="field">
           <label class="field-label">Type</label>
@@ -301,8 +438,9 @@
         </div>
 
         <div class="actions">
-          <button type="button" class="btn-primary" id="next-btn">Next →</button>
-          <a href="/marketplace?tab=flea" class="btn-link">Cancel</a>
+          {{ ds.button('Next →', variant='primary', type='button', id='next-btn') }}
+          {{ ds.button('Cancel', variant='secondary',
+                       href='/marketplace?tab=flea') }}
         </div>
       </div>
     </div>
@@ -317,17 +455,85 @@
       </div>
       <div class="card-body">
         <p class="card-sub">Pre-filled from the ZIP's frontmatter — change anything you want.
-          Name and description are required; everything below is optional.</p>
+          Name and description are required; everything below is optional.
+        </p>
+
+        <div id="guidelines-2" class="guidelines">
+          <button type="button" class="guidelines-toggle" id="guidelines-toggle-2"
+                  aria-expanded="false" aria-controls="guidelines-body-2">
+            Before you upload — what passes review
+          </button>
+          <div class="guidelines-body" id="guidelines-body-2" hidden>
+            <p style="margin-top: 4px;">
+              Every component description (plugin, agents, skills, commands)
+              is the trigger string Claude reads to decide whether to invoke
+              it. Vague or missing descriptions get rejected even when the
+              code is fine.
+            </p>
+            <p><strong>The bar:</strong></p>
+            <ul>
+              <li>Each description ≥ <strong>{{ guardrail.min_description_chars|default(60) }} characters</strong> (commands ≥ {{ guardrail.min_command_description_chars|default(25) }}). Aim for one complete sentence — too short and the assistant can't tell when to use it.</li>
+              <li>At least {{ guardrail.min_distinct_words|default(5) }} distinct words</li>
+              <li>No <code>TODO</code> / <code>TBD</code> / template placeholders</li>
+              <li>Action-oriented, names the trigger condition</li>
+            </ul>
+            <p style="margin-top: 10px;">
+              <a href="/store/examples" target="_blank" rel="noopener"
+                 style="color: var(--ds-primary); text-decoration: none; font-weight: 500;">
+                See full examples ↗
+              </a>
+            </p>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="title">Title</label>
+          <input type="text" id="title" maxlength="100" required
+                 placeholder="My Awesome Skill"
+                 data-user-edited="false">
+          <div class="field-hint">Human-friendly name shown on marketplace cards. Pre-filled from Name, edit freely.</div>
+        </div>
 
         <div class="field">
           <label class="field-label" for="name">Name</label>
-          <input type="text" id="name" required placeholder="my-awesome-skill">
-          <div class="field-hint">Lowercase letters, digits, hyphens. Max 64 characters.</div>
+          <div class="name-row">
+            <input type="text" id="name" required placeholder="my-awesome-skill">
+            <div class="invocation-preview" id="synthetic-preview" aria-live="polite">
+              <span class="prompt">/</span><span id="synthetic-text">your-name-by-{{ owner_username|default("you") }}</span>
+            </div>
+          </div>
+          <div class="field-hint">Lowercase letters, digits, hyphens. Max 64 characters. Final invocation shown to the right.</div>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="tagline">Short description <span style="color:var(--text-secondary,#6b7280);font-weight:400;">(optional)</span></label>
+          <input type="text" id="tagline" maxlength="200"
+                 placeholder="One-line summary shown alongside the entity name">
+          <div id="tagline-counter" class="desc-counter">0 / 200 max</div>
+          <div class="field-hint">Max 200 characters. Renders next to the title on marketplace listings.</div>
         </div>
 
         <div class="field">
           <label class="field-label" for="description">Description</label>
-          <textarea id="description" placeholder="What does it do?"></textarea>
+          <textarea id="description"
+            placeholder="Use when reviewing pull requests to flag missing tests, weak assertions, and brittle implementation coupling."></textarea>
+          <div id="desc-counter" class="desc-counter">0 / 30 minimum</div>
+          <div class="field-hint">
+            Shown on the marketplace tile. Same bar as the per-component
+            descriptions —
+            <a href="#guidelines-2" id="open-guidelines-link"
+               style="color: var(--ds-primary); text-decoration: underline;">see Before you upload</a>.
+          </div>
+        </div>
+
+        <div id="comp-preview" class="field" hidden>
+          <label class="field-label">Bundle components</label>
+          <div id="comp-list" class="comp-list"></div>
+          <div class="field-hint">
+            Green dots pass the mechanical description bar. The
+            substantive review runs after you Finish — bundles can still
+            be flagged for vague descriptions even when every dot is green.
+          </div>
         </div>
 
         <div class="field">
@@ -369,8 +575,8 @@
         </div>
 
         <div class="actions">
-          <button type="button" class="btn-primary" id="finish-btn">Finish</button>
-          <button type="button" class="btn-secondary" id="back-btn">← Back</button>
+          {{ ds.button('Finish', variant='primary', type='button', id='finish-btn') }}
+          {{ ds.button('← Back', variant='secondary', type='button', id='back-btn') }}
         </div>
       </div>
     </div>
@@ -395,9 +601,72 @@ const photoLabel = document.getElementById('photo-label');
 const addDocBtn = document.getElementById('add-doc-btn');
 const docInput = document.getElementById('doc-input');
 const docList = document.getElementById('doc-list');
+// v49 phase-1 — Title + Tagline inputs and the read-only synthetic preview.
+const titleInput = document.getElementById('title');
+const taglineInput = document.getElementById('tagline');
+const taglineCounter = document.getElementById('tagline-counter');
+const nameInput = document.getElementById('name');
+const syntheticText = document.getElementById('synthetic-text');
+
+// Acronym dict + owner username injected from the route handler so JS
+// humanize stays in sync with the Python TITLE_ACRONYMS source.
+const TITLE_ACRONYMS = {{ title_acronyms|tojson if title_acronyms else "{}" }};
+const OWNER_USERNAME = {{ owner_username|tojson if owner_username else '""' }};
 
 let zipFile = null;
 let docs = [];
+
+// Replicates src/store_naming.py:humanize_name(). Split on `-`, drop empty
+// tokens, replace each token with its canonical acronym form (case-insensitive
+// lookup) or Title Case it. Join with spaces.
+function humanizeName(name) {
+  if (!name) return '';
+  const tokens = String(name).split('-').filter(Boolean);
+  return tokens.map(tok => {
+    const canonical = TITLE_ACRONYMS[tok.toLowerCase()];
+    if (canonical !== undefined) return canonical;
+    return tok.charAt(0).toUpperCase() + tok.slice(1).toLowerCase();
+  }).join(' ');
+}
+
+// Updates the read-only `/<name>-by-<owner>` preview as the user types
+// in the Name field. Empty name shows a placeholder.
+function updateSyntheticPreview() {
+  const name = (nameInput.value || '').trim();
+  if (!name) {
+    syntheticText.textContent = 'your-name-by-' + (OWNER_USERNAME || 'you');
+  } else {
+    syntheticText.textContent = name + '-by-' + (OWNER_USERNAME || 'you');
+  }
+}
+
+// Auto-fill Title from Name unless the user has manually edited Title.
+// We track manual edits via a `data-user-edited` flag on the input so
+// flipping back to auto-fill is possible by clearing the title.
+function maybeAutoFillTitle() {
+  if (titleInput.dataset.userEdited === 'true') return;
+  const name = (nameInput.value || '').trim();
+  titleInput.value = humanizeName(name);
+}
+
+titleInput.addEventListener('input', () => {
+  titleInput.dataset.userEdited = titleInput.value.trim() ? 'true' : 'false';
+});
+nameInput.addEventListener('input', () => {
+  updateSyntheticPreview();
+  maybeAutoFillTitle();
+});
+
+// Tagline counter (mirror desc-counter pattern).
+function updateTaglineCounter() {
+  const len = (taglineInput.value || '').length;
+  taglineCounter.textContent = `${len} / 200 max`;
+  taglineCounter.classList.toggle('warn', len > 200);
+}
+taglineInput.addEventListener('input', updateTaglineCounter);
+// Initialize on load.
+updateSyntheticPreview();
+updateTaglineCounter();
 
 // Server returns short machine codes in `detail`. Map them to human-friendly
 // sentences here. Any unknown code falls back to a generic prefix + the raw
@@ -431,6 +700,9 @@ const ERROR_MESSAGES = {
     'Couldn\'t derive a username from your email. Contact your administrator.',
   conflict_owner_name:
     'You already have a Store entity with this name. Each owner needs unique names — pick a different one or delete the existing entity first.',
+  title_required: 'Title is required.',
+  title_too_long: 'Title is too long — max 100 characters.',
+  tagline_too_long: 'Short description is too long — max 200 characters.',
 
   // Step 2 — photo
   photo_unsupported_format: 'Photo must be JPG, PNG, or WebP.',
@@ -440,32 +712,108 @@ const ERROR_MESSAGES = {
   not_owner: 'You don\'t own this entity, so you can\'t change it.',
 };
 
+function _renderManifestIssues(lines, manifest) {
+  const issues = (manifest && manifest.issues) || [];
+  for (const m of issues.slice(0, 5)) {
+    lines.push('• manifest: ' + m);
+  }
+  if (issues.length > 5) lines.push('  …and ' + (issues.length - 5) + ' more.');
+}
+
+function _renderContentIssues(lines, content) {
+  const issues = (content && content.issues) || [];
+  if (!issues.length) return;
+  // Plain-language labels — match the server-side rendering in
+  // _content_findings.html so the wording stays consistent.
+  const FIELD_LABEL = {
+    'frontmatter.description': 'Description (top of the file, after `description:`)',
+    'plugin.json.description': 'Description (in `.claude-plugin/plugin.json`)',
+    'description': 'Description (on the upload form)',
+    'body': 'Content (rest of the file after the description line)',
+  };
+  const CODE_LABEL = {
+    'empty': 'is missing',
+    'too_short': 'is too short',
+    'low_word_count': 'needs more distinct words',
+    'placeholder_text': 'still has placeholder text (TODO, template, etc.)',
+    'body_too_short': 'is too short',
+  };
+  const COMPONENT_LABEL = {
+    'skill': 'skill', 'agent': 'agent', 'plugin': 'plugin',
+    'command': 'command', 'submission': 'description',
+  };
+  lines.push('');
+  lines.push('What needs fixing:');
+  for (const issue of issues.slice(0, 6)) {
+    const comp = COMPONENT_LABEL[issue.component_type] || 'component';
+    const fieldLabel = FIELD_LABEL[issue.field] || issue.field || 'description';
+    const codeLabel = CODE_LABEL[issue.code] || (issue.code || 'issue').replace(/_/g, ' ');
+    const where = issue.component_type === 'submission'
+      ? 'Description on the upload form'
+      : (comp.charAt(0).toUpperCase() + comp.slice(1))
+        + (issue.name ? ' — ' + issue.name : '');
+    lines.push('• ' + where);
+    lines.push('    ' + fieldLabel + ' ' + codeLabel + '.');
+    if (issue.hint) lines.push('    ' + issue.hint);
+  }
+  if (issues.length > 6) {
+    lines.push('  …and ' + (issues.length - 6) + ' more.');
+  }
+}
+
+function _renderSecurityFindings(lines, staticSecurity) {
+  const findings = (staticSecurity && staticSecurity.findings) || [];
+  for (const f of findings.slice(0, 5)) {
+    const where = (f.file || '?') + ':' + (f.line || '?');
+    lines.push('• ' + where + ' — ' + (f.reason || f.category || 'security finding'));
+  }
+  if (findings.length > 5) lines.push('  …and ' + (findings.length - 5) + ' more.');
+}
+
 function humanizeError(detail) {
   if (!detail) return 'Something went wrong. Please try again.';
 
-  // Structured detail (FastAPI wraps the dict at .detail). Two shapes:
-  //   {code: "submission_blocked", submission_id, checks: {...}}    — guardrails
-  //   {code: "quota_exceeded", limit, blocked_in_last_24h, hint}     — quota
-  // Drop the bare ``Upload failed: [object Object]`` fallback.
+  // Structured detail (FastAPI wraps the dict at .detail). Shapes:
+  //   {code: "validation_failed", checks: {manifest, content, quality}}  — manifest/content fail
+  //   {code: "security_blocked",  checks: {static_security}}              — static_scan deny-list hit
+  //   {code: "submission_blocked", entity_id, checks: {...}}              — legacy, kept for back-compat
+  //   {code: "quota_exceeded", limit, blocked_in_last_24h, hint}          — LLM-tier spam quota
   if (typeof detail === 'object') {
     const code = detail.code || '';
-    if (code === 'submission_blocked') {
-      const lines = ['Upload blocked by automated checks.'];
-      const checks = detail.checks || {};
-      const inline = (checks.static_security && checks.static_security.findings) || [];
-      for (const f of inline.slice(0, 5)) {
-        const where = (f.file || '?') + ':' + (f.line || '?');
-        lines.push('• ' + where + ' — ' + (f.reason || f.category || 'security finding'));
-      }
-      if (inline.length > 5) lines.push('  …and ' + (inline.length - 5) + ' more.');
-      const manifestIssues = (checks.manifest && checks.manifest.issues) || [];
-      for (const m of manifestIssues.slice(0, 3)) {
-        lines.push('• manifest: ' + m);
-      }
+    const checks = detail.checks || {};
+
+    if (code === 'validation_failed') {
+      const lines = ['Bundle needs fixing before it can be submitted.'];
+      _renderManifestIssues(lines, checks.manifest);
+      _renderContentIssues(lines, checks.content);
       lines.push('');
-      lines.push('Fix the issues above and re-upload, or open the admin queue if the rule was over-strict.');
+      lines.push('Fix the issues above and try again. Nothing was uploaded.');
+      lines.push('See /store/examples for full before/after examples (opens in new tab).');
       return lines.join('\n');
     }
+
+    if (code === 'security_blocked') {
+      const lines = ['Upload blocked: security review found risky patterns in the bundle.'];
+      _renderSecurityFindings(lines, checks.static_security);
+      lines.push('');
+      lines.push('Nothing was uploaded. Remove the flagged code or secrets and try again.');
+      lines.push('If a finding is a false positive, contact your administrator.');
+      return lines.join('\n');
+    }
+
+    if (code === 'submission_blocked') {
+      // Legacy server response (pre-cutover). Render same payload shape
+      // so refreshed pages on an older deploy still get a usable banner.
+      const lines = ['Upload blocked by automated checks.'];
+      _renderSecurityFindings(lines, checks.static_security);
+      _renderManifestIssues(lines, checks.manifest);
+      _renderContentIssues(lines, checks.content);
+      lines.push('');
+      lines.push('Fix the issues above and re-upload as a new version.');
+      lines.push('See /store/examples for full before/after examples (opens in new tab).');
+      return lines.join('\n');
+    }
+
     if (code === 'quota_exceeded') {
       return 'Upload blocked: too many rejected uploads in the last 24 hours '
         + '(' + (detail.blocked_in_last_24h || '?') + '/' + (detail.limit || '?') + '). '
@@ -487,13 +835,55 @@ function humanizeError(detail) {
   return 'Upload failed: ' + s;
 }
 
-function showError(msg) {
+const bannerActions = document.getElementById('banner-actions');
+
+// Manual toggle for the "Before you upload" disclosure. Native <details>
+// behaviour was unreliable in at least one operator browser — explicit
+// button + aria-expanded keeps the toggle deterministic. Renders on both
+// step 1 and step 2 so the bar stays visible after Next.
+function setGuidelinesOpen(btn, body, open) {
+  btn.setAttribute('aria-expanded', String(open));
+  body.hidden = !open;
+}
+
+document.querySelectorAll('.guidelines-toggle').forEach((btn) => {
+  const bodyId = btn.getAttribute('aria-controls');
+  const body = bodyId ? document.getElementById(bodyId) : null;
+  if (!body) return;
+  btn.addEventListener('click', () => {
+    const isOpen = btn.getAttribute('aria-expanded') === 'true';
+    setGuidelinesOpen(btn, body, !isOpen);
+  });
+});
+
+// "See Before you upload" inline link below the description textarea —
+// open the step-2 disclosure programmatically so the user lands with
+// the panel already expanded.
+const openGuidelinesLink = document.getElementById('open-guidelines-link');
+if (openGuidelinesLink) {
+  openGuidelinesLink.addEventListener('click', (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('guidelines-toggle-2');
+    const body = document.getElementById('guidelines-body-2');
+    if (btn && body) {
+      setGuidelinesOpen(btn, body, true);
+      btn.scrollIntoView({behavior: 'smooth', block: 'start'});
+    }
+  });
+}
+function showError(msg, {showExamplesLink = false} = {}) {
   banner.className = 'banner error';
   banner.firstElementChild.textContent = '!';
   bannerText.textContent = msg;
   banner.hidden = false;
+  bannerActions.hidden = !showExamplesLink;
+  // Scroll the banner into view — the Finish button lives at the bottom
+  // of step 2, so a rejection banner that flips on at the top is
+  // off-screen on a tall form. Submitter needs to SEE the issues to
+  // act on them.
+  banner.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
-function clearBanner() { banner.hidden = true; }
+function clearBanner() { banner.hidden = true; bannerActions.hidden = true; }
 
 function showStep(n) {
   document.getElementById('step-1').classList.toggle('is-active', n === 1);
@@ -609,13 +999,13 @@ wireDropZone(
 // the round-trip.
 const ALLOWED_DOC_EXT = new Set(['.pdf', '.md', '.markdown', '.txt']);
 addDocBtn.addEventListener('click', () => docInput.click());
-docInput.addEventListener('change', () => {
+docInput.addEventListener('change', async () => {
   for (const f of docInput.files) {
     const lower = (f.name || '').toLowerCase();
     const dot = lower.lastIndexOf('.');
     const ext = dot >= 0 ? lower.slice(dot) : '';
     if (!ALLOWED_DOC_EXT.has(ext)) {
-      alert(
+      await alertModal(
         'Unsupported document format: "' + f.name + '". '
         + 'Only PDF (.pdf), Markdown (.md, .markdown), and plain text (.txt) are accepted.'
       );
@@ -646,6 +1036,105 @@ function renderDocs() {
   });
 }
 
+// Description char counter — turns green at the configured floor so the
+// submitter gets immediate feedback that they're past the bar. The server
+// is the source of truth; this is purely UX. Floor is operator-configurable
+// via /admin/server-config (default 60).
+const DESC_MIN = {{ guardrail.min_description_chars|default(60) }};  // Live config from /admin/server-config
+const descField = document.getElementById('description');
+const descCounter = document.getElementById('desc-counter');
+function updateDescCounter() {
+  const n = (descField.value || '').trim().length;
+  descCounter.textContent = `${n} / ${DESC_MIN} minimum`;
+  descCounter.classList.toggle('ok', n >= DESC_MIN);
+  descCounter.classList.toggle('warn', n > 0 && n < DESC_MIN);
+}
+descField.addEventListener('input', updateDescCounter);
+
+// Component preview rendering. Called after /preview with the
+// `components` array — shows green/red dots per component description.
+// Same plain-language maps used by humanizeError above. Kept inline
+// here so the renderComponents preview shows the same wording as the
+// rejection banner.
+const FIELD_LABEL_PREVIEW = {
+  'frontmatter.description': 'Description (top of the file)',
+  'plugin.json.description': 'Description (in plugin.json)',
+  'description': 'Description',
+  'body': 'Content (rest of the file)',
+};
+const CODE_LABEL_PREVIEW = {
+  'empty': 'is missing',
+  'too_short': 'is too short',
+  'low_word_count': 'needs more distinct words',
+  'placeholder_text': 'still has placeholder text',
+  'body_too_short': 'is too short',
+};
+
+function renderComponents(components) {
+  const wrap = document.getElementById('comp-preview');
+  const list = document.getElementById('comp-list');
+  list.innerHTML = '';
+  if (!components || components.length === 0) {
+    wrap.hidden = true;
+    return;
+  }
+  for (const c of components) {
+    const row = document.createElement('div');
+    row.className = 'comp-row';
+    const dot = document.createElement('div');
+    dot.className = 'comp-dot ' + (c.ok ? 'ok' : 'bad');
+    const text = document.createElement('div');
+    text.className = 'comp-text';
+    const fileLine = document.createElement('div');
+    const fileSpan = document.createElement('span');
+    fileSpan.className = 'file';
+    fileSpan.textContent = c.file || '';
+    const typeBadge = document.createElement('span');
+    typeBadge.className = 'type';
+    typeBadge.textContent = c.type;
+    fileLine.appendChild(fileSpan);
+    fileLine.appendChild(typeBadge);
+    text.appendChild(fileLine);
+    if (c.ok && c.description) {
+      const preview = document.createElement('div');
+      preview.className = 'preview';
+      preview.textContent = c.description;
+      text.appendChild(preview);
+    }
+    if (!c.ok) {
+      for (const issue of (c.issues || []).slice(0, 3)) {
+        const issLine = document.createElement('div');
+        issLine.className = 'issue';
+        const fieldLabel = FIELD_LABEL_PREVIEW[issue.field]
+          || issue.field || 'Description';
+        const codeLabel = CODE_LABEL_PREVIEW[issue.code]
+          || (issue.code || 'issue').replace(/_/g, ' ');
+        issLine.textContent = fieldLabel + ' ' + codeLabel + '. ' + (issue.hint || '');
+        text.appendChild(issLine);
+      }
+      // Single "See example ↗" link per component pointing at the
+      // matching anchor on /store/examples.
+      const anchor = c.type || 'skill';
+      const linkRow = document.createElement('div');
+      linkRow.style.marginTop = '4px';
+      const link = document.createElement('a');
+      link.href = '/store/examples#' + anchor;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.textContent = 'See ' + anchor + ' example ↗';
+      link.style.fontSize = '12px';
+      link.style.color = 'var(--ds-primary)';
+      link.style.textDecoration = 'underline';
+      linkRow.appendChild(link);
+      text.appendChild(linkRow);
+    }
+    row.appendChild(dot);
+    row.appendChild(text);
+    list.appendChild(row);
+  }
+  wrap.hidden = false;
+}
+
 // Step 1 → preview
 nextBtn.addEventListener('click', async () => {
   clearBanner();
@@ -671,6 +1160,15 @@ nextBtn.addEventListener('click', async () => {
     const preview = await res.json();
     document.getElementById('name').value = preview.name || '';
     document.getElementById('description').value = preview.description || '';
+    // v49: pre-fill Title from server-computed humanize unless the user
+    // already touched the field (e.g. came back via Back). Keep the
+    // user-edited flag stable so re-entering step 2 doesn't clobber.
+    if (titleInput.dataset.userEdited !== 'true') {
+      titleInput.value = preview.title || humanizeName(preview.name || '');
+    }
+    updateDescCounter();
+    updateSyntheticPreview();
+    renderComponents(preview.components || []);
     showStep(2);
   } catch (err) {
     showError(String(err));
@@ -687,6 +1185,20 @@ finishBtn.addEventListener('click', async () => {
   clearBanner();
   const name = document.getElementById('name').value.trim();
   if (!name) { showError('Name is required.'); return; }
+  // v49: Title is required (NOT NULL in DB). Auto-fill should have set
+  // it; this guards manual clears.
+  if (!titleInput.value.trim()) { showError('Title is required.'); return; }
+
+  function isContentBlock(detail) {
+    if (!detail || !detail.checks) return false;
+    // Show the "see examples" link when content-tier issues are the
+    // dominant fix needed — both new + legacy codes can carry them.
+    const isFixable = detail.code === 'validation_failed'
+      || detail.code === 'submission_blocked';
+    return isFixable
+      && detail.checks.content
+      && (detail.checks.content.issues || []).length > 0;
+  }
   const type = document.querySelector('input[name=type]:checked').value;
 
   finishBtn.disabled = true;
@@ -697,6 +1209,10 @@ finishBtn.addEventListener('click', async () => {
     fd.append('type', type);
     fd.append('name', name);
     fd.append('description', document.getElementById('description').value);
+    // v49: title required, tagline optional.
+    fd.append('title', titleInput.value.trim());
+    const tag = taglineInput.value.trim();
+    if (tag) fd.append('tagline', tag);
     const cat = document.getElementById('category').value;
     if (cat) fd.append('category', cat);
     const vurl = document.getElementById('video_url').value.trim();
@@ -711,23 +1227,31 @@ finishBtn.addEventListener('click', async () => {
       window.location = `/marketplace/flea/${encodeURIComponent(entity.id)}`;
       return;
     }
-    // Inline-blocked uploads (422 with submission_blocked) now persist
-    // the entity at visibility=hidden so admins can rescan/override and
-    // submitters can see the full quarantine banner. Redirect to the
-    // detail page when the response carries an entity_id — same UX as
-    // a successful upload, just landing on a banner instead of an
-    // approved card.
+    // Inline failures (validation_failed / security_blocked) are hard
+    // rejections — no entity row, no bundle on disk. Render the banner
+    // inline and stay on step 2 so the submitter can fix and retry.
+    //
+    // The legacy ``submission_blocked`` branch is retained for one
+    // release cycle. Older deploys may still emit it with an
+    // ``entity_id`` pointing at a hidden row; redirect to the detail
+    // page so the existing quarantine banner UX still works. Fresh
+    // deploys never hit this branch.
     let msg = 'Upload failed.';
+    let showLink = false;
     try {
       const j = await res.json();
-      const eid = j && j.detail && j.detail.entity_id;
-      if (eid && j.detail.code === 'submission_blocked') {
+      const detail = j && j.detail;
+      const eid = detail && detail.entity_id;
+      if (eid && detail.code === 'submission_blocked') {
         window.location = `/marketplace/flea/${encodeURIComponent(eid)}`;
         return;
       }
-      if (j.detail) msg = humanizeError(j.detail);
+      if (detail) {
+        msg = humanizeError(detail);
+        showLink = isContentBlock(detail);
+      }
     } catch(_) {}
-    showError(msg);
+    showError(msg, {showExamplesLink: showLink});
   } catch (err) {
     showError(String(err));
   } finally {

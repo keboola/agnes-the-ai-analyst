@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "feature/**"]
+    branches: [main, "feature/**", "ci/update-test-durations-*"]
   pull_request:
     branches: [main]
   schedule:
@@ -10,10 +10,14 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  test-shard:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6
         with:
@@ -21,19 +25,164 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
 
       - name: Install dependencies
-        run: uv pip install --system ".[dev]"
+        run: uv pip install --system ".[dev,server]"
 
-      - name: Run tests (parallel)
-        run: pytest tests/ -v --tb=short -n auto
+      - name: Run tests (shard ${{ matrix.group }}/8)
+        # pytest-split shards the suite across 8 parallel jobs, balanced by
+        # the committed `.test_durations` file; `-n auto` parallelises
+        # within each shard across the runner's cores. tests/db_pg/ is
+        # excluded here and runs in the dedicated test-pg job below so that
+        # the pgserver session fixture doesn't inflate shard 1's wall-clock.
+        # Regenerate durations with `pytest tests/ --ignore=tests/db_pg
+        # --store-durations -n auto -q --tb=no` when shards drift
+        # (target: ~3 min/shard).
+        run: pytest tests/ --ignore=tests/db_pg -v --tb=short -n auto --splits 8 --group ${{ matrix.group }}
         env:
           TESTING: "1"
+
+  test-pg:
+    # Runs tests/db_pg/ split across 2 parallel jobs to halve wall-clock time.
+    # Keeping these separate from the main split shards avoids the pgserver
+    # session-fixture startup overhead (~60 s per worker) from landing in shard
+    # 1 and skewing the main shards. pytest-split balances the 2 groups; tests
+    # without timing data receive the mean duration so the split is roughly even.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv pip install --system ".[dev,server]"
+
+      - name: Run Postgres contract tests (shard ${{ matrix.group }}/2)
+        run: pytest tests/db_pg/ -v --tb=short -n auto --splits 2 --group ${{ matrix.group }}
+        env:
+          TESTING: "1"
+
+  # Single required status check. Branch protection requires `test`, but the
+  # matrices above publish `test-shard (1..8)` and `test-pg (1..2)` — this job
+  # aggregates them into one `test` result so no branch-protection change is needed.
+  test:
+    needs: [test-shard, test-pg]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all test shards passed
+        run: |
+          if [ "${{ needs.test-shard.result }}" != "success" ]; then
+            echo "::error::test-shard result was '${{ needs.test-shard.result }}' — one or more shards failed"
+            exit 1
+          fi
+          if [ "${{ needs.test-pg.result }}" != "success" ]; then
+            echo "::error::test-pg result was '${{ needs.test-pg.result }}' — Postgres contract tests failed"
+            exit 1
+          fi
+          echo "All 8 test shards and both Postgres contract shards passed."
+
+  lint:
+    # Advisory only (continue-on-error) — ruff + mypy surface issues but
+    # never gate. Split out of release.yml's old test job; runs without the
+    # full dependency install since neither tool needs it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Lint with ruff
+        run: |
+          pip install ruff
+          ruff check . || true
+        continue-on-error: true
+
+      - name: Type check with mypy
+        run: |
+          pip install mypy
+          mypy src/ app/ cli/ connectors/ --ignore-missing-imports --no-error-summary || true
+        continue-on-error: true
+
+  cli-wheel-clean-install:
+    # Catches the "wheel METADATA conflicts with transitive deps under fresh
+    # resolver" class — exactly what the workspace-only `[tool.uv]
+    # override-dependencies` does NOT protect against. Builds the wheel the
+    # way `release.yml` ships it to analysts (`uv build --wheel`), then
+    # installs it into a fresh `python:3.13-slim` container with `uv tool
+    # install` (the path the `/setup` page advertises) and asserts the
+    # `agnes` binary actually launches. Without this, a regression like
+    # 0.53.3's `kbcstorage>=0.9.0 → urllib3<2.0.0` cap silently caps the
+    # wheel METADATA, every existing test passes (workspace overrides the
+    # cap), and the break only surfaces on the next analyst's first install.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Build wheel
+        run: uv build --wheel --out-dir dist
+
+      - name: Write CLI install assertion script
+        run: |
+          cat > /tmp/smoke.py <<'PY'
+          import sys, urllib3
+          try:
+              import kbcstorage  # noqa: F401
+              sys.exit("REGRESSION: kbcstorage leaked into the CLI wheel — should be in [server] extra only")
+          except ImportError:
+              pass
+          maj, minor = (int(x) for x in urllib3.__version__.split(".")[:2])
+          assert (maj, minor) >= (2, 7), f"urllib3 too old: {urllib3.__version__}"
+          print(f"OK: kbcstorage absent, urllib3 {urllib3.__version__}")
+          PY
+
+      - name: Smoke install in fresh python:3.13-slim
+        run: |
+          docker run --rm \
+            -v "$PWD/dist:/wheels:ro" \
+            -v /tmp/smoke.py:/smoke.py:ro \
+            python:3.13-slim bash -c '
+              set -euo pipefail
+              apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates >/dev/null
+              curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+              export PATH="$HOME/.local/bin:$PATH"
+              WHEEL=$(ls /wheels/agnes_the_ai_analyst-*-py3-none-any.whl | head -1)
+              uv tool install --force "$WHEEL"
+              agnes --version
+              agnes --help > /dev/null
+              agnes catalog --help > /dev/null
+              # Run the assertion in the same venv uv tool created
+              "$HOME/.local/share/uv/tools/agnes-the-ai-analyst/bin/python" /smoke.py
+            '
 
   docker-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Build Docker image
         run: docker build -t data-analyst:test .
@@ -43,7 +192,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: docker-build
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6
         with:
@@ -51,13 +200,23 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
 
       - name: Install dependencies
-        run: uv pip install --system ".[dev]"
+        run: uv pip install --system ".[dev,server]"
 
       - name: Start services
         run: |
-          touch .env
+          # docker-compose.yml declares `env_file: .env` as required; CI
+          # ships no .env. Generate a random per-run JWT_SECRET_KEY so the
+          # app's v0.56.0 fail-closed guard (refuses to start in production
+          # without an explicit ≥32-char key; see app/auth/jwt.py and
+          # PR #483) is satisfied. Random rather than hard-coded so the
+          # value can't be mistaken for a real key in logs or screenshots.
+          # All other runtime values are still provided by the compose
+          # `environment:` block.
+          echo "JWT_SECRET_KEY=$(openssl rand -hex 32)" > .env
           docker compose up -d --wait --wait-timeout 60
 
       - name: Run Docker E2E tests

@@ -16,6 +16,7 @@ display name don't collide in Claude Code's flat namespace.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -25,9 +26,10 @@ import shutil
 import tempfile
 import uuid
 import zipfile
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import duckdb
@@ -41,19 +43,28 @@ from fastapi import (
     Query,
     UploadFile,
 )
+
+from src.repositories import (
+    audit_repo,
+    store_entities_repo,
+    store_entity_votes_repo,
+    store_submissions_repo,
+    user_store_installs_repo,
+    users_repo,
+)
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from app.auth.access import is_user_admin, require_admin
 from app.auth.dependencies import _get_db, get_current_user
-from app.instance_config import get_guardrails_enabled
+from app.instance_config import (
+    get_guardrails_enabled,
+    get_guardrails_llm_provider_ready,
+    get_guardrails_review_model,
+)
 from app.utils import get_store_dir
 from src.db import get_system_db
-from src.repositories.audit import AuditRepository
-from src.repositories.store_entities import StoreEntitiesRepository
-from src.repositories.store_submissions import StoreSubmissionsRepository
-from src.repositories.user_store_installs import UserStoreInstallsRepository
-from src.repositories.users import UserRepository
 from src.store_categories import STORE_CATEGORIES, is_valid_category
 from src.store_guardrails import InlineResult, run_inline_checks, run_llm_review
 from src.store_guardrails.runner import (
@@ -70,9 +81,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/store", tags=["store"])
 
 
-MAX_ZIP_SIZE = 50 * 1024 * 1024   # 50 MB — matches app/api/upload.py
+MAX_ZIP_SIZE = 50 * 1024 * 1024  # 50 MB — matches app/api/upload.py
 MAX_PHOTO_SIZE = 5 * 1024 * 1024  # 5 MB
-MAX_DOC_SIZE = 10 * 1024 * 1024   # 10 MB per uploaded doc
+MAX_DOC_SIZE = 10 * 1024 * 1024  # 10 MB per uploaded doc
 ALLOWED_PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 _CHUNK_SIZE = 64 * 1024
 _VALID_TYPES = {"skill", "agent", "plugin"}
@@ -88,7 +99,6 @@ MAX_ZIP_UNCOMPRESSED = 200 * 1024 * 1024  # 200 MB
 
 
 def _suffixed_already_taken(
-    conn: duckdb.DuckDBPyConnection,
     suffixed: str,
     *,
     exclude_entity_id: Optional[str] = None,
@@ -99,7 +109,7 @@ def _suffixed_already_taken(
     The Store namespace is **flat** in Claude Code — two plugins/skills/agents
     that share a ``name`` collide in the served marketplace catalog (the
     ``manifest_name`` is unique-key for ``/plugin`` lookup) and on-disk inside
-    the ``agnes-store-bundle`` (skills/<suffixed>/SKILL.md is the dir name).
+    the ``flea`` bundle (skills/<suffixed>/SKILL.md is the dir name).
 
     ``sanitize_username`` is many-to-one (``alice.smith`` and ``alice_smith``
     both → ``alice-smith``), so the per-owner UNIQUE on
@@ -112,18 +122,19 @@ def _suffixed_already_taken(
     check so the same owner can re-upload under the original name after
     archive. The archive path renames the row to free the slug, so this
     flag is belt-and-braces.
+
+    v49 phase-3: query the stored ``synthetic_name`` column instead of
+    the inline concat ``name || '-by-' || owner_username``. Phase 1's
+    migration backfilled the column for every row and the repo write
+    paths keep it in sync, so both expressions return the same set —
+    but querying the column is indexable and avoids divergence if the
+    naming formula ever changes (single source of truth).
     """
-    sql = (
-        "SELECT id FROM store_entities "
-        "WHERE name || '-by-' || owner_username = ?"
+    return store_entities_repo().synthetic_name_taken(
+        suffixed,
+        exclude_entity_id=exclude_entity_id,
+        exclude_archived=exclude_archived,
     )
-    params: List[Any] = [suffixed]
-    if exclude_entity_id:
-        sql += " AND id != ?"
-        params.append(exclude_entity_id)
-    if exclude_archived:
-        sql += " AND visibility_status != 'archived'"
-    return bool(conn.execute(sql, params).fetchone())
 
 
 def _validate_video_url(value: Optional[str]) -> Optional[str]:
@@ -151,6 +162,18 @@ def _validate_video_url(value: Optional[str]) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
+class EntityRating(BaseModel):
+    """#398: per-user thumbs up/down tally for a store entity.
+
+    ``up`` / ``down`` are global counts; ``my_vote`` is the caller's own
+    vote (``1`` up, ``-1`` down, ``0`` = not voted).
+    """
+
+    up: int = 0
+    down: int = 0
+    my_vote: int = 0
+
+
 class StoreEntityResponse(BaseModel):
     id: str
     type: str
@@ -172,6 +195,19 @@ class StoreEntityResponse(BaseModel):
     # v32+ quarantine: surface visibility so /store browse can render
     # the corner badge on the submitter's own non-approved cards.
     visibility_status: Optional[str] = None
+    # v49 phase-1 Flea refactor — user-facing metadata. `title` is a
+    # humanized display name (acronym-aware), `tagline` is an optional
+    # 200-char short description, `synthetic_name` is the deterministic
+    # <name>-by-<owner> baked into served bundles. Phase 1 only writes
+    # them; consuming surfaces (cards, detail, Claude Code) come later.
+    title: Optional[str] = None
+    tagline: Optional[str] = None
+    synthetic_name: Optional[str] = None
+    # #398: per-user thumbs up/down ratings. ``up``/``down`` are global
+    # tallies; ``my_vote`` is the caller's own vote (1 / -1 / 0). Populated
+    # on the single-entity GET; left None in list responses (avoids an
+    # N-query aggregate per card).
+    rating: Optional[EntityRating] = None
 
 
 class StoreEntityListResponse(BaseModel):
@@ -186,14 +222,47 @@ class InstallResponse(BaseModel):
     installed: bool
 
 
+class RateRequest(BaseModel):
+    # 1 = thumbs up, -1 = thumbs down, 0 = clear the caller's vote (#398).
+    vote: int
+
+
+class PreviewComponent(BaseModel):
+    type: str
+    name: Optional[str] = None
+    file: str
+    description: Optional[str] = None
+    ok: bool
+    issues: list = []
+
+
 class PreviewResponse(BaseModel):
     type: str
     name: Optional[str] = None
     description: Optional[str] = None
+    # v49: humanized form of `name` for pre-filling the Title input on
+    # the upload form. Computed server-side so the acronym dict has a
+    # single source of truth (src/store_naming.py:TITLE_ACRONYMS).
+    title: Optional[str] = None
+    components: list[PreviewComponent] = []
 
 
 class OkResponse(BaseModel):
     ok: bool = True
+
+
+class DryRunResponse(BaseModel):
+    """Pre-submit dry-run verdict — guardrail findings without any DB write.
+
+    Lets a submitter run the full pipeline (inline checks + LLM review)
+    against a candidate bundle and see what would block it, BEFORE the
+    real ``POST /entities``. ``would_publish`` is the AND of the inline
+    verdict and the LLM ``is_safe`` decision.
+    """
+
+    inline_checks: dict
+    llm_findings: Optional[dict] = None
+    would_publish: bool
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +278,7 @@ def _audit(
     params: Optional[dict] = None,
 ) -> None:
     try:
-        AuditRepository(conn).log(
+        audit_repo().log(
             user_id=actor_id,
             action=action,
             resource=f"store_entity:{entity_id}",
@@ -217,6 +286,109 @@ def _audit(
         )
     except Exception:
         pass
+
+
+def _reject_inline_or_continue(
+    *,
+    conn: duckdb.DuckDBPyConnection,
+    user: dict,
+    inline: InlineResult,
+    plugin_dir: Path,
+    cleanup_paths: List[Path],
+    type_: str,
+    name: str,
+    context: str,
+) -> None:
+    """Hard-reject sync guardrail failures; return None on pass.
+
+    Two tiers, aligned to the *nature* of the failure rather than the
+    synchronicity of the check:
+
+    * **Validation tier** — ``manifest_check`` and ``content_check``
+      failures are fixable-by-submitter mistakes (missing files, bad
+      name regex, description too short). Return 422 ``validation_failed``
+      with no DB writes and no audit trail; the upload wizard surfaces
+      a banner and the submitter retries. Matches the
+      ``/api/store/entities/preview`` step: invalid input → 4xx with
+      no side effects.
+
+    * **Security tier** — ``static_scan`` failures are deny-list regex
+      hits (eval, leaked tokens, reverse-shell idioms). Return 422
+      ``security_blocked`` with no DB writes, but emit one ``audit_log``
+      row tagged ``store.upload.security_blocked`` carrying the
+      findings + SHA256 + size. Forensically interesting; the audit
+      row is the *only* trace.
+
+    Quality is never blocking (``status='warn'`` max — checked elsewhere).
+
+    Validation failures shadow security failures: if the bundle's
+    manifest is broken, the submitter sees only the manifest issues
+    (no security findings). This stops attackers from enumerating the
+    static_scan rule set by submitting bundles with adversarial bytes
+    inside otherwise-malformed manifests.
+    """
+    validation_fail = inline.manifest.get("status") != "pass" or inline.content.get("status") != "pass"
+    if validation_fail:
+        for p in cleanup_paths:
+            shutil.rmtree(p, ignore_errors=True)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "validation_failed",
+                "checks": {
+                    "manifest": inline.manifest,
+                    "content": inline.content,
+                    "quality": inline.quality,
+                },
+            },
+        )
+
+    if inline.static_security.get("status") != "pass":
+        # Lazy-compute bundle_meta only on the security branch. The
+        # validation branch returned above without needing the hash,
+        # so callers don't pay for compute_bundle_meta when manifest /
+        # content checks fail (the common case for honest submitters).
+        from src.store_guardrails.bundle_meta import compute_bundle_meta
+
+        bundle_meta = compute_bundle_meta(plugin_dir)
+        findings = inline.static_security.get("findings") or []
+        try:
+            audit_repo().log(
+                user_id=user["id"],
+                action="store.upload.security_blocked",
+                resource=f"store_upload:{bundle_meta.sha256}",
+                params={
+                    "context": context,
+                    "type": type_,
+                    "name": name,
+                    "findings": findings,
+                    "finding_count": len(findings),
+                    "file_size": bundle_meta.file_size,
+                    "bundle_sha256": bundle_meta.sha256,
+                    "submitter_email": user.get("email"),
+                },
+                result="blocked",
+            )
+        except Exception:
+            # The security_blocked audit row is the ONLY forensic
+            # trace of this attempt (no DB submission row by design),
+            # so a swallowed failure here loses the signal entirely.
+            # Surface it in logs even though we keep raising the 422
+            # so the submitter still sees the same response.
+            logger.exception(
+                "Failed to write store.upload.security_blocked audit_log entry (context=%s sha256=%s)",
+                context,
+                bundle_meta.sha256,
+            )
+        for p in cleanup_paths:
+            shutil.rmtree(p, ignore_errors=True)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "security_blocked",
+                "checks": {"static_security": inline.static_security},
+            },
+        )
 
 
 def _schedule_llm_review(
@@ -262,6 +434,125 @@ def _plugin_dir(entity_id: str) -> Path:
     return _entity_dir(entity_id) / "plugin"
 
 
+def _submission_plugin_dir(
+    entity_id: str,
+    version_no: int,
+) -> Path:
+    """On-disk path of the bundle a particular submission represents.
+
+    v37+ writes each version's bytes under
+    ``<entity_dir>/versions/v<N>/plugin/``. Live ``plugin/`` mirrors
+    whichever ``v<N>`` is currently promoted. Admin retry / rescan
+    flows MUST review the staged version dir, not live — otherwise a
+    pending v2 retry would re-review v1's bytes, a clean verdict
+    would land, and the runner's hash-match promotion would advance
+    the entity to v2 bytes that were never actually reviewed.
+    """
+    return _entity_dir(entity_id) / "versions" / f"v{int(version_no)}" / "plugin"
+
+
+# Per-entity write lock. Serializes the "read latest submission → bake
+# new version dir → append history" critical section in PUT + restore
+# so two concurrent edits on the same entity_id can't both pass the
+# "no pending submission" gate, both append history rows, and race
+# on ``versions/v<N+1>/plugin/``. Surfaced by the adversarial review
+# of PR #316.
+#
+# Scope: single-process. Multi-worker uvicorn deployments still have
+# a window — a process-shared lock (DB advisory, filesystem flock)
+# would be the next step. For the typical single-worker corporate
+# deployment this closes the race; the publish-gate model is already
+# defense-in-depth (LLM tier won't approve duplicate bytes anyway).
+_entity_write_locks: Dict[str, asyncio.Lock] = {}
+_entity_write_locks_guard = asyncio.Lock()
+
+
+@asynccontextmanager
+async def _hold_entity_write_lock(entity_id: str):
+    """Serialize concurrent writes to a single flea-market entity.
+
+    Wrap the version-creating critical section in PUT + restore:
+    read latest submission status, bake new version dir, append
+    ``version_history``. Outside this section the request can hit the
+    DB freely.
+    """
+    async with _entity_write_locks_guard:
+        lock = _entity_write_locks.get(entity_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _entity_write_locks[entity_id] = lock
+    async with lock:
+        yield
+
+
+def _find_reusable_approved_verdict(
+    entity_row: Dict[str, Any],
+    new_version_hash: str,
+    subs_repo,
+    current_review_model: str,
+) -> Optional[tuple]:
+    """Find a prior `approved` submission whose bundle hash matches
+    the new submission's hash and whose reviewer was the same model.
+
+    Returns ``(prior_submission_id, prior_llm_findings)`` for the
+    caller to reuse, or ``None`` if no eligible prior verdict exists.
+
+    Rationale:
+        Anthropic structured output is non-deterministic. The
+        content_quality.verdict in particular can flip pass↔fail on
+        byte-identical bundles (observed live on a development
+        deployment: across five identical-hash submissions of one
+        entity, four landed `approved` and one landed `blocked_llm`
+        because the model flagged a description as weak on that one
+        call). When the user restores an already-approved version
+        — or re-uploads byte-identical bundles — the previous verdict
+        is the authoritative one and should be reused.
+
+        Gated on ``reviewed_by_model`` match so a stricter model can
+        still re-review under tightened rules (admin upgrades from
+        Haiku → Sonnet → Opus).
+    """
+    for entry in entity_row.get("version_history") or []:
+        if entry.get("hash") != new_version_hash:
+            continue
+        sid = entry.get("submission_id")
+        if not sid:
+            continue
+        try:
+            sub = subs_repo.get(sid)
+        except Exception:
+            continue
+        if not sub:
+            continue
+        if sub.get("status") != "approved":
+            continue
+        # Skip rows that pre-date the LLM tier (guardrails-off prior
+        # approvals carry no reviewed_by_model — caller still needs
+        # the LLM to validate the bundle under guardrails-on rules).
+        if not sub.get("reviewed_by_model"):
+            continue
+        if sub.get("reviewed_by_model") != current_review_model:
+            continue
+        return sid, sub.get("llm_findings") or {}
+    return None
+
+
+def _version_no_for_submission(
+    entity_row: Dict[str, Any],
+    submission_id: str,
+) -> Optional[int]:
+    """Locate the version_history entry produced by `submission_id`
+    and return its ``n``. Used by admin retry / rescan / override to
+    pick the right ``versions/v<N>/plugin/`` directory."""
+    for entry in entity_row.get("version_history") or []:
+        if entry.get("submission_id") == submission_id:
+            try:
+                return int(entry.get("n"))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def _assets_dir(entity_id: str) -> Path:
     return _entity_dir(entity_id) / "assets"
 
@@ -274,25 +565,34 @@ def _to_iso(value: Any) -> Optional[str]:
     return str(value)
 
 
-def _resolve_owner_display(
-    conn: duckdb.DuckDBPyConnection, user_id: str
-) -> Optional[str]:
-    row = conn.execute(
-        "SELECT name, email FROM users WHERE id = ?", [user_id]
-    ).fetchone()
+def _resolve_owner_display(user_id: str) -> Optional[str]:
+    # Backend-aware: owner rows live in the active backend (Postgres on a PG
+    # instance), so resolve through the factory rather than a raw DuckDB conn.
+    from src.repositories import users_repo
+
+    row = users_repo().get_by_id(user_id)
     if not row:
         return None
-    name, email = row
+    name = row.get("name")
     if name and str(name).strip():
         return str(name).strip()
+    email = row.get("email")
     return str(email) if email else None
 
 
 def _entity_to_response(
-    conn: duckdb.DuckDBPyConnection, entity: dict
+    conn: duckdb.DuckDBPyConnection,
+    entity: dict,
+    rating: Optional["EntityRating"] = None,
 ) -> StoreEntityResponse:
     photo_url = (
-        f"/api/store/entities/{entity['id']}/photo" if entity.get("photo_path") else None
+        # ``?v=`` cache-busting fingerprint via ``version_no`` (schema v37
+        # monotonic counter, bumps on every re-upload). Pairs with the
+        # ``Cache-Control: public, max-age=2592000, immutable`` header
+        # served by ``get_entity_photo``.
+        f"/api/store/entities/{entity['id']}/photo?v={entity.get('version_no', 1)}"
+        if entity.get("photo_path")
+        else None
     )
     return StoreEntityResponse(
         id=entity["id"],
@@ -303,7 +603,7 @@ def _entity_to_response(
         version=entity["version"],
         owner_user_id=entity["owner_user_id"],
         owner_username=entity["owner_username"],
-        owner_display_name=_resolve_owner_display(conn, entity["owner_user_id"]),
+        owner_display_name=_resolve_owner_display(entity["owner_user_id"]),
         install_count=int(entity.get("install_count") or 0),
         file_size=int(entity.get("file_size") or 0),
         photo_url=photo_url,
@@ -311,8 +611,16 @@ def _entity_to_response(
         doc_paths=entity.get("doc_paths") or [],
         created_at=_to_iso(entity.get("created_at")),
         updated_at=_to_iso(entity.get("updated_at")),
-        invocation_name=suffixed_name(entity["name"], entity["owner_username"]),
+        # v49 phase-3: invocation_name comes from the stored
+        # synthetic_name column (single source of truth). The column is
+        # NOT NULL and the repo write paths keep it in lockstep with
+        # name + owner_username — any missing value is a real bug.
+        invocation_name=entity["synthetic_name"],
         visibility_status=entity.get("visibility_status") or "approved",
+        title=entity.get("title"),
+        tagline=entity.get("tagline"),
+        synthetic_name=entity.get("synthetic_name"),
+        rating=rating,
     )
 
 
@@ -400,18 +708,12 @@ def _safe_zip_extract(zf: zipfile.ZipFile, dest: Path) -> None:
 
 
 def _parse_frontmatter(text: str) -> dict:
-    m = _FRONTMATTER_RE.match(text)
-    if not m:
-        return {}
-    body = m.group(1)
-    out: dict = {}
-    for line in body.splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        if ":" in line:
-            k, v = line.split(":", 1)
-            out[k.strip()] = v.strip().strip('"').strip("'")
-    return out
+    # Delegated to src/store_guardrails/_frontmatter.py so the guardrail
+    # module can parse the same shape without creating an app→src→app
+    # import cycle. Wrapper kept for callers inside this file.
+    from src.store_guardrails._frontmatter import parse_frontmatter
+
+    return parse_frontmatter(text)
 
 
 def _set_frontmatter_name(text: str, new_name: str) -> str:
@@ -435,7 +737,7 @@ def _set_frontmatter_name(text: str, new_name: str) -> str:
     if not found:
         new_body_lines.insert(0, f"name: {new_name}")
     new_body = "\n".join(new_body_lines)
-    return f"---\n{new_body}\n---" + text[m.end():]
+    return f"---\n{new_body}\n---" + text[m.end() :]
 
 
 def _find_skill_md(root: Path) -> Optional[Path]:
@@ -478,9 +780,7 @@ def _find_plugin_json(root: Path) -> Optional[Path]:
     return None
 
 
-def _validate_and_extract_metadata(
-    type_: str, extracted_root: Path
-) -> dict:
+def _validate_and_extract_metadata(type_: str, extracted_root: Path) -> dict:
     """Return ``{"name": str | None, "description": str | None}`` parsed from
     the ZIP for pre-fill. Raises 422 if the ZIP layout doesn't match ``type``.
 
@@ -623,18 +923,75 @@ def _bake_plugin_tree(
     return total
 
 
-def _write_synth_plugin_json(
-    plugin_dir: Path, suffixed: str, description: Optional[str]
-) -> None:
+def _write_synth_plugin_json(plugin_dir: Path, suffixed: str, description: Optional[str]) -> None:
     target = plugin_dir / ".claude-plugin"
     target.mkdir(parents=True, exist_ok=True)
     payload = {
         "name": suffixed,
         "description": description or "",
     }
-    (target / "plugin.json").write_text(
-        json.dumps(payload, indent=2), encoding="utf-8"
-    )
+    (target / "plugin.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def promote_to_version(
+    entity_id: str,
+    target_version_no: int,
+    repo,
+) -> Optional[int]:
+    """Atomic-ish promotion: swap live bundle FIRST, then update DB.
+
+    Returns the promoted version number on success, ``None`` when the
+    source bundle is missing or the swap failed. The DB row only moves
+    forward after the live dir is in place — eliminating the
+    "DB promoted but live still on prior bytes" inconsistency
+    surfaced by the adversarial review.
+
+    Failure modes:
+        * Source ``versions/v<N>/plugin/`` missing → return None,
+          no DB change, no live change.
+        * Swap raises mid-rename → live is restored from backup
+          (handled inside ``_swap_live_to_version``); DB untouched.
+        * DB ``promote_version`` reports no row updated (entity gone) →
+          best-effort swap back to prior version so live + DB stay
+          consistent.
+    """
+    source = _entity_dir(entity_id) / "versions" / f"v{int(target_version_no)}" / "plugin"
+    if not source.is_dir():
+        logger.error(
+            "promote_to_version: source missing for entity %s v%d at %s",
+            entity_id,
+            target_version_no,
+            source,
+        )
+        return None
+    prior_row = repo.get(entity_id) or {}
+    prior_n = int(prior_row.get("version_no") or 0)
+    try:
+        ok = _swap_live_to_version(entity_id, target_version_no)
+    except OSError:
+        logger.exception(
+            "promote_to_version: live swap raised for entity %s v%d",
+            entity_id,
+            target_version_no,
+        )
+        return None
+    if not ok:
+        return None
+    if not repo.promote_version(entity_id, target_version_no):
+        # DB row vanished mid-flight (rare: hard-delete between our
+        # earlier `.get()` and the promote). Roll live back to the
+        # prior version to keep on-disk and (still-absent) DB
+        # consistent for the next caller.
+        if prior_n:
+            try:
+                _swap_live_to_version(entity_id, prior_n)
+            except Exception:
+                logger.exception(
+                    "promote_to_version: rollback swap failed for entity %s",
+                    entity_id,
+                )
+        return None
+    return int(target_version_no)
 
 
 def _swap_live_to_version(entity_id: str, version_no: int) -> bool:
@@ -658,7 +1015,9 @@ def _swap_live_to_version(entity_id: str, version_no: int) -> bool:
     if not source.is_dir():
         logger.error(
             "_swap_live_to_version: source missing for entity %s v%d at %s",
-            entity_id, version_no, source,
+            entity_id,
+            version_no,
+            source,
         )
         return False
     live = _plugin_dir(entity_id)
@@ -726,9 +1085,7 @@ def _rename_baked_tree(
         skill_md = new_dir / "SKILL.md"
         if skill_md.is_file():
             text = skill_md.read_text(encoding="utf-8", errors="replace")
-            skill_md.write_text(
-                _set_frontmatter_name(text, new_suffix), encoding="utf-8"
-            )
+            skill_md.write_text(_set_frontmatter_name(text, new_suffix), encoding="utf-8")
     elif type_ == "agent":
         old_md = plugin_dir / "agents" / f"{old_suffix}.md"
         new_md = plugin_dir / "agents" / f"{new_suffix}.md"
@@ -736,9 +1093,7 @@ def _rename_baked_tree(
             old_md.rename(new_md)
         if new_md.is_file():
             text = new_md.read_text(encoding="utf-8", errors="replace")
-            new_md.write_text(
-                _set_frontmatter_name(text, new_suffix), encoding="utf-8"
-            )
+            new_md.write_text(_set_frontmatter_name(text, new_suffix), encoding="utf-8")
     elif type_ == "plugin":
         pj_path = plugin_dir / ".claude-plugin" / "plugin.json"
         if pj_path.is_file():
@@ -746,9 +1101,7 @@ def _rename_baked_tree(
                 data = json.loads(pj_path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
                     data["name"] = new_suffix
-                    pj_path.write_text(
-                        json.dumps(data, indent=2), encoding="utf-8"
-                    )
+                    pj_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
             except (OSError, ValueError):
                 pass
 
@@ -792,35 +1145,37 @@ async def list_owners(
     the public dropdown until at least one is approved). Admin sees
     every owner regardless of state.
     """
-    if is_user_admin(user["id"], conn):
-        where_sql = ""
-        params: list = []
-    else:
-        # 'approved' is the public set. Owners of only-archived /
-        # only-pending / only-blocked entries don't appear in the
-        # public dropdown — they have nothing to filter to.
-        where_sql = "WHERE se.visibility_status = 'approved'"
-        params = []
-    rows = conn.execute(
-        f"""SELECT
-               se.owner_user_id,
-               COALESCE(NULLIF(TRIM(u.name), ''), u.email, se.owner_username) AS display_name,
-               COUNT(*) AS entity_count
-           FROM store_entities se
-           LEFT JOIN users u ON u.id = se.owner_user_id
-           {where_sql}
-           GROUP BY se.owner_user_id, display_name
-           ORDER BY display_name""",
-        params,
-    ).fetchall()
-    return [
-        OwnerOption(
-            user_id=r[0],
-            display_name=str(r[1]),
-            entity_count=int(r[2]),
-        )
-        for r in rows
-    ]
+    # Backend-aware: aggregate owners from the factory-backed entity list +
+    # resolve display names through users_repo(), instead of a raw DuckDB
+    # JOIN (which was empty on a Postgres instance).
+    from src.repositories import store_entities_repo, users_repo
+
+    visibility = None if is_user_admin(user["id"]) else ["approved"]
+    items, _ = store_entities_repo().list(visibility_status=visibility, limit=100_000)
+
+    counts: Dict[str, int] = {}
+    fallback_username: Dict[str, str] = {}
+    for e in items:
+        oid = e.get("owner_user_id")
+        if not oid:
+            continue
+        counts[oid] = counts.get(oid, 0) + 1
+        fallback_username.setdefault(oid, e.get("owner_username") or "")
+
+    owners: List[OwnerOption] = []
+    for oid, cnt in counts.items():
+        u = users_repo().get_by_id(oid)
+        name = (u or {}).get("name")
+        if name and str(name).strip():
+            display = str(name).strip()
+        elif u and u.get("email"):
+            display = str(u["email"])
+        else:
+            display = fallback_username.get(oid) or oid
+        owners.append(OwnerOption(user_id=oid, display_name=display, entity_count=cnt))
+
+    owners.sort(key=lambda o: o.display_name)
+    return owners
 
 
 @router.get("/entities", response_model=StoreEntityListResponse)
@@ -836,7 +1191,7 @@ async def list_entities(
 ):
     if type and type not in _VALID_TYPES:
         raise HTTPException(status_code=400, detail="invalid_type")
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     # Visibility filter: hide pending/blocked from the public flea browse.
     # An owner viewing their own uploads (`owner=<self_id>`) sees their
     # whole catalogue regardless of guardrail status — same goes for
@@ -894,11 +1249,12 @@ async def get_entity(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     _enforce_visibility(entity, user, conn)
-    return _entity_to_response(conn, entity)
+    agg = store_entity_votes_repo().get_aggregate(entity_id, user_id=user["id"])
+    return _entity_to_response(conn, entity, rating=EntityRating(**agg))
 
 
 @router.get("/entities/{entity_id}/files")
@@ -907,7 +1263,7 @@ async def list_entity_files(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     _enforce_visibility(entity, user, conn)
@@ -929,17 +1285,33 @@ async def list_entity_files(
 @router.get("/entities/{entity_id}/photo")
 async def get_entity_photo(
     entity_id: str,
-    user: dict = Depends(get_current_user),
+    _user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    """Serve a flea-market entity's cover photo.
+
+    **Auth model: login-only, no per-entity visibility check.** Cover
+    photos are uploader-designed showcase images — they exist to be seen
+    and carry no PII / source / secrets. The previous
+    ``_enforce_visibility`` check serialized every request through a DB
+    join (same ``_system_db_lock`` rationale as
+    ``app/api/marketplace.py:curated_asset``). Login still required.
+
+    Cache: bytes change exactly when ``store_entities.version_no`` bumps,
+    and listing endpoints append ``?v=<version_no>`` to the photo URL,
+    so a 30-day ``immutable`` cache is safe — a re-upload generates a
+    new URL fingerprint that the browser refetches.
+    """
+    entity = store_entities_repo().get(entity_id)
     if not entity or not entity.get("photo_path"):
         raise HTTPException(status_code=404, detail="photo_not_found")
-    _enforce_visibility(entity, user, conn)
     abs_path = _entity_dir(entity_id) / entity["photo_path"]
     if not abs_path.is_file():
         raise HTTPException(status_code=404, detail="photo_not_found")
-    return FileResponse(abs_path)
+    return FileResponse(
+        abs_path,
+        headers={"Cache-Control": "public, max-age=2592000, immutable"},
+    )
 
 
 @router.get("/entities/{entity_id}/docs/{filename}")
@@ -950,7 +1322,7 @@ async def get_entity_doc(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Stream an attached doc — directory-traversal-guarded."""
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     _enforce_visibility(entity, user, conn)
@@ -995,16 +1367,151 @@ async def preview_entity(
             except zipfile.BadZipFile:
                 raise HTTPException(status_code=422, detail="zip_invalid")
             meta = _validate_and_extract_metadata(type, scratch)
+            from src.store_guardrails.content_check import summarize_for_preview
+
+            component_rows = summarize_for_preview(scratch, type)
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
     finally:
         Path(tmp.name).unlink(missing_ok=True)
 
+    from src.store_naming import humanize_name
+
+    extracted_name = meta.get("name")
     return PreviewResponse(
         type=type,
-        name=meta.get("name"),
+        name=extracted_name,
         description=meta.get("description"),
+        title=humanize_name(extracted_name) if extracted_name else None,
+        components=[
+            PreviewComponent(
+                type=row["type"],
+                name=row.get("name") or None,
+                file=row["file"],
+                description=row.get("description") or None,
+                ok=row["ok"],
+                issues=row["issues"],
+            )
+            for row in component_rows
+        ],
     )
+
+
+# ---------------------------------------------------------------------------
+# Pre-submit dry-run — POST /api/store/entities/dryrun
+# ---------------------------------------------------------------------------
+
+
+@router.post("/entities/dryrun", response_model=DryRunResponse)
+async def dryrun_entity(
+    file: UploadFile = File(...),
+    type: str = Form(...),
+    description: Optional[str] = Form(None),
+    user: dict = Depends(get_current_user),
+):
+    """Run the full guardrail pipeline against a candidate bundle WITHOUT
+    persisting anything.
+
+    Same multipart payload as ``POST /entities`` (``file``, ``type``,
+    ``description``). The submitter sees exactly what would block the
+    real upload — inline checks plus the LLM verdict — and can iterate
+    before spending an LLM token budget / admin-queue slot on a real
+    submission (#317).
+
+    NO DB writes: no ``store_entities``, no ``store_submissions``, no
+    ``audit_log``. The bundle bytes are extracted to a scratch dir,
+    baked into a throwaway plugin tree, checked, and wiped in ``finally``
+    exactly like :func:`preview_entity`.
+
+    Per-submitter dry-run quota + identical-bundle verdict caching are
+    deferred (tracked on #317) — the auth gate plus HTTP-level rate
+    limiting bound abuse until they land.
+    """
+    if type not in _VALID_TYPES:
+        raise HTTPException(status_code=400, detail="invalid_type")
+
+    tmp, _ = await _stream_to_temp(file, MAX_ZIP_SIZE, suffix=".zip")
+    try:
+        tmp.close()
+        scratch = Path(tempfile.mkdtemp(prefix="agnes_store_dryrun_"))
+        plugin_root = Path(tempfile.mkdtemp(prefix="agnes_store_dryrun_baked_"))
+        plugin_dir = plugin_root / "plugin"
+        try:
+            try:
+                with zipfile.ZipFile(tmp.name, "r") as zf:
+                    _safe_zip_extract(zf, scratch)
+            except zipfile.BadZipFile:
+                raise HTTPException(status_code=422, detail="zip_invalid")
+
+            meta = _validate_and_extract_metadata(type, scratch)
+            meta_name = meta.get("name") or ""
+
+            # Bake into a throwaway tree so the checks see the same canonical
+            # layout the real create path would persist. final_name == the
+            # raw bundle name (no -by-<user> suffix needed for a dry-run; the
+            # checks don't care about the namespaced name).
+            _bake_plugin_tree(
+                type_=type,
+                extracted_root=scratch,
+                plugin_dir=plugin_dir,
+                final_name=meta_name,
+                suffixed=meta_name or "dryrun",
+                description=description,
+            )
+
+            inline = run_inline_checks(
+                plugin_dir,
+                type_=type,
+                description=description,
+            )
+
+            verdict: Optional[dict] = None
+            safe = False
+            if get_guardrails_enabled() and get_guardrails_llm_provider_ready():
+                from src.store_guardrails import llm_review
+
+                # review_bundle makes a blocking Anthropic round-trip; run it
+                # off the event loop so a dry-run can't stall other requests.
+                verdict = await run_in_threadpool(
+                    llm_review.review_bundle,
+                    plugin_dir,
+                    type_=type,
+                    name=meta_name,
+                    version="",
+                    description=description,
+                    api_key=default_api_key_loader(),
+                    model=default_model_loader(),
+                )
+                safe = llm_review.is_safe(verdict)
+            else:
+                # Guardrails OFF: the LLM tier is a no-op, so publication
+                # hinges on inline alone -> safe. Guardrails ON but provider
+                # NOT configured: the real create path holds the entity at
+                # "pending" with no LLM review scheduled (fail-CLOSED), so it
+                # would never auto-publish -> mirror that. Reporting
+                # would_publish=True for this state would be a false positive.
+                safe = not get_guardrails_enabled()
+
+            # Mirror the anti-enumeration shadowing the real upload path applies
+            # in _reject_inline_or_continue: when manifest or content fails, the
+            # static_scan findings are withheld so a malformed bundle can't be
+            # used to probe the deny-list rule set. would_publish is unaffected
+            # — inline.passed already folds in static_security.
+            inline_checks = inline.to_response_dict()
+            validation_failed = inline.manifest.get("status") != "pass" or inline.content.get("status") != "pass"
+            if validation_failed:
+                inline_checks["static_security"] = {"status": "skipped"}
+
+            return DryRunResponse(
+                inline_checks=inline_checks,
+                llm_findings=verdict,
+                would_publish=inline.passed and safe,
+            )
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+            shutil.rmtree(plugin_root, ignore_errors=True)
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1021,6 +1528,10 @@ async def create_entity(
     description: Optional[str] = Form(None),
     category: Optional[str] = Form(None),
     video_url: Optional[str] = Form(None),
+    # v49 phase-1: user-facing metadata fields. Upload form pre-fills
+    # `title` from a humanizer over `name`; `tagline` is optional.
+    title: Optional[str] = Form(None),
+    tagline: Optional[str] = Form(None),
     photo: Optional[UploadFile] = File(None),
     docs: List[UploadFile] = File(default=[]),
     user: dict = Depends(get_current_user),
@@ -1045,8 +1556,10 @@ async def create_entity(
     # queue with noise. Cap rejected uploads per submitter per 24h;
     # operator can disable by setting the knob to 0.
     #
-    # #9 widening: counts blocked_inline + blocked_llm + review_error so
-    # a submitter triggering only LLM-blocked verdicts is bounded too.
+    # Counter narrows to blocked_llm + review_error — inline failures
+    # are hard-rejected upstream and never create rows. HTTP-level
+    # slowapi limits + the `store.upload.security_blocked` audit trail
+    # cover the inline-tier abuse path.
     #
     # Race note (#5, deferred): two parallel uploads from the same
     # submitter can both pass the SELECT before either INSERT — the cap
@@ -1057,11 +1570,11 @@ async def create_entity(
     # API-level rate limiting (slowapi) bounds the worst case until then.
     from datetime import datetime as _dt, timezone as _tz, timedelta as _td
     from app.instance_config import get_guardrails_blocked_quota_per_day
+
     quota = get_guardrails_blocked_quota_per_day()
     if quota > 0:
         since = _dt.now(_tz.utc) - _td(hours=24)
-        recent_blocked = StoreSubmissionsRepository(conn) \
-            .count_blocked_for_submitter_since(user["id"], since)
+        recent_blocked = store_submissions_repo().count_blocked_for_submitter_since(user["id"], since)
         if recent_blocked >= quota:
             raise HTTPException(
                 status_code=429,
@@ -1070,7 +1583,7 @@ async def create_entity(
                     "blocked_in_last_24h": recent_blocked,
                     "limit": quota,
                     "hint": "Fix the previous upload errors before retrying. "
-                            "Quota resets 24h after each blocked attempt.",
+                    "Quota resets 24h after each blocked attempt.",
                 },
             )
 
@@ -1102,7 +1615,20 @@ async def create_entity(
             raise HTTPException(status_code=400, detail="invalid_name_format")
         final_description = description or meta.get("description")
 
-        repo = StoreEntitiesRepository(conn)
+        # v49: Title is user-supplied; pre-filled in the upload form by
+        # JS humanize_name() with the same acronym dict the server uses,
+        # but always editable. Fall back to server-side humanize when the
+        # client omits the field (e.g. legacy uploaders, API integrations).
+        from src.store_naming import humanize_name
+
+        final_title = (title or "").strip() or humanize_name(final_name) or final_name
+        if len(final_title) > 100:
+            raise HTTPException(status_code=400, detail="title_too_long")
+        final_tagline = (tagline or "").strip() or None
+        if final_tagline is not None and len(final_tagline) > 200:
+            raise HTTPException(status_code=400, detail="tagline_too_long")
+
+        repo = store_entities_repo()
         # Skip archived rows: archive renames the row to free the slot,
         # so a same-name re-upload after archive succeeds. Active rows
         # (approved / pending / hidden) still 409 on collision.
@@ -1118,7 +1644,7 @@ async def create_entity(
         # the bundle on-disk dir and the served plugin.json `name`, so a
         # collision silently last-write-wins. Refuse upfront — but skip
         # archived rows since archive renames their slug.
-        if _suffixed_already_taken(conn, suffixed, exclude_archived=True):
+        if _suffixed_already_taken(suffixed, exclude_archived=True):
             raise HTTPException(status_code=409, detail="conflict_global_suffix")
         plugin_dir = _plugin_dir(entity_id)
         file_size = _bake_plugin_tree(
@@ -1142,85 +1668,51 @@ async def create_entity(
 
         # ---- Guardrail pipeline ------------------------------------------
         #
-        # Inline checks (manifest, static security, quality+templating)
-        # run synchronously against the BAKED plugin tree.
-        #
-        # On fail (v30): we KEEP the bundle on disk, create the entity
-        # row at ``visibility_status='hidden'`` (invisible in flea
-        # browse + served marketplace), persist the submission with
-        # entity_id + sha + size. Admin can Rescan / Override /
-        # Download from /admin/store/submissions. The 30-day TTL job
-        # purges bundle bytes later but keeps the audit row.
-        #
-        # On pass: create the entity in 'pending' visibility, schedule
-        # the (slow) LLM review on BackgroundTasks. Entity only
-        # becomes visible after the review approves it (or admin
-        # overrides). See docs/STORE_GUARDRAILS.md.
-        from src.store_guardrails.bundle_meta import compute_bundle_meta
-        bundle_meta = compute_bundle_meta(plugin_dir)
+        # Inline checks (manifest, content, static-security, quality)
+        # run synchronously against the BAKED plugin tree. Failure is
+        # hard-rejected — no entity row, no submission row, no bundle on
+        # disk. Quarantine + admin rescan apply ONLY to the async LLM
+        # path (see runner.run_llm_review). See docs/STORE_GUARDRAILS.md.
         inline = run_inline_checks(
-            plugin_dir, type_=type, description=final_description,
+            plugin_dir,
+            type_=type,
+            description=final_description,
         )
-        subs_repo = StoreSubmissionsRepository(conn)
-        if not inline.passed:
-            # Persist the bundle on disk so admins can Rescan/Download.
-            # No rmtree here — TTL purge owns deletion now.
-            photo_rel = await _save_photo(photo, entity_id) if photo else None
-            doc_rels = await _save_docs(docs, entity_id)
-            repo.create(
-                id=entity_id,
-                owner_user_id=user["id"],
-                owner_username=username,
-                type=type,
-                name=final_name,
-                description=final_description,
-                category=category,
-                version=version,
-                photo_path=photo_rel,
-                video_url=video_url,
-                doc_paths=doc_rels,
-                file_size=file_size,
-                visibility_status="hidden",
-            )
-            sub_id = subs_repo.create(
-                submitter_id=user["id"],
-                submitter_email=user.get("email"),
-                type=type,
-                name=final_name,
-                version=version,
-                status="blocked_inline",
-                entity_id=entity_id,
-                inline_checks=inline.to_response_dict(),
-                file_size=bundle_meta.file_size,
-                bundle_sha256=bundle_meta.sha256,
-            )
-            _audit(
-                conn, user["id"], "store.submission.blocked_inline",
-                sub_id, {
-                    "type": type, "name": final_name,
-                    "entity_id": entity_id,
-                    "manifest": inline.manifest.get("status"),
-                    "static_security": inline.static_security.get("status"),
-                    "static_findings": len(inline.static_security.get("findings") or []),
-                    "sha256": bundle_meta.sha256,
-                    "file_size": bundle_meta.file_size,
-                },
-            )
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "submission_blocked",
-                    "submission_id": sub_id,
-                    "entity_id": entity_id,
-                    "checks": inline.to_response_dict(),
-                },
-            )
+        _reject_inline_or_continue(
+            conn=conn,
+            user=user,
+            inline=inline,
+            plugin_dir=plugin_dir,
+            cleanup_paths=[_entity_dir(entity_id)],
+            type_=type,
+            name=final_name,
+            context="create",
+        )
+        # Compute meta after the reject gate so honest submitters whose
+        # bundles fail validation never pay for the SHA256 walk; this
+        # path only fires once we know the bundle is going to be
+        # persisted (as a submission row).
+        from src.store_guardrails.bundle_meta import compute_bundle_meta
 
-        guardrails_on = get_guardrails_enabled()
-        # When the pipeline is disabled (local dev / no ANTHROPIC_API_KEY)
-        # we approve immediately. Inline checks ran above and recorded a
-        # passing verdict; skip the async LLM step and the 'pending' hold.
-        initial_visibility = "approved" if not guardrails_on else "pending"
+        bundle_meta = compute_bundle_meta(plugin_dir)
+        subs_repo = store_submissions_repo()
+
+        # Three-state matrix (fail-CLOSED on misconfig):
+        #   - intent False           → auto-approve (operator opt-out, e.g. local dev)
+        #   - intent True + ready    → hold for review, schedule LLM async
+        #   - intent True + NOT ready → hold for review, DO NOT auto-approve
+        #     (submission sits at pending_llm; admin can set the key + click
+        #     Retry review or override-publish manually). The previous
+        #     auto-fallback silently approved everything when the env-var
+        #     was missing — a fail-OPEN hole.
+        guardrails_enabled = get_guardrails_enabled()
+        provider_ready = get_guardrails_llm_provider_ready()
+        hold_for_review = guardrails_enabled  # intent drives the hold
+        schedule_async_llm = guardrails_enabled and provider_ready
+        # `guardrails_on` retained for downstream audit-log compat —
+        # historical column meaning is "did the pipeline gate this row".
+        guardrails_on = hold_for_review
+        initial_visibility = "pending" if hold_for_review else "approved"
         photo_rel = await _save_photo(photo, entity_id) if photo else None
         doc_rels = await _save_docs(docs, entity_id)
 
@@ -1230,6 +1722,8 @@ async def create_entity(
             owner_username=username,
             type=type,
             name=final_name,
+            title=final_title,
+            synthetic_name=suffixed,
             description=final_description,
             category=category,
             version=version,
@@ -1238,6 +1732,7 @@ async def create_entity(
             doc_paths=doc_rels,
             file_size=file_size,
             visibility_status=initial_visibility,
+            tagline=final_tagline,
         )
         _audit(
             conn,
@@ -1259,21 +1754,38 @@ async def create_entity(
             file_size=bundle_meta.file_size,
             bundle_sha256=bundle_meta.sha256,
         )
+        # Backfill the v1 seed's submission_id so downstream lookups
+        # (`_version_no_for_submission`, admin queue v#, admin detail
+        # v# chip, restore reuse) can resolve v1 the same way they
+        # resolve v2+. Pre-fix this was deferred to a later
+        # `update_history_submission_id` call that never landed in
+        # the create path — leaving the v1 entry with
+        # `submission_id=None` and every "find v# for this submission"
+        # lookup silently failing for v1.
+        repo.update_history_submission_id(entity_id, 1, sub_id)
         _audit(
-            conn, user["id"],
+            conn,
+            user["id"],
             "store.submission.accepted" if guardrails_on else "store.submission.approved",
-            sub_id, {
+            sub_id,
+            {
                 "entity_id": entity_id,
                 "guardrails_enabled": guardrails_on,
             },
         )
-        if guardrails_on:
+        if schedule_async_llm:
             _schedule_llm_review(background_tasks, sub_id, plugin_dir)
+        # When guardrails are explicitly disabled the entity is immediately
+        # live (initial_visibility=='approved'); when enabled-but-not-ready
+        # the submission sits at pending_llm and the admin retries / overrides
+        # from the admin UI — no silent auto-approval. v46: no separate
+        # attribution write needed in either branch — `MarketplaceItemLookup`
+        # resolves flea entities via `store_entities.name` at event time.
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
     _invalidate_etag()
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     return _entity_to_response(conn, entity)  # type: ignore[arg-type]
 
 
@@ -1292,6 +1804,11 @@ async def update_entity(
     description: Optional[str] = Form(None),
     category: Optional[str] = Form(None),
     video_url: Optional[str] = Form(None),
+    # v49 phase-1 metadata. ``title`` and ``tagline`` are partial-update
+    # fields: omit to leave unchanged, send empty string to clear (only
+    # meaningful for ``tagline``; empty ``title`` is rejected).
+    title: Optional[str] = Form(None),
+    tagline: Optional[str] = Form(None),
     photo: Optional[UploadFile] = File(None),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -1324,7 +1841,41 @@ async def update_entity(
     * **Metadata-only edit** (no ``file`` posted) skips the bundle
       pipeline and the version bump.
     """
-    repo = StoreEntitiesRepository(conn)
+    async with _hold_entity_write_lock(entity_id):
+        return await _update_entity_locked(
+            entity_id=entity_id,
+            background_tasks=background_tasks,
+            file=file,
+            name=name,
+            type=type,
+            description=description,
+            category=category,
+            video_url=video_url,
+            photo=photo,
+            title=title,
+            tagline=tagline,
+            user=user,
+            conn=conn,
+        )
+
+
+async def _update_entity_locked(
+    *,
+    entity_id: str,
+    background_tasks: BackgroundTasks,
+    file: Optional[UploadFile],
+    name: Optional[str],
+    type: Optional[str],
+    description: Optional[str],
+    category: Optional[str],
+    video_url: Optional[str],
+    photo: Optional[UploadFile],
+    title: Optional[str],
+    tagline: Optional[str],
+    user: dict,
+    conn: duckdb.DuckDBPyConnection,
+):
+    repo = store_entities_repo()
     entity = repo.get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
@@ -1337,8 +1888,7 @@ async def update_entity(
             status_code=400,
             detail={
                 "code": "type_locked",
-                "message": "Cannot change a flea entity's type. "
-                           "Upload a new entity instead.",
+                "message": "Cannot change a flea entity's type. Upload a new entity instead.",
             },
         )
 
@@ -1355,17 +1905,18 @@ async def update_entity(
     # (each baking its own versions/v<N+1>/plugin/ which the runner
     # would then sequentially promote — violates the "single in-flight
     # version per entity" invariant).
-    latest_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+    latest_sub = store_submissions_repo().latest_for_entity(entity_id)
     if latest_sub and latest_sub.get("status") in (
-        "pending_inline", "pending_llm",
+        "pending_inline",
+        "pending_llm",
     ):
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "prior_version_pending",
                 "message": "A previous edit is still under review. "
-                           "Wait for the verdict to finish before "
-                           "submitting another change.",
+                "Wait for the verdict to finish before "
+                "submitting another change.",
                 "submission_id": latest_sub.get("id"),
             },
         )
@@ -1374,6 +1925,24 @@ async def update_entity(
         raise HTTPException(status_code=400, detail="invalid_category")
 
     video_url = _validate_video_url(video_url)
+
+    # v49 phase-1: validate metadata fields. ``title`` left None means "no
+    # change"; empty string is rejected (title is NOT NULL). ``tagline``
+    # supports empty-string clear via the repository sentinel.
+    new_title: Optional[str] = None
+    if title is not None:
+        stripped = title.strip()
+        if not stripped:
+            raise HTTPException(status_code=400, detail="title_required")
+        if len(stripped) > 100:
+            raise HTTPException(status_code=400, detail="title_too_long")
+        new_title = stripped
+    new_tagline: Optional[str] = None
+    if tagline is not None:
+        stripped_tagline = tagline.strip()
+        if len(stripped_tagline) > 200:
+            raise HTTPException(status_code=400, detail="tagline_too_long")
+        new_tagline = stripped_tagline  # "" clears (repo treats falsy as NULL)
 
     # Display-name change handled at the end (after bundle bake) so the
     # rename can target the version-bumped or current bundle dir.
@@ -1384,13 +1953,16 @@ async def update_entity(
             raise HTTPException(status_code=400, detail="invalid_name_format")
         # Same-owner conflict (skip archived which already freed slot).
         if repo.get_by_owner_and_name(
-            entity["owner_user_id"], new_name, exclude_archived=True,
+            entity["owner_user_id"],
+            new_name,
+            exclude_archived=True,
         ):
             raise HTTPException(status_code=409, detail="conflict_owner_name")
         # Cross-owner suffix — must be globally unique post-rename.
         new_suffixed = suffixed_name(new_name, entity["owner_username"])
         if _suffixed_already_taken(
-            conn, new_suffixed, exclude_entity_id=entity_id,
+            new_suffixed,
+            exclude_entity_id=entity_id,
             exclude_archived=True,
         ):
             raise HTTPException(status_code=409, detail="conflict_global_suffix")
@@ -1411,7 +1983,17 @@ async def update_entity(
         tmp.close()
         scratch = Path(tempfile.mkdtemp(prefix="agnes_store_"))
         existing_plugin = _plugin_dir(entity_id)
-        new_version_no = int(entity.get("version_no") or 1) + 1
+        # New version number is max(version_history.n) + 1, NOT
+        # entity.version_no + 1. Under deferred promotion (v37+),
+        # entity.version_no stays at the last *approved* version while
+        # version_history accumulates blocked / errored / pending
+        # entries. Deriving from version_no would overwrite an
+        # in-flight (blocked or pending) version dir on the next PUT
+        # — and the runner's hash-match promotion would then load
+        # bytes that don't match the recorded submission. Bug surfaced
+        # by adversarial review (M2 / atomic promotion).
+        history_ns = [int(e.get("n") or 0) for e in (entity.get("version_history") or [])]
+        new_version_no = (max(history_ns) if history_ns else int(entity.get("version_no") or 1)) + 1
         version_root = _entity_dir(entity_id) / "versions" / f"v{new_version_no}"
         staging_plugin = version_root / "plugin"
         new_version_dir = version_root  # exposed to outer scope
@@ -1426,7 +2008,11 @@ async def update_entity(
                 Path(tmp.name).unlink(missing_ok=True)
 
             _validate_and_extract_metadata(entity["type"], scratch)
-            suffixed = suffixed_name(entity["name"], entity["owner_username"])
+            # v49 phase-3: read the stored synthetic_name. Entity row was
+            # loaded before any rename — `synthetic_name` is the OLD value
+            # baked-tree code expects (rename, when present, is applied
+            # below via _rename_baked_tree with NEW suffix).
+            suffixed = entity["synthetic_name"]
             # Bake into the staging dir — _bake_plugin_tree creates the
             # target if missing and does its own rmtree on existing
             # children, so the staging path being fresh is fine.
@@ -1443,45 +2029,23 @@ async def update_entity(
             inline_after_update = run_inline_checks(
                 staging_plugin,
                 type_=entity["type"],
-                description=description if description is not None
-                            else entity.get("description"),
+                description=description if description is not None else entity.get("description"),
             )
-            if not inline_after_update.passed:
-                # Compute the rejected bundle's sha+size BEFORE the
-                # staging dir is removed so the submission row carries
-                # forensics about what was tried.
-                from src.store_guardrails.bundle_meta import compute_bundle_meta
-                rejected_meta = compute_bundle_meta(staging_plugin)
-                # Live tree was never touched — no rollback work to do.
-                # The `finally` below cleans the staging dir.
-                subs_repo = StoreSubmissionsRepository(conn)
-                sub_id = subs_repo.create(
-                    submitter_id=user["id"],
-                    submitter_email=user.get("email"),
-                    type=entity["type"],
-                    name=entity["name"],
-                    version=new_version,
-                    status="blocked_inline",
-                    entity_id=entity_id,
-                    inline_checks=inline_after_update.to_response_dict(),
-                    file_size=rejected_meta.file_size,
-                    bundle_sha256=rejected_meta.sha256,
-                )
-                _audit(
-                    conn, user["id"], "store.submission.blocked_inline",
-                    sub_id, {"entity_id": entity_id, "on": "update",
-                             "sha256": rejected_meta.sha256,
-                             "file_size": rejected_meta.file_size},
-                )
-                raise HTTPException(
-                    status_code=422,
-                    detail={
-                        "code": "submission_blocked",
-                        "submission_id": sub_id,
-                        "entity_id": entity_id,
-                        "checks": inline_after_update.to_response_dict(),
-                    },
-                )
+            # Hard-reject on inline failure. _reject_inline_or_continue
+            # cleans the staged version dir (no live state to roll back —
+            # the live ``plugin/`` tree was never touched) and raises 422
+            # with code=validation_failed or code=security_blocked. The
+            # outer `finally` still wipes `scratch` regardless.
+            _reject_inline_or_continue(
+                conn=conn,
+                user=user,
+                inline=inline_after_update,
+                plugin_dir=staging_plugin,
+                cleanup_paths=[version_root],
+                type_=entity["type"],
+                name=entity["name"],
+                context="update",
+            )
 
             # Checks passed — but DO NOT swap live yet. Live ``plugin/``
             # keeps serving the prior approved version to existing
@@ -1498,22 +2062,14 @@ async def update_entity(
             # accepted submission is implicitly approved.
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
-            # The version dir IS the source of truth — don't remove it
-            # on failure paths. But if the bundle was rejected before
-            # the swap (failed inline check raised 422), the version
-            # dir is incomplete: the row hasn't been bumped yet, the
-            # bytes are blocked-only forensics. Decision: keep the
-            # version dir for the admin to download via the
-            # submission's bundle download endpoint, but mark the
-            # row's version_history WITHOUT this incomplete entry
-            # (we never called append_version on the failed path).
-            # The version dir at versions/v<N+1>/plugin/ stays orphan
-            # on disk linked from the submission row's hash — admin
-            # can still inspect.
+            # Inline-fail cleanup is owned by _reject_inline_or_continue
+            # (rmtrees the staged version dir before raising). The
+            # backup_plugin orphan check below covers the historical
+            # swap path that no longer triggers here, kept defensively
+            # in case a future refactor reintroduces an atomic swap.
             if backup_plugin is not None and backup_plugin.exists():
                 logger.error(
-                    "PUT version-swap left orphan backup at %s — "
-                    "operator should reconcile manually",
+                    "PUT version-swap left orphan backup at %s — operator should reconcile manually",
                     backup_plugin,
                 )
 
@@ -1547,7 +2103,10 @@ async def update_entity(
     #    keep serving the prior bundle under the prior slug.
     if rename_to is not None:
         owner_username = entity["owner_username"]
-        old_suffix = suffixed_name(entity["name"], owner_username)
+        # v49 phase-3: old_suffix reads the stored synthetic_name (entity
+        # was loaded before any rename was applied). new_suffix MUST be
+        # freshly computed — rename_to is a proposed value not yet in DB.
+        old_suffix = entity["synthetic_name"]
         new_suffix = suffixed_name(rename_to, owner_username)
 
         if file is None:
@@ -1562,8 +2121,8 @@ async def update_entity(
                 )
             except Exception:
                 logger.exception(
-                    "rename_baked_tree failed during metadata-only "
-                    "edit for entity %s", entity_id,
+                    "rename_baked_tree failed during metadata-only edit for entity %s",
+                    entity_id,
                 )
                 raise HTTPException(status_code=500, detail="rename_failed")
         elif new_version_dir is not None:
@@ -1589,12 +2148,20 @@ async def update_entity(
                     new_version_dir,
                 )
                 raise HTTPException(
-                    status_code=500, detail="version_rename_failed",
+                    status_code=500,
+                    detail="version_rename_failed",
                 )
 
     # Metadata-only column updates (name, description, category, photo,
     # video) — never bundle-derived (version / file_size) because the
     # new version isn't promoted to current until the LLM approves.
+    # v49: when ``rename_to`` is set, synthetic_name must move in lockstep
+    # so attribution lookups + the global suffix-uniqueness check stay
+    # accurate. owner_username is immutable, so the new synthetic is a
+    # pure function of the new name.
+    new_synthetic: Optional[str] = None
+    if rename_to is not None:
+        new_synthetic = suffixed_name(rename_to, entity["owner_username"])
     repo.update(
         entity_id,
         name=rename_to,
@@ -1602,7 +2169,13 @@ async def update_entity(
         category=category,
         photo_path=photo_rel,
         video_url=video_url,
+        title=new_title,
+        tagline=new_tagline,
+        synthetic_name=new_synthetic,
     )
+
+    # v46: rename no longer needs an explicit attribution refresh — the
+    # next UsageProcessor tick preloads store_entities by current name.
 
     # Bundle change → record a new version + maybe promote.
     #
@@ -1616,9 +2189,20 @@ async def update_entity(
     # guardrails disabled the path collapses: submission lands at
     # 'approved' and we promote synchronously below.
     if file is not None and new_version_no is not None and new_version_dir is not None:
-        guardrails_on = get_guardrails_enabled()
-        subs_repo = StoreSubmissionsRepository(conn)
+        # Same three-state matrix as the initial-upload path. Hold the
+        # new version (defer promotion) whenever guardrails are enabled
+        # — even when the provider isn't ready. Promotion only fires on
+        # an actual LLM approval OR when the operator explicitly opted
+        # out via `guardrails.enabled: false`. Misconfig (enabled +
+        # no key) sits at pending_llm awaiting admin action.
+        guardrails_enabled = get_guardrails_enabled()
+        provider_ready = get_guardrails_llm_provider_ready()
+        hold_for_review = guardrails_enabled
+        schedule_async_llm = guardrails_enabled and provider_ready
+        guardrails_on = hold_for_review
+        subs_repo = store_submissions_repo()
         from src.store_guardrails.bundle_meta import compute_bundle_meta
+
         # Hash the NEW version dir, not live (which still holds the
         # prior approved bytes during a guardrails-on edit).
         accepted_meta = compute_bundle_meta(new_version_dir / "plugin")
@@ -1628,10 +2212,9 @@ async def update_entity(
             type=entity["type"],
             name=rename_to or entity["name"],
             version=new_version,
-            status="approved" if not guardrails_on else "pending_llm",
+            status="approved" if not hold_for_review else "pending_llm",
             entity_id=entity_id,
-            inline_checks=inline_after_update.to_response_dict()
-                          if inline_after_update else None,
+            inline_checks=inline_after_update.to_response_dict() if inline_after_update else None,
             file_size=accepted_meta.file_size,
             bundle_sha256=accepted_meta.sha256,
         )
@@ -1646,23 +2229,33 @@ async def update_entity(
             created_by=user["id"],
         )
         _audit(
-            conn, user["id"],
-            "store.submission.accepted" if guardrails_on else "store.submission.approved",
-            sub_id, {"entity_id": entity_id, "on": "update",
-                     "version_no": appended_n,
-                     "guardrails_enabled": guardrails_on},
+            conn,
+            user["id"],
+            "store.submission.accepted" if hold_for_review else "store.submission.approved",
+            sub_id,
+            {"entity_id": entity_id, "on": "update", "version_no": appended_n, "guardrails_enabled": guardrails_on},
         )
-        if guardrails_on:
+        if schedule_async_llm:
             # Live remains at prior approved bundle. LLM reviews the
             # new version dir; runner promotes on approval.
             _schedule_llm_review(
-                background_tasks, sub_id, new_version_dir / "plugin",
+                background_tasks,
+                sub_id,
+                new_version_dir / "plugin",
             )
-        else:
-            # Guardrails off → implicit approval. Promote inline:
-            # update entity columns + swap live to new version.
-            repo.promote_version(entity_id, appended_n)
-            _swap_live_to_version(entity_id, appended_n)
+        elif not hold_for_review:
+            # Guardrails explicitly disabled → implicit approval.
+            # Promote inline via the atomic helper: swap-first then
+            # DB-promote so a missing source / mid-rename failure
+            # never leaves the DB ahead of the on-disk bundle. v47:
+            # attribution lookup is live — `MarketplaceItemLookup`
+            # resolves flea entities by name at event time, so no
+            # separate `update_flea_attribution` refresh is needed.
+            promote_to_version(entity_id, appended_n, repo)
+        # Else (enabled + not-ready): submission sits at pending_llm,
+        # live continues serving the prior approved version. Admin
+        # retries from /admin/store/submissions once credentials are
+        # provided.
 
     # Use the freshly-appended version number when a bundle change
     # produced one, falling back to the planned new_version_no for
@@ -1691,9 +2284,7 @@ async def update_entity(
         user["id"],
         "store.entity.update",
         entity_id,
-        {"version": new_version, "version_no": audit_version_no,
-         "rebuilt": file is not None,
-         "renamed_to": rename_to},
+        {"version": new_version, "version_no": audit_version_no, "rebuilt": file is not None, "renamed_to": rename_to},
     )
     _invalidate_etag()
     return _entity_to_response(conn, repo.get(entity_id))  # type: ignore[arg-type]
@@ -1728,8 +2319,30 @@ async def restore_version(
 
     Refuses while a prior version is under review (same
     ``prior_version_pending`` 409 as PUT).
+
+    Wrapped in the per-entity write lock so a concurrent PUT and
+    restore on the same entity can't both pass the pending-gate +
+    race on ``versions/v<N+1>/plugin/``.
     """
-    repo = StoreEntitiesRepository(conn)
+    async with _hold_entity_write_lock(entity_id):
+        return await _restore_version_locked(
+            entity_id=entity_id,
+            version_no=version_no,
+            background_tasks=background_tasks,
+            user=user,
+            conn=conn,
+        )
+
+
+async def _restore_version_locked(
+    *,
+    entity_id: str,
+    version_no: int,
+    background_tasks: BackgroundTasks,
+    user: dict,
+    conn: duckdb.DuckDBPyConnection,
+):
+    repo = store_entities_repo()
     entity = repo.get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
@@ -1739,24 +2352,48 @@ async def restore_version(
     # Block while pending — same gate as PUT. Gate on submission
     # status directly so v2+ deferred-promotion edits don't slip
     # through the visibility check.
-    latest_sub = StoreSubmissionsRepository(conn).latest_for_entity(entity_id)
+    latest_sub = store_submissions_repo().latest_for_entity(entity_id)
     if latest_sub and latest_sub.get("status") in (
-        "pending_inline", "pending_llm",
+        "pending_inline",
+        "pending_llm",
     ):
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "prior_version_pending",
-                "message": "A previous edit is still under review. "
-                           "Wait for the verdict before restoring.",
+                "message": "A previous edit is still under review. Wait for the verdict before restoring.",
                 "submission_id": latest_sub.get("id"),
             },
         )
 
-    # Locate the source version dir.
-    source_dir = (
-        _entity_dir(entity_id) / "versions" / f"v{version_no}" / "plugin"
+    # Refuse to restore a version that was never approved. Look up the
+    # submission that produced version `v<version_no>` and gate on its
+    # status. Legacy v1 (no submission_id — seeded pre-v37) is
+    # back-compat treated as approved. The UI also hides the Restore
+    # button for these statuses, but defense in depth: a direct API
+    # caller bypasses the template.
+    src_sub_id = next(
+        (
+            entry.get("submission_id")
+            for entry in (entity.get("version_history") or [])
+            if int(entry.get("n") or 0) == int(version_no)
+        ),
+        None,
     )
+    if src_sub_id:
+        src_sub = store_submissions_repo().get(src_sub_id)
+        if src_sub and src_sub.get("status") not in ("approved",):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "version_not_approved",
+                    "version_no": version_no,
+                    "source_status": src_sub.get("status"),
+                },
+            )
+
+    # Locate the source version dir.
+    source_dir = _entity_dir(entity_id) / "versions" / f"v{version_no}" / "plugin"
     if not source_dir.is_dir():
         raise HTTPException(
             status_code=404,
@@ -1775,7 +2412,11 @@ async def restore_version(
         )
 
     # Copy source → new version dir, run guardrails, swap live.
-    new_version_no = int(entity.get("version_no") or 1) + 1
+    # Derive from max(version_history.n) so deferred-promotion blocked
+    # / errored entries don't get overwritten. Same fix as the PUT
+    # path above.
+    history_ns = [int(e.get("n") or 0) for e in (entity.get("version_history") or [])]
+    new_version_no = (max(history_ns) if history_ns else int(entity.get("version_no") or 1)) + 1
     target_root = _entity_dir(entity_id) / "versions" / f"v{new_version_no}"
     target_plugin = target_root / "plugin"
     if target_plugin.exists():
@@ -1789,80 +2430,170 @@ async def restore_version(
         type_=entity["type"],
         description=entity.get("description"),
     )
-    if not inline.passed:
-        from src.store_guardrails.bundle_meta import compute_bundle_meta
-        rejected_meta = compute_bundle_meta(target_plugin)
-        subs_repo = StoreSubmissionsRepository(conn)
+    # Hard-reject on inline failure. Wipe the staged version dir
+    # entirely — live tree untouched, no entity/submission row to
+    # create. The submitter sees the structured 422 and either fixes
+    # the source version (rare) or restores a different version.
+    _reject_inline_or_continue(
+        conn=conn,
+        user=user,
+        inline=inline,
+        plugin_dir=target_plugin,
+        cleanup_paths=[target_root],
+        type_=entity["type"],
+        name=entity["name"],
+        context="restore",
+    )
+
+    # Inline checks passed. DO NOT swap live yet — same invariant as
+    # the PUT edit path: existing installers keep getting the prior
+    # approved version through the LLM review window. Promotion (live
+    # swap + version_no/version/file_size bump) waits on LLM approval.
+    from src.store_guardrails.bundle_meta import compute_bundle_meta
+
+    target_meta = compute_bundle_meta(target_plugin)
+    # Same three-state hold-for-review matrix as create/edit.
+    guardrails_enabled = get_guardrails_enabled()
+    provider_ready = get_guardrails_llm_provider_ready()
+    hold_for_review = guardrails_enabled
+    schedule_async_llm = guardrails_enabled and provider_ready
+    subs_repo = store_submissions_repo()
+
+    # Idempotent restore: when the restored bundle is byte-identical
+    # to a prior `approved` submission reviewed by the SAME model,
+    # reuse that verdict and skip the async LLM step. Anthropic
+    # structured output is non-deterministic — same bytes can flip
+    # content_quality.verdict pass↔fail across calls, so a second
+    # restore of an already-approved version could spuriously block.
+    # Reuse keeps the chain deterministic + saves tokens.
+    # `restore` (and its byte-for-byte recovery contract) is the
+    # most natural place for this; PUT could extend later. Gated on
+    # `schedule_async_llm` so guardrails-off keeps its existing
+    # auto-approve path and enabled-but-not-ready doesn't silently
+    # promote without a verdict in env.
+    reuse_verdict = None
+    if schedule_async_llm:
+        try:
+            current_model = get_guardrails_review_model()
+            reuse_verdict = _find_reusable_approved_verdict(
+                entity,
+                new_version,
+                subs_repo,
+                current_model,
+            )
+        except Exception:
+            logger.exception(
+                "restore: reusable-verdict lookup failed for entity %s",
+                entity_id,
+            )
+            reuse_verdict = None
+
+    if reuse_verdict is not None:
+        prior_sid, prior_findings = reuse_verdict
+        reused_findings = dict(prior_findings)
+        reused_findings["reused_from_submission_id"] = prior_sid
+        reused_findings["reused_reason"] = (
+            "byte-identical bundle to a prior approved submission; "
+            "skipped re-running LLM review to avoid spurious "
+            "content_quality flips (Anthropic structured output is "
+            "non-deterministic)"
+        )
         sub_id = subs_repo.create(
             submitter_id=user["id"],
             submitter_email=user.get("email"),
             type=entity["type"],
             name=entity["name"],
             version=new_version,
-            status="blocked_inline",
+            status="approved",
             entity_id=entity_id,
             inline_checks=inline.to_response_dict(),
-            file_size=rejected_meta.file_size,
-            bundle_sha256=rejected_meta.sha256,
+            llm_findings=reused_findings,
+            file_size=target_meta.file_size,
+            bundle_sha256=target_meta.sha256,
+        )
+        # Stamp reviewed_by_model + llm_findings via update_status
+        # (create doesn't accept reviewed_by_model). Terminal-state
+        # CAS guard allows this since the row was just inserted at
+        # 'approved' — we're re-affirming, not clobbering.
+        subs_repo.update_status(
+            sub_id,
+            status="approved",
+            llm_findings=reused_findings,
+            reviewed_by_model=current_model,
+            allow_terminal_overwrite=True,
+        )
+        appended_n = repo.append_version_history(
+            entity_id,
+            version_hash=new_version,
+            sha256=target_meta.sha256,
+            size=target_meta.file_size,
+            submission_id=sub_id,
+            created_by=user["id"],
         )
         _audit(
-            conn, user["id"], "store.submission.blocked_inline",
-            sub_id,
-            {"entity_id": entity_id, "on": "restore",
-             "restored_from_version_no": version_no,
-             "sha256": rejected_meta.sha256,
-             "file_size": rejected_meta.file_size},
-        )
-        # Live tree untouched. Version dir kept for forensic download.
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "submission_blocked",
-                "submission_id": sub_id,
+            conn,
+            user["id"],
+            "store.submission.reused_approved_verdict",
+            f"store_submission:{sub_id}",
+            {
                 "entity_id": entity_id,
-                "checks": inline.to_response_dict(),
+                "restored_from_version_no": version_no,
+                "new_version_no": appended_n,
+                "reused_from_submission_id": prior_sid,
+                "reviewed_by_model": current_model,
             },
         )
+        _audit(
+            conn,
+            user["id"],
+            "store.entity.restore",
+            entity_id,
+            {
+                "restored_from_version_no": version_no,
+                "new_version_no": appended_n,
+                "submission_id": sub_id,
+                "reused_verdict": True,
+            },
+        )
+        # Forward-only promote (same gate as runner / override).
+        if appended_n > int(entity.get("version_no") or 0):
+            promote_to_version(entity_id, appended_n, repo)
+        _invalidate_etag()
+        return _entity_to_response(conn, repo.get(entity_id))  # type: ignore[arg-type]
 
-    # Inline checks passed. DO NOT swap live yet — same invariant as
-    # the PUT edit path: existing installers keep getting the prior
-    # approved version through the LLM review window. Promotion (live
-    # swap + version_no/version/file_size bump) waits on LLM approval.
-    guardrails_on = get_guardrails_enabled()
-    from src.store_guardrails.bundle_meta import compute_bundle_meta
-    accepted_meta = compute_bundle_meta(target_plugin)
-    subs_repo = StoreSubmissionsRepository(conn)
     sub_id = subs_repo.create(
         submitter_id=user["id"],
         submitter_email=user.get("email"),
         type=entity["type"],
         name=entity["name"],
         version=new_version,
-        status="approved" if not guardrails_on else "pending_llm",
+        status="approved" if not hold_for_review else "pending_llm",
         entity_id=entity_id,
         inline_checks=inline.to_response_dict(),
-        file_size=accepted_meta.file_size,
-        bundle_sha256=accepted_meta.sha256,
+        file_size=target_meta.file_size,
+        bundle_sha256=target_meta.sha256,
     )
     appended_n = repo.append_version_history(
         entity_id,
         version_hash=new_version,
-        sha256=accepted_meta.sha256,
-        size=accepted_meta.file_size,
+        sha256=target_meta.sha256,
+        size=target_meta.file_size,
         submission_id=sub_id,
         created_by=user["id"],
     )
     _audit(
-        conn, user["id"], "store.entity.restore", entity_id,
-        {"restored_from_version_no": version_no,
-         "new_version_no": appended_n,
-         "submission_id": sub_id},
+        conn,
+        user["id"],
+        "store.entity.restore",
+        entity_id,
+        {"restored_from_version_no": version_no, "new_version_no": appended_n, "submission_id": sub_id},
     )
-    if guardrails_on:
+    if schedule_async_llm:
         _schedule_llm_review(background_tasks, sub_id, target_plugin)
-    else:
-        repo.promote_version(entity_id, appended_n)
-        _swap_live_to_version(entity_id, appended_n)
+    elif not hold_for_review:
+        # Guardrails explicitly disabled — inline-promote atomically.
+        promote_to_version(entity_id, appended_n, repo)
+    # Else (enabled + not-ready): defer promotion, await admin retry.
 
     _invalidate_etag()
     return _entity_to_response(conn, repo.get(entity_id))  # type: ignore[arg-type]
@@ -1873,7 +2604,7 @@ async def restore_version(
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/entities/{entity_id}", response_model=OkResponse)
+@router.delete("/entities/{entity_id}", status_code=204)
 async def delete_entity(
     entity_id: str,
     hard: bool = False,
@@ -1897,7 +2628,7 @@ async def delete_entity(
     archive or hard-delete; owner is refused so they can't erase the
     evidence of a flagged upload before triage.
     """
-    entity = StoreEntitiesRepository(conn).get(entity_id)
+    entity = store_entities_repo().get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
     is_admin_caller = is_user_admin(user["id"], conn)
@@ -1912,45 +2643,44 @@ async def delete_entity(
             detail={
                 "code": "hard_delete_admin_only",
                 "hint": "Hard delete is admin-only — it drops the bundle "
-                        "from disk and removes existing installs. Use the "
-                        "default Archive button to soft-delete (keeps "
-                        "existing installs working).",
+                "from disk and removes existing installs. Use the "
+                "default Archive button to soft-delete (keeps "
+                "existing installs working).",
             },
         )
 
     # Quarantined (non-approved + non-archived): owner can't touch.
     # Admin can either Archive (soft) or Hard Delete from here.
-    if (
-        entity.get("visibility_status") not in ("approved", "archived")
-        and not is_admin_caller
-    ):
+    if entity.get("visibility_status") not in ("approved", "archived") and not is_admin_caller:
         raise HTTPException(
             status_code=403,
             detail={
                 "code": "quarantined_owner_cannot_delete",
                 "hint": "This submission is under quarantine while admins "
-                        "review it. Edit and re-upload to fix the issues, "
-                        "or wait for an admin to resolve the quarantine.",
+                "review it. Edit and re-upload to fix the issues, "
+                "or wait for an admin to resolve the quarantine.",
             },
         )
 
     if hard:
         # Mark linked submissions before dropping the entity row so
         # mark_deleted_for_entity can find them by entity_id.
-        StoreSubmissionsRepository(conn).mark_deleted_for_entity(entity_id)
-        UserStoreInstallsRepository(conn).delete_all_for_entity(entity_id)
-        StoreEntitiesRepository(conn).delete(entity_id)
+        store_submissions_repo().mark_deleted_for_entity(entity_id)
+        user_store_installs_repo().delete_all_for_entity(entity_id)
+        store_entity_votes_repo().delete_all_for_entity(entity_id)
+        store_entities_repo().delete(entity_id)
         shutil.rmtree(_entity_dir(entity_id), ignore_errors=True)
+        # v46: attribution lookup is live — the next UsageProcessor tick
+        # rebuilds its in-memory cache without the deleted entity.
         _audit(
             conn,
             user["id"],
             "store.entity.hard_delete",
             entity_id,
-            {"name": entity.get("name"),
-             "owner_user_id": entity.get("owner_user_id")},
+            {"name": entity.get("name"), "owner_user_id": entity.get("owner_user_id")},
         )
         _invalidate_etag()
-        return OkResponse()
+        return
 
     # Soft archive — preserves disk + installs + audit chain.
     # v36+: archive renames the entity row's `name` (appends
@@ -1959,8 +2689,9 @@ async def delete_entity(
     # re-upload. The on-disk skill/agent/plugin subdir is renamed
     # in lockstep + frontmatter rewritten so consumers see the
     # plugin under the new slug on their next sync.
-    rename_info = StoreEntitiesRepository(conn).archive(
-        entity_id, by_user_id=user["id"],
+    rename_info = store_entities_repo().archive(
+        entity_id,
+        by_user_id=user["id"],
     )
     original_name = rename_info["original_name"]
     new_name = rename_info["new_name"]
@@ -1981,35 +2712,33 @@ async def delete_entity(
             # stale slug. Revert the DB row so the system stays
             # consistent (operator can retry archive).
             logger.exception(
-                "archive on-disk rename failed for entity %s — "
-                "reverting DB",
+                "archive on-disk rename failed for entity %s — reverting DB",
                 entity_id,
             )
-            conn.execute(
-                """UPDATE store_entities
-                      SET visibility_status = 'approved',
-                          name = ?,
-                          archived_at = NULL,
-                          archived_by = NULL,
-                          updated_at = ?
-                    WHERE id = ?""",
-                [original_name, datetime.now(timezone.utc), entity_id],
-            )
+            # Factory-routed revert so it hits the active backend. set_visibility
+            # already clears archived_at/archived_by and strips the archive-rename
+            # suffix to restore the original display name (#518: the old raw
+            # UPDATE wrote the frozen DuckDB system file on Postgres instances).
+            store_entities_repo().set_visibility(entity_id, "approved")
             raise HTTPException(
-                status_code=500, detail="archive_rename_failed",
+                status_code=500,
+                detail="archive_rename_failed",
             )
+    # v46: archived entity is filtered out of the next attribution preload
+    # because the lookup query is `WHERE visibility_status='approved'`.
     _audit(
         conn,
         user["id"],
         "store.entity.archive",
         entity_id,
-        {"name": new_name,
-         "original_name": original_name,
-         "owner_user_id": entity.get("owner_user_id"),
-         "by_admin": is_admin_caller and entity["owner_user_id"] != user["id"]},
+        {
+            "name": new_name,
+            "original_name": original_name,
+            "owner_user_id": entity.get("owner_user_id"),
+            "by_admin": is_admin_caller and entity["owner_user_id"] != user["id"],
+        },
     )
     _invalidate_etag()
-    return OkResponse()
 
 
 # ---------------------------------------------------------------------------
@@ -2023,7 +2752,7 @@ async def install_entity(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     entity = repo.get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
@@ -2035,7 +2764,7 @@ async def install_entity(
     # or wait for approval.
     if entity.get("visibility_status") != "approved" and not is_user_admin(user["id"], conn):
         raise HTTPException(status_code=409, detail="entity_not_approved")
-    installs = UserStoreInstallsRepository(conn)
+    installs = user_store_installs_repo()
     inserted = installs.install(user["id"], entity_id)
     if inserted:
         repo.bump_install_count(entity_id, +1)
@@ -2044,19 +2773,59 @@ async def install_entity(
     return InstallResponse(entity_id=entity_id, installed=True)
 
 
-@router.delete("/entities/{entity_id}/install", response_model=InstallResponse)
+@router.delete("/entities/{entity_id}/install", status_code=204)
 async def uninstall_entity(
     entity_id: str,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    installs = UserStoreInstallsRepository(conn)
+    installs = user_store_installs_repo()
     deleted = installs.uninstall(user["id"], entity_id)
     if deleted:
-        StoreEntitiesRepository(conn).bump_install_count(entity_id, -1)
+        store_entities_repo().bump_install_count(entity_id, -1)
         _audit(conn, user["id"], "store.entity.uninstall", entity_id)
         _invalidate_etag()
-    return InstallResponse(entity_id=entity_id, installed=False)
+
+
+# ---------------------------------------------------------------------------
+# Rating (thumbs up/down) — #398
+# ---------------------------------------------------------------------------
+
+
+@router.post("/entities/{entity_id}/rate", response_model=EntityRating)
+async def rate_entity(
+    entity_id: str,
+    body: RateRequest,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Cast / change / clear the caller's thumbs up/down vote on an entity.
+
+    ``vote``: ``1`` = up, ``-1`` = down, ``0`` = clear the caller's vote.
+    One vote per (entity, user): re-voting replaces the prior value in place.
+    Returns the updated ``{up, down, my_vote}`` aggregate.
+    """
+    if body.vote not in (1, -1, 0):
+        raise HTTPException(status_code=422, detail="vote must be 1, -1, or 0")
+    entity = store_entities_repo().get(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="entity_not_found")
+    _enforce_visibility(entity, user, conn)
+    votes = store_entity_votes_repo()
+    if body.vote == 0:
+        votes.unvote(entity_id, user["id"])
+        _audit(conn, user["id"], "store.entity.unrate", entity_id)
+    else:
+        votes.vote(entity_id, user["id"], body.vote)
+        _audit(
+            conn,
+            user["id"],
+            "store.entity.rate",
+            entity_id,
+            {"vote": body.vote},
+        )
+    agg = votes.get_aggregate(entity_id, user_id=user["id"])
+    return EntityRating(**agg)
 
 
 # ---------------------------------------------------------------------------
@@ -2067,7 +2836,7 @@ async def uninstall_entity(
 # `agnes admin store {pull,push}` CLI commands which back up the Store to a
 # git repo (or restore from one). Bundle format:
 #
-#     agnes-store-bundle.zip
+#     flea.zip
 #     ├── manifest.json                 ← {"format":1,"generated_at":..., "entries":[...]}
 #     └── entities/<entity_id>/
 #         ├── plugin/...                ← canonical Claude Code plugin tree
@@ -2122,23 +2891,17 @@ class ImportBundleResponse(BaseModel):
     errors: List[dict] = []
 
 
-def _resolve_owner_emails(
-    conn: duckdb.DuckDBPyConnection, owner_ids: List[str]
-) -> dict:
+def _resolve_owner_emails(owner_ids: List[str]) -> dict:
     """Bulk-fetch user_id → email map for the given owners.
 
     Empty list short-circuits to {} so the caller doesn't need a guard.
     Missing rows are simply absent from the returned dict — the caller
     falls back to the row's stored ``owner_username`` for diagnostics.
+
+    Routed through the factory (#518) — a raw ``SELECT ... WHERE id IN`` on a
+    system connection read the frozen DuckDB file on Postgres instances.
     """
-    if not owner_ids:
-        return {}
-    placeholders = ",".join(["?"] * len(owner_ids))
-    rows = conn.execute(
-        f"SELECT id, email FROM users WHERE id IN ({placeholders})",
-        list(owner_ids),
-    ).fetchall()
-    return {r[0]: r[1] for r in rows}
+    return users_repo().get_by_ids(list(owner_ids))
 
 
 def _walk_entity_files(entity_id: str) -> List[tuple[str, Path]]:
@@ -2174,9 +2937,7 @@ def _build_bundle_zip(
     owner_email in one bulk roundtrip to keep the export path off the
     O(N) per-row query path.
     """
-    owner_emails = _resolve_owner_emails(
-        conn, list({e["owner_user_id"] for e in entries})
-    )
+    owner_emails = _resolve_owner_emails(list({e["owner_user_id"] for e in entries}))
     bundle_entries: List[dict] = []
     for e in sorted(entries, key=lambda r: r["id"]):
         bundle_entries.append(
@@ -2250,7 +3011,21 @@ async def export_bundle(
     # uploads without needing to look up their own user_id first.
     if owner == "me":
         owner = user["id"]
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
+    # Visibility filter mirrors the marketplace browse query: only
+    # `approved` is visible to non-admin non-owner callers. Without
+    # this filter, an authenticated non-admin could pull the entire
+    # store including pending / blocked / hidden v1 bytes — bypassing
+    # the publish gate the same way `_enforce_visibility` already
+    # prevents on the detail page + install endpoint. Surfaced by the
+    # adversarial review pass on PR #316.
+    is_admin = is_user_admin(user["id"], conn)
+    visibility_filter: Optional[List[str]] = None if is_admin else ["approved"]
+    # Owners always see their own non-approved entries in their
+    # export — same affordance the browse listing applies via the
+    # `include_owner_id` knob on `repo.list`. Admins skip the filter
+    # entirely.
+    include_owner_id: Optional[str] = None if is_admin else user["id"]
     # Page through everything. The 100/req limit on `list` is a UI
     # pagination affordance, not a backup constraint — for a bulk export
     # we want all matches.
@@ -2259,8 +3034,14 @@ async def export_bundle(
     page = 200
     while True:
         page_items, _total = repo.list(
-            skip=skip, limit=page, type=type, category=category,
-            search=search, owner_user_id=owner,
+            skip=skip,
+            limit=page,
+            type=type,
+            category=category,
+            search=search,
+            owner_user_id=owner,
+            visibility_status=visibility_filter,
+            include_owner_id=include_owner_id,
         )
         if not page_items:
             break
@@ -2274,7 +3055,7 @@ async def export_bundle(
         content=payload,
         media_type="application/zip",
         headers={
-            "Content-Disposition": 'attachment; filename="agnes-store-bundle.zip"',
+            "Content-Disposition": 'attachment; filename="flea.zip"',
             "X-Bundle-Entry-Count": str(len(items)),
         },
     )
@@ -2298,7 +3079,7 @@ def _import_one_entry(
     sha256(email)[:12]`` to make it idempotent across repeated imports.
     """
     entity_id = entry["entity_id"]
-    repo = StoreEntitiesRepository(conn)
+    repo = store_entities_repo()
     existing = repo.get(entity_id)
 
     if existing:
@@ -2311,7 +3092,7 @@ def _import_one_entry(
         # mode='replace' OR mode='merge' with newer version → fall through.
 
     # Resolve owner.
-    user_repo = UserRepository(conn)
+    user_repo = users_repo()
     owner_email = (entry.get("owner_email") or "").strip().lower()
     stub_created = 0
     owner_user_id: Optional[str] = None
@@ -2321,10 +3102,13 @@ def _import_one_entry(
             owner_user_id = existing_user["id"]
         else:
             import hashlib as _hl
+
             stub_id = "imported-" + _hl.sha256(owner_email.encode("utf-8")).hexdigest()[:12]
             if not user_repo.get_by_id(stub_id):
                 user_repo.create(
-                    id=stub_id, email=owner_email, name=owner_email,
+                    id=stub_id,
+                    email=owner_email,
+                    name=owner_email,
                     password_hash=None,
                 )
                 user_repo.update(stub_id, active=False)
@@ -2444,7 +3228,11 @@ async def import_bundle(
                 continue
             try:
                 outcome, sc = _import_one_entry(
-                    conn, entry, extract_root, mode=mode, actor_user_id=user["id"],
+                    conn,
+                    entry,
+                    extract_root,
+                    mode=mode,
+                    actor_user_id=user["id"],
                 )
             except HTTPException:
                 raise
@@ -2460,7 +3248,10 @@ async def import_bundle(
                 skipped += 1
 
         _audit(
-            conn, user["id"], "store.bundle.import", "bundle",
+            conn,
+            user["id"],
+            "store.bundle.import",
+            "bundle",
             {
                 "mode": mode,
                 "imported": imported,
@@ -2472,8 +3263,11 @@ async def import_bundle(
         )
         _invalidate_etag()
         return ImportBundleResponse(
-            imported=imported, replaced=replaced, skipped=skipped,
-            stub_users_created=stubs, errors=errors,
+            imported=imported,
+            replaced=replaced,
+            skipped=skipped,
+            stub_users_created=stubs,
+            errors=errors,
         )
     finally:
         shutil.rmtree(extract_root, ignore_errors=True)
@@ -2513,7 +3307,9 @@ async def _save_docs(docs: List[UploadFile], entity_id: str) -> List[str]:
             continue
         target = _unique_doc_path(docs_dir, safe_name)
         tmp, _ = await _stream_to_temp(
-            upload, MAX_DOC_SIZE, suffix=Path(safe_name).suffix or ".tmp",
+            upload,
+            MAX_DOC_SIZE,
+            suffix=Path(safe_name).suffix or ".tmp",
         )
         try:
             tmp.close()
@@ -2614,6 +3410,13 @@ async def _save_photo(photo: UploadFile, entity_id: str) -> str:
 def _invalidate_etag() -> None:
     try:
         from app.marketplace_server import packager
+
         packager.invalidate_etag_cache()
     except Exception:
         logger.exception("failed to invalidate marketplace etag cache")
+    try:
+        from app.marketplace_server import cowork_packager
+
+        cowork_packager.invalidate_cache()
+    except Exception:
+        logger.exception("failed to invalidate cowork zip cache")

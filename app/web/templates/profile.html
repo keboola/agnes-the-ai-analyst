@@ -1,263 +1,47 @@
-{% extends "base.html" %}
+{% extends "base_page.html" %}
 {% block title %}Profile — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
+{# Migrated onto base_page.html (Tier 2, issue 367): the hero comes from the
+   page_hero_* vars below (base_page auto-includes _page_hero.html); the body
+   lives in `{% block page %}`. Width is unchanged — the canonical
+   `.container:has(.profile-page) { max-width: 1100px }` rule in style-custom.css
+   still caps the shell because `.profile-page` remains inside the container. #}
+{% set page_hero_eyebrow = "Your account" %}
+{% set page_hero_title = "Profile" %}
+{% set page_hero_subtitle = "Account details and your group memberships." %}
+
+{% block head_extra %}
 <style>
-  /* /profile — read-only account view with Google Workspace group list.
-     Matches the card/hero vocabulary used on /tokens. */
-  body > .container { max-width: 960px; }
-  .profile-page {
-    max-width: 960px;
-    margin: 0 auto;
-    padding: 28px 8px 48px;
-    box-sizing: border-box;
-    font-family: var(--font-primary, 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif);
-  }
-  @media (max-width: 720px) {
-    .profile-page { padding: 20px 0 32px; }
-  }
-
-  .profile-hero {
-    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
-    border-radius: 14px;
-    padding: 28px 32px 24px;
-    margin-bottom: 20px;
-    box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
-    color: #fff;
-  }
-  .profile-hero .hero-eyebrow {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    color: rgba(255, 255, 255, 0.75);
-    margin-bottom: 8px;
-  }
-  .profile-hero .profile-title {
-    font-size: 28px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    margin: 0 0 6px;
-    color: #fff;
-  }
-  .profile-hero .profile-subtitle {
-    font-size: 14px;
-    font-weight: 400;
-    color: rgba(255, 255, 255, 0.9);
-    margin: 0;
-    line-height: 1.5;
-  }
-
-  .section-card {
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 12px;
-    padding: 20px 24px;
-    margin-bottom: 16px;
-  }
-  .section-card h3 {
-    margin: 0 0 14px;
-    font-size: 13px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    color: var(--text-secondary, #6b7280);
-  }
-
-  .account-grid {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: 10px 18px;
-    font-size: 14px;
-  }
-  .account-grid .k {
-    color: var(--text-secondary, #6b7280);
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    font-weight: 600;
-    align-self: center;
-  }
-  .account-grid .v {
-    color: var(--text-primary, #1A253C);
-    font-weight: 500;
-    word-break: break-word;
-  }
-
-  .groups-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .group-row {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 10px 14px;
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 10px;
-    background: var(--background, #f9fafb);
-  }
-  .group-row .group-name {
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-primary, #1A253C);
-    min-width: 0;
-    flex: 0 1 auto;
-  }
-  .group-row .group-id {
-    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
-    font-size: 12px;
-    color: var(--text-secondary, #6b7280);
-    word-break: break-all;
-    flex: 1 1 auto;
-  }
-  /* Same chip vocabulary as /admin/users + /admin/users/{id}. Name match
-     wins over origin so an env-mapped Admin/Everyone keeps the canonical
-     color even when their server-side origin is google_sync. */
-  .group-chip {
-    display: inline-block;
-    padding: 3px 10px; border-radius: 999px;
-    font-size: 12px; font-weight: 500;
-    background: #ede9fe; color: #6d28d9;  /* default = custom (purple) */
-  }
-  .group-chip.is-admin       { background: #fef3c7; color: #92400e; font-weight: 600; }
-  .group-chip.is-everyone    { background: #f3f4f6; color: #4b5563; }
-  .group-chip.is-google_sync { background: #dcfce7; color: #166534; }
-  .group-chip.is-custom      { background: #ede9fe; color: #6d28d9; }
-
-  .empty-state {
-    padding: 20px 0 4px;
-    color: var(--text-secondary, #6b7280);
-    font-size: 14px;
-    line-height: 1.55;
-  }
-  .empty-state .empty-title {
-    font-weight: 600;
-    color: var(--text-primary, #1A253C);
-    margin-bottom: 4px;
-  }
-
-  .tokens-link-row {
-    margin-top: 18px;
-    padding-top: 16px;
-    border-top: 1px solid var(--border-light, #f3f4f6);
-    font-size: 13.5px;
-    color: var(--text-secondary, #6b7280);
-  }
-  .tokens-link-row a {
-    color: #0073D1;
-    text-decoration: none;
-    font-weight: 600;
-  }
-  .tokens-link-row a:hover { text-decoration: underline; }
-
-  /* Effective roles section: chip cloud + grouped breakdown */
-  .role-chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin: 0 0 4px;
-  }
-  .role-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
-    border-radius: 999px;
-    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
-    font-size: 12px;
-    font-weight: 600;
-    background: rgba(0, 115, 209, 0.10);
-    color: #0073D1;
-    border: 1px solid rgba(0, 115, 209, 0.25);
-  }
-  .role-chip.is-core { background: rgba(16, 185, 129, 0.10); color: #047857; border-color: rgba(16, 185, 129, 0.25); }
-
-  .grant-list, .group-roles-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .grant-row, .group-roles-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 14px;
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 10px;
-    background: var(--background, #f9fafb);
-    flex-wrap: wrap;
-  }
-  .grant-row .grant-key, .group-roles-row .group-roles-name {
-    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text-primary, #1A253C);
-  }
-  .group-roles-row .group-roles-name {
-    font-family: var(--font-primary, 'Inter', system-ui, sans-serif);
-  }
-  .grant-row .grant-source {
-    font-size: 11.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    padding: 2px 8px;
-    border-radius: 4px;
-    background: rgba(107, 114, 128, 0.12);
-    color: var(--text-secondary, #6b7280);
-    font-weight: 600;
-  }
-  .grant-row .grant-source.source-direct { background: rgba(0, 115, 209, 0.12); color: #0073D1; }
-  .grant-row .grant-source.source-auto { background: rgba(245, 158, 11, 0.12); color: #b45309; }
-  .grant-row .grant-meta {
-    font-size: 12px;
-    color: var(--text-secondary, #6b7280);
-    margin-left: auto;
-  }
-
-  .group-roles-row .group-roles-arrow {
-    color: var(--text-secondary, #9ca3af);
-    font-weight: 400;
-  }
-  .group-roles-row .role-chips { margin: 0; }
-
-  .effective-help {
-    margin-top: 12px;
-    font-size: 12.5px;
-    color: var(--text-secondary, #6b7280);
-    line-height: 1.55;
-  }
+.group-chip.is-admin       { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); font-weight: 600; }
+.group-chip.is-everyone    { background: var(--ds-surface-dim); color: var(--ds-text-secondary); }
+.group-chip.is-google_sync { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+.group-chip.is-custom      { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
 </style>
+{% endblock %}
+
+{% block page %}
+{# Design-system component macros — the 3 section cards (Account, Group
+   memberships, Effective access) render via `ds.panel(tag='section',
+   title=...)` so each stays an aria-labelled landmark. The Session-
+   troubleshooting `<details>` can't go through the macro (no
+   <details>/<summary> support); it carries `.ds-card` explicitly. `ds` is
+   auto-imported by base_ds.html. #}
 
 <div class="profile-page">
-  <section class="profile-hero" aria-labelledby="profile-title">
-    <div class="hero-eyebrow">Your account</div>
-    <h2 class="profile-title" id="profile-title">Profile</h2>
-    <p class="profile-subtitle">Account details and your group memberships.</p>
-  </section>
-
-  <section class="section-card" aria-label="Account details">
-    <h3>Account</h3>
+  {% call ds.panel(title='Account', tag='section',
+                   klass='section-card',
+                   attrs='aria-label="Account details"') %}
     <div class="account-grid">
       <span class="k">Email</span>
       <span class="v">{{ user.email or "—" }}</span>
       <span class="k">Name</span>
       <span class="v">{{ user.name or "—" }}</span>
     </div>
-    <div class="tokens-link-row">
-      Manage personal access tokens at <a href="/tokens">/tokens</a>.
-    </div>
-  </section>
+  {% endcall %}
 
-  <section class="section-card" aria-label="Group memberships">
-    <h3>Group memberships</h3>
+  {% call ds.panel(title='Group memberships', tag='section',
+                   klass='section-card',
+                   attrs='aria-label="Group memberships"') %}
     {% if memberships and memberships | length > 0 %}
     <ul class="groups-list" role="list">
       {% for m in memberships %}
@@ -285,16 +69,27 @@
       <div>You're not a member of any groups yet. Ask an admin to add you, or wait for the next Google Workspace sync if you sign in via Google.</div>
     </div>
     {% endif %}
-  </section>
+  {% endcall %}
 
-  <section class="section-card" aria-label="Effective access">
-    <h3>Effective access</h3>
+  {% call ds.panel(title='Effective access', tag='section',
+                   klass='section-card',
+                   attrs='aria-label="Effective access"') %}
     <div id="effective-access-host">
       <div class="empty-state">
         <div class="empty-title">Loading…</div>
       </div>
     </div>
-  </section>
+  {% endcall %}
+
+  {% include "_profile_tokens.html" %}
+
+  {# `<details>` can't go through `ds.panel` (the macro doesn't render
+     <details>/<summary>); add `.ds-card` explicitly so the same surface
+     treatment applies. `.section-card` rules override radius+padding. #}
+  <details class="ds-card section-card" aria-label="Session and troubleshooting">
+    <summary>Session &amp; troubleshooting</summary>
+    {% include "_profile_troubleshooting.html" %}
+  </details>
 </div>
 
 <script>

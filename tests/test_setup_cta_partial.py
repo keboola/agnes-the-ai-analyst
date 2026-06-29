@@ -75,9 +75,11 @@ def test_dashboard_includes_setup_cta_partial(fresh_db):
     resp = c.get("/dashboard", cookies={"access_token": sess})
     assert resp.status_code == 200
     _assert_partial_present(resp.text)
-    # Dashboard's own CTA chrome still here too.
+    # Dashboard's own CTA chrome still here too. Button label was
+    # standardised across consumers to the canonical action wording
+    # documented in the partial.
     assert 'id="setupClaudeBtn"' in resp.text
-    assert "Setup a new Claude Code" in resp.text
+    assert "Copy install script to clipboard" in resp.text
 
 
 def test_home_not_onboarded_includes_setup_cta_partial(fresh_db):
@@ -97,7 +99,8 @@ def test_home_not_onboarded_includes_setup_cta_partial(fresh_db):
     assert resp.status_code == 200
     _assert_partial_present(resp.text)
     assert 'id="setupClaudeBtn"' in resp.text
-    assert "Setup a new Claude Code" in resp.text
+    # Button label was relabeled to read as the action it performs.
+    assert "Copy install script to clipboard" in resp.text
 
 
 def test_home_renders_preview_under_manual_fallback(fresh_db):

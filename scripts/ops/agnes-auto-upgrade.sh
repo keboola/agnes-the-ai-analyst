@@ -14,6 +14,25 @@
 # (sdb at /data, sdc parallel at /data-state) — see docs/state-dir.md.
 set -euo pipefail
 cd /opt/agnes
+
+# Single-instance guard. GCE live migration / clock-jump events make
+# cron deliver several catch-up ticks in a single second (saw 4 ticks
+# in ≤2s on a freshly-migrated VM), and parallel runs of this script
+# race on `docker compose pull` + `docker images --digest` — different
+# runners observe different digest values for the same tag, the diff
+# trips the "image digest moved" branch, and a `docker compose up -d`
+# fires for an upgrade that hasn't actually happened. flock with -n
+# (non-blocking) means the second runner exits cleanly without
+# log-spamming; the next regular 5-min tick handles whatever real
+# change is pending. /var/lock survives reboots on Ubuntu (tmpfs is
+# recreated at boot, but that's fine — the lock only needs to be
+# unique among concurrently-running processes).
+exec 9>/var/lock/agnes-auto-upgrade.lock
+flock -n 9 || {
+  logger -t agnes-auto-upgrade "another instance holds the lock — exiting"
+  exit 0
+}
+
 # shellcheck disable=SC1091
 set -a; . /opt/agnes/.env; set +a
 
@@ -69,7 +88,21 @@ IMAGE="ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}"
 # omit `--profile tls` until the next 5-minute tick — a window where
 # the recreate uses the wrong overlay set). Base file list is fine to
 # initialise here because the tls overlay is the only conditional one.
-COMPOSE_FILES=( -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml )
+# COMPOSE_FILE is sourced from /opt/agnes/.env above (startup-script.sh.tpl
+# writes the full ``docker-compose.yml:docker-compose.prod.yml:docker-compose.postgres.yml:docker-compose.host-mount.yml``
+# list so the prod + postgres + host-mount overlays engage by default on
+# every tick — note host-mount loads LAST so its !override on
+# data-migrate.volumes can see the service already defined by
+# docker-compose.postgres.yml). Fall back to the historical prod + host-mount baseline when
+# .env doesn't set it — keeps long-uptime VMs whose .env predates the
+# COMPOSE_FILE line behaving identically.
+#
+# The colon-separated COMPOSE_FILE form is the documented alternative to
+# explicit ``-f`` args (docker.com/compose/reference/envvars/compose_file).
+# The conditional TLS overlay (further down) APPENDS via the same
+# colon-separator so docker compose sees a unified list — interleaving
+# ``-f`` args and a COMPOSE_FILE env var is unspecified behaviour.
+export COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml:docker-compose.prod.yml:docker-compose.host-mount.yml}"
 PROFILE_ARGS=()
 
 # Re-fetch the bind-mounted config files (compose overlays + Caddyfile)
@@ -91,6 +124,7 @@ PROFILE_ARGS=()
 RAW_BASE="https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main"
 CONFIG_FILES=(
   docker-compose.yml docker-compose.prod.yml docker-compose.host-mount.yml
+  docker-compose.postgres.yml docker-compose.postgres-host-mount.yml
   docker-compose.tls.yml Caddyfile
 )
 hash_config_files() {
@@ -101,7 +135,6 @@ hash_config_files() {
       sha256sum "$f" 2>/dev/null || printf 'missing %s\n' "$f"
     done ) | sort | sha256sum | awk '{print $1}'
 }
-CONFIG_BEFORE=$(hash_config_files)
 for f in "${CONFIG_FILES[@]}"; do
   if curl -fsSL "$RAW_BASE/$f" -o "/opt/agnes/$f.new" 2>/dev/null; then
     mv -f "/opt/agnes/$f.new" "/opt/agnes/$f"
@@ -125,26 +158,94 @@ CONFIG_AFTER=$(hash_config_files)
 # freshly-removed Caddyfile is reflected in this tick's compose set,
 # not the next one.
 if [ -s "$STATE_DIR/certs/fullchain.pem" ] && [ -s "$STATE_DIR/certs/privkey.pem" ] && [ -s Caddyfile ]; then
-    COMPOSE_FILES+=( -f docker-compose.tls.yml )
+    # Append tls overlay onto the colon-separated COMPOSE_FILE list. Idempotent
+    # check guards against the cron tick re-appending across self-update
+    # iterations (unlikely since COMPOSE_FILE is re-sourced from .env each
+    # run, but cheap insurance).
+    case ":$COMPOSE_FILE:" in
+      *:docker-compose.tls.yml:*) : ;;
+      *) export COMPOSE_FILE="$COMPOSE_FILE:docker-compose.tls.yml" ;;
+    esac
     PROFILE_ARGS=( --profile tls )
 elif [ -s "$STATE_DIR/certs/fullchain.pem" ] && [ -s "$STATE_DIR/certs/privkey.pem" ]; then
     logger -t agnes-auto-upgrade "WARN: certs present but Caddyfile missing/empty — skipping tls overlay"
 fi
 
-BEFORE=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
-docker compose "${COMPOSE_FILES[@]}" pull >/dev/null 2>&1
-AFTER=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
-if [ "$BEFORE" != "$AFTER" ] || [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ]; then
+# gcplogs overlay — ships container stdout/stderr to GCP Cloud Logging. Gated
+# purely on file presence (mirrors the tls append above): the file is NOT baked
+# into the image and is NOT in CONFIG_FILES, so it lands ONLY when the GCE deploy
+# layer (Terraform startup-script / infra startup.sh) placed it. On non-GCP hosts
+# the file is absent → the overlay is never appended → containers stay on the
+# default json-file driver (gcplogs would otherwise fail without a GCE metadata
+# server). Idempotent case-check guards against re-appending across ticks.
+if [ -f docker-compose.gcp-logging.yml ]; then
+    case ":$COMPOSE_FILE:" in
+      *:docker-compose.gcp-logging.yml:*) : ;;
+      *) export COMPOSE_FILE="$COMPOSE_FILE:docker-compose.gcp-logging.yml" ;;
+    esac
+fi
+
+# COMPOSE_FILE is exported above; docker compose picks it up automatically.
+# `|| …` so a pull failure (registry outage, transient network/auth blip)
+# doesn't abort the script under `set -e` BEFORE drift detection runs —
+# a pending upgrade whose image was already pulled on a previous tick
+# must still be applied from the local store. The warning keeps the
+# failure visible in syslog instead of silently masking it.
+docker compose pull >/dev/null 2>&1 \
+  || logger -t agnes-auto-upgrade "WARN: docker compose pull failed — proceeding with locally available images"
+
+# Drift-based change detection — STATELESS on the image side, marker-based
+# on the config side. The previous implementation compared the local tag
+# digest before/after the pull; that permanently LOST a deferred upgrade:
+# the deferring tick's pull had already moved the local tag, so the next
+# tick saw before == after, concluded "no change", and never recreated —
+# the container stayed on the old image until the *next* release shipped
+# (observed live: a VM ran a stale image for 8+ hours with the new tag
+# sitting pulled beside it). Comparing what is actually RUNNING against
+# what the tag points to has no such window: drift persists across ticks
+# until a recreate succeeds.
+TAG_ID=$(docker images --no-trunc --format '{{.ID}}' "$IMAGE" | head -1)
+RUNNING_CID=$(docker compose ps -q app 2>/dev/null | head -1)
+RUNNING_ID=""
+if [ -n "$RUNNING_CID" ]; then
+    RUNNING_ID=$(docker inspect --format '{{.Image}}' "$RUNNING_CID" 2>/dev/null || true)
+fi
+# No local tag image (pull failed on a fresh host) → nothing to compare,
+# skip. No running app container → recreate (compose up starts it).
+IMAGE_DRIFT=0
+if [ -n "$TAG_ID" ] && [ "$RUNNING_ID" != "$TAG_ID" ]; then
+    IMAGE_DRIFT=1
+fi
+
+# Config drift had the same lost-defer hole — the re-fetch above already
+# rewrote the files before the defer exits, so a before/after comparison
+# forgets the change by the next tick. Track the hash that was in effect
+# at the last successful recreate in a marker file; drift = current hash
+# != marker. Lazily initialized so the first tick after this script lands
+# on a VM records the status quo instead of forcing a spurious recreate.
+CONFIG_MARKER=/opt/agnes/.agnes-config-applied
+if [ ! -f "$CONFIG_MARKER" ]; then
+    printf '%s\n' "$CONFIG_AFTER" > "$CONFIG_MARKER"
+fi
+CONFIG_APPLIED=$(cat "$CONFIG_MARKER" 2>/dev/null || true)
+CONFIG_DRIFT=0
+if [ "$CONFIG_AFTER" != "$CONFIG_APPLIED" ]; then
+    CONFIG_DRIFT=1
+fi
+
+if [ "$IMAGE_DRIFT" = "1" ] || [ "$CONFIG_DRIFT" = "1" ]; then
     REASON=()
-    [ "$BEFORE" != "$AFTER" ] && REASON+=("image digest")
-    [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ] && REASON+=("config files")
+    [ "$IMAGE_DRIFT" = "1" ] && REASON+=("image drift")
+    [ "$CONFIG_DRIFT" = "1" ] && REASON+=("config files")
 
     # Sync-in-flight defer guard. ``docker compose up -d`` recreates the
     # uvicorn worker, which kills any in-flight extractor / materialized
-    # pass that was holding ``_sync_lock``. The next 5-min cron tick
-    # picks up the same change — we just delay the upgrade until the
-    # current sync finishes (typically minutes for small tables, longer
-    # for big Snowflake UNLOADs). curl with a 5s timeout: if the app is
+    # pass that was holding ``_sync_lock`` — so we delay the upgrade until
+    # the current sync finishes (typically minutes for small tables,
+    # longer for big Snowflake UNLOADs). Deferring is SAFE with the drift
+    # detection above: the drift persists until a recreate actually
+    # succeeds, so the next 5-min tick re-detects the same pending change
+    # — there is no state to lose. curl with a 5s timeout: if the app is
     # unreachable for any reason (already crashed, port not bound,
     # older app version without /api/sync/status), we proceed with the
     # upgrade — being stuck on a wedged previous version is worse than
@@ -166,8 +267,8 @@ if [ "$BEFORE" != "$AFTER" ] || [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ]; then
     # matches). The Dockerfile pins runtime to uid:gid 999:999 today
     # (`useradd --system --uid 999 ... agnes`); read it back from the
     # image config to stay honest if that ever changes. Only relevant
-    # when the image digest actually changed.
-    if [ "$BEFORE" != "$AFTER" ]; then
+    # when the image actually changed.
+    if [ "$IMAGE_DRIFT" = "1" ]; then
         IMAGE_USER=$(docker image inspect -f '{{.Config.User}}' "$IMAGE" 2>/dev/null || true)
         if [ -n "$IMAGE_USER" ] && [ "$IMAGE_USER" != "root" ] && [ "$IMAGE_USER" != "0" ]; then
             # IMAGE_USER may be "agnes" (name) or "999" or "999:999".
@@ -176,7 +277,15 @@ if [ "$BEFORE" != "$AFTER" ] || [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ]; then
             IMAGE_UIDGID=$(docker run --rm --entrypoint cat "$IMAGE" /etc/passwd 2>/dev/null \
                 | awk -F: -v u="${IMAGE_USER%%:*}" '$1==u || $3==u {print $3":"$4; exit}')
             if [ -n "$IMAGE_UIDGID" ]; then
-                for d in "$STATE_DIR" /data/extracts /data/analytics; do
+                # /data/tmp is the default ``AGNES_TEMP_DIR`` from
+                # docker-compose.yml — Snowflake-UNLOAD slice staging
+                # and CSV intermediates land here. Without an explicit
+                # mkdir + chown, the runtime user can't create it
+                # under a root-owned ``/data`` (the data disk's root
+                # comes up root-owned on first mount). ``mkdir -p``
+                # is idempotent so existing dirs survive.
+                mkdir -p /data/tmp 2>/dev/null || true
+                for d in "$STATE_DIR" /data/extracts /data/analytics /data/tmp; do
                     [ -d "$d" ] && chown -R "$IMAGE_UIDGID" "$d" 2>/dev/null || true
                 done
             fi
@@ -184,7 +293,12 @@ if [ "$BEFORE" != "$AFTER" ] || [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ]; then
     fi
     # ${arr[@]+"${arr[@]}"} pattern: expands to nothing when array is
     # empty (vs. plain "${arr[@]}" which trips `set -u` on bash <4.4).
-    docker compose "${COMPOSE_FILES[@]}" ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d
+    # COMPOSE_FILE (incl. any conditionally-appended overlays) is exported
+    # above and picked up by docker compose automatically.
+    docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d
+    # Record the config hash that is now in effect — config drift is
+    # declared against this marker on subsequent ticks.
+    printf '%s\n' "$CONFIG_AFTER" > "$CONFIG_MARKER"
     docker image prune -f >/dev/null 2>&1
 fi
 

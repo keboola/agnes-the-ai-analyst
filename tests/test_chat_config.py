@@ -1,0 +1,84 @@
+from pathlib import Path
+
+
+from app.chat.config import load_chat_config
+
+
+def test_default_disabled(tmp_path: Path):
+    yaml = tmp_path / "instance.yaml"
+    yaml.write_text("instance_name: test\n")
+    cfg = load_chat_config(yaml)
+    assert cfg.enabled is False
+    assert cfg.provider == "e2b"
+    assert cfg.concurrency_per_user == 3
+    assert cfg.idle_ttl_seconds == 1800
+    assert cfg.per_tool_call_seconds == 90
+    assert cfg.per_session_bq_scan_bytes == 20 * 1024**3
+    assert cfg.daily_anthropic_spend_usd == 20.0
+    assert cfg.e2b_template_id is None
+    assert cfg.e2b_workspace_max_bytes == 100 * 1024 * 1024
+    assert cfg.e2b_kill_on_ws_disconnect is True
+
+
+def test_enabled_with_overrides(tmp_path: Path):
+    yaml = tmp_path / "instance.yaml"
+    yaml.write_text(
+        "instance_name: test\n"
+        "chat:\n"
+        "  enabled: true\n"
+        "  provider: e2b\n"
+        "  e2b_template_id: agnes-chat\n"
+        "  e2b_workspace_max_bytes: 52428800\n"
+        "  e2b_kill_on_ws_disconnect: false\n"
+        "  concurrency_per_user: 5\n"
+        "  idle_ttl_seconds: 900\n"
+    )
+    cfg = load_chat_config(yaml)
+    assert cfg.enabled is True
+    assert cfg.provider == "e2b"
+    assert cfg.e2b_template_id == "agnes-chat"
+    assert cfg.e2b_workspace_max_bytes == 52428800
+    assert cfg.e2b_kill_on_ws_disconnect is False
+    assert cfg.concurrency_per_user == 5
+    assert cfg.idle_ttl_seconds == 900
+
+
+def test_legacy_sandbox_uid_knob_is_dropped(tmp_path: Path):
+    """The deprecated sandbox_uid / require_isolation keys are silently
+    ignored — the ChatConfig dataclass no longer exposes them and the
+    loader doesn't trip on their presence in older instance.yaml files."""
+    yaml = tmp_path / "instance.yaml"
+    yaml.write_text(
+        "chat:\n  enabled: true\n  e2b_template_id: agnes-chat\n  require_isolation: true\n  sandbox_uid: 1500\n"
+    )
+    cfg = load_chat_config(yaml)
+    assert cfg.enabled is True
+    assert not hasattr(cfg, "require_isolation")
+    assert not hasattr(cfg, "sandbox_uid")
+
+
+def test_detach_defaults():
+    cfg = load_chat_config(Path("/nonexistent"))
+    assert cfg.on_detach == "pause"
+    assert cfg.detach_linger_seconds == 60
+    assert cfg.paused_ttl_seconds == 7 * 24 * 3600
+
+
+def test_legacy_kill_knob_maps_to_on_detach_kill(tmp_path, caplog):
+    p = tmp_path / "instance.yaml"
+    p.write_text("chat:\n  enabled: true\n  e2b_kill_on_ws_disconnect: true\n")
+    cfg = load_chat_config(p)
+    assert cfg.on_detach == "kill"
+    assert "deprecated" in caplog.text.lower()
+
+
+def test_explicit_on_detach_wins_over_legacy_knob(tmp_path):
+    p = tmp_path / "instance.yaml"
+    p.write_text("chat:\n  enabled: true\n  e2b_kill_on_ws_disconnect: true\n  on_detach: pause\n")
+    assert load_chat_config(p).on_detach == "pause"
+
+
+def test_unknown_on_detach_normalizes_to_pause(tmp_path):
+    p = tmp_path / "instance.yaml"
+    p.write_text("chat:\n  enabled: true\n  on_detach: explode\n")
+    assert load_chat_config(p).on_detach == "pause"

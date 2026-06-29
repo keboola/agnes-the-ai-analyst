@@ -1,10 +1,12 @@
+> New: [docs/PLATFORM_SETUP.md](./PLATFORM_SETUP.md) is the consolidated operator playbook. This doc covers a focused subset; check the playbook first.
+
 # Headless / CI usage
 
 For unattended clients (CI, cron, Claude Code), authenticate with a Personal Access Token (PAT) rather than an interactive session.
 
 ## Create a PAT
 
-**Via UI:** sign in, open `/tokens`, create a token. Copy the raw value — it is shown exactly once.
+**Via UI:** sign in, open `/me/profile`, create a token. Copy the raw value — it is shown exactly once.
 
 **Via CLI (requires an interactive session):**
 
@@ -42,4 +44,4 @@ agnes auth token list
 agnes auth token revoke <id|prefix|name>
 ```
 
-Or from `/tokens` → Revoke.
+Or from `/me/profile` → Revoke.

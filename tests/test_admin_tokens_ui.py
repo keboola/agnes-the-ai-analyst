@@ -1,11 +1,10 @@
-"""Tests for the split /tokens (own) and /admin/tokens (all) UI.
+"""Tests for the split /me/profile (own PATs) and /admin/tokens (all) UI.
 
 The two routes render distinct templates:
-- /tokens       → my_tokens.html (any signed-in user, own PATs, create modal)
+- /me/profile   → profile.html + _profile_tokens.html partial (any signed-in
+                  user, own PATs, create modal — tokens section is embedded)
 - /admin/tokens → admin_tokens.html (admin-only, all users, stat strip,
                                      owner search, sort-by-owner)
-
-/profile 302-redirects to /tokens for back-compat.
 """
 
 import hashlib
@@ -71,10 +70,10 @@ def _make_pat_row(conn, user_id: str, name: str = "ci",
     return tid
 
 
-# ── /tokens — "My tokens" (own PATs) — every signed-in user ────────────────
+# ── /me/profile — "Personal Authentication Tokens" section — every signed-in user ──
 
 def test_non_admin_sees_my_tokens_page(fresh_db):
-    """Non-admin GET /tokens: personal body, New-token CTA, create modal."""
+    """Non-admin GET /me/profile: PAT section with New-token CTA + create modal."""
     from fastapi.testclient import TestClient
     from src.db import get_system_db, close_system_db
     from app.main import app
@@ -88,17 +87,15 @@ def test_non_admin_sees_my_tokens_page(fresh_db):
 
     client = TestClient(app)
     resp = client.get(
-        "/tokens",
+        "/me/profile",
         headers={"Accept": "text/html"},
         cookies={"access_token": sess},
     )
     assert resp.status_code == 200, resp.text
     body = resp.text
-    # Non-admin title + eyebrow
-    assert "My tokens" in body
-    assert "Your account" in body
-    assert "Long-lived tokens for CLI" in body
-    # Role-awareness marker stays on the page root
+    # PAT section header
+    assert "Personal Authentication Tokens" in body
+    # Role-awareness marker stays on the section root
     assert 'data-is-admin="false"' in body
     assert 'data-view="my"' in body
     # New-token CTA + create modal are rendered
@@ -116,10 +113,10 @@ def test_non_admin_sees_my_tokens_page(fresh_db):
 
 
 def test_admin_sees_my_tokens_on_tokens_path(fresh_db):
-    """Admin GET /tokens renders the SAME "My tokens" page as non-admins.
+    """Admin GET /me/profile renders the same PAT section as non-admins.
 
-    /tokens is always the personal view — admins use /admin/tokens for the
-    org-wide list."""
+    /me/profile always shows the personal PAT section — admins use
+    /admin/tokens for the org-wide list."""
     from fastapi.testclient import TestClient
     from src.db import get_system_db, close_system_db
     from app.main import app
@@ -133,19 +130,18 @@ def test_admin_sees_my_tokens_on_tokens_path(fresh_db):
 
     client = TestClient(app)
     resp = client.get(
-        "/tokens",
+        "/me/profile",
         headers={"Accept": "text/html"},
         cookies={"access_token": admin_sess},
     )
     assert resp.status_code == 200, resp.text
     body = resp.text
     # Personal view markers (same as non-admin)
-    assert "My tokens" in body
-    assert "Your account" in body
+    assert "Personal Authentication Tokens" in body
     assert 'id="new-token-btn"' in body
     assert 'id="create-modal"' in body
     assert 'data-is-admin="false"' in body
-    # Admin-only UI must NOT show on /tokens, even for an admin
+    # Admin-only UI must NOT show on /me/profile PAT section, even for an admin
     assert 'id="tokens-counts"' not in body
     assert "Access tokens" not in body  # admin hero title
     assert "Administration" not in body
@@ -157,7 +153,7 @@ def test_unauthenticated_redirects_from_tokens_page(fresh_db):
 
     client = TestClient(app)
     resp = client.get(
-        "/tokens",
+        "/me/profile",
         headers={"Accept": "text/html"},
         follow_redirects=False,
     )
@@ -270,9 +266,9 @@ def test_admin_tokens_deeplink_preserves_user_query(fresh_db):
     assert 'id="flt-user"' in resp.text
 
 
-# NOTE: test_profile_redirects_to_tokens removed — /profile no longer
+# NOTE: test_profile_redirects_to_tokens removed — /me/profile no longer
 # redirects to /tokens; it renders a real profile page including Google
-# Workspace groups (cherry-pick of Zdeněk's 4f7e4cd). Current /profile
+# Workspace groups (cherry-pick of Zdeněk's 4f7e4cd). Current /me/profile
 # behaviour is covered by tests/test_auth_providers.py.
 
 

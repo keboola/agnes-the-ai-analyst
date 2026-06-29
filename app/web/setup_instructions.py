@@ -116,6 +116,19 @@ permitted that fallback chain — it's not improvising-around-a-TLS-error.
 
 from __future__ import annotations
 
+import logging
+import re
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    # Avoid circular import at module load — connectors_manifest imports
+    # from src.initial_workspace which is imported transitively from many
+    # app modules. The forward reference under TYPE_CHECKING keeps the
+    # type annotation expressive without paying the import cost.
+    from src.connectors_manifest import ConnectorEntry  # noqa: F401
+
+logger = logging.getLogger(__name__)
+
 # Marketplace name as published by app.marketplace_server.packager.
 # Hard-coded here (rather than imported) to keep this module dependency-free
 # and trivially testable. If the value ever drifts, the regression test
@@ -307,8 +320,13 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
             "",
             "   If `agnes --version` fails after install because ~/.local/bin is not on PATH:",
             "     export PATH=\"$HOME/.local/bin:$PATH\"",
-            "     # persist: append the same line to your ~/.zshrc or ~/.bashrc",
-            "     # (the trust block in step 0 already does this for you on first run).",
+            "     # Persist for future shells. Use `grep -qF` (fixed-string,",
+            "     # not regex) + `||` short-circuit so a re-run doesn't append",
+            "     # a duplicate. Pick the rc file your login shell reads:",
+            "     RC=\"$HOME/.zshrc\"  # or ~/.bashrc / ~/.bash_profile",
+            "     grep -qF '$HOME/.local/bin' \"$RC\" 2>/dev/null \\",
+            "       || echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> \"$RC\"",
+            "     # (The trust block in step 0 already does this for you on first run.)",
         ]
     return [
         "1) Install the CLI:",
@@ -319,23 +337,58 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
         "",
         "   If `agnes --version` fails after install because ~/.local/bin is not on PATH:",
         "     export PATH=\"$HOME/.local/bin:$PATH\"",
-        "     # persist: append the same line to your ~/.zshrc or ~/.bashrc",
+        "     # Persist for future shells. Use `grep -qF` (fixed-string, not",
+        "     # regex) + `||` short-circuit so a re-run doesn't append a",
+        "     # duplicate. Pick the rc file your login shell reads:",
+        "     RC=\"$HOME/.zshrc\"  # or ~/.bashrc / ~/.bash_profile",
+        "     grep -qF '$HOME/.local/bin' \"$RC\" 2>/dev/null \\",
+        "       || echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> \"$RC\"",
     ]
 
 
 def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
-    """Steps 2-4 — workspace folder bootstrap, then `agnes init` + smoke verify.
+    """Steps 2-4 — install-location decision, then `agnes init` + smoke verify.
 
-    Step 2 (new) explicitly creates the workspace folder and cd's into it.
-    Previously the script assumed Claude Code was already cd'd to a sensible
-    location and ran `agnes init --workspace .` against whatever that
-    happened to be. With the new explicit mkdir+cd the workspace path is
-    deterministic — `~/{workspace_dir}` — and the visible /home step block
-    + this scripted step stay in lockstep.
+    Step 2 picks the install directory using a three-way decision tree on
+    the user's current cwd instead of demanding a specific "expected"
+    path. Earlier flows hard-coded `~/Desktop/{workspace_dir}` as the
+    Right Answer and treated every other cwd as a recoverable mistake —
+    which scolded users who intentionally `cd`'d into a project folder
+    (e.g. `~/Devel/acme-data-app/`) before pasting the script.
+
+    The new tree:
+
+    - **REFUSE** if cwd is `$HOME` exactly, or a system path (`/`,
+      `/tmp`, `/etc`, `/usr`, `/var`, `/opt`, `/root`, `/bin`, `/sbin`,
+      `/boot`, `/sys`, `/proc`). Installing into any of these dumps
+      `.claude/`, `.agnes/`, `AGNES_WORKSPACE.md`, marketplace clones,
+      etc. into a directory that already has unrelated meaning. The old
+      flow's `'install here'` keyword silently accepted `$HOME` — this
+      one refuses.
+    - **PROCEED SILENTLY** if cwd is empty, or contains only the
+      whitelisted artefacts a prepared workspace might already hold
+      (`.git`, `.claude`, `.agnes`, `AGNES_WORKSPACE.md`, `README.md`).
+      The user clearly created+cd'd into a workspace folder before
+      pasting; no need to interrupt them.
+    - **CONFIRM ONCE** for anything else (cwd has unrelated content).
+      Neutral framing: *"I'll install {brand} in <pwd>. Reply 'ok' to
+      continue here, 'default' to install in ~/Desktop/{workspace_dir}
+      instead, or 'abort'."* The 'default' branch runs the `mkdir + cd`
+      itself so the user doesn't have to re-paste. Anything else stops
+      cleanly without touching the filesystem. Users who want a
+      different custom path /exit, `cd` to their preferred location,
+      restart `claude`, and re-paste — Claude Code can't change the
+      parent shell's cwd from inside a session anyway.
 
     `{workspace_dir}` and `{instance_brand}` are placeholders pre-substituted
     by :func:`resolve_lines` from the operator-configured brand. Defaults
-    keep `~/Agnes` behavior for instances that don't set the brand knob.
+    keep `~/Desktop/Agnes` behavior for instances that don't set the brand knob.
+
+    `agnes init --workspace .` continues to use the current cwd, so once
+    step 2 has confirmed (or auto-accepted) the install dir, step 3
+    lands in the right place. Step 9's restart-claude cue references
+    "this same directory" so users on a custom path see accurate
+    guidance.
 
     `agnes init` is the workspace-rails delivery mechanism for everyone:
     it authenticates with the PAT, fetches CLAUDE.md (RBAC-filtered),
@@ -352,17 +405,92 @@ def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
     """
     return [
         "",
-        "2) Create the workspace folder in the user's home directory and cd into it:",
-        "   # POSIX (macOS / Linux / WSL):",
-        "   mkdir -p \"$HOME/{workspace_dir}\" && cd \"$HOME/{workspace_dir}\"",
-        "   # Windows (PowerShell) — only run if the user is on Windows:",
-        "   #   New-Item -ItemType Directory -Force -Path \"$HOME\\{workspace_dir}\" | Out-Null",
-        "   #   Set-Location \"$HOME\\{workspace_dir}\"",
+        "2) Confirm the install location.",
+        "   The /home page's \"Step 2 — pick a folder\" recommended",
+        "       mkdir -p ~/Desktop/{workspace_dir} && cd ~/Desktop/{workspace_dir}",
+        "   but the install works in any workspace folder the user prepared.",
+        "   Decide where to install using the three branches below — do NOT",
+        "   silently `mkdir`/`cd` anywhere, and do NOT treat the user's current",
+        "   cwd as a mistake unless it lands in the REFUSE list.",
         "",
-        "   The remaining steps run inside this directory.",
+        "   Run:",
+        "       pwd",
         "",
-        "3) Bootstrap your {instance_brand} workspace in this directory:",
-        f"   agnes init --server-url \"{server_url_placeholder}\" --token \"{{token}}\" --workspace .",
+        "   2a) REFUSE — these paths are never safe to install into. STOP and",
+        "       tell the user verbatim:",
+        "",
+        "           \"I won't install {instance_brand} into <pwd> — it's a home or",
+        "           system directory and the install would scatter .claude/,",
+        "           .agnes/, AGNES_WORKSPACE.md and marketplace clones across",
+        "           it. Please pick a workspace folder (e.g. ~/Desktop/{workspace_dir}",
+        "           or ~/work/{workspace_dir}), cd into it, and re-paste this",
+        "           script from there.\"",
+        "",
+        "       Then stop — no `mkdir`, no `cd`, no further steps. The refuse",
+        "       list is exact match on:",
+        "           $HOME    /    /tmp    /etc    /usr    /var    /opt",
+        "           /root    /bin    /sbin    /boot    /sys    /proc",
+        "",
+        "   2b) PROCEED SILENTLY — if the cwd is a prepared workspace, just",
+        "       continue to step 3 without prompting. The whitelisted artefacts",
+        "       a prepared workspace may already hold are:",
+        "           .git    .claude    .agnes    AGNES_WORKSPACE.md    README.md",
+        "       To check, run (fixed-string match, no regex):",
+        "",
+        "           ls -A | grep -Fxv -e .git -e .claude -e .agnes -e AGNES_WORKSPACE.md -e README.md | head -1",
+        "",
+        "       If the output is empty (cwd is empty OR contains only the",
+        "       whitelisted artefacts above) → the user clearly prepared this",
+        "       folder; continue to step 3 in <pwd>. Remember <pwd> as the",
+        "       install dir for step 9.",
+        "",
+        "   2c) CONFIRM — for any other cwd (unrelated content present), tell",
+        "       the user verbatim, exactly once:",
+        "",
+        "           \"I'll install {instance_brand} in <pwd>. Reply 'ok' to",
+        "           continue here, 'default' to install in ~/Desktop/{workspace_dir}",
+        "           instead, or 'abort' to stop. (For a different custom path:",
+        "           type /exit, `cd` to where you want it, then run `claude`",
+        "           again and re-paste this script.)\"",
+        "",
+        "       Wait for the user's reply.",
+        "         - 'ok' / 'yes' / 'install here' / Enter → continue to step 3",
+        "                       in <pwd>. Remember <pwd> as the install dir.",
+        "         - 'default' → run:",
+        "                       mkdir -p ~/Desktop/{workspace_dir} && cd ~/Desktop/{workspace_dir}",
+        "                       Then continue to step 3 in the new cwd.",
+        "                       Remember ~/Desktop/{workspace_dir} as the install",
+        "                       dir for step 9.",
+        "         - 'abort' / anything else → stop without making any changes.",
+        "                       Do NOT run `mkdir`, do NOT `cd`, do NOT continue.",
+        "",
+        "3) Bootstrap your {instance_brand} workspace in this directory.",
+        "   Write the PAT to a file FIRST, then run `agnes init` with",
+        "   `--token-file`. Passing the JWT inline via `--token \"eyJ...\"`",
+        "   sometimes trips Claude Code's auto-classifier (long bearer",
+        "   token in a command line looks like a credential-exfil pattern);",
+        "   piping the token through a file keeps it out of the command-",
+        "   line argv entirely.",
+        "",
+        "   NOTE: the heredoc below contains the literal PAT, so it lands in",
+        "   this Claude Code session's transcript — which `agnes push` uploads",
+        "   to the server. Treat the token as exposed once this prompt is in a",
+        "   stored transcript. To keep this bootstrap session out of the upload,",
+        "   run `/agnes-private` BEFORE pasting these commands; `agnes init`",
+        "   deletes `~/.agnes/token` once it has consumed it, but the transcript",
+        "   copy persists unless the session is marked private.",
+        "",
+        "   mkdir -p ~/.agnes && umask 077 && cat > ~/.agnes/token <<'AGNES_PAT'",
+        "{token}",
+        "AGNES_PAT",
+        f"   agnes init --server-url \"{server_url_placeholder}\" --token-file ~/.agnes/token --workspace .",
+        "",
+        "   If Claude Code still blocks an `agnes` command (e.g. the",
+        "   `agnes init` line above or `agnes catalog` in step 4), prefix",
+        "   it with `!` to run the command directly in your shell,",
+        "   bypassing the auto-classifier — e.g. `! agnes init …`. The",
+        "   `!` prefix is Claude Code's escape hatch for commands you",
+        "   explicitly trust.",
         "",
         "   This authenticates with the PAT, fetches your CLAUDE.md (RBAC-filtered),",
         "   writes AGNES_WORKSPACE.md (human-facing docs), installs Claude Code",
@@ -414,34 +542,63 @@ def _diagnose_lines(*, diagnose_num: str) -> list[str]:
     ]
 
 
+def _load_connector_body(slug: str) -> Optional[str]:
+    """Read the post-frontmatter body of a connector skill's SKILL.md,
+    sourced from the operator's Initial Workspace Template clone (preferred)
+    or the bundled snapshot in the wheel (fallback).
+
+    Returns ``None`` when neither tier has the file — the caller logs a
+    warning and skips the entry rather than rendering a half-block.
+    """
+    from src.initial_workspace import resolve_seed_file
+
+    rel_path = f"workspace/.claude/skills/{slug}/SKILL.md"
+    result = resolve_seed_file(rel_path)
+    if result is None:
+        return None
+    content, _source = result
+
+    # Strip YAML frontmatter — the prompt body starts after the closing `---`.
+    stripped = content.lstrip()
+    if not stripped.startswith("---"):
+        return content
+    body = stripped[3:]
+    end_match = re.search(r"^---\s*$", body, re.MULTILINE)
+    if not end_match:
+        # Malformed frontmatter — return the raw content rather than
+        # silently emitting an empty body. The manifest validator already
+        # logged the issue; double-failure here would lose context.
+        return content
+    return body[end_match.end():].lstrip("\n")
+
+
 def _connectors_block(
     step_num: str,
-    connector_prompts: dict[str, str],
+    manifest: list["ConnectorEntry"],
     *,
     confirm_step_num: str,
+    instance_brand: str,
 ) -> list[str]:
     """Per-connector interactive ask + inline prompt. Last interactive
     step before Confirm.
 
     Defaults to install (Y) — the user has to actively type "no" to skip.
-    Rationale: when the operator provisions a shared GWS OAuth app
-    (AGNES_GWS_CLIENT_ID + AGNES_GWS_CLIENT_SECRET), the GWS path runs
-    in ~2 minutes with zero GCP clickops; Asana + Atlassian only need
-    the user's own API token from their respective developer consoles —
-    which they need either way to use the tool. Default-install matches
-    "wire everything up" — the common path.
+    Default-install matches "wire everything up" — the common path. Each
+    connector ships with its own step-0 keychain precheck so re-runs
+    short-circuit cleanly.
 
-    Each connector's prompt body comes verbatim from
-    ``app/web/connector_prompts.py`` — same source the /home tile cards
-    render, so editing one place updates both surfaces. The prompts
-    themselves are idempotent (each has its own step-0 precheck) so
-    re-runs short-circuit cleanly.
+    Manifest source: ``src.connectors_manifest.load_manifest()`` reads the
+    seed-resident ``workspace/.claude/skills/connector-*/SKILL.md`` files
+    (operator IWT clone first, bundled snapshot fallback). Each entry
+    carries display_name + short_summary + estimated_minutes; the body
+    text comes from the same file via :func:`_load_connector_body`.
 
-    Connectors are presented in the order they appear in the
-    ``connector_prompts`` dict — the caller controls ordering by how
-    they build the dict. Today that's asana → gws → atlassian, matching
-    the /home tile order.
+    Order: stable, alphabetical by display_name (set in
+    ``load_manifest``). Empty manifest renders no block.
     """
+    if not manifest:
+        return []
+
     lines = [
         "",
         f"{step_num}) Connect the user's tools (last interactive ask before Confirm):",
@@ -453,24 +610,32 @@ def _connectors_block(
         "   safe to re-run if anything goes sideways.",
         "",
     ]
-    # Stable ordering — let the dict iteration order win (Python 3.7+ insertion-ordered).
-    # Caller controls which connectors are present; we just iterate.
+    # Sub-letter index tracks ONLY the connectors we actually rendered
+    # (not the raw enumerate index) — if a connector body is missing
+    # from the seed we want the letter sequence to stay tight (a, b, c)
+    # rather than skip to (a, c, d). The bug was visible to users as
+    # "b)" and "c)" with no "a)" in the rendered install prompt.
     sub_letters = "abcdefghij"
-    for i, (slug, body) in enumerate(connector_prompts.items()):
-        # Display name is sourced from the registry so the ask phrasing stays
-        # in lockstep with what /home renders.
-        from app.web.connector_prompts import CONNECTORS  # local import — avoids module-load cycles
-        display = next((c.display_name for c in CONNECTORS if c.slug == slug), slug)
-        desc = next((c.description for c in CONNECTORS if c.slug == slug), "")
-        lines.append(f"   {sub_letters[i]}) {display} — {desc}")
-        lines.append(f"      Ask: \"Set up {display} now? (Y/n)\"")
+    letter_idx = 0
+    for entry in manifest:
+        body = _load_connector_body(entry.slug)
+        if body is None:
+            logger.warning(
+                "setup_instructions: connector %s body not found in seed — skipped",
+                entry.slug,
+            )
+            continue
+        # Substitute brand placeholder. Atlassian / Asana / GWS bodies all
+        # reference {instance_brand} in their token-label hints.
+        body = body.replace("{instance_brand}", instance_brand)
+        lines.append(f"   {sub_letters[letter_idx]}) {entry.display_name} — {entry.short_summary}")
+        lines.append(f"      Ask: \"Set up {entry.display_name} now? (Y/n)\"")
         lines.append("      If yes (default) — follow this inline prompt verbatim:")
         lines.append("")
-        # Indent the prompt body two spaces so it visually nests under the
-        # ask. Empty lines stay empty (no trailing whitespace).
         for body_line in body.split("\n"):
             lines.append(f"      {body_line}" if body_line else "")
         lines.append("")
+        letter_idx += 1
     lines.extend([
         f"   After all asks (regardless of answers) continue to step {confirm_step_num}.",
     ])
@@ -490,24 +655,29 @@ def _restart_claude_lines(step_num: str) -> list[str]:
     return [
         "",
         f"{step_num}) Restart Claude Code so every plugin, MCP server, and SessionStart hook installed above actually loads:",
-        "   Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same `~/{workspace_dir}` directory.",
+        "   Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same directory — the install dir confirmed in step 2 (`~/Desktop/{workspace_dir}` on the default path, or whatever cwd the user explicitly accepted with 'install here').",
         "   The next session boots with all marketplace plugins, every connector's keychain entries / OAuth grants, and the agnes-welcome + refresh-marketplace SessionStart hooks active. This is the last action before the Confirm summary — once I'm back in Claude Code, setup is complete.",
     ]
 
 
-def _finale_lines(*, confirm_step_num: str, has_ca: bool) -> list[str]:
+def _finale_lines(
+    *,
+    confirm_step_num: str,
+    has_ca: bool,
+    manifest: list["ConnectorEntry"],
+) -> list[str]:
     """Final Confirm step. Bullets it asks the assistant to report on must
     only reference earlier steps that were actually emitted, otherwise the
     assistant either hallucinates an answer or asks the user about a
     non-existent step. The CA-bundle-source bullet only makes sense when
     the trust block ran (`has_ca`). The marketplace clone bullet is
-    unconditional now — preflight + marketplace are always emitted (Fix B
-    in the 2026-05-10 init-report response). Init + catalog + diagnose +
-    skills + connectors + version always render, so their bullets are
-    unconditional. The per-connector ✅/❌ bullet exploits the uniform
-    output contract every connector prompt emits on its verify step —
-    the assistant scans its own prior output for those markers instead
-    of re-running probes."""
+    unconditional now — preflight + marketplace are always emitted.
+
+    Connector bullet is dynamic: lists the display names from ``manifest``
+    so adding/removing a connector in the seed flows through to the
+    Confirm summary without a code change. Empty manifest → connector
+    bullet omitted entirely (no step 8 connector block was emitted either).
+    """
     bullets = [
         "   - `agnes --version` output",
         "   - First few lines of `agnes catalog` (tables you can see)",
@@ -517,12 +687,16 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool) -> list[str]:
         "   - Whether skills were copied or left on-demand",
         "   - Confirmation that `~/.agnes/marketplace/.git/` exists "
         "(the marketplace clone) and that any granted plugins installed",
-        "   - For each connector (Asana, Google Workspace, Atlassian): "
-        "the verbatim ✅ or ❌ line that the connector's verify step "
-        "emitted earlier in this session (e.g. `✅ Asana ready — connected "
-        "as Vojtech Rysanek. 2 workspace(s) visible.` or `❌ Atlassian setup "
-        "failed: ...`). If the user declined a connector, say declined.",
     ]
+    if manifest:
+        connector_names = ", ".join(e.display_name for e in manifest)
+        bullets.append(
+            f"   - For each connector ({connector_names}): "
+            "the verbatim ✅ or ❌ line that the connector's verify step "
+            "emitted earlier in this session (e.g. `✅ Asana ready — ...` "
+            "or `❌ Atlassian setup failed: ...`). If the user declined "
+            "a connector, say declined."
+        )
     if has_ca:
         bullets.append(
             "   - Which CA bundle source got picked in step 0(d) "
@@ -573,7 +747,7 @@ def _preflight_block(step_num: str) -> list[str]:
         "     - Linux:   sudo apt-get install git    OR    sudo dnf install git",
         "",
         "   If `claude --version` fails, install Claude Code:",
-        "     - npm (Linux / WSL): npm i -g @anthropic-ai/claude-code",
+        "     - npm (Linux): npm i -g @anthropic-ai/claude-code",
         "     - macOS / Windows native installer: see https://docs.claude.com/claude-code",
         "",
         "   Then re-run both `--version` checks to confirm before continuing.",
@@ -739,16 +913,13 @@ def _step_numbers(*, has_connectors: bool = True) -> dict[str, str]:
       - Marketplace registration is useful even when the operator has
         zero plugin grants (SessionStart hook reconciles future grants
         automatically).
-      - Connectors (Asana / GWS / Atlassian) are per-connector default-yes
-        asks — the user can decline each individually, so always-emitting
-        the block costs nothing for users who skip everything. The
-        Atlassian Remote MCP registration (`claude mcp add ...`) used to
-        be its own step 6 but moved INTO the Atlassian connector's
-        prompt body (atlassian_prompt() in app.web.connector_prompts) so
-        everything Atlassian-related lives in one group — both the
-        /home Atlassian tile and the inlined Atlassian sub-block in the
-        setup script emit the same `claude mcp add` line as part of the
-        standard connector setup.
+      - Connectors are per-connector default-yes asks sourced from the
+        seed manifest — the user can decline each individually, so
+        always-emitting the block costs nothing for users who skip
+        everything. The Atlassian Remote MCP registration
+        (`claude mcp add ...`) lives INSIDE the Atlassian connector's
+        SKILL.md body in the seed, so all Atlassian setup is grouped
+        together rather than scattered across the setup script.
 
     The interactive "Skills" step that previously sat between diagnose
     and Confirm was deleted in #242 — on-demand `agnes skills show
@@ -789,7 +960,7 @@ def resolve_lines(
     plugin_install_names: list[str] | None = None,
     server_host: str = "",
     ca_pem: str | None = None,
-    connector_prompts: dict[str, str] | None = None,
+    connector_manifest: Optional[list["ConnectorEntry"]] = None,
     instance_brand: str = "Agnes",
     workspace_dir: str = "Agnes",
 ) -> list[str]:
@@ -806,12 +977,10 @@ def resolve_lines(
     needs the bootstrap (typically: skip for publicly-trusted certs like
     Let's Encrypt, emit for self-signed or private corp CA).
 
-    `connector_prompts` is a dict {slug: prompt_text} sourced from
-    :func:`app.web.connector_prompts.all_connector_prompts`. When empty
-    or None we fall back to the module's defaults (no operator GWS OAuth
-    credentials baked in — the unconfigured GCP-walkthrough branch
-    renders). Both the /home tiles and this setup script consume the
-    same dict so the prompt text stays in lockstep across surfaces.
+    `connector_manifest` is a list of validated ConnectorEntry objects
+    sourced from :func:`src.connectors_manifest.load_manifest`. ``None``
+    triggers a fresh manifest load. ``[]`` (empty list) is treated
+    differently from ``None``: it intentionally renders no step 8 block.
 
     Fallback: callers pass `"agnes.whl"` when no wheel is present on disk.
     The resulting URL (`/cli/wheel/agnes.whl`) will 404 at download time, but
@@ -821,22 +990,21 @@ def resolve_lines(
     names = list(plugin_install_names or [])
     has_ca = bool(ca_pem and ca_pem.strip())
 
-    # Lazy default for connector_prompts. Imported inline so the
-    # setup_instructions module stays import-light when callers don't
-    # actually emit the connectors block (tests that hit a single helper
-    # don't pay the cost of loading the prompt strings).
-    if not connector_prompts:
-        from app.web.connector_prompts import all_connector_prompts
-        connector_prompts = all_connector_prompts()
+    # Distinguish "caller didn't pass anything → load fresh from seed" from
+    # "caller passed []  → intentionally render empty connector section".
+    # Codex C-1 fix: don't silently rehydrate when caller wanted empty.
+    if connector_manifest is None:
+        from src.connectors_manifest import load_manifest
+        connector_manifest = load_manifest()
 
+    has_connectors = bool(connector_manifest)
     # Step layout. Preflight + marketplace + MCP go BEFORE diagnose;
     # connectors is the LAST interactive ask before Confirm — once plugins
     # + MCP + diagnose are settled, the only remaining work is plugging
-    # the user's tools (Asana / GWS / Atlassian). The Skills step that
-    # used to sit between diagnose and Confirm was deleted in #242
-    # (on-demand `agnes skills show <name>` is the default;
-    # bulk-copying skills was an opinion question).
-    steps = _step_numbers(has_connectors=True)
+    # the user's tools. When manifest is empty (no seed connectors found
+    # at all), the connectors step is skipped and Confirm shifts down a
+    # number — _step_numbers handles the renumbering.
+    steps = _step_numbers(has_connectors=has_connectors)
 
     lines: list[str] = []
     if has_ca:
@@ -846,16 +1014,15 @@ def resolve_lines(
     lines.extend(_init_lines())                        # 2, 3
     lines.extend(_preflight_block(steps["preflight"]))                       # 4
     lines.extend(_marketplace_block(names, step_num=steps["marketplace"]))    # 5
-    # Standalone MCP step used to live here — moved INTO the Atlassian
-    # connector's prompt body in step 7 so all Atlassian setup is grouped
-    # together.
     lines.extend(_diagnose_lines(diagnose_num=steps["diagnose"]))             # 6
     # Connectors are the LAST interactive ask before the restart-claude
     # cue. Per-connector default-yes — empty/Enter is install, explicit
-    # "no" skips.
+    # "no" skips. Empty manifest renders no block (step 8 is dropped).
     lines.extend(_connectors_block(
-        steps["connectors"], connector_prompts,
+        steps["connectors"],
+        connector_manifest,
         confirm_step_num=steps["confirm"],
+        instance_brand=instance_brand,
     ))
     # Restart-claude lands between connectors and confirm so the user
     # picks up freshly-registered plugins / MCP servers / hooks on the
@@ -866,6 +1033,7 @@ def resolve_lines(
     lines.extend(_finale_lines(
         confirm_step_num=steps["confirm"],
         has_ca=has_ca,
+        manifest=connector_manifest,
     ))
 
     return [
@@ -886,7 +1054,7 @@ def render_setup_instructions(
     plugin_install_names: list[str] | None = None,
     server_host: str = "",
     ca_pem: str | None = None,
-    connector_prompts: dict[str, str] | None = None,
+    connector_manifest: Optional[list["ConnectorEntry"]] = None,
     instance_brand: str = "Agnes",
     workspace_dir: str = "Agnes",
 ) -> str:
@@ -895,14 +1063,15 @@ def render_setup_instructions(
     Used server-side for tests and any non-JS rendering path. The browser
     clipboard flow uses the JS renderer embedded in the Jinja partial; both
     must produce byte-identical output for a given (server_url, token,
-    wheel, plugins, host, ca_pem, connector_prompts, brand, workspace_dir) tuple.
+    wheel, plugins, host, ca_pem, connector_manifest, brand, workspace_dir)
+    tuple.
     """
     lines = resolve_lines(
         wheel_filename,
         plugin_install_names=plugin_install_names,
         server_host=server_host,
         ca_pem=ca_pem,
-        connector_prompts=connector_prompts,
+        connector_manifest=connector_manifest,
         instance_brand=instance_brand,
         workspace_dir=workspace_dir,
     )

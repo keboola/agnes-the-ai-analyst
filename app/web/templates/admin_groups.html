@@ -1,52 +1,29 @@
-{% extends "base.html" %}
+{% extends "base_page.html" %}
 {% block title %}Groups — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-<style>
-  .container:has(.gp-page) { max-width: none; padding: 24px 16px; }
-  .gp-page { max-width: 1400px; margin: 0 auto; padding: 0; }
+{% set page_hero_eyebrow = "Users & Access" %}
+{% set page_hero_title = "Groups" %}
+{% set page_hero_subtitle = "Named groups + members. Resource access lives on the Resource access page." %}
 
+{% block head_extra %}
+<style>
   .gp-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 12px; margin-bottom: 18px; flex-wrap: wrap;
   }
-  .gp-title { margin: 0; font-size: 22px; font-weight: 600; }
-  .gp-sub { margin: 0; font-size: 13px; color: var(--text-secondary, #6b7280); }
   .gp-search {
     padding: 8px 12px 8px 32px; min-width: 280px;
     border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
     font-size: 13px;
-    background: #fff url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 10px center;
+    background: var(--ds-surface) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 10px center;
   }
 
-  .gp-table-wrap {
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 12px;
-    overflow: hidden;
-  }
-  .gp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .gp-table thead th {
-    text-align: left; padding: 12px 16px;
-    background: var(--border-light, #f9fafb);
-    border-bottom: 1px solid var(--border, #e5e7eb);
-    font-weight: 600; color: var(--text-secondary, #6b7280);
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
-  }
-  .gp-table tbody td {
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border-light, #f3f4f6);
-    vertical-align: middle;
-  }
-  .gp-table tbody tr:last-child td { border-bottom: none; }
-  .gp-table tbody tr { cursor: pointer; }
-  .gp-table tbody tr:hover { background: var(--border-light, #fafafa); }
 
   .gp-name {
     font-weight: 500; color: var(--text-primary, #111827);
     text-decoration: none;
   }
-  .gp-name:hover { color: var(--primary, #4338ca); text-decoration: underline; }
+  .gp-name:hover { color: var(--ds-primary, #4338ca); text-decoration: underline; }
   .gp-name-sub {
     display: block;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
@@ -89,18 +66,9 @@
   }
   .gp-empty .big { font-size: 15px; font-weight: 600; color: var(--text-primary, #111827); margin-bottom: 4px; }
 
-  .gp-btn {
-    padding: 8px 14px; border-radius: 8px;
-    font-size: 13px; font-weight: 500;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-    cursor: pointer;
-  }
-  .gp-btn:hover { background: var(--border-light, #f9fafb); }
-  .gp-btn.primary {
-    background: var(--primary, #6366f1); color: #fff;
-    border-color: var(--primary, #6366f1);
-  }
-  .gp-btn.primary:hover { filter: brightness(1.05); }
+  /* `.gp-btn` / `.gp-btn.primary` rules deleted — toolbar button
+     renders via `ds.button(variant='primary')` carrying canonical
+     .btn family. */
 
   /* Modal — same vocabulary as the rest of the admin pages */
   .modal-backdrop {
@@ -127,13 +95,6 @@
   .modal-card textarea { min-height: 60px; resize: vertical; }
 
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
-  .modal-btn {
-    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-    cursor: pointer;
-  }
-  .modal-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
-  .modal-btn.danger  { background: #dc2626; color: #fff; border-color: #dc2626; }
 
   .toast-stack {
     position: fixed; bottom: 24px; right: 24px; z-index: 2000;
@@ -149,22 +110,25 @@
   .toast.success { background: #047857; }
   .toast.error { background: #b91c1c; }
 </style>
+{% endblock %}
 
+{% block page %}
+{# Design-system component macros — toolbar "+ New group" + 4 modal
+   action buttons render via `ds.button` (auto-imported by base_ds).
+   JS-generated `.icon-btn` row actions stay page-local. #}
 <div class="gp-page">
+
   <div class="gp-toolbar">
     <div>
-      <h2 class="gp-title">Groups</h2>
-      <p class="gp-sub">Named buckets that hold members and resource grants.
-        Manage who has access to what on <a href="/admin/access">Resource access</a>.</p>
     </div>
     <div style="display:flex; gap:10px; align-items:center;">
       <input id="search" type="search" class="gp-search" placeholder="Filter by name or description…" autocomplete="off">
-      <button class="gp-btn primary" id="open-create-btn">+ New group</button>
+      {{ ds.button('+ New group', variant='primary', id='open-create-btn') }}
     </div>
   </div>
 
-  <div class="gp-table-wrap">
-    <table class="gp-table" id="groups-table">
+  <div class="data-table-wrap">
+    <table class="data-table" id="groups-table">
       <thead>
         <tr>
           <th>Name</th>
@@ -197,8 +161,9 @@
     <label for="group-desc">Description (optional)</label>
     <textarea id="group-desc" autocomplete="off"></textarea>
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="group-modal">Cancel</button>
-      <button class="modal-btn primary" id="group-save-btn">Save</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="group-modal"') }}
+      {{ ds.button('Save', variant='primary', id='group-save-btn') }}
     </div>
   </div>
 </div>
@@ -209,8 +174,9 @@
     <h3 id="confirm-title">Delete group?</h3>
     <p class="sub" id="confirm-text"></p>
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="confirm-modal">Cancel</button>
-      <button class="modal-btn danger" id="confirm-ok-btn">Delete</button>
+      {{ ds.button('Cancel', variant='secondary',
+                   attrs='data-close-modal="confirm-modal"') }}
+      {{ ds.button('Delete', variant='danger', id='confirm-ok-btn') }}
     </div>
   </div>
 </div>
@@ -225,7 +191,7 @@ const API = "/api/admin/groups";
 const GOOGLE_GROUP_PREFIX = {{ config.AGNES_GOOGLE_GROUP_PREFIX | tojson }};
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
-function fmtDate(s) { return s ? String(s).slice(0, 16).replace("T", " ") : "-"; }
+function fmtDate(s) { return s ? (window.AgnesTime.formatDateTime(s) || "-") : "-"; }
 
 function deriveDisplayName(fullEmail) {
   // Strip @domain, then strip the configured prefix (case-insensitive),

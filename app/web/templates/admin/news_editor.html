@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 
 {% block title %}Admin · News — {{ instance_name or "AI Data Analyst" }}{% endblock %}
 
@@ -6,23 +6,23 @@
 <style>
 body.news-admin .container { max-width: 1280px; padding: 0 32px 48px; }
 body.news-admin h1 { font-size: 22px; margin: 24px 0 10px; }
-body.news-admin h2 { font-size: 16px; margin: 18px 0 8px; color: #374151; }
+body.news-admin h2 { font-size: 16px; margin: 18px 0 8px; color: var(--ds-text-primary); }
 
 body.news-admin .panel {
-    background: white;
-    border: 1px solid #E5E7EB;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
     border-radius: 12px;
     padding: 22px 26px;
     margin-bottom: 18px;
 }
 body.news-admin .meta {
     font-size: 12px;
-    color: #6B7280;
+    color: var(--ds-text-secondary);
     margin-bottom: 10px;
     text-transform: uppercase;
     letter-spacing: 0.6px;
 }
-body.news-admin .empty { color: #6B7280; font-style: italic; }
+body.news-admin .empty { color: var(--ds-text-secondary); font-style: italic; }
 
 body.news-admin .editor-row {
     display: grid;
@@ -33,7 +33,7 @@ body.news-admin .editor-col label {
     display: block;
     font-size: 12px;
     font-weight: 600;
-    color: #374151;
+    color: var(--ds-text-primary);
     margin-bottom: 6px;
     text-transform: uppercase;
     letter-spacing: 0.4px;
@@ -44,7 +44,7 @@ body.news-admin textarea {
     font-family: ui-monospace, "SF Mono", Consolas, monospace;
     font-size: 13px;
     padding: 10px 12px;
-    border: 1px solid #D1D5DB;
+    border: 1px solid var(--ds-border);
     border-radius: 6px;
     resize: vertical;
     box-sizing: border-box;
@@ -53,9 +53,9 @@ body.news-admin textarea#content { min-height: 360px; }
 body.news-admin .preview-frame {
     width: 100%;
     min-height: 360px;
-    border: 1px solid #E5E7EB;
+    border: 1px solid var(--ds-border);
     border-radius: 6px;
-    background: white;
+    background: var(--ds-surface);
 }
 
 body.news-admin .row-actions {
@@ -65,28 +65,28 @@ body.news-admin .row-actions {
     margin-top: 14px;
 }
 body.news-admin button.primary {
-    background: #0073D1;
+    background: var(--ds-primary);
     color: white;
-    border: 1px solid #0073D1;
+    border: 1px solid var(--ds-primary);
     padding: 8px 16px;
     border-radius: 6px;
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
 }
-body.news-admin button.primary:hover { background: #0056A3; }
+body.news-admin button.primary:hover { background: var(--ds-primary-dark); }
 body.news-admin button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 body.news-admin button.ghost {
-    background: white;
-    color: #374151;
-    border: 1px solid #D1D5DB;
+    background: var(--ds-surface);
+    color: var(--ds-text-primary);
+    border: 1px solid var(--ds-border);
     padding: 8px 14px;
     border-radius: 6px;
     font-size: 13px;
     cursor: pointer;
 }
-body.news-admin button.ghost:hover { border-color: #0073D1; color: #0073D1; }
-body.news-admin .status { font-size: 13px; color: #6B7280; margin-left: 6px; }
+body.news-admin button.ghost:hover { border-color: var(--ds-primary); color: var(--ds-primary); }
+body.news-admin .status { font-size: 13px; color: var(--ds-text-secondary); margin-left: 6px; }
 
 body.news-admin table.versions {
     width: 100%;
@@ -113,14 +113,14 @@ body.news-admin .badge-published { background: #D1FAE5; color: #047857; }
 body.news-admin details.format-help {
     margin-top: 14px;
     background: #F9FAFB;
-    border: 1px solid #E5E7EB;
+    border: 1px solid var(--ds-border);
     border-radius: 6px;
     padding: 10px 14px;
 }
 body.news-admin details.format-help summary {
     cursor: pointer;
     font-weight: 600;
-    color: #374151;
+    color: var(--ds-text-primary);
     font-size: 13px;
 }
 body.news-admin details.format-help pre {
@@ -156,7 +156,7 @@ document.addEventListener('DOMContentLoaded', function () {
             // through. Empty sandbox = strictest possible posture.
             var html = '<style>body{font-family:Inter,system-ui,sans-serif;font-size:14px;color:#111827;margin:0;padding:18px;}</style>'
                 + '<div>' + (data.intro || '') + '</div>'
-                + '<hr style="border:0;border-top:1px solid #E5E7EB;margin:14px 0">'
+                + '<hr style="border:0;border-top:1px solid #e4e7ee;margin:14px 0">'
                 + '<div>' + (data.content || '') + '</div>';
             previewFrame.setAttribute('srcdoc', html);
         }).catch(function () { /* ignore preview failures silently */ });
@@ -185,8 +185,8 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 
-    publishBtn && publishBtn.addEventListener('click', function () {
-        if (!confirm('Publish the active draft? This makes it the version everyone sees on /home and /news.')) return;
+    publishBtn && publishBtn.addEventListener('click', async function () {
+        if (!(await confirmModal({ message: 'Publish the active draft? This makes it the version everyone sees on /home and /news.', danger: false }))) return;
         publishBtn.disabled = true;
         saveStatus.textContent = 'Publishing…';
         fetch('/api/admin/news/publish', { method: 'POST', credentials: 'same-origin' })
@@ -201,16 +201,16 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     document.querySelectorAll('button.unpublish-btn').forEach(function (btn) {
-        btn.addEventListener('click', function () {
+        btn.addEventListener('click', async function () {
             var v = btn.getAttribute('data-version');
-            if (!confirm('Unpublish version ' + v + '? /home and /news will fall back to the next-highest published version.')) return;
+            if (!(await confirmModal('Unpublish version ' + v + '? /home and /news will fall back to the next-highest published version.'))) return;
             btn.disabled = true;
             fetch('/api/admin/news/unpublish/' + v, { method: 'POST', credentials: 'same-origin' })
                 .then(function (r) {
                     if (!r.ok) throw new Error(r.status);
                     window.location.reload();
                 }).catch(function (e) {
-                    alert('Unpublish failed: ' + e.message);
+                    alertModal('Unpublish failed: ' + e.message);
                     btn.disabled = false;
                 });
         });
@@ -220,14 +220,21 @@ document.addEventListener('DOMContentLoaded', function () {
 {% endblock %}
 
 {% block content %}
-<h1>News editor</h1>
-
+{# Design-system component macros — Save draft / Publish / Unpublish
+   buttons render via `ds.button`. Page-local `body.news-admin
+   button.primary` / `button.ghost` rules are no longer matched
+   (markup now carries `.btn .btn-*` instead). The `.unpublish-btn`
+   class survives via klass= to keep the JS selector working. #}
+{% set page_hero_eyebrow = "Server" %}
+{% set page_hero_title = "News editor" %}
+{% set page_hero_subtitle = "Compose the news intro shown at the bottom of /home." %}
+{% include "_page_hero.html" %}
 <div class="panel">
     <h2>Currently published</h2>
     {% if news_current %}
     <div class="meta">
         Version {{ news_current.version }} ·
-        published {{ news_current.published_at.strftime('%Y-%m-%d %H:%M UTC') if news_current.published_at else '' }}
+        published {% if news_current.published_at %}<time datetime="{{ news_current.published_at.isoformat() }}">{{ news_current.published_at.strftime('%Y-%m-%d %H:%M') }} UTC</time>{% endif %}
         {% if news_current.published_by %} by {{ news_current.published_by }}{% endif %}
     </div>
     <p style="margin:0">View live at <a href="/news">/news</a>.</p>
@@ -247,11 +254,12 @@ document.addEventListener('DOMContentLoaded', function () {
             <textarea id="content" placeholder="<h1>Full body</h1>&#10;<p>Use the documented classes — see Format help below.</p>">{{ news_draft.content if news_draft else '' }}</textarea>
 
             <div class="row-actions">
-                <button type="button" class="primary" id="save-btn">Save draft</button>
-                <button type="button" class="primary" id="publish-btn"
-                        {% if not news_draft %}disabled title="Save a draft first"{% endif %}>
-                    Publish this draft
-                </button>
+                {{ ds.button('Save draft', variant='primary',
+                             type='button', id='save-btn') }}
+                {{ ds.button('Publish this draft', variant='primary',
+                             type='button', id='publish-btn',
+                             disabled=(not news_draft),
+                             attrs=('title="Save a draft first"' if not news_draft else '')) }}
                 <span class="status" id="save-status"></span>
             </div>
 
@@ -300,13 +308,15 @@ document.addEventListener('DOMContentLoaded', function () {
             <tr>
                 <td><strong>{{ v.version }}</strong></td>
                 <td><span class="badge badge-{{ v.status }}">{{ v.status }}</span></td>
-                <td>{{ v.created_at.strftime('%Y-%m-%d %H:%M') if v.created_at else '' }}</td>
+                <td>{% if v.created_at %}<time datetime="{{ v.created_at.isoformat() }}">{{ v.created_at.strftime('%Y-%m-%d %H:%M') }} UTC</time>{% endif %}</td>
                 <td>{{ v.created_by or '' }}</td>
-                <td>{{ v.published_at.strftime('%Y-%m-%d %H:%M') if v.published_at else '' }}</td>
+                <td>{% if v.published_at %}<time datetime="{{ v.published_at.isoformat() }}">{{ v.published_at.strftime('%Y-%m-%d %H:%M') }} UTC</time>{% endif %}</td>
                 <td>{{ v.intro_preview }}</td>
                 <td>
                     {% if v.published %}
-                    <button type="button" class="ghost unpublish-btn" data-version="{{ v.version }}">Unpublish</button>
+                    {{ ds.button('Unpublish', variant='ghost', size='sm',
+                                 type='button', klass='unpublish-btn',
+                                 attrs='data-version="' ~ v.version ~ '"') }}
                     {% endif %}
                 </td>
             </tr>

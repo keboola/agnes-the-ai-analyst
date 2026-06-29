@@ -45,10 +45,23 @@ def setup_db(tmp_path, monkeypatch):
         "INSERT INTO table_registry (id, name) VALUES (?, ?)",
         ["salaries", "salaries"],
     )
+    # Stack-gated RBAC: wrap 'orders' in an auto data_package and grant the
+    # package to the analysts group with required=true so it lands in the
+    # user's stack automatically. Per-table grants on resource_grants are
+    # no longer consulted for analyst visibility.
+    from src.repositories.data_packages import DataPackagesRepository
+    pkgs = DataPackagesRepository(conn)
+    pkg_id = pkgs.create(
+        name="orders-pkg", slug="orders-pkg",
+        description=None, icon=None, color=None,
+        created_by="test",
+    )
+    pkgs.add_table(pkg_id, "orders", added_by="test")
     conn.execute(
-        """INSERT INTO resource_grants (id, group_id, resource_type, resource_id)
-           VALUES (?, ?, 'table', 'orders')""",
-        [str(uuid.uuid4()), analysts["id"]],
+        """INSERT INTO resource_grants
+           (id, group_id, resource_type, resource_id, requirement)
+           VALUES (?, ?, 'data_package', ?, 'required')""",
+        [str(uuid.uuid4()), analysts["id"], pkg_id],
     )
 
     conn.close()
@@ -130,10 +143,16 @@ class TestGetAccessibleTables:
     def test_non_admin_returns_grant_list(self, setup_db):
         from src.db import get_system_db
         from src.rbac import get_accessible_tables
+        from connectors.internal.access import INTERNAL_TABLES
         conn = get_system_db()
         try:
             tables = get_accessible_tables({"id": "user1"}, conn)
-            assert tables == ["orders"]
+            internal_ids = {t.registry_id for t in INTERNAL_TABLES}
+            # Granted tables + auto-appended internal tables (every
+            # authenticated user gets the agnes_* row-scoped views).
+            assert "orders" in tables
+            assert internal_ids <= set(tables)
+            assert set(tables) - internal_ids == {"orders"}
         finally:
             conn.close()
 
@@ -142,10 +161,13 @@ class TestGetAccessibleTables:
         from src.repositories.user_group_members import UserGroupMembersRepository
         from src.repositories.users import UserRepository
         from src.rbac import get_accessible_tables
+        from connectors.internal.access import INTERNAL_TABLES
         conn = get_system_db()
         try:
             UserRepository(conn).create(id="loner", email="loner@test.com", name="L")
-            # Membership in Everyone alone (no grants on it) → empty list.
+            # Membership in Everyone alone (no grants on it). The user still
+            # gets the agnes_* internal tables (row-level RBAC handles the
+            # actual security), but no granted tables.
             everyone = conn.execute(
                 "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_EVERYONE_GROUP]
             ).fetchone()
@@ -153,6 +175,53 @@ class TestGetAccessibleTables:
                 UserGroupMembersRepository(conn).add_member(
                     "loner", everyone[0], source="system_seed",
                 )
-            assert get_accessible_tables({"id": "loner"}, conn) == []
+            internal_ids = {t.registry_id for t in INTERNAL_TABLES}
+            assert set(get_accessible_tables({"id": "loner"}, conn)) == internal_ids
+        finally:
+            conn.close()
+
+
+class TestHasExplicitGrant:
+    """``has_explicit_grant`` reports only what is explicitly granted to a
+    group the user belongs to — no Admin god-mode short-circuit, no implicit
+    internal-table grants. Used for UI affordances (the cloud-chat nav link)
+    that must track rollout state, not effective access. Contrast with
+    ``can_access``, which DOES short-circuit for admins."""
+
+    def test_admin_without_grant_is_false_while_can_access_is_true(self, setup_db):
+        from src.db import get_system_db
+        from app.auth.access import can_access, has_explicit_grant
+        conn = get_system_db()
+        try:
+            # No chat grant exists anywhere in the seeded DB.
+            assert has_explicit_grant("admin1", "chat", "chat", conn) is False
+            # Same answer through the backend-aware default path (no conn) —
+            # this is what the nav-link caller now uses post-fix.
+            assert has_explicit_grant("admin1", "chat", "chat") is False
+            # ...yet god-mode still grants the admin *effective* access.
+            assert can_access("admin1", "chat", "chat", conn) is True
+        finally:
+            conn.close()
+
+    def test_member_of_granted_group_is_true(self, setup_db):
+        from src.db import get_system_db
+        from app.auth.access import has_explicit_grant
+        conn = get_system_db()
+        try:
+            analysts_id = conn.execute(
+                "SELECT id FROM user_groups WHERE name = 'analysts'"
+            ).fetchone()[0]
+            conn.execute(
+                """INSERT INTO resource_grants
+                   (id, group_id, resource_type, resource_id)
+                   VALUES (?, ?, 'chat', 'chat')""",
+                [str(uuid.uuid4()), analysts_id],
+            )
+            # user1 ∈ analysts → the explicit grant is visible.
+            assert has_explicit_grant("user1", "chat", "chat", conn) is True
+            # Backend-aware default path (no conn) sees the same grant.
+            assert has_explicit_grant("user1", "chat", "chat") is True
+            # admin1 ∉ analysts and god-mode is NOT applied here → still False.
+            assert has_explicit_grant("admin1", "chat", "chat", conn) is False
         finally:
             conn.close()

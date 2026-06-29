@@ -4,10 +4,19 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock
 
+from click.testing import CliRunner as ClickCliRunner
+from typer.main import get_command
 from typer.testing import CliRunner
 from cli.main import app
 
 runner = CliRunner()
+# Typer's CliRunner mixes stdout/stderr into a single buffer (Click 8.1-era
+# behaviour), which raises ValueError on `.stderr` access. Click 8.2+ runs
+# them separately by default. Convert the Typer app to a Click command and
+# invoke it via Click's runner for the bytes_scanned tests that need to
+# inspect `result.stderr` (Devin Review BUG_0001 on #598).
+split_runner = ClickCliRunner()
+click_app = get_command(app)
 
 
 @pytest.fixture(autouse=True)
@@ -47,6 +56,51 @@ class TestRemoteQuery:
         assert "HTTP 400" in result.output
         assert "bad SQL" in result.output
 
+    def test_remote_query_5xx_exits_nonzero(self):
+        """5xx server errors propagate to a nonzero exit code (issue #345 C).
+
+        Without this, ``set -e`` shells, CI pipelines, and any wrapper
+        script that checks ``$?`` to detect failure would silently
+        proceed even when the server returned ``HTTP 502:`` to stdout.
+        The reporter who filed #345 hit the exact rc=0-on-502 pattern
+        on a slightly older CLI build; this guards against any future
+        regression that drops the ``raise typer.Exit(1)`` from the
+        non-200 branch of ``_query_remote``.
+        """
+        with patch("cli.client.api_post", return_value=_resp(502, text="bad gateway")):
+            result = runner.invoke(app, ["query", "SELECT 1", "--remote"])
+        assert result.exit_code != 0, (
+            f"Expected nonzero exit for HTTP 502, got rc={result.exit_code}. "
+            f"Output: {result.output}"
+        )
+        assert "HTTP 502" in result.output
+
+    def test_remote_query_json_alias_equals_format_json(self):
+        """``--json`` is a shortcut for ``--format json`` (issue #345 D).
+
+        Paste-prompts and LLM-assisted analysts routinely reach for
+        ``agnes query --json`` first; the typer "Did you mean --stdin?"
+        suggestion the absence of this flag previously produced was
+        actively misleading.
+        """
+        payload = {"columns": ["id"], "rows": [[1]], "truncated": False}
+        with patch("cli.client.api_post", return_value=_resp(200, payload)):
+            result = runner.invoke(app, ["query", "SELECT 1", "--remote", "--json"])
+        assert result.exit_code == 0
+        # Output is parseable JSON, equivalent to --format json
+        parsed = json.loads(result.output.strip())
+        assert parsed == [{"id": 1}]
+
+    def test_json_and_explicit_csv_format_are_mutually_exclusive(self):
+        """``--json --format csv`` is contradictory; reject with rc=1.
+
+        ``--json --format json`` is allowed (redundant but consistent);
+        ``--json`` alone is the common case.
+        """
+        result = runner.invoke(app, ["query", "SELECT 1", "--json", "--format", "csv"])
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output
+
     def test_remote_query_truncated(self):
         """Truncated result shows warning."""
         payload = {"columns": ["id"], "rows": [[i] for i in range(5)], "truncated": True}
@@ -54,6 +108,56 @@ class TestRemoteQuery:
             result = runner.invoke(app, ["query", "SELECT id FROM t", "--remote", "--limit", "5"])
         assert result.exit_code == 0
         assert "truncated" in result.output
+
+    def test_remote_query_bytes_scanned_notice_on_stderr(self):
+        """#393: a non-null bytes_scanned prints a human-readable dry-run
+        estimate to STDERR (mirrors the `truncated` notice). Uses the
+        module-level ``split_runner`` so result.stderr is captured
+        separately (Devin Review BUG_0001 on #598)."""
+        payload = {
+            "columns": ["id"],
+            "rows": [[1]],
+            "truncated": False,
+            "bytes_scanned": 4_500_000_000,
+        }
+        with patch("cli.client.api_post", return_value=_resp(200, payload)):
+            result = split_runner.invoke(click_app, ["query", "SELECT id FROM web_sessions", "--remote"])
+        assert result.exit_code == 0
+        assert "BigQuery scanned" in result.stderr
+        assert "dry-run estimate" in result.stderr
+        # 4.5e9 bytes ~= 4.2 GB
+        assert "GB" in result.stderr
+
+    def test_remote_query_no_bytes_scanned_notice_when_none(self):
+        """#393: local-style payload (bytes_scanned None) emits no notice."""
+        payload = {"columns": ["id"], "rows": [[1]], "truncated": False, "bytes_scanned": None}
+        with patch("cli.client.api_post", return_value=_resp(200, payload)):
+            result = runner.invoke(app, ["query", "SELECT 1", "--remote"])
+        assert result.exit_code == 0
+        assert "BigQuery scanned" not in result.output
+
+    def test_remote_query_bytes_scanned_keeps_stdout_pure_json(self):
+        """#393: the bytes_scanned notice goes to STDERR only — `--format
+        json` stdout stays parseable JSON. Uses the module-level
+        ``split_runner`` so we can verify stdout stays pure JSON and the
+        notice lands only on stderr (Devin Review BUG_0001 on #598)."""
+        payload = {
+            "columns": ["id"],
+            "rows": [[1]],
+            "truncated": False,
+            "bytes_scanned": 1_073_741_824,
+        }
+        with patch("cli.client.api_post", return_value=_resp(200, payload)):
+            result = split_runner.invoke(
+                click_app, ["query", "SELECT id FROM t", "--remote", "--format", "json"]
+            )
+        assert result.exit_code == 0
+        # stdout is pure JSON — no notice leaked in.
+        parsed = json.loads(result.stdout.strip())
+        assert parsed == [{"id": 1}]
+        assert "BigQuery scanned" not in result.stdout
+        # ...but the notice is present on stderr.
+        assert "BigQuery scanned" in result.stderr
 
     def test_remote_query_uses_long_timeout(self):
         """--remote passes the long-running QUERY_TIMEOUT_S to api_post.
@@ -75,10 +179,13 @@ class TestRemoteQuery:
 
 class TestLocalQuery:
     def test_local_query_no_db(self, tmp_config):
-        """Local query without DuckDB exits with guidance."""
+        """Local query without DuckDB exits with guidance that leads with the
+        no-download `--remote` path (and still mentions `agnes pull`)."""
         result = runner.invoke(app, ["query", "SELECT 1"])
         assert result.exit_code == 1
-        assert "not found" in result.output.lower()
+        out = result.output.lower()
+        assert "--remote" in out
+        assert "agnes pull" in out
 
     def test_local_query_with_real_db(self, tmp_config):
         """Local query executes against real DuckDB."""

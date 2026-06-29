@@ -1,0 +1,347 @@
+/* Design system tokens — `--ds-*` namespace.
+ *
+ * The `--ds-*` set is the opt-in design system introduced by the
+ * /home redesign: green/navy palette, system font stack, light/dark
+ * surface pair, blue-info + amber-warn callout vocabularies.
+ *
+ * Pages opt into the design system by adding a scope class
+ * (`.home-mock`, `.advanced-mock`) and referencing `var(--ds-*)`.
+ * Tokens live globally so any future page (or shared component) can
+ * pick them up without re-declaring values.
+ *
+ * The legacy `--primary` family in style-custom.css remains the
+ * default app brand (blue) used by login, dashboard, catalog,
+ * marketplace, admin, etc. The two systems coexist — pages that
+ * haven't been redesigned keep reading `var(--primary)` and stay
+ * blue; redesigned pages reference `var(--ds-*)` and get the green
+ * surface.
+ */
+
+:root {
+    /* Native form controls (inputs/selects/textareas) + scrollbars render in
+       the light UA palette; `[data-theme="dark"]` below flips this to `dark`
+       so a default-styled field with no explicit background doesn't stay
+       white on a dark surface. */
+    color-scheme: light;
+
+    /* Brand surface — green/navy palette. Opted into via the
+       `.home-mock` / `.advanced-mock` scopes. */
+    --ds-primary: #2ea877;          /* brand-dark green */
+    --ds-primary-dark: #1f8a5e;     /* hover/active */
+    --ds-primary-light: #e6f9f0;    /* mint tint */
+    --ds-brand-accent: #54d3a0;     /* brand (lighter) */
+
+    /* Hero surface — deep navy used by setup hero + first-session
+       terminal-frame backgrounds. Reads as the visual ground for any
+       "this is what your terminal will look like" mock-up. */
+    --ds-hero-bg: #0f1b3a;
+    --ds-hero-bg-deep: #0a1430;
+    --ds-hero-ink: #f3f6ff;
+
+    /* Code-panel surface — near-black bg with cool-blue ink + warm
+       yellow command accent. Used by `.code-block` (copyable install
+       command), `.terminal-body`, expected-output blocks. */
+    --ds-code-bg: #0c1224;
+    --ds-code-ink: #d7e4ff;
+    --ds-code-yellow: #ffd866;
+
+    /* Light surface — page background, card surface, dim variant
+       for inset panels. */
+    --ds-bg: #f6f7fa;
+    --ds-surface: #ffffff;
+    --ds-surface-dim: #f0f2f6;
+    --ds-border: #e4e7ee;
+    --ds-border-light: #f0f2f6;
+
+    /* Text — primary / secondary / muted on light surfaces. Primary
+       is near-black for body copy; muted is for chrome (timestamps,
+       hints, captions). */
+    --ds-text-primary: #0e1525;
+    --ds-text-secondary: #4a5168;
+    --ds-text-muted: #788098;
+
+    /* Accent — orange used for terminal `[3]`-style prompts and the
+       Cowork surface card warning chip. */
+    --ds-orange: #C2410C;
+    --ds-orange-light: #FED7AA;
+
+    /* Callout vocabularies — `.callout-hint` (blue info) and
+       `.callout-rec` (amber recommendation). Background +
+       left-border + ink so the box reads at a glance. */
+    --ds-info-bg: #eef3ff;
+    --ds-info-ink: #1c3994;
+    --ds-info-line: #4f7cf2;
+    --ds-warn-bg: #fff8e6;
+    --ds-warn-ink: #6e4d00;
+    --ds-warn-line: #f5c84b;
+
+    /* Elevation — navy-tinted shadow stack. Matches the deep-navy
+       hero so the depth perception reads consistently across the
+       page. */
+    --ds-shadow-sm: 0 1px 2px rgba(15, 27, 58, .05), 0 1px 3px rgba(15, 27, 58, .06);
+    --ds-shadow-md: 0 4px 16px rgba(15, 27, 58, .08);
+    --ds-shadow-lg: 0 8px 24px rgba(15, 27, 58, .14);
+
+    /* Hero box-shadow tint — used by `.page-header--hero`,
+       `.stack-hero`, `.env-setup-cta`. Flipped per theme so the
+       drop-shadow colour follows the gradient. */
+    --ds-hero-shadow: rgba(15, 27, 58, 0.22);
+
+    /* Hero eyebrow colour — green accent on top of the navy
+       gradient by default. The "blue" theme aliases this to a
+       translucent white because mint-green on blue reads poorly. */
+    --ds-hero-eyebrow: var(--ds-brand-accent);
+
+    /* Hero CTA pill — `<a class="btn-intro-primary">` on /home's
+       intro hero. Mint-green-on-navy by default; the "blue" theme
+       flips it to white-on-blue because mint-on-blue has poor
+       contrast. */
+    --ds-hero-cta-bg: var(--ds-brand-accent);
+    --ds-hero-cta-fg: var(--ds-hero-bg);
+    --ds-hero-cta-bg-hover: var(--ds-primary);
+    /* On hover the bg darkens to --ds-primary; switch text to white
+       so contrast stays high (dark navy on medium-dark green ≈ 5.6:1,
+       white on --ds-primary ≈ 8.5:1). */
+    --ds-hero-cta-fg-hover: #ffffff;
+
+    /* Typography — system stack so weight + letterforms render
+       identically on macOS (San Francisco) and Windows (Segoe UI).
+       Inter remains a graceful fallback in the cascade. */
+    --ds-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+    --ds-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* ─── Theme: blue (pre-redesign palette) ──────────────────────────
+   Activated by `<html data-theme="blue">`. Overrides only the
+   tokens that diverge from the default navy theme:
+     - brand fill          → blue (legacy `--primary`)
+     - hero gradient       → blue → blue-dark
+     - eyebrow accent      → translucent white (mint-green on blue
+                              reads poorly)
+     - drop-shadow tint    → blue
+   Everything else (surfaces, callouts, code panels, fonts)
+   stays the same. Page markup and component classes don't change
+   between themes. */
+:root[data-theme="blue"] {
+    --ds-primary: var(--primary);
+    --ds-primary-dark: var(--primary-dark);
+    --ds-primary-light: var(--primary-light);
+    --ds-brand-accent: var(--brand-accent);
+
+    --ds-hero-bg: var(--primary);
+    --ds-hero-bg-deep: var(--primary-dark);
+
+    --ds-hero-shadow: rgba(0, 115, 209, 0.20);
+    --ds-hero-eyebrow: rgba(255, 255, 255, 0.92);
+
+    /* Blue theme — hero CTA pill flips to white-on-blue. Mint-green
+       on blue reads badly; white on the brand-blue gradient has
+       full contrast. Hover state darkens to a translucent white. */
+    --ds-hero-cta-bg: #ffffff;
+    --ds-hero-cta-fg: var(--primary-dark);
+    --ds-hero-cta-bg-hover: rgba(255, 255, 255, 0.88);
+    /* Blue theme: bg on hover stays near-white, keep dark text for contrast. */
+    --ds-hero-cta-fg-hover: var(--primary-dark);
+
+    /* `.callout-hint` info-bg vocabulary — default is a cool-blue
+       indigo (#eef3ff / #4f7cf2 / #1c3994) that reads as a
+       distinct "info" hue on the navy theme. Under the brand-blue
+       theme the indigo clashes with the hero gradient; re-tint to
+       brand-blue so all the blue surfaces share a hue family. */
+    --ds-info-bg: rgba(0, 115, 209, 0.08);
+    --ds-info-line: var(--primary);
+    --ds-info-ink: var(--primary-dark);
+}
+
+/* ─── Design-system additions driven by .interface-design/system.md ────
+   Tokens consumed by the .ds-card family, the .badge--* modifiers, and
+   the canonical focus-ring contract. Append-only; nothing above this
+   block changed. */
+:root {
+    /* Cross-pattern accent vocabulary — one set of {bg,ink,line} per
+       status that feeds .flash-*, .badge--*, .ds-card--*, and the
+       legacy .card-error/.card-highlight/.card-ai re-skins. Info +
+       warn alias the pre-existing tokens above; success + danger are
+       net-new. Per system.md: "One status vocabulary, five surfaces."
+       Re-tinting any status is a one-token edit. */
+    --ds-accent-info-bg:    var(--ds-info-bg);
+    --ds-accent-info-ink:   var(--ds-info-ink);
+    --ds-accent-info-line:  var(--ds-info-line);
+
+    --ds-accent-warn-bg:    var(--ds-warn-bg);
+    --ds-accent-warn-ink:   var(--ds-warn-ink);
+    --ds-accent-warn-line:  var(--ds-warn-line);
+
+    --ds-accent-success-bg:    #dcfce7;
+    --ds-accent-success-ink:   #166534;
+    --ds-accent-success-line:  #16a34a;
+
+    --ds-accent-danger-bg:    #fee2e2;
+    --ds-accent-danger-ink:   #991b1b;
+    --ds-accent-danger-line:  #dc2626;
+
+    /* Canonical focus-ring — one outline + offset reused on every
+       interactive element (button, link, tab, table row, input). Per
+       system.md: "Focus ring is non-negotiable. No outline: none
+       carve-outs." */
+    --ds-focus-outline:        2px solid var(--ds-primary);
+    --ds-focus-outline-offset: 2px;
+
+    /* Extended text hierarchy used by .ds-card and form-control rules. */
+    --ds-text-disabled: #d1d5db;
+    --ds-text-inverse:  #ffffff;
+    --ds-text-link:     var(--ds-primary);
+}
+
+/* ─── Theme: dark + blue variant ──────────────────────────────────
+   Activated by `<html data-theme="dark" data-theme-variant="blue">`.
+   Stamped by _theme_resolve.html when the user's light-mode brand is
+   "blue" and they switch to dark.  Overrides only the brand tokens so
+   the blue palette persists in dark mode instead of falling back to
+   the default green.
+
+   Colour selection rationale (WCAG AA contrast on --ds-surface #141a30):
+     --ds-primary      #4f9deb  → 6.1:1  ✓ (AA ≥ 4.5:1)
+     --ds-primary-dark #3a87d4  → 4.8:1  ✓ (AA ≥ 4.5:1)
+     --ds-brand-accent #7ab8f2  → 8.1:1  ✓ (lighter, used for hero)
+   Light tint is a translucent fill, not body text, so 3:1 is sufficient.
+   Hero tokens mirror the light-blue theme's white-on-blue convention. */
+:root[data-theme="dark"][data-theme-variant="blue"] {
+    --ds-primary:       #4f9deb;
+    --ds-primary-dark:  #3a87d4;
+    --ds-primary-light: rgba(79, 157, 235, 0.18);
+    --ds-brand-accent:  #7ab8f2;
+
+    /* Hero surface — stays blue even in dark mode. */
+    --ds-hero-bg:      #0a2a5e;
+    --ds-hero-bg-deep: #061a45;
+
+    /* Hero eyebrow + CTA: translucent-white convention from the blue
+       light theme — mint-on-blue has poor contrast. */
+    --ds-hero-shadow:     rgba(0, 80, 180, 0.35);
+    --ds-hero-eyebrow:    rgba(255, 255, 255, 0.92);
+    --ds-hero-cta-bg:     #ffffff;
+    --ds-hero-cta-fg:     #0a2a5e;
+    --ds-hero-cta-bg-hover: rgba(255, 255, 255, 0.88);
+    --ds-hero-cta-fg-hover: #0a2a5e;
+
+    /* Info callout vocabulary re-tinted to brand-blue family (same
+       reasoning as the light blue theme). */
+    --ds-info-bg:         rgba(79, 157, 235, 0.18);
+    --ds-info-line:       #4f9deb;
+    --ds-info-ink:        #a8c8f5;
+    --ds-accent-info-bg:  rgba(79, 157, 235, 0.18);
+    --ds-accent-info-line: #4f9deb;
+    --ds-accent-info-ink:  #a8c8f5;
+}
+
+/* ─── Theme: dark ──────────────────────────────────────────────────
+   Activated by ``<html data-theme="dark">``. Overrides the surface,
+   text, border, and accent tokens so every consumer of ``--ds-*``
+   flips wholesale. The brand-primary green stays the same hue but
+   shifts lighter for AA contrast on dark fills. Page markup and
+   component classes do NOT change between themes.
+
+   Status accent backgrounds use a translucent tint of the line
+   colour instead of a tinted-pastel light surface — pastel
+   backgrounds (success-bg=#dcfce7 etc.) wash out the body text on
+   dark surfaces, while a 14% rgba over the dark page bg reads
+   correctly as "muted info / warn / success / danger" without
+   competing with the body.
+
+   Also overrides the legacy ``--background`` / ``--surface`` family
+   in style-custom.css so the app header, footer, and any page still
+   reading the legacy tokens flip together. The two families are
+   the same surface — splitting them across themes would tear the
+   chrome.
+
+   Known gap: dark mode is the system.md "future brief" — only the
+   surfaces audited by the chat page are guaranteed AA-clean.
+   Other pages may need touch-ups when their templates next change. */
+:root[data-theme="dark"] {
+    /* Flip native controls (inputs, selects, textareas, scrollbars) to the
+       dark UA palette so browser-default form fields aren't white-on-dark.
+       Higher specificity than `:root`; `auto` + OS-dark resolves here too. */
+    color-scheme: dark;
+
+    /* Brand surface — same hue, lighter for AA contrast on dark fills */
+    --ds-primary: #4ec096;
+    --ds-primary-dark: #2ea877;
+    --ds-primary-light: rgba(78, 192, 150, 0.16);
+    --ds-brand-accent: #76d6ad;
+
+    /* Light surface family flips to a navy-tinted dark stack so the
+       page reads as a single tonal family with the existing hero. */
+    --ds-bg: #0c1224;
+    --ds-surface: #141a30;
+    --ds-surface-dim: #1c2440;
+    --ds-border: #283255;
+    --ds-border-light: #1f2845;
+
+    /* Text — pale-ink hierarchy on dark surfaces. */
+    --ds-text-primary: #f3f6ff;
+    --ds-text-secondary: #b9c1d8;
+    --ds-text-muted: #7d86a3;
+    --ds-text-disabled: #4a5168;
+    --ds-text-inverse: #0e1525;
+
+    /* Status backgrounds: translucent tint of the line colour over
+       the page bg. Inks shift lighter so they read on the tint. */
+    --ds-accent-info-bg:    rgba(79, 124, 242, 0.18);
+    --ds-accent-info-ink:   #a8c1ff;
+    --ds-accent-info-line:  #4f7cf2;
+
+    --ds-accent-warn-bg:    rgba(245, 200, 75, 0.18);
+    --ds-accent-warn-ink:   #ffd970;
+    --ds-accent-warn-line:  #f5c84b;
+
+    --ds-accent-success-bg: rgba(22, 163, 74, 0.20);
+    --ds-accent-success-ink: #86e1a3;
+    --ds-accent-success-line: #16a34a;
+
+    --ds-accent-danger-bg:  rgba(220, 38, 38, 0.22);
+    --ds-accent-danger-ink: #ff9b9b;
+    --ds-accent-danger-line: #dc2626;
+
+    /* Legacy compat shims — these live in style-custom.css and are
+       referenced by the app header, footer, and pages that haven't
+       moved onto ``--ds-*`` yet. Override them here so the chrome
+       flips alongside the design-token surfaces. */
+    --background: var(--ds-bg);
+    --surface: var(--ds-surface);
+    --surface-dim: var(--ds-surface-dim);
+    --border: var(--ds-border);
+    --border-light: var(--ds-border-light);
+    --text-primary: var(--ds-text-primary);
+    --text-secondary: var(--ds-text-secondary);
+    --text-muted: var(--ds-text-muted);
+    --text-disabled: var(--ds-text-disabled);
+    --info-bg: var(--ds-accent-info-bg);
+    --info-ink: var(--ds-accent-info-ink);
+    --info-line: var(--ds-accent-info-line);
+    --warn-bg: var(--ds-accent-warn-bg);
+    --warn-ink: var(--ds-accent-warn-ink);
+    --warn-line: var(--ds-accent-warn-line);
+
+    /* Shadows are mostly invisible on dark surfaces — give them more
+       weight so the depth perception still registers. */
+    --ds-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.25);
+    --ds-shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
+    --ds-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.55);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.25);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
+    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.45);
+    --shadow-elevated: 0 8px 24px rgba(0, 0, 0, 0.55);
+
+    /* Focus-ring colour stays the brand primary — same green dot on
+       dark surfaces reads as "interactive" identically to light. */
+
+    /* Old --ds-info-* / --ds-warn-* vocab → the dark accent tints; the
+       light pastel bgs (#eef3ff etc.) wash out body text on dark. */
+    --ds-info-bg: var(--ds-accent-info-bg);
+    --ds-info-ink: var(--ds-accent-info-ink);
+    --ds-info-line: var(--ds-accent-info-line);
+    --ds-warn-bg: var(--ds-accent-warn-bg);
+    --ds-warn-ink: var(--ds-accent-warn-ink);
+    --ds-warn-line: var(--ds-accent-warn-line);
+}

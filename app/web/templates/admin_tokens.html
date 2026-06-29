@@ -1,65 +1,29 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}Access tokens — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
+{% block head_extra %}
 <style>
   /* ─────────────────────────────────────────────────────────────────────────
      /admin/tokens — ALL tokens across users for incident response + offboarding.
      Admin-only. Card-stack layout with owner column, stat chip strip, owner
      search + sort-by-owner chip, confirm-with-owner revoke modal. No "new
-     token" button here — admins use /tokens for their own.
+     token" button here — admins use /me/profile for their own.
      ───────────────────────────────────────────────────────────────────────── */
 
-  body > .container { max-width: 1280px; }
+  /* Width + gutters come from the canonical `.container` in
+     style-custom.css. `.tokens-page` is just a font-family scope. */
   .tokens-page {
-    max-width: 1280px;
-    margin: 0 auto;
-    padding: 28px 8px 48px;
-    box-sizing: border-box;
     font-family: var(--font-primary, 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif);
-  }
-  @media (max-width: 720px) {
-    .tokens-page { padding: 20px 0 32px; }
   }
 
   /* ── Hero ──────────────────────────────────────────────────────────────── */
+  /* Hero box (gradient, padding, radius, max-width, shadow) comes
+     from the canonical `.page-header--hero` rule in
+     style-custom.css. `.tokens-hero` is now just a marker — the
+     extras (token-counts chip row) sit inside it as a child below
+     the canonical hero text. */
   .tokens-hero {
-    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
-    border-radius: 14px;
-    padding: 28px 32px 24px;
     margin-bottom: 20px;
-    box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
-    color: #fff;
-    position: relative;
-  }
-  .tokens-hero .hero-top {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 16px;
-  }
-  .tokens-hero .hero-text { min-width: 0; }
-  .tokens-hero .hero-eyebrow {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    color: rgba(255, 255, 255, 0.75);
-    margin-bottom: 8px;
-  }
-  .tokens-hero .tokens-title {
-    font-size: 28px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    margin: 0 0 6px;
-    color: #fff;
-  }
-  .tokens-hero .tokens-subtitle {
-    font-size: 14px;
-    font-weight: 400;
-    color: rgba(255, 255, 255, 0.9);
-    margin: 0;
-    line-height: 1.5;
   }
 
   .tokens-counts {
@@ -158,13 +122,13 @@
     color: var(--text-primary, #111827);
   }
   .chip-btn[aria-pressed="true"] {
-    background: rgba(0, 115, 209, 0.10);
-    border-color: #0073D1;
-    color: #0073D1;
+    background: color-mix(in srgb, var(--ds-primary) 10%, transparent);
+    border-color: var(--ds-primary);
+    color: var(--ds-primary);
     font-weight: 600;
   }
   .chip-btn:focus-visible {
-    outline: 2px solid #0073D1;
+    outline: 2px solid var(--ds-primary);
     outline-offset: 2px;
   }
   .chip-btn .chip-dot {
@@ -219,8 +183,8 @@
   .search-wrap input[type="search"]:hover { border-color: #cbd5e1; }
   .search-wrap input[type="search"]:focus {
     outline: none;
-    border-color: #0073D1;
-    box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.15);
+    border-color: var(--ds-primary);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ds-primary) 15%, transparent);
   }
 
   .clear-link {
@@ -235,9 +199,9 @@
     text-decoration: none;
     margin-left: auto;
   }
-  .clear-link:hover { color: #0073D1; text-decoration: underline; }
+  .clear-link:hover { color: var(--ds-primary); text-decoration: underline; }
   .clear-link:focus-visible {
-    outline: 2px solid #0073D1;
+    outline: 2px solid var(--ds-primary);
     outline-offset: 2px;
     border-radius: 4px;
   }
@@ -294,7 +258,7 @@
   .avatar-sm {
     width: 32px; height: 32px;
     border-radius: 50%;
-    background: #0073D1;
+    background: var(--ds-primary);
     color: #fff;
     font-size: 12px;
     font-weight: 600;
@@ -424,7 +388,7 @@
     border-color: #dc2626;
   }
   .revoke-btn:focus-visible {
-    outline: 2px solid #0073D1;
+    outline: 2px solid var(--ds-primary);
     outline-offset: 2px;
   }
   .revoke-btn[disabled] {
@@ -476,9 +440,9 @@
     transition: all 0.15s ease;
   }
   .tokens-empty .empty-clear:hover {
-    border-color: #0073D1;
-    color: #0073D1;
-    background: rgba(0, 115, 209, 0.04);
+    border-color: var(--ds-primary);
+    color: var(--ds-primary);
+    background: color-mix(in srgb, var(--ds-primary) 4%, transparent);
   }
 
   /* ── Modal ─────────────────────────────────────────────────────────────── */
@@ -554,35 +518,6 @@
     justify-content: flex-end;
     margin-top: 24px;
   }
-  .modal-btn {
-    padding: 10px 18px;
-    border-radius: 8px;
-    font-size: 13.5px;
-    font-weight: 500;
-    font-family: var(--font-primary, inherit);
-    cursor: pointer;
-    transition: all 0.15s ease;
-    border: 1px solid var(--border, #e5e7eb);
-    background: var(--surface, #fff);
-    color: var(--text-primary, #1A253C);
-  }
-  .modal-btn:hover {
-    border-color: #cbd5e1;
-    background: var(--background, #F5F7FA);
-  }
-  .modal-btn.danger {
-    background: #dc2626;
-    color: #fff;
-    border-color: #dc2626;
-  }
-  .modal-btn.danger:hover {
-    background: #b91c1c;
-    border-color: #b91c1c;
-  }
-  .modal-btn:focus-visible {
-    outline: 2px solid #0073D1;
-    outline-offset: 2px;
-  }
 
   /* ── Toast ─────────────────────────────────────────────────────────────── */
   .toast-stack {
@@ -609,7 +544,6 @@
 
   /* ── Responsive ────────────────────────────────────────────────────────── */
   @media (max-width: 720px) {
-    .tokens-page { padding: 20px 16px 32px; }
     .tokens-hero { padding: 24px 20px 20px; }
     .tokens-hero .tokens-title { font-size: 22px; }
     .tokens-hero .hero-top { flex-direction: column; align-items: stretch; }
@@ -637,18 +571,24 @@
     .tokens-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 </style>
+{% endblock %}
 
+{% block content %}
+{# modal Cancel/Revoke render via `ds.button` (auto-imported by base_ds).
+   Bespoke .chip-btn / .clear-link / JS-generated .revoke-btn + token card
+   stack stay page-local. #}
 <div class="tokens-page" data-is-admin="true" data-view="admin">
   <!-- ═════════ HERO ═════════ -->
-  <section class="tokens-hero" aria-labelledby="tokens-title">
-    <div class="hero-top">
-      <div class="hero-text">
-        <div class="hero-eyebrow">Administration</div>
-        <h2 class="tokens-title" id="tokens-title">Access tokens</h2>
-        <p class="tokens-subtitle">
-          Personal access tokens across all users &mdash; for incident response and offboarding.
-        </p>
-      </div>
+  {# Canonical page-hero box + bespoke `tokens-counts` chip row on the
+     gradient. `.page-header__title` etc. drive the typography from the
+     shared rule in style-custom.css, matching every other admin page. #}
+  <section class="page-header page-header--hero tokens-hero" aria-labelledby="tokens-title">
+    <div class="page-header__main">
+      <div class="page-header__eyebrow">Administration</div>
+      <h1 class="page-header__title" id="tokens-title">Access tokens</h1>
+      <p class="page-header__subtitle">
+        Personal access tokens across all users &mdash; for incident response and offboarding.
+      </p>
     </div>
 
     <div class="tokens-counts" id="tokens-counts" aria-live="polite" aria-label="Token counts summary">
@@ -768,8 +708,9 @@
     </p>
     <div class="modal-meta" id="confirm-meta" aria-hidden="true"></div>
     <div class="modal-actions">
-      <button class="modal-btn" id="confirm-cancel-btn" data-close-modal="confirm-modal">Cancel</button>
-      <button class="modal-btn danger" id="confirm-ok-btn">Revoke token</button>
+      {{ ds.button('Cancel', variant='secondary', id='confirm-cancel-btn',
+                   attrs='data-close-modal="confirm-modal"') }}
+      {{ ds.button('Revoke token', variant='danger', id='confirm-ok-btn') }}
     </div>
   </div>
 </div>
@@ -902,7 +843,7 @@ document.addEventListener("keydown", e => {
   }
 });
 
-function confirmModal({ title, sub, meta, okLabel = "Revoke token" }) {
+function confirmTokenRevoke({ title, sub, meta, okLabel = "Revoke token" }) {
   document.getElementById("confirm-title").textContent = title;
   document.getElementById("confirm-text").textContent = sub;
   const metaEl = document.getElementById("confirm-meta");
@@ -1110,7 +1051,7 @@ async function revokeToken({ id, name, owner, prefix }) {
     "Owner": owner,
     "Prefix": (prefix || "") + "…",
   };
-  const confirmed = await confirmModal({
+  const confirmed = await confirmTokenRevoke({
     title: "Revoke this token?",
     sub: "This cannot be undone and will immediately sign out any session using this token.",
     meta,

@@ -10,6 +10,7 @@ from src.scheduler import (
     _parse_daily_times,
     _parse_timestamp,
     is_table_due,
+    is_valid_schedule,
     parse_interval_minutes,
 )
 
@@ -408,6 +409,9 @@ _LLM_PIPELINE_ENV = (
     "SCHEDULER_SESSION_COLLECTOR_INTERVAL",
     "SCHEDULER_VERIFICATION_DETECTOR_INTERVAL",
     "SCHEDULER_CORPORATE_MEMORY_INTERVAL",
+    "SCHEDULER_USAGE_PRUNE_INTERVAL",
+    "SCHEDULER_JIRA_SLA_POLL_INTERVAL",
+    "SCHEDULER_JIRA_CONSISTENCY_INTERVAL",
 )
 
 
@@ -613,3 +617,290 @@ class TestRunLoopParallelism:
         # the first one finished mid-tick — both are correct, the bug is
         # ≥5).
         assert call_count["n"] <= 2, f"in_flight protection failed; {call_count['n']} launches"
+
+
+# ---------------------------------------------------------------------------
+# usage-prune scheduler job
+# ---------------------------------------------------------------------------
+
+
+class TestUsagePruneJob:
+    """SCHEDULER_USAGE_PRUNE_INTERVAL drives the usage-prune job cadence."""
+
+    def test_usage_prune_job_present_in_defaults(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: (schedule, endpoint) for name, schedule, endpoint, *_ in build_jobs()}
+        assert "usage-prune" in jobs, "usage-prune job must be registered in build_jobs()"
+        _, endpoint = jobs["usage-prune"]
+        assert endpoint == "/api/admin/usage/prune"
+
+    def test_usage_prune_default_cadence_is_daily(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        # Default 86400s → every 24h
+        assert jobs["usage-prune"] == "every 24h"
+
+    def test_usage_prune_env_override_changes_cadence(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_USAGE_PRUNE_INTERVAL", "3600")  # 1h
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["usage-prune"] == "every 1h"
+        # Other jobs unaffected
+        assert jobs["session-collector"] == "every 10m"
+
+    def test_usage_prune_invalid_env_rejected(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_USAGE_PRUNE_INTERVAL", "0")
+        from services.scheduler.__main__ import build_jobs
+
+        with pytest.raises(ValueError):
+            build_jobs()
+
+
+class TestJiraSelfHealingJobs:
+    """SCHEDULER_JIRA_SLA_POLL_INTERVAL + SCHEDULER_JIRA_CONSISTENCY_INTERVAL
+    drive the two Jira maintenance jobs that bring Agnes back to parity with
+    the legacy Data Broker systemd timers."""
+
+    def test_jira_jobs_present_in_defaults(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: (schedule, endpoint) for name, schedule, endpoint, *_ in build_jobs()}
+        assert "jira-sla-poll" in jobs
+        assert "jira-consistency-check" in jobs
+        assert jobs["jira-sla-poll"][1] == "/api/admin/run-jira-sla-poll"
+        assert jobs["jira-consistency-check"][1] == "/api/admin/run-jira-consistency-check"
+
+    def test_jira_default_cadences_match_legacy_systemd_units(self, monkeypatch) -> None:
+        """Defaults match connectors/jira/systemd/{jira-sla-poll,jira-consistency}.timer."""
+        _clear_scheduler_env(monkeypatch)
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["jira-sla-poll"] == "every 15m"
+        assert jobs["jira-consistency-check"] == "every 30m"
+
+    def test_jira_sla_env_override_changes_cadence(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_JIRA_SLA_POLL_INTERVAL", "300")  # 5m
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["jira-sla-poll"] == "every 5m"
+        # Other Jira job unaffected.
+        assert jobs["jira-consistency-check"] == "every 30m"
+
+    def test_jira_consistency_env_override_changes_cadence(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_JIRA_CONSISTENCY_INTERVAL", "3600")  # 1h
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["jira-consistency-check"] == "every 1h"
+        assert jobs["jira-sla-poll"] == "every 15m"
+
+    @pytest.mark.parametrize("var", [
+        "SCHEDULER_JIRA_SLA_POLL_INTERVAL",
+        "SCHEDULER_JIRA_CONSISTENCY_INTERVAL",
+    ])
+    @pytest.mark.parametrize("bad", ["0", "-5", "abc", ""])
+    def test_invalid_jira_env_rejected(self, monkeypatch, var, bad) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv(var, bad)
+        from services.scheduler.__main__ import build_jobs
+
+        with pytest.raises(ValueError):
+            build_jobs()
+
+
+# ---------------------------------------------------------------------------
+# cron schedules — is_valid_schedule (#608)
+# ---------------------------------------------------------------------------
+
+
+class TestIsValidScheduleCron:
+    """is_valid_schedule() accepts well-formed 5-field cron expressions and
+    rejects malformed ones so the admin API returns 422 (consistent with the
+    `daily 25:00` rejection contract)."""
+
+    def test_simple_monthly_valid(self) -> None:
+        # 05:00 UTC on the 7th of every month — the motivating use case.
+        assert is_valid_schedule("cron 0 5 7 * *") is True
+
+    def test_minute_out_of_range_invalid(self) -> None:
+        assert is_valid_schedule("cron 99 5 7 * *") is False
+
+    def test_weekly_valid(self) -> None:
+        # 05:00 UTC every Monday.
+        assert is_valid_schedule("cron 0 5 * * 1") is True
+
+    def test_all_wildcards_valid(self) -> None:
+        assert is_valid_schedule("cron * * * * *") is True
+
+    def test_comma_list_valid(self) -> None:
+        assert is_valid_schedule("cron 30 6 1,15 * *") is True
+
+    def test_range_valid(self) -> None:
+        assert is_valid_schedule("cron 0 9-17 * * 1-5") is True
+
+    def test_step_valid(self) -> None:
+        assert is_valid_schedule("cron */15 * * * *") is True
+
+    def test_step_on_range_valid(self) -> None:
+        assert is_valid_schedule("cron 0 0-12/2 * * *") is True
+
+    def test_hour_out_of_range_invalid(self) -> None:
+        assert is_valid_schedule("cron 0 24 * * *") is False
+
+    def test_dom_zero_invalid(self) -> None:
+        # day-of-month is 1-31; 0 is out of range.
+        assert is_valid_schedule("cron 0 5 0 * *") is False
+
+    def test_month_out_of_range_invalid(self) -> None:
+        assert is_valid_schedule("cron 0 5 1 13 *") is False
+
+    def test_dow_out_of_range_invalid(self) -> None:
+        # day-of-week is 0-6; 7 is out of range in this matcher.
+        assert is_valid_schedule("cron 0 5 * * 7") is False
+
+    def test_too_few_fields_invalid(self) -> None:
+        assert is_valid_schedule("cron 0 5 7 *") is False
+
+    def test_too_many_fields_invalid(self) -> None:
+        assert is_valid_schedule("cron 0 5 7 * * *") is False
+
+    def test_garbage_field_invalid(self) -> None:
+        assert is_valid_schedule("cron 0 5 abc * *") is False
+
+    def test_reversed_range_invalid(self) -> None:
+        assert is_valid_schedule("cron 0 17-9 * * *") is False
+
+    def test_step_zero_invalid(self) -> None:
+        assert is_valid_schedule("cron */0 * * * *") is False
+
+    def test_empty_cron_invalid(self) -> None:
+        assert is_valid_schedule("cron ") is False
+        assert is_valid_schedule("cron") is False
+
+
+# ---------------------------------------------------------------------------
+# cron schedules — is_table_due (#608)
+# ---------------------------------------------------------------------------
+
+
+# Fixed reference time for cron tests: 2026-06-07 05:00:00 UTC (a Sunday).
+CRON_NOW = datetime(2026, 6, 7, 5, 0, 0, tzinfo=timezone.utc)
+
+
+class TestIsTableDueCron:
+    """is_table_due() with cron schedules. A cron occurrence is "due" when a
+    fire time falls in the half-open window (last_sync, now] — mirroring the
+    daily catch-up contract (fires on the next tick after a missed
+    occurrence)."""
+
+    def test_monthly_fire_just_passed_is_due(self) -> None:
+        # cron fires at 05:00 on the 7th; last_sync at 04:59 same day,
+        # now == 05:00 → the 05:00 occurrence is in (04:59, 05:00] → due.
+        last_sync = datetime(2026, 6, 7, 4, 59, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron 0 5 7 * *", last_sync_iso=last_sync, now=CRON_NOW) is True
+
+    def test_monthly_already_synced_at_fire_not_due(self) -> None:
+        # last_sync == the fire time (05:00); window (05:00, 05:00] is empty
+        # → not due again.
+        last_sync = datetime(2026, 6, 7, 5, 0, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron 0 5 7 * *", last_sync_iso=last_sync, now=CRON_NOW) is False
+
+    def test_monthly_missed_tick_catch_up_is_due(self) -> None:
+        # Scheduler was down across the 05:00 fire; it's now 06:30 and the
+        # last sync was the previous day. The missed 05:00 occurrence is in
+        # (prev-day, 06:30] → catch-up fire.
+        now = datetime(2026, 6, 7, 6, 30, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 6, 6, 5, 0, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron 0 5 7 * *", last_sync_iso=last_sync, now=now) is True
+
+    def test_monthly_before_fire_not_due(self) -> None:
+        # now is 04:30 on the 7th, before the 05:00 fire → not due.
+        now = datetime(2026, 6, 7, 4, 30, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 6, 6, 5, 0, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron 0 5 7 * *", last_sync_iso=last_sync, now=now) is False
+
+    def test_wrong_day_of_month_not_due(self) -> None:
+        # 8th of the month, fire is on the 7th; nothing fired in the window.
+        now = datetime(2026, 6, 8, 5, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 6, 7, 5, 0, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron 0 5 7 * *", last_sync_iso=last_sync, now=now) is False
+
+    def test_month_end_31_never_fires_in_30_day_month(self) -> None:
+        # June has 30 days; `cron 0 0 31 * *` must never fire in June.
+        # Window spans the whole month — still no occurrence.
+        now = datetime(2026, 6, 30, 23, 59, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 6, 1, 0, 0, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron 0 0 31 * *", last_sync_iso=last_sync, now=now) is False
+
+    def test_month_end_31_fires_in_31_day_month(self) -> None:
+        # July has 31 days — the 31st at 00:00 fires.
+        now = datetime(2026, 7, 31, 0, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 7, 30, 0, 0, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron 0 0 31 * *", last_sync_iso=last_sync, now=now) is True
+
+    def test_weekly_monday_fire_is_due(self) -> None:
+        # 2026-06-08 is a Monday; fire at 05:00 Monday.
+        now = datetime(2026, 6, 8, 5, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 6, 8, 4, 0, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron 0 5 * * 1", last_sync_iso=last_sync, now=now) is True
+
+    def test_weekly_non_monday_not_due(self) -> None:
+        # 2026-06-09 is a Tuesday; the Monday-only cron does not fire.
+        now = datetime(2026, 6, 9, 5, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 6, 9, 4, 0, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron 0 5 * * 1", last_sync_iso=last_sync, now=now) is False
+
+    def test_cron_never_synced_is_due(self) -> None:
+        # Never synced → due regardless of cron expression.
+        assert is_table_due("cron 0 5 7 * *", last_sync_iso=None, now=CRON_NOW) is True
+
+    def test_step_every_15m_fires_in_window(self) -> None:
+        # `*/15` fires at :00 :15 :30 :45; from 05:00 to 05:20 the :15
+        # occurrence is in the window.
+        now = datetime(2026, 6, 7, 5, 20, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 6, 7, 5, 0, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron */15 * * * *", last_sync_iso=last_sync, now=now) is True
+
+    def test_dow_sunday_zero(self) -> None:
+        # 2026-06-07 is a Sunday (dow 0). cron `* * * * 0` fires.
+        last_sync = datetime(2026, 6, 7, 4, 59, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron 0 5 * * 0", last_sync_iso=last_sync, now=CRON_NOW) is True
+
+    # -- catch-up across gaps longer than a month (#627 review BUG_0001) --
+
+    def test_catchup_across_59_day_gap_is_due(self) -> None:
+        # `cron 0 0 31 * *` has a 59-day gap Jan 31 → Mar 31 (no Feb 31).
+        # Instance offline since Jan 31; at May 15 the missed Mar 31
+        # occurrence must still fire. The old 32-day lookback cap returned
+        # False here.
+        now = datetime(2026, 5, 15, 12, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 1, 31, 0, 0, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron 0 0 31 * *", last_sync_iso=last_sync, now=now) is True
+
+    def test_feb29_cron_fires_across_multi_year_gap(self) -> None:
+        # `cron 0 0 29 2 *` fires once every 4 years. last_sync just before
+        # the 2028-02-29 occurrence, now well past it → due.
+        now = datetime(2028, 6, 1, 0, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2028, 2, 28, 0, 0, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron 0 0 29 2 *", last_sync_iso=last_sync, now=now) is True
+
+    def test_feb29_cron_synced_at_fire_not_due_years_later(self) -> None:
+        # Synced exactly at the 2028-02-29 fire; the next occurrence is
+        # 2032 — at 2030 nothing new fired. Must also terminate fast (the
+        # day-walk stops at last_sync's date, not after scanning years of
+        # minutes).
+        now = datetime(2030, 6, 1, 0, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2028, 2, 29, 0, 0, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("cron 0 0 29 2 *", last_sync_iso=last_sync, now=now) is False

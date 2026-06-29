@@ -1,5 +1,7 @@
 """Auth commands — agnes login, agnes logout, agnes whoami, agnes auth import-token."""
 
+import socket
+
 import httpx
 import typer
 
@@ -16,56 +18,130 @@ from cli.config import (
 auth_app = typer.Typer(help="Authentication commands")
 
 
+def _manual_token_hint() -> None:
+    """Print the fallback path when the browser flow can't be used."""
+    server = get_server_url().rstrip("/")
+    typer.echo(
+        "\nManual fallback — create a token in your browser, then import it:\n"
+        f"  1. Open {server}/me/profile#tokens\n"
+        "  2. Click 'Create token', name it (e.g. 'cli'), copy it\n"
+        "  3. agnes auth import-token --token <paste-token>",
+        err=True,
+    )
+
+
+def _login_with_password(server: str | None) -> None:
+    """Terminal-only email+password login (no browser)."""
+    if server:
+        import os
+        os.environ["AGNES_SERVER"] = server
+    email = typer.prompt("Email")
+    password = typer.prompt("Password", hide_input=True)
+    body = {"email": email, "password": password}
+    resp = api_post("/auth/token", json=body)
+    if resp.status_code == 200:
+        data = resp.json()
+        save_token(data["access_token"], data["email"])
+        typer.echo(f"Logged in as {data['email']}")
+        return
+    try:
+        detail = resp.json().get("detail", resp.text)
+    except Exception:
+        detail = resp.text
+    if resp.status_code == 401 and "external authentication" in str(detail).lower():
+        typer.echo(
+            "This account has no password — it signs in via Google / magic link. "
+            "Run `agnes auth login` (without --password) to use the browser flow.",
+            err=True,
+        )
+    else:
+        typer.echo(f"Login failed: {detail}", err=True)
+    raise typer.Exit(1)
+
+
 @auth_app.command()
 def login(
-    email: str = typer.Option(..., prompt=True, help="Your email address"),
-    password: str = typer.Option(
-        "", prompt="Password (leave empty for magic-link / OAuth accounts)",
-        hide_input=True, help="Your password (if the account has one)",
-    ),
     server: str = typer.Option(None, help="Server URL override"),
+    password: bool = typer.Option(
+        False, "--password",
+        help="Sign in with email + password in the terminal instead of the browser.",
+    ),
+    no_browser: bool = typer.Option(
+        False, "--no-browser",
+        help="Print the sign-in URL instead of auto-opening a browser (headless hosts).",
+    ),
 ):
-    """Login and obtain a JWT token.
+    """Sign in via your browser and store a personal access token.
 
-    Password-enabled accounts: enter the password when prompted.
-    Magic-link / OAuth accounts: leave the password empty — the server will
-    respond with guidance pointing you to the correct auth provider.
+    Opens your default browser to {server}/cli/auth/start, where you sign in
+    with whatever provider your account uses (Google, magic link, or
+    password). On approval the server hands a 90-day token straight back to
+    the CLI — no copy/paste, no plaintext password in the terminal.
+
+    Use --password for a terminal-only email+password login (rare; only for
+    password accounts on a host with no browser), or --no-browser to print the
+    URL when no browser can be auto-launched.
     """
+    if password:
+        try:
+            _login_with_password(server)
+        except typer.Exit:
+            raise
+        except Exception as e:
+            typer.echo(f"Connection error: {e}", err=True)
+            raise typer.Exit(1)
+        return
+
     if server:
         import os
         os.environ["AGNES_SERVER"] = server
 
-    body = {"email": email}
-    if password:
-        body["password"] = password
+    from cli.lib.loopback import capture_code_via_browser
+
+    server_url = get_server_url()
+    token_name = f"Agnes CLI ({socket.gethostname()})"[:80]
+
+    if not no_browser:
+        typer.echo(f"Opening {server_url}/cli/auth/start in your browser…")
+        typer.echo("Sign in and approve the request — waiting for it to complete.")
 
     try:
-        resp = api_post("/auth/token", json=body)
-        if resp.status_code == 200:
-            data = resp.json()
-            save_token(data["access_token"], data["email"])
-            typer.echo(f"Logged in as {data['email']}")
-            return
-        # Helpful error for accounts that cannot login via password.
+        code = capture_code_via_browser(server_url, open_browser=not no_browser)
+    except TimeoutError as e:
+        typer.echo(f"Login timed out: {e}", err=True)
+        _manual_token_hint()
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"Browser login failed: {e}", err=True)
+        _manual_token_hint()
+        raise typer.Exit(1)
+
+    try:
+        resp = api_post("/cli/auth/exchange", json={"code": code, "name": token_name})
+    except Exception as e:
+        typer.echo(f"Connection error: {e}", err=True)
+        raise typer.Exit(1)
+
+    if resp.status_code == 404:
+        typer.echo(
+            "This server doesn't support browser login yet (needs a newer "
+            "Agnes server).",
+            err=True,
+        )
+        _manual_token_hint()
+        raise typer.Exit(1)
+    if resp.status_code != 200:
         try:
             detail = resp.json().get("detail", resp.text)
         except Exception:
             detail = resp.text
-        if resp.status_code == 401 and "external authentication" in str(detail).lower():
-            typer.echo(
-                "This account uses a magic link / OAuth provider. "
-                "Sign in via the web UI, open /tokens, and create a personal "
-                "access token — then export it as AGNES_TOKEN.",
-                err=True,
-            )
-        else:
-            typer.echo(f"Login failed: {detail}", err=True)
+        typer.echo(f"Login failed: {detail}", err=True)
         raise typer.Exit(1)
-    except typer.Exit:
-        raise
-    except Exception as e:
-        typer.echo(f"Connection error: {e}", err=True)
-        raise typer.Exit(1)
+
+    data = resp.json()
+    save_token(data["token"], data["email"])
+    expires = data.get("expires_at") or "never"
+    typer.echo(f"Logged in as {data['email']} (token valid until {expires}).")
 
 
 @auth_app.command()
@@ -195,6 +271,99 @@ def import_token(
     # 6) Persist in the canonical on-disk format used by cli/config.py.
     save_token(token, resolved_email)
     typer.echo(f"Imported token for {resolved_email}.")
+
+
+@auth_app.command("refresh-groups")
+def refresh_groups(
+    json_out: bool = typer.Option(False, "--json", help="Print raw JSON."),
+):
+    """Re-sync your Google Workspace group memberships with the server.
+
+    The Agnes server's snapshot of your Workspace group membership refreshes
+    automatically on browser sign-in. If you've been added to a new group
+    since your last dashboard login and you're working entirely via the CLI,
+    your access (RBAC, marketplace plugin visibility, table grants) won't
+    reflect that new group until the snapshot refreshes. This command
+    triggers that refresh against the live Admin SDK without requiring a
+    browser round-trip.
+
+    Use it when a teammate added you to a group / granted you access and
+    you don't see the new plugins / tables yet — instead of signing out and
+    back in on the dashboard.
+    """
+    token = get_token()
+    if not token:
+        typer.echo("Not logged in. Run: agnes login", err=True)
+        raise typer.Exit(1)
+
+    server = get_server_url().rstrip("/")
+    try:
+        with httpx.Client(
+            base_url=server,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30.0,
+        ) as client:
+            resp = client.post("/auth/refresh-groups")
+    except Exception as e:
+        typer.echo(f"Could not reach server {server}: {e}", err=True)
+        raise typer.Exit(1)
+
+    if resp.status_code != 200:
+        detail = resp.text
+        try:
+            detail = resp.json().get("detail", detail)
+        except Exception:
+            pass
+        typer.echo(
+            f"Refresh failed (HTTP {resp.status_code}): {detail}", err=True,
+        )
+        raise typer.Exit(1)
+
+    data = resp.json()
+
+    if json_out:
+        import json
+        typer.echo(json.dumps(data, indent=2))
+        return
+
+    if data.get("denied"):
+        typer.echo(
+            "Refresh denied: your Workspace groups don't match the "
+            "configured group prefix on this Agnes instance — no access "
+            "applied. Ask your Agnes admin if you should be a member of an "
+            "allow-listed group.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if data.get("soft_failed"):
+        typer.echo(
+            "Refresh soft-failed: the server could not fetch your "
+            "Workspace groups (transient Admin SDK error or empty result). "
+            "Your previous group snapshot is unchanged."
+        )
+        return
+
+    added = data.get("added") or []
+    removed = data.get("removed") or []
+    current = data.get("current") or []
+
+    if not added and not removed:
+        typer.echo(
+            f"Groups already up to date — currently in {len(current)} "
+            f"group(s):"
+        )
+    else:
+        if added:
+            typer.echo(f"Added {len(added)} group(s):")
+            for g in added:
+                typer.echo(f"  + {g}")
+        if removed:
+            typer.echo(f"Removed {len(removed)} group(s):")
+            for g in removed:
+                typer.echo(f"  - {g}")
+        typer.echo(f"\nNow in {len(current)} group(s):")
+    for g in current:
+        typer.echo(f"  • {g}")
 
 
 from cli.commands.tokens import token_app

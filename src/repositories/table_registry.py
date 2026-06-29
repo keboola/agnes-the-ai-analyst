@@ -87,6 +87,7 @@ def _decode_primary_key(stored: Any) -> Optional[List[str]]:
             # Python repr legacy: `"['a', 'b']"` (single-quoted)
             try:
                 import ast
+
                 v = ast.literal_eval(s)
                 if isinstance(v, list):
                     return [str(x) for x in v if x]
@@ -102,15 +103,21 @@ class TableRegistryRepository:
         self.conn = conn
 
     def register(
-        self, id: str, name: str, folder: Optional[str] = None,
+        self,
+        id: str,
+        name: str,
+        folder: Optional[str] = None,
         sync_strategy: Optional[str] = None,
         primary_key: Union[None, str, List[str]] = None,
-        description: Optional[str] = None, registered_by: Optional[str] = None,
-        source_type: Optional[str] = None, bucket: Optional[str] = None,
+        description: Optional[str] = None,
+        registered_by: Optional[str] = None,
+        source_type: Optional[str] = None,
+        bucket: Optional[str] = None,
         source_table: Optional[str] = None,
         source_query: Optional[str] = None,
         query_mode: str = "local",
-        sync_schedule: Optional[str] = None, profile_after_sync: bool = True,
+        sync_schedule: Optional[str] = None,
+        profile_after_sync: bool = True,
         registered_at: Optional[datetime] = None,
         # v26 — Keboola sync-strategy support fields. All optional; meaningful
         # only when paired with the matching sync_strategy. API-layer
@@ -123,6 +130,20 @@ class TableRegistryRepository:
         partition_by: Optional[str] = None,
         partition_granularity: Optional[str] = None,
         initial_load_chunk_days: Optional[int] = None,
+        # v51 — fully-qualified BigQuery path (``project.dataset.table``).
+        # When set, the orchestrator uses this in place of constructing the
+        # path from ``_remote_attach.url.project`` + ``bucket`` +
+        # ``source_table`` at rebuild. Decouples the UX/RBAC ``bucket``
+        # label from the physical BQ dataset name (issue #343).
+        bq_fqn: Optional[str] = None,
+        # v74 (#607) — distribution flag decoupled from query_mode. When True
+        # the row is kept server-side & queryable via `agnes query --remote`,
+        # but `agnes pull` skips its parquet. API-layer validator rejects
+        # True paired with query_mode='remote'.
+        server_only: bool = False,
+        # v79 — nullable FK to source_connections.id. NULL = use the default
+        # connection for the row's source_type (spec 2026-06-12).
+        connection_id: Optional[str] = None,
     ) -> None:
         # `registered_at` defaults to "now" for fresh inserts. Updaters that
         # want to preserve the original registration time across edits pass
@@ -142,8 +163,8 @@ class TableRegistryRepository:
                 sync_schedule, profile_after_sync,
                 incremental_window_days, max_history_days, incremental_column,
                 where_filters, partition_by, partition_granularity,
-                initial_load_chunk_days)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                initial_load_chunk_days, bq_fqn, server_only, connection_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name, folder = excluded.folder,
                 sync_strategy = excluded.sync_strategy, primary_key = excluded.primary_key,
@@ -159,13 +180,37 @@ class TableRegistryRepository:
                 where_filters = excluded.where_filters,
                 partition_by = excluded.partition_by,
                 partition_granularity = excluded.partition_granularity,
-                initial_load_chunk_days = excluded.initial_load_chunk_days""",
-            [id, name, folder, effective_strategy, encoded_pk, description, registered_by, ts,
-             source_type, bucket, source_table, source_query, query_mode,
-             sync_schedule, profile_after_sync,
-             incremental_window_days, max_history_days, incremental_column,
-             encoded_filters, partition_by, partition_granularity,
-             initial_load_chunk_days],
+                initial_load_chunk_days = excluded.initial_load_chunk_days,
+                bq_fqn = excluded.bq_fqn,
+                server_only = excluded.server_only,
+                connection_id = excluded.connection_id""",
+            [
+                id,
+                name,
+                folder,
+                effective_strategy,
+                encoded_pk,
+                description,
+                registered_by,
+                ts,
+                source_type,
+                bucket,
+                source_table,
+                source_query,
+                query_mode,
+                sync_schedule,
+                profile_after_sync,
+                incremental_window_days,
+                max_history_days,
+                incremental_column,
+                encoded_filters,
+                partition_by,
+                partition_granularity,
+                initial_load_chunk_days,
+                bq_fqn,
+                bool(server_only),
+                connection_id,
+            ],
         )
 
     @staticmethod
@@ -175,15 +220,132 @@ class TableRegistryRepository:
             row_dict["primary_key"] = _decode_primary_key(row_dict["primary_key"])
         if "where_filters" in row_dict:
             row_dict["where_filters"] = _decode_where_filters(row_dict["where_filters"])
+        # v52 + v56: per-table docs surface for /catalog/t/<id> + the
+        # package-detail-page extended sections. DuckDB's JSON column
+        # round-trips as a Python str on read; decode to list/dict.
+        # ``platforms`` + ``gotchas`` are v56 additions stored as VARCHAR
+        # (not JSON column) so they go through the same str→list path.
+        # NULL / empty → [].
+        for k in ("sample_questions", "pairs_well_with", "platforms", "gotchas"):
+            if k not in row_dict:
+                continue
+            v = row_dict[k]
+            if v is None or v == "":
+                row_dict[k] = []
+                continue
+            if isinstance(v, list):
+                continue
+            try:
+                parsed = json.loads(v) if isinstance(v, str) else v
+                row_dict[k] = parsed if isinstance(parsed, list) else []
+            except Exception:
+                row_dict[k] = []
         return row_dict
+
+    def update_docs(
+        self,
+        table_id: str,
+        *,
+        # v52 docs surface
+        sample_questions: Optional[List[str]] = None,
+        things_to_know: Optional[str] = None,
+        pairs_well_with: Optional[List[str]] = None,
+        clear_sample_questions: bool = False,
+        clear_things_to_know: bool = False,
+        clear_pairs_well_with: bool = False,
+        # v56 structured docs for the package-detail rewrite. Same
+        # Optional-is-no-op contract as the v52 fields.
+        grain: Optional[str] = None,
+        platforms: Optional[List[str]] = None,
+        partition_col: Optional[str] = None,
+        history: Optional[str] = None,
+        gotchas: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        """v52 + v56: write the per-table docs fields shown on
+        /catalog/t/<id> + the per-table extended section on
+        /catalog/p/<slug>.
+
+        Optional-is-no-op contract; pass an explicit ``clear_*`` flag to
+        actively NULL a v52 field instead of leaving it untouched (mirrors
+        the cover_image_url pattern in data_packages.update). v56 fields
+        don't have ``clear_*`` flags yet — pass an empty list/empty string
+        if you want to actively clear them (rare in practice)."""
+        fields: List[str] = []
+        params: List[Any] = []
+        if clear_sample_questions:
+            fields.append("sample_questions = NULL")
+        elif sample_questions is not None:
+            fields.append("sample_questions = ?")
+            params.append(json.dumps(sample_questions))
+        if clear_things_to_know:
+            fields.append("things_to_know = NULL")
+        elif things_to_know is not None:
+            fields.append("things_to_know = ?")
+            params.append(things_to_know)
+        if clear_pairs_well_with:
+            fields.append("pairs_well_with = NULL")
+        elif pairs_well_with is not None:
+            fields.append("pairs_well_with = ?")
+            params.append(json.dumps(pairs_well_with))
+        # v56 fields
+        if grain is not None:
+            fields.append("grain = ?")
+            params.append(grain)
+        if platforms is not None:
+            fields.append("platforms = ?")
+            params.append(json.dumps(platforms))
+        if partition_col is not None:
+            fields.append("partition_col = ?")
+            params.append(partition_col)
+        if history is not None:
+            fields.append("history = ?")
+            params.append(history)
+        if gotchas is not None:
+            fields.append("gotchas = ?")
+            params.append(json.dumps(gotchas))
+        if not fields:
+            return
+        params.append(table_id)
+        self.conn.execute(
+            f"UPDATE table_registry SET {', '.join(fields)} WHERE id = ?",
+            params,
+        )
 
     def unregister(self, table_id: str) -> None:
         self.conn.execute("DELETE FROM table_registry WHERE id = ?", [table_id])
 
+    def delete_for_corpus(self, corpus_id: str) -> List[str]:
+        """Delete all table_registry rows belonging to a file-corpus collection.
+
+        Rows are identified by ``source_type='collection'`` and
+        ``bucket=corpus_id``.  Returns the list of deleted table ids so the
+        caller can clean up derived artefacts (parquet files, extract.duckdb
+        views) before calling ``orchestrator.rebuild_source``.
+        """
+        rows = self.conn.execute(
+            "SELECT id FROM table_registry WHERE source_type = 'collection' AND bucket = ?",
+            [corpus_id],
+        ).fetchall()
+        ids = [r[0] for r in rows]
+        if ids:
+            self.conn.execute(
+                "DELETE FROM table_registry WHERE source_type = 'collection' AND bucket = ?",
+                [corpus_id],
+            )
+        return ids
+
+    def set_description(self, table_id: str, description: str) -> None:
+        """Set only the ``description`` column, leaving every other field
+        untouched (unlike ``register()``'s full upsert). Used by the LLM
+        auto-doc tool (#399) to backfill descriptions without disturbing
+        sync-strategy / partition / docs columns."""
+        self.conn.execute(
+            "UPDATE table_registry SET description = ? WHERE id = ?",
+            [description, table_id],
+        )
+
     def get(self, table_id: str) -> Optional[Dict[str, Any]]:
-        result = self.conn.execute(
-            "SELECT * FROM table_registry WHERE id = ?", [table_id]
-        ).fetchone()
+        result = self.conn.execute("SELECT * FROM table_registry WHERE id = ?", [table_id]).fetchone()
         if not result:
             return None
         columns = [desc[0] for desc in self.conn.description]
@@ -195,6 +357,19 @@ class TableRegistryRepository:
             return []
         columns = [desc[0] for desc in self.conn.description]
         return [self._decode_row(dict(zip(columns, row))) for row in results]
+
+    def count_non_internal(self) -> int:
+        """Count registered business tables, excluding internal source rows.
+
+        ``source_type='internal'`` rows (agnes_* tables) live in their own
+        card on /catalog and are excluded from the headline counter on the
+        dashboard + the catalog empty-state hint. NULL ``source_type`` is
+        treated as non-internal (COALESCE to '').
+        """
+        result = self.conn.execute(
+            "SELECT COUNT(*) FROM table_registry WHERE COALESCE(source_type, '') != 'internal'"
+        ).fetchone()
+        return int(result[0]) if result else 0
 
     def list_by_source(self, source_type: str) -> List[Dict[str, Any]]:
         """List tables for a given source type (keboola, bigquery, jira, etc.)."""
@@ -208,7 +383,9 @@ class TableRegistryRepository:
         return [self._decode_row(dict(zip(columns, row))) for row in results]
 
     def find_by_bq_path(
-        self, bucket: str, source_table: str,
+        self,
+        bucket: str,
+        source_table: str,
     ) -> Optional[Dict[str, Any]]:
         """Look up a BigQuery row by `(bucket, source_table)`.
 

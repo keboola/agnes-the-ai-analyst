@@ -14,8 +14,9 @@ The request path never calls BQ.
 
 from __future__ import annotations
 
+import logging
+import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -23,11 +24,15 @@ from fastapi import APIRouter, Depends
 
 from app.api.v2_cache import TTLCache
 from app.auth.dependencies import _get_db, get_current_user
-from app.utils import get_data_dir as _get_data_dir
+from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
-from src.repositories.bq_metadata_cache import BqMetadataCacheRepository
-from src.repositories.table_registry import TableRegistryRepository
 
+from src.repositories import (
+    audit_repo,
+    bq_metadata_cache_repo,
+    table_registry_repo,
+)
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 
 # Global cache of the raw table_registry rows. RBAC is enforced PER REQUEST
@@ -109,17 +114,17 @@ def _materialized_parquet_size_bucket(
     """Size hint for rows whose data is on the server filesystem
     (``local`` or ``materialized``). Cheap ``Path.stat()``; never blocks.
 
-    Layout matches the v2 extract.duckdb contract:
-      ${DATA_DIR}/extracts/<source_type>/data/<table_id>.parquet
+    Resolves the parquet by source-name-agnostic lookup: the extract directory
+    is not necessarily the ``source_type`` (e.g. the bundled `demo` extract
+    registers tables as 'local' but lives under ``extracts/demo/``), so keying
+    the path off ``source_type`` silently lost the size hint for such rows.
     """
     if not source_type:
         return None
     try:
-        path = (
-            Path(_get_data_dir()) / "extracts" / source_type / "data"
-            / f"{table_id}.parquet"
-        )
-        if not path.exists():
+        from app.utils import resolve_local_parquet
+        path = resolve_local_parquet(table_id, source_type)
+        if path is None:
             return None
         return _bucket_size(path.stat().st_size)
     except Exception:
@@ -221,14 +226,14 @@ def invalidate_for_table(table_id: str) -> None:
 def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
     rows = _table_rows_cache.get(_TABLE_ROWS_KEY)
     if rows is None:
-        repo = TableRegistryRepository(conn)
+        repo = table_registry_repo()
         rows = repo.list_all()
         _table_rows_cache.set(_TABLE_ROWS_KEY, rows)
 
     # One DB read for all remote-row metadata. Indexed by table_id so the
     # per-row loop below stays O(N).
     bq_cache_index: dict[str, dict[str, Any]] = {
-        r["table_id"]: r for r in BqMetadataCacheRepository(conn).list_all()
+        r["table_id"]: r for r in bq_metadata_cache_repo().list_all()
     }
 
     # RBAC is enforced fresh per request. Revoking a user's access to a
@@ -273,4 +278,34 @@ def catalog(
     # Plain ``def`` so FastAPI auto-offloads to the anyio thread pool —
     # the request path is pure local I/O (DuckDB reads + filesystem
     # stat()) and uses a sync DuckDB cursor.
-    return build_catalog(conn, user)
+    t0 = time.monotonic()
+    try:
+        result = build_catalog(conn, user)
+        try:
+            audit_repo().log(
+                user_id=user.get("id"),
+                action="catalog.list",
+                resource="catalog",
+                params={
+                    "rows_returned": len(result.get("tables", [])),
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                },
+                result="success",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed for catalog.list; continuing")
+        return result
+    except Exception as exc:
+        try:
+            audit_repo().log(
+                user_id=user.get("id"),
+                action="catalog.list",
+                resource="catalog",
+                params={"error": str(exc)[:200], "duration_ms": int((time.monotonic() - t0) * 1000)},
+                result=f"error.{type(exc).__name__}",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed on error path for catalog.list; continuing")
+        raise

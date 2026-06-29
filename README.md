@@ -1,6 +1,6 @@
 # Agnes — AI Data Analyst
 
-Agnes is an open-source data distribution platform for AI analytical systems. It extracts data from configured sources into DuckDB, serves it via a FastAPI backend, and distributes Parquet files to analysts who query them locally using Claude Code and DuckDB.
+Agnes is a source-available data distribution platform for AI analytical systems. It extracts data from configured sources into DuckDB, serves it via a FastAPI backend, and distributes Parquet files to analysts who query them locally using Claude Code and DuckDB.
 
 Each data source produces a self-describing `extract.duckdb` file. The `SyncOrchestrator` attaches all extract databases into a master `analytics.duckdb`, making every table available through a unified view layer without copying data unnecessarily.
 
@@ -182,12 +182,15 @@ See `config/instance.yaml.example` for all available options.
 
 ## Documentation
 
-- [Hackathon TL;DR](docs/HACKATHON.md) — condensed deploy + dev playbooks (for both humans and AI agents)
+**Full index: [docs/README.md](docs/README.md)** — every doc, organized by audience (analyst / operator / developer).
+
+Key entry points:
+
+- [Quickstart](docs/QUICKSTART.md) — local development setup
 - [Onboarding Guide](docs/ONBOARDING.md) — end-to-end Terraform deployment into a GCP project (recommended for production)
 - [Deployment Guide](docs/DEPLOYMENT.md) — chooses between Terraform and Docker Compose; covers OSS self-host
 - [Configuration Reference](docs/CONFIGURATION.md) — `instance.yaml`, env vars, per-instance options
 - [Architecture](ARCHITECTURE.md) — orchestrator, extractors, DB layout
-- [Quickstart](docs/QUICKSTART.md) — local development
 
 ## Contributing
 
@@ -200,4 +203,4 @@ For bugs and feature requests, open a GitHub issue.
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [PolyForm Small Business License 1.0.0](LICENSE).

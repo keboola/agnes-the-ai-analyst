@@ -18,12 +18,16 @@ from app.api import sync as sync_module
 @pytest.fixture(autouse=True)
 def reset_sync_lock():
     """Make sure each test starts with a free lock — and never leaves one
-    held even if an assertion fires mid-test."""
+    held even if an assertion fires mid-test. Also wipe the trigger-hold
+    timestamp so an earlier test's ``_recent_trigger_at`` doesn't
+    silently pin the next test's ``/api/sync/status`` at locked=True."""
     if sync_module._sync_lock.locked():
         sync_module._sync_lock.release()
+    sync_module._recent_trigger_at = 0.0
     yield
     if sync_module._sync_lock.locked():
         sync_module._sync_lock.release()
+    sync_module._recent_trigger_at = 0.0
 
 
 def test_run_sync_skips_when_lock_held(capsys):
@@ -147,7 +151,9 @@ def test_trigger_accepts_both_body_shapes(body, expected_tables):
         else:
             resp = client.post("/api/sync/trigger", json=body)
     assert resp.status_code == 200, resp.text
-    run_mock.assert_called_once_with(expected_tables)
+    # `source` defaults to None (full sweep); it's threaded as the second
+    # positional arg into `_run_sync(tables, source_type_filter)`.
+    run_mock.assert_called_once_with(expected_tables, None)
 
 
 @pytest.mark.parametrize("bad_body", [
@@ -222,3 +228,56 @@ def test_sync_status_does_not_require_auth():
     # No auth headers at all.
     resp = client.get("/api/sync/status")
     assert resp.status_code == 200
+
+
+def test_sync_status_trigger_hold_window_reports_locked_after_trigger():
+    """Race-protection: even when ``_sync_lock`` is NOT yet held (the
+    background task hasn't acquired it), a recent ``_recent_trigger_at``
+    timestamp within ``_TRIGGER_HOLD_SEC`` must report
+    ``{"locked": true}``. Without this, an auto-upgrade defer probe
+    firing in the few-hundred-ms window between the trigger handler's
+    200 response and ``_run_sync.acquire()`` would see locked=False
+    and SIGKILL the spawning extractor."""
+    import time as _time
+    if sync_module._sync_lock.locked():
+        sync_module._sync_lock.release()
+    # Stamp a fresh trigger time, then immediately probe.
+    sync_module._recent_trigger_at = _time.monotonic()
+    try:
+        from fastapi.testclient import TestClient
+        from fastapi import FastAPI
+        app = FastAPI()
+        app.include_router(sync_module.router)
+        client = TestClient(app)
+        resp = client.get("/api/sync/status")
+        assert resp.status_code == 200
+        assert resp.json() == {"locked": True}, (
+            "trigger-hold window not honored — auto-upgrade defer probe "
+            "would race the background task acquisition"
+        )
+    finally:
+        sync_module._recent_trigger_at = 0.0
+
+
+def test_sync_status_trigger_hold_window_expires():
+    """Trigger-hold reports locked only for ``_TRIGGER_HOLD_SEC`` — a
+    stale timestamp past the window must NOT pin the probe at True
+    forever. Without expiry, a single trigger would block all
+    auto-upgrades indefinitely."""
+    if sync_module._sync_lock.locked():
+        sync_module._sync_lock.release()
+    # Stamp a timestamp ``_TRIGGER_HOLD_SEC + 5`` seconds in the past.
+    import time as _time
+    sync_module._recent_trigger_at = (
+        _time.monotonic() - sync_module._TRIGGER_HOLD_SEC - 5
+    )
+    try:
+        from fastapi.testclient import TestClient
+        from fastapi import FastAPI
+        app = FastAPI()
+        app.include_router(sync_module.router)
+        client = TestClient(app)
+        resp = client.get("/api/sync/status")
+        assert resp.json() == {"locked": False}
+    finally:
+        sync_module._recent_trigger_at = 0.0

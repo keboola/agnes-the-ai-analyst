@@ -1,0 +1,169 @@
+# Postgres app-state overlay for local dev + self-hosted prod.
+#
+# Use ON TOP OF docker-compose.yml:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.postgres.yml up
+#
+# Or set the env var ``COMPOSE_FILE=docker-compose.yml:docker-compose.postgres.yml``
+# so plain ``docker compose up`` includes the overlay automatically.
+#
+# What this adds:
+#
+#   1. A ``postgres:16-alpine`` service with a named volume for durable storage.
+#      On customer-instance VMs the named volume is bound to /data/postgres so
+#      app state lives on the same data disk already covered by the daily
+#      snapshot policy (the startup-script pre-chowns /data/postgres to uid 70
+#      — the Alpine postgres uid — before the side-car boots).
+#   2. A one-shot ``migrate`` service that runs ``alembic upgrade head`` against
+#      the Postgres above, then exits. ``app`` depends on it completing
+#      successfully so the schema is always present before uvicorn boots.
+#   3. A one-shot ``data-migrate`` service that runs
+#      ``python -m scripts.migrate_duckdb_to_pg`` on every ``compose up``.
+#      Idempotent (ON CONFLICT DO NOTHING + per-row SHA-256 checksums); when
+#      DuckDB has no rows for a given table the task is a no-op. ``app`` blocks
+#      on this exiting 0 so the cut-over from DuckDB → PG always happens before
+#      first request.
+#   4. ``DATABASE_URL`` injected into the ``app`` service. The migration
+#      modules in ``src/repositories/*_pg.py`` and ``src/db_pg.py`` activate
+#      when this is set; without the overlay, ``app`` continues to use the
+#      DuckDB ``system.duckdb`` path unchanged.
+#
+# Production guidance — operators NOT using self-hosted Postgres (e.g. Cloud SQL,
+# RDS) should NOT include this overlay. Instead, set ``DATABASE_URL`` in ``.env``
+# pointing at the managed instance, and run the migration step in your deploy
+# pipeline (``alembic upgrade head`` against the same URL). See
+# docs/migrations.md § "Production wiring" for the Cloud SQL Unix-socket form.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    # LOW-2: POSTGRES_PASSWORD is REQUIRED — no literal default. Set it in
+    # your ``.env`` file (Secret Manager-sourced on customer VMs). ``docker
+    # compose up`` will fail with "POSTGRES_PASSWORD is not set" rather
+    # than silently booting Postgres with ``agnes/agnes``.
+    # The username + db name are hard-coded here so the service URL stays
+    # stable; if you need different ones for a bare-metal prod-like stack,
+    # fork this file.
+    environment:
+      POSTGRES_USER: agnes
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: agnes
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready is the documented PG readiness probe; -U + -d match the
+      # actual role + db so the check fails fast on credentials drift, not
+      # just on TCP availability.
+      test: ["CMD-SHELL", "pg_isready -U agnes -d agnes"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    # Bind only to the host loopback by default so a misconfigured firewall
+    # doesn't expose PG to the public internet. Operators who need cross-host
+    # access (e.g. running the app outside the compose network) should
+    # override via ``docker-compose.override.yml``.
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  migrate:
+    # `build` for local dev; `image` for prod, where the VM is sourceless and
+    # `docker compose up` would otherwise fail with "failed to read dockerfile".
+    # Mirrors the app/scheduler build+image pattern (build in base, image in
+    # the prod path) — when the pulled image is present compose uses it instead
+    # of building.
+    build: .
+    image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
+    command: alembic upgrade head
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # ``postgresql+psycopg://`` selects the psycopg 3 dialect (we don't ship
+      # psycopg2). ``postgres`` is the service name resolved by Compose's
+      # internal DNS; from outside the compose network the same DB is
+      # reachable on 127.0.0.1:5432.
+      - DATABASE_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
+    restart: "no"
+
+  # One-shot DuckDB → Postgres data migration. Runs on every ``compose up``;
+  # the underlying script is idempotent (ON CONFLICT DO NOTHING + SHA-256 row
+  # checksums) so re-runs against an already-migrated PG are no-ops. When the
+  # source DuckDB has no rows for a given target table (fresh deploy, or table
+  # already empty) the corresponding task copies zero rows and reports
+  # ``checksum_match: true``.
+  #
+  # The script reads ``system.duckdb`` strictly read-only (DuckDB open mode
+  # enforces it) and writes into PG via ``DATABASE_URL``. ``app`` and
+  # ``scheduler`` block on this exiting 0 so the runtime never observes a
+  # partially-migrated PG.
+  data-migrate:
+    # build/image split as for `migrate` above — prod uses the pulled image.
+    build: .
+    image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
+    command: python -m scripts.migrate_duckdb_to_pg --duckdb-path /data/state/system.duckdb
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      - DATABASE_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
+      - DATA_DIR=/data
+    volumes:
+      # Read-only mount: this service must not mutate DuckDB state. ``:ro``
+      # belt-and-suspenders alongside ``duckdb.connect(..., read_only=True)``
+      # inside the script.
+      - data:/data:ro
+    restart: "no"
+
+  app:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        # ``service_completed_successfully`` waits for migrate to exit 0 before
+        # bringing up app. A non-zero exit (e.g. constraint violation on an
+        # in-place upgrade) blocks app start with a clear log trail —
+        # preferable to booting app against an outdated schema.
+        condition: service_completed_successfully
+      data-migrate:
+        # Same gate for the data copy: app must not serve traffic against a
+        # schema-only PG while DuckDB still holds the source-of-truth rows.
+        # On re-runs the data-migrate exit is a near-instant no-op.
+        condition: service_completed_successfully
+    environment:
+      - DATABASE_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
+
+  # Scheduler reads/writes the same app-state tables (sync_history,
+  # materialized refresh runs, etc.) — gate it on the same migration chain so
+  # it can't fire a tick against a half-migrated PG.
+  scheduler:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      data-migrate:
+        condition: service_completed_successfully
+    environment:
+      - DATABASE_URL=postgresql+psycopg://agnes:${POSTGRES_PASSWORD}@postgres:5432/agnes
+
+volumes:
+  # On customer-instance VMs the startup-script creates /data/postgres
+  # (uid:gid 70:70, mode 0700) on every boot so this bind resolves to a
+  # location that:
+  #   1. Survives container recreates (lives on the config disk, not the
+  #      container layer);
+  #   2. Is covered by the daily disk-snapshot policy attached to /data;
+  #   3. Has the right ownership for the Alpine postgres user.
+  #
+  # For local dev where /data/postgres doesn't exist, override this overlay
+  # via docker-compose.override.yml — set ``postgres_data: {}`` to fall back
+  # to a plain Docker named volume on the local filesystem.
+  postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /data/postgres
+      o: bind

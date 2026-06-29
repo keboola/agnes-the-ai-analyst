@@ -330,8 +330,29 @@ class TestAnthropicExtractor:
         mock_sleep.assert_called_once_with(2)  # INITIAL_BACKOFF_SECONDS
 
     @patch("connectors.llm.anthropic_provider.anthropic.Anthropic")
-    def test_truncation_raises_format_error(self, mock_client_cls):
-        """stop_reason='max_tokens' raises LLMFormatError immediately (no recursion)."""
+    def test_truncation_retries_with_doubled_budget(self, mock_client_cls):
+        """stop_reason='max_tokens' on first attempt retries with 2x budget."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+
+        truncated = _anthropic_response('{"items": [', stop_reason="max_tokens")
+        success = _anthropic_response('{"items": ["ok"]}')
+        mock_client.messages.create.side_effect = [truncated, success]
+
+        ext = AnthropicExtractor(api_key="sk-ant-test", model="claude-haiku-4-5-20251001")
+        result = ext.extract_json("test", 1024, self.SCHEMA, "test_schema")
+
+        assert result == {"items": ["ok"]}
+        assert mock_client.messages.create.call_count == 2
+        # First call used the caller's budget; second call doubled.
+        first_kwargs = mock_client.messages.create.call_args_list[0].kwargs
+        second_kwargs = mock_client.messages.create.call_args_list[1].kwargs
+        assert first_kwargs["max_tokens"] == 1024
+        assert second_kwargs["max_tokens"] == 2048
+
+    @patch("connectors.llm.anthropic_provider.anthropic.Anthropic")
+    def test_truncation_persistent_raises_format_error(self, mock_client_cls):
+        """Truncation on every attempt eventually surfaces LLMFormatError."""
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
 
@@ -341,6 +362,13 @@ class TestAnthropicExtractor:
         ext = AnthropicExtractor(api_key="sk-ant-test", model="claude-haiku-4-5-20251001")
         with pytest.raises(LLMFormatError, match="truncated"):
             ext.extract_json("test", 1024, self.SCHEMA, "test_schema")
+
+        # MAX_TRUNCATION_RETRIES=2 → up to 3 calls (initial + 2 retries
+        # at 2x and 4x), bounded by MAX_RETRIES=3 loop slots.
+        assert mock_client.messages.create.call_count == 3
+        # Final call hit the 4x cap.
+        last_kwargs = mock_client.messages.create.call_args_list[-1].kwargs
+        assert last_kwargs["max_tokens"] == 4096
 
     @patch("connectors.llm.anthropic_provider.anthropic.Anthropic")
     def test_invalid_json_raises_format_error(self, mock_client_cls):

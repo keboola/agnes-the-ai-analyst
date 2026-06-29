@@ -3,6 +3,7 @@
 from __future__ import annotations
 import logging
 import re
+import time
 from typing import Optional
 
 import pyarrow as pa
@@ -12,14 +13,21 @@ from pydantic import BaseModel, Field
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
+from src.db import _open_duckdb
 from app.instance_config import get_value
+from src.audit_helpers import client_kind_from_user
 from src.rbac import can_access_table
-from src.repositories.table_registry import TableRegistryRepository
 from app.api.where_validator import (
-    validate_where, safe_where_predicate, WhereValidationError,
+    safe_where_predicate,
+    WhereValidationError,
+)
+
+from src.repositories import (
+    audit_repo,
+    table_registry_repo,
 )
 from app.api.v2_schema import build_schema  # reused for column resolution
-from app.api.v2_arrow import arrow_table_to_ipc_bytes, CONTENT_TYPE
+from app.api.v2_arrow import CONTENT_TYPE, arrow_to_ipc_bytes_capped
 from app.api.v2_quota import QuotaTracker, QuotaExceededError
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
 
@@ -108,7 +116,11 @@ def _quote_order_by_duckdb(entry: str) -> str:
 
 
 def _build_bq_sql(
-    table_row: dict, project_id: str, req: ScanRequest, *, safe_where: str | None = None,
+    table_row: dict,
+    project_id: str,
+    req: ScanRequest,
+    *,
+    safe_where: str | None = None,
 ) -> str:
     """Build the BQ SQL string. ``safe_where`` MUST be the comment-stripped
     fragment from ``safe_where_predicate`` — splicing ``req.where`` raw lets a
@@ -119,11 +131,14 @@ def _build_bq_sql(
     need backticks to parse as identifiers in BQ.
     """
     from src.identifier_validation import validate_quoted_identifier
-    bucket = table_row.get('bucket') or ''
-    src_table = table_row.get('source_table') or req.table_id
-    if not (validate_quoted_identifier(project_id, "BQ project")
-            and validate_quoted_identifier(bucket, "BQ dataset")
-            and validate_quoted_identifier(src_table, "BQ source_table")):
+
+    bucket = table_row.get("bucket") or ""
+    src_table = table_row.get("source_table") or req.table_id
+    if not (
+        validate_quoted_identifier(project_id, "BQ project")
+        and validate_quoted_identifier(bucket, "BQ dataset")
+        and validate_quoted_identifier(src_table, "BQ source_table")
+    ):
         raise ValueError("unsafe BQ identifier in registry — refusing to build SQL")
 
     select_sql = ", ".join(f"`{c}`" for c in req.select) if req.select else "*"
@@ -140,7 +155,7 @@ def _build_bq_sql(
 
 def estimate(conn, user, raw_request: dict, *, bq: BqAccess) -> dict:
     req = ScanRequest(**raw_request)
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     row = repo.get(req.table_id)
     if not row:
         raise FileNotFoundError(req.table_id)
@@ -151,10 +166,7 @@ def estimate(conn, user, raw_request: dict, *, bq: BqAccess) -> dict:
     dialect = "bigquery" if (row.get("source_type") or "") == "bigquery" else "duckdb"
 
     # Validate WHERE and capture the comment-stripped fragment for splicing.
-    safe_where = (
-        safe_where_predicate(req.where, req.table_id, schema, dialect=dialect)
-        if req.where else None
-    )
+    safe_where = safe_where_predicate(req.where, req.table_id, schema, dialect=dialect) if req.where else None
     # Validate select columns exist (case-insensitive, matching order_by).
     if req.select:
         _validate_select_columns(req.select, schema)
@@ -186,9 +198,8 @@ def estimate(conn, user, raw_request: dict, *, bq: BqAccess) -> dict:
     # often write a lowercased column name where INFORMATION_SCHEMA returned
     # mixed-case; the schema lookup must follow.
     schema_lower = {k.lower(): v for k, v in schema.items()}
-    cols_for_estimate = (
-        [schema_lower[c.lower()] for c in (req.select or []) if c.lower() in schema_lower]
-        or list(schema.values())
+    cols_for_estimate = [schema_lower[c.lower()] for c in (req.select or []) if c.lower() in schema_lower] or list(
+        schema.values()
     )
     avg_row_bytes = max(1, sum(_avg_bytes_for_type(t) for t in cols_for_estimate))
     rows_est = scan_bytes // max(avg_row_bytes, 1)
@@ -229,23 +240,66 @@ def scan_estimate_endpoint(
     # dry_run=True)` which blocks until BQ returns the dry-run cost. Under
     # ``async def`` that wait holds the event loop. See PR #188's Tier 1
     # entry for the wider rollout.
+    t0 = time.monotonic()
+    table_id = raw.get("table_id", "") if isinstance(raw, dict) else ""
+    resource = f"table:{table_id}"[:256]
     try:
-        return estimate(conn, user, raw, bq=bq)
-    except WhereValidationError as e:
+        result = estimate(conn, user, raw, bq=bq)
+        try:
+            audit_repo().log(
+                user_id=user.get("id"),
+                action="snapshot.estimate",
+                resource=resource,
+                params={
+                    "bytes_estimated": result.get("estimated_scan_bytes"),
+                    "where_present": bool(raw.get("where") if isinstance(raw, dict) else False),
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                },
+                result="success",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed for snapshot.estimate; continuing")
+        return result
+    except (WhereValidationError, PermissionError, FileNotFoundError, ValueError, BqAccessError) as exc:
+        try:
+            if isinstance(exc, PermissionError):
+                status_code = 403
+            elif isinstance(exc, FileNotFoundError):
+                status_code = 404
+            elif isinstance(exc, (WhereValidationError, ValueError)):
+                status_code = 400
+            else:
+                status_code = BqAccessError.HTTP_STATUS.get(exc.kind, 500)  # type: ignore[union-attr]
+            audit_repo().log(
+                user_id=user.get("id"),
+                action="snapshot.estimate",
+                resource=resource,
+                params={"duration_ms": int((time.monotonic() - t0) * 1000), "error": str(exc)[:200]},
+                result=f"error.{status_code}",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed on error path for snapshot.estimate; continuing")
+        if isinstance(exc, WhereValidationError):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "validator_rejected", "kind": exc.kind, "details": exc.detail or {}},
+            )
+        if isinstance(exc, PermissionError):
+            from src.rbac import table_not_in_stack_message
+
+            raise HTTPException(
+                status_code=403,
+                detail=table_not_in_stack_message(str(exc) or "<unknown>"),
+            )
+        if isinstance(exc, FileNotFoundError):
+            raise HTTPException(status_code=404, detail=f"table {exc!s} not found")
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=400, detail=str(exc))
         raise HTTPException(
-            status_code=400,
-            detail={"error": "validator_rejected", "kind": e.kind, "details": e.detail or {}},
-        )
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="not authorized for this table")
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=f"table {e!s} not found")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except BqAccessError as e:
-        raise HTTPException(
-            status_code=BqAccessError.HTTP_STATUS.get(e.kind, 500),
-            detail={"error": e.kind, "message": e.message, "details": e.details},
+            status_code=BqAccessError.HTTP_STATUS.get(exc.kind, 500),  # type: ignore[union-attr]
+            detail={"error": exc.kind, "message": exc.message, "details": exc.details},  # type: ignore[union-attr]
         )
 
 
@@ -257,7 +311,7 @@ def scan_estimate_endpoint(
 # Do NOT re-export `_quota_singleton` — `from X import var` copies the
 # binding at import time, so a re-exported singleton would never see the
 # initialized value (#160 review caveat).
-from app.api.v2_quota import _build_quota_tracker  # re-export
+from app.api.v2_quota import _build_quota_tracker  # noqa: E402  # re-export
 
 
 def _max_result_bytes() -> int:
@@ -299,8 +353,26 @@ def run_scan(
         WhereValidationError, QuotaExceededError, FileNotFoundError, PermissionError,
         ValueError, BqAccessError
     """
+    # `from_query` mode (#616): materialize a raw SELECT, reusing /api/query's
+    # RBAC + registry-gating but bypassing the remote_scan_too_large cap. The
+    # raw query carries its own projection, so select/where/order_by are
+    # rejected as mutually exclusive.
+    if isinstance(raw_request, dict) and raw_request.get("from_query"):
+        if any(raw_request.get(k) for k in ("select", "where", "order_by", "limit")):
+            raise ValueError("from_query is mutually exclusive with select/where/order_by/limit")
+        from app.api.query import run_remote_select_to_arrow
+
+        table = run_remote_select_to_arrow(
+            conn,
+            user,
+            raw_request["from_query"],
+            bq=bq,
+            quota=quota,
+        )
+        return arrow_to_ipc_bytes_capped(table, _max_result_bytes())
+
     req = ScanRequest(**raw_request)
-    repo = TableRegistryRepository(conn)
+    repo = table_registry_repo()
     row = repo.get(req.table_id)
     if not row:
         raise FileNotFoundError(req.table_id)
@@ -313,10 +385,7 @@ def run_scan(
     schema = _resolve_schema(conn, user, req.table_id, bq)
     dialect = "bigquery" if (row.get("source_type") or "") == "bigquery" else "duckdb"
     # Validate WHERE and capture the comment-stripped fragment for splicing.
-    safe_where = (
-        safe_where_predicate(req.where, req.table_id, schema, dialect=dialect)
-        if req.where else None
-    )
+    safe_where = safe_where_predicate(req.where, req.table_id, schema, dialect=dialect) if req.where else None
     if req.select:
         # Case-insensitive (BQ identifiers are case-insensitive; mixed-case
         # names from INFORMATION_SCHEMA.COLUMNS shouldn't 400-reject the
@@ -337,14 +406,17 @@ def run_scan(
 
     with quota.acquire(user=user_id):
         if source_type != "bigquery":
-            # Local source: query parquet directly. `source_type` extracted above
-            # because `row["source_type"]` could be NULL for legacy registry rows
-            # and `Path(...) / None` raises TypeError.
-            from app.utils import get_data_dir
-            parquet = (
-                get_data_dir() / "extracts" / source_type / "data" / f"{req.table_id}.parquet"
-            )
-            local = duckdb.connect(":memory:")
+            # Local source: query parquet directly. Resolve by source-name-agnostic
+            # lookup — the extract directory is not necessarily the source_type
+            # (e.g. the bundled `demo` extract registers tables as 'local' but
+            # lives under extracts/demo/), and `source_type` may be NULL/empty for
+            # legacy rows. resolve_local_parquet handles both.
+            from app.utils import resolve_local_parquet
+
+            parquet = resolve_local_parquet(req.table_id, source_type)
+            if parquet is None:
+                raise FileNotFoundError(req.table_id)
+            local = _open_duckdb(":memory:")
             try:
                 projection = ", ".join(f'"{c}"' for c in req.select) if req.select else "*"
                 sql = f"SELECT {projection} FROM read_parquet(?)"
@@ -361,17 +433,10 @@ def run_scan(
             bq_sql = _build_bq_sql(row, bq.projects.data, req, safe_where=safe_where)
             table = _run_bq_scan(bq, bq_sql)
 
-        ipc = arrow_table_to_ipc_bytes(table)
-
-        # Enforce max_result_bytes guard (spec §3.4 step 8)
-        if len(ipc) > _max_result_bytes():
-            # Truncate by taking only as many rows as fit roughly
-            # Simple heuristic: cap rows to estimated avg per max_bytes
-            row_count = table.num_rows
-            avg = max(1, len(ipc) // max(row_count, 1))
-            keep = min(row_count, _max_result_bytes() // max(avg, 1))
-            table = table.slice(0, keep)
-            ipc = arrow_table_to_ipc_bytes(table)
+        # Enforce max_result_bytes guard (spec §3.4 step 8). Streams with the
+        # cap applied, so a RecordBatchReader (duckdb>=1.5 `.arrow()`) is
+        # never fully materialized on an over-cap result.
+        ipc = arrow_to_ipc_bytes_capped(table, _max_result_bytes())
 
         # Record bytes for daily quota
         quota.record_bytes(user=user_id, n=len(ipc))
@@ -386,33 +451,125 @@ def scan_endpoint(
     bq: BqAccess = Depends(get_bq_access),
 ):
     quota = _build_quota_tracker()
+    t0 = time.monotonic()
+    table_id = raw.get("table_id", "") if isinstance(raw, dict) else ""
+    snapshot_name = raw.get("as") if isinstance(raw, dict) else None
+    resource = (f"table:{table_id}:as:{snapshot_name}" if snapshot_name else f"table:{table_id}")[:256]
     try:
         ipc = run_scan(conn, user, raw, bq=bq, quota=quota)
+        # Decode row count from IPC without re-running the scan.
+        # bytes_scanned / bytes_billed / bq_job_id are deferred — the BQ
+        # extension doesn't expose per-job metadata through the DuckDB
+        # execute() path; adding that plumbing is a multi-site change.
+        # TODO: surface bytes_scanned / bytes_billed / bq_job_id once the
+        # BQ extension or _run_bq_scan is extended to return job metadata.
+        try:
+            from app.api.v2_arrow import parse_ipc_bytes
+
+            rows_written = parse_ipc_bytes(ipc).num_rows
+        except Exception:
+            rows_written = None
+        try:
+            audit_repo().log(
+                user_id=user.get("id"),
+                action="snapshot.create",
+                resource=resource,
+                params={
+                    "rows_written": rows_written,
+                    "bytes_scanned": None,  # deferred — see TODO above
+                    "bytes_billed": None,  # deferred
+                    "bq_job_id": None,  # deferred
+                    "snapshot_name": snapshot_name,
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                },
+                result="success",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed for snapshot.create; continuing")
         return Response(content=ipc, media_type=CONTENT_TYPE)
-    except WhereValidationError as e:
+    except HTTPException as exc:
+        # `run_remote_select_to_arrow` (from_query mode, #616) raises
+        # HTTPException directly for RBAC / SELECT-only / registry
+        # rejections and for DuckDB execution errors (Devin Review
+        # ANALYSIS_0003 on #620). Without this branch those bypass the
+        # structured error block below — the audit-log error path never
+        # fires and the response shape diverges from the rest of
+        # `scan_endpoint`. Log the error-result audit row, then re-raise
+        # the HTTPException unchanged so the client still sees the
+        # original status + detail. Devin Review ANALYSIS_0001 on #620.
+        try:
+            audit_repo().log(
+                user_id=user.get("id"),
+                action="snapshot.create",
+                resource=resource,
+                params={
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                    "error": str(exc.detail)[:200],
+                },
+                result=f"error.{exc.status_code}",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed on http_exc path for snapshot.create; continuing")
+        raise
+    except (
+        WhereValidationError,
+        QuotaExceededError,
+        FileNotFoundError,
+        PermissionError,
+        ValueError,
+        BqAccessError,
+    ) as exc:
+        try:
+            if isinstance(exc, PermissionError):
+                status_code = 403
+            elif isinstance(exc, FileNotFoundError):
+                status_code = 404
+            elif isinstance(exc, QuotaExceededError):
+                status_code = 429
+            elif isinstance(exc, (WhereValidationError, ValueError)):
+                status_code = 400
+            else:
+                status_code = BqAccessError.HTTP_STATUS.get(exc.kind, 500)  # type: ignore[union-attr]
+            audit_repo().log(
+                user_id=user.get("id"),
+                action="snapshot.create",
+                resource=resource,
+                params={"duration_ms": int((time.monotonic() - t0) * 1000), "error": str(exc)[:200]},
+                result=f"error.{status_code}",
+                client_kind=client_kind_from_user(user),
+            )
+        except Exception:
+            logger.exception("audit_log write failed on error path for snapshot.create; continuing")
+        if isinstance(exc, WhereValidationError):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "validator_rejected", "kind": exc.kind, "details": exc.detail or {}},
+            )
+        if isinstance(exc, QuotaExceededError):
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "quota_exceeded",
+                    "kind": exc.kind,
+                    "current": exc.current,
+                    "limit": exc.limit,
+                    "retry_after_seconds": exc.retry_after_seconds,
+                },
+            )
+        if isinstance(exc, FileNotFoundError):
+            raise HTTPException(status_code=404, detail="table not found")
+        if isinstance(exc, PermissionError):
+            from src.rbac import table_not_in_stack_message
+
+            raise HTTPException(
+                status_code=403,
+                detail=table_not_in_stack_message(str(exc) or "<unknown>"),
+            )
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=400, detail=str(exc))
         raise HTTPException(
-            status_code=400,
-            detail={"error": "validator_rejected", "kind": e.kind, "details": e.detail or {}},
-        )
-    except QuotaExceededError as e:
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "error": "quota_exceeded",
-                "kind": e.kind,
-                "current": e.current,
-                "limit": e.limit,
-                "retry_after_seconds": e.retry_after_seconds,
-            },
-        )
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="table not found")
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="not authorized")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except BqAccessError as e:
-        raise HTTPException(
-            status_code=BqAccessError.HTTP_STATUS.get(e.kind, 500),
-            detail={"error": e.kind, "message": e.message, "details": e.details},
+            status_code=BqAccessError.HTTP_STATUS.get(exc.kind, 500),  # type: ignore[union-attr]
+            detail={"error": exc.kind, "message": exc.message, "details": exc.details},  # type: ignore[union-attr]
         )

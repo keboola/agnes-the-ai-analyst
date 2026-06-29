@@ -97,12 +97,41 @@ def _seed_curated_grant(
         conn.close()
 
 
+_OK_DESC = "Use when validating marketplace API endpoints across guardrail tiers"
+_OK_BODY = (
+    "Body explaining the skill, when to invoke it, and the expected outputs. "
+    "Long enough to clear the 200-char content guardrail floor. " * 2
+)
+
+
 def _make_skill_zip(skill_name: str = "code-review") -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
             f"{skill_name}/SKILL.md",
-            f"---\nname: {skill_name}\ndescription: A test skill.\n---\nbody",
+            f"---\nname: {skill_name}\ndescription: {_OK_DESC}\n---\n\n{_OK_BODY}",
+        )
+    return buf.getvalue()
+
+
+def _make_plugin_zip(plugin_name: str, inner_skill: str = "dummy") -> bytes:
+    """Mirror of test_store_api._make_plugin_zip — minimal flea plugin
+    ZIP with one inner skill, used to drive ``/api/marketplace/flea/{id}
+    /skill/{name}`` inner-detail tests."""
+    import json
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(
+            ".claude-plugin/plugin.json",
+            json.dumps({
+                "name": plugin_name,
+                "description": _OK_DESC,
+                "version": "0.1",
+            }),
+        )
+        zf.writestr(
+            f"skills/{inner_skill}/SKILL.md",
+            f"---\nname: {inner_skill}\ndescription: {_OK_DESC}\n---\n\n{_OK_BODY}",
         )
     return buf.getvalue()
 
@@ -138,15 +167,20 @@ class TestListItems:
         web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("alpha"), "application/zip")},
-            data={"type": "skill"}, cookies=cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=cookies,
         )
         r = web_client.get("/api/marketplace/items?tab=flea", cookies=cookies)
         assert r.status_code == 200
         data = r.json()
         assert data["total"] == 1
-        assert data["items"][0]["source"] == "flea"
-        # Invocation name suffixed with -by-<owner>
-        assert "alpha" in data["items"][0]["name"]
+        item = data["items"][0]
+        assert item["source"] == "flea"
+        # v49 phase-1: `name` is the suffixed invocation slug — kept as the
+        # technical identifier card JS falls back to when display_name is
+        # absent. v49 phase-2: `display_name` carries the humanized title
+        # (`Alpha`), and JS uses it as the visible card heading.
+        assert item["name"] == "alpha-by-alice"
+        assert item["display_name"] == "Alpha"
 
     def test_my_subscriptions_default_empty(self, web_client):
         """Without explicit install, a granted curated plugin doesn't show
@@ -450,7 +484,7 @@ class TestCuratedDetail:
         r = web_client.delete(
             "/api/marketplace/curated/mkt-x/alpha/install", cookies=cookies,
         )
-        assert r.status_code == 200
+        assert r.status_code == 204
         conn = get_system_db()
         try:
             assert not UserCuratedSubscriptionsRepository(conn).is_subscribed(
@@ -477,7 +511,7 @@ def _seed_curated_skill_on_disk(
     skill_dir = tmp_path / "marketplaces" / marketplace / "plugins" / plugin / "skills" / skill
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {skill}\ndescription: A test skill.\n---\nbody",
+        f"---\nname: {skill}\ndescription: Use when validating marketplace skill rows across guardrail tiers and endpoints\n---\nbody",
         encoding="utf-8",
     )
     for rel, content in (files or {}).items():
@@ -492,7 +526,7 @@ def _seed_curated_agent_on_disk(
     agents_dir = tmp_path / "marketplaces" / marketplace / "plugins" / plugin / "agents"
     agents_dir.mkdir(parents=True, exist_ok=True)
     (agents_dir / f"{agent}.md").write_text(
-        f"---\nname: {agent}\ndescription: A test agent.\n---\nbody",
+        f"---\nname: {agent}\ndescription: Use when validating marketplace agent rows across guardrail tiers and endpoints\n---\nbody",
         encoding="utf-8",
     )
 
@@ -519,7 +553,7 @@ class TestCuratedInnerDetail:
         # Inner-detail fields.
         assert d["kind"] == "skill"
         assert d["name"] == "data-explorer"
-        assert d["description"] == "A test skill."
+        assert d["description"] == "Use when validating marketplace skill rows across guardrail tiers and endpoints"
         # Parent plugin metadata surfaced for the redesigned hero / sidebar.
         assert d["category"] == "Data"
         assert d["marketplace_name"]  # registry display name
@@ -646,7 +680,7 @@ class TestFleaDetail:
         up = web_client.post(
             "/api/store/entities",
             files={"file": ("s.zip", _make_skill_zip("alpha"), "application/zip")},
-            data={"type": "skill"}, cookies=cookies,
+            data={"type": "skill", "description": _OK_DESC}, cookies=cookies,
         )
         assert up.status_code == 201, up.text
         entity_id = up.json()["id"]
@@ -667,3 +701,311 @@ class TestFleaDetail:
         assert d["install_count"] == 0
         # docs is always a list (empty when uploader didn't ship any).
         assert isinstance(d["docs"], list)
+
+
+# ---------------------------------------------------------------------------
+# v49 phase-2 — title + tagline + full-name owner on flea presentation
+# ---------------------------------------------------------------------------
+
+
+def _set_user_full_name(user_id: str, full_name: str) -> None:
+    """Override the `users.name` field for an existing test user. Used to
+    simulate the real-world case where a user has a proper full name
+    (e.g. "Carolina Bsolinová Pauerová") distinct from their kebab-case
+    `owner_username` derived from email (`c-bsolinovapauerova`)."""
+    from src.db import get_system_db
+    conn = get_system_db()
+    try:
+        conn.execute("UPDATE users SET name = ? WHERE id = ?", [full_name, user_id])
+    finally:
+        conn.close()
+
+
+class TestFleaPhase2Presentation:
+    """v49 phase-2 — flea cards and detail pages surface `title` (humanized),
+    `tagline`, and the owner's full name (`users.name`) instead of the
+    kebab-case slug + bare username they used to render."""
+
+    def test_flea_card_carries_title_tagline_and_full_name_owner(self, web_client):
+        user_id, cookies = _create_user(web_client, "c_marustamyan@x.com")
+        # Simulate a real account whose users.name is the friendly form;
+        # owner_username on the entity will be the sanitized kebab-case
+        # local-part ("c-marustamyan").
+        _set_user_full_name(user_id, "Minas Arustamyan")
+
+        web_client.post(
+            "/api/store/entities",
+            files={
+                "file": ("s.zip", _make_skill_zip("mcp-builder"), "application/zip"),
+            },
+            data={
+                "type": "skill",
+                "description": _OK_DESC,
+                "tagline": "Spawns MCP servers from a one-line prompt.",
+            },
+            cookies=cookies,
+        )
+
+        r = web_client.get("/api/marketplace/items?tab=flea", cookies=cookies)
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        assert len(items) == 1
+        it = items[0]
+        # display_name carries the acronym-aware humanized title from
+        # store_entities.title; JS card uses it as the visible heading.
+        assert it["display_name"] == "MCP Builder"
+        # tagline rides the existing curated chain; JS prefers it over
+        # description for the card subtitle.
+        assert it["tagline"] == "Spawns MCP servers from a one-line prompt."
+        # owner is now the full users.name, not the kebab-case slug.
+        assert it["owner"] == "Minas Arustamyan"
+        # The technical suffixed slug stays on `name` as the JS-fallback
+        # identifier (legacy compat — no card UI surfaces it directly).
+        assert it["name"] == "mcp-builder-by-c-marustamyan"
+
+    def test_flea_card_owner_falls_back_to_email_then_username(self, web_client):
+        """When users.name is NULL, owner display falls back to users.email;
+        when neither is present, to owner_username (defensive bottom)."""
+        from src.db import get_system_db
+        user_id, cookies = _create_user(web_client, "bob@x.com")
+        # Clear the seeded users.name so the fallback chain kicks in.
+        conn = get_system_db()
+        try:
+            conn.execute("UPDATE users SET name = NULL WHERE id = ?", [user_id])
+        finally:
+            conn.close()
+        web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("alpha"), "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        r = web_client.get("/api/marketplace/items?tab=flea", cookies=cookies)
+        assert r.status_code == 200
+        it = r.json()["items"][0]
+        # Fallback: users.name=NULL → users.email → "bob@x.com".
+        assert it["owner"] == "bob@x.com"
+
+    def test_flea_detail_exposes_title_and_tagline(self, web_client):
+        _, cookies = _create_user(web_client, "alice@x.com")
+        up = web_client.post(
+            "/api/store/entities",
+            files={
+                "file": ("s.zip", _make_skill_zip("oauth-server"), "application/zip"),
+            },
+            data={
+                "type": "skill",
+                "description": _OK_DESC,
+                "tagline": "Mock OAuth provider for integration tests.",
+            },
+            cookies=cookies,
+        )
+        entity_id = up.json()["id"]
+
+        r = web_client.get(
+            f"/api/marketplace/flea/{entity_id}/detail", cookies=cookies,
+        )
+        assert r.status_code == 200, r.text
+        d = r.json()
+        # `display_name` is the curated-style hero title — phase 2 wires
+        # it up for flea so the heroTitle JS chain renders the friendly
+        # form instead of falling through to plugin_name (= entity name).
+        assert d["display_name"] == "OAuth Server"
+        assert d["tagline"] == "Mock OAuth provider for integration tests."
+        # plugin_name + manifest_name unchanged — the JS chain in templates
+        # uses display_name first; these remain for backward compat with
+        # paths that have always read the slug.
+        assert d["plugin_name"] == "oauth-server"
+        assert d["manifest_name"] == "oauth-server-by-alice"
+
+    def test_flea_detail_tagline_null_when_omitted(self, web_client):
+        """Tagline is optional — flea entity uploaded without it must
+        surface as None on detail so the hero element stays hidden."""
+        _, cookies = _create_user(web_client, "alice@x.com")
+        up = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("notagline"), "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        entity_id = up.json()["id"]
+        r = web_client.get(
+            f"/api/marketplace/flea/{entity_id}/detail", cookies=cookies,
+        )
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["tagline"] is None
+        # display_name still set from the humanizer fallback in POST.
+        assert d["display_name"] == "Notagline"
+
+    def test_flea_inner_skill_parent_display_name_uses_title(self, web_client):
+        """v49 phase-3: inner skill/agent detail of a flea plugin surfaces
+        the parent plugin's user-friendly ``title`` (humanized) via
+        ``parent_display_name``. JS chains (breadcrumb 3rd segment, hero
+        "part of <plugin>", helper "This skill is part of <plugin>",
+        sidebar "Parent plugin") all read this field first — single
+        source swap drives every surface to the friendly form."""
+        _, cookies = _create_user(web_client, "alice@x.com")
+        up = web_client.post(
+            "/api/store/entities",
+            files={
+                "file": (
+                    "p.zip",
+                    _make_plugin_zip("codex-second-opinion", inner_skill="codex-setup"),
+                    "application/zip",
+                ),
+            },
+            data={
+                "type": "plugin",
+                "description": _OK_DESC,
+                "title": "Codex Second Opinion",
+            },
+            cookies=cookies,
+        )
+        assert up.status_code == 201, up.text
+        entity_id = up.json()["id"]
+
+        r = web_client.get(
+            f"/api/marketplace/flea/{entity_id}/skill/codex-setup",
+            cookies=cookies,
+        )
+        assert r.status_code == 200, r.text
+        d = r.json()
+        # Inner skill's own name still comes from frontmatter.
+        assert d["name"] == "codex-setup"
+        # Parent identification: manifest_name = entity.name (technical
+        # slug used by the rename / archive paths); parent_display_name =
+        # entity.title (the human form rendered everywhere on the UI).
+        assert d["manifest_name"] == "codex-second-opinion"
+        assert d["parent_display_name"] == "Codex Second Opinion"
+
+    def test_flea_card_and_detail_read_synthetic_name_from_db(self, web_client):
+        """v49 phase-3: ``MarketplaceItem.name`` (card) and
+        ``PluginDetailResponse.manifest_name`` (detail) source from the
+        stored ``synthetic_name`` column. Manually override the column to
+        a non-canonical value — both surfaces must reflect the override,
+        proving they read the column instead of recomputing
+        ``<name>-by-<owner_username>``."""
+        from src.db import get_system_db
+        _, cookies = _create_user(web_client, "syntheticread@x.com")
+        up = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("orig"), "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        eid = up.json()["id"]
+        conn = get_system_db()
+        try:
+            conn.execute(
+                "UPDATE store_entities SET synthetic_name = ? WHERE id = ?",
+                ["manual-override-mkt", eid],
+            )
+        finally:
+            conn.close()
+        # Card
+        r = web_client.get("/api/marketplace/items?tab=flea", cookies=cookies)
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        assert len(items) == 1
+        assert items[0]["name"] == "manual-override-mkt"
+        # Detail
+        d = web_client.get(
+            f"/api/marketplace/flea/{eid}/detail", cookies=cookies,
+        )
+        assert d.status_code == 200, d.text
+        assert d.json()["manifest_name"] == "manual-override-mkt"
+
+    def test_flea_inner_skill_parent_display_name_humanize_fallback(self, web_client):
+        """When title is omitted on upload, the POST endpoint humanizes the
+        plugin name as a fallback — phase 3 must thread that humanized form
+        into ``parent_display_name`` too, not the kebab-case slug."""
+        _, cookies = _create_user(web_client, "alice@x.com")
+        up = web_client.post(
+            "/api/store/entities",
+            files={
+                "file": (
+                    "p.zip",
+                    _make_plugin_zip("mcp-tools", inner_skill="dummy"),
+                    "application/zip",
+                ),
+            },
+            data={"type": "plugin", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        entity_id = up.json()["id"]
+        r = web_client.get(
+            f"/api/marketplace/flea/{entity_id}/skill/dummy",
+            cookies=cookies,
+        )
+        assert r.status_code == 200, r.text
+        d = r.json()
+        # Humanizer + acronym dict from phase 1 — "mcp-tools" → "MCP Tools".
+        assert d["parent_display_name"] == "MCP Tools"
+        assert d["manifest_name"] == "mcp-tools"
+
+
+# ---------------------------------------------------------------------------
+# v49 hardening — owner-display N+1 regression guard
+# ---------------------------------------------------------------------------
+
+
+class TestFleaOwnerDisplayBatched:
+    """Pre-fix, ``_flea_to_item`` called ``_resolve_owner_display`` for every
+    item in the list comprehension — one ``SELECT … FROM users WHERE id = ?``
+    per item. v49 hardening batches the prefetch via ``_load_users_display``
+    so the listing endpoint runs O(1) user lookups regardless of item count.
+
+    Regression guard: assert ``_resolve_owner_display`` is NEVER invoked
+    during the flea listing path. If a future change reintroduces the per-row
+    helper inside ``_flea_to_item``, this fails immediately."""
+
+    def test_listing_does_not_call_per_row_owner_resolver(self, web_client, monkeypatch):
+        # Three owners + three flea uploads — enough to make any per-row
+        # call obviously visible if it sneaks back in.
+        for email in ("alice@x.com", "bob@x.com", "carol@x.com"):
+            _, cookies = _create_user(web_client, email)
+            web_client.post(
+                "/api/store/entities",
+                files={
+                    "file": (
+                        "s.zip",
+                        _make_skill_zip(f"skill-{email.split('@')[0]}"),
+                        "application/zip",
+                    ),
+                },
+                data={"type": "skill", "description": _OK_DESC},
+                cookies=cookies,
+            )
+
+        # Any logged-in user can see the public flea tab.
+        _, viewer_cookies = _create_user(web_client, "viewer@x.com")
+
+        # Spy on the per-row resolver. The fixed implementation must not
+        # call it inside the listing comprehension.
+        from app.api import marketplace as marketplace_module
+        calls: list[str] = []
+        original = marketplace_module._resolve_owner_display
+
+        def spy(conn, owner_user_id, fallback):
+            calls.append(owner_user_id)
+            return original(conn, owner_user_id, fallback)
+
+        monkeypatch.setattr(marketplace_module, "_resolve_owner_display", spy)
+
+        r = web_client.get(
+            "/api/marketplace/items?tab=flea", cookies=viewer_cookies,
+        )
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        assert len(items) == 3
+        assert calls == [], (
+            f"_resolve_owner_display called {len(calls)} times inside the "
+            f"flea listing path — regression to the N+1 pattern."
+        )
+
+        # All three owner display strings still resolved correctly via the
+        # batch prefetch (so we're not just sidestepping the assertion by
+        # returning blank owners).
+        owners = sorted(it["owner"] for it in items)
+        assert owners == ["alice", "bob", "carol"]

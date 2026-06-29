@@ -1,12 +1,7 @@
-{% extends "base.html" %}
+{% extends "base_ds.html" %}
 {% block title %}{{ guide_title }} — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block content %}
-{# Publication-flow guide. Reached from the action-row CTA on /marketplace
-   ("Submit a plugin" on the curated tab; the flea variant is reachable
-   only as a fallback since flea has a self-service +Upload button).
-
-   Two distinct flows, one template — `guide_kind` switches the body. #}
+{% block head_extra %}
 <style>
   .guide-page {
     max-width: 760px; margin: 0 auto;
@@ -19,7 +14,7 @@
     color: var(--text-secondary); font-size: 13px;
     text-decoration: none;
   }
-  .guide-page .back:hover { color: var(--primary); }
+  .guide-page .back:hover { color: var(--ds-primary); }
 
   .guide-page h1 {
     font-size: 26px; font-weight: 700;
@@ -53,7 +48,7 @@
     position: absolute; left: 16px; top: 14px;
     width: 28px; height: 28px;
     display: flex; align-items: center; justify-content: center;
-    background: var(--primary); color: #fff;
+    background: var(--ds-primary); color: #fff;
     border-radius: 999px;
     font-size: 13px; font-weight: 700;
   }
@@ -70,6 +65,45 @@
 
   /* Flea variant uses purple step bubbles (matches flea badge accent). */
   .guide-page[data-kind="flea"] .guide-steps li::before { background: #6D28D9; }
+
+  /* Fast-path callout — visually distinct from the numbered steps so
+     readers spot "wait, there's a quicker option" without re-reading
+     the whole page. Lives only on the curated guide; flea has no
+     equivalent escape hatch (it's already the fast path). */
+  .guide-fastpath {
+    margin: 16px 0 28px;
+    padding: 18px 22px;
+    background: linear-gradient(135deg, rgba(109, 40, 217, 0.06), rgba(109, 40, 217, 0.02));
+    border: 1px solid rgba(109, 40, 217, 0.25);
+    border-left: 4px solid #6D28D9;
+    border-radius: 12px;
+  }
+  .guide-fastpath h3 {
+    margin: 0 0 8px;
+    font-size: 15px; font-weight: 700;
+    color: var(--text-primary);
+  }
+  .guide-fastpath p {
+    margin: 0 0 12px;
+    font-size: 14px; line-height: 1.6;
+    color: var(--text-secondary);
+  }
+  .guide-fastpath p strong { color: var(--text-primary); }
+  .guide-fastpath a.fastpath-cta {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 9px 16px;
+    background: var(--ds-primary); color: #fff;
+    border: 1px solid var(--ds-primary);
+    border-radius: 8px;
+    font-size: 13px; line-height: 1; font-weight: 600;
+    text-decoration: none;
+    box-sizing: border-box;
+    transition: all 0.15s ease;
+  }
+  .guide-fastpath a.fastpath-cta:hover {
+    background: var(--ds-primary-dark);
+    border-color: var(--ds-primary-dark);
+  }
 
   /* ── Section block ──────────────────────────────────────────────── */
   .guide-section {
@@ -97,65 +131,138 @@
   }
 
   /* ── CTA bar ────────────────────────────────────────────────────── */
+  /* Container layout only — the two buttons inside render via
+     `ds.button(variant='primary'|'secondary')`, so the bg/border/
+     padding/hover styling that lived here is supplied by the
+     canonical .btn family in style-custom.css. */
   .guide-cta {
-    display: flex; gap: 10px; flex-wrap: wrap;
-    margin-top: 24px;
-  }
-  .guide-cta a {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 9px 16px;
-    border: 1px solid var(--border);
-    background: var(--card-bg);
-    color: var(--text-primary);
-    border-radius: 8px;
-    font-size: 13px; font-weight: 500;
-    text-decoration: none;
-    transition: all 0.15s ease;
-  }
-  .guide-cta a:hover { border-color: var(--primary); color: var(--primary); }
-  .guide-cta a.primary {
-    background: var(--primary); color: #fff; border-color: var(--primary);
-  }
-  .guide-cta a.primary:hover { background: var(--primary-dark, #0056A3); color: #fff; }
-  .guide-page[data-kind="flea"] .guide-cta a.primary {
-    background: #6D28D9; border-color: #6D28D9;
-  }
-  .guide-page[data-kind="flea"] .guide-cta a.primary:hover {
-    background: #5B21B6; border-color: #5B21B6;
+    display: flex; gap: var(--space-3); flex-wrap: wrap;
+    margin-top: var(--space-6);
   }
 </style>
+{% endblock %}
 
+{% block content %}
+{# Publication-flow guide for /marketplace submissions; `guide_kind` switches
+   curated vs flea. Bottom .guide-cta buttons render via `ds.button`
+   (auto-imported by base_ds); the purple .fastpath-cta stays bespoke. #}
 <div class="guide-page" data-kind="{{ guide_kind }}">
   <a class="back" href="/marketplace?tab={{ guide_kind }}">← Back to {{ 'Curated Marketplace' if guide_kind == 'curated' else 'Flea Market' }}</a>
   <h1>{{ guide_title }}</h1>
 
   {% if guide_kind == 'curated' %}
-  {# Curated submission guide — body intentionally left minimal; full
-     content to be authored separately. The CTA buttons at the bottom of
-     the page still let the user jump back to the Curated tab or browse
-     the Flea Market as a self-service alternative. #}
+  {# Curated submission guide — publish-by-curator flow. Named Curators
+     are the gatekeepers (security / telemetry hygiene / docs bar). The
+     fast-path callout points users at the Flea Market when they want
+     reach without the review wait. #}
   <p class="lede">
-    The Curated Marketplace is publish-by-curator only. To get your skill,
-    agent, or plugin listed, hand it off to a curator who reviews and
-    publishes it on your behalf.
+    Curated Marketplace submissions go through <strong>Named Curators</strong>
+    — folks accountable for keeping the bar (security, telemetry hygiene,
+    documentation) consistent across what ships on this shelf.
   </p>
-  {% else %}
-  {# Flea publishing guide — body intentionally left minimal; full content
-     to be authored separately. The CTA buttons at the bottom of the page
-     still let the user jump to /store/new or browse the Flea Market. #}
-  <p class="lede">
-    The Flea Market is self-service. Anyone in the company can upload a
-    skill, agent, or plugin.
-  </p>
-  {% endif %}
 
-  <div class="guide-cta">
-    <a class="primary" href="{{ '/store/new' if guide_kind == 'flea' else '/marketplace?tab=curated' }}">
-      {{ '+ Upload to Flea Market' if guide_kind == 'flea' else '← Back to Curated' }}
-    </a>
-    <a href="/marketplace?tab={{ 'flea' if guide_kind == 'curated' else 'curated' }}">
-      {{ 'Browse Flea Market' if guide_kind == 'curated' else 'Browse Curated' }} →
+  <ol class="guide-steps">
+    <li>
+      <strong>Find a Curator.</strong>
+      Each plugin in the Curated Marketplace lists its curator on its detail
+      page. Reach out to any curator whose published work overlaps with what
+      you're shipping — they're the most likely owner. The
+      <em>See all curators →</em> link on the
+      <a href="/marketplace?tab=curated">Curated tab</a> is the directory entry.
+      <span class="note">If no curator's domain matches, ask the
+      {{ instance_brand }} platform team — they'll either adopt the
+      submission or steer it to the right person.</span>
+    </li>
+    <li>
+      <strong>Hand off your skill or plugin.</strong>
+      Share the source repo (or a zipped bundle) plus a one-paragraph intro
+      covering <em>what it does</em>, <em>who it's for</em>, and
+      <em>what data it touches</em>. The curator runs it through the review
+      bar (manifest sanity, prompt-injection surface, doc completeness,
+      telemetry posture).
+    </li>
+    <li>
+      <strong>Curator publishes.</strong>
+      Once they accept, the curator commits the manifest entry to the
+      curated repo. Your plugin appears on the Curated tab on the next
+      nightly catalog sync (within ~24&nbsp;h of merge).
+      <span class="note">Iteration after publish goes through the same
+      curator — they own the entry's lifecycle (version bumps,
+      deprecation, takedown).</span>
+    </li>
+  </ol>
+
+  <div class="guide-fastpath">
+    <h3>&#x26A1; Want it live in minutes instead of days?</h3>
+    <p>
+      The <strong>Flea Market</strong> is the self-service shelf — anyone in
+      the company can upload a skill, agent, or plugin without going
+      through a curator. Same Claude Code reach, faster path, lighter
+      review bar (automated guardrails only; no human gatekeeper).
+    </p>
+    <a class="fastpath-cta" href="/marketplace/guide/flea">
+      Submit a skill to Flea Market &rarr;
     </a>
   </div>
+
+  <div class="guide-cta">
+    {{ ds.button('Submit a skill to Flea Market →', variant='primary',
+                 href='/marketplace/guide/flea') }}
+    {{ ds.button('← Back to Curated', variant='secondary',
+                 href='/marketplace?tab=curated') }}
+  </div>
+  {% else %}
+  {# Flea publishing guide — self-service flow. No human gatekeeper,
+     automated guardrails only (content quality + security review run
+     server-side at submission time). Lives at /store/new. #}
+  <p class="lede">
+    The Flea Market is self-service. Anyone in the company can upload a
+    skill, agent, or plugin — no curator handoff, no review queue.
+    Automated guardrails check the manifest, content quality, and
+    prompt-injection surface at submission time.
+  </p>
+
+  <ol class="guide-steps">
+    <li>
+      <strong>Package what you're shipping.</strong>
+      A skill is a single <code>SKILL.md</code> (front-matter + body); an
+      agent is an <code>AGENT.md</code>; a plugin is a folder with a
+      <code>plugin.json</code> manifest and any commands / agents / skills
+      it bundles. Zip the folder (or point at a git URL containing it).
+      <span class="note">If you're starting fresh, the
+      <a href="/marketplace/format-guide">format guide</a> documents each
+      shape with copy-pasteable examples.</span>
+    </li>
+    <li>
+      <strong>Upload via the form.</strong>
+      Head to <a href="/store/new"><code>/store/new</code></a>. Drop the
+      zip (or paste the git URL), fill the metadata form (name, short
+      description, what data it touches, who it's for), submit.
+      <span class="note">The <em>+ Upload</em> button on the Flea Market
+      tab is the same form.</span>
+    </li>
+    <li>
+      <strong>Automated review.</strong>
+      Server runs content-quality checks (manifest completeness, prose
+      length, distinct-word floor) and a prompt-injection scan. Most
+      submissions pass within seconds. Failures surface inline with the
+      exact field to fix.
+    </li>
+    <li>
+      <strong>Published.</strong>
+      Once green, your submission goes live on the Flea Market tab
+      immediately — no nightly-sync delay. Iteration goes through the
+      same form: upload a new version, the form recognises the slug
+      and bumps the version pointer.
+    </li>
+  </ol>
+
+  <div class="guide-cta">
+    {{ ds.button('+ Upload to Flea Market', variant='primary',
+                 href='/store/new') }}
+    {{ ds.button('Browse Curated →', variant='secondary',
+                 href='/marketplace?tab=curated') }}
+  </div>
+  {% endif %}
 </div>
 {% endblock %}

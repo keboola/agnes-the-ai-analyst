@@ -1,3 +1,5 @@
+> New: [docs/PLATFORM_SETUP.md](./PLATFORM_SETUP.md) is the consolidated operator playbook. This doc covers a focused subset; check the playbook first.
+
 # Quick Start Guide
 
 ## Prerequisites
@@ -84,4 +86,4 @@ Open the project in Claude Code. The CLAUDE.md file will guide the AI assistant 
 
 ## Hackathon
 
-See [`HACKATHON.md`](HACKATHON.md) for the deploy-and-develop playbook. Per-developer dev VMs are the supported pattern — point your VM at your branch image with `gcloud compute ssh <vm> --command "sudo sed -i 's/^AGNES_TAG=.*/AGNES_TAG=dev-<slug>/' /opt/agnes/.env && sudo /usr/local/bin/agnes-auto-upgrade.sh"`.
+See [`archive/HACKATHON.md`](archive/HACKATHON.md) for the deploy-and-develop playbook (archived event runbook). Per-developer dev VMs are the supported pattern — point your VM at your branch image with `gcloud compute ssh <vm> --command "sudo sed -i 's/^AGNES_TAG=.*/AGNES_TAG=dev-<slug>/' /opt/agnes/.env && sudo /usr/local/bin/agnes-auto-upgrade.sh"`.
