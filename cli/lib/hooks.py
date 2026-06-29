@@ -74,6 +74,7 @@ from pathlib import Path
 # shells out to a deleted script.
 _OUR_COMMAND_MARKERS = (
     "agnes self-upgrade",
+    "agnes update",
     "agnes pull",
     "agnes push",
     "agnes refresh-marketplace",
@@ -109,11 +110,30 @@ def install_claude_hooks(workspace: Path) -> None:
         try:
             cfg = json.loads(settings_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            print(
-                f"Warning: {settings_path} is not valid JSON; skipping hook install.",
-                file=sys.stderr,
-            )
-            return
+            # Self-heal a corrupt settings.json instead of giving up. The old
+            # behaviour (`return`) bricked hook repair entirely: a malformed
+            # file could never be fixed by `agnes init`/`self-upgrade`/`update`.
+            # Back up the unparseable file (so the analyst can recover any
+            # third-party keys by hand) and rebuild Agnes's managed entries
+            # from an empty config.
+            from datetime import datetime, timezone
+
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            corrupt = settings_path.with_name(f"{settings_path.name}.corrupt.{ts}")
+            try:
+                corrupt.write_bytes(settings_path.read_bytes())
+                print(
+                    f"Warning: {settings_path} was not valid JSON; backed it up to "
+                    f"{corrupt.name} and rebuilt the Agnes hook entries.",
+                    file=sys.stderr,
+                )
+            except OSError:
+                print(
+                    f"Warning: {settings_path} was not valid JSON and could not be "
+                    f"backed up; rebuilt the Agnes hook entries from scratch.",
+                    file=sys.stderr,
+                )
+            cfg = {}
     else:
         cfg = {}
 
@@ -158,11 +178,23 @@ def install_claude_hooks(workspace: Path) -> None:
     # leftover capture entry from a CLI- or template-seeded settings.json is
     # stripped because its command matches a `_OUR_COMMAND_MARKERS` substring
     # ("agnes capture-session" or "capture-session/capture.sh").
+    # SessionStart kicks off ONE detached `agnes update --quiet`: the unified
+    # convergence (CLI self-upgrade -> workspace template -> Agnes-owned
+    # hooks/statusLine/commands -> marketplace plugins -> data pull -> report).
+    # Detached via `( nohup ... & )` (like the SessionEnd push) so it NEVER
+    # blocks session start; a freshly-installed CLI binary, if any, activates
+    # next session. `agnes update` sets AGNES_NO_UPDATE_CHECK internally so it
+    # doesn't recurse, and holds update.lock so only one runs.
+    #
+    # This replaces the older two entries (`self-upgrade; pull` chain + a
+    # separate `refresh-marketplace --check`). Workspaces still on the old form
+    # auto-migrate here: `_replace_or_add` strips entries whose commands match
+    # `_OUR_COMMAND_MARKERS` (which covers `agnes self-upgrade` / `agnes pull` /
+    # `agnes refresh-marketplace` / `agnes update`) and re-adds just this one.
     _replace_or_add(
         "SessionStart",
         [
-            'bash -c "agnes self-upgrade --quiet 2>/dev/null || true; agnes pull --quiet 2>/dev/null || true"',
-            'bash -c "agnes refresh-marketplace --check 2>/dev/null || true"',
+            'bash -c "( nohup agnes update --quiet </dev/null >/dev/null 2>&1 & ) ; true"',
         ],
     )
     # SessionEnd runs the detached push. Claude Code in `-p` (headless) mode
