@@ -180,6 +180,7 @@ def process_file(json_path: Path, base_url: str, auth: tuple[str, str], force: b
 
         # Atomic write: temp file + replace
         fd, tmp_path = tempfile.mkstemp(dir=str(json_path.parent), suffix=".tmp")
+        os.fchmod(fd, 0o660)  # Restore group rw so www-data/deploy can access via ACL
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(data, f, indent=2, default=str)
@@ -233,6 +234,14 @@ def main():
     if not issues_dir.exists():
         logger.error(f"Issues directory not found: {issues_dir}")
         sys.exit(1)
+
+    field_ids = configured_field_ids()
+    if not field_ids:
+        logger.warning(
+            "JIRA_REFRESH_FIELDS is not configured — nothing to backfill. "
+            "Set JIRA_REFRESH_FIELDS to e.g. 'customfield_10328:first_response' to enable."
+        )
+        sys.exit(0)
 
     base_url = config["base_url"]
     auth = (config["email"], config["api_token"])

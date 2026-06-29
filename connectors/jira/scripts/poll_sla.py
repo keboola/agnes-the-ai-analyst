@@ -265,6 +265,22 @@ def run(dry_run: bool = False, verbose: bool = False) -> dict:
     if verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
+    field_ids = configured_field_ids()
+    if not field_ids:
+        logger.warning(
+            "JIRA_REFRESH_FIELDS is not configured — no fields to refresh; skipping poll. "
+            "Set JIRA_REFRESH_FIELDS to e.g. 'customfield_10328:first_response' to enable."
+        )
+        return {
+            "open_issues": 0,
+            "updated": 0,
+            "healed": 0,
+            "skipped": 0,
+            "failed": 0,
+            "elapsed_sec": 0.0,
+            "dry_run": dry_run,
+        }
+
     config = load_config()
     raw_dir = config["data_dir"]
     parquet_dir = Path(os.environ.get("JIRA_PARQUET_DIR", "/data/src_data/parquet/jira"))
