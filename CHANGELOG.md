@@ -11,14 +11,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- `agnes update` — one idempotent, best-effort convergence of the workspace + CLI: CLI self-upgrade, workspace template (override 3-way merge with `.bak` backups / default `CLAUDE.md` refresh), Agnes-owned hooks/statusLine/commands, marketplace plugins, and data pull. Single-instance locked (`~/.config/agnes/update.lock`), runnable from any directory, with a per-run report appended to `<workspace>/.claude/agnes/update.log`. This is the recommended way to repair a broken install or pick up a new release.
+- A corrupt `<workspace>/.claude/settings.json` is now backed up to `settings.json.corrupt.<ts>` and rebuilt, instead of leaving hook install/repair permanently skipped.
 
 ### Changed
+- CLI version drift no longer shows an interactive `Upgrade now? [Y/n]` prompt. Instead it kicks off a detached background `agnes update` (no confirmation); the SessionStart hook runs the same single `agnes update --quiet` (replacing the prior `self-upgrade; pull` + `refresh-marketplace --check` entries).
+- `agnes init` now installs the Agnes-owned hooks / statusLine / managed slash-commands in BOTH default and override (Initial Workspace Template) modes — in override mode they are applied on top of the template after extraction.
+- **BREAKING (override reinstall)** `agnes init --force` over an existing template workspace now backs up analyst-modified files to `<name>.bak.<ts>` via the 3-way merge instead of blind-overwriting them. A fresh install is unchanged.
+- The generated setup prompt routes an already-initialised workspace (a `.claude/init-complete` sentinel exists) to `agnes update` instead of a plain `agnes init` that would refuse.
 
 ### Fixed
 
 ### Removed
+- The interactive upgrade prompt (`cli/upgrade_prompt.py`) — superseded by the unattended background `agnes update`.
 
 ### Internal
+- `cli/lib/push_lock.py` gained `acquire_path_or_skip(path)` (a path-scoped cross-platform `filelock`) reused for the update lock.
+- `agnes refresh-marketplace --check` exits a dedicated drift code (`20`) so `agnes update` can decide whether to run a full reconcile without re-implementing the ls-remote comparison.
 
 ## [0.72.0] - 2026-06-26
 

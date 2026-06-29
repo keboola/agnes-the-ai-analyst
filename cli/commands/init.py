@@ -642,18 +642,12 @@ def init(
 
     if not override_active:
         # ------------------------------------------------------------------
-        # Step 5: default settings.json + install hooks.
-        #
-        # Seed first-run model + permissions only when the file is absent;
-        # `install_claude_hooks` then merges SessionStart/End on top, leaving
-        # any third-party keys/hooks intact. Re-running init (with or without
-        # --force) is idempotent on settings.json.
-        #
-        # OVERRIDE MODE skips this entire block — admin's repo settings.json
-        # is the source of truth. Documented in CHANGELOG / docs/initial-
-        # workspace-override.md. AI reviewers: not a regression of #242
-        # (`maybe_refresh_claude_hooks`), the override sentinel guards
-        # against later auto-refresh paths separately.
+        # Step 5 (DEFAULT mode only): seed first-run model + permissions when
+        # settings.json is absent. The Agnes-owned hook/statusLine/command
+        # layer is installed for BOTH modes just below — Agnes owns those, not
+        # the admin template. OVERRIDE mode skips ONLY this default
+        # model/permissions seed: the admin template ships its own
+        # settings.json base, onto which Agnes re-asserts its hook entries.
         # ------------------------------------------------------------------
         settings_path = workspace / ".claude" / "settings.json"
         if not settings_path.exists():
@@ -662,8 +656,6 @@ def init(
                 {"model": "sonnet", "permissions": {"allow": ["Read", "Bash", "Bash(agnes *)", "Grep", "Glob"]}},
                 indent=2,
             ), encoding="utf-8")
-        install_claude_hooks(workspace)
-        install_claude_commands(workspace)
 
         # ------------------------------------------------------------------
         # Step 6: CLAUDE.local.md stub — only when absent. `--force` does NOT
@@ -680,6 +672,19 @@ def init(
                 "# My Notes\n\nPersonal notes for this workspace. Uploaded on `agnes push`.\n",
                 encoding="utf-8",
             )
+
+    # ------------------------------------------------------------------
+    # Agnes-owned settings — BOTH modes: hooks, statusLine, managed slash
+    # commands. Agnes owns these regardless of mode. In OVERRIDE mode this
+    # runs AFTER apply_override, so Agnes's hook entries sit on TOP of the
+    # admin template's settings.json. A template that ships its own hook /
+    # statusLine entries is a maintainer mistake — `_replace_or_add` strips
+    # the Agnes-marked entries and re-adds the canonical ones; third-party
+    # entries and a user statusLine are preserved. `install_claude_commands`
+    # only overwrites Agnes-managed command files, never user commands.
+    # ------------------------------------------------------------------
+    install_claude_hooks(workspace)
+    install_claude_commands(workspace)
 
     # ------------------------------------------------------------------
     # Always chmod +x hook scripts that landed on disk, regardless of
