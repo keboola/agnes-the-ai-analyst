@@ -11,7 +11,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
-- `/connect-guide` page — informational, read-only setup guide for connecting AI agents through the OAuth 2.1 remote MCP connector. Per-agent instructions sit behind a button picker (Claude Desktop, Claude.ai, Cursor, VS Code / GitHub Copilot, ChatGPT connectors) so only the selected guide is shown; Cursor and VS Code include config snippets. Adds a "how it works" handshake summary, an available-tools overview, and troubleshooting. Reachable by direct URL for any authenticated user (not linked from the nav).
+- `/me/ai-connector` now includes a collapsible, per-agent setup guide directly under the connector URL. A button picker (Claude Desktop, Claude.ai, Cursor, VS Code / GitHub Copilot, ChatGPT) shows only the selected agent's steps; Cursor and VS Code include copyable config snippets. Replaces the old static client chips and corrects the list to OAuth-capable agents only (drops Gemini and Microsoft Copilot). Collapsed by default.
 
 ### Changed
 

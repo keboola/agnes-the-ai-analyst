@@ -1006,29 +1006,6 @@ async def mcp_connect_page(
     return templates.TemplateResponse(request, "mcp_connect.html", ctx)
 
 
-@router.get("/connect-guide", response_class=HTMLResponse)
-async def connect_guide_page(
-    request: Request,
-    user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Informational guide for the OAuth 2.1 remote MCP connector.
-
-    Walks through connecting each AI agent that speaks the native
-    browser-based OAuth handshake (Claude Desktop / Claude.ai, Cursor,
-    ChatGPT connectors). Read-only documentation — the connector URL is
-    the only value users need; every client registers itself and signs in
-    through the browser. Any authenticated user can reach this page.
-    """
-    ctx = _build_context(
-        request,
-        user=user,
-        conn=conn,
-        is_admin=is_user_admin(user["id"], conn),
-    )
-    return templates.TemplateResponse(request, "connect_guide.html", ctx)
-
-
 @router.get("/me/activity", response_class=HTMLResponse)
 async def me_activity_page(
     request: Request,
