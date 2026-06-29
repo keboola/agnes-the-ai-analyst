@@ -59,7 +59,7 @@ def test_admin_post_returns_skill_metadata(seeded_app):
         json={"skill_md": _SKILL_MD, "grant_group": "Admin"},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert r.status_code == 200
+    assert r.status_code == 201
     data = r.json()
     assert data["skill_name"] == "Test Skill"
     assert data["plugin_name"] == "test-skill"
@@ -69,11 +69,12 @@ def test_admin_post_returns_skill_metadata(seeded_app):
 def test_admin_get_lists_plugins(seeded_app):
     client = seeded_app["client"]
     token = seeded_app["admin_token"]
-    client.post(
+    resp = client.post(
         "/api/admin/contributed-skills",
         json={"skill_md": _SKILL_MD, "grant_group": "Admin"},
         headers={"Authorization": f"Bearer {token}"},
     )
+    assert resp.status_code == 201
     r = client.get(
         "/api/admin/contributed-skills",
         headers={"Authorization": f"Bearer {token}"},

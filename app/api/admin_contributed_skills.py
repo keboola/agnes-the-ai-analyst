@@ -33,7 +33,7 @@ class _ContributeRequest(BaseModel):
     grant_group: str = "Admin"
 
 
-@router.post("/api/admin/contributed-skills")
+@router.post("/api/admin/contributed-skills", status_code=201)
 def post_contributed_skill(
     body: _ContributeRequest,
     user: dict = Depends(require_admin),
@@ -100,10 +100,9 @@ def delete_contributed_skill(
     plugins_dir = repo_root / "plugins"
     plugin_dir = plugins_dir / name
 
-    if not plugin_dir.exists():
-        raise HTTPException(status_code=404, detail=f"Plugin '{name}' not found")
-
     with _lock:
+        if not plugin_dir.exists():
+            raise HTTPException(status_code=404, detail=f"Plugin '{name}' not found")
         shutil.rmtree(plugin_dir)
 
         manifest_path = repo_root / ".claude-plugin" / "marketplace.json"
