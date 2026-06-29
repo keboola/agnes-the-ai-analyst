@@ -3050,15 +3050,14 @@ def admin_contribute_skill_delete(
     plugins_dir = repo_root / "plugins"
     plugin_dir = plugins_dir / name
 
-    if not plugin_dir.exists():
-        from src.repositories import user_groups_repo
-
-        ctx = _build_context(request, user=user)
-        ctx["groups"] = user_groups_repo().list_all()
-        ctx["error"] = f"Plugin '{name}' not found."
-        return templates.TemplateResponse(request, "contribute_skill.html", ctx)
-
     with _lock:
+        if not plugin_dir.exists():
+            from src.repositories import user_groups_repo
+
+            ctx = _build_context(request, user=user)
+            ctx["groups"] = user_groups_repo().list_all()
+            ctx["error"] = f"Plugin '{name}' not found."
+            return templates.TemplateResponse(request, "contribute_skill.html", ctx)
         shutil.rmtree(plugin_dir)
         manifest_path = repo_root / ".claude-plugin" / "marketplace.json"
         if manifest_path.is_file():

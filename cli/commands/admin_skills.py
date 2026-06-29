@@ -83,7 +83,7 @@ def skill_contribute(
         "/api/admin/contributed-skills",
         json={"skill_md": skill_md, "grant_group": group},
     )
-    if resp.status_code != 200:
+    if resp.status_code not in (200, 201):
         _fail(resp)
     result = resp.json()
     typer.echo(
