@@ -1,11 +1,14 @@
 """Tests for cli/lib/hooks.py:install_claude_hooks.
 
-Current layout: SessionStart has two Agnes entries — the chained
-``agnes self-upgrade; agnes pull`` and the standalone
-``agnes refresh-marketplace --check``. SessionEnd has one — the detached
-``agnes push``. There is no ``agnes capture-session`` entry (push scans the
-session folder directly now); the capture markers survive only so old
-capture entries get stripped on the next install/refresh.
+Current layout: SessionStart has ONE Agnes entry — the detached
+``agnes update --quiet`` (the unified convergence: CLI self-upgrade +
+workspace template + Agnes-owned hooks/statusLine/commands + marketplace +
+data pull). SessionEnd has one — the detached ``agnes push``. There is no
+``agnes capture-session`` entry (push scans the session folder directly now);
+the capture markers survive only so old capture entries get stripped on the
+next install/refresh. Old SessionStart forms (the ``self-upgrade; pull``
+chain, a standalone ``refresh-marketplace`` entry) are recognised by
+``_OUR_COMMAND_MARKERS`` and migrated to the single update entry.
 """
 
 import json
@@ -36,26 +39,16 @@ def test_install_creates_settings_file(tmp_path):
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
-    # Two entries: (1) chained self-upgrade ; pull — self-upgrade first so a
-    # wire-protocol bump lands before pull uses the new CLI; (2)
-    # refresh-marketplace as a separate entry so its failure (e.g. no clone)
-    # doesn't suppress the data pull.
-    assert len(starts) == 2
-    # No capture-session, and no push, in SessionStart.
+    # ONE entry: the detached unified `agnes update` convergence (self-upgrade
+    # + workspace + Agnes-owned + marketplace + pull all happen inside it).
+    assert len(starts) == 1
+    entry = starts[0]
+    assert "agnes update --quiet" in entry
+    assert entry.startswith("bash -c "), entry
+    assert "nohup" in entry  # detached so it never blocks session start
+    # No capture-session, no push, no standalone self-upgrade/pull/refresh.
     assert not any("capture-session" in c for c in starts), starts
     assert not any("agnes push" in c for c in starts), starts
-    chain = next(
-        (c for c in starts if "agnes self-upgrade" in c and "agnes pull" in c),
-        None,
-    )
-    assert chain is not None, "Expected one SessionStart entry chaining self-upgrade and pull"
-    assert "agnes self-upgrade --quiet" in chain
-    assert "agnes pull --quiet" in chain
-    refresh = next((c for c in starts if "agnes refresh-marketplace" in c), None)
-    assert refresh is not None
-    assert refresh.startswith("bash -c "), refresh
-    assert "--check" in refresh
-    assert "--quiet" not in refresh
     ends = _commands_for(cfg, "SessionEnd")
     assert len(ends) == 1
     assert "agnes push --quiet" in ends[0]
@@ -87,7 +80,7 @@ def test_install_idempotent(tmp_path):
     install_claude_hooks(tmp_path)
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
-    assert len(cfg["hooks"]["SessionStart"]) == 2
+    assert len(cfg["hooks"]["SessionStart"]) == 1
     assert len(cfg["hooks"]["SessionEnd"]) == 1
 
 
@@ -103,9 +96,8 @@ def test_install_replaces_old_da_sync_entries(tmp_path):
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
-    assert len(starts) == 2
-    assert any("agnes pull" in c for c in starts)
-    assert any("agnes refresh-marketplace" in c for c in starts)
+    assert len(starts) == 1
+    assert any("agnes update" in c for c in starts)
     assert not any("agnes push" in c for c in starts)
     assert not any("da sync" in c for c in starts)
 
@@ -139,8 +131,9 @@ def test_install_removes_legacy_capture_session_entries(tmp_path):
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
     ends = _commands_for(cfg, "SessionEnd")
-    assert len(starts) == 2, starts
+    assert len(starts) == 1, starts
     assert not any("capture-session" in c for c in starts), starts
+    assert any("agnes update" in c for c in starts), starts
     assert len(ends) == 1
     assert "capture-session" not in ends[0], ends
     assert "nohup agnes push" in ends[0]
@@ -159,13 +152,16 @@ def test_install_replaces_prior_single_pull_entry(tmp_path):
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
-    assert len(starts) == 2
-    assert any("agnes pull" in c for c in starts)
-    assert any("agnes refresh-marketplace" in c for c in starts)
+    assert len(starts) == 1
+    assert any("agnes update" in c for c in starts)
     assert not any("agnes push" in c for c in starts)
 
 
-def test_install_replaces_old_quiet_refresh_with_check(tmp_path):
+def test_install_migrates_old_entries_to_single_update(tmp_path):
+    """The old SessionStart layout (the `self-upgrade; pull` chain + a
+    standalone `refresh-marketplace` entry) is collapsed into the single
+    `agnes update` entry — marketplace refresh is folded into the
+    convergence now, not a separate hook entry."""
     settings_path = tmp_path / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text(json.dumps({
@@ -176,7 +172,7 @@ def test_install_replaces_old_quiet_refresh_with_check(tmp_path):
                     "agnes pull --quiet 2>/dev/null || true"
                 )}]},
                 {"hooks": [{"type": "command", "command": (
-                    'bash -c "agnes refresh-marketplace --quiet 2>/dev/null || true"'
+                    'bash -c "agnes refresh-marketplace --check 2>/dev/null || true"'
                 )}]},
             ],
         }
@@ -184,11 +180,13 @@ def test_install_replaces_old_quiet_refresh_with_check(tmp_path):
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
-    refresh_entries = [c for c in starts if "agnes refresh-marketplace" in c]
-    assert len(refresh_entries) == 1, refresh_entries
-    refresh = refresh_entries[0]
-    assert "--check" in refresh
-    assert "--quiet" not in refresh
+    assert len(starts) == 1, starts
+    assert "agnes update --quiet" in starts[0]
+    # No standalone self-upgrade / pull / refresh-marketplace entries remain.
+    assert not any(
+        ("refresh-marketplace" in c or "agnes self-upgrade" in c) and "agnes update" not in c
+        for c in starts
+    ), starts
 
 
 def test_install_preserves_third_party_hooks(tmp_path):
@@ -203,11 +201,10 @@ def test_install_preserves_third_party_hooks(tmp_path):
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
-    # Third-party entry stays + both agnes entries get added.
-    assert len(starts) == 3
+    # Third-party entry stays + the single agnes update entry is added.
+    assert len(starts) == 2
     assert any("echo hi from another tool" in c for c in starts)
-    assert any("agnes pull" in c for c in starts)
-    assert any("agnes refresh-marketplace" in c for c in starts)
+    assert any("agnes update" in c for c in starts)
     assert not any("agnes push" in c for c in starts)
     assert cfg["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "echo pre"
 
@@ -226,19 +223,17 @@ def test_install_handles_invalid_json(tmp_path, capsys):
     assert "not valid JSON" in captured.err or "warning" in captured.err.lower()
 
 
-def test_install_chains_self_upgrade_then_pull_in_one_entry(tmp_path):
+def test_install_session_start_is_single_detached_update(tmp_path):
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
-    chain = next(
-        (c for c in starts if "agnes self-upgrade" in c and "agnes pull" in c),
-        None,
-    )
-    assert chain is not None, starts
-    assert "agnes self-upgrade --quiet" in chain
-    assert "agnes pull --quiet" in chain
-    assert chain.index("agnes self-upgrade") < chain.index("agnes pull")
-    assert chain.count("|| true") >= 2
+    assert len(starts) == 1, starts
+    entry = starts[0]
+    assert "agnes update --quiet" in entry
+    assert entry.startswith("bash -c "), entry
+    # Detached + non-blocking, mirroring the SessionEnd push pattern.
+    assert "nohup" in entry and "&" in entry
+    assert "</dev/null" in entry and ">/dev/null 2>&1" in entry
 
 
 def test_session_end_push_is_detached(tmp_path):
@@ -417,8 +412,9 @@ def test_maybe_refresh_migrates_capture_session_workspace(tmp_path):
     cfg = _read_settings(tmp_path)
     starts = _commands_for(cfg, "SessionStart")
     assert not any("capture-session" in c for c in starts), starts
-    refresh = next((c for c in starts if "agnes refresh-marketplace" in c), None)
-    assert refresh is not None and "--check" in refresh, refresh
+    # Old self-upgrade/pull/refresh entries migrate to the single update entry.
+    assert any("agnes update --quiet" in c for c in starts), starts
+    assert not any("refresh-marketplace" in c for c in starts), starts
     ends = _commands_for(cfg, "SessionEnd")
     assert all("capture-session" not in c for c in ends), ends
     assert any("nohup" in c for c in ends), ends

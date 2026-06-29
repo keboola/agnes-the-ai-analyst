@@ -37,28 +37,46 @@ def lock_path(workspace: Path) -> Path:
 
 
 @contextmanager
-def acquire_or_skip(workspace: Path) -> Iterator[FileLock | None]:
-    """Yield the held lock, or ``None`` if the lock can't be acquired.
+def acquire_path_or_skip(lock_file: Path) -> Iterator[FileLock | None]:
+    """Single-instance lock at an arbitrary ``lock_file`` path.
 
-    Non-blocking (``timeout=0``). Two ways acquisition can fail, both
-    treated the same way (yield ``None`` so the caller can ``return`` /
-    ``sys.exit(0)`` quietly):
+    Generalises :func:`acquire_or_skip` to any lock location (e.g.
+    ``~/.config/agnes/update.lock`` for ``agnes update``, not just the
+    per-workspace push lock). Non-blocking (``timeout=0``). Yields the
+    held lock, or ``None`` when it can't be acquired — same two failure
+    modes, both swallowed so the caller can ``return`` / ``sys.exit(0)``
+    quietly:
 
-    - ``filelock.Timeout`` — another push is already running. Expected
-      when multiple SessionEnd hooks fire simultaneously after the user
-      closes several Claude Code sessions at once: exactly one acquires
-      the lock and runs, the rest no-op.
-    - ``OSError`` — the lock file can't be created or opened (read-only
-      filesystem, ``.claude/`` not writable, disk full, hardware I/O
-      error). Rare; when it happens the operator's environment has
-      bigger problems than missing session uploads. We swallow it so
-      ``agnes push`` exits cleanly instead of dumping an opaque
-      traceback to stderr or, in the SessionEnd hook context, crashing
-      silently under ``|| true``.
+    - ``filelock.Timeout`` — another holder is already running. Exactly
+      one process acquires and runs; the rest no-op.
+    - ``OSError`` — the lock file can't be created/opened (read-only fs,
+      parent dir not writable, disk full). Rare; swallowed so we exit
+      cleanly rather than dump a traceback.
+
+    The OS releases the lock automatically when the holding process exits
+    (including crashes), so there are no stale-lock / PID-tracking
+    concerns — the next run always proceeds.
     """
-    lock = FileLock(str(lock_path(workspace)))
+    try:
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        yield None
+        return
+    lock = FileLock(str(lock_file))
     try:
         with lock.acquire(timeout=0):
             yield lock
     except (Timeout, OSError):
         yield None
+
+
+@contextmanager
+def acquire_or_skip(workspace: Path) -> Iterator[FileLock | None]:
+    """Per-workspace push lock at ``<workspace>/.claude/agnes-push.lock``.
+
+    Thin wrapper over :func:`acquire_path_or_skip` for the ``agnes push``
+    SessionEnd-hook path: when multiple sessions close at once, exactly one
+    acquires the lock and runs, the rest no-op.
+    """
+    with acquire_path_or_skip(lock_path(workspace)) as lock:
+        yield lock
