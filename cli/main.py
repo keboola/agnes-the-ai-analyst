@@ -33,6 +33,7 @@ from cli.commands.push import push_app
 from cli.commands.refresh_marketplace import refresh_marketplace_app
 from cli.commands.statusline import statusline_app
 from cli.commands.update_workspace import update_workspace_app
+from cli.commands.update import update_app
 from cli.commands.query import query_command
 from cli.commands.status import status_app
 from cli.commands.admin import admin_app
@@ -105,24 +106,88 @@ def _root(
     _maybe_warn_outdated()
 
 
-def _maybe_warn_outdated() -> None:
-    """Hit /cli/latest on the configured server (cached 24h). On version
-    drift, offer the one-time interactive upgrade prompt (TTY only,
-    #617); if that doesn't handle it (declined, skipped, non-TTY,
-    bypassed), emit the one-line out-of-date banner as before. Never
-    raises."""
-    try:
-        from cli.config import get_server_url
-        from cli.update_check import check, format_outdated_notice
-        from cli.upgrade_prompt import maybe_prompt_and_upgrade
+_MAINTENANCE_COMMANDS = frozenset({
+    "update", "self-upgrade", "self-update", "pull", "push",
+    "refresh-marketplace", "init",
+})
 
-        info = check(get_server_url())
-        if info and info.is_outdated():
-            # The interactive prompt re-execs on accept (never returns) or
-            # returns True when it handled the drift; on any other path it
-            # returns False and we fall back to the banner.
-            if not maybe_prompt_and_upgrade(info):
-                typer.echo(format_outdated_notice(info), err=True)
+
+def _is_maintenance_command() -> bool:
+    """True if the current invocation IS an update-family command.
+
+    The root callback fires BEFORE subcommand dispatch, so without this guard
+    running `agnes update` (or the SessionStart hook that invokes it) would
+    itself spawn ANOTHER `agnes update`. Inspect argv directly — parsing
+    hasn't happened yet; the first non-flag token is the subcommand name."""
+    for arg in sys.argv[1:]:
+        if arg.startswith("-"):
+            continue
+        return arg in _MAINTENANCE_COMMANDS
+    return False
+
+
+def _spawn_background_update(latest: str) -> None:
+    """Kick off a detached, non-interactive `agnes update --quiet` (no prompt).
+
+    Fire-and-forget: the child holds `~/.config/agnes/update.lock` so
+    concurrent spawns exit 0, and sets `AGNES_NO_UPDATE_CHECK=1` for itself
+    and its children so nothing re-triggers detection. A per-version marker
+    means we kick at most one update per distinct server version — the binary
+    only becomes current next session, so `is_outdated()` stays true all
+    session and, without this guard, every command would spawn. Cross-platform
+    detach (POSIX `start_new_session`, Windows `DETACHED_PROCESS`). Best-effort;
+    never raises."""
+    import os
+    import subprocess
+
+    try:
+        from cli.config import _config_dir
+
+        marker = _config_dir() / "auto-update-attempt"
+        try:
+            if marker.exists() and marker.read_text(encoding="utf-8").strip() == latest:
+                return  # already kicked an update for this version this cycle
+        except OSError:
+            pass
+
+        env = {**os.environ, "AGNES_NO_UPDATE_CHECK": "1"}
+        argv = [sys.executable, "-m", "cli.main", "update", "--quiet"]
+        popen_kwargs: dict = dict(
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, env=env, close_fds=True,
+        )
+        if os.name == "nt":
+            # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — outlive the parent.
+            popen_kwargs["creationflags"] = 0x00000008 | 0x00000200
+        else:
+            popen_kwargs["start_new_session"] = True
+        subprocess.Popen(argv, **popen_kwargs)
+
+        try:
+            marker.write_text(latest, encoding="utf-8")
+        except OSError:
+            pass
+    except Exception:
+        pass  # best-effort: a spawn failure must never break the command
+
+
+def _maybe_warn_outdated() -> None:
+    """On CLI version drift, kick a detached background `agnes update` — no
+    prompt, no blocking. Detection is best-effort and cached (24h) by
+    `update_check`. Suppressed when `AGNES_NO_UPDATE_CHECK` is set (we're
+    already inside an update tree) or when the current command is itself an
+    update-family command (the root callback runs before dispatch). A single
+    `update.lock` guarantees only one update actually runs. Never raises."""
+    try:
+        import os
+
+        if not os.environ.get("AGNES_NO_UPDATE_CHECK") and not _is_maintenance_command():
+            from cli.config import get_server_url
+            from cli.update_check import check
+
+            info = check(get_server_url())
+            if info and info.is_outdated() and info.latest:
+                _spawn_background_update(info.latest)
     except Exception:
         pass  # best-effort: never fail a command on the probe
     _maybe_warn_upgrade_failures()
@@ -180,6 +245,7 @@ app.add_typer(push_app, name="push")
 app.add_typer(mark_private_app, name="mark-private")
 app.add_typer(statusline_app, name="statusline")
 app.add_typer(update_workspace_app, name="update-workspace")
+app.add_typer(update_app, name="update")
 app.add_typer(refresh_marketplace_app, name="refresh-marketplace")
 app.command("query")(query_command)
 app.add_typer(status_app, name="status")
