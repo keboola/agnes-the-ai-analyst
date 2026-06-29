@@ -709,15 +709,37 @@ def apply_override(
             raise typer.Exit(1)
 
     zip_bytes = download_zip(server_url, token)
+    # Reinstall over an EXISTING override workspace routes through the
+    # backup-aware 3-way merge: analyst-edited files are copied to
+    # ``<name>.bak.<ts>`` BEFORE being updated, instead of blind-overwritten.
+    # A FRESH install (no prior override sentinel) has nothing to preserve, so
+    # it uses the plain extract. When no baseline is stored (older CLI / moved
+    # workspace) the merge treats every changed file as analyst-modified and
+    # backs it up — more ``.bak`` files, but never silent data loss.
     try:
-        result = initialize_workspace_from_template(
-            workspace,
-            zip_bytes,
-            agnes_version=agnes_version,
-            server_url=server_url,
-            template_source=status.template_source,
-            template_sha=status.template_sha,
-        )
+        if is_override_workspace(workspace):
+            upd = update_workspace_from_template(
+                workspace,
+                zip_bytes,
+                load_template_baseline(workspace),
+                agnes_version=agnes_version,
+                server_url=server_url,
+                template_source=status.template_source,
+                template_sha=status.template_sha,
+            )
+            result = ExtractResult(
+                overwritten=sorted(list(upd.updated) + [name for name, _ in upd.backed_up]),
+                created=sorted(list(upd.created)),
+            )
+        else:
+            result = initialize_workspace_from_template(
+                workspace,
+                zip_bytes,
+                agnes_version=agnes_version,
+                server_url=server_url,
+                template_source=status.template_source,
+                template_sha=status.template_sha,
+            )
     except ValueError as exc:
         _render_unsafe_entry_error(exc)
         raise  # unreachable — _render_unsafe_entry_error always raises typer.Exit
