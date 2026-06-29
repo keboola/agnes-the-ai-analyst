@@ -19,6 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
 from connectors.jira import service as jira_service
+from connectors.jira.scripts import backfill_sla
 from connectors.jira.service import JiraService, refresh_fields
 from connectors.jira.transform import (
     ISSUES_SCHEMA,
@@ -271,3 +272,23 @@ class TestRefreshColumnCollision:
 class TestRefreshNamespaceLock:
     def test_no_builtin_starts_with_collision_prefix(self) -> None:
         assert not any(k.startswith(REFRESH_COLLISION_PREFIX) for k in ISSUES_SCHEMA)
+
+
+# ---------------------------------------------------------------------------
+# backfill process_file restores group rw (ACL) after mkstemp
+# ---------------------------------------------------------------------------
+
+
+class TestBackfillFilePerms:
+    def test_process_file_restores_group_rw(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clear_refresh_env: None
+    ) -> None:
+        # mkstemp creates 0600; without fchmod the issues/ POSIX-ACL mask drops to
+        # ---, breaking www-data/deploy read access (README incident #203).
+        monkeypatch.setenv(REFRESH_ENV, "customfield_99001:lunch")
+        json_path = tmp_path / "SUPPORT-1.json"
+        json_path.write_text(json.dumps({"key": "SUPPORT-1", "fields": {"summary": "x"}}))
+        with patch.object(backfill_sla, "fetch_fields", return_value={"customfield_99001": {"value": "pizza"}}):
+            result = backfill_sla.process_file(json_path, "https://x/rest/api/3", ("e", "t"), force=False)
+        assert result == "updated"
+        assert (json_path.stat().st_mode & 0o777) == 0o660
