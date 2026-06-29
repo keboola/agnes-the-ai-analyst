@@ -269,9 +269,11 @@ jira:
   email: ""
   api_token: "${JIRA_API_TOKEN}"
   webhook_secret: "${JIRA_WEBHOOK_SECRET}"
-  sla_email: ""
-  sla_api_token: "${JIRA_SLA_API_TOKEN}"
-  cloud_id: ""
+  # Custom fields to refresh onto tickets (generic; no defaults). field_id or
+  # field_id:column, comma-separated. Discover with:
+  #   python -m connectors.jira.scripts.verify_sla_access --list-fields
+  refresh_fields: "${JIRA_REFRESH_FIELDS}"
+  cloud_id: ""  # set only for a scoped API token (gateway URL)
 
 # --- Corporate Memory AI (optional) ---
 # Extracts shared knowledge from team members' CLAUDE.local.md files.

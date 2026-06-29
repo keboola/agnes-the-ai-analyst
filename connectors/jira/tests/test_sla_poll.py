@@ -17,8 +17,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
 from connectors.jira.scripts.poll_sla import (
-    SLA_FIELDS,
     STATUS_FIELDS,
+    configured_field_ids,
     fetch_sla_and_status,
     update_issue_sla,
 )
@@ -27,6 +27,13 @@ from connectors.jira.scripts.poll_sla import (
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _configure_refresh_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests exercise refreshing two fields; configure them via env."""
+    monkeypatch.setenv("JIRA_REFRESH_FIELDS", "customfield_10328,customfield_10161")
+
 
 @pytest.fixture()
 def fake_issue_json_in_progress(tmp_path: Path) -> Path:
@@ -64,6 +71,7 @@ def fake_issue_json_in_progress(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 # Test 1: fetch_sla_and_status returns all 6 field types
 # ---------------------------------------------------------------------------
+
 
 class TestFetchSlaAndStatus:
     """Tests for the fetch_sla_and_status function."""
@@ -123,9 +131,9 @@ class TestFetchSlaAndStatus:
 
         assert result is not None
 
-        # All SLA fields must be present
-        for field in SLA_FIELDS:
-            assert field in result, f"SLA field {field} missing from result"
+        # All configured fields must be present
+        for field in configured_field_ids():
+            assert field in result, f"field {field} missing from result"
 
         # All STATUS fields must be present
         for field in STATUS_FIELDS:
@@ -141,6 +149,7 @@ class TestFetchSlaAndStatus:
 # ---------------------------------------------------------------------------
 # Test 2: update_issue_sla self-healing
 # ---------------------------------------------------------------------------
+
 
 class TestUpdateIssueSlaHealing:
     """Tests for self-healing when API reports an issue as resolved."""
@@ -165,15 +174,11 @@ class TestUpdateIssueSlaHealing:
         mock_fetch.return_value = {
             "customfield_10328": {
                 "name": "Time to first response",
-                "completedCycles": [
-                    {"elapsedTime": {"millis": 60000}, "breached": False}
-                ],
+                "completedCycles": [{"elapsedTime": {"millis": 60000}, "breached": False}],
             },
             "customfield_10161": {
                 "name": "Time to resolution",
-                "completedCycles": [
-                    {"elapsedTime": {"millis": 300000}, "breached": False}
-                ],
+                "completedCycles": [{"elapsedTime": {"millis": 300000}, "breached": False}],
             },
             "status": {
                 "name": "Done",
@@ -220,6 +225,7 @@ class TestUpdateIssueSlaHealing:
 # ---------------------------------------------------------------------------
 # Test 3: update_issue_sla skips when no useful data
 # ---------------------------------------------------------------------------
+
 
 class TestUpdateIssueSlaSkip:
     """Tests for the skip logic when SLA data is empty and status is not Done."""
@@ -268,6 +274,7 @@ class TestUpdateIssueSlaSkip:
 # ---------------------------------------------------------------------------
 # Test 4: update_issue_sla returns "skipped" when JSON is missing
 # ---------------------------------------------------------------------------
+
 
 class TestUpdateIssueSlaJsonMissing:
     """Tests for missing JSON file handling."""

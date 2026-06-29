@@ -24,9 +24,11 @@ Usage:
     python -m connectors.jira.scripts.poll_sla --verbose
 
 Environment variables (loaded from .env):
-    JIRA_SLA_EMAIL - Email for JSM service account authentication
-    JIRA_SLA_API_TOKEN - API token for JSM service account
-    JIRA_CLOUD_ID - Atlassian Cloud site ID (for cloud API base URL)
+    JIRA_DOMAIN - Atlassian site host (e.g. your-org.atlassian.net)
+    JIRA_EMAIL - Email for API authentication
+    JIRA_API_TOKEN - Primary API token (account needs a JSM Agent licence)
+    JIRA_CLOUD_ID - Optional; set only for a scoped token (gateway base URL)
+    JIRA_REFRESH_FIELDS - field ids to refresh (field_id or field_id:column, comma-separated)
     JIRA_DATA_DIR - Directory for raw Jira data (default: /data/src_data/raw/jira)
 """
 
@@ -46,15 +48,14 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from connectors.jira.scripts.backfill_sla import (
-    SLA_FIELDS,
-    has_valid_sla_data,
+from connectors.jira.scripts.backfill_sla import (  # noqa: E402
+    configured_field_ids,
     load_config,
 )
-from connectors.jira.incremental_transform import transform_single_issue
-from connectors.jira.file_lock import issue_json_lock
+from connectors.jira.incremental_transform import transform_single_issue  # noqa: E402
+from connectors.jira.file_lock import issue_json_lock  # noqa: E402
 
-from app.logging_config import setup_logging
+from app.logging_config import setup_logging  # noqa: E402
 
 setup_logging(__name__)
 logger = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ def fetch_sla_and_status(base_url: str, auth: tuple[str, str], issue_key: str) -
 
     Returns dict with all field values, or None on failure.
     """
-    all_fields = SLA_FIELDS + STATUS_FIELDS
+    all_fields = configured_field_ids() + STATUS_FIELDS
     url = f"{base_url}/issue/{issue_key}"
     params = {"fields": ",".join(all_fields)}
 
@@ -104,13 +105,12 @@ def fetch_sla_and_status(base_url: str, auth: tuple[str, str], issue_key: str) -
         return None
 
 
-def find_open_issues_with_sla(parquet_dir: Path) -> list[str]:
+def find_open_issues(parquet_dir: Path) -> list[str]:
     """
-    Read Parquet issues and return keys of open tickets that have SLA data.
+    Read Parquet issues and return keys of open tickets (status_category != 'Done').
 
-    An issue qualifies if:
-    - status_category != 'Done' (still open)
-    - Has non-null first_response_elapsed_millis OR time_to_resolution_elapsed_millis
+    Open tickets are the ones whose field values can still change, so they are the
+    ones worth re-fetching each poll cycle.
     """
     issues_dir = parquet_dir / "issues"
     if not issues_dir.exists():
@@ -126,14 +126,7 @@ def find_open_issues_with_sla(parquet_dir: Path) -> list[str]:
 
     logger.info(f"Reading {len(parquet_files)} Parquet files from {issues_dir}")
 
-    # Read only needed columns for efficiency
-    columns = [
-        "issue_key",
-        "status_category",
-        "first_response_elapsed_millis",
-        "time_to_resolution_elapsed_millis",
-    ]
-
+    columns = ["issue_key", "status_category"]
     dfs = []
     for pf in parquet_files:
         try:
@@ -148,17 +141,9 @@ def find_open_issues_with_sla(parquet_dir: Path) -> list[str]:
     all_issues = pd.concat(dfs, ignore_index=True)
     logger.info(f"Total issues in Parquet: {len(all_issues)}")
 
-    # Filter: open issues with SLA data
-    open_with_sla = all_issues[
-        (all_issues["status_category"] != "Done")
-        & (
-            all_issues["first_response_elapsed_millis"].notna()
-            | all_issues["time_to_resolution_elapsed_millis"].notna()
-        )
-    ]
-
-    issue_keys = open_with_sla["issue_key"].tolist()
-    logger.info(f"Open issues with SLA data: {len(issue_keys)}")
+    open_issues = all_issues[all_issues["status_category"] != "Done"]
+    issue_keys = open_issues["issue_key"].tolist()
+    logger.info(f"Open issues: {len(issue_keys)}")
     return issue_keys
 
 
@@ -193,8 +178,8 @@ def update_issue_sla(
         logger.warning(f"Failed to fetch SLA+status for {issue_key}")
         return "failed"
 
-    # Check if any SLA field has valid data
-    has_sla_data = any(has_valid_sla_data(api_data.get(f)) for f in SLA_FIELDS)
+    # Did any configured field come back with a value to refresh?
+    has_data = any(api_data.get(f) is not None for f in configured_field_ids())
 
     # Check if status indicates resolution (self-healing)
     api_status = api_data.get("status")
@@ -206,8 +191,8 @@ def update_issue_sla(
 
     is_healed = api_status_category == "Done"
 
-    if not has_sla_data and not is_healed:
-        logger.debug(f"No SLA data and not resolved for {issue_key}")
+    if not has_data and not is_healed:
+        logger.debug(f"No fresh field data and not resolved for {issue_key}")
         return "skipped"
 
     # Lock, read-modify-write, and transform atomically
@@ -223,10 +208,10 @@ def update_issue_sla(
         if "fields" not in data:
             data["fields"] = {}
 
-        # Update SLA fields
-        for sla_field in SLA_FIELDS:
-            if sla_field in api_data:
-                data["fields"][sla_field] = api_data[sla_field]
+        # Update the configured fields
+        for field_id in configured_field_ids():
+            if field_id in api_data:
+                data["fields"][field_id] = api_data[field_id]
 
         # Update status fields (self-healing)
         if api_status is not None:
@@ -280,16 +265,32 @@ def run(dry_run: bool = False, verbose: bool = False) -> dict:
     if verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
+    field_ids = configured_field_ids()
+    if not field_ids:
+        logger.warning(
+            "JIRA_REFRESH_FIELDS is not configured — no fields to refresh; skipping poll. "
+            "Set JIRA_REFRESH_FIELDS to e.g. 'customfield_10328:first_response' to enable."
+        )
+        return {
+            "open_issues": 0,
+            "updated": 0,
+            "healed": 0,
+            "skipped": 0,
+            "failed": 0,
+            "elapsed_sec": 0.0,
+            "dry_run": dry_run,
+        }
+
     config = load_config()
     raw_dir = config["data_dir"]
     parquet_dir = Path(os.environ.get("JIRA_PARQUET_DIR", "/data/src_data/parquet/jira"))
     base_url = config["base_url"]
     auth = (config["email"], config["api_token"])
 
-    open_issues = find_open_issues_with_sla(parquet_dir)
+    open_issues = find_open_issues(parquet_dir)
 
     if not open_issues:
-        logger.info("No open issues with SLA data found")
+        logger.info("No open issues found")
         return {
             "open_issues": 0,
             "updated": 0,

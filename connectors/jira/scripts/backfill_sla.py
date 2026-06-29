@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-Jira SLA Backfill - Fetch SLA fields (first_response_time, time_to_resolution).
+Jira field backfill - fetch the configured refresh fields into existing issues.
 
-One-time migration script that fetches SLA custom fields from Jira API
-using a service account with JSM Agent permissions, and updates existing
-issue JSON files. The personal API token lacks SLA read permissions,
-so this script uses your JSM service account.
+One-time migration script that fetches the operator-configured custom fields from
+the Jira API with the primary token (JIRA_EMAIL / JIRA_API_TOKEN) and embeds them
+into existing issue JSON files. The token's account needs whatever read permission
+each field requires (e.g. a JSM Agent licence for SLA fields). The field ids come
+from JIRA_REFRESH_FIELDS (no defaults); discover them with
+`verify_sla_access --list-fields`.
 
-NOTE: The service account requires the Atlassian Cloud API base URL
-(https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/...) instead of
-the domain-based URL (https://your-org.atlassian.net/rest/api/3/...).
+NOTE: A classic API token uses the site domain URL
+(https://your-org.atlassian.net/rest/api/3/...). A scoped token must use the
+gateway URL (https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/...);
+set JIRA_CLOUD_ID to switch to it.
 
 Usage:
     # On server:
@@ -25,9 +28,11 @@ Usage:
     python -m connectors.jira.scripts.backfill_sla --force
 
 Environment variables (loaded from .env):
-    JIRA_SLA_EMAIL - Email for JSM service account authentication
-    JIRA_SLA_API_TOKEN - API token for JSM service account
-    JIRA_CLOUD_ID - Atlassian Cloud site ID (for cloud API base URL)
+    JIRA_DOMAIN - Atlassian site host (e.g. your-org.atlassian.net)
+    JIRA_EMAIL - Email for API authentication
+    JIRA_API_TOKEN - Primary API token (account needs a JSM Agent licence)
+    JIRA_CLOUD_ID - Optional; set only for a scoped token (gateway base URL)
+    JIRA_REFRESH_FIELDS - field ids to refresh (field_id or field_id:column, comma-separated)
     JIRA_DATA_DIR - Directory for raw Jira data (default: /data/src_data/raw/jira)
 """
 
@@ -44,15 +49,17 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 
-# SLA custom field IDs
-SLA_FIELD_FIRST_RESPONSE = "customfield_10328"
-SLA_FIELD_TIME_TO_RESOLUTION = "customfield_10161"
-SLA_FIELDS = [SLA_FIELD_FIRST_RESPONSE, SLA_FIELD_TIME_TO_RESOLUTION]
+from connectors.jira.service import refresh_fields
 
 from app.logging_config import setup_logging
 
 setup_logging(__name__)
 logger = logging.getLogger(__name__)
+
+
+def configured_field_ids() -> list[str]:
+    """Field ids from JIRA_REFRESH_FIELDS (no defaults), resolved at call time."""
+    return [fid for fid, _ in refresh_fields()]
 
 
 def load_config() -> dict:
@@ -71,53 +78,46 @@ def load_config() -> dict:
             logger.info(f"Loaded environment from {env_path}")
             break
 
-    required = ["JIRA_SLA_EMAIL", "JIRA_SLA_API_TOKEN", "JIRA_CLOUD_ID"]
+    required = ["JIRA_DOMAIN", "JIRA_EMAIL", "JIRA_API_TOKEN"]
     missing = [var for var in required if not os.environ.get(var)]
     if missing:
         raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
 
-    cloud_id = os.environ["JIRA_CLOUD_ID"]
-    base_url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3"
+    cloud_id = os.environ.get("JIRA_CLOUD_ID", "")
+    if cloud_id:
+        # Scoped API tokens must use the api.atlassian.com gateway.
+        base_url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3"
+    else:
+        # Classic API token: the site domain URL serves the same REST API.
+        base_url = f"https://{os.environ['JIRA_DOMAIN']}/rest/api/3"
 
     return {
-        "email": os.environ["JIRA_SLA_EMAIL"],
-        "api_token": os.environ["JIRA_SLA_API_TOKEN"],
+        "email": os.environ["JIRA_EMAIL"],
+        "api_token": os.environ["JIRA_API_TOKEN"],
         "base_url": base_url,
         "data_dir": Path(os.environ.get("JIRA_DATA_DIR", "/data/src_data/raw/jira")),
+        "refresh_fields": configured_field_ids(),
     }
 
 
-def has_valid_sla_data(field_value: object) -> bool:
-    """Check if a field value contains valid SLA data (not an error)."""
-    if field_value is None:
-        return False
-    if not isinstance(field_value, dict):
-        return False
-    # Error responses contain "errorMessage" key
-    if "errorMessage" in field_value:
-        return False
-    # Valid SLA data has "name" or "completedCycles" or "ongoingCycle"
-    return bool(field_value.get("name") or "completedCycles" in field_value or "ongoingCycle" in field_value)
-
-
-def needs_sla_update(data: dict) -> bool:
-    """Check if an issue JSON needs SLA field update."""
+def needs_field_update(data: dict) -> bool:
+    """True if any configured field is missing/null/error in the issue JSON."""
     fields = data.get("fields", {})
-    for sla_field in SLA_FIELDS:
-        field_value = fields.get(sla_field)
-        if not has_valid_sla_data(field_value):
+    for field_id in configured_field_ids():
+        value = fields.get(field_id)
+        if value is None or (isinstance(value, dict) and "errorMessage" in value):
             return True
     return False
 
 
-def fetch_sla_fields(base_url: str, auth: tuple[str, str], issue_key: str) -> dict | None:
+def fetch_fields(base_url: str, auth: tuple[str, str], issue_key: str) -> dict | None:
     """
     Fetch SLA fields for a single issue from Jira API.
 
     Returns dict with SLA field values, or None on failure.
     """
     url = f"{base_url}/issue/{issue_key}"
-    params = {"fields": ",".join(SLA_FIELDS)}
+    params = {"fields": ",".join(configured_field_ids())}
 
     try:
         with httpx.Client(timeout=30) as client:
@@ -137,7 +137,7 @@ def fetch_sla_fields(base_url: str, auth: tuple[str, str], issue_key: str) -> di
             retry_after = int(response.headers.get("Retry-After", 60))
             logger.warning(f"Rate limited, waiting {retry_after}s...")
             time.sleep(retry_after)
-            return fetch_sla_fields(base_url, auth, issue_key)
+            return fetch_fields(base_url, auth, issue_key)
         else:
             logger.warning(f"Failed to fetch SLA for {issue_key}: {response.status_code} {response.text[:200]}")
             return None
@@ -158,7 +158,7 @@ def process_file(json_path: Path, base_url: str, auth: tuple[str, str], force: b
             data = json.load(f)
 
         # Check if update needed
-        if not force and not needs_sla_update(data):
+        if not force and not needs_field_update(data):
             return "skipped"
 
         issue_key = data.get("key")
@@ -166,7 +166,7 @@ def process_file(json_path: Path, base_url: str, auth: tuple[str, str], force: b
             return "failed"
 
         # Fetch SLA fields from API
-        sla_data = fetch_sla_fields(base_url, auth, issue_key)
+        sla_data = fetch_fields(base_url, auth, issue_key)
         if sla_data is None:
             return "failed"
 
@@ -174,12 +174,13 @@ def process_file(json_path: Path, base_url: str, auth: tuple[str, str], force: b
         if "fields" not in data:
             data["fields"] = {}
 
-        for sla_field in SLA_FIELDS:
+        for sla_field in configured_field_ids():
             if sla_field in sla_data:
                 data["fields"][sla_field] = sla_data[sla_field]
 
         # Atomic write: temp file + replace
         fd, tmp_path = tempfile.mkstemp(dir=str(json_path.parent), suffix=".tmp")
+        os.fchmod(fd, 0o660)  # Restore group rw so www-data/deploy can access via ACL
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(data, f, indent=2, default=str)
@@ -234,6 +235,14 @@ def main():
         logger.error(f"Issues directory not found: {issues_dir}")
         sys.exit(1)
 
+    field_ids = configured_field_ids()
+    if not field_ids:
+        logger.warning(
+            "JIRA_REFRESH_FIELDS is not configured — nothing to backfill. "
+            "Set JIRA_REFRESH_FIELDS to e.g. 'customfield_10328:first_response' to enable."
+        )
+        sys.exit(0)
+
     base_url = config["base_url"]
     auth = (config["email"], config["api_token"])
 
@@ -253,10 +262,11 @@ def main():
             try:
                 with open(jf) as f:
                     data = json.load(f)
-                if needs_sla_update(data):
+                if needs_field_update(data):
                     needs_update += 1
                     fields = data.get("fields", {})
-                    frt = fields.get(SLA_FIELD_FIRST_RESPONSE)
+                    sla_ids = configured_field_ids()
+                    frt = fields.get(sla_ids[0]) if sla_ids else None
                     if isinstance(frt, dict) and "errorMessage" in frt:
                         has_error += 1
                     elif frt is None:
