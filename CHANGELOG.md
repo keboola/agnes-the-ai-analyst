@@ -18,6 +18,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Jira field refresh uses the single primary token** (`JIRA_EMAIL` / `JIRA_API_TOKEN`) instead of a separate JSM service account. Fields are read via the regular issue REST API — the domain URL by default, or the `api.atlassian.com` gateway when `JIRA_CLOUD_ID` is set (required for a scoped token). The account needs whatever read permission each field requires (e.g. a JSM Agent licence for SLA fields).
 
 ### Fixed
+- **Jira poll/backfill early-exit when `JIRA_REFRESH_FIELDS` is not configured** — `poll_sla run()` now logs a warning and returns immediately (no parquet scan, no API calls) when no fields are configured; `backfill_sla main()` does the same and exits 0. Previously both scripts would silently iterate over all open issues and do nothing.
+- **`backfill_sla.py` temp-file ACL** — `process_file` now calls `os.fchmod(fd, 0o660)` after `mkstemp`, matching `poll_sla.py` and `service.py`. Without it, the default 0600 mode overrides the POSIX ACL mask and breaks group-read access (e.g. `www-data` / deploy user).
 
 ### Removed
 - **BREAKING (config): the second-token SLA path is removed** — `JIRA_SLA_EMAIL` and `JIRA_SLA_API_TOKEN` are no longer read. A deployment that used a separate JSM service account must instead give the primary token's account the required read permission (and set `JIRA_CLOUD_ID` if that token is scoped).
