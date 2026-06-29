@@ -213,3 +213,32 @@ def test_gws_client_id_accepts_valid(seeded_app, monkeypatch):
     r = client.get("/api/admin/datasource-secrets", headers=headers)
     by_name = {s["name"]: s for s in r.json()["secrets"]}
     assert by_name["AGNES_GWS_CLIENT_ID"]["source"] == "vault"
+
+
+def test_validate_gws_requires_admin(seeded_app):
+    r = seeded_app["client"].post(
+        "/api/admin/validate-gws-credentials",
+        headers=_analyst(seeded_app),
+        json={"client_id": "123-abc.apps.googleusercontent.com"},
+    )
+    assert r.status_code == 403
+
+
+def test_validate_gws_accepts_valid_format(seeded_app):
+    r = seeded_app["client"].post(
+        "/api/admin/validate-gws-credentials",
+        headers=_admin(seeded_app),
+        json={"client_id": "123456789012-abcdefghijklmnopqrstuvwxyz.apps.googleusercontent.com"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"valid": True}
+
+
+def test_validate_gws_rejects_invalid_format(seeded_app):
+    r = seeded_app["client"].post(
+        "/api/admin/validate-gws-credentials",
+        headers=_admin(seeded_app),
+        json={"client_id": "not-a-client-id"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"valid": False}

@@ -3,6 +3,7 @@
   - GET    /api/admin/datasource-secrets             — presence/source status (no values)
   - PUT    /api/admin/datasource-secrets/{name}      — set / rotate (write-only)
   - DELETE /api/admin/datasource-secrets/{name}      — clear vault row
+  - POST   /api/admin/validate-gws-credentials       — format-check GWS client_id (no network)
 
 All gated by ``require_admin``. Secret values are never returned by any
 endpoint and never placed in audit records (params are empty, mirroring
@@ -33,6 +34,10 @@ _GWS_CLIENT_ID_RE = re.compile(r"^\d+-\w+\.apps\.googleusercontent\.com$")
 
 class DatasourceSecretBody(BaseModel):
     value: str
+
+
+class ValidateGwsBody(BaseModel):
+    client_id: str
 
 
 def _audit(actor_id: str, action: str, resource: str) -> None:
@@ -110,6 +115,20 @@ async def set_datasource_secret(
         except Exception:
             pass
     _audit(user["id"], "datasource.secret.set", f"datasource_secret:{name}")
+
+
+@router.post("/validate-gws-credentials")
+async def validate_gws_credentials(
+    body: ValidateGwsBody,
+    user: dict = Depends(require_admin),
+):
+    """Format-check a GWS ``client_id`` without saving it or making a network call.
+
+    Returns ``{"valid": bool}`` (200 always) so the UI "Test" button can show a
+    ✓/✗ before the admin commits the value via PUT. Mirrors the server-side regex
+    applied during ``set_datasource_secret``.
+    """
+    return {"valid": bool(_GWS_CLIENT_ID_RE.match(body.client_id.strip()))}
 
 
 @router.delete("/datasource-secrets/{name}", status_code=204)
