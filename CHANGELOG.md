@@ -32,6 +32,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.72.1] - 2026-06-29
+
+### Internal
+
+- `scripts/dev/worktree-spawn.sh` — helper script to spawn an isolated Git worktree for a parallel Claude Code session; symlinks shared local state (`user/`, `.venv/`, `.env`, `data/`) back to the main checkout. Documented in CLAUDE.md under *Parallel Claude Code worktrees*.
+
 ## [0.72.0] - 2026-06-26
 
 ### Fixed
