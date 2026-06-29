@@ -74,7 +74,8 @@ def skill_contribute(
         skill_md = sys.stdin.read()
     else:
         try:
-            skill_md = open(file, encoding="utf-8").read()
+            with open(file, encoding="utf-8") as f:
+                skill_md = f.read()
         except OSError as e:
             typer.echo(f"Cannot read file: {e}", err=True)
             raise typer.Exit(1)

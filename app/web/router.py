@@ -3008,10 +3008,11 @@ def admin_contribute_skill_submit(
     from src.skill_contribution import SkillContributionError, contribute_skill
 
     ctx = _build_context(request, user=user)
+    ctx["groups"] = user_groups_repo().list_all()
     try:
         result = contribute_skill(
             skill_md,
-            registered_by=user.get("id") or user.get("email"),
+            registered_by=user.get("email") or user.get("id"),
             grant_group=(grant_group or "Admin").strip(),
         )
         invalidate_etag_cache()
