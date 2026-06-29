@@ -55,7 +55,7 @@ Next:
 
 Caveats for parallel sessions:
   - DuckDB (user/duckdb/, data/state/system.duckdb) is single-writer.
-    Don't run 'da sync' or migrations from two worktrees at once.
+    Don't run 'agnes pull', 'agnes push', or migrations from two worktrees at once.
   - For parallel docker compose stacks, set:
       export COMPOSE_PROJECT_NAME=agnes-$SLUG
   - Cleanup when done:
