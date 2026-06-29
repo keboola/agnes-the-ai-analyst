@@ -324,6 +324,93 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
 .cowork-plugin-name { font-weight: 600; }
 .cowork-plugin-ver { color: var(--ds-text-muted); font-family: var(--ds-font-mono, monospace); font-size: var(--text-xs); }
 .cowork-plugin-dl { margin-left: auto; color: var(--ds-primary); font-weight: 600; white-space: nowrap; }
+
+/* ── Per-agent setup guide (segmented underline tabs) ───────────── */
+.cg-guide-box summary { cursor: pointer; font-weight: 600; color: var(--ds-text-primary); }
+.cg-lede { color: var(--ds-text-secondary); font-size: 14px; line-height: 1.6; }
+
+/* Underline tabs — native, restrained */
+.cg-picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    margin-bottom: 22px;
+    border-bottom: 1px solid var(--ds-border);
+}
+.cg-pick-btn {
+    appearance: none;
+    padding: 10px 16px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--ds-text-secondary);
+    margin-bottom: -1px;
+    white-space: nowrap;
+    transition: color .12s ease, border-color .12s ease;
+}
+.cg-pick-btn:hover { color: var(--ds-text-primary); }
+.cg-pick-btn.is-active {
+    color: var(--ds-primary);
+    border-bottom-color: var(--ds-primary);
+    font-weight: 600;
+}
+.cg-pick-btn:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 2px; border-radius: var(--ds-radius-sm, 4px); }
+.cg-guide { display: none; }
+.cg-guide.is-active { display: block; }
+.cg-guide h3 { margin: 0 0 2px; font-size: 17px; color: var(--ds-text-primary); }
+.cg-req { font-size: 12.5px; color: var(--ds-text-muted); margin: 4px 0 10px; }
+.cg-sub { font-size: 14px; font-weight: 600; color: var(--ds-text-primary); margin: 16px 0 4px; }
+.cg-steps { margin: 8px 0 0; padding-left: 20px; }
+.cg-steps > li { color: var(--ds-text-secondary); font-size: 14px; line-height: 1.7; margin-bottom: 6px; }
+.cg-steps code, .cg-inline-code {
+    font-family: var(--ds-font-mono, monospace);
+    font-size: 13px;
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-sm, 4px);
+    padding: 1px 5px;
+}
+.cg-code-wrap { margin: 12px 0 0; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-md, 6px); overflow: hidden; }
+.cg-code-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 8px 6px 14px;
+    background: var(--ds-surface);
+    border-bottom: 1px solid var(--ds-border);
+}
+.cg-code-file {
+    font-family: var(--ds-font-mono, monospace);
+    font-size: 12px;
+    color: var(--ds-text-muted);
+}
+.cg-code {
+    font-family: var(--ds-font-mono, monospace);
+    font-size: 13px;
+    line-height: 1.55;
+    white-space: pre;
+    overflow-x: auto;
+    color: var(--ds-text-primary);
+    background: var(--ds-surface-dim);
+    border: 0;
+    padding: 14px 16px;
+    margin: 0;
+}
+.cg-note {
+    background: var(--ds-accent-warn-bg);
+    color: var(--ds-accent-warn-ink);
+    border: 1px solid var(--ds-accent-warn-bg);
+    border-left: 3px solid var(--ds-accent-warn-ink);
+    border-radius: var(--ds-radius-md, 6px);
+    padding: 10px 14px;
+    font-size: 13.5px;
+    line-height: 1.6;
+    margin-top: 12px;
+}
 </style>
 {% endblock %}
 
@@ -352,21 +439,128 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
       <button type="button" class="btn btn-secondary btn-sm" id="cowork-connector-copy" style="margin-left:auto;">Copy</button>
     </div>
 
-    <ol class="cowork-connect-steps">
-      <li>Open your AI client → add a <strong>custom connector</strong> and paste the URL above.</li>
-      <li>Sign in to Agnes when the browser opens, then click <strong>Allow</strong>.</li>
-      <li>Done — ask your agent to explore your data.</li>
-    </ol>
+    {# Per-agent setup guide — open by default, sits directly under the
+       connector URL. Pick an agent → its steps show; the others hide. #}
+    <details class="ds-card section-card cg-guide-box" open aria-label="Setup guide">
+      <summary>Setup guide — connect your AI agent</summary>
+      <div style="margin-top:var(--space-4);">
+        <p class="cg-lede" style="margin-bottom:14px;">Pick your tool to see its setup steps. Paste the connector URL above when prompted.</p>
 
-    <div class="cowork-connect-clients" aria-label="Supported clients">
-      <span class="chip">Claude Cowork</span>
-      <span class="chip">Claude (web)</span>
-      <span class="chip">ChatGPT</span>
-      <span class="chip">Gemini</span>
-      <span class="chip">Cursor</span>
-      <span class="chip">Microsoft Copilot</span>
-      <span class="chip">VS Code</span>
-    </div>
+        <div class="cg-picker" role="tablist" aria-label="Choose an agent">
+          <button type="button" class="cg-pick-btn is-active" role="tab" aria-selected="true" data-guide="claude-desktop">Claude Desktop</button>
+          <button type="button" class="cg-pick-btn" role="tab" aria-selected="false" data-guide="claude-web">Claude.ai</button>
+          <button type="button" class="cg-pick-btn" role="tab" aria-selected="false" data-guide="cursor">Cursor</button>
+          <button type="button" class="cg-pick-btn" role="tab" aria-selected="false" data-guide="vscode">VS Code / Copilot</button>
+          <button type="button" class="cg-pick-btn" role="tab" aria-selected="false" data-guide="chatgpt">ChatGPT</button>
+        </div>
+
+        {# Claude Desktop #}
+        <div class="cg-guide is-active" id="guide-claude-desktop" role="tabpanel">
+          <h3>Claude Desktop</h3>
+          <p class="cg-req">Requires the Claude Desktop app (macOS or Windows), signed in to your Claude account.</p>
+          <ol class="cg-steps">
+            <li>Open <strong>Settings → Connectors</strong> and click <strong>Add custom connector</strong>.</li>
+            <li>Paste the connector URL above into the <em>URL</em> field and click <strong>Add</strong>.</li>
+            <li>Claude registers itself automatically and opens a browser window.</li>
+            <li>Sign in to {{ instance_brand }} with your usual identity provider, then on the consent screen click <strong>Allow</strong>.</li>
+            <li>The connector goes live — the {{ instance_brand }} tools are now available in your conversations.</li>
+          </ol>
+        </div>
+
+        {# Claude.ai #}
+        <div class="cg-guide" id="guide-claude-web" role="tabpanel">
+          <h3>Claude.ai (web)</h3>
+          <p class="cg-req">Requires a Claude.ai plan that supports custom connectors.</p>
+          <ol class="cg-steps">
+            <li>Go to <strong>Settings → Connectors</strong> and choose <strong>Add custom connector</strong>.</li>
+            <li>Paste the connector URL above and confirm.</li>
+            <li>Complete the browser sign-in and approve the consent screen.</li>
+            <li>Enable the connector in a chat to expose the tools to Claude.</li>
+          </ol>
+        </div>
+
+        {# Cursor #}
+        <div class="cg-guide" id="guide-cursor" role="tabpanel">
+          <h3>Cursor</h3>
+          <p class="cg-req">Requires a recent Cursor build with MCP support.</p>
+          <p class="cg-sub">1. Add the server</p>
+          <p class="cg-lede">Create or edit <code class="cg-inline-code">.cursor/mcp.json</code> (per-project) or <code class="cg-inline-code">~/.cursor/mcp.json</code> (global):</p>
+          <div class="cg-code-wrap">
+            <div class="cg-code-head">
+              <span class="cg-code-file">.cursor/mcp.json</span>
+              <button type="button" class="btn btn-secondary btn-sm cg-copy" data-copy="#cg-cursor-json">Copy</button>
+            </div>
+            <pre class="cg-code" id="cg-cursor-json">{
+  "mcpServers": {
+    "agnes": {
+      "url": "{{ server_url }}/api/mcp/http"
+    }
+  }
+}</pre>
+          </div>
+          <p class="cg-sub">2. Sign in</p>
+          <ol class="cg-steps">
+            <li>Open <strong>Settings → MCP</strong>; the <code>agnes</code> server appears in the list.</li>
+            <li>Click the sign-in / refresh action next to it — a browser opens for the {{ instance_brand }} login and consent.</li>
+            <li>Once authorized, the tools are available in Agent and Composer.</li>
+          </ol>
+        </div>
+
+        {# VS Code / Copilot #}
+        <div class="cg-guide" id="guide-vscode" role="tabpanel">
+          <h3>VS Code / GitHub Copilot</h3>
+          <p class="cg-req">Requires VS Code 1.101+ with the GitHub Copilot Chat extension (native MCP with OAuth). Update both to the latest version if the sign-in does not appear.</p>
+
+          <p class="cg-sub">Option A — add via the Command Palette (recommended)</p>
+          <ol class="cg-steps">
+            <li>Open the Command Palette (<code>⇧⌘P</code> / <code>Ctrl+Shift+P</code>) and run <strong>MCP: Add Server</strong>.</li>
+            <li>Choose <strong>HTTP (HTTP or Server-Sent Events)</strong>.</li>
+            <li>Paste the connector URL above and name the server <code>agnes</code>.</li>
+            <li>Choose <strong>Global</strong> to use it everywhere (or <strong>Workspace</strong> to scope it to the current project).</li>
+            <li>The server starts and opens a browser — sign in to {{ instance_brand }} and click <strong>Allow</strong>.</li>
+          </ol>
+
+          <p class="cg-sub">Option B — commit it to the workspace</p>
+          <p class="cg-lede">Add <code class="cg-inline-code">.vscode/mcp.json</code> to share the server with everyone who opens the project:</p>
+          <div class="cg-code-wrap">
+            <div class="cg-code-head">
+              <span class="cg-code-file">.vscode/mcp.json</span>
+              <button type="button" class="btn btn-secondary btn-sm cg-copy" data-copy="#cg-vscode-json">Copy</button>
+            </div>
+            <pre class="cg-code" id="cg-vscode-json">{
+  "servers": {
+    "agnes": {
+      "type": "http",
+      "url": "{{ server_url }}/api/mcp/http"
+    }
+  }
+}</pre>
+          </div>
+
+          <p class="cg-sub">Use it in Copilot</p>
+          <ol class="cg-steps">
+            <li>Open <strong>Copilot Chat</strong> and switch the mode selector to <strong>Agent</strong>.</li>
+            <li>Click the tools icon (🔧) and enable <strong>agnes</strong>.</li>
+            <li>Verify by asking the agent to run <code>server_info</code> — it should return your account email.</li>
+          </ol>
+          <div class="cg-note">
+            If sign-in fails or the server gets stuck, run <strong>MCP: Clear Saved Authorizations</strong> from the Command Palette, remove and re-add the server, then restart VS Code. A stale cached registration is the most common cause.
+          </div>
+        </div>
+
+        {# ChatGPT #}
+        <div class="cg-guide" id="guide-chatgpt" role="tabpanel">
+          <h3>ChatGPT connectors</h3>
+          <p class="cg-req">Requires a ChatGPT plan that supports custom / remote MCP connectors.</p>
+          <ol class="cg-steps">
+            <li>Open the connector settings and choose to add a <strong>remote MCP server</strong>.</li>
+            <li>Paste the connector URL above.</li>
+            <li>ChatGPT registers itself and opens the browser for sign-in.</li>
+            <li>Approve the consent screen to finish; the tools become available to the assistant.</li>
+          </ol>
+        </div>
+      </div>
+    </details>
   </section>
 
   {# ── Plugin packages — open by default, the cross-project flow ───────── #}
@@ -482,6 +676,35 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
         });
       });
     }
+  })();
+
+  // ── Per-agent setup guide: picker + snippet copy buttons ────────────
+  (function () {
+    var btns = document.querySelectorAll('.cg-pick-btn');
+    btns.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var key = btn.getAttribute('data-guide');
+        btns.forEach(function (b) {
+          var on = b === btn;
+          b.classList.toggle('is-active', on);
+          b.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        document.querySelectorAll('.cg-guide').forEach(function (g) {
+          g.classList.toggle('is-active', g.id === 'guide-' + key);
+        });
+      });
+    });
+    document.querySelectorAll('[data-copy]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var target = document.querySelector(btn.getAttribute('data-copy'));
+        if (!target) return;
+        var original = btn.textContent;
+        navigator.clipboard.writeText(target.textContent.trim()).then(function () {
+          btn.textContent = 'Copied!';
+          setTimeout(function () { btn.textContent = original; }, 1800);
+        });
+      });
+    });
   })();
 
   // ── Plugin packages download list ───────────────────────────────────
