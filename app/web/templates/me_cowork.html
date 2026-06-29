@@ -698,8 +698,8 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
       btn.addEventListener('click', function () {
         var target = document.querySelector(btn.getAttribute('data-copy'));
         if (!target) return;
+        var original = btn.textContent;
         navigator.clipboard.writeText(target.textContent.trim()).then(function () {
-          var original = btn.textContent;
           btn.textContent = 'Copied!';
           setTimeout(function () { btn.textContent = original; }, 1800);
         });
