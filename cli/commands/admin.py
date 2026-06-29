@@ -12,6 +12,7 @@ from cli.commands.admin_data_package import admin_data_package_app
 from cli.commands.admin_data_semantics import admin_data_semantics_app
 from cli.commands.admin_mcp import mcp_app as admin_mcp_app
 from cli.commands.admin_memory_domain import admin_memory_domain_app
+from cli.commands.admin_skills import admin_skills_app
 from cli.commands.admin_metrics import admin_metrics_app
 from cli.commands.db import db_app as admin_db_app
 from cli.commands.admin_news import admin_news_app
@@ -50,6 +51,7 @@ admin_app.add_typer(
 admin_app.add_typer(admin_memory_domain_app, name="memory-domain", help="Memory Domain CRUD (v49)")
 admin_app.add_typer(admin_db_app, name="db", help="Manage app-state DB backend (DuckDB / Postgres)")
 admin_app.add_typer(admin_mcp_app, name="mcp", help="Universal MCP source + tool admin")
+admin_app.add_typer(admin_skills_app, name="skill", help="Contributed skills management")
 # Single direct command (mirrors `register-table` / `discover-and-register`):
 # LLM-generate descriptions for undescribed tables (#399).
 admin_app.command("autodoc-tables")(autodoc_tables)

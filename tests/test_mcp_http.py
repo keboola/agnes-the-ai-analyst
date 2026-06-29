@@ -148,6 +148,12 @@ class TestToolRegistration:
             # IWT, marketplaces, infra_repo_url). Triple-surface with
             # GET /api/admin/config-surface + `agnes admin config-surface`.
             "admin_config_surface",
+            # Contributed-skill triple-surface — admin can list, publish, and
+            # delete skills in the Agnes Contributed marketplace without leaving
+            # the chat. Mirrors REST + `agnes admin skill` CLI surface.
+            "list_contributed_skills",
+            "contribute_skill",
+            "delete_contributed_skill",
         }
 
     def test_no_client_only_tools(self):
