@@ -96,3 +96,39 @@ def test_contribute_rejects_missing_frontmatter_name(e2e_env):
 def test_contribute_rejects_empty(e2e_env):
     with pytest.raises(SkillContributionError):
         contribute_skill("   \n  ")
+
+
+def test_rest_delete_removes_plugin_and_grants(e2e_env):
+    from app.auth.jwt import create_access_token
+    from app.main import create_app
+    from app.utils import get_marketplaces_dir
+    from fastapi.testclient import TestClient
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    from src.repositories import resource_grants_repo
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.users import UserRepository
+
+    conn = get_system_db()
+    UserRepository(conn).create(id="del_admin1", email="deladmin@test.com", name="DelAdmin")
+    admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()[0]
+    UserGroupMembersRepository(conn).add_member("del_admin1", admin_gid, source="system_seed")
+    conn.close()
+
+    result = contribute_skill(_SKILL, registered_by="tester@test", grant_group="Admin")
+    pname = result["plugin_name"]
+
+    root = get_marketplaces_dir() / CONTRIBUTED_MARKETPLACE_SLUG
+    assert (root / "plugins" / pname).exists()
+
+    token = create_access_token("del_admin1", "deladmin@test.com")
+    client = TestClient(create_app())
+    r = client.delete(
+        f"/api/admin/contributed-skills/{pname}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 204
+
+    assert not (root / "plugins" / pname).exists()
+    grants = resource_grants_repo().list_all(resource_type="marketplace_plugin")
+    resource_ids = {g["resource_id"] for g in grants}
+    assert f"{CONTRIBUTED_MARKETPLACE_SLUG}/{pname}" not in resource_ids

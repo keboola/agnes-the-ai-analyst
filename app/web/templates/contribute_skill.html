@@ -154,6 +154,9 @@
     marketplace{% if result.granted_group %}, visible to <strong>{{ result.granted_group }}</strong>{% endif %}.
     <br>
     <a class="deep" href="{{ result.detail_url }}">Open &ldquo;{{ result.plugin_name }}&rdquo; in Agnes &rarr;</a>
+    <form method="post" action="/admin/contribute-skill/{{ result.plugin_name }}/delete" style="margin-top:0.75rem">
+      <button type="submit" class="contrib-btn-ghost">Remove this skill</button>
+    </form>
   </div>
   {% endif %}
   {% if error %}
@@ -171,8 +174,12 @@
       <span class="contrib-field">
         <label for="grant_group">Visible to</label>
         <select name="grant_group" id="grant_group">
-          <option value="Admin" selected>Admins only (curate first)</option>
-          <option value="Everyone">Everyone (publish now)</option>
+          {% for group in (groups or []) %}
+          <option value="{{ group.name }}"{% if group.name == 'Admin' %} selected{% endif %}>{{ group.name }}</option>
+          {% else %}
+          <option value="Admin" selected>Admin</option>
+          <option value="Everyone">Everyone</option>
+          {% endfor %}
         </select>
       </span>
     </div>
@@ -213,7 +220,7 @@
       var h = location.hash || '';
       if (h.indexOf('#skill=') === 0 && !ta.value.trim()) {
         var b64 = decodeURIComponent(h.slice('#skill='.length));
-        ta.value = decodeURIComponent(escape(atob(b64)));
+        ta.value = new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0)));
         history.replaceState(null, '', location.pathname + location.search);
       }
     } catch (e) { /* malformed fragment — fall through to clipboard */ }

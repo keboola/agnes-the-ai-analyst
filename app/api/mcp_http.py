@@ -398,6 +398,62 @@ async def documentation_api() -> str:
 
 
 @mcp.tool()
+async def list_contributed_skills() -> dict:
+    """List all plugins in the Agnes Contributed marketplace (admin only).
+
+    Returns name, version, description, and granted group for each plugin
+    contributed via the web form, CLI, or ``contribute_skill`` MCP tool.
+    Mirrors ``GET /api/admin/contributed-skills`` and ``agnes admin skill list``.
+
+    Requires an admin PAT.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.get(
+            f"{_BASE}/api/admin/contributed-skills",
+            headers=_headers(),
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
+async def contribute_skill(skill_md: str, grant_group: str = "Admin") -> dict:
+    """Publish a SKILL.md into the Agnes Contributed marketplace (admin only).
+
+    Parses the SKILL.md frontmatter, wraps the skill in a one-skill plugin,
+    and grants it to ``grant_group``. Mirrors ``POST /api/admin/contributed-skills``
+    and ``agnes admin skill contribute``.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.post(
+            f"{_BASE}/api/admin/contributed-skills",
+            json={"skill_md": skill_md, "grant_group": grant_group},
+            headers=_headers(),
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool()
+async def delete_contributed_skill(name: str) -> dict:
+    """Remove a contributed skill by plugin name (admin only).
+
+    Mirrors ``DELETE /api/admin/contributed-skills/{name}`` and
+    ``agnes admin skill delete``.
+    """
+    async with httpx.AsyncClient() as c:
+        r = await c.delete(
+            f"{_BASE}/api/admin/contributed-skills/{name}",
+            headers=_headers(),
+            timeout=30,
+        )
+        r.raise_for_status()
+        return {"deleted": name, "status": r.status_code}
+
+
+@mcp.tool()
 async def admin_config_surface() -> dict:
     """Return the complete per-instance configuration surface (admin only).
 

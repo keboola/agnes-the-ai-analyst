@@ -22,6 +22,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   instance-wide). No new schema, repository method, or auth surface — uses the
   admin session and existing marketplace primitives. New module
   `src/skill_contribution.py`.
+- Contributed-skill triple-surface: REST (`GET`/`POST`/`DELETE /api/admin/contributed-skills`), CLI (`agnes admin skill list/contribute/delete`), and MCP (`contribute_skill`, `delete_contributed_skill`) alongside the existing `/admin/contribute-skill` web form.
 
 ### Changed
 

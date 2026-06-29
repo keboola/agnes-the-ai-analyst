@@ -2981,7 +2981,10 @@ async def admin_contribute_skill_page(
     marketplace. This is the landing target for an external "Load skill to
     Agnes" button: the external tool copies the skill to the clipboard and
     opens this page (optionally with ?prefill=1 to auto-read the clipboard)."""
+    from src.repositories import user_groups_repo
+
     ctx = _build_context(request, user=user)
+    ctx["groups"] = user_groups_repo().list_all()
     return templates.TemplateResponse(request, "contribute_skill.html", ctx)
 
 
@@ -3023,6 +3026,58 @@ def admin_contribute_skill_submit(
         ctx["error"] = f"Unexpected error: {e}"
         ctx["skill_md"] = skill_md
     return templates.TemplateResponse(request, "contribute_skill.html", ctx)
+
+
+@router.post("/admin/contribute-skill/{name}/delete", response_class=HTMLResponse)
+def admin_contribute_skill_delete(
+    name: str,
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Delete a contributed skill plugin and redirect back to the list page."""
+    import json as _json
+    import shutil
+
+    from fastapi.responses import RedirectResponse
+
+    from app.marketplace_server.packager import invalidate_etag_cache
+    from app.utils import get_marketplaces_dir
+    from src.marketplace import _lock, _refresh_plugin_cache
+    from src.repositories import resource_grants_repo
+    from src.skill_contribution import CONTRIBUTED_MARKETPLACE_SLUG
+
+    repo_root = get_marketplaces_dir() / CONTRIBUTED_MARKETPLACE_SLUG
+    plugins_dir = repo_root / "plugins"
+    plugin_dir = plugins_dir / name
+
+    if not plugin_dir.exists():
+        from src.repositories import user_groups_repo
+
+        ctx = _build_context(request, user=user)
+        ctx["groups"] = user_groups_repo().list_all()
+        ctx["error"] = f"Plugin '{name}' not found."
+        return templates.TemplateResponse(request, "contribute_skill.html", ctx)
+
+    with _lock:
+        shutil.rmtree(plugin_dir)
+        manifest_path = repo_root / ".claude-plugin" / "marketplace.json"
+        if manifest_path.is_file():
+            try:
+                data = _json.loads(manifest_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    old_plugins = data.get("plugins")
+                    if isinstance(old_plugins, list):
+                        data["plugins"] = [
+                            p for p in old_plugins if not (isinstance(p, dict) and p.get("name") == name)
+                        ]
+                    manifest_path.write_text(_json.dumps(data, indent=2) + "\n", encoding="utf-8")
+            except (OSError, ValueError):
+                pass
+        _refresh_plugin_cache(CONTRIBUTED_MARKETPLACE_SLUG)
+        resource_grants_repo().delete_by_resource("marketplace_plugin", f"{CONTRIBUTED_MARKETPLACE_SLUG}/{name}")
+        invalidate_etag_cache()
+
+    return RedirectResponse("/admin/contribute-skill", status_code=303)
 
 
 @router.get("/admin/initial-workspace", response_class=HTMLResponse)
