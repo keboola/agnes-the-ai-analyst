@@ -13,20 +13,16 @@ Design notes:
   Third-party hooks (mixed entries, foreign commands) are left alone.
 - Uses `|| true` in the hook command so the hook never blocks a session on
   a transient sync error.
-- SessionStart gets two entries:
-    1. Chained `agnes self-upgrade; agnes pull` — self-upgrade runs first
-       so any wire-protocol bump lands before pull tries to use the new
-       CLI version (and back-fills the `workspace_root` config anchor for
-       older clients). Both `|| true`-guarded so an upgrade failure doesn't
-       block the pull.
-    2. `agnes refresh-marketplace --check` — independent entry. Detector-
-       only (since the slash-command split): runs `git fetch` against the
-       marketplace clone and emits a Claude Code hook JSON message
-       hinting the user at `/update-agnes-plugins` when remote content
-       changed. Does NOT install/update plugins itself — the slash
-       command does that interactively, with full output visible in the
-       Claude Code transcript and under user control. Failure (no clone,
-       no token) silently no-ops via the surrounding `|| true`.
+- SessionStart gets ONE entry: a detached `agnes update --quiet`. That single
+  command is the unified convergence — it self-upgrades the CLI, applies the
+  workspace template, re-asserts the Agnes-owned hooks/statusLine/commands,
+  refreshes marketplace plugins, and pulls data — then writes a run report.
+  It runs detached (`( nohup ... & )`, like the SessionEnd push) so it never
+  blocks session start, sets `AGNES_NO_UPDATE_CHECK` internally so it doesn't
+  recurse, and holds a single-instance lock so only one runs at a time. It
+  replaces the older two entries (the `agnes self-upgrade; agnes pull` chain
+  and a separate `agnes refresh-marketplace --check`); workspaces still on the
+  old form auto-migrate because `_OUR_COMMAND_MARKERS` matches those commands.
 
   There is no `agnes capture-session` entry any more. `agnes push` now
   scans the workspace's Claude Code session folder directly (anchored on
@@ -89,12 +85,14 @@ _OUR_COMMAND_MARKERS = (
 
 
 def install_claude_hooks(workspace: Path) -> None:
-    """Install SessionStart hooks (`agnes self-upgrade; agnes pull` chained
-    + `agnes refresh-marketplace` as a separate entry) and SessionEnd hook
-    (`agnes push`).
+    """Install the SessionStart hook (one detached `agnes update --quiet`) and
+    the SessionEnd hook (detached `agnes push`), plus the `agnes statusline`
+    statusLine.
 
     Idempotent. Workspace-scoped (writes `<workspace>/.claude/settings.json`).
-    Preserves third-party hooks and other event types.
+    Preserves third-party hooks and other event types. On a corrupt
+    settings.json it backs the file up (`.corrupt.<ts>`) and rebuilds rather
+    than skipping.
 
     Override-sentinel handling lives at the call site, not here. The
     init-time caller (`cli/commands/init.py`, gated by `override_active`)
