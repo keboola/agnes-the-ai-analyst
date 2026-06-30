@@ -2305,3 +2305,11 @@ class TestBigQueryDeferRebuild:
         c = seeded_app["client"]
         resp = c.post("/api/admin/registry/rebuild")  # no auth
         assert resp.status_code in (401, 403)
+
+    def test_rebuild_endpoint_422_on_non_bq_instance(self, seeded_app):
+        # default test instance resolves to a non-BigQuery data source -> 422
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post("/api/admin/registry/rebuild", headers=_auth(token))
+        assert resp.status_code == 422
+        assert "bigquery" in resp.json()["detail"].lower()

@@ -2851,10 +2851,26 @@ def rebuild_registry(
     on synchronous success, 202 if the rebuild exceeds the wall-clock budget and
     continues on a BackgroundTask, 500 if it surfaced errors.
     """
+    from app.instance_config import get_data_source_type
     from fastapi.responses import JSONResponse
+
+    # The rebuild only makes sense on a BigQuery instance (it rebuilds the BQ
+    # extract). On a non-BQ instance rebuild_from_registry would fail with a
+    # "project missing" 500 — pre-check for a clean 422 instead.
+    if get_data_source_type() != "bigquery":
+        raise HTTPException(
+            status_code=422,
+            detail="registry rebuild applies only to BigQuery instances",
+        )
 
     outcome = _run_bigquery_materialize_with_timeout(background)
     status = outcome.get("status")
+    audit_repo().log(
+        user_id=user.get("id"),
+        action="rebuild_registry",
+        resource="registry",
+        params={"status": status},
+    )
     if status == "ok":
         return JSONResponse(status_code=200, content={"status": "ok"})
     if status == "errors":
