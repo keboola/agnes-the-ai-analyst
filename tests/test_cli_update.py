@@ -351,3 +351,80 @@ def test_update_skips_workspace_steps_when_chdir_fails(monkeypatch, tmp_path):
     entry = json.loads(result.output)
     assert any(s["stage"] == "workspace" and s["status"] == "error"
                and "cannot enter workspace" in s["detail"] for s in entry["steps"]), entry
+
+
+# --- _step_cli updated / error branches -----------------------------------------
+
+
+def _update_info():
+    from cli.update_check import UpdateInfo
+    return UpdateInfo(installed="2.0.0", latest="2.1.0",
+                      download_url="http://s/cli/wheel/x.whl")
+
+
+def test_step_cli_reports_updated_and_records_success(monkeypatch):
+    """rc == 0 → status 'updated', record_outcome(success=True)."""
+    import cli.commands.self_upgrade as su
+    import cli.upgrade_status as us
+
+    monkeypatch.setattr(su, "_resolve_info", lambda force=False: _update_info())
+    monkeypatch.setattr(su, "_do_install_with_smoke_and_rollback",
+                        lambda info, quiet=False: 0)
+    outcomes: list[bool] = []
+    monkeypatch.setattr(us, "record_outcome", lambda *, success: outcomes.append(success))
+
+    report: list[dict] = []
+    upd._step_cli(quiet=True, report=report)
+
+    assert outcomes == [True]
+    assert report == [{"stage": "cli", "status": "updated",
+                       "detail": "2.0.0 -> 2.1.0 (active next run)"}]
+
+
+def test_step_cli_reports_error_and_records_failure(monkeypatch):
+    """rc != 0 → status 'error', record_outcome(success=False); never raises."""
+    import cli.commands.self_upgrade as su
+    import cli.upgrade_status as us
+
+    monkeypatch.setattr(su, "_resolve_info", lambda force=False: _update_info())
+    monkeypatch.setattr(su, "_do_install_with_smoke_and_rollback",
+                        lambda info, quiet=False: 1)
+    outcomes: list[bool] = []
+    monkeypatch.setattr(us, "record_outcome", lambda *, success: outcomes.append(success))
+
+    report: list[dict] = []
+    upd._step_cli(quiet=True, report=report)  # must NOT raise
+
+    assert outcomes == [False]
+    assert report[0]["stage"] == "cli"
+    assert report[0]["status"] == "error"
+
+
+# --- _write_report rotation -----------------------------------------------------
+
+
+def test_write_report_rotates_when_oversized(monkeypatch, tmp_path):
+    """Past the cap, _write_report keeps the tail (last 200 lines) + the new
+    entry, so update.log stays bounded over a workspace's lifetime."""
+    monkeypatch.setattr(upd, "_REPORT_MAX_BYTES", 50)
+    workspace = tmp_path / "ws"
+    log = workspace / ".claude" / "agnes" / "update.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("\n".join(f'{{"old": {i}}}' for i in range(500)) + "\n",
+                   encoding="utf-8")
+
+    out = upd._write_report(workspace, {"ts": "newest"})
+
+    assert out == log
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) <= 201, len(lines)
+    assert json.loads(lines[-1]) == {"ts": "newest"}
+
+
+def test_write_report_returns_none_on_oserror(tmp_path):
+    """A filesystem error degrades to None instead of raising (best-effort)."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    # .claude is a FILE, so mkdir(.claude/agnes) raises OSError → swallowed.
+    (workspace / ".claude").write_text("not a dir", encoding="utf-8")
+    assert upd._write_report(workspace, {"ts": "x"}) is None

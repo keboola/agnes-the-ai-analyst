@@ -301,8 +301,6 @@ def update(
     # (run_pull / refresh-marketplace / the smoke-test `agnes --version`).
     os.environ["AGNES_NO_UPDATE_CHECK"] = "1"
 
-    server_url = get_server_url()
-    token = get_token()
     report: list[dict] = []
 
     lock_file = _config_dir() / "update.lock"
@@ -311,6 +309,20 @@ def update(
             if not quiet and not as_json:
                 typer.echo("Another `agnes update` is already running — exiting.")
             raise typer.Exit(0)
+
+        # `agnes update` is the repair path, so read the persisted server/token
+        # config under the best-effort boundary: a corrupt/half-written
+        # config.yaml must degrade into skipped workspace steps + a report
+        # line, not a raw traceback out of the command meant to fix a broken
+        # install. A None token routes to the "no token configured" skip below.
+        server_url = ""
+        token: Optional[str] = None
+        try:
+            server_url = get_server_url()
+            token = get_token()
+        except Exception as exc:  # noqa: BLE001 — best-effort, mirror _run_step
+            report.append({"stage": "config", "status": "error",
+                           "detail": f"{type(exc).__name__}: {exc}"})
 
         workspace = _resolve_workspace()
 
