@@ -2872,6 +2872,13 @@ def rebuild_registry(
         params={"status": status},
     )
     if status == "ok":
+        # Views are materialized — drop every per-table catalog cache so reads
+        # taken during the deferred-register window (which would have cached a
+        # no-view schema) don't serve stale results. (The 202 background path
+        # mirrors register-table: caches were invalidated per table at register.)
+        from app.api.v2_catalog import invalidate_all
+
+        invalidate_all()
         return JSONResponse(status_code=200, content={"status": "ok"})
     if status == "errors":
         return JSONResponse(
