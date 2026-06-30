@@ -336,3 +336,19 @@ class TestRootCallbackIntegration:
              patch("cli.main._spawn_background_update") as spawn:
             _maybe_warn_outdated()
         spawn.assert_not_called()
+
+    def test_spawn_dedupes_per_version(self, tmp_config):
+        """The per-version marker limits spawns to one per distinct server
+        version. A freshly-installed binary only goes current NEXT session, so
+        `is_outdated()` stays true all session — without this guard every
+        command would spawn a detached update (process storm). Popen is patched
+        so no real process starts; the assertion is on the spawn count + the
+        marker the function persists across calls."""
+        from cli.main import _spawn_background_update
+
+        with patch("subprocess.Popen") as popen:
+            _spawn_background_update("2.1.0")
+            _spawn_background_update("2.1.0")  # same version → no second spawn
+            assert popen.call_count == 1
+            _spawn_background_update("2.2.0")  # new version → spawns again
+            assert popen.call_count == 2
