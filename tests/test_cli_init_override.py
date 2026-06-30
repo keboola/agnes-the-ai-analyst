@@ -614,3 +614,40 @@ def test_init_override_existing_workspace_no_force_exits_partial_state(tmp_path,
     assert "partial_state" in (result.output + str(result.stderr_bytes or b""))
     # CLAUDE.md untouched
     assert (tmp_path / "CLAUDE.md").read_text() == "acme content\n"
+
+
+def test_init_override_force_backs_up_analyst_edits(tmp_path, monkeypatch):
+    """`init --force` over an EXISTING override workspace must back up
+    analyst-edited template files (3-way merge) instead of blind-overwriting —
+    guards the data-loss-sensitive call site the PR intentionally changed."""
+    import typer
+
+    from cli.lib.initial_workspace import (
+        StatusInfo,
+        apply_override,
+        save_template_baseline,
+    )
+
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+    workspace = tmp_path / "ws"
+    (workspace / "docs").mkdir(parents=True)
+    # Existing override workspace + stored baseline of what the template shipped.
+    _write_sentinel(workspace, "override: true\ntemplate_sha: oldsha\n")
+    save_template_baseline(workspace, _make_zip({"docs/handbook.md": b"ORIGINAL\n"}))
+    # Analyst edited the template-owned file (differs from baseline).
+    (workspace / "docs" / "handbook.md").write_bytes(b"ANALYST EDIT\n")
+
+    status = StatusInfo(configured=True, synced=True, template_source="repo",
+                        template_sha="newsha", synced_at="t", files=["docs/handbook.md"])
+    new_zip = _make_zip({"docs/handbook.md": b"NEW TEMPLATE\n"})
+    monkeypatch.setattr("cli.lib.initial_workspace.download_zip", lambda *a, **k: new_zip)
+    monkeypatch.setattr("cli.lib.initial_workspace.report_applied", lambda *a, **k: None)
+    monkeypatch.setattr("cli.lib.initial_workspace.write_agnes_env", lambda *a, **k: None)
+    monkeypatch.setattr(typer, "prompt", lambda *a, **k: "YES")  # confirm --force
+
+    apply_override(workspace, status, "http://s", "tok", force=True, agnes_version="9.9.9")
+
+    baks = list((workspace / "docs").glob("handbook.md.bak.*"))
+    assert len(baks) == 1, "analyst-edited template file must be backed up, not clobbered"
+    assert baks[0].read_bytes() == b"ANALYST EDIT\n"
+    assert (workspace / "docs" / "handbook.md").read_bytes() == b"NEW TEMPLATE\n"

@@ -244,3 +244,110 @@ def test_install_claude_hooks_self_heals_corrupt_settings(tmp_path):
     assert baks[0].read_text(encoding="utf-8") == "{ this is : not valid json "
     cfg = json.loads(settings.read_text(encoding="utf-8"))  # now valid JSON
     assert "SessionStart" in cfg.get("hooks", {})
+
+
+# --- OVERRIDE-template convergence branch (_step_workspace) ---------------------
+
+
+class _FakeUpdateResult:
+    created = ["new/skill.md"]
+    updated = ["docs/handbook.md"]
+    backed_up = [("library/metrics.md", "library/metrics.md.bak.20260101T000000Z")]
+
+
+def test_step_workspace_override_merges_on_sha_change(monkeypatch, tmp_path):
+    """OVERRIDE mode, server template_sha newer than the sentinel → download +
+    backup-aware merge, report 'merged', and refresh .claude/agnes/.env."""
+    from cli.lib.initial_workspace import StatusInfo
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    status = StatusInfo(configured=True, synced=True, template_source="repo",
+                        template_sha="newsha1234567890", synced_at="t", files=[])
+    applied = {}
+    env_calls = []
+
+    def fake_apply(*a, **k):
+        applied["called"] = True
+        return _FakeUpdateResult()
+
+    monkeypatch.setattr("cli.lib.initial_workspace.probe_status", lambda *a, **k: status)
+    monkeypatch.setattr("src.initial_workspace.is_override_workspace", lambda ws: True)
+    monkeypatch.setattr("cli.lib.override.read_override_metadata", lambda ws: {"template_sha": "OLDsha"})
+    monkeypatch.setattr("cli.lib.initial_workspace.load_template_baseline", lambda ws: b"baseline-zip")
+    monkeypatch.setattr("cli.lib.initial_workspace.download_zip", lambda *a, **k: b"new-zip")
+    monkeypatch.setattr("cli.lib.initial_workspace.apply_update", fake_apply)
+    monkeypatch.setattr("cli.lib.initial_workspace.write_agnes_env", lambda *a, **k: env_calls.append(True))
+
+    report: list[dict] = []
+    upd._step_workspace(workspace, server_url="http://s", token="t", report=report)
+
+    ws_step = next(s for s in report if s["stage"] == "workspace")
+    assert ws_step["status"] == "merged", report
+    assert ws_step["detail"]["template_sha"] == "newsha1234"  # status.template_sha[:10]
+    assert applied.get("called") is True
+    assert env_calls, "write_agnes_env should be refreshed in override mode"
+
+
+def test_step_workspace_override_skips_when_sha_matches(monkeypatch, tmp_path):
+    """Sentinel template_sha == server SHA → no download/merge (cheap), but
+    .env is still refreshed."""
+    from cli.lib.initial_workspace import StatusInfo
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    status = StatusInfo(configured=True, synced=True, template_source="repo",
+                        template_sha="samesha", synced_at="t", files=[])
+    dl: list = []
+
+    def must_not_apply(*a, **k):
+        raise AssertionError("apply_update must not run when SHA matches")
+
+    monkeypatch.setattr("cli.lib.initial_workspace.probe_status", lambda *a, **k: status)
+    monkeypatch.setattr("src.initial_workspace.is_override_workspace", lambda ws: True)
+    monkeypatch.setattr("cli.lib.override.read_override_metadata", lambda ws: {"template_sha": "samesha"})
+    monkeypatch.setattr("cli.lib.initial_workspace.load_template_baseline", lambda ws: b"baseline")
+    monkeypatch.setattr("cli.lib.initial_workspace.download_zip", lambda *a, **k: dl.append(True) or b"z")
+    monkeypatch.setattr("cli.lib.initial_workspace.apply_update", must_not_apply)
+    monkeypatch.setattr("cli.lib.initial_workspace.write_agnes_env", lambda *a, **k: None)
+
+    report: list[dict] = []
+    upd._step_workspace(workspace, server_url="http://s", token="t", report=report)
+    ws_step = next(s for s in report if s["stage"] == "workspace")
+    assert ws_step["status"] == "ok"
+    assert dl == [], "no zip download when template SHA matches"
+
+
+# --- chdir-failure guard --------------------------------------------------------
+
+
+def test_update_skips_workspace_steps_when_chdir_fails(monkeypatch, tmp_path):
+    """If the resolved workspace can't be entered, workspace-relative steps are
+    skipped (never run from the launching cwd); the CLI step still runs."""
+    workspace = tmp_path / "ws"
+    (workspace / ".claude").mkdir(parents=True)
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(workspace))
+    monkeypatch.setattr(upd, "_config_dir", lambda: tmp_path / "cfg")
+    monkeypatch.setattr(upd, "get_server_url", lambda: "http://s")
+    monkeypatch.setattr(upd, "get_token", lambda: "tok")
+
+    cli_ran = []
+    ran = []
+    monkeypatch.setattr(upd, "_step_cli", lambda **k: cli_ran.append(True))
+    monkeypatch.setattr(upd, "_step_workspace", lambda *a, **k: ran.append("workspace"))
+    monkeypatch.setattr(upd, "_step_agnes_owned", lambda *a, **k: ran.append("agnes-owned"))
+    monkeypatch.setattr(upd, "_step_marketplace", lambda *a, **k: ran.append("marketplace"))
+    monkeypatch.setattr(upd, "_step_pull", lambda *a, **k: ran.append("pull"))
+
+    def boom_chdir(_path):
+        raise OSError("cannot enter")
+
+    monkeypatch.setattr(upd.os, "chdir", boom_chdir)
+
+    result = runner.invoke(update_app, ["--json"])
+    assert result.exit_code == 0, result.output
+    assert cli_ran == [True], "CLI step must still run"
+    assert ran == [], "workspace-relative steps must be skipped on chdir failure"
+    entry = json.loads(result.output)
+    assert any(s["stage"] == "workspace" and s["status"] == "error"
+               and "cannot enter workspace" in s["detail"] for s in entry["steps"]), entry
