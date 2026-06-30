@@ -10,15 +10,26 @@ plugins, and operational rules for the analyst.
 `agnes init` fetches `GET /api/welcome` and writes the rendered markdown
 to `<workspace>/CLAUDE.md` on every run (including `--force` re-initialisation).
 
-To skip writing CLAUDE.md:
+On **default** workspaces (no Initial Workspace Template), `agnes update` also
+refreshes `CLAUDE.md` from `/api/welcome`: if the file already exists and the
+server content changed, Agnes writes a `CLAUDE.md.bak.<timestamp>` backup
+before overwriting (an unchanged template is a no-op). Because the SessionStart
+hook runs a detached `agnes update --quiet`, an admin's prompt edit now
+propagates **automatically** on the analyst's next Claude Code session — not
+only on the next `agnes init`. (Initial Workspace Template workspaces get
+`CLAUDE.md` from the template repo instead — see
+[`initial-workspace-override.md`](initial-workspace-override.md).)
+
+To skip writing CLAUDE.md on init:
 
 ```bash
 agnes init --server-url https://agnes.example.com --no-claude-md
 ```
 
 **Analysts who ran setup while CLAUDE.md generation was temporarily absent** will
-have their file written on the next `agnes init` run. Any existing
-`CLAUDE.md` is overwritten with the current server template.
+have their file written on the next `agnes init` or `agnes update` run. Any
+existing `CLAUDE.md` is backed up (by `agnes update`) and replaced with the
+current server template.
 
 The companion `CLAUDE.local.md` (at `.claude/CLAUDE.local.md`) is **never**
 overwritten — it is the analyst's personal customisation space.
