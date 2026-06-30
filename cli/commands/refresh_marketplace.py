@@ -51,9 +51,10 @@ refresh_marketplace_app = typer.Typer(
 # Exit code emitted by `--check` when the remote marketplace has new content
 # (drift) relative to the local clone. 0 = no drift / nothing to do, 1 = error.
 # `agnes update` reads this to decide whether to run a full reconcile without
-# re-implementing the ls-remote-vs-HEAD comparison. The SessionStart `--check`
-# usage wraps the command in `|| true`, so a non-zero drift code is harmless
-# there; nothing else depends on `--check` exiting 0 on drift.
+# re-implementing the ls-remote-vs-HEAD comparison. `agnes update` calls
+# `--check` IN-PROCESS and maps this code to a reconcile — there is no longer a
+# standalone SessionStart `--check` hook entry (the single SessionStart hook is
+# `agnes update`). Nothing else depends on `--check` exiting 0 on drift.
 _EXIT_MARKETPLACE_DRIFT = 20
 
 
@@ -180,8 +181,10 @@ def refresh_marketplace(
         local_sha = _local_head_sha()
         if local_sha is not None and local_sha != remote_sha:
             _emit_check_hook_message()
-            # Signal drift to in-process callers (`agnes update`) via a
-            # dedicated exit code. Hook usage (`--check … || true`) ignores it.
+            # Signal drift to the in-process caller (`agnes update`) via a
+            # dedicated exit code; it maps the code to a full reconcile. A
+            # manual `agnes refresh-marketplace --check` just surfaces it as a
+            # non-zero exit.
             raise typer.Exit(_EXIT_MARKETPLACE_DRIFT)
         raise typer.Exit(0)
 
