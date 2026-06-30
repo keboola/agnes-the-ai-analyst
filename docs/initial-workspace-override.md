@@ -205,11 +205,11 @@ the workspace as on a default install.
 |------------------------------------------------------------------------|-----------------------------------------------------------------------------------|
 | `CLAUDE.md` fetched from `/api/welcome` (server-rendered Jinja2)       | `CLAUDE.md` comes verbatim from your repo (no Jinja2, no RBAC filtering)          |
 | `.claude/settings.json` seeded with `{model: sonnet, permissions: …}`  | Whatever your repo ships (or no file at all)                                      |
-| `install_claude_hooks(workspace)` installs SessionStart/End/statusLine | Your repo's `settings.json` is the source of truth at init time; Agnes installs nothing during `agnes init` |
-| `install_claude_commands(workspace)` installs `/update-agnes-plugins` + `/agnes-private` | Your repo controls `.claude/commands/` at init time                            |
+| `install_claude_hooks(workspace)` installs SessionStart/End + statusLine | **Agnes installs these too** — on top of your template, after extraction. Agnes owns its SessionStart (`agnes update`) / SessionEnd (`agnes push`) hooks + statusLine in both modes; Agnes-looking entries your repo ships are replaced (foreign entries preserved). |
+| `install_claude_commands(workspace)` installs `/update-agnes-plugins` + `/agnes-private` | **Agnes installs these too**; your other `.claude/commands/` files are preserved.                            |
 | `.claude/CLAUDE.local.md` stub written if absent                       | If your repo ships one, that wins; otherwise the file simply doesn't exist        |
 | `AGNES_WORKSPACE.md` rendered from `config/agnes_workspace_template.txt` | Your repo controls (or doesn't ship at all)                                       |
-| `--force` backs up `CLAUDE.md` to `CLAUDE.md.bak.<timestamp>`          | **No backup.** Source of truth is your Git repo; recovery is `git log` / `git checkout`.|
+| `--force` backs up `CLAUDE.md` to `CLAUDE.md.bak.<timestamp>`          | `--force` over an existing override workspace backs up your edited files to `<name>.bak.<timestamp>` via the 3-way merge before updating — no longer a blind overwrite. |
 
 The remaining `agnes init` steps **still run** — they are data-plane
 concerns, not workspace-skeleton concerns:
@@ -243,16 +243,22 @@ to a Session hook, just include them in your repo's `settings.json`
 under an entry whose command does NOT contain any of the
 `_OUR_COMMAND_MARKERS` substrings; runtime refresh leaves it alone.
 
-## What you (the operator) must include in your repo
+## What Agnes installs vs what your repo provides
 
-Because Agnes installs nothing of its own, your repo is responsible for:
+Agnes installs and re-asserts its OWN elements on every `agnes update` — you do
+NOT need to ship these in your template (if you do, Agnes replaces its own
+entries; foreign hook entries and a custom statusLine are preserved):
 
-### 1. SessionStart hook for `agnes pull`
+- **SessionStart** → one detached `agnes update --quiet` (the convergence:
+  self-upgrade + template + Agnes-owned hooks/commands + marketplace + pull).
+- **SessionEnd** → detached `agnes push`.
+- **statusLine** → `agnes statusline` (the `🔒 agnes-private` indicator).
+- **Slash commands** → `/update-agnes-plugins`, `/agnes-private`.
 
-Without this hook, analysts won't get fresh parquets at the start of
-every Claude Code session. Recommended `workspace/.claude/settings.json`
-(in your repo) → lands as `.claude/settings.json` in the analyst's
-workspace:
+Your repo's `workspace/.claude/settings.json` therefore only needs the parts
+YOU control (`model`, `permissions`, any third-party hooks). The block below
+shows what the converged `.claude/settings.json` ends up with, for reference —
+you don't ship the Agnes entries:
 
 ```json
 {
@@ -266,15 +272,7 @@ workspace:
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c \"agnes self-upgrade --quiet 2>/dev/null || true; agnes pull --quiet 2>/dev/null || true\""
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash -c \"agnes refresh-marketplace --check 2>/dev/null || true\""
+            "command": "bash -c \"( nohup agnes update --quiet </dev/null >/dev/null 2>&1 & ) ; true\""
           }
         ]
       }
@@ -297,29 +295,18 @@ workspace:
 }
 ```
 
-The exact bash strings mirror what Agnes's default `cli/lib/hooks.py`
-would have installed. You can deviate, but understand the trade-offs:
+These hook/statusLine entries mirror what Agnes installs automatically, so you
+normally leave them OUT of your repo — Agnes re-asserts them on every
+`agnes update`. They are shown only so you can see what the converged
+workspace ends up with. The single SessionStart `agnes update` runs the whole
+convergence (self-upgrade, template, marketplace, pull) in the background; the
+SessionEnd `agnes push` is detached so headless-mode SIGTERM can't truncate it.
 
-- Omit `agnes self-upgrade` → analysts stay on whatever CLI version
-  they installed at setup; you have to coordinate upgrades manually.
-- Omit `agnes pull` → workspaces never refresh parquets without a
-  manual `agnes pull` invocation.
-- Omit the SessionEnd `agnes push` (detached form) → session transcripts
-  and `CLAUDE.local.md` stay local, never reach the server.
-- Omit `agnes refresh-marketplace --check` → analysts don't get
-  marketplace-plugin-update notifications.
-- Omit `agnes statusline` → no `🔒 agnes-private` indicator when an
-  analyst marks a session private.
+### Slash commands
 
-### 2. Slash commands (optional but recommended)
-
-Default Agnes ships two slash commands. Replicate them in your repo if
-you want analysts to have them:
-
-- `workspace/.claude/commands/update-agnes-plugins.md` — drives
-  `agnes refresh-marketplace` for marketplace plugin updates.
-- `workspace/.claude/commands/agnes-private.md` — toggles
-  session-private mode.
+Agnes installs its managed `/update-agnes-plugins` and `/agnes-private` slash
+commands automatically (both modes) — you do NOT ship them. Your own
+`workspace/.claude/commands/*.md` are preserved alongside.
 
 Copy the canonical content from the open-source Agnes repo at
 `cli/templates/commands/`, or write your own.
@@ -355,10 +342,13 @@ silent workspace mutations under analysts' feet would be hostile UX.
 ## Updating an existing workspace (`agnes update-workspace`)
 
 `agnes init --force` is a *bootstrap* command: it requires an explicit
-`--server-url`, re-pulls all parquets, and overwrites template files in
-place with no backup. To **re-apply a newer template into a workspace an
-analyst has already been working in**, use `agnes update-workspace`
-instead — it is purpose-built to preserve their edits.
+`--server-url` and re-pulls all parquets. Over an EXISTING override workspace
+it applies the template through the same backup-aware 3-way merge as
+`agnes update-workspace` (analyst-edited files are copied to
+`<name>.bak.<timestamp>` before being updated — no blind overwrite). For a
+routine re-apply into a workspace an analyst is already working in, prefer the
+unattended `agnes update` or the interactive `agnes update-workspace` (which
+shows a preview first).
 
 ```bash
 agnes update-workspace --dry-run   # preview: created / updated / backed-up
@@ -427,15 +417,18 @@ secret; only the env-var name.
 1. Probes the server's status endpoint.
 2. Downloads the template zip.
 3. Diffs the zip's file list against what's on disk.
-4. Prints a warning listing files-to-be-overwritten and files-to-be-created.
+4. Prints a warning listing files-to-be-updated (your edits backed up first)
+   and files-to-be-created.
 5. Prompts `Type YES to continue, anything else to abort`. Uppercase-strict.
-6. On `YES`, extracts the zip (overwriting files in your repo, leaving
-   any local-only files alone).
+6. On `YES`, applies the template through the backup-aware 3-way merge:
+   files you edited are copied to `<name>.bak.<timestamp>` before being
+   updated; files you never touched are updated in place; files not in the
+   template are left alone.
 7. POSTs an `initial_workspace.applied` audit event.
 
-The warning explicitly tells the analyst the action is irreversible and
-will be logged. Files in the workspace that are **not** in the
-template are preserved — analyst-local additions survive.
+Your edits are recoverable from the `.bak` copies, and the action is logged
+on the server. Files in the workspace that are **not** in the template are
+preserved — analyst-local additions survive.
 
 ## Audit trail
 
