@@ -428,3 +428,94 @@ def test_write_report_returns_none_on_oserror(tmp_path):
     # .claude is a FILE, so mkdir(.claude/agnes) raises OSError → swallowed.
     (workspace / ".claude").write_text("not a dir", encoding="utf-8")
     assert upd._write_report(workspace, {"ts": "x"}) is None
+
+
+# --- OVERRIDE merge with NO stored baseline -------------------------------------
+
+
+def test_step_workspace_override_merges_without_baseline(monkeypatch, tmp_path):
+    """OVERRIDE mode with NO stored baseline (pre-baseline install, or a moved
+    workspace whose baseline is filed under the old path) still merges on a SHA
+    change — the 3-way engine backs up every changed file and apply_update()
+    establishes the baseline. Previously this case was skipped."""
+    from cli.lib.initial_workspace import StatusInfo
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    status = StatusInfo(configured=True, synced=True, template_source="repo",
+                        template_sha="newsha", synced_at="t", files=[])
+    applied = {}
+
+    def fake_apply(*a, **k):
+        applied["called"] = True
+        return _FakeUpdateResult()
+
+    monkeypatch.setattr("cli.lib.initial_workspace.probe_status", lambda *a, **k: status)
+    monkeypatch.setattr("src.initial_workspace.is_override_workspace", lambda ws: True)
+    monkeypatch.setattr("cli.lib.override.read_override_metadata", lambda ws: {"template_sha": "OLDsha"})
+    monkeypatch.setattr("cli.lib.initial_workspace.load_template_baseline", lambda ws: None)  # no baseline
+    monkeypatch.setattr("cli.lib.initial_workspace.download_zip", lambda *a, **k: b"new-zip")
+    monkeypatch.setattr("cli.lib.initial_workspace.apply_update", fake_apply)
+    monkeypatch.setattr("cli.lib.initial_workspace.write_agnes_env", lambda *a, **k: None)
+
+    report: list[dict] = []
+    upd._step_workspace(workspace, server_url="http://s", token="t", report=report)
+
+    ws_step = next(s for s in report if s["stage"] == "workspace")
+    assert ws_step["status"] == "merged", report
+    assert applied.get("called") is True
+
+
+# --- update() config-degradation guards -----------------------------------------
+
+
+def test_update_skips_workspace_steps_when_token_missing(monkeypatch, tmp_path):
+    """No saved token → the workspace-independent CLI step still runs, the
+    workspace-relative steps are skipped with a note, and exit is clean."""
+    workspace = tmp_path / "ws"
+    (workspace / ".claude").mkdir(parents=True)
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(workspace))
+    monkeypatch.setattr(upd, "_config_dir", lambda: tmp_path / "cfg")
+    monkeypatch.setattr(upd, "get_server_url", lambda: "http://s")
+    monkeypatch.setattr(upd, "get_token", lambda: None)
+
+    cli_ran: list = []
+    ws_ran: list = []
+    monkeypatch.setattr(upd, "_step_cli", lambda **k: cli_ran.append(True))
+    monkeypatch.setattr(upd, "_step_workspace", lambda *a, **k: ws_ran.append(True))
+
+    result = runner.invoke(update_app, ["--json"])
+    assert result.exit_code == 0, result.output
+    assert cli_ran == [True]
+    assert ws_ran == []
+    entry = json.loads(result.output)
+    ws = next(s for s in entry["steps"] if s["stage"] == "workspace")
+    assert ws["status"] == "skipped" and "no token" in ws["detail"]
+
+
+def test_update_degrades_on_corrupt_config(monkeypatch, tmp_path):
+    """A corrupt config (here: workspace-root read raises, like a malformed
+    config.yaml) must not crash the repair command — the CLI step still runs,
+    workspace steps are skipped, the failure is recorded, and exit is clean.
+    Regression guard for the boundary that re-reads config in _resolve_workspace."""
+    monkeypatch.delenv("AGNES_LOCAL_DIR", raising=False)
+    monkeypatch.setattr(upd, "_config_dir", lambda: tmp_path / "cfg")
+    monkeypatch.setattr(upd, "get_server_url", lambda: "http://s")
+    monkeypatch.setattr(upd, "get_token", lambda: "tok")
+
+    def boom():
+        raise ValueError("mapping values are not allowed here")  # yaml-ish
+
+    monkeypatch.setattr(upd, "get_workspace_root", boom)
+
+    cli_ran: list = []
+    ws_ran: list = []
+    monkeypatch.setattr(upd, "_step_cli", lambda **k: cli_ran.append(True))
+    monkeypatch.setattr(upd, "_step_workspace", lambda *a, **k: ws_ran.append(True))
+
+    result = runner.invoke(update_app, ["--json"])
+    assert result.exit_code == 0, result.output
+    assert cli_ran == [True]
+    assert ws_ran == []
+    entry = json.loads(result.output)
+    assert any(s["stage"] == "config" and s["status"] == "error" for s in entry["steps"]), entry

@@ -11,8 +11,8 @@ Design notes:
   `agnes pull` / `agnes push` / `agnes refresh-marketplace` / `da sync`
   entries (matched by command substring) and appends fresh entries.
   Third-party hooks (mixed entries, foreign commands) are left alone.
-- Uses `|| true` in the hook command so the hook never blocks a session on
-  a transient sync error.
+- Each hook trails with `; true` and runs detached (`( nohup ... & )`) so the
+  hook never blocks a session on a transient sync error or a slow run.
 - SessionStart gets ONE entry: a detached `agnes update --quiet`. That single
   command is the unified convergence — it self-upgrades the CLI, applies the
   workspace template, re-asserts the Agnes-owned hooks/statusLine/commands,
