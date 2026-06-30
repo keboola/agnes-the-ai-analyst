@@ -41,6 +41,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- Corporate-memory contradiction check no longer fails with a 400 from the LLM provider. `BATCH_CONTRADICTION_SCHEMA`'s nullable `severity` / `resolution_action` fields now use `anyOf` (a string-with-enum branch or null) instead of a union `["string", "null"]` type combined with an `enum` containing `null`, which strict structured outputs reject — every contradiction check was permanently broken. The enum stays enforced at the schema level, so the model still can't emit out-of-range values.
 
 ### Removed
 
