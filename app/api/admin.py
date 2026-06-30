@@ -1445,6 +1445,18 @@ class RegisterTableRequest(BaseModel):
     # to /data/extracts/bigquery/data/<id>.parquet.
     source_query: Optional[str] = None
     query_mode: str = "local"
+    defer_rebuild: bool = Field(
+        default=False,
+        description=(
+            "BigQuery only. When true, skip the synchronous post-insert "
+            "rebuild of the extract + master views; the registry row is "
+            "created but the table is not yet queryable. Intended for bulk "
+            "onboarding: register many tables with defer_rebuild=true (each "
+            "skipping the O(registry) per-insert rebuild), then call "
+            "POST /api/admin/registry/rebuild ONCE to materialize them all in "
+            "a single rebuild. No effect for non-BigQuery or materialized rows."
+        ),
+    )
     sync_schedule: Optional[str] = None
     profile_after_sync: bool = Field(
         default=True,
@@ -2747,6 +2759,23 @@ def register_table(
             },
         )
 
+    if request.defer_rebuild:
+        # Bulk-onboarding path: the registry row is created but the
+        # (O(registry)) extract + master-view rebuild is skipped. The caller
+        # registers a batch this way and then triggers a single rebuild via
+        # POST /api/admin/registry/rebuild — turning N per-insert rebuilds into
+        # one. The table is NOT queryable until that rebuild runs.
+        return JSONResponse(
+            status_code=202,
+            content={
+                "id": table_id,
+                "name": request.name,
+                "status": "registered",
+                "view_name": table_id,
+                "message": ("Registered; rebuild deferred. Trigger once via POST /api/admin/registry/rebuild."),
+            },
+        )
+
     # BQ post-register: rebuild extract + master views, with timeout fallback.
     # Decision 1: 200 on synchronous success, 202 on timeout, 500 if the
     # synchronous rebuild surfaced errors. Distinct from the 201 Keboola
@@ -2797,6 +2826,45 @@ def register_table(
             "view_name": table_id,
             "message": "Registration accepted; materializing in background",
         },
+    )
+
+
+@router.post(
+    "/registry/rebuild",
+    responses={
+        200: {"description": "Extract + master views rebuilt synchronously"},
+        202: {"description": "Rebuild exceeded the wall-clock budget; continues in background"},
+        500: {"description": "Rebuild surfaced errors; master views may be incomplete"},
+    },
+)
+def rebuild_registry(
+    background: BackgroundTasks,
+    user: dict = Depends(require_admin),
+):
+    """Rebuild the BigQuery extract + master views once, across the whole registry.
+
+    Companion to ``register-table``'s ``defer_rebuild``: a bulk-onboarding flow
+    registers many tables with ``defer_rebuild=true`` (each skipping the
+    O(registry) per-insert rebuild) and then calls this endpoint ONCE to
+    materialize them all in a single rebuild — turning N registry-wide rebuilds
+    into one. Same timeout/background semantics as a synchronous register: 200
+    on synchronous success, 202 if the rebuild exceeds the wall-clock budget and
+    continues on a BackgroundTask, 500 if it surfaced errors.
+    """
+    from fastapi.responses import JSONResponse
+
+    outcome = _run_bigquery_materialize_with_timeout(background)
+    status = outcome.get("status")
+    if status == "ok":
+        return JSONResponse(status_code=200, content={"status": "ok"})
+    if status == "errors":
+        return JSONResponse(
+            status_code=500,
+            content={"status": "rebuild_failed", "errors": outcome.get("errors") or []},
+        )
+    return JSONResponse(
+        status_code=202,
+        content={"status": "accepted", "message": "Rebuild continues in background"},
     )
 
 
