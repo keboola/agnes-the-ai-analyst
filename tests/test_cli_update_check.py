@@ -352,3 +352,24 @@ class TestRootCallbackIntegration:
             assert popen.call_count == 1
             _spawn_background_update("2.2.0")  # new version → spawns again
             assert popen.call_count == 2
+
+    def test_spawn_background_update_child_contract(self, tmp_config):
+        """The detached child is the non-recursive `agnes update --quiet`:
+        argv ends with `update --quiet`, env carries AGNES_NO_UPDATE_CHECK=1 so
+        it can't re-trigger detection, and stdio is fully detached. Popen is
+        patched so no real process starts."""
+        import subprocess
+
+        from cli.main import _spawn_background_update
+
+        with patch("subprocess.Popen") as popen:
+            _spawn_background_update("3.0.0")
+
+        assert popen.call_count == 1
+        argv = popen.call_args.args[0]
+        kwargs = popen.call_args.kwargs
+        assert argv[-2:] == ["update", "--quiet"]
+        assert kwargs["env"]["AGNES_NO_UPDATE_CHECK"] == "1"
+        assert kwargs["stdin"] is subprocess.DEVNULL
+        assert kwargs["stdout"] is subprocess.DEVNULL
+        assert kwargs["stderr"] is subprocess.DEVNULL
