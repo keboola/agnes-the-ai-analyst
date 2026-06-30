@@ -1246,6 +1246,81 @@ class TestDetectorWiresContradictionDetection:
         conn.close()
 
 
+class TestBatchContradictionSchemaStrictValid:
+    """Guard BATCH_CONTRADICTION_SCHEMA against the FAI-120 regression.
+
+    The bug: ``severity`` / ``resolution_action`` declared a union type
+    ``["string","null"]`` AND an ``enum`` containing ``None``. Anthropic strict
+    structured outputs reject that combination -> every contradiction check
+    400s. The fix keeps the enum (so the model can't emit out-of-range values)
+    but splits each nullable field into ``anyOf`` of a string-with-enum branch
+    and a null branch.
+    """
+
+    @staticmethod
+    def _walk(node):
+        """Yield every dict node in a JSON-schema tree."""
+        if isinstance(node, dict):
+            yield node
+            for v in node.values():
+                yield from TestBatchContradictionSchemaStrictValid._walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                yield from TestBatchContradictionSchemaStrictValid._walk(item)
+
+    def test_no_node_combines_enum_with_union_type_or_null_enum(self):
+        """Anti-regression for the exact shape Anthropic returns 400 for.
+
+        Walk the schema as it is actually sent (after _strict_json_schema) and
+        assert no node combines an ``enum`` with a list-typed ``type``, and no
+        ``enum`` contains ``None``. Protects future schemas too.
+        """
+        from connectors.llm.anthropic_provider import _strict_json_schema
+        from services.corporate_memory.prompts import BATCH_CONTRADICTION_SCHEMA
+
+        strict = _strict_json_schema(BATCH_CONTRADICTION_SCHEMA)
+        for node in self._walk(strict):
+            if "enum" not in node:
+                continue
+            assert not isinstance(node.get("type"), list), (
+                f"enum combined with a union type is rejected by strict outputs: {node!r}"
+            )
+            assert None not in node["enum"], (
+                f"enum containing None is rejected by strict outputs: {node!r}"
+            )
+
+    def test_nullable_enum_fields_preserve_strict_enum_via_anyof(self):
+        """The fix must not loosen the constraint -- enum values stay enforced.
+
+        ``severity`` / ``resolution_action`` must be ``anyOf`` of a
+        string-with-enum branch (matching the code's valid sets) plus a null
+        branch, so the model still cannot emit out-of-range values.
+        """
+        from services.corporate_memory.contradiction import (
+            _VALID_ACTIONS,
+            _VALID_SEVERITIES,
+        )
+        from services.corporate_memory.prompts import BATCH_CONTRADICTION_SCHEMA
+
+        item_props = BATCH_CONTRADICTION_SCHEMA["properties"]["judgments"]["items"][
+            "properties"
+        ]
+        for field, valid in (
+            ("severity", _VALID_SEVERITIES),
+            ("resolution_action", _VALID_ACTIONS),
+        ):
+            spec = item_props[field]
+            assert "anyOf" in spec, f"{field} must use anyOf, got {spec!r}"
+            branches = spec["anyOf"]
+            assert {"type": "null"} in branches, f"{field} must allow null: {spec!r}"
+            enum_branches = [b for b in branches if "enum" in b]
+            assert len(enum_branches) == 1, f"{field} needs one enum branch: {spec!r}"
+            assert enum_branches[0]["type"] == "string"
+            assert set(enum_branches[0]["enum"]) == valid, (
+                f"{field} enum drifted from the code's valid set {valid}: {spec!r}"
+            )
+
+
 class TestBatchedContradictionFindAndJudge:
     """Direct unit tests for find_and_judge — the new batched Haiku path
     (ADR Decision 4). Covers hallucination-defense, severity normalization,
