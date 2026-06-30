@@ -2253,3 +2253,55 @@ class TestBigQueryDottedSourceTableNormalization:
         )
         assert resp.status_code == 200, resp.text
         assert self._row(c, token, "orders")["source_table"] == "orders"
+
+
+class TestBigQueryDeferRebuild:
+    """defer_rebuild + the bulk POST /registry/rebuild endpoint.
+
+    A BigQuery register triggers an O(registry) extract + master-view rebuild
+    per insert; bulk onboarding registers many tables with defer_rebuild=true
+    (each skipping that rebuild) and then rebuilds once."""
+
+    def test_defer_rebuild_skips_the_per_insert_rebuild(
+        self, seeded_app, bq_instance, stub_bq_extractor
+    ):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json=_bq_payload(name="deferred_orders", defer_rebuild=True),
+            headers=_auth(token),
+        )
+        assert resp.status_code == 202
+        body = resp.json()
+        assert body["status"] == "registered"
+        assert "rebuild" in body["message"].lower()
+        # the expensive per-insert rebuild must NOT have run
+        stub_bq_extractor["rebuild"].assert_not_called()
+
+    def test_normal_register_still_rebuilds(
+        self, seeded_app, bq_instance, stub_bq_extractor
+    ):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json=_bq_payload(name="eager_orders"),  # defer_rebuild defaults False
+            headers=_auth(token),
+        )
+        assert resp.status_code in (200, 202)
+        stub_bq_extractor["rebuild"].assert_called()
+
+    def test_rebuild_endpoint_triggers_one_rebuild(
+        self, seeded_app, bq_instance, stub_bq_extractor
+    ):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post("/api/admin/registry/rebuild", headers=_auth(token))
+        assert resp.status_code in (200, 202)
+        stub_bq_extractor["rebuild"].assert_called()
+
+    def test_rebuild_endpoint_requires_admin(self, seeded_app):
+        c = seeded_app["client"]
+        resp = c.post("/api/admin/registry/rebuild")  # no auth
+        assert resp.status_code in (401, 403)
