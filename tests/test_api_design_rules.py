@@ -119,6 +119,9 @@ _VERB_PATH_ALLOWLIST = frozenset(
         "/api/v2/metadata-cache/refresh",
         # Cache warmup — manual trigger (idempotent fire-and-forget)
         "/api/admin/cache-warmup/run",
+        # Registry rebuild — fire-and-forget; rebuilds the extract + master
+        # views once. Companion to register-table's defer_rebuild (bulk onboarding).
+        "/api/admin/registry/rebuild",
         # Store submission rescan — re-runs guardrail scan on an existing submission
         "/api/admin/store/submissions/{submission_id}/rescan",
         # Telemetry export — GET because it streams a report, not a resource collection

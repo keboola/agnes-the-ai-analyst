@@ -164,6 +164,11 @@ _MCP_CONNECT_REASON = (
     "snippets; no CLI/MCP analogue (the PAT it creates IS the MCP credential)"
 )
 _EXEMPT: dict[str, str] = {
+    "/api/admin/registry/rebuild": (
+        "admin-only registry rebuild trigger — server/consumer maintenance op "
+        "(companion to register-table's defer_rebuild for bulk onboarding); no "
+        "analyst CLI/MCP analogue, mirrors the cache-warmup/run + sync triggers"
+    ),
     "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
     "/api/studio/memory-mining/consent": _MEMORY_MINING_REASON,

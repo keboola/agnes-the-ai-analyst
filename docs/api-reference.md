@@ -73,6 +73,7 @@ are the unit of curation and user-facing discovery.
 | `GET` | `/api/v2/catalog` | — | Public-facing catalog (same data, no admin fields) |
 | `POST` | `/api/admin/register-table` | see §3.3 | Register a new table |
 | `POST` | `/api/admin/register-table/precheck` | see §3.3 | Validate a registration payload without committing |
+| `POST` | `/api/admin/registry/rebuild` | — | Rebuild the extract + master views once (companion to `register-table` `defer_rebuild` for bulk onboarding) |
 | `PUT` | `/api/admin/registry/{table_id}` | see §3.2 | Update **operational** fields (idempotent partial) |
 | `PATCH` | `/api/admin/registry/{table_id}/docs` | see §3.5 | Update **extended LLM-facing docs** (grain, gotchas, …) |
 | `DELETE` | `/api/admin/registry/{table_id}` | — | Unregister |
@@ -601,6 +602,7 @@ checks against.
 ### `/api/admin/registry` — Table registry
 
 - /api/admin/registry
+- /api/admin/registry/rebuild
 - /api/admin/registry/{table_id}
 - /api/admin/registry/{table_id}/docs
 
