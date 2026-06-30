@@ -7,11 +7,14 @@ install or pick up a new release. Runs the same whether triggered automatically
 
 Steps, in order, each wrapped so one failure never aborts the rest:
 
-  1. CLI binary self-upgrade — the ONLY step with a rollback (stage/verify/
-     swap/rollback lives in `cli/commands/self_upgrade.py`). A freshly-installed
-     binary becomes active on the NEXT `agnes` invocation: the running
-     interpreter can't replace itself, and `os.execv` is unreliable on Windows,
-     so there is deliberately NO re-exec. Steps 2-6 run on the current binary.
+  1. CLI binary self-upgrade — the ONLY step with a rollback: a direct uv/pip
+     reinstall guarded by a smoke test, with best-effort rollback to the prior
+     wheel where one is available (in `cli/commands/self_upgrade.py`; a fully
+     staged swap is a separate, not-yet-implemented hardening). A
+     freshly-installed binary becomes active on the NEXT `agnes` invocation:
+     the running interpreter can't replace itself, and `os.execv` is unreliable
+     on Windows, so there is deliberately NO re-exec. Steps 2-6 run on the
+     current binary.
   2. Workspace template — OVERRIDE: safe 3-way merge (backs up analyst edits to
      `.bak`) only when the server template SHA moved; DEFAULT: refresh the
      server-rendered CLAUDE.md, backing it up before overwrite.
@@ -141,7 +144,6 @@ def _step_workspace(workspace: Path, *, server_url: str, token: str, report: lis
     from cli.lib.initial_workspace import (
         apply_update,
         download_zip,
-        load_template_baseline,
         probe_status,
         write_agnes_env,
     )
@@ -156,13 +158,17 @@ def _step_workspace(workspace: Path, *, server_url: str, token: str, report: lis
                            "detail": "template configured but not synced (ask admin to Sync now)"})
             return
         sentinel = read_override_metadata(workspace) or {}
-        has_baseline = load_template_baseline(workspace) is not None
-        if not is_override_workspace(workspace) or not has_baseline:
+        if not is_override_workspace(workspace):
             report.append({"stage": "workspace", "status": "skipped",
-                           "detail": "no override sentinel/baseline; run `agnes update-workspace` once interactively"})
+                           "detail": "no override sentinel; run `agnes update-workspace` once interactively"})
         elif sentinel.get("template_sha") == status.template_sha:
             report.append({"stage": "workspace", "status": "ok", "detail": "template already current"})
         else:
+            # A missing stored baseline (pre-baseline install, or a workspace
+            # that was moved — the baseline is keyed by absolute path) is safe:
+            # the 3-way engine backs up every file that differs from the new
+            # template before overwriting, and apply_update() then establishes
+            # the baseline so the next run is a precise merge.
             new_zip = download_zip(server_url, token)
             result = apply_update(workspace, new_zip, status, server_url, token,
                                   agnes_version=_agnes_version())
@@ -310,21 +316,23 @@ def update(
                 typer.echo("Another `agnes update` is already running — exiting.")
             raise typer.Exit(0)
 
-        # `agnes update` is the repair path, so read the persisted server/token
-        # config under the best-effort boundary: a corrupt/half-written
-        # config.yaml must degrade into skipped workspace steps + a report
-        # line, not a raw traceback out of the command meant to fix a broken
-        # install. A None token routes to the "no token configured" skip below.
+        # `agnes update` is the repair path, so read ALL persisted-config
+        # values under the best-effort boundary: get_server_url/get_token AND
+        # _resolve_workspace (which re-reads config.yaml via get_workspace_root)
+        # must degrade into skipped workspace steps + a report line, not a raw
+        # traceback out of the command meant to fix a broken install. A None
+        # token routes to the "no token configured" skip below; a None
+        # workspace routes to the "no initialised workspace" skip.
         server_url = ""
         token: Optional[str] = None
+        workspace: Optional[Path] = None
         try:
             server_url = get_server_url()
             token = get_token()
+            workspace = _resolve_workspace()
         except Exception as exc:  # noqa: BLE001 — best-effort, mirror _run_step
             report.append({"stage": "config", "status": "error",
                            "detail": f"{type(exc).__name__}: {exc}"})
-
-        workspace = _resolve_workspace()
 
         # Step 1 — CLI binary (workspace-independent; always runs).
         _run_step("cli", lambda: _step_cli(quiet=quiet, report=report), report)

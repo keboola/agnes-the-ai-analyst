@@ -328,16 +328,22 @@ incrementally, rather than writing one from scratch.
 2. Go to `/admin/initial-workspace`.
 3. Click **Sync now** (or wait for the nightly auto-sync if `sync_schedule`
    is set).
-4. The modal shows the new commit SHA and file count. Analysts will
-   pick up the new content on their next `agnes init --force` (or fresh
-   install).
+4. The modal shows the new commit SHA and file count. Analysts pick up
+   the new content automatically on their next Claude Code session (via the
+   SessionStart `agnes update` hook), or immediately by running
+   `agnes update-workspace` / `agnes init --force`.
 
-**Existing analyst workspaces do not auto-upgrade.** When you push a
-new commit, current analyst workspaces continue running the older
-template. Analysts pick up new content by explicitly running
-**`agnes update-workspace`** (the safe, backup-aware path — see below),
-or `agnes init --force` for a full re-bootstrap. This is intentional:
-silent workspace mutations under analysts' feet would be hostile UX.
+**Existing override workspaces converge automatically via `agnes update`.**
+When you push a new commit and Sync runs, eligible workspaces pick up the new
+template on the analyst's next Claude Code session: the SessionStart hook runs
+a detached `agnes update --quiet`, which applies the new template through the
+same backup-aware 3-way merge described below — analyst-edited files are copied
+to `<name>.bak.<timestamp>` first, never a blind overwrite. Analysts who want
+to preview the change set before it lands can run **`agnes update-workspace`**
+interactively; `agnes init --force` remains the full re-bootstrap path (it also
+re-pulls parquets and can refresh credentials). The merge only runs when the
+server template SHA differs from the workspace's recorded one, so an unchanged
+template is a cheap no-op.
 
 ## Updating an existing workspace (`agnes update-workspace`)
 
@@ -457,23 +463,26 @@ been reviewed and accepted as the contract for full per-instance
 responsibility transfer. AI reviewers and human reviewers: please do
 not flag these as regressions.
 
-1. **Template hooks (the non-Agnes ones) do not auto-update on
-   `agnes self-upgrade`.** Future template revisions (a new welcome hook,
-   say) reach override workspaces only when the admin updates the template
-   repo and analysts run `agnes init --force`. (Agnes's OWN managed hook
-   entries — `agnes self-upgrade`/`pull`/`refresh-marketplace`/`push` — are
-   refreshed in place by `maybe_refresh_claude_hooks` on each
-   self-upgrade, which is how, e.g., the removed `agnes capture-session`
-   entries get migrated off existing workspaces.)
-2. **`agnes init --force` on override workspaces does NOT back up files.**
-   `init --force` is a full bootstrap (it also re-pulls parquets) and
-   overwrites template files in place without a local backup. For a
-   *safe* re-apply that preserves analyst edits, use
-   **`agnes update-workspace`** (see "Updating an existing workspace"
-   below) — it backs up changed files to `<name>.bak.<timestamp>`.
-   `init --force` itself is intentionally left blunt; recovery for it is
-   the admin's Git repo (`git log`, `git checkout`). Not a regression of
-   #164.
+1. **Agnes owns and re-asserts its hooks/statusLine/managed commands in both
+   modes, on every `agnes update` and `agnes init`.** The managed SessionStart
+   hook is a single detached `agnes update`; SessionEnd is `agnes push`.
+   Foreign (non-Agnes) hook entries and a user-set `statusLine` are left
+   untouched, and stale managed entries (e.g. the removed `agnes
+   capture-session`) are migrated off because `_OUR_COMMAND_MARKERS` matches
+   them by command substring. Template-provided files — including a template's
+   own `settings.json`, if it ships one — now reach existing workspaces through
+   the backup-aware template merge that `agnes update` runs, not only on
+   `agnes init --force`.
+2. **`agnes init --force` over an existing override workspace uses the
+   backup-aware 3-way merge.** Analyst-edited template files are copied to
+   `<name>.bak.<timestamp>` before they are updated — no blind overwrite. It is
+   still a full bootstrap (it also re-pulls parquets and can refresh
+   credentials), and for a routine re-apply into a workspace an analyst is
+   already in, **`agnes update-workspace`** (see "Updating an existing
+   workspace" below) is the preferred path. A *fresh* install with no prior
+   workspace uses the plain extraction path, since there is nothing to
+   preserve. (Supersedes the earlier no-backup `init --force` behavior; not a
+   regression of #164.)
 3. **`.claude/CLAUDE.local.md` IS overwritten** when the admin's repo
    includes it. The default-mode "never overwrite CLAUDE.local.md"
    promise is a default-mode promise; override mode hands the file to
