@@ -62,9 +62,10 @@ def test_clean_install_minimal_grants(fastapi_test_server, tmp_path, test_pat):
     # No dead dirs
     assert_no_dead_dirs(workspace)
 
-    # Hooks installed
+    # Hooks installed — SessionStart now runs the single detached `agnes update`
+    # convergence (which pulls data internally) in place of a direct `agnes pull`.
     settings = json.loads((workspace / ".claude" / "settings.json").read_text())
-    assert any("agnes pull" in h["hooks"][0]["command"]
+    assert any("agnes update" in h["hooks"][0]["command"]
                for h in settings.get("hooks", {}).get("SessionStart", []))
     assert any("agnes push" in h["hooks"][0]["command"]
                for h in settings.get("hooks", {}).get("SessionEnd", []))

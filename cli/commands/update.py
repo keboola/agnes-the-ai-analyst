@@ -324,24 +324,33 @@ def update(
             report.append({"stage": "workspace", "status": "skipped", "detail": "no token configured"})
         else:
             # Workspace-relative steps need cwd == workspace (marketplace installs
-            # plugins with --scope project into cwd).
+            # plugins with --scope project into cwd, and the report log lands
+            # under the workspace). If we can't enter the workspace (deleted,
+            # not a dir, unreadable), DO NOT run those steps from the launching
+            # cwd — that would scatter plugin/settings writes into an unrelated
+            # directory. Record the failure and skip; the workspace-independent
+            # CLI step above already ran.
             prev_cwd = Path.cwd()
             try:
                 os.chdir(workspace)
-            except OSError:
-                pass
-            try:
-                _run_step("workspace", lambda: _step_workspace(
-                    workspace, server_url=server_url, token=token, report=report), report)
-                _run_step("agnes-owned", lambda: _step_agnes_owned(workspace, report=report), report)
-                _run_step("marketplace", lambda: _step_marketplace(report=report), report)
-                _run_step("pull", lambda: _step_pull(
-                    workspace, server_url=server_url, token=token, quiet=quiet, report=report), report)
-            finally:
+            except OSError as exc:
+                report.append({
+                    "stage": "workspace", "status": "error",
+                    "detail": f"cannot enter workspace {workspace}: {exc}; skipped workspace steps",
+                })
+            else:
                 try:
-                    os.chdir(prev_cwd)
-                except OSError:
-                    pass
+                    _run_step("workspace", lambda: _step_workspace(
+                        workspace, server_url=server_url, token=token, report=report), report)
+                    _run_step("agnes-owned", lambda: _step_agnes_owned(workspace, report=report), report)
+                    _run_step("marketplace", lambda: _step_marketplace(report=report), report)
+                    _run_step("pull", lambda: _step_pull(
+                        workspace, server_url=server_url, token=token, quiet=quiet, report=report), report)
+                finally:
+                    try:
+                        os.chdir(prev_cwd)
+                    except OSError:
+                        pass
 
         entry = {
             "ts": _utc_stamp(),
