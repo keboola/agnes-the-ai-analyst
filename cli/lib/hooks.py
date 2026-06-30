@@ -153,22 +153,11 @@ def install_claude_hooks(workspace: Path) -> None:
         for cmd in commands:
             existing.append({"hooks": [{"type": "command", "command": cmd}]})
 
-    # All entries are wrapped in `bash -c "..."` for Windows compatibility:
-    # Claude Code on Windows runs hook commands directly (no shell), so
-    # the `; ` chain operator, `2>/dev/null` redirection, and `|| true`
-    # short-circuit never get interpreted unless we explicitly invoke
-    # bash. (Git Bash on PATH or WSL satisfies this.) The self-upgrade +
-    # pull chain previously shipped unwrapped — that pre-dates the
-    # Windows fix; ship it wrapped now so every entry uses the same
-    # contract. Workspaces still on the older unwrapped form auto-upgrade
-    # via `maybe_refresh_claude_hooks` on the next `agnes self-upgrade`.
-    #
-    # `--check` makes the marketplace entry a detector only: the actual
-    # plugin install/update happens in the `/update-agnes-plugins` slash
-    # command (installed by `cli.lib.commands.install_claude_commands`).
-    # Workspaces still on the older `--quiet` form auto-upgrade here
-    # because `_OUR_COMMAND_MARKERS` matches by substring on the
-    # `agnes refresh-marketplace` prefix.
+    # Both entries are wrapped in `bash -c "..."` for Windows compatibility:
+    # Claude Code on Windows runs hook commands directly (no shell), so the
+    # `2>/dev/null` redirection, the `( ... & )` detach subshell, and the
+    # `; true` short-circuit never get interpreted unless we explicitly invoke
+    # bash. (Git Bash on PATH or WSL satisfies this.)
     #
     # No `agnes capture-session` entry: `agnes push` scans the workspace's
     # Claude Code session folder directly (anchored on the `workspace_root`
