@@ -47,6 +47,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - The generated setup prompt routes an already-initialised workspace (a `.claude/init-complete` sentinel exists) to `agnes update` instead of a plain `agnes init` that would refuse.
 
 ### Fixed
+- **Windows deferred self-update** is now headless and no longer loses the venv to the status bar. The detached helper is spawned without a console, but the console children it launched (`tasklist` polled ~1/s while waiting for the agnes process to exit, the `uv tool install` retries, the verify `agnes --version`) each got a fresh console allocated — a window flashed per call. Every child now runs `CREATE_NO_WINDOW`. And because `agnes statusline` runs from the tool venv on every render — re-locking the files `uv tool install --force` must replace — the install is now gated on a best-effort "venv is free" probe (so an attempt lands in the gap between renders) and retried patiently, and for the duration of the swap a `deferred-update.active` sentinel makes `agnes statusline` step aside so it stops re-locking the venv. Windows-only; the POSIX in-place upgrade is unchanged.
 
 ### Removed
 - The interactive upgrade prompt (`cli/upgrade_prompt.py`) — superseded by the unattended background `agnes update`.

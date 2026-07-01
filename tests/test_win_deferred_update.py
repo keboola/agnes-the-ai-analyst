@@ -84,3 +84,39 @@ def test_main_parses_args_and_empty_rollback_is_none(monkeypatch):
 
 def test_main_usage_error_on_missing_args():
     assert h.main(["1234", "w.whl"]) == 64
+
+
+def test_venv_free_true_when_absent_or_openable(tmp_path):
+    # No path / missing file → "attempt anyway" (True). A present, not-running
+    # file is openable for write → free (True). (The locked-running-exe case is
+    # Windows-runtime-only and can't be simulated portably.)
+    assert h._venv_free(None) is True
+    assert h._venv_free(str(tmp_path / "missing.exe")) is True
+    py = tmp_path / "python.exe"
+    py.write_bytes(b"stub")
+    assert h._venv_free(str(py)) is True
+
+
+def test_run_clears_updating_sentinel_on_success(monkeypatch, tmp_path):
+    # The status-bar "step aside" sentinel must not linger once the swap is done.
+    monkeypatch.setattr(h, "_wait_for_exit", lambda pid, **k: None)
+    monkeypatch.setattr(h, "_uv_install", lambda wheel, **k: 0)
+    monkeypatch.setattr(h, "_installed_version_ok", lambda v: True)
+
+    wheel = tmp_path / "0.72.3.whl"
+    wheel.write_bytes(b"w")
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+
+    assert h.run(1, str(wheel), "0.72.3", str(cfg), None) == 0
+    assert not (cfg / "deferred-update.active").exists()
+
+
+def test_run_clears_updating_sentinel_on_install_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(h, "_wait_for_exit", lambda pid, **k: None)
+    monkeypatch.setattr(h, "_uv_install", lambda wheel, **k: 2)
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+
+    assert h.run(1, str(tmp_path / "x.whl"), "0.72.3", str(cfg), None) == 2
+    assert not (cfg / "deferred-update.active").exists()
