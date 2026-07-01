@@ -362,42 +362,51 @@ def _update_info():
                       download_url="http://s/cli/wheel/x.whl")
 
 
-def test_step_cli_reports_updated_and_records_success(monkeypatch):
-    """rc == 0 → status 'updated', record_outcome(success=True)."""
+def test_step_cli_reports_updated(monkeypatch):
+    """rc == 0 → status 'updated'. Outcome recording lives inside
+    `_do_install_with_smoke_and_rollback` now, so `_step_cli` only shapes the
+    report line."""
     import cli.commands.self_upgrade as su
-    import cli.upgrade_status as us
 
     monkeypatch.setattr(su, "_resolve_info", lambda force=False: _update_info())
     monkeypatch.setattr(su, "_do_install_with_smoke_and_rollback",
                         lambda info, quiet=False: 0)
-    outcomes: list[bool] = []
-    monkeypatch.setattr(us, "record_outcome", lambda *, success: outcomes.append(success))
 
     report: list[dict] = []
     upd._step_cli(quiet=True, report=report)
 
-    assert outcomes == [True]
     assert report == [{"stage": "cli", "status": "updated",
                        "detail": "2.0.0 -> 2.1.0 (active next run)"}]
 
 
-def test_step_cli_reports_error_and_records_failure(monkeypatch):
-    """rc != 0 → status 'error', record_outcome(success=False); never raises."""
+def test_step_cli_reports_error(monkeypatch):
+    """rc != 0 → status 'error'; never raises."""
     import cli.commands.self_upgrade as su
-    import cli.upgrade_status as us
 
     monkeypatch.setattr(su, "_resolve_info", lambda force=False: _update_info())
     monkeypatch.setattr(su, "_do_install_with_smoke_and_rollback",
                         lambda info, quiet=False: 1)
-    outcomes: list[bool] = []
-    monkeypatch.setattr(us, "record_outcome", lambda *, success: outcomes.append(success))
 
     report: list[dict] = []
     upd._step_cli(quiet=True, report=report)  # must NOT raise
 
-    assert outcomes == [False]
     assert report[0]["stage"] == "cli"
     assert report[0]["status"] == "error"
+
+
+def test_step_cli_defers_on_preflight(monkeypatch):
+    """rc == _INSTALL_DEFERRED → status 'deferred'."""
+    import cli.commands.self_upgrade as su
+
+    monkeypatch.setattr(su, "_resolve_info", lambda force=False: _update_info())
+    monkeypatch.setattr(su, "_do_install_with_smoke_and_rollback",
+                        lambda info, quiet=False: su._INSTALL_DEFERRED)
+
+    report: list[dict] = []
+    upd._step_cli(quiet=True, report=report)
+
+    assert report[0]["stage"] == "cli"
+    assert report[0]["status"] == "deferred"
 
 
 # --- _write_report rotation -----------------------------------------------------

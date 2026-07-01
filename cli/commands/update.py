@@ -119,16 +119,24 @@ def _run_step(name: str, fn: Callable[[], None], report: list[dict]) -> None:
 def _step_cli(*, quiet: bool, report: list[dict]) -> None:
     from cli.commands import self_upgrade as su
     from cli.update_check import UpdateInfo
-    from cli.upgrade_status import record_outcome
 
     info = su._resolve_info(force=False)
     if not isinstance(info, UpdateInfo):
         # CLI already current, offline, or unreachable — nothing to swap.
         report.append({"stage": "cli", "status": "ok", "detail": "already current / offline"})
         return
+    # `_do_install_with_smoke_and_rollback` records the upgrade outcome itself
+    # (with a reason) — we only translate the return code into a report line.
     rc = su._do_install_with_smoke_and_rollback(info, quiet=quiet)
-    record_outcome(success=(rc == 0))
-    if rc == 0:
+    if rc == su._INSTALL_DEFERRED:
+        # Unattended run with no safe rollback artifact — intentionally NOT
+        # attempted. Not a failure: the counter is untouched.
+        report.append({
+            "stage": "cli", "status": "deferred",
+            "detail": "no safe rollback artifact; will retry next session",
+        })
+        return
+    if rc == su._INSTALL_OK:
         report.append({
             "stage": "cli", "status": "updated",
             "detail": f"{info.installed} -> {info.latest} (active next run)",
