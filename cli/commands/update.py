@@ -136,6 +136,14 @@ def _step_cli(*, quiet: bool, report: list[dict]) -> None:
             "detail": "no safe rollback artifact; will retry next session",
         })
         return
+    if rc == su._INSTALL_STAGED:
+        # Windows: the swap was handed to a detached helper that completes after
+        # this process exits. Not a failure; the helper records the real outcome.
+        report.append({
+            "stage": "cli", "status": "staged",
+            "detail": "windows deferred install; completes after this process exits",
+        })
+        return
     if rc == su._INSTALL_OK:
         report.append({
             "stage": "cli", "status": "updated",
