@@ -9,10 +9,15 @@ runner = CliRunner()
 
 def test_set_server_creates_config(tmp_path, monkeypatch):
     monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
+    # Assert on the PERSISTED config, not get_server_url(): that getter reads
+    # the AGNES_SERVER env var first, and auth/setup set it via os.environ
+    # without restoring, so it leaks across xdist tests and would shadow what
+    # we just wrote. Drop any leaked value and check config.yaml directly.
+    monkeypatch.delenv("AGNES_SERVER", raising=False)
     result = runner.invoke(app, ["config", "set-server", "https://s.example.com"])
     assert result.exit_code == 0
-    from cli.config import get_server_url
-    assert get_server_url() == "https://s.example.com"
+    from cli.config import load_config
+    assert load_config().get("server") == "https://s.example.com"
 
 
 def test_set_server_preserves_existing_keys(tmp_path, monkeypatch):
