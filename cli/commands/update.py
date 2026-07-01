@@ -245,6 +245,31 @@ def _step_agnes_owned(workspace: Path, *, report: list[dict]) -> None:
 # --------------------------------------------------------------------------- #
 # Step 4 — marketplace plugins (bootstrap if missing; full reconcile on drift)
 # --------------------------------------------------------------------------- #
+def _reassert_enabled_plugins() -> list[str]:
+    """Ensure the workspace `settings.json` enables every plugin in the LOCAL
+    marketplace manifest; return the names newly flipped on.
+
+    Runs on the no-drift path: the marketplace content is current, but step 2's
+    template merge (or a manual edit) may have reset `settings.json` and dropped
+    the stack's `enabledPlugins` — leaving plugins installed but DISABLED in the
+    workspace. Reasserting from the on-disk manifest is cheap (no fetch) and
+    idempotent (`_enable_plugins_in_workspace_settings` writes only on change),
+    and mirrors how step 3 reasserts hooks/statusline unconditionally. cwd is the
+    workspace here (the update callback chdir'd into it), which is where
+    `_enable_plugins_in_workspace_settings` writes."""
+    from cli.commands.refresh_marketplace import (
+        _enable_plugins_in_workspace_settings,
+        _read_marketplace_plugin_versions,
+    )
+
+    manifest = _read_marketplace_plugin_versions()
+    if not manifest:
+        return []
+    ev: dict[str, list[str]] = {"installed": [], "updated": [], "enabled": []}
+    _enable_plugins_in_workspace_settings(manifest, events=ev)
+    return ev["enabled"]
+
+
 def _step_marketplace(*, report: list[dict]) -> None:
     from cli.commands.refresh_marketplace import _EXIT_MARKETPLACE_DRIFT, refresh_marketplace
     from cli.lib.marketplace import CLONE_DIR
@@ -268,7 +293,17 @@ def _step_marketplace(*, report: list[dict]) -> None:
         report.append({"stage": "marketplace", "status": "reconciled" if full == 0 else "error",
                        "detail": f"drift detected; reconcile exit={full}"})
     elif rc == 0:
-        report.append({"stage": "marketplace", "status": "ok", "detail": "plugins already current"})
+        # No marketplace drift — but the workspace settings.json may have been
+        # reset since the last reconcile (step 2's template merge drops the
+        # stack's enabledPlugins). Reassert them from the local manifest so
+        # installed stack plugins stay ENABLED; cheap (no fetch) and idempotent.
+        enabled = _reassert_enabled_plugins()
+        if enabled:
+            report.append({"stage": "marketplace", "status": "enabled",
+                           "detail": f"re-enabled {len(enabled)} stack plugin(s) in settings.json: "
+                                     + ", ".join(enabled)})
+        else:
+            report.append({"stage": "marketplace", "status": "ok", "detail": "plugins already current"})
     else:
         report.append({"stage": "marketplace", "status": "error", "detail": f"check exit={rc}"})
 
