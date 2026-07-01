@@ -1,9 +1,11 @@
-"""Persist + surface the outcome of `agnes self-upgrade` attempts (#478).
+"""Persist + surface the outcome of self-upgrade attempts (#478).
 
-The SessionStart hook runs `agnes self-upgrade --quiet 2>/dev/null || true`,
-so any failure (network, uv/pip resolution, smoke-test rollback) is
-invisible: stdout is suppressed and the `|| true` swallows the exit code.
-An analyst can sit on a stale CLI for weeks with no signal.
+The SessionStart hook runs a detached `agnes update --quiet` (see
+`cli/lib/hooks.py`), whose CLI step invokes the self-upgrade installer
+(`_do_install_with_smoke_and_rollback`). The child is fully detached with
+stdout/stderr suppressed, so any failure (network, uv/pip resolution,
+smoke-test rollback) is invisible. An analyst can sit on a stale CLI for
+weeks with no signal.
 
 This module records each self-upgrade outcome to
 ``$AGNES_CONFIG_DIR/upgrade_status.json``::

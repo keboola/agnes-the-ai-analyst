@@ -206,10 +206,11 @@ def _command_is_quiet() -> bool:
 def _maybe_warn_upgrade_failures() -> None:
     """Surface repeated SILENT self-upgrade failures (#478).
 
-    The SessionStart hook runs `agnes self-upgrade --quiet 2>/dev/null
-    || true`, so its failures are invisible. `agnes self-upgrade` records
-    each outcome in `$AGNES_CONFIG_DIR/upgrade_status.json`; once N attempts
-    in a row have failed, the NEXT non-quiet `agnes` command warns once.
+    The SessionStart hook runs a detached `agnes update --quiet`, whose CLI
+    step invokes the self-upgrade installer; its failures are invisible
+    (fully detached, output suppressed). The installer records each outcome
+    in `$AGNES_CONFIG_DIR/upgrade_status.json`; once N attempts in a row have
+    failed, the NEXT non-quiet `agnes` command warns once.
 
     Skipped entirely:
     - under `--quiet` (keeps the SessionStart hook silent), and
