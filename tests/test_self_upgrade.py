@@ -1150,3 +1150,97 @@ def test_smoke_fail_records_reason_end_to_end(tmp_path, monkeypatch):
         assert result.exit_code == 1
     reason = us.read_status().get("last_failure_reason", "")
     assert reason.startswith("smoke:")
+
+
+# ---------------------------------------------------------------------------
+# Windows deferred self-update (detached helper) — branch selection + spawn
+# ---------------------------------------------------------------------------
+
+
+def test_windows_uv_tool_routes_to_deferred_helper(monkeypatch):
+    """On Windows + uv-tool, self-upgrade STAGES a detached helper (exit 0) and
+    does NOT attempt the in-place install that would self-lock and corrupt."""
+    monkeypatch.setattr("cli.commands.self_upgrade.sys.platform", "win32")
+    spawned = {"n": 0}
+
+    def fake_spawn(info, prior_meta, *, quiet):
+        spawned["n"] += 1
+        return True
+
+    monkeypatch.setattr("cli.commands.self_upgrade._spawn_windows_deferred_update", fake_spawn)
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade.shutil.which", return_value="uv.exe"), \
+         patch("cli.commands.self_upgrade.subprocess.run") as mock_run, \
+         patch("cli.commands.self_upgrade._read_last_known_good_meta", return_value={}):
+        result = runner.invoke(app, ["self-upgrade", "--force"])
+        assert result.exit_code == 0
+        assert spawned["n"] == 1
+        cmds = [c.args[0] for c in mock_run.call_args_list if c.args]
+        assert not any(len(c) >= 3 and c[:3] == ["uv", "tool", "install"] for c in cmds), cmds
+
+
+def test_windows_deferred_staging_failure_is_failsafe(monkeypatch):
+    """If the helper can't be staged, self-upgrade FAILS SAFE (exit 1) — it must
+    NOT fall through to the corrupting in-place swap."""
+    monkeypatch.setattr("cli.commands.self_upgrade.sys.platform", "win32")
+    monkeypatch.setattr("cli.commands.self_upgrade._spawn_windows_deferred_update",
+                        lambda info, prior_meta, *, quiet: False)
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade.shutil.which", return_value="uv.exe"), \
+         patch("cli.commands.self_upgrade.subprocess.run") as mock_run, \
+         patch("cli.commands.self_upgrade._read_last_known_good_meta", return_value={}):
+        result = runner.invoke(app, ["self-upgrade", "--force"])
+        assert result.exit_code == 1
+        cmds = [c.args[0] for c in mock_run.call_args_list if c.args]
+        assert not any(len(c) >= 3 and c[:3] == ["uv", "tool", "install"] for c in cmds), cmds
+
+
+@pytest.mark.no_routing_override
+def test_spawn_windows_deferred_update_builds_detached_popen(monkeypatch, tmp_path):
+    from cli.commands import self_upgrade as su
+    monkeypatch.setattr("cli.commands.self_upgrade.sys.platform", "win32")
+    monkeypatch.setattr("cli.commands.self_upgrade.shutil.which", lambda n: "uv.exe")
+    monkeypatch.setattr(su, "_helper_interpreter", lambda: r"C:\base\python.exe")
+    monkeypatch.setattr(su, "_wheel_cache_dir", lambda: tmp_path / "wheels")
+    monkeypatch.setattr(su, "_config_dir", lambda: tmp_path / "cfg")
+    monkeypatch.setattr(su, "_cached_wheel_for", lambda meta: None)
+
+    def fake_dl(url, dest, *, quiet):
+        p = Path(dest) / "agnes.whl"
+        p.write_bytes(b"wheel")
+        return p
+
+    monkeypatch.setattr(su, "_download_wheel", fake_dl)
+    captured = {}
+
+    def fake_popen(argv, **kw):
+        captured["argv"] = argv
+        captured["kw"] = kw
+        return object()
+
+    monkeypatch.setattr("cli.commands.self_upgrade.subprocess.Popen", fake_popen)
+    info = UpdateInfo(installed="0.72.1", latest="0.72.2",
+                      download_url="http://s/agnes-0.72.2.whl")
+
+    ok = su._spawn_windows_deferred_update(info, {}, quiet=True)
+    assert ok is True
+    argv = captured["argv"]
+    assert argv[0] == r"C:\base\python.exe"
+    assert argv[2] == str(os.getpid())
+    assert argv[4] == "0.72.2"       # expected version
+    assert argv[-1] == ""            # no rollback wheel (first upgrade)
+    assert captured["kw"]["creationflags"] & 0x00000008  # DETACHED_PROCESS
+    assert (tmp_path / "wheels" / "0.72.2.whl").exists()  # wheel staged for the helper
+
+
+@pytest.mark.no_routing_override
+def test_spawn_windows_deferred_update_no_interpreter_fails_safe(monkeypatch, tmp_path):
+    from cli.commands import self_upgrade as su
+    monkeypatch.setattr("cli.commands.self_upgrade.shutil.which", lambda n: "uv.exe")
+    monkeypatch.setattr(su, "_helper_interpreter", lambda: None)  # no safe interpreter
+    called = {"popen": 0}
+    monkeypatch.setattr("cli.commands.self_upgrade.subprocess.Popen",
+                        lambda *a, **k: called.__setitem__("popen", 1))
+    info = UpdateInfo(installed="0.72.1", latest="0.72.2", download_url="http://s/x.whl")
+    assert su._spawn_windows_deferred_update(info, {}, quiet=True) is False
+    assert called["popen"] == 0  # never spawned
