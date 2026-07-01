@@ -147,9 +147,20 @@ CFG_DIR="${{AGNES_CONFIG_DIR:-$HOME/.config/agnes}}"
 mkdir -p "$CFG_DIR"
 CFG="$CFG_DIR/config.yaml"
 if [ -f "$CFG" ]; then
-    grep -v '^server:' "$CFG" > "$CFG.tmp" 2>/dev/null || true
-    printf 'server: %s\\n' "$SERVER" >> "$CFG.tmp"
-    mv "$CFG.tmp" "$CFG"
+    CFG_TMP=$(mktemp "$CFG_DIR/config.yaml.XXXXXX")
+    # grep -v exits 0 (kept non-server lines) or 1 (config was server-only —
+    # an empty tmp is correct). ANY exit > 1 is a real read error: abort rather
+    # than clobber config.yaml down to a single server: line (which would wipe
+    # workspace_root and every other key). `rc=$?` in an || list is exempt from
+    # `set -e`, so grep's benign rc=1 does not kill the script.
+    grep -v '^server:' "$CFG" > "$CFG_TMP" 2>/dev/null && rc=0 || rc=$?
+    if [ "$rc" -gt 1 ]; then
+        echo "error: could not read existing config $CFG (grep exit $rc); leaving it untouched" >&2
+        rm -f "$CFG_TMP"
+        exit 1
+    fi
+    printf 'server: %s\\n' "$SERVER" >> "$CFG_TMP"
+    mv "$CFG_TMP" "$CFG"
 else
     printf 'server: %s\\n' "$SERVER" > "$CFG"
 fi
