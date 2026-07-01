@@ -25,6 +25,7 @@ working `agnes` command — that is the whole point of the feature.
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Optional
 
@@ -35,6 +36,25 @@ _STATUS_FILENAME = "upgrade_status.json"
 # Number of consecutive silent self-upgrade failures before the next
 # non-quiet command surfaces a warning. Owner default = 3.
 _WARN_THRESHOLD = 3
+
+# Cap + secret-scrub for the persisted failure reason. upgrade_status.json is
+# NOT 0600 (unlike token.json), and the smoke-test detail can embed
+# `stderr[:200]` which might echo a signed wheel URL carrying a token — so
+# redact before persisting.
+_MAX_REASON_LEN = 200
+_SECRET_PATTERNS = [
+    re.compile(r"(?i)\b(AGNES_TOKEN|authorization|bearer)\b\s*[:=]?\s*\S+"),
+    re.compile(r"(?i)[?&](token|access_token|sig|signature|api[_-]?key|key)=[^\s&]+"),
+    re.compile(r"\b[A-Fa-f0-9]{32,}\b"),  # long hex runs (tokens / hashes)
+]
+
+
+def _redact(reason: str) -> str:
+    """Scrub obvious secrets from a failure reason and cap its length."""
+    s = reason
+    for pat in _SECRET_PATTERNS:
+        s = pat.sub("[REDACTED]", s)
+    return s[:_MAX_REASON_LEN]
 
 
 def _status_path():
@@ -62,13 +82,16 @@ def _write_status(entry: dict) -> None:
         pass  # best-effort — a status-write failure must not break the flow
 
 
-def record_outcome(success: bool, *, now: Optional[float] = None) -> None:
+def record_outcome(success: bool, *, reason: Optional[str] = None,
+                   now: Optional[float] = None) -> None:
     """Record a self-upgrade attempt outcome.
 
-    On success the consecutive-failure counter resets to 0; on failure it
-    increments from the prior value. ``last_outcome`` is ``"success"`` or
-    ``"failure"`` and ``last_attempt_ts`` is the wall-clock time of the
-    attempt.
+    On success the consecutive-failure counter resets to 0 (and any prior
+    failure reason is cleared); on failure it increments from the prior value
+    and — when ``reason`` is given — persists a redacted one-line
+    ``last_failure_reason`` so the next non-quiet command can surface WHY it
+    failed, not just that it did. ``last_outcome`` is ``"success"`` or
+    ``"failure"`` and ``last_attempt_ts`` is the wall-clock time of the attempt.
     """
     ts = time.time() if now is None else now
     prior = read_status()
@@ -76,16 +99,20 @@ def record_outcome(success: bool, *, now: Optional[float] = None) -> None:
     if not isinstance(prior_failures, int) or prior_failures < 0:
         prior_failures = 0
     if success:
-        consecutive = 0
-        outcome = "success"
+        entry = {
+            "last_attempt_ts": ts,
+            "last_outcome": "success",
+            "consecutive_failures": 0,
+        }
     else:
-        consecutive = prior_failures + 1
-        outcome = "failure"
-    _write_status({
-        "last_attempt_ts": ts,
-        "last_outcome": outcome,
-        "consecutive_failures": consecutive,
-    })
+        entry = {
+            "last_attempt_ts": ts,
+            "last_outcome": "failure",
+            "consecutive_failures": prior_failures + 1,
+        }
+        if reason:
+            entry["last_failure_reason"] = _redact(reason)
+    _write_status(entry)
 
 
 def consecutive_failures() -> int:
@@ -123,9 +150,17 @@ def mark_warned() -> None:
 
 
 def format_failure_notice() -> str:
-    """One-line stderr warning for repeated silent self-upgrade failures."""
+    """One-line stderr warning for repeated silent self-upgrade failures.
+
+    Appends the recorded (already-redacted) ``last_failure_reason`` when present
+    so the analyst sees WHY it's failing without having to re-run the command.
+    """
     n = consecutive_failures()
-    return (
+    base = (
         f"agnes self-upgrade has failed {n} times — "
         "run `agnes self-upgrade` to see the error."
     )
+    reason = read_status().get("last_failure_reason")
+    if isinstance(reason, str) and reason:
+        base += f" Last error: {reason}"
+    return base

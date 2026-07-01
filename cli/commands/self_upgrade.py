@@ -3,9 +3,12 @@ roll back on failure."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import shutil
+import site
 import subprocess
 import sys
 import tempfile
@@ -26,6 +29,14 @@ self_upgrade_app = typer.Typer(
 )
 
 _SENTINEL_ENV = "AGNES_SELF_UPGRADE_IN_PROGRESS"
+
+# `_do_install_with_smoke_and_rollback` return codes. 0/1 are the usual
+# success/failure exit codes; DEFERRED means "we intentionally did NOT attempt
+# an install this run" (unattended run with no safe rollback artifact) — the
+# caller must treat it as a no-op: exit 0 and DO NOT touch the failure counter.
+_INSTALL_OK = 0
+_INSTALL_FAIL = 1
+_INSTALL_DEFERRED = 2
 
 
 class _Unreachable:
@@ -59,23 +70,129 @@ def _last_known_good_path() -> Path:
     return _config_dir() / "last_known_good.json"
 
 
-def _read_last_known_good() -> Optional[str]:
+def _read_last_known_good_meta() -> dict:
+    """Full last-known-good record: ``{download_url, version, wheel_filename,
+    sha256}`` (any subset). ``{}`` on missing/malformed. The rollback source of
+    truth — ``wheel_filename``+``sha256`` point at a locally-cached wheel."""
     p = _last_known_good_path()
     if not p.exists():
-        return None
+        return {}
     try:
-        return json.loads(p.read_text(encoding="utf-8")).get("download_url")
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
-        return None
+        return {}
 
 
-def _record_last_known_good(download_url: str) -> None:
+def _read_last_known_good() -> Optional[str]:
+    """Back-compat shim: the prior wheel's download URL (or None). Kept so old
+    callers/tests that only need the URL keep working; the full record is
+    ``_read_last_known_good_meta``."""
+    return _read_last_known_good_meta().get("download_url")
+
+
+def _record_last_known_good_meta(meta: dict) -> None:
     p = _last_known_good_path()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({"download_url": download_url}), encoding="utf-8")
+        p.write_text(json.dumps(meta), encoding="utf-8")
     except OSError:
         pass  # best-effort — failure to record must not break the flow
+
+
+def _record_last_known_good(download_url: str) -> None:
+    """Back-compat: record only the download URL. Superseded by
+    ``_record_last_known_good_meta`` (which also records the cached wheel
+    filename + sha256); retained so older callers/tests keep working."""
+    _record_last_known_good_meta({"download_url": download_url})
+
+
+# --------------------------------------------------------------------------- #
+# Local wheel cache — the rollback artifact source (FIX 3). The server serves
+# only the latest wheel (older filenames 404), so a URL-based rollback is dead
+# once a newer wheel ships. Instead we keep the last N verified wheels on disk
+# and roll back from there, sha256-verified.
+# --------------------------------------------------------------------------- #
+_WHEEL_CACHE_KEEP = 2
+
+
+def _wheel_cache_dir() -> Path:
+    return _config_dir() / "wheels"
+
+
+def _sha256_file(p: Path) -> str:
+    """Streamed sha256 hex digest (don't load the whole wheel into memory)."""
+    h = hashlib.sha256()
+    with open(p, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _sanitize_version(v: str) -> str:
+    """Filesystem-safe wheel-cache filename stem from a version string."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", v or "unknown")
+
+
+def _gc_wheel_cache(keep_name: str) -> None:
+    """Keep only the newest ``_WHEEL_CACHE_KEEP`` wheels (plus ``keep_name``);
+    delete the rest. Best-effort — a locked/undeletable file is harmless."""
+    try:
+        cache = _wheel_cache_dir()
+        wheels = sorted(cache.glob("*.whl"), key=lambda p: p.stat().st_mtime, reverse=True)
+        kept = 0
+        for w in wheels:
+            if w.name == keep_name:
+                continue
+            kept += 1
+            if kept >= _WHEEL_CACHE_KEEP:
+                w.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _record_wheel_cache(version: str, wheel_path: Path) -> dict:
+    """Copy a verified wheel into the cache, GC to the last N, and return the
+    ``{version, wheel_filename, sha256}`` metadata. ``{}`` on any error (the
+    caller still records the download URL — the cache is a best-effort rollback
+    aid, not a correctness dependency)."""
+    try:
+        cache = _wheel_cache_dir()
+        cache.mkdir(parents=True, exist_ok=True)
+        fname = f"{_sanitize_version(version)}.whl"
+        dest = cache / fname
+        shutil.copyfile(wheel_path, dest)
+        sha = _sha256_file(dest)
+        _gc_wheel_cache(keep_name=fname)
+        return {"version": version, "wheel_filename": fname, "sha256": sha}
+    except OSError:
+        return {}
+
+
+def _cached_wheel_for(meta: dict) -> Optional[Path]:
+    """Return the cached wheel Path iff it exists AND its sha256 matches the
+    recorded digest (defends against a truncated/corrupt cache). Else None."""
+    if not meta:
+        return None
+    fname = meta.get("wheel_filename")
+    sha = meta.get("sha256")
+    if not fname or not sha:
+        return None
+    p = _wheel_cache_dir() / fname
+    if not p.exists():
+        return None
+    try:
+        return p if _sha256_file(p) == sha else None
+    except OSError:
+        return None
+
+
+def _rollback_artifact_ok(meta: dict) -> bool:
+    """True iff ``meta`` names a rollback wheel AND that wheel is present +
+    sha256-valid in the cache. False when there is no prior at all (first-ever
+    upgrade) — the caller distinguishes 'no prior' from 'prior expected but
+    missing' via ``meta`` being empty vs. carrying a ``wheel_filename``."""
+    return _cached_wheel_for(meta) is not None
 
 
 def _uv_tool_bin_path() -> Optional[Path]:
@@ -112,25 +229,77 @@ def _uv_tool_bin_path() -> Optional[Path]:
     return None
 
 
-def _pip_bin_path() -> Optional[Path]:
-    """`<venv>/bin/agnes` (POSIX) or `<venv>\\Scripts\\agnes.exe` (Windows)."""
-    parent = Path(sys.executable).parent
+def _pip_bin_path(user: bool = False) -> Optional[Path]:
+    """Console-script path for a pip install.
+
+    Normally `<venv>/bin/agnes` (POSIX) or `<venv>\\Scripts\\agnes.exe`
+    (Windows), resolved next to ``sys.executable``. For a ``pip install --user``
+    the console script lands under the per-user base (``site.getuserbase()``),
+    NOT next to ``sys.executable`` — so check there first when ``user`` is set,
+    or the smoke test can't find the binary and false-fails into a rollback.
+    """
     name = "agnes.exe" if sys.platform == "win32" else "agnes"
-    candidate = parent / name
-    return candidate if candidate.exists() else None
+    subdir = "Scripts" if sys.platform == "win32" else "bin"
+    candidates = []
+    if user:
+        try:
+            base = site.getuserbase()
+        except Exception:
+            base = None
+        if base:
+            candidates.append(Path(base) / subdir / name)
+    candidates.append(Path(sys.executable).parent / name)
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
+def _canonical(p: Path) -> str:
+    """Canonical, case-normalized string form of a path for containment checks.
+
+    ``os.path.realpath`` resolves symlinks in the path's *directory* prefix;
+    ``os.path.normcase`` folds case on case-insensitive filesystems (Windows,
+    macOS HFS+). Apply ONLY to directories (the venv prefix, the uv tool dir),
+    never to the interpreter symlink — resolving *that* is exactly the bug this
+    module avoids (see ``_python_is_uv_tool_install``).
+    """
+    return os.path.normcase(os.path.realpath(str(p)))
+
+
+def _path_is_within(child: Path, parent: Path) -> bool:
+    """True iff ``child`` equals ``parent`` or is nested under it.
+
+    Compares canonicalized + case-normalized paths via ``os.path.commonpath``
+    (component-aware — ``/a/bc`` is NOT within ``/a/b``, unlike ``startswith``).
+    Returns False rather than raising when the two live on different roots or
+    Windows drives (``commonpath`` raises ``ValueError`` there).
+    """
+    c = _canonical(child)
+    p = _canonical(parent)
+    try:
+        return os.path.commonpath([c, p]) == p
+    except ValueError:
+        return False
 
 
 def _python_is_uv_tool_install() -> bool:
-    """True iff ``sys.executable`` lives under uv's tool-install root.
+    """True iff the RUNNING interpreter is a uv-managed tool install.
 
-    Routing key for self-upgrade. ``uv tool install --force`` only
-    rewrites the venv uv itself manages (``~/.local/share/uv/tools/<pkg>/``);
-    if the running agnes was installed elsewhere (project venv via
-    ``pip install -e .``, pipx, system pip, …), the uv install lands in
-    a different binary and the active one stays stale — but self-upgrade
-    would still report "Installed: <new>" because uv's own exit code is 0.
-    When this returns False, route through pip targeting
-    ``sys.executable`` so the actually-running binary is the one upgraded.
+    Routing key for self-upgrade. ``uv tool install --force`` only rewrites the
+    venv uv itself manages (``<uv tool dir>/<pkg>/``); if the running agnes was
+    installed elsewhere (project venv via ``pip install -e .``, pipx, system
+    pip, …) the uv install would land in a different binary while the active one
+    stays stale. When this returns False, route through pip targeting
+    ``sys.executable`` so the actually-running binary is upgraded.
+
+    Anchored on ``sys.prefix`` (the venv directory), NOT ``sys.executable``. A
+    venv's ``bin/python`` is a symlink to the base interpreter, so
+    ``Path(sys.executable).resolve()`` follows it OUT of the uv tree (e.g. into
+    the Homebrew Cellar) and the containment check wrongly fails — the bug that
+    routed every uv-tool self-upgrade to pip, where a uv venv has no pip
+    (``No module named pip``). ``sys.prefix`` is the real venv dir and is not a
+    symlink to elsewhere, so it stays inside the uv tree.
     """
     if not shutil.which("uv"):
         return False
@@ -140,14 +309,80 @@ def _python_is_uv_tool_install() -> bool:
         )
         if out.returncode != 0:
             return False
-        uv_tool_root = Path(out.stdout.strip()).resolve()
+        uv_tool_root = Path(out.stdout.strip())
     except (OSError, subprocess.TimeoutExpired):
         return False
+    return _path_is_within(Path(sys.prefix), uv_tool_root)
+
+
+def _is_editable_install() -> bool:
+    """True iff agnes is an editable (``pip install -e .``) checkout.
+
+    Reads the distribution's PEP 610 ``direct_url.json``; an editable install
+    carries ``dir_info.editable == true``. Best-effort — any error (metadata
+    absent, not installed) returns False so a classification probe never
+    crashes the upgrade path.
+    """
     try:
-        Path(sys.executable).resolve().relative_to(uv_tool_root)
-        return True
-    except ValueError:
+        import importlib.metadata as md
+
+        raw = md.distribution("agnes-the-ai-analyst").read_text("direct_url.json")
+        if not raw:
+            return False
+        return bool(json.loads(raw).get("dir_info", {}).get("editable"))
+    except Exception:
         return False
+
+
+def _in_pipx_venv() -> bool:
+    """True iff the running interpreter lives inside a pipx-managed venv
+    (``$PIPX_HOME/venvs/`` or the default ``~/.local/pipx/venvs/``)."""
+    roots = []
+    pipx_home = os.environ.get("PIPX_HOME")
+    if pipx_home:
+        roots.append(Path(pipx_home) / "venvs")
+    roots.append(Path.home() / ".local" / "pipx" / "venvs")
+    return any(_path_is_within(Path(sys.prefix), r) for r in roots)
+
+
+def _in_user_site() -> bool:
+    """True iff the agnes package is installed under the per-user site
+    (``pip install --user``). Best-effort; False on any probe error."""
+    try:
+        user_site = site.getusersitepackages()
+    except Exception:
+        return False
+    if not user_site:
+        return False
+    try:
+        import importlib.metadata as md
+
+        loc = md.distribution("agnes-the-ai-analyst").locate_file("")
+        return _path_is_within(Path(str(loc)), Path(user_site))
+    except Exception:
+        return False
+
+
+def _classify_install_method() -> tuple[str, dict]:
+    """Classify how the running agnes was installed → ``(method, ctx)``.
+
+    ``method`` ∈ {"editable", "uv-tool", "pipx", "venv", "user", "system"}.
+    Evaluated top-to-bottom, first match wins — the order disambiguates the
+    overlaps: an editable install can also be inside a venv; a uv-tool venv is
+    also a venv; a pipx venv is also a venv. ``ctx`` carries method-specific
+    data (currently ``{"user": True}`` for the ``--user`` console-script lookup).
+    """
+    if _is_editable_install():
+        return "editable", {}
+    if _python_is_uv_tool_install():
+        return "uv-tool", {}
+    if _in_pipx_venv():
+        return "pipx", {}
+    if sys.prefix != sys.base_prefix:
+        return "venv", {}
+    if _in_user_site():
+        return "user", {"user": True}
+    return "system", {}
 
 
 def _install_with_uv(download_url: str, *, quiet: bool) -> int:
@@ -157,13 +392,15 @@ def _install_with_uv(download_url: str, *, quiet: bool) -> int:
     ).returncode
 
 
-def _install_with_pip(download_url: str, *, quiet: bool) -> int:
+def _install_with_pip(download_url: str, *, quiet: bool, user: bool = False) -> int:
     """Install into the SAME interpreter that's running this command.
 
-    sys.executable resolves to the venv that owns the live `agnes` binary.
-    `python3` would PATH-resolve to system python on macOS, landing the
-    wheel outside the agnes venv. `--user` is wrong inside a uv-tool venv
-    (targets ~/.local outside the venv).
+    ``sys.executable`` owns the live `agnes` binary; `python3` would
+    PATH-resolve to a different (system) interpreter on macOS. ``--user`` is
+    passed ONLY for a genuine ``pip install --user`` (method == "user") — it is
+    wrong inside a venv/uv-tool (targets ~/.local outside the venv). Deps are
+    resolved (NO ``--no-deps``) so a release that bumps a dependency doesn't
+    leave a stale transitive pinned to the previous version.
     """
     out = subprocess.DEVNULL if quiet else None
     with tempfile.TemporaryDirectory(prefix="agnes_cli.") as td:
@@ -173,19 +410,52 @@ def _install_with_pip(download_url: str, *, quiet: bool) -> int:
         ).returncode
         if rc != 0:
             return rc
+        cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall"]
+        if user:
+            cmd.append("--user")
+        cmd.append(str(wheel_path))
+        return subprocess.run(cmd, stdout=out).returncode
+
+
+def _download_wheel(url: str, dest_dir: Path, *, quiet: bool) -> Optional[Path]:
+    """Download the wheel to ``dest_dir`` via curl. Returns the local path (on
+    curl exit 0) or None. Used to obtain a local copy for the wheel cache after
+    a successful install; the return is rc-based (not existence-checked) so it
+    stays mockable in tests that stub ``subprocess.run``."""
+    out = subprocess.DEVNULL if quiet else None
+    wheel_path = dest_dir / "agnes.whl"
+    rc = subprocess.run(
+        ["curl", "-fsSL", "-o", str(wheel_path), url], stdout=out
+    ).returncode
+    return wheel_path if rc == 0 else None
+
+
+def _install_local_wheel(wheel: Path, *, method: str, quiet: bool, user: bool) -> int:
+    """Install an already-downloaded LOCAL wheel (rollback-from-cache path).
+
+    ``method`` is "uv" or "pip". Unlike ``_install_with_pip`` (which curls a
+    URL), this installs the local file directly — no network fetch for the
+    artifact, so a rollback works even after the server has rotated its wheel."""
+    out = subprocess.DEVNULL if quiet else None
+    if method == "uv":
         return subprocess.run(
-            [sys.executable, "-m", "pip", "install",
-             "--force-reinstall", "--no-deps", str(wheel_path)],
-            stdout=out,
+            ["uv", "tool", "install", "--force", str(wheel)], stdout=out
         ).returncode
+    cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall"]
+    if user:
+        cmd.append("--user")
+    cmd.append(str(wheel))
+    return subprocess.run(cmd, stdout=out).returncode
 
 
-def _smoke_test_new_binary(install_method: str, expected_version: str) -> tuple[bool, str]:
+def _smoke_test_new_binary(install_method: str, expected_version: str, *, user: bool = False) -> tuple[bool, str]:
     """Exec `<install-path>/agnes --version` and confirm it boots AND reports
     the expected version. Resolves the binary at the install-method-specific
     path rather than via PATH — defends against a stale shadow ahead of the
-    freshly-installed binary in $PATH."""
-    binary = _uv_tool_bin_path() if install_method == "uv" else _pip_bin_path()
+    freshly-installed binary in $PATH. ``install_method`` is "uv" or "pip"
+    (pip covers venv/pipx/user); ``user`` shifts the pip lookup to the per-user
+    base for a ``--user`` install."""
+    binary = _uv_tool_bin_path() if install_method == "uv" else _pip_bin_path(user=user)
     if binary is None:
         return False, f"agnes binary not found at expected {install_method} install path"
     try:
@@ -286,39 +556,93 @@ def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, _Offline, None
 def _do_install_with_smoke_and_rollback(
     info: UpdateInfo, *, quiet: bool
 ) -> int:
-    """Returns the exit code typer should use (0 success, 1 failure)."""
-    prior_url = _read_last_known_good()  # may be None on first upgrade
+    """Install → smoke-test → roll back on failure.
 
-    # Route by which install manager owns the running binary, not just
-    # by `which uv`. A developer with `uv` on PATH but agnes installed
-    # via `pip install -e .` into a project venv would otherwise see
-    # self-upgrade write to `~/.local/share/uv/tools/...` (a different
-    # binary entirely) while their `.venv/bin/agnes` stays stale forever —
-    # and the stale-version banner spams every subsequent command output.
-    if _python_is_uv_tool_install():
+    Returns ``_INSTALL_OK`` / ``_INSTALL_FAIL`` / ``_INSTALL_DEFERRED`` (the
+    caller maps DEFERRED to a no-op exit-0 that does not touch the failure
+    counter).
+    """
+    prior_meta = _read_last_known_good_meta()  # {} on first-ever upgrade
+    prior_url = prior_meta.get("download_url") or _read_last_known_good()
+
+    # Classify how the running agnes was installed and route accordingly.
+    # Refuse the two cases we must not touch: an editable checkout (the working
+    # tree is the source of truth) and a system/base Python. For the rest,
+    # route uv-tool → uv, everything else → pip targeting sys.executable so the
+    # actually-running binary is the one upgraded.
+    method, ctx = _classify_install_method()
+    if method == "editable":
+        sys.stderr.write(
+            "agnes self-upgrade: refusing to self-upgrade an editable "
+            "(pip install -e) checkout — your working tree is the source of "
+            "truth. Update from git instead (git pull && uv pip install -e .).\n"
+        )
+        record_outcome(success=False, reason="editable install: self-upgrade refused")
+        return _INSTALL_FAIL
+    if method == "system":
+        server = get_server_url().rstrip("/")
+        sys.stderr.write(
+            "agnes self-upgrade: refusing to modify a system/base Python "
+            "(sys.prefix == sys.base_prefix). Reinstall into a managed "
+            f"environment: curl -fsSL {server}/cli/install.sh | bash\n"
+        )
+        record_outcome(success=False, reason="system python: self-upgrade refused")
+        return _INSTALL_FAIL
+
+    is_user = bool(ctx.get("user"))
+    smoke_method = "uv" if method == "uv-tool" else "pip"
+
+    # PREFLIGHT (unattended only): if we recorded a prior wheel but its cached
+    # artifact is missing/corrupt, an install that then fails smoke could not be
+    # rolled back. On the detached/quiet SessionStart path, DEFER rather than
+    # risk an unrecoverable break — retry next session. A first-ever upgrade
+    # (empty prior_meta) has nothing to roll back to anyway, so it PROCEEDS;
+    # blocking it would freeze every fresh install. Manual (non-quiet) runs
+    # always proceed — the operator is watching and can recover via install.sh.
+    if quiet and prior_meta.get("wheel_filename") and not _rollback_artifact_ok(prior_meta):
+        sys.stderr.write(
+            "agnes self-upgrade: deferred — no safe rollback artifact "
+            "(cached prior wheel missing/corrupt); will retry next session.\n"
+        )
+        return _INSTALL_DEFERRED
+
+    if method == "uv-tool":
         rc = _install_with_uv(info.download_url, quiet=quiet)
-        method = "uv"
     else:
-        rc = _install_with_pip(info.download_url, quiet=quiet)
-        method = "pip"
+        rc = _install_with_pip(info.download_url, quiet=quiet, user=is_user)
 
     if rc != 0:
         sys.stderr.write(f"agnes self-upgrade: install failed with exit {rc}\n")
-        return 1
+        record_outcome(success=False, reason=f"install rc={rc} ({method})")
+        return _INSTALL_FAIL
 
-    ok, detail = _smoke_test_new_binary(method, expected_version=info.latest)
+    ok, detail = _smoke_test_new_binary(smoke_method, expected_version=info.latest, user=is_user)
     if not ok:
         sys.stderr.write(
             f"agnes self-upgrade: new binary failed smoke test ({detail}).\n"
         )
         server = get_server_url().rstrip("/")
         bootstrap_recovery = f"  Manual recovery: curl -fsSL {server}/cli/install.sh | bash\n"
-        if prior_url and prior_url != info.download_url:
-            sys.stderr.write(f"  rolling back to {prior_url}\n")
+        cached = _cached_wheel_for(prior_meta)
+        if cached is not None:
+            sys.stderr.write(f"  rolling back to cached {prior_meta.get('version')}\n")
+            rb_rc = _install_local_wheel(
+                cached, method=smoke_method, quiet=True, user=is_user
+            )
+            if rb_rc != 0:
+                sys.stderr.write(
+                    f"  rollback ALSO failed (rc={rb_rc}); CLI is in a broken state.\n"
+                )
+                sys.stderr.write(bootstrap_recovery)
+        elif prior_url and prior_url != info.download_url:
+            # No cached artifact (e.g. upgraded from a pre-cache version) — fall
+            # back to the recorded URL. It may 404 if the server rotated its
+            # wheel; that surfaces below and the recovery hint is printed.
+            sys.stderr.write(f"  no cached wheel; rolling back via URL {prior_url}\n")
             rb_rc = (
                 _install_with_uv(prior_url, quiet=True)
-                if method == "uv"
-                else _install_with_pip(prior_url, quiet=True)
+                if smoke_method == "uv"
+                else _install_with_pip(prior_url, quiet=True, user=is_user)
             )
             if rb_rc != 0:
                 sys.stderr.write(
@@ -327,17 +651,27 @@ def _do_install_with_smoke_and_rollback(
                 sys.stderr.write(bootstrap_recovery)
         else:
             sys.stderr.write(
-                "  no prior wheel URL on record; rollback skipped.\n"
+                "  no usable cached wheel for rollback; skipped.\n"
             )
             sys.stderr.write(bootstrap_recovery)
-        return 1
+        record_outcome(success=False, reason=f"smoke: {detail}")
+        return _INSTALL_FAIL
 
-    # Convention: record then invalidate. No correctness consequence either way.
-    _record_last_known_good(info.download_url)
+    # Success: cache the verified wheel (so the NEXT upgrade can roll back to
+    # THIS one) and record the full last-known-good metadata.
+    cache_meta: dict = {}
+    with tempfile.TemporaryDirectory(prefix="agnes_cache.") as td:
+        dl = _download_wheel(info.download_url, Path(td), quiet=True)
+        if dl is not None:
+            cache_meta = _record_wheel_cache(info.latest, dl)
+    _record_last_known_good_meta(
+        {"download_url": info.download_url, "version": info.latest, **cache_meta}
+    )
     _invalidate_update_cache()
+    record_outcome(success=True)  # clears any prior failure reason + resets counter
     if not quiet:
         typer.echo(f"agnes self-upgrade: installed {info.latest}", err=True)
-    return 0
+    return _INSTALL_OK
 
 
 @self_upgrade_app.callback()
@@ -386,7 +720,7 @@ def self_upgrade(
             # couldn't even probe. Record a failure so repeated silent
             # SessionStart failures (network down for days) surface on the
             # next non-quiet command. (#478)
-            record_outcome(success=False)
+            record_outcome(success=False, reason="server unreachable (--force)")
             sys.stderr.write(
                 f"agnes self-upgrade: cannot reach {get_server_url()}/cli/latest\n"
             )
@@ -420,11 +754,16 @@ def self_upgrade(
             raise typer.Exit(0)
 
         rc = _do_install_with_smoke_and_rollback(info, quiet=quiet)
-        # Persist the outcome so a string of silent SessionStart failures
-        # (install error, smoke-test rollback) becomes visible on the next
-        # non-quiet command. Success resets the counter. (#478)
-        record_outcome(success=(rc == 0))
-        if rc == 0:
+        # NOTE: `_do_install_with_smoke_and_rollback` records the outcome itself
+        # (with a specific failure reason) at each terminal branch, so we do NOT
+        # re-record here — a reason-less record would clobber the detailed one.
+        if rc == _INSTALL_DEFERRED:
+            # No install attempted (unattended run with no safe rollback
+            # artifact). This is NOT a failure — the counter is untouched; exit
+            # 0 and still refresh hooks. It retries next session.
+            _try_refresh_hooks(quiet=quiet)
+            raise typer.Exit(0)
+        if rc == _INSTALL_OK:
             # After a successful install of the new wheel, refresh the
             # workspace hooks so any wire-format change in the new release
             # lands on the next session-start without re-running
