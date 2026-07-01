@@ -139,12 +139,20 @@ else
     python3 -m pip install --user --force-reinstall "$WHEEL"
 fi
 
-# 3. Seed the server URL in CLI config
+# 3. Seed/merge the server URL in CLI config. MERGE (do not truncate) so a
+#    re-run of this installer on an already-initialized machine preserves
+#    workspace_root and any other keys — a naive `cat > config.yaml` would wipe
+#    them. Done in shell so it never depends on `agnes` being on PATH yet.
 CFG_DIR="${{AGNES_CONFIG_DIR:-$HOME/.config/agnes}}"
 mkdir -p "$CFG_DIR"
-cat > "$CFG_DIR/config.yaml" <<EOF
-server: $SERVER
-EOF
+CFG="$CFG_DIR/config.yaml"
+if [ -f "$CFG" ]; then
+    grep -v '^server:' "$CFG" > "$CFG.tmp" 2>/dev/null || true
+    printf 'server: %s\\n' "$SERVER" >> "$CFG.tmp"
+    mv "$CFG.tmp" "$CFG"
+else
+    printf 'server: %s\\n' "$SERVER" > "$CFG"
+fi
 
 echo "Installed."
 echo "Next steps:"
