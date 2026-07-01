@@ -132,35 +132,57 @@ def _venv_free(py_path: "str | None") -> bool:
         return False
 
 
-def _uv_install(wheel: str, *, budget_s: float = _INSTALL_BUDGET_S,
-                backoff_s: float = _INSTALL_BACKOFF_S) -> int:
-    """``uv tool install --force <wheel>`` (headless), retried while the tool
-    venv is held by another agnes process — the statusline / other sessions
-    re-grab the lock between renders, so a single attempt often loses the race.
+# Substrings in uv's stderr that mean "the tool venv is locked by another
+# process right now" (a concurrent agnes/statusline holding the running
+# python.exe). ONLY these are worth waiting out; any other uv failure won't fix
+# itself, so we fail fast with the real message instead of burning the whole
+# budget mislabeled as "locked" (which is what hid a bad staged-wheel filename).
+_LOCK_HINTS = ("os error 5", "access is denied", "being used", " in use", "denied")
 
-    Attempts only when the venv python looks free, so an attempt lands in the gap
-    between renders rather than hammering `uv` (real resolve/link work) against a
-    guaranteed lock; near the deadline it attempts regardless. A locked attempt
-    fails cleanly — `uv` aborts before touching the install (that is why the
-    failed swap never corrupted anything) — so retrying is always safe. Returns 0
-    on success, else the last rc."""
+
+def _looks_like_lock(text: str) -> bool:
+    t = (text or "").lower()
+    return any(h in t for h in _LOCK_HINTS)
+
+
+def _uv_install(wheel: str, *, config_dir: "str | None" = None,
+                budget_s: float = _INSTALL_BUDGET_S,
+                backoff_s: float = _INSTALL_BACKOFF_S) -> int:
+    """``uv tool install --force <wheel>`` (headless). Returns 0 on success,
+    else the last rc.
+
+    Retries ONLY while the failure looks like a Windows file lock — the venv
+    being replaced is briefly held by a concurrent agnes process (a statusline
+    render / another session). To land an attempt in the gap between renders
+    rather than hammer `uv` against a guaranteed lock, it attempts only when the
+    venv python looks free (near the deadline it attempts regardless). ANY other
+    error (a bad wheel filename, uv missing, …) FAILS FAST with the real stderr
+    logged — retrying it would just waste the budget and, historically, get
+    mislabeled as 'venv locked'."""
     py = _venv_python()
     deadline = time.monotonic() + max(0.0, budget_s)
-    rc = 1
+    rc, err = 1, ""
     while True:
         near_deadline = time.monotonic() >= deadline - backoff_s
         if _venv_free(py) or near_deadline:
             try:
-                rc = subprocess.run(
+                p = subprocess.run(
                     ["uv", "tool", "install", "--force", wheel],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    creationflags=_NO_WINDOW,
-                ).returncode
-            except OSError:
-                rc = 1
+                    capture_output=True, text=True, creationflags=_NO_WINDOW,
+                )
+                rc, err = p.returncode, (p.stderr or "").strip()
+            except OSError as e:
+                rc, err = 1, str(e)
             if rc == 0:
                 return 0
+            if not _looks_like_lock(err):
+                if config_dir:
+                    _log(config_dir, f"uv install failed rc={rc}: {err[:300]}")
+                return rc  # not a lock — it won't fix itself; don't retry
         if time.monotonic() >= deadline:
+            if config_dir:
+                _log(config_dir,
+                     f"uv install gave up rc={rc} after ~{int(budget_s)}s (venv locked): {err[:200]}")
             return rc
         # Jittered backoff so we don't beat in lockstep with a ~1 Hz statusline.
         time.sleep(backoff_s + (time.monotonic() % 0.7))
@@ -274,11 +296,11 @@ def run(parent_pid: int, staged_wheel: str, expected_version: str,
     # in `finally` — a crash leaves only a stale sentinel, ignored past its TTL.
     _set_updating(config_dir)
     try:
-        rc = _uv_install(staged_wheel)
+        rc = _uv_install(staged_wheel, config_dir=config_dir)
         if rc != 0:
-            _log(config_dir, f"install failed rc={rc} (venv still locked after retries)")
+            _log(config_dir, f"install failed rc={rc} (see reason above)")
             _write_status(config_dir, success=False,
-                         reason=f"windows deferred install rc={rc} (venv locked)")
+                         reason=f"windows deferred install failed rc={rc}")
             return 2
 
         if _installed_version_ok(expected_version):
@@ -290,7 +312,7 @@ def run(parent_pid: int, staged_wheel: str, expected_version: str,
         # Verify failed → roll back to the last-known-good cached wheel if we have one.
         _log(config_dir, "verify failed after install")
         if rollback_wheel and os.path.exists(rollback_wheel):
-            rb = _uv_install(rollback_wheel)
+            rb = _uv_install(rollback_wheel, config_dir=config_dir)
             _log(config_dir, f"rollback to {rollback_wheel} rc={rb}")
         else:
             _log(config_dir, "no rollback wheel available; leaving as-is")

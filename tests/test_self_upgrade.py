@@ -1244,3 +1244,26 @@ def test_spawn_windows_deferred_update_no_interpreter_fails_safe(monkeypatch, tm
     info = UpdateInfo(installed="0.72.1", latest="0.72.2", download_url="http://s/x.whl")
     assert su._spawn_windows_deferred_update(info, {}, quiet=True) is False
     assert called["popen"] == 0  # never spawned
+
+
+def test_staged_wheel_name_keeps_real_pep427_filename():
+    # uv tool install parses the wheel filename; the server's download_url ends
+    # in the valid `name-version-tags.whl`, so we stage under THAT name — a bare
+    # `<version>.whl` is rejected ("Must have a version") and broke every
+    # Windows deferred update.
+    from cli.commands.self_upgrade import _staged_wheel_name
+
+    url = "https://s.example/cli/wheel/agnes_the_ai_analyst-0.72.4-py3-none-any.whl"
+    assert _staged_wheel_name(url, "0.72.4") == "agnes_the_ai_analyst-0.72.4-py3-none-any.whl"
+
+
+def test_staged_wheel_name_falls_back_on_degenerate_url():
+    from cli.commands.self_upgrade import _staged_wheel_name
+
+    # Missing URL, or a URL that ends in the invalid bare `<version>.whl`, both
+    # fall back to a constructed PEP 427-valid name.
+    assert _staged_wheel_name(None, "0.72.4") == "agnes_the_ai_analyst-0.72.4-py3-none-any.whl"
+    assert (
+        _staged_wheel_name("https://s.example/cli/wheel/0.72.4.whl", "0.72.4")
+        == "agnes_the_ai_analyst-0.72.4-py3-none-any.whl"
+    )
