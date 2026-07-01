@@ -1507,7 +1507,7 @@ async def catalog_table_detail(
                     }
                 )
     except Exception:
-        logger.warning("could not load profile for %s", table_id)
+        logger.warning("could not load profile for %s", table_id, exc_info=True)
 
     # Fallback: when table_profiles has no row (table never synced, or
     # profile was wiped), introspect schema via the same code path the
@@ -1531,7 +1531,7 @@ async def catalog_table_detail(
                     }
                 )
         except Exception:
-            logger.warning("schema introspection fallback failed for %s", table_id)
+            logger.warning("schema introspection fallback failed for %s", table_id, exc_info=True)
 
     last_sync_state = sync_state_repo().get_table_state(table_id) or {}
 
