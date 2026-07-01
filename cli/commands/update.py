@@ -342,6 +342,23 @@ def update(
             report.append({"stage": "config", "status": "error",
                            "detail": f"{type(exc).__name__}: {exc}"})
 
+        # Legacy-fleet backfill of the `workspace_root` config anchor.
+        # Workspaces initialized before that key existed relied on the old
+        # `agnes self-upgrade` SessionStart hook, whose Typer callback called
+        # `_maybe_backfill_workspace_root()`. `agnes update` is now the SOLE
+        # SessionStart entry and reaches `_do_install...` directly (via
+        # `_step_cli`), bypassing that backfill — so without this the anchor
+        # never lands and the SessionEnd `agnes push --quiet` silently uploads
+        # nothing on those clients (push reads `workspace_root` from config
+        # only; it does NOT fall back to AGNES_LOCAL_DIR). Best-effort: the
+        # helper is guarded by the `.claude/init-complete` sentinel, writes
+        # ONLY when unset, and swallows its own errors — no network, no lock.
+        try:
+            from cli.commands.self_upgrade import _maybe_backfill_workspace_root
+            _maybe_backfill_workspace_root()
+        except Exception:  # noqa: BLE001 — best-effort, mirror _run_step
+            pass
+
         # Step 1 — CLI binary (workspace-independent; always runs).
         _run_step("cli", lambda: _step_cli(quiet=quiet, report=report), report)
 

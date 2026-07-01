@@ -9,14 +9,16 @@ Three call paths share the same code:
     change. This is what the `/update-agnes-plugins` slash command runs
     inside Claude Code so the user sees install/update progress in the
     transcript.
-  - `agnes refresh-marketplace --check` — SessionStart hook context.
-    Lightweight detector: `git ls-remote origin HEAD` only (no fetch,
-    no reset, no plugin install/update side effects), compares the
-    remote HEAD SHA against the local `HEAD` SHA, emits a Claude Code
-    hook JSON message pointing the user at `/update-agnes-plugins`
-    when they differ. Silent otherwise. ls-remote is ~0.5–1 s vs ~8 s
-    for fetch — matters because every Claude Code session start in
-    every workspace fires this hook.
+  - `agnes refresh-marketplace --check` — drift detector used by
+    `agnes update`. Lightweight: `git ls-remote origin HEAD` only (no
+    fetch, no reset, no plugin install/update side effects), compares the
+    remote HEAD SHA against the local `HEAD` SHA. On drift it emits a
+    Claude Code hook JSON hint pointing at `/update-agnes-plugins` and
+    exits `_EXIT_MARKETPLACE_DRIFT`. `agnes update` (the single SessionStart
+    hook) calls this IN-PROCESS and maps that exit code to a full reconcile,
+    so drift converges automatically; a manual `--check` just surfaces the
+    hint and the non-zero exit. ls-remote is ~0.5-1 s vs ~8 s for fetch —
+    matters because `agnes update` runs on every Claude Code session start.
 
 Reconcile (default + --bootstrap paths) is version-aware (install
 missing / update on version diff / skip on match). Server-side stack
@@ -97,14 +99,14 @@ def refresh_marketplace(
     check: bool = typer.Option(
         False, "--check",
         help=(
-            "Detect-only mode for the SessionStart hook. Runs "
-            "`git ls-remote origin HEAD` and compares the returned SHA "
-            "with local HEAD. When they differ, emits a Claude Code "
-            "hook JSON message hinting the user at "
-            "`/update-agnes-plugins`. No `git fetch`, no `git reset`, "
-            "no plugin install/update side effects — fast, invisible "
-            "when nothing changed, fully recoverable interactively "
-            "via the slash command."
+            "Detect-only mode used by `agnes update` to decide whether to "
+            "reconcile. Runs `git ls-remote origin HEAD` and compares the "
+            "returned SHA with local HEAD. When they differ, emits a Claude "
+            "Code hook JSON hint at `/update-agnes-plugins` and exits with the "
+            "drift code. No `git fetch`, no `git reset`, no plugin "
+            "install/update side effects. On drift, `agnes update` reconciles "
+            "automatically; a manual `--check` just emits the hint and a "
+            "non-zero exit."
         ),
     ),
     bootstrap: bool = typer.Option(

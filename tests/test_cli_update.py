@@ -224,6 +224,32 @@ def test_default_mode_converges_and_writes_report(monkeypatch, tmp_path):
     assert ws_step["status"] == "refreshed"
 
 
+def test_update_backfills_workspace_root_for_legacy_workspace(monkeypatch, tmp_path):
+    """`agnes update` (now the sole SessionStart entry) must backfill the
+    `workspace_root` anchor that the retired `agnes self-upgrade` hook used to
+    write — otherwise SessionEnd `agnes push --quiet` silently uploads nothing
+    on legacy workspaces initialized before the config key existed."""
+    workspace = tmp_path / "ws"
+    (workspace / ".claude").mkdir(parents=True)
+    (workspace / ".claude" / "init-complete").write_text("x\n", encoding="utf-8")
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(workspace))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "cfg"))
+
+    # CLI already current; no token → workspace steps skip. The backfill runs
+    # before step 1 regardless of token.
+    import cli.commands.self_upgrade as su
+    monkeypatch.setattr(su, "_resolve_info", lambda force=False: None)
+    monkeypatch.setattr(upd, "get_server_url", lambda: "http://server")
+    monkeypatch.setattr(upd, "get_token", lambda: None)
+
+    from cli.config import get_workspace_root
+    assert get_workspace_root() is None  # precondition: anchor missing
+
+    result = runner.invoke(update_app, ["--quiet"])
+    assert result.exit_code == 0, result.output
+    assert get_workspace_root() == str(workspace.resolve())  # backfilled
+
+
 # --- settings.json self-heal ----------------------------------------------------
 
 
