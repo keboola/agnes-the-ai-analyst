@@ -1220,7 +1220,7 @@ def test_spawn_windows_deferred_update_builds_detached_popen(monkeypatch, tmp_pa
 
     monkeypatch.setattr("cli.commands.self_upgrade.subprocess.Popen", fake_popen)
     info = UpdateInfo(installed="0.72.1", latest="0.72.2",
-                      download_url="http://s/agnes-0.72.2.whl")
+                      download_url="http://s/agnes_the_ai_analyst-0.72.2-py3-none-any.whl")
 
     ok = su._spawn_windows_deferred_update(info, {}, quiet=True)
     assert ok is True
@@ -1230,7 +1230,9 @@ def test_spawn_windows_deferred_update_builds_detached_popen(monkeypatch, tmp_pa
     assert argv[4] == "0.72.2"       # expected version
     assert argv[-1] == ""            # no rollback wheel (first upgrade)
     assert captured["kw"]["creationflags"] & 0x00000008  # DETACHED_PROCESS
-    assert (tmp_path / "wheels" / "0.72.2.whl").exists()  # wheel staged for the helper
+    # Staged under the real PEP 427 wheel filename (NOT a bare "<version>.whl",
+    # which `uv tool install` rejects with "Must have a version" — that was the bug).
+    assert (tmp_path / "wheels" / "agnes_the_ai_analyst-0.72.2-py3-none-any.whl").exists()
 
 
 @pytest.mark.no_routing_override
