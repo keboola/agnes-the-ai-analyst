@@ -472,6 +472,24 @@ def test_step_cli_defers_on_preflight(monkeypatch):
 
     assert report[0]["stage"] == "cli"
     assert report[0]["status"] == "deferred"
+    assert "2.0.0 -> 2.1.0" in report[0]["detail"]  # names the version it would install
+
+
+def test_step_cli_reports_staged_with_version(monkeypatch):
+    """rc == _INSTALL_STAGED (Windows deferred) → status 'staged', and the detail
+    names the target version so the log says WHAT is being installed."""
+    import cli.commands.self_upgrade as su
+
+    monkeypatch.setattr(su, "_resolve_info", lambda force=False: _update_info())
+    monkeypatch.setattr(su, "_do_install_with_smoke_and_rollback",
+                        lambda info, quiet=False: su._INSTALL_STAGED)
+
+    report: list[dict] = []
+    upd._step_cli(quiet=True, report=report)
+
+    assert report[0]["stage"] == "cli"
+    assert report[0]["status"] == "staged"
+    assert "2.0.0 -> 2.1.0" in report[0]["detail"]
 
 
 # --- _write_report rotation -----------------------------------------------------
