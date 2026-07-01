@@ -18,6 +18,21 @@ def test_cli_install_script_bakes_server_url(monkeypatch):
     assert "pip install" in body or "uv tool install" in body
 
 
+def test_cli_install_script_merges_config_not_clobber(monkeypatch):
+    """The generated installer must MERGE config.yaml (preserve workspace_root
+    and other keys on a re-run), never truncate it with `cat >`."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app, base_url="https://agnes.example.com")
+    body = client.get("/cli/install.sh", headers={"host": "agnes.example.com"}).text
+    # No truncating write to config.yaml.
+    assert 'cat > "$CFG_DIR/config.yaml"' not in body
+    # Uses a merge: strip any existing server line, then append the new one.
+    assert "grep -v '^server:'" in body
+    assert 'printf \'server: %s\\n\' "$SERVER"' in body
+
+
 def test_cli_download_returns_wheel_or_404(monkeypatch):
     from fastapi.testclient import TestClient
     from app.main import app
