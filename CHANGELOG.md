@@ -12,6 +12,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 - `/me/ai-connector` now includes a collapsible, per-agent setup guide directly under the connector URL. A button picker (Claude Desktop, Claude.ai, Cursor, VS Code / GitHub Copilot, ChatGPT) shows only the selected agent's steps; Cursor and VS Code include copyable config snippets. Replaces the old static client chips and corrects the list to OAuth-capable agents only (drops Gemini and Microsoft Copilot). Collapsed by default.
+- `agnes catalog --metrics --show` now prints a `Notes:` section when the metric has notes — previously only visible via `--show --json`. `sql_variants` stays `--json`-only (a single variant can run 15+ lines of SQL); notes already flag when one exists. The generated workspace `CLAUDE.md` Metrics Workflow gained a step pointing analysts to `Notes:` and to `--json` when a note references a variant.
 
 ### Changed
 

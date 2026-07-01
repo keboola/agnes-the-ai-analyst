@@ -285,3 +285,46 @@ class TestCatalogMetrics:
         # admin-only metric authoring: import / export / validate.
         assert "import" in result.output
         assert "validate" in result.output
+
+    def test_show_metric_prints_notes(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "id": "sales_revenue/new_arr",
+            "name": "new_arr",
+            "notes": [
+                "Includes only companies in their FIRST month of revenue",
+                "Has pre-built sql_variant(s) `by_company` - retrieve via --json",
+            ],
+        }
+        with patch("cli.commands.catalog.api_get", return_value=mock_resp):
+            result = runner.invoke(
+                app, ["catalog", "--metrics", "--show", "sales_revenue/new_arr"]
+            )
+        assert result.exit_code == 0
+        assert "Notes:" in result.output
+        assert "Has pre-built sql_variant(s) `by_company` - retrieve via --json" in result.output
+
+    def test_show_metric_omits_notes_when_absent(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "finance/mrr", "name": "mrr"}
+        with patch("cli.commands.catalog.api_get", return_value=mock_resp):
+            result = runner.invoke(app, ["catalog", "--metrics", "--show", "finance/mrr"])
+        assert result.exit_code == 0
+        assert "Notes:" not in result.output
+
+    def test_show_metric_human_output_never_prints_sql_variants(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "id": "sales_revenue/new_arr",
+            "name": "new_arr",
+            "sql_variants": '{"by_company": "SELECT 1"}',
+        }
+        with patch("cli.commands.catalog.api_get", return_value=mock_resp):
+            result = runner.invoke(
+                app, ["catalog", "--metrics", "--show", "sales_revenue/new_arr"]
+            )
+        assert result.exit_code == 0
+        assert "sql_variants" not in result.output.lower()
