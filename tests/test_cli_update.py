@@ -142,10 +142,49 @@ def test_marketplace_skips_full_when_no_drift(monkeypatch, tmp_path):
         raise typer.Exit(0)  # no drift
 
     monkeypatch.setattr(rm, "refresh_marketplace", fake_refresh)
+    # No local manifest to reassert from → the no-drift path stays a clean no-op.
+    monkeypatch.setattr(rm, "_read_marketplace_plugin_versions", lambda: None)
     report: list[dict] = []
     upd._step_marketplace(report=report)
     assert seq == [(True, False)]  # check only
     assert report[0]["status"] == "ok"
+
+
+def test_marketplace_reenables_plugins_when_settings_reset_no_drift(monkeypatch, tmp_path):
+    # No marketplace drift, but the workspace settings.json lost its
+    # enabledPlugins (step 2's template merge backed it up + rewrote it). The
+    # no-drift path must STILL reassert them from the local manifest, so the
+    # stack's installed plugins stay enabled in the workspace.
+    import json
+
+    import cli.commands.refresh_marketplace as rm
+
+    clone = tmp_path / "clone"
+    (clone / ".git").mkdir(parents=True)
+    monkeypatch.setattr("cli.lib.marketplace.CLONE_DIR", clone)
+
+    def fake_refresh(*, check, bootstrap):
+        raise typer.Exit(0)  # no drift
+
+    monkeypatch.setattr(rm, "refresh_marketplace", fake_refresh)
+    monkeypatch.setattr(rm, "_read_marketplace_plugin_versions",
+                        lambda: {"flea": "1.0", "finance-common": "2.0"})
+
+    ws = tmp_path / "ws"
+    (ws / ".claude").mkdir(parents=True)
+    # settings.json as left by the template merge: hooks/statusline, NO enabledPlugins.
+    (ws / ".claude" / "settings.json").write_text(
+        '{"hooks": {}, "statusLine": {"type": "command", "command": "agnes statusline"}}',
+        encoding="utf-8")
+    monkeypatch.chdir(ws)  # _enable_plugins_in_workspace_settings writes to cwd/.claude/settings.json
+
+    report: list[dict] = []
+    upd._step_marketplace(report=report)
+
+    assert report[0]["status"] == "enabled"
+    cfg = json.loads((ws / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert cfg["enabledPlugins"] == {"flea@agnes": True, "finance-common@agnes": True}
+    assert "hooks" in cfg and "statusLine" in cfg  # existing keys preserved
 
 
 # --- DEFAULT-mode end-to-end (no IWT) -------------------------------------------
