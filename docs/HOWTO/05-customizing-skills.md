@@ -47,7 +47,7 @@ After `add` / `remove`, run inside Claude Code:
 /update-agnes-plugins
 ```
 
-That installs/updates/removes the corresponding plugins in your local Claude Code session. The `SessionStart` hook detects pending updates automatically and surfaces a hint, so you can wait for the next session if you prefer.
+That installs/updates/removes the corresponding plugins in your local Claude Code session. On the next Claude Code session, `agnes update` (the `SessionStart` hook) detects pending marketplace updates and reconciles your plugins automatically - so you can also just wait for the next session instead of running the slash command.
 
 ---
 
