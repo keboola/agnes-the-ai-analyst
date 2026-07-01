@@ -37,6 +37,11 @@ _SENTINEL_ENV = "AGNES_SELF_UPGRADE_IN_PROGRESS"
 _INSTALL_OK = 0
 _INSTALL_FAIL = 1
 _INSTALL_DEFERRED = 2
+# Windows: the swap was handed to a detached helper that completes after this
+# process exits (a running .exe/.dll can't be replaced in place on Windows).
+# Like DEFERRED, the caller treats it as a benign no-op (exit 0, no failure
+# recorded here) — the helper records the real outcome to upgrade_status.json.
+_INSTALL_STAGED = 3
 
 
 class _Unreachable:
@@ -448,6 +453,74 @@ def _install_local_wheel(wheel: Path, *, method: str, quiet: bool, user: bool) -
     return subprocess.run(cmd, stdout=out).returncode
 
 
+def _helper_interpreter() -> Optional[str]:
+    """A Python interpreter OUTSIDE the agnes tool venv, to run the Windows
+    deferred-update helper. Using the target venv's own python would re-create
+    the self-lock the helper exists to avoid. ``sys.base_prefix`` is the base
+    interpreter the venv was built from (a uv-managed or system python in a
+    different tree). Returns its path, or None if none is usable (the caller
+    then fails safe rather than attempting the corrupting in-place swap)."""
+    exe = "python.exe" if sys.platform == "win32" else "python"
+    candidate = Path(sys.base_prefix) / exe
+    if candidate.exists() and not _path_is_within(candidate, Path(sys.prefix)):
+        return str(candidate)
+    return None
+
+
+def _spawn_windows_deferred_update(info: UpdateInfo, prior_meta: dict, *, quiet: bool) -> bool:
+    """Stage the new wheel and spawn a DETACHED helper that installs it after
+    this agnes process exits (Windows can't replace its own running files in
+    place). Returns True if the helper was spawned; False if we couldn't stage
+    safely — the caller then fails safe and never attempts the corrupting
+    in-place swap."""
+    if not shutil.which("uv"):
+        return False
+    py = _helper_interpreter()
+    if py is None:
+        return False
+    # Stage the NEW wheel into the cache dir so the detached helper (which runs
+    # after we've exited) has a local file to install from.
+    cache = _wheel_cache_dir()
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    staged = cache / f"{_sanitize_version(info.latest)}.whl"
+    with tempfile.TemporaryDirectory(prefix="agnes_stage.") as td:
+        dl = _download_wheel(info.download_url, Path(td), quiet=quiet)
+        if dl is None:
+            return False
+        try:
+            shutil.copyfile(dl, staged)
+        except OSError:
+            return False
+    # Copy the helper OUT of the venv before spawning: uv will wipe the venv,
+    # so a handle inside it would block removal / vanish mid-run.
+    src = Path(__file__).with_name("_win_deferred_update.py")
+    helper = Path(tempfile.gettempdir()) / f"agnes_deferred_update_{os.getpid()}.py"
+    try:
+        shutil.copyfile(src, helper)
+    except OSError:
+        return False
+    rollback = _cached_wheel_for(prior_meta)  # None on first-ever upgrade
+    argv = [py, str(helper), str(os.getpid()), str(staged), info.latest,
+            str(_config_dir()), str(rollback) if rollback else ""]
+    creationflags = 0
+    if sys.platform == "win32":
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW — the
+        # helper must outlive us and hold no console.
+        creationflags = 0x00000008 | 0x00000200 | 0x08000000
+    try:
+        subprocess.Popen(
+            argv, creationflags=creationflags, close_fds=True,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return False
+    return True
+
+
 def _smoke_test_new_binary(install_method: str, expected_version: str, *, user: bool = False) -> tuple[bool, str]:
     """Exec `<install-path>/agnes --version` and confirm it boots AND reports
     the expected version. Resolves the binary at the install-method-specific
@@ -591,6 +664,29 @@ def _do_install_with_smoke_and_rollback(
 
     is_user = bool(ctx.get("user"))
     smoke_method = "uv" if method == "uv-tool" else "pip"
+
+    # WINDOWS + uv-tool: a running .exe and its loaded DLLs are locked, so
+    # `uv tool install --force` fails removing the venv (os error 5) and a
+    # half-done in-place swap CORRUPTS the install. Hand the swap to a detached
+    # helper that runs AFTER this process exits (VS-Code-style deferred update).
+    # macOS/Linux fall through to the in-place path below (POSIX can unlink a
+    # running binary). If staging fails we do NOT attempt the corrupting swap.
+    if sys.platform == "win32" and method == "uv-tool":
+        if _spawn_windows_deferred_update(info, prior_meta, quiet=quiet):
+            if not quiet:
+                typer.echo(
+                    "agnes self-upgrade: update staged; it finishes after this "
+                    "process exits (Windows deferred install).", err=True,
+                )
+            return _INSTALL_STAGED
+        server = get_server_url().rstrip("/")
+        sys.stderr.write(
+            "agnes self-upgrade: could not stage the Windows deferred update; "
+            "leaving the current install untouched. Recover with "
+            f"curl -fsSL {server}/cli/install.sh | bash\n"
+        )
+        record_outcome(success=False, reason="windows: deferred-update staging failed")
+        return _INSTALL_FAIL
 
     # PREFLIGHT (unattended only): if we recorded a prior wheel but its cached
     # artifact is missing/corrupt, an install that then fails smoke could not be
@@ -757,10 +853,12 @@ def self_upgrade(
         # NOTE: `_do_install_with_smoke_and_rollback` records the outcome itself
         # (with a specific failure reason) at each terminal branch, so we do NOT
         # re-record here — a reason-less record would clobber the detailed one.
-        if rc == _INSTALL_DEFERRED:
-            # No install attempted (unattended run with no safe rollback
-            # artifact). This is NOT a failure — the counter is untouched; exit
-            # 0 and still refresh hooks. It retries next session.
+        if rc in (_INSTALL_DEFERRED, _INSTALL_STAGED):
+            # DEFERRED: unattended run with no safe rollback artifact — not
+            # attempted, retry next session. STAGED: handed to the Windows
+            # detached helper, which finishes after we exit and records the real
+            # outcome itself. Both are benign no-ops here: exit 0, do NOT touch
+            # the failure counter, still refresh hooks.
             _try_refresh_hooks(quiet=quiet)
             raise typer.Exit(0)
         if rc == _INSTALL_OK:
