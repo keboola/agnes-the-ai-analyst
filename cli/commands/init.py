@@ -552,8 +552,12 @@ def init(
     # clobber admin's content:
     #
     #   - Step 4: fetch /api/welcome → CLAUDE.md  (admin's repo CLAUDE.md wins)
-    #   - Step 5: settings.json defaults + install_claude_hooks +
-    #             install_claude_commands  (admin's repo settings.json wins)
+    #   - Step 5: default settings.json model/permissions SEED only
+    #             (admin's repo settings.json base wins). NOTE: Agnes-owned
+    #             hooks/statusLine and managed slash-commands
+    #             (install_claude_hooks + install_claude_commands) are NOT
+    #             skipped — they run in BOTH modes just below, re-asserted on
+    #             top of the template.
     #   - Step 6: write .claude/CLAUDE.local.md stub  (admin decides)
     #   - Step 8: render AGNES_WORKSPACE.md  (admin decides)
     #

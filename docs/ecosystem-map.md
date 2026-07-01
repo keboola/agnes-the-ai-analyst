@@ -217,8 +217,8 @@ button); the repo is cloned into `${DATA_DIR}/initial-workspace/`.
 | Default | Override |
 |---------|----------|
 | `CLAUDE.md` fetched from `/api/welcome` (Jinja2-rendered) | `workspace/CLAUDE.md` shipped verbatim |
-| `.claude/settings.json` seeded with `{model: sonnet, permissions, hooks}` | Whatever your repo ships |
-| Default `/agnes-private` + `/update-agnes-plugins` commands installed | Whatever your repo's `.claude/commands/` has |
+| `.claude/settings.json` seeded with `{model: sonnet, permissions, hooks}` | Your repo's settings.json base wins for the model/permissions SEED; Agnes still re-asserts its own hooks + statusLine on top (both modes) |
+| Default `/agnes-private` + `/update-agnes-plugins` commands installed | Your repo's commands, EXCEPT Agnes re-asserts its managed `/agnes-private` + `/update-agnes-plugins` in both modes |
 
 **What still happens regardless** (data-plane concerns, not skeleton):
 PAT verification, `agnes pull` of parquets + corporate-memory rules,
