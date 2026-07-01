@@ -5,6 +5,7 @@ smoke detection."""
 
 import os
 import sys
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -32,17 +33,22 @@ def _ensure_no_sentinel_leak(monkeypatch, request):
     sentinel before every test so a leaked value from a prior test doesn't
     produce a false-positive 'cleared on exit' assertion.
 
-    Also default ``_python_is_uv_tool_install`` to True so the bulk of
-    existing tests (which exercise the uv install path) keep passing
-    without each one having to mock the routing helper itself. Tests that
-    exercise the pip-fallback path flip it back to False explicitly. Unit
-    tests that exercise the helper *itself* opt out via
+    Also default ``_classify_install_method`` to the uv-tool path (and
+    ``_python_is_uv_tool_install`` to True) so the bulk of existing tests
+    (which exercise the uv install path) keep passing without each one having
+    to mock routing. Tests that exercise the pip path override
+    ``_classify_install_method`` to return ("venv", {}). Unit tests that
+    exercise the routing helpers *themselves* opt out via
     ``@pytest.mark.no_routing_override``."""
     monkeypatch.delenv("AGNES_SELF_UPGRADE_IN_PROGRESS", raising=False)
     if "no_routing_override" not in request.keywords:
         monkeypatch.setattr(
             "cli.commands.self_upgrade._python_is_uv_tool_install",
             lambda: True,
+        )
+        monkeypatch.setattr(
+            "cli.commands.self_upgrade._classify_install_method",
+            lambda: ("uv-tool", {}),
         )
     yield
 
@@ -108,7 +114,7 @@ def test_uv_path_when_uv_available():
 def test_pip_fallback_uses_sys_executable_not_user(monkeypatch):
     """pip path must target the running interpreter's venv, never --user."""
     monkeypatch.setattr(
-        "cli.commands.self_upgrade._python_is_uv_tool_install", lambda: False,
+        "cli.commands.self_upgrade._classify_install_method", lambda: ("venv", {}),
     )
     with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
          patch("cli.commands.self_upgrade.shutil.which", return_value=None), \
@@ -140,7 +146,7 @@ def test_uv_available_but_python_outside_uv_tools_uses_pip(monkeypatch):
     subsequent command output because self-upgrade reported success but
     the running binary never changed."""
     monkeypatch.setattr(
-        "cli.commands.self_upgrade._python_is_uv_tool_install", lambda: False,
+        "cli.commands.self_upgrade._classify_install_method", lambda: ("venv", {}),
     )
     # uv IS on PATH (otherwise the bug doesn't manifest — pip path would
     # be taken anyway). The fix's job is to route on whether the running
@@ -327,9 +333,10 @@ def test_smoke_pass_records_last_known_good_then_invalidates_cache():
          patch("cli.commands.self_upgrade.shutil.which", return_value="/usr/local/bin/uv"), \
          patch("cli.commands.self_upgrade.subprocess.run") as mock_run, \
          patch("cli.commands.self_upgrade._smoke_test_new_binary", return_value=_smoke_pass()), \
-         patch("cli.commands.self_upgrade._read_last_known_good", return_value=None), \
-         patch("cli.commands.self_upgrade._record_last_known_good",
-               side_effect=lambda url: call_order.append(("record", url))), \
+         patch("cli.commands.self_upgrade._read_last_known_good_meta", return_value={}), \
+         patch("cli.commands.self_upgrade._record_last_known_good_meta",
+               side_effect=lambda meta: call_order.append(("record", meta.get("download_url")))), \
+         patch("cli.commands.self_upgrade._record_wheel_cache", return_value={}), \
          patch("cli.commands.self_upgrade._invalidate_update_cache",
                side_effect=lambda: call_order.append(("invalidate", None))):
         mock_run.return_value = MagicMock(returncode=0)
@@ -348,7 +355,7 @@ def test_self_upgrade_propagates_sentinel_to_smoke_subprocess():
     """The sentinel is set in os.environ during the run and cleared in finally."""
     captured_envs = []
 
-    def _fake_smoke(method, expected_version):
+    def _fake_smoke(method, expected_version, *, user=False):
         env = {**os.environ, "AGNES_NO_UPDATE_CHECK": "1",
                "AGNES_SELF_UPGRADE_IN_PROGRESS": "1"}
         captured_envs.append(env)
@@ -557,45 +564,107 @@ def test_python_is_uv_tool_install_no_uv_on_path(monkeypatch):
 
 
 @pytest.mark.no_routing_override
-def test_python_is_uv_tool_install_sys_executable_under_uv_root(monkeypatch, tmp_path):
-    """`sys.executable` lives under `uv tool dir` → uv-tool install."""
+def test_python_is_uv_tool_install_sys_prefix_under_uv_root(monkeypatch, tmp_path):
+    """`sys.prefix` (the venv dir) lives under `uv tool dir` → uv-tool install."""
     from cli.commands import self_upgrade as su
     fake_uv_root = tmp_path / "uv" / "tools"
-    fake_python = fake_uv_root / "agnes-the-ai-analyst" / "bin" / "python"
-    fake_python.parent.mkdir(parents=True)
-    fake_python.touch()
+    venv_dir = fake_uv_root / "agnes-the-ai-analyst"
+    venv_dir.mkdir(parents=True)
     monkeypatch.setattr("cli.commands.self_upgrade.shutil.which",
                         lambda name: "/usr/local/bin/uv" if name == "uv" else None)
     monkeypatch.setattr(
         "cli.commands.self_upgrade.subprocess.run",
         lambda *a, **kw: MagicMock(returncode=0, stdout=f"{fake_uv_root}\n"),
     )
-    monkeypatch.setattr("cli.commands.self_upgrade.sys.executable", str(fake_python))
+    monkeypatch.setattr("cli.commands.self_upgrade.sys.prefix", str(venv_dir))
     assert su._python_is_uv_tool_install() is True
 
 
 @pytest.mark.no_routing_override
-def test_python_is_uv_tool_install_sys_executable_in_project_venv(monkeypatch, tmp_path):
-    """`sys.executable` is in a project venv outside uv's tool root →
-    not a uv-tool install (routes to pip). This is the bug scenario: uv
-    is installed (perhaps the user has other uv-managed tools) but agnes
-    came in via `pip install -e .` into a project venv."""
+def test_python_is_uv_tool_install_symlinked_prefix(monkeypatch, tmp_path):
+    """REGRESSION (#521): the venv's `bin/python` is a symlink to the base
+    interpreter OUTSIDE the uv tree. Detection must anchor on `sys.prefix`
+    (the real venv dir, under uv root) and return True. The old code did
+    `Path(sys.executable).resolve()`, which followed the symlink out to the
+    base interpreter → False → routed to pip → `No module named pip`.
+
+    Both `sys.prefix` and `sys.executable` are set so that reverting to the
+    `sys.executable`-based check re-breaks this test."""
     from cli.commands import self_upgrade as su
     fake_uv_root = tmp_path / "uv" / "tools"
-    fake_uv_root.mkdir(parents=True)
-    project_venv_python = tmp_path / "project" / ".venv" / "bin" / "python"
-    project_venv_python.parent.mkdir(parents=True)
-    project_venv_python.touch()
+    venv_dir = fake_uv_root / "agnes-the-ai-analyst"
+    (venv_dir / "bin").mkdir(parents=True)
+    outside_python = tmp_path / "homebrew" / "python3.12"
+    outside_python.parent.mkdir(parents=True)
+    outside_python.touch()
+    venv_python = venv_dir / "bin" / "python"
+    try:
+        venv_python.symlink_to(outside_python)
+    except (OSError, NotImplementedError):  # pragma: no cover — Windows w/o priv
+        pytest.skip("symlink creation not permitted on this platform")
     monkeypatch.setattr("cli.commands.self_upgrade.shutil.which",
                         lambda name: "/usr/local/bin/uv" if name == "uv" else None)
     monkeypatch.setattr(
         "cli.commands.self_upgrade.subprocess.run",
         lambda *a, **kw: MagicMock(returncode=0, stdout=f"{fake_uv_root}\n"),
     )
+    monkeypatch.setattr("cli.commands.self_upgrade.sys.prefix", str(venv_dir))
+    monkeypatch.setattr("cli.commands.self_upgrade.sys.executable", str(venv_python))
+    assert su._python_is_uv_tool_install() is True
+
+
+@pytest.mark.no_routing_override
+def test_python_is_uv_tool_install_sys_prefix_in_project_venv(monkeypatch, tmp_path):
+    """`sys.prefix` is a project venv outside uv's tool root → not a uv-tool
+    install (routes to pip). Bug scenario: uv is installed (other uv-managed
+    tools) but agnes came in via `pip install -e .` into a project venv."""
+    from cli.commands import self_upgrade as su
+    fake_uv_root = tmp_path / "uv" / "tools"
+    fake_uv_root.mkdir(parents=True)
+    project_venv = tmp_path / "project" / ".venv"
+    project_venv.mkdir(parents=True)
+    monkeypatch.setattr("cli.commands.self_upgrade.shutil.which",
+                        lambda name: "/usr/local/bin/uv" if name == "uv" else None)
     monkeypatch.setattr(
-        "cli.commands.self_upgrade.sys.executable", str(project_venv_python),
+        "cli.commands.self_upgrade.subprocess.run",
+        lambda *a, **kw: MagicMock(returncode=0, stdout=f"{fake_uv_root}\n"),
     )
+    monkeypatch.setattr("cli.commands.self_upgrade.sys.prefix", str(project_venv))
     assert su._python_is_uv_tool_install() is False
+
+
+@pytest.mark.no_routing_override
+def test_path_is_within_containment_and_siblings(tmp_path):
+    """`_path_is_within` is component-aware: a sibling with a shared prefix
+    string (`/a/bc` vs `/a/b`) is NOT contained."""
+    from cli.commands import self_upgrade as su
+    parent = tmp_path / "a" / "b"
+    assert su._path_is_within(parent / "c" / "d", parent) is True
+    assert su._path_is_within(parent, parent) is True
+    assert su._path_is_within(tmp_path / "a" / "bc", parent) is False
+
+
+@pytest.mark.no_routing_override
+def test_path_is_within_case_insensitive(monkeypatch):
+    """On a case-insensitive filesystem (Windows/macOS), containment folds
+    case. Simulate by monkeypatching normcase to lower-case."""
+    from cli.commands import self_upgrade as su
+    monkeypatch.setattr("cli.commands.self_upgrade.os.path.normcase", str.lower)
+    monkeypatch.setattr("cli.commands.self_upgrade.os.path.realpath", lambda s: s)
+    assert su._path_is_within(Path("/UV/Tools/Agnes"), Path("/uv/tools")) is True
+
+
+@pytest.mark.no_routing_override
+def test_path_is_within_cross_drive_is_false(monkeypatch):
+    """Different Windows drives make `os.path.commonpath` raise ValueError;
+    `_path_is_within` swallows it and returns False (routes to pip)."""
+    from cli.commands import self_upgrade as su
+
+    def _raise(_paths):
+        raise ValueError("Paths don't have the same drive")
+
+    monkeypatch.setattr("cli.commands.self_upgrade.os.path.commonpath", _raise)
+    assert su._path_is_within(Path("/x"), Path("/y")) is False
 
 
 @pytest.mark.no_routing_override
@@ -610,6 +679,279 @@ def test_python_is_uv_tool_install_uv_tool_dir_nonzero_exit(monkeypatch):
         lambda *a, **kw: MagicMock(returncode=1, stdout=""),
     )
     assert su._python_is_uv_tool_install() is False
+
+
+# ---------------------------------------------------------------------------
+# _classify_install_method — routing + refuse (FIX 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.no_routing_override
+def test_classify_editable_wins(monkeypatch):
+    """An editable checkout classifies as "editable" even inside a venv."""
+    from cli.commands import self_upgrade as su
+    monkeypatch.setattr("cli.commands.self_upgrade._is_editable_install", lambda: True)
+    assert su._classify_install_method() == ("editable", {})
+
+
+@pytest.mark.no_routing_override
+def test_classify_system_when_base_prefix(monkeypatch):
+    """No venv / uv / pipx / user → system (base == prefix)."""
+    from cli.commands import self_upgrade as su
+    monkeypatch.setattr("cli.commands.self_upgrade._is_editable_install", lambda: False)
+    monkeypatch.setattr("cli.commands.self_upgrade._python_is_uv_tool_install", lambda: False)
+    monkeypatch.setattr("cli.commands.self_upgrade._in_pipx_venv", lambda: False)
+    monkeypatch.setattr("cli.commands.self_upgrade._in_user_site", lambda: False)
+    monkeypatch.setattr("cli.commands.self_upgrade.sys.prefix", "/usr")
+    monkeypatch.setattr("cli.commands.self_upgrade.sys.base_prefix", "/usr")
+    assert su._classify_install_method() == ("system", {})
+
+
+@pytest.mark.no_routing_override
+def test_classify_user_site(monkeypatch):
+    """Not in a venv but package under the user site → ("user", {"user": True})."""
+    from cli.commands import self_upgrade as su
+    monkeypatch.setattr("cli.commands.self_upgrade._is_editable_install", lambda: False)
+    monkeypatch.setattr("cli.commands.self_upgrade._python_is_uv_tool_install", lambda: False)
+    monkeypatch.setattr("cli.commands.self_upgrade._in_pipx_venv", lambda: False)
+    monkeypatch.setattr("cli.commands.self_upgrade.sys.prefix", "/usr")
+    monkeypatch.setattr("cli.commands.self_upgrade.sys.base_prefix", "/usr")
+    monkeypatch.setattr("cli.commands.self_upgrade._in_user_site", lambda: True)
+    assert su._classify_install_method() == ("user", {"user": True})
+
+
+def test_self_upgrade_refuses_editable(monkeypatch):
+    """An editable install is refused: exit 1, no install subprocess runs."""
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade._classify_install_method", return_value=("editable", {})), \
+         patch("cli.commands.self_upgrade.subprocess.run") as mock_run:
+        result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 1
+        mock_run.assert_not_called()  # nothing installed
+
+
+def test_self_upgrade_refuses_system(monkeypatch):
+    """A system/base Python is refused: exit 1, no install subprocess runs."""
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade._classify_install_method", return_value=("system", {})), \
+         patch("cli.commands.self_upgrade.subprocess.run") as mock_run:
+        result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 1
+        mock_run.assert_not_called()
+
+
+def test_user_method_passes_user_flag(monkeypatch):
+    """method == user routes to pip with --user."""
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade._classify_install_method",
+               return_value=("user", {"user": True})), \
+         patch("cli.commands.self_upgrade.subprocess.run") as mock_run, \
+         patch("cli.commands.self_upgrade._smoke_test_new_binary", return_value=_smoke_pass()), \
+         patch("cli.commands.self_upgrade._read_last_known_good", return_value=None), \
+         patch("cli.commands.self_upgrade._record_last_known_good"), \
+         patch("cli.commands.self_upgrade._invalidate_update_cache"):
+        mock_run.return_value = MagicMock(returncode=0)
+        result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 0
+        pip_cmd = next(c.args[0] for c in mock_run.call_args_list if "pip" in c.args[0])
+        assert "--user" in pip_cmd
+
+
+def test_pipx_method_routes_pip_no_user(monkeypatch):
+    """method == pipx routes to pip WITHOUT --user (pipx venvs have pip)."""
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade._classify_install_method", return_value=("pipx", {})), \
+         patch("cli.commands.self_upgrade.subprocess.run") as mock_run, \
+         patch("cli.commands.self_upgrade._smoke_test_new_binary", return_value=_smoke_pass()), \
+         patch("cli.commands.self_upgrade._read_last_known_good", return_value=None), \
+         patch("cli.commands.self_upgrade._record_last_known_good"), \
+         patch("cli.commands.self_upgrade._invalidate_update_cache"):
+        mock_run.return_value = MagicMock(returncode=0)
+        result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 0
+        cmds = [c.args[0] for c in mock_run.call_args_list]
+        assert not any(cmd[:3] == ["uv", "tool", "install"] for cmd in cmds if len(cmd) >= 3)
+        pip_cmd = next(cmd for cmd in cmds if "pip" in cmd)
+        assert "--user" not in pip_cmd
+
+
+def test_install_with_pip_drops_no_deps(monkeypatch):
+    """The pip install must NOT pass --no-deps (so a dep bump resolves)."""
+    from cli.commands import self_upgrade as su
+    calls = []
+    monkeypatch.setattr(
+        "cli.commands.self_upgrade.subprocess.run",
+        lambda cmd, **kw: calls.append(cmd) or MagicMock(returncode=0),
+    )
+    assert su._install_with_pip("http://s/agnes.whl", quiet=True) == 0
+    pip_cmd = next(c for c in calls if "pip" in c)
+    assert "--no-deps" not in pip_cmd
+    assert "--force-reinstall" in pip_cmd
+    assert "--user" not in pip_cmd
+
+
+def test_install_with_pip_user_adds_user_flag(monkeypatch):
+    from cli.commands import self_upgrade as su
+    calls = []
+    monkeypatch.setattr(
+        "cli.commands.self_upgrade.subprocess.run",
+        lambda cmd, **kw: calls.append(cmd) or MagicMock(returncode=0),
+    )
+    assert su._install_with_pip("http://s/agnes.whl", quiet=True, user=True) == 0
+    pip_cmd = next(c for c in calls if "pip" in c)
+    assert "--user" in pip_cmd
+
+
+# ---------------------------------------------------------------------------
+# Local wheel cache / rollback-from-cache / preflight (FIX 3)
+# ---------------------------------------------------------------------------
+
+
+def test_record_and_cached_wheel_roundtrip(tmp_path):
+    from cli.commands import self_upgrade as su
+    src = tmp_path / "src.whl"
+    src.write_bytes(b"wheelbytes")
+    meta = su._record_wheel_cache("1.0.0", src)
+    assert meta["version"] == "1.0.0"
+    assert meta["wheel_filename"] == "1.0.0.whl"
+    assert meta["sha256"]
+    cached = su._cached_wheel_for(meta)
+    assert cached is not None and cached.exists()
+
+
+def test_cached_wheel_for_sha_mismatch_and_missing(tmp_path):
+    from cli.commands import self_upgrade as su
+    src = tmp_path / "src.whl"
+    src.write_bytes(b"good")
+    meta = su._record_wheel_cache("2.0.0", src)
+    # tamper with the cached copy → sha no longer matches → None
+    (su._wheel_cache_dir() / meta["wheel_filename"]).write_bytes(b"tampered")
+    assert su._cached_wheel_for(meta) is None
+    # missing file / empty meta → None
+    assert su._cached_wheel_for({"wheel_filename": "nope.whl", "sha256": "x"}) is None
+    assert su._cached_wheel_for({}) is None
+
+
+def test_wheel_cache_gc_keeps_last_two(tmp_path):
+    from cli.commands import self_upgrade as su
+    for v in ("1.0.0", "1.1.0", "1.2.0"):
+        src = tmp_path / f"{v}.whl"
+        src.write_bytes(v.encode())
+        su._record_wheel_cache(v, src)
+    remaining = {p.name for p in su._wheel_cache_dir().glob("*.whl")}
+    assert len(remaining) == 2, remaining
+    assert "1.2.0.whl" in remaining  # the just-cached one is always kept
+
+
+def test_read_last_known_good_backcompat(tmp_path):
+    from cli.commands import self_upgrade as su
+    su._record_last_known_good("http://s/agnes-1.0.0-py3-none-any.whl")
+    assert su._read_last_known_good() == "http://s/agnes-1.0.0-py3-none-any.whl"
+    assert su._read_last_known_good_meta()["download_url"].endswith(".whl")
+
+
+def test_successful_install_caches_wheel_and_records_sha(tmp_path):
+    """On smoke pass, the wheel is cached and last_known_good.json gets sha256."""
+    from cli.commands import self_upgrade as su
+
+    def fake_download(url, dest_dir, *, quiet):
+        p = Path(dest_dir) / "agnes.whl"
+        p.write_bytes(b"realwheel")
+        return p
+
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade.shutil.which", return_value="/usr/local/bin/uv"), \
+         patch("cli.commands.self_upgrade.subprocess.run", return_value=MagicMock(returncode=0)), \
+         patch("cli.commands.self_upgrade._smoke_test_new_binary", return_value=_smoke_pass()), \
+         patch("cli.commands.self_upgrade._read_last_known_good_meta", return_value={}), \
+         patch("cli.commands.self_upgrade._download_wheel", side_effect=fake_download), \
+         patch("cli.commands.self_upgrade._invalidate_update_cache"):
+        result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 0
+    meta = su._read_last_known_good_meta()
+    assert meta.get("wheel_filename") and meta.get("sha256")
+    assert su._cached_wheel_for(meta) is not None
+
+
+def test_rollback_uses_cached_wheel_not_url(tmp_path):
+    """Smoke fail with a valid cached prior wheel → rollback installs the LOCAL
+    cached wheel, never the (possibly-404) prior URL."""
+    from cli.commands import self_upgrade as su
+    src = tmp_path / "prior.whl"
+    src.write_bytes(b"priorwheel")
+    prior_meta = {"download_url": _PRIOR_URL, **su._record_wheel_cache("0.35.0", src)}
+    cached = su._cached_wheel_for(prior_meta)
+    assert cached is not None
+
+    installed = []
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade.shutil.which", return_value="/usr/local/bin/uv"), \
+         patch("cli.commands.self_upgrade.subprocess.run",
+               side_effect=lambda cmd, **kw: installed.append(cmd) or MagicMock(returncode=0)), \
+         patch("cli.commands.self_upgrade._smoke_test_new_binary", return_value=_smoke_fail()), \
+         patch("cli.commands.self_upgrade._read_last_known_good_meta", return_value=prior_meta):
+        result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 1
+        flat = [a for cmd in installed for a in cmd]
+        assert str(cached) in flat            # rolled back from the local cache
+        assert _PRIOR_URL not in flat          # never touched the prior URL
+
+
+def test_rollback_skipped_when_no_cache_and_no_url(tmp_path):
+    """Smoke fail, prior meta names a wheel whose cache is corrupt AND no URL →
+    rollback skipped, bootstrap recovery printed."""
+    from cli.commands import self_upgrade as su
+    src = tmp_path / "prior.whl"
+    src.write_bytes(b"priorwheel")
+    meta = su._record_wheel_cache("0.35.0", src)  # no download_url key
+    (su._wheel_cache_dir() / meta["wheel_filename"]).write_bytes(b"tampered")
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade.shutil.which", return_value="/usr/local/bin/uv"), \
+         patch("cli.commands.self_upgrade.subprocess.run", return_value=MagicMock(returncode=0)), \
+         patch("cli.commands.self_upgrade._smoke_test_new_binary", return_value=_smoke_fail()), \
+         patch("cli.commands.self_upgrade._read_last_known_good_meta", return_value=meta), \
+         patch("cli.commands.self_upgrade.get_server_url", return_value="http://server.test"):
+        result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 1
+        assert "no usable cached wheel" in result.stderr
+        assert "/cli/install.sh" in result.stderr
+
+
+def test_preflight_defers_unattended_when_artifact_missing(tmp_path):
+    """--quiet + prior meta names a wheel that's missing → defer (exit 0), no
+    install attempted, failure counter untouched."""
+    from cli.commands import self_upgrade as su
+    from cli import upgrade_status as us
+    us.record_outcome(False)
+    us.record_outcome(False)  # counter = 2
+    prior_meta = {"download_url": _PRIOR_URL, "version": "0.35.0",
+                  "wheel_filename": "0.35.0.whl", "sha256": "deadbeef"}  # file absent
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade.shutil.which", return_value="/usr/local/bin/uv"), \
+         patch("cli.commands.self_upgrade.subprocess.run") as mock_run, \
+         patch("cli.commands.self_upgrade._smoke_test_new_binary", return_value=_smoke_pass()), \
+         patch("cli.commands.self_upgrade._read_last_known_good_meta", return_value=prior_meta):
+        result = runner.invoke(app, ["self-upgrade", "--quiet"])
+        assert result.exit_code == 0
+        assert mock_run.call_count == 0            # nothing installed
+    assert us.consecutive_failures() == 2          # counter untouched by a defer
+
+
+def test_preflight_proceeds_first_ever_unattended(tmp_path):
+    """--quiet + NO prior meta (first-ever) → proceed; blocking would freeze
+    fresh installs."""
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade.shutil.which", return_value="/usr/local/bin/uv"), \
+         patch("cli.commands.self_upgrade.subprocess.run") as mock_run, \
+         patch("cli.commands.self_upgrade._smoke_test_new_binary", return_value=_smoke_pass()), \
+         patch("cli.commands.self_upgrade._read_last_known_good_meta", return_value={}), \
+         patch("cli.commands.self_upgrade._download_wheel", return_value=None), \
+         patch("cli.commands.self_upgrade._invalidate_update_cache"):
+        mock_run.return_value = MagicMock(returncode=0)
+        result = runner.invoke(app, ["self-upgrade", "--quiet"])
+        assert result.exit_code == 0
+        cmds = [c.args[0] for c in mock_run.call_args_list]
+        assert any(len(cmd) >= 3 and cmd[:3] == ["uv", "tool", "install"] for cmd in cmds)
 
 
 # ---------------------------------------------------------------------------
@@ -749,3 +1091,62 @@ def test_backfill_does_not_overwrite_existing_workspace_root(tmp_path, monkeypat
 
     _maybe_backfill_workspace_root()
     assert get_workspace_root() == "/already/set"
+
+
+# ---------------------------------------------------------------------------
+# Failure-reason persistence + surfacing (FIX 4)
+# ---------------------------------------------------------------------------
+
+
+def test_record_outcome_persists_and_clears_reason(tmp_path, monkeypatch):
+    """A failure with a reason persists last_failure_reason; a later success
+    clears it (and resets the counter)."""
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
+    from cli import upgrade_status as us
+
+    us.record_outcome(False, reason="smoke: exit 1: boom")
+    assert us.read_status()["last_failure_reason"] == "smoke: exit 1: boom"
+    us.record_outcome(True)
+    assert "last_failure_reason" not in us.read_status()
+    assert us.consecutive_failures() == 0
+
+
+def test_record_outcome_redacts_secret_in_reason(tmp_path, monkeypatch):
+    """A token embedded in the reason is scrubbed before it hits
+    upgrade_status.json (which is not 0600)."""
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
+    from cli import upgrade_status as us
+
+    secret_url = "smoke: exit 1: 404 for https://s/cli/wheel/x.whl?token=SEKRET12345&sig=abcdef"
+    us.record_outcome(False, reason=secret_url)
+    stored = us.read_status()["last_failure_reason"]
+    assert "SEKRET12345" not in stored
+    assert "[REDACTED]" in stored
+    assert len(stored) <= us._MAX_REASON_LEN
+
+
+def test_format_failure_notice_appends_reason(tmp_path, monkeypatch):
+    """The surfaced notice includes the recorded reason when present."""
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
+    from cli import upgrade_status as us
+
+    for _ in range(3):
+        us.record_outcome(False, reason="smoke: version mismatch")
+    notice = us.format_failure_notice()
+    assert "failed 3 times" in notice
+    assert "Last error: smoke: version mismatch" in notice
+
+
+def test_smoke_fail_records_reason_end_to_end(tmp_path, monkeypatch):
+    """A real smoke-fail self-upgrade persists a 'smoke:' reason."""
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
+    from cli import upgrade_status as us
+    with patch("cli.commands.self_upgrade.check", return_value=_outdated_info()), \
+         patch("cli.commands.self_upgrade.shutil.which", return_value="/usr/local/bin/uv"), \
+         patch("cli.commands.self_upgrade.subprocess.run", return_value=MagicMock(returncode=0)), \
+         patch("cli.commands.self_upgrade._smoke_test_new_binary", return_value=_smoke_fail()), \
+         patch("cli.commands.self_upgrade._read_last_known_good_meta", return_value={}):
+        result = runner.invoke(app, ["self-upgrade", "--quiet"])
+        assert result.exit_code == 1
+    reason = us.read_status().get("last_failure_reason", "")
+    assert reason.startswith("smoke:")
