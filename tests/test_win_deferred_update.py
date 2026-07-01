@@ -120,3 +120,14 @@ def test_run_clears_updating_sentinel_on_install_failure(monkeypatch, tmp_path):
 
     assert h.run(1, str(tmp_path / "x.whl"), "0.72.3", str(cfg), None) == 2
     assert not (cfg / "deferred-update.active").exists()
+
+
+def test_looks_like_lock_only_matches_real_locks():
+    # Real Windows file-lock errors are retried; anything else (a bad wheel
+    # filename, uv missing) must NOT be treated as a lock — otherwise it burns
+    # the whole retry budget mislabeled as "venv locked", which is exactly what
+    # hid the staged-wheel-filename bug.
+    assert h._looks_like_lock("failed to remove directory ...Scripts: Access is denied. (os error 5)")
+    assert h._looks_like_lock("cannot access the file because it is being used by another process")
+    assert not h._looks_like_lock('The wheel filename "0.72.4.whl" is invalid: Must have a version')
+    assert not h._looks_like_lock("")

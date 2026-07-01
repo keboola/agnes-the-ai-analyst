@@ -14,6 +14,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Optional, Union
+from urllib.parse import urlparse
 
 import typer
 
@@ -467,6 +468,22 @@ def _helper_interpreter() -> Optional[str]:
     return None
 
 
+def _staged_wheel_name(download_url: Optional[str], version: Optional[str]) -> str:
+    """A PEP 427-valid wheel filename for the locally-staged wheel.
+
+    ``uv tool install <file>`` parses the FILENAME (``name-version-<tags>.whl``)
+    and rejects a bare ``<version>.whl`` with "Must have a version" — so the
+    Windows deferred helper (which installs the staged wheel by path) must keep
+    the server's real wheel filename, e.g.
+    ``agnes_the_ai_analyst-0.72.4-py3-none-any.whl``. The server's
+    ``download_url`` already ends in that name; fall back to a constructed valid
+    name if it's somehow missing/degenerate."""
+    name = os.path.basename(urlparse(download_url or "").path)
+    if name.endswith(".whl") and "-" in name:
+        return name
+    return f"agnes_the_ai_analyst-{_sanitize_version(version or 'unknown')}-py3-none-any.whl"
+
+
 def _spawn_windows_deferred_update(info: UpdateInfo, prior_meta: dict, *, quiet: bool) -> bool:
     """Stage the new wheel and spawn a DETACHED helper that installs it after
     this agnes process exits (Windows can't replace its own running files in
@@ -485,7 +502,7 @@ def _spawn_windows_deferred_update(info: UpdateInfo, prior_meta: dict, *, quiet:
         cache.mkdir(parents=True, exist_ok=True)
     except OSError:
         return False
-    staged = cache / f"{_sanitize_version(info.latest)}.whl"
+    staged = cache / _staged_wheel_name(info.download_url, info.latest)
     with tempfile.TemporaryDirectory(prefix="agnes_stage.") as td:
         dl = _download_wheel(info.download_url, Path(td), quiet=quiet)
         if dl is None:
