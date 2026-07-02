@@ -112,9 +112,9 @@ def needs_field_update(data: dict) -> bool:
 
 def fetch_fields(base_url: str, auth: tuple[str, str], issue_key: str) -> dict | None:
     """
-    Fetch SLA fields for a single issue from Jira API.
+    Fetch configured refresh fields for a single issue from Jira API.
 
-    Returns dict with SLA field values, or None on failure.
+    Returns dict with field values, or None on failure.
     """
     url = f"{base_url}/issue/{issue_key}"
     params = {"fields": ",".join(configured_field_ids())}
@@ -139,11 +139,11 @@ def fetch_fields(base_url: str, auth: tuple[str, str], issue_key: str) -> dict |
             time.sleep(retry_after)
             return fetch_fields(base_url, auth, issue_key)
         else:
-            logger.warning(f"Failed to fetch SLA for {issue_key}: {response.status_code} {response.text[:200]}")
+            logger.warning(f"Failed to fetch fields for {issue_key}: {response.status_code} {response.text[:200]}")
             return None
 
     except httpx.RequestError as e:
-        logger.error(f"Request error fetching SLA for {issue_key}: {e}")
+        logger.error(f"Request error fetching fields for {issue_key}: {e}")
         return None
 
 
@@ -265,8 +265,7 @@ def main():
                 if needs_field_update(data):
                     needs_update += 1
                     fields = data.get("fields", {})
-                    sla_ids = configured_field_ids()
-                    frt = fields.get(sla_ids[0]) if sla_ids else None
+                    frt = fields.get(field_ids[0]) if field_ids else None
                     if isinstance(frt, dict) and "errorMessage" in frt:
                         has_error += 1
                     elif frt is None:
@@ -276,7 +275,7 @@ def main():
             except Exception:
                 needs_update += 1
 
-        logger.info(f"Already have valid SLA data: {has_valid}")
+        logger.info(f"Already have valid field data: {has_valid}")
         logger.info(f"Have permission error: {has_error}")
         logger.info(f"Have NULL/missing: {has_none}")
         logger.info(f"Total needing update: {needs_update}")
@@ -309,10 +308,10 @@ def main():
     elapsed = time.time() - start_time
 
     logger.info("=" * 60)
-    logger.info("SLA backfill completed!")
+    logger.info("Field backfill completed!")
     logger.info(f"Total files: {total}")
     logger.info(f"Updated: {stats['updated']}")
-    logger.info(f"Skipped (already had valid SLA): {stats['skipped']}")
+    logger.info(f"Skipped (already had valid field data): {stats['skipped']}")
     logger.info(f"Failed: {stats['failed']}")
     logger.info(f"Time: {elapsed:.1f}s")
     logger.info("=" * 60)
