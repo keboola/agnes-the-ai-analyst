@@ -19,6 +19,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+## [0.74.2] - 2026-07-02
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
 - Bump `PyJWT` minimum to 2.13.0 (lock: 2.12.1 → 2.13.0), resolving five Dependabot alerts against the auth-critical JWT dependency — GHSA-xgmm-8j9v-c9wx (high: public-key JWK accepted as HMAC secret), GHSA-w7vc-732c-9m39, GHSA-993g-76c3-p5m4, GHSA-jq35-7prp-9v3f, GHSA-fhv5-28vv-h8m8. Agnes only uses symmetric HS256 `encode`/`decode` (no `PyJWK`/`PyJWKClient`), so none of the advisories were directly exploitable here; this is defense-in-depth hygiene.
 
 ## [0.74.1] - 2026-07-02
