@@ -64,6 +64,7 @@ def bq_instance(monkeypatch):
     # above is enough — but reset cache to avoid a stale read poisoning
     # the test.
     from app.instance_config import reset_cache
+
     reset_cache()
     yield fake_cfg
     reset_cache()
@@ -87,9 +88,12 @@ def keboola_instance(monkeypatch):
         },
     }
     monkeypatch.setattr(
-        "app.instance_config.load_instance_config", lambda: fake_cfg, raising=False,
+        "app.instance_config.load_instance_config",
+        lambda: fake_cfg,
+        raising=False,
     )
     from app.instance_config import reset_cache
+
     reset_cache()
     yield fake_cfg
     reset_cache()
@@ -99,12 +103,14 @@ def keboola_instance(monkeypatch):
 def stub_bq_extractor(monkeypatch):
     """Replace rebuild_from_registry + SyncOrchestrator.rebuild with mocks
     so the API's post-register materialize doesn't try to hit real BQ."""
-    rebuild_mock = MagicMock(return_value={
-        "project_id": "my-test-project",
-        "tables_registered": 1,
-        "errors": [],
-        "skipped": False,
-    })
+    rebuild_mock = MagicMock(
+        return_value={
+            "project_id": "my-test-project",
+            "tables_registered": 1,
+            "errors": [],
+            "skipped": False,
+        }
+    )
     monkeypatch.setattr(
         "connectors.bigquery.extractor.rebuild_from_registry",
         rebuild_mock,
@@ -175,7 +181,7 @@ class TestBigQueryRegisterValidation:
         token = seeded_app["admin_token"]
         resp = c.post(
             "/api/admin/register-table",
-            json=_bq_payload(source_table='orders;DROP'),
+            json=_bq_payload(source_table="orders;DROP"),
             headers=_auth(token),
         )
         assert resp.status_code == 400
@@ -208,6 +214,7 @@ class TestBigQueryRegisterValidation:
         rebuild anyway, but registering a row that can never materialize
         is an operator footgun."""
         from app.instance_config import reset_cache
+
         monkeypatch.setattr(
             "app.instance_config.load_instance_config",
             lambda: {"data_source": {"type": "bigquery", "bigquery": {}}},
@@ -229,6 +236,7 @@ class TestBigQueryRegisterValidation:
 
     def test_malformed_project_id_returns_400(self, seeded_app, monkeypatch, stub_bq_extractor):
         from app.instance_config import reset_cache
+
         monkeypatch.setattr(
             "app.instance_config.load_instance_config",
             lambda: {
@@ -340,7 +348,10 @@ class TestBigQueryRegisterMaterialize:
     and asserting they fired."""
 
     def test_register_invokes_rebuild_and_orchestrator(
-        self, seeded_app, bq_instance, stub_bq_extractor,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
     ):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -357,7 +368,10 @@ class TestBigQueryRegisterMaterialize:
         assert stub_bq_extractor["orchestrator"].rebuild.called, "orchestrator.rebuild not called"
 
     def test_register_returns_200_with_view_name_on_sync_success(
-        self, seeded_app, bq_instance, stub_bq_extractor,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
     ):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -422,6 +436,7 @@ class TestBigQueryPrecheck:
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         from google.api_core import exceptions as google_exc
+
         fake_client = MagicMock()
         fake_client.get_table.side_effect = google_exc.NotFound("missing")
         with patch("google.cloud.bigquery.Client", return_value=fake_client):
@@ -437,6 +452,7 @@ class TestBigQueryPrecheck:
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         from google.api_core import exceptions as google_exc
+
         fake_client = MagicMock()
         fake_client.get_table.side_effect = google_exc.Forbidden("nope")
         with patch("google.cloud.bigquery.Client", return_value=fake_client):
@@ -535,6 +551,7 @@ class TestRegistryAuditLog:
 
     def _list_audit(self, conn, action):
         from src.repositories.audit import AuditRepository
+
         rows, _ = AuditRepository(conn).query(action=action, limit=10)
         return rows
 
@@ -549,13 +566,13 @@ class TestRegistryAuditLog:
         assert resp.status_code == 201
 
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             rows = self._list_audit(conn, "register_table")
         finally:
             conn.close()
-        assert any(r["resource"] == "kb_aud" for r in rows), \
-            f"register_table audit entry not found in {rows}"
+        assert any(r["resource"] == "kb_aud" for r in rows), f"register_table audit entry not found in {rows}"
 
     def test_register_bq_writes_audit_entry(self, seeded_app, bq_instance, stub_bq_extractor):
         c = seeded_app["client"]
@@ -563,6 +580,7 @@ class TestRegistryAuditLog:
         c.post("/api/admin/register-table", json=_bq_payload(name="bq_aud"), headers=_auth(token))
 
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             rows = self._list_audit(conn, "register_table")
@@ -581,14 +599,17 @@ class TestRegistryAuditLog:
         path runs `model_dump` so we can't test via the wire. Instead test
         the helper directly."""
         from app.api.admin import _sanitize_for_audit
-        out = _sanitize_for_audit({
-            "name": "x",
-            "api_token": "hunter2",
-            "bot_secret": "abc",
-            "primary_key": ["id"],
-            "description": "raw description stays raw",
-            "password": "p",
-        })
+
+        out = _sanitize_for_audit(
+            {
+                "name": "x",
+                "api_token": "hunter2",
+                "bot_secret": "abc",
+                "primary_key": ["id"],
+                "description": "raw description stays raw",
+                "password": "p",
+            }
+        )
         assert out["name"] == "x"
         assert out["api_token"] == "***"
         assert out["bot_secret"] == "***"
@@ -612,6 +633,7 @@ class TestRegistryAuditLog:
         assert resp.status_code == 200, resp.text
 
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             rows = self._list_audit(conn, "update_table")
@@ -631,6 +653,7 @@ class TestRegistryAuditLog:
         assert resp.status_code == 204
 
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             rows = self._list_audit(conn, "unregister_table")
@@ -656,6 +679,7 @@ class TestRebuildFromRegistry:
         )
         # Empty registry — get_system_db returns the test DB, fresh.
         from connectors.bigquery import extractor as bq
+
         fake_init = MagicMock()
         monkeypatch.setattr(bq, "init_extract", fake_init)
 
@@ -715,12 +739,14 @@ class TestRebuildFromRegistry:
         # call, not on monkeypatch's restore — so monkeypatch.setattr alone
         # isn't sufficient.
         from app.instance_config import reset_cache
+
         reset_cache()
         monkeypatch.setattr(
             "config.loader.load_instance_config",
             lambda: {"data_source": {"type": "bigquery", "bigquery": {}}},
         )
         from connectors.bigquery import extractor as bq
+
         result = bq.rebuild_from_registry()
         assert result["project_id"] == ""
         assert result["errors"]
@@ -761,6 +787,7 @@ class TestAdminTablesUI:
 
     def test_renders_keboola_fields_when_data_source_keboola(self, seeded_app, monkeypatch):
         from app.instance_config import reset_cache
+
         monkeypatch.setattr(
             "app.instance_config.load_instance_config",
             lambda: {"data_source": {"type": "keboola"}},
@@ -822,6 +849,7 @@ class TestCliRegisterTableDryRun:
     def test_dry_run_calls_precheck_endpoint(self, monkeypatch, tmp_path):
         from typer.testing import CliRunner
         from cli.main import app
+
         runner = CliRunner()
 
         captured = {}
@@ -853,13 +881,21 @@ class TestCliRegisterTableDryRun:
         monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         with patch("cli.commands.admin.api_post", side_effect=fake_post):
-            result = runner.invoke(app, [
-                "admin", "register-table", "orders",
-                "--source-type", "bigquery",
-                "--bucket", "analytics",
-                "--source-table", "orders",
-                "--dry-run",
-            ])
+            result = runner.invoke(
+                app,
+                [
+                    "admin",
+                    "register-table",
+                    "orders",
+                    "--source-type",
+                    "bigquery",
+                    "--bucket",
+                    "analytics",
+                    "--source-table",
+                    "orders",
+                    "--dry-run",
+                ],
+            )
         assert result.exit_code == 0, result.output
         assert captured["path"] == "/api/admin/register-table/precheck"
         # No DB write happened (we only mocked api_post).
@@ -871,6 +907,7 @@ class TestCliRegisterTableDryRun:
     def test_dry_run_failure_exits_nonzero(self, monkeypatch, tmp_path):
         from typer.testing import CliRunner
         from cli.main import app
+
         runner = CliRunner()
 
         monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
@@ -879,13 +916,21 @@ class TestCliRegisterTableDryRun:
             "cli.commands.admin.api_post",
             return_value=self._resp(404, {"detail": "BigQuery table not found"}, "404"),
         ):
-            result = runner.invoke(app, [
-                "admin", "register-table", "missing",
-                "--source-type", "bigquery",
-                "--bucket", "analytics",
-                "--source-table", "missing",
-                "--dry-run",
-            ])
+            result = runner.invoke(
+                app,
+                [
+                    "admin",
+                    "register-table",
+                    "missing",
+                    "--source-type",
+                    "bigquery",
+                    "--bucket",
+                    "analytics",
+                    "--source-table",
+                    "missing",
+                    "--dry-run",
+                ],
+            )
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
 
@@ -893,6 +938,7 @@ class TestCliRegisterTableDryRun:
         """Backwards compat — the existing flag set unchanged."""
         from typer.testing import CliRunner
         from cli.main import app
+
         runner = CliRunner()
 
         monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
@@ -905,11 +951,18 @@ class TestCliRegisterTableDryRun:
             return self._resp(201, {"id": "x", "name": "x", "status": "registered"})
 
         with patch("cli.commands.admin.api_post", side_effect=fake_post):
-            result = runner.invoke(app, [
-                "admin", "register-table", "orders",
-                "--source-type", "keboola",
-                "--bucket", "in.c-crm",
-            ])
+            result = runner.invoke(
+                app,
+                [
+                    "admin",
+                    "register-table",
+                    "orders",
+                    "--source-type",
+                    "keboola",
+                    "--bucket",
+                    "in.c-crm",
+                ],
+            )
         assert result.exit_code == 0
         assert captured["path"] == "/api/admin/register-table"
 
@@ -917,6 +970,7 @@ class TestCliRegisterTableDryRun:
         """BQ register can return 202 when materialize exceeds the budget."""
         from typer.testing import CliRunner
         from cli.main import app
+
         runner = CliRunner()
 
         monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
@@ -926,12 +980,20 @@ class TestCliRegisterTableDryRun:
             "cli.commands.admin.api_post",
             return_value=self._resp(202, {"id": "x", "name": "x", "status": "accepted", "view_name": "x"}),
         ):
-            result = runner.invoke(app, [
-                "admin", "register-table", "orders",
-                "--source-type", "bigquery",
-                "--bucket", "analytics",
-                "--source-table", "orders",
-            ])
+            result = runner.invoke(
+                app,
+                [
+                    "admin",
+                    "register-table",
+                    "orders",
+                    "--source-type",
+                    "bigquery",
+                    "--bucket",
+                    "analytics",
+                    "--source-table",
+                    "orders",
+                ],
+            )
         assert result.exit_code == 0
         assert "background" in result.output.lower()
 
@@ -970,9 +1032,12 @@ class TestUpdateTableBigQueryValidation:
     flips source_type from keboola → bigquery (review IMPORTANT-4)."""
 
     def test_put_keboola_row_to_bq_with_bad_project_returns_4xx(
-        self, seeded_app, monkeypatch,
+        self,
+        seeded_app,
+        monkeypatch,
     ):
         from app.instance_config import reset_cache
+
         # Set a malformed project_id in instance.yaml so the BQ validator
         # rejects the merged row at PUT time. Configure both `bigquery`
         # AND `keboola` blocks so the test's initial Keboola register
@@ -1027,7 +1092,10 @@ class TestUpdateTableBigQueryValidation:
             reset_cache()
 
     def test_put_existing_bq_row_with_bad_bucket_returns_400(
-        self, seeded_app, bq_instance, stub_bq_extractor,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
     ):
         """An admin PATCH that mutates `bucket` on an existing BQ row to an
         unsafe identifier must be rejected before the registry write."""
@@ -1070,9 +1138,7 @@ class TestUpdateTableBigQueryValidation:
         assert resp.status_code == 201, resp.text
         # Read the timestamp the registry actually stored.
         listing = c.get("/api/admin/registry", headers=_auth(token)).json()
-        original_ts = next(
-            r for r in listing["tables"] if r["id"] == "preserve_ts"
-        )["registered_at"]
+        original_ts = next(r for r in listing["tables"] if r["id"] == "preserve_ts")["registered_at"]
         assert original_ts  # not None / empty
         # Edit the row — PUT a description change.
         resp = c.put(
@@ -1083,12 +1149,9 @@ class TestUpdateTableBigQueryValidation:
         assert resp.status_code == 200, resp.text
         # Re-read; registered_at must still match the original.
         listing2 = c.get("/api/admin/registry", headers=_auth(token)).json()
-        post_edit_ts = next(
-            r for r in listing2["tables"] if r["id"] == "preserve_ts"
-        )["registered_at"]
+        post_edit_ts = next(r for r in listing2["tables"] if r["id"] == "preserve_ts")["registered_at"]
         assert post_edit_ts == original_ts, (
-            f"registered_at changed across PUT: was {original_ts!r}, "
-            f"now {post_edit_ts!r}"
+            f"registered_at changed across PUT: was {original_ts!r}, now {post_edit_ts!r}"
         )
 
 
@@ -1103,16 +1166,19 @@ class TestAuditAllowlistMasking:
 
     def test_substring_match_does_not_mask_unknown_fields(self):
         from app.api.admin import _sanitize_for_audit
-        out = _sanitize_for_audit({
-            # All of these would have been masked by the old substring
-            # scan but should now flow through cleartext — they aren't
-            # actual credentials.
-            "not_actually_a_token": "literal value",
-            "primary_key": ["id"],
-            "primary_key_hash": "deadbeef",
-            "passwordless": "no creds here",
-            "secretly_an_int": 42,
-        })
+
+        out = _sanitize_for_audit(
+            {
+                # All of these would have been masked by the old substring
+                # scan but should now flow through cleartext — they aren't
+                # actual credentials.
+                "not_actually_a_token": "literal value",
+                "primary_key": ["id"],
+                "primary_key_hash": "deadbeef",
+                "passwordless": "no creds here",
+                "secretly_an_int": 42,
+            }
+        )
         assert out["not_actually_a_token"] == "literal value"
         assert out["primary_key"] == ["id"]
         assert out["primary_key_hash"] == "deadbeef"
@@ -1121,13 +1187,16 @@ class TestAuditAllowlistMasking:
 
     def test_allowlisted_secret_fields_are_masked(self):
         from app.api.admin import _sanitize_for_audit
-        out = _sanitize_for_audit({
-            "keboola_token": "kbc-1234",
-            "client_secret": "abc",
-            "smtp_password": "p",
-            "bot_token": "tg-1",
-            "name": "kept-raw",
-        })
+
+        out = _sanitize_for_audit(
+            {
+                "keboola_token": "kbc-1234",
+                "client_secret": "abc",
+                "smtp_password": "p",
+                "bot_token": "tg-1",
+                "name": "kept-raw",
+            }
+        )
         assert out["keboola_token"] == "***"
         assert out["client_secret"] == "***"
         assert out["smtp_password"] == "***"
@@ -1136,6 +1205,7 @@ class TestAuditAllowlistMasking:
 
     def test_empty_secret_fields_are_marked_empty(self):
         from app.api.admin import _sanitize_for_audit
+
         out = _sanitize_for_audit({"keboola_token": "", "client_secret": None})
         assert out["keboola_token"] == "<empty>"
         assert out["client_secret"] == "<empty>"
@@ -1177,9 +1247,7 @@ class TestBigQueryInitExtractLockSerialization:
         results = []
 
         def call():
-            results.append(
-                bq.init_extract(str(tmp_path / "extr"), "ok-project", [])
-            )
+            results.append(bq.init_extract(str(tmp_path / "extr"), "ok-project", []))
 
         threads = [threading.Thread(target=call) for _ in range(3)]
         for t in threads:
@@ -1189,8 +1257,7 @@ class TestBigQueryInitExtractLockSerialization:
 
         assert len(results) == 3
         assert inside["peak"] == 1, (
-            f"_INIT_EXTRACT_LOCK did not serialize concurrent callers — "
-            f"peak concurrency was {inside['peak']}"
+            f"_INIT_EXTRACT_LOCK did not serialize concurrent callers — peak concurrency was {inside['peak']}"
         )
 
 
@@ -1201,7 +1268,11 @@ class TestBigQueryRegisterFreshConnection:
     """
 
     def test_worker_opens_fresh_connection(
-        self, seeded_app, bq_instance, stub_bq_extractor, monkeypatch,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
+        monkeypatch,
     ):
         from src import db as _db
 
@@ -1217,6 +1288,7 @@ class TestBigQueryRegisterFreshConnection:
         # inside the worker function, so patching `src.db.get_system_db` is
         # sufficient — but also patch any cached binding for safety.
         import app.api.admin as admin_mod
+
         if hasattr(admin_mod, "get_system_db"):
             monkeypatch.setattr(admin_mod, "get_system_db", counting_get_system_db, raising=False)
 
@@ -1239,12 +1311,13 @@ class TestBigQueryRegisterFreshConnection:
         # threading the request conn through, but a separate handle implies
         # the worker did its own open).
         passed_conn = stub_bq_extractor["rebuild"].call_args.kwargs.get("conn")
-        assert passed_conn is not None, (
-            "rebuild_from_registry should receive a fresh worker-opened conn"
-        )
+        assert passed_conn is not None, "rebuild_from_registry should receive a fresh worker-opened conn"
 
     def test_worker_runs_after_request_returns(
-        self, seeded_app, bq_instance, monkeypatch,
+        self,
+        seeded_app,
+        bq_instance,
+        monkeypatch,
     ):
         """Force the synchronous budget to expire so the BackgroundTask path
         runs after the request connection is closed. The worker must still
@@ -1281,7 +1354,9 @@ class TestBigQueryRegisterFreshConnection:
 
         # Tighten the budget so the test is fast.
         monkeypatch.setattr(
-            "app.api.admin._BQ_SYNC_REGISTER_TIMEOUT_S", 0.05, raising=False,
+            "app.api.admin._BQ_SYNC_REGISTER_TIMEOUT_S",
+            0.05,
+            raising=False,
         )
 
         c = seeded_app["client"]
@@ -1301,8 +1376,7 @@ class TestBigQueryRegisterFreshConnection:
         while time.time() < deadline and slow_rebuild.call_count < 1:
             time.sleep(0.01)
         assert slow_rebuild.called, (
-            "rebuild_from_registry should run after request returns "
-            "(via BackgroundTask + daemon fallback)"
+            "rebuild_from_registry should run after request returns (via BackgroundTask + daemon fallback)"
         )
 
 
@@ -1320,6 +1394,7 @@ class TestRegisterTableHandlerIsSync:
     def test_handler_is_not_a_coroutine(self):
         import inspect
         from app.api.admin import register_table
+
         assert not inspect.iscoroutinefunction(register_table), (
             "register_table must be a sync def — see review BLOCKER 1 in #119. "
             "An async handler that blocks on threading.Event.wait() parks the "
@@ -1327,7 +1402,10 @@ class TestRegisterTableHandlerIsSync:
         )
 
     def test_event_loop_not_blocked_by_slow_register(
-        self, seeded_app, bq_instance, monkeypatch,
+        self,
+        seeded_app,
+        bq_instance,
+        monkeypatch,
     ):
         """A slow BQ register must not stall a parallel request.
 
@@ -1367,9 +1445,7 @@ class TestRegisterTableHandlerIsSync:
             )
             results[idx] = (r.status_code, time.time() - t0)
 
-        threads = [
-            threading.Thread(target=fire_register, args=(i,)) for i in range(2)
-        ]
+        threads = [threading.Thread(target=fire_register, args=(i,)) for i in range(2)]
         for t in threads:
             t.start()
         for t in threads:
@@ -1514,15 +1590,20 @@ class TestBigQueryRebuildErrorPropagation:
     in the BackgroundTask path must be logged at ERROR level (not warn)."""
 
     def test_synchronous_path_returns_500_on_rebuild_errors(
-        self, seeded_app, bq_instance, monkeypatch,
+        self,
+        seeded_app,
+        bq_instance,
+        monkeypatch,
     ):
         # Stub rebuild_from_registry to report errors but not raise.
-        rebuild_mock = MagicMock(return_value={
-            "project_id": "my-test-project",
-            "tables_registered": 0,
-            "errors": [{"table": "orders", "error": "auth failed"}],
-            "skipped": False,
-        })
+        rebuild_mock = MagicMock(
+            return_value={
+                "project_id": "my-test-project",
+                "tables_registered": 0,
+                "errors": [{"table": "orders", "error": "auth failed"}],
+                "skipped": False,
+            }
+        )
         monkeypatch.setattr(
             "connectors.bigquery.extractor.rebuild_from_registry",
             rebuild_mock,
@@ -1554,7 +1635,11 @@ class TestBigQueryRebuildErrorPropagation:
         assert "errprop" in names
 
     def test_background_path_logs_at_error_level(
-        self, seeded_app, bq_instance, monkeypatch, caplog,
+        self,
+        seeded_app,
+        bq_instance,
+        monkeypatch,
+        caplog,
     ):
         """Force timeout so the BackgroundTask wrapper runs, then assert
         the wrapper logs the rebuild errors at ERROR level."""
@@ -1582,7 +1667,9 @@ class TestBigQueryRebuildErrorPropagation:
         )
         # Tighten the budget so timeout kicks in fast.
         monkeypatch.setattr(
-            "app.api.admin._BQ_SYNC_REGISTER_TIMEOUT_S", 0.05, raising=False,
+            "app.api.admin._BQ_SYNC_REGISTER_TIMEOUT_S",
+            0.05,
+            raising=False,
         )
 
         c = seeded_app["client"]
@@ -1603,9 +1690,7 @@ class TestBigQueryRebuildErrorPropagation:
         # At least one ERROR-level entry must mention "bg-rebuild failure"
         # — so the operator's logs surface the failure even though the
         # 202 response can't carry the detail.
-        assert any("bg-rebuild failure" in m for m in msgs), (
-            f"expected ERROR-level rebuild-failure log; got: {msgs}"
-        )
+        assert any("bg-rebuild failure" in m for m in msgs), f"expected ERROR-level rebuild-failure log; got: {msgs}"
 
 
 class TestKeboolaModalUsesDiscoveredTableId:
@@ -1621,9 +1706,12 @@ class TestKeboolaModalUsesDiscoveredTableId:
     tests below were rewritten to gate the Phase F flow."""
 
     def test_phase_f_modal_separates_storage_id_from_display_name(
-        self, seeded_app, monkeypatch,
+        self,
+        seeded_app,
+        monkeypatch,
     ):
         from app.instance_config import reset_cache
+
         monkeypatch.setattr(
             "app.instance_config.load_instance_config",
             lambda: {"data_source": {"type": "keboola"}},
@@ -1652,13 +1740,16 @@ class TestKeboolaModalUsesDiscoveredTableId:
             reset_cache()
 
     def test_legacy_regtablename_payload_path_is_gone(
-        self, seeded_app, monkeypatch,
+        self,
+        seeded_app,
+        monkeypatch,
     ):
         """Regression check: the pre-fix payload line
         `source_table: document.getElementById('regTableName').value`
         must remain absent. C3 removed the entire legacy modal so no
         regTableName-based payload can be reintroduced."""
         from app.instance_config import reset_cache
+
         monkeypatch.setattr(
             "app.instance_config.load_instance_config",
             lambda: {"data_source": {"type": "keboola"}},
@@ -1673,10 +1764,7 @@ class TestKeboolaModalUsesDiscoveredTableId:
             finally:
                 c.cookies.clear()
             body = resp.text
-            assert (
-                "source_table: document.getElementById('regTableName').value"
-                not in body
-            )
+            assert "source_table: document.getElementById('regTableName').value" not in body
             # C3: the regTableName / regSourceTable inputs themselves are
             # gone with the legacy modal.
             assert 'id="regTableName"' not in body
@@ -1716,15 +1804,21 @@ class TestBigQueryUITwoStepFlow:
         assert idx >= 0
         # Take the next ~2000 chars as the function body — generous
         # enough for the small handler.
-        confirm_body = body[idx:idx + 3000]
+        confirm_body = body[idx : idx + 3000]
         assert "/api/admin/register-table'" in confirm_body
         assert "method: 'POST'" in confirm_body
 
 
 class TestCliDiscoverAndRegisterAcceptsAllSuccessCodes:
     """Review NIT 6: `agnes admin discover-and-register` must accept 200
-    (BQ sync OK) and 202 (BQ background) as success, not just 201.
-    Pre-fix every successful BQ row counted as an error."""
+    (BQ sync OK) and 202 (BQ background / deferred) as success, not just 201.
+    Pre-fix every successful BQ row counted as an error.
+
+    NB-3 (review fix): for BigQuery source_type, the command now sends
+    defer_rebuild=True on every register call, then issues a single
+    POST /api/admin/registry/rebuild at the end — turning N per-insert
+    rebuilds into one.
+    """
 
     def _resp(self, status_code=200, json_data=None, text=""):
         r = MagicMock()
@@ -1733,9 +1827,10 @@ class TestCliDiscoverAndRegisterAcceptsAllSuccessCodes:
         r.text = text
         return r
 
-    def _run(self, monkeypatch, status_code, body=None, source_type="bigquery"):
+    def _run(self, monkeypatch, status_code, body=None, source_type="bigquery", rebuild_status_code=200):
         from typer.testing import CliRunner
         from cli.main import app
+
         runner = CliRunner()
 
         # Need both KEBOOLA_* env vars for the gate; we mock httpx.get
@@ -1757,38 +1852,80 @@ class TestCliDiscoverAndRegisterAcceptsAllSuccessCodes:
         # `httpx` is imported locally inside discover_and_register, so we
         # patch the module-level attribute the function will resolve.
         import httpx as _httpx
+
         monkeypatch.setattr(_httpx, "get", fake_get)
 
         register_resp = self._resp(status_code, body or {"id": "orders", "name": "orders"})
-        with patch("cli.commands.admin.api_post", return_value=register_resp):
-            result = runner.invoke(app, [
-                "admin", "discover-and-register",
-                "--source-type", source_type,
-            ])
+        rebuild_resp = self._resp(rebuild_status_code, {"status": "ok"})
+
+        # BQ path: api_post is called twice — once for register-table and
+        # once for the final registry/rebuild. Use side_effect to return
+        # different responses for each call.
+        if source_type == "bigquery":
+            post_side_effect = [register_resp, rebuild_resp]
+            with patch("cli.commands.admin.api_post", side_effect=post_side_effect):
+                result = runner.invoke(
+                    app,
+                    [
+                        "admin",
+                        "discover-and-register",
+                        "--source-type",
+                        source_type,
+                    ],
+                )
+        else:
+            with patch("cli.commands.admin.api_post", return_value=register_resp):
+                result = runner.invoke(
+                    app,
+                    [
+                        "admin",
+                        "discover-and-register",
+                        "--source-type",
+                        source_type,
+                    ],
+                )
         return result
 
     def test_accepts_200_as_success(self, monkeypatch):
-        result = self._run(monkeypatch, 200, {
-            "id": "orders", "name": "orders", "status": "ok", "view_name": "orders",
-        })
+        result = self._run(
+            monkeypatch,
+            200,
+            {
+                "id": "orders",
+                "name": "orders",
+                "status": "ok",
+                "view_name": "orders",
+            },
+        )
         assert result.exit_code == 0, result.output
         assert "1 registered" in result.output
         assert "0 errors" in result.output
 
     def test_accepts_202_as_success(self, monkeypatch):
-        result = self._run(monkeypatch, 202, {
-            "id": "orders", "name": "orders", "status": "accepted", "view_name": "orders",
-        })
+        # 202 from register means defer_rebuild=True was honoured (row
+        # registered, rebuild deferred). The command then issues a single
+        # registry/rebuild call at the end.
+        result = self._run(
+            monkeypatch,
+            202,
+            {
+                "id": "orders",
+                "name": "orders",
+                "status": "registered",
+                "view_name": "orders",
+            },
+        )
         assert result.exit_code == 0, result.output
         assert "1 registered" in result.output
         assert "0 errors" in result.output
-        # Operator gets a hint that the row is materializing in BG.
-        assert "background" in result.output.lower()
+        # Operator sees a rebuild message instead of a per-row "background" hint.
+        assert "rebuild" in result.output.lower()
 
     def test_accepts_201_as_success(self, monkeypatch):
         # Regression: legacy non-BQ insert path still works.
         result = self._run(
-            monkeypatch, 201,
+            monkeypatch,
+            201,
             {"id": "orders", "name": "orders", "status": "registered"},
             source_type="keboola",
         )
@@ -1805,7 +1942,10 @@ class TestBigQueryRegisterRawNameValidation:
     the post-insert rebuild — defeating fast-fail-at-register."""
 
     def test_register_rejects_name_with_space(
-        self, seeded_app, bq_instance, stub_bq_extractor,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
     ):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -1821,7 +1961,10 @@ class TestBigQueryRegisterRawNameValidation:
         assert "view name" in body["detail"].lower()
 
     def test_register_rejects_name_with_leading_whitespace(
-        self, seeded_app, bq_instance, stub_bq_extractor,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
     ):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -1833,7 +1976,10 @@ class TestBigQueryRegisterRawNameValidation:
         assert resp.status_code == 400, resp.text
 
     def test_register_rejects_name_with_trailing_whitespace(
-        self, seeded_app, bq_instance, stub_bq_extractor,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
     ):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -1845,7 +1991,10 @@ class TestBigQueryRegisterRawNameValidation:
         assert resp.status_code == 400, resp.text
 
     def test_register_accepts_safe_name(
-        self, seeded_app, bq_instance, stub_bq_extractor,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
     ):
         """Sanity check: the strict check still admits well-formed names."""
         c = seeded_app["client"]
@@ -1896,7 +2045,10 @@ class TestBigQueryRegisterRawBucketSourceTableValidation:
     view-create time. Parity with the ``name`` fix from round 3."""
 
     def test_register_rejects_bucket_with_leading_whitespace(
-        self, seeded_app, bq_instance, stub_bq_extractor,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
     ):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -1912,7 +2064,10 @@ class TestBigQueryRegisterRawBucketSourceTableValidation:
         assert "dataset" in body["detail"].lower()
 
     def test_register_rejects_bucket_with_trailing_whitespace(
-        self, seeded_app, bq_instance, stub_bq_extractor,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
     ):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -1927,7 +2082,10 @@ class TestBigQueryRegisterRawBucketSourceTableValidation:
         assert "dataset" in body["detail"].lower()
 
     def test_register_rejects_source_table_with_leading_whitespace(
-        self, seeded_app, bq_instance, stub_bq_extractor,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
     ):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -1942,7 +2100,10 @@ class TestBigQueryRegisterRawBucketSourceTableValidation:
         assert "source_table" in body["detail"].lower()
 
     def test_register_rejects_source_table_with_trailing_whitespace(
-        self, seeded_app, bq_instance, stub_bq_extractor,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
     ):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -1957,7 +2118,9 @@ class TestBigQueryRegisterRawBucketSourceTableValidation:
         assert "source_table" in body["detail"].lower()
 
     def test_precheck_rejects_bucket_with_leading_whitespace(
-        self, seeded_app, bq_instance,
+        self,
+        seeded_app,
+        bq_instance,
     ):
         """Validation runs identically in /precheck and short-circuits before
         the BQ round-trip — the helper is shared, so this is the same code
@@ -1975,7 +2138,9 @@ class TestBigQueryRegisterRawBucketSourceTableValidation:
         cls.assert_not_called()
 
     def test_precheck_rejects_bucket_with_trailing_whitespace(
-        self, seeded_app, bq_instance,
+        self,
+        seeded_app,
+        bq_instance,
     ):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -1989,7 +2154,9 @@ class TestBigQueryRegisterRawBucketSourceTableValidation:
         cls.assert_not_called()
 
     def test_precheck_rejects_source_table_with_leading_whitespace(
-        self, seeded_app, bq_instance,
+        self,
+        seeded_app,
+        bq_instance,
     ):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -2003,7 +2170,9 @@ class TestBigQueryRegisterRawBucketSourceTableValidation:
         cls.assert_not_called()
 
     def test_precheck_rejects_source_table_with_trailing_whitespace(
-        self, seeded_app, bq_instance,
+        self,
+        seeded_app,
+        bq_instance,
     ):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -2026,12 +2195,16 @@ class TestBigQueryWorkerExceptionVsTimeout:
     of seconds, then the BG retry surfaced the same exception in the logs."""
 
     def test_worker_raises_within_budget_returns_500(
-        self, seeded_app, bq_instance, monkeypatch,
+        self,
+        seeded_app,
+        bq_instance,
+        monkeypatch,
     ):
         # Stub rebuild_from_registry to RAISE (not return errors). Worker
         # finishes within budget but the exception lands in err_holder.
         def boom(conn=None, output_dir=None):
             raise RuntimeError("simulated GCE auth failure")
+
         monkeypatch.setattr(
             "connectors.bigquery.extractor.rebuild_from_registry",
             boom,
@@ -2055,17 +2228,17 @@ class TestBigQueryWorkerExceptionVsTimeout:
         # The exception message must show up in the body so the operator
         # gets the actual root cause, not a "timeout" red herring.
         assert body["errors"], body
-        assert any(
-            "simulated GCE auth failure" in (e.get("error") or "")
-            for e in body["errors"]
-        ), body["errors"]
+        assert any("simulated GCE auth failure" in (e.get("error") or "") for e in body["errors"]), body["errors"]
         # The row was still inserted before the rebuild ran — re-running
         # after fixing the underlying issue picks it up.
         list_resp = c.get("/api/admin/registry", headers=_auth(token))
         assert "boomtable" in [t["name"] for t in list_resp.json()["tables"]]
 
     def test_worker_still_running_at_timeout_returns_202(
-        self, seeded_app, bq_instance, monkeypatch,
+        self,
+        seeded_app,
+        bq_instance,
+        monkeypatch,
     ):
         """Counterpart: if the worker is genuinely still running when the
         budget expires, 202 + BackgroundTask is correct."""
@@ -2079,6 +2252,7 @@ class TestBigQueryWorkerExceptionVsTimeout:
                 "errors": [],
                 "skipped": False,
             }
+
         monkeypatch.setattr(
             "connectors.bigquery.extractor.rebuild_from_registry",
             slow_ok,
@@ -2091,7 +2265,9 @@ class TestBigQueryWorkerExceptionVsTimeout:
         # Force a short budget so the worker is still running when wait()
         # returns False.
         monkeypatch.setattr(
-            "app.api.admin._BQ_SYNC_REGISTER_TIMEOUT_S", 0.05, raising=False,
+            "app.api.admin._BQ_SYNC_REGISTER_TIMEOUT_S",
+            0.05,
+            raising=False,
         )
 
         c = seeded_app["client"]
@@ -2116,9 +2292,8 @@ class TestRegisterTablePrecheckHandlerIsSync:
     def test_precheck_handler_is_sync(self):
         import inspect
         from app.api import admin as admin_mod
-        assert not inspect.iscoroutinefunction(
-            admin_mod.register_table_precheck
-        ), (
+
+        assert not inspect.iscoroutinefunction(admin_mod.register_table_precheck), (
             "register_table_precheck must be a plain `def` so FastAPI runs "
             "it in a threadpool; otherwise the synchronous bigquery.Client "
             "calls block the asyncio event loop."
@@ -2128,24 +2303,30 @@ class TestRegisterTablePrecheckHandlerIsSync:
 # --- sync_schedule format validation (#79) ----------------------------------
 
 
-@pytest.mark.parametrize("schedule", [
-    "every 15m",
-    "every 1h",
-    "daily 05:00",
-    "daily 07:00,13:00,18:00",
-    None,  # explicit None is allowed (no schedule = always sync)
-])
+@pytest.mark.parametrize(
+    "schedule",
+    [
+        "every 15m",
+        "every 1h",
+        "daily 05:00",
+        "daily 07:00,13:00,18:00",
+        None,  # explicit None is allowed (no schedule = always sync)
+    ],
+)
 def test_register_request_accepts_valid_sync_schedule(schedule):
     req = RegisterTableRequest(name="orders", sync_schedule=schedule)
     assert req.sync_schedule == schedule
 
 
-@pytest.mark.parametrize("schedule", [
-    "hourly",
-    "daily 25:00",
-    "every 5x",
-    "  ",
-])
+@pytest.mark.parametrize(
+    "schedule",
+    [
+        "hourly",
+        "daily 25:00",
+        "every 5x",
+        "  ",
+    ],
+)
 def test_register_request_rejects_malformed_sync_schedule(schedule):
     # `every 0m` was previously here as a rejected value; the runtime
     # now accepts it as the "always due" force-resync override (used
@@ -2157,11 +2338,14 @@ def test_register_request_rejects_malformed_sync_schedule(schedule):
     assert "sync_schedule" in str(exc_info.value)
 
 
-@pytest.mark.parametrize("schedule", [
-    "every 30m",
-    "daily 08:00",
-    None,
-])
+@pytest.mark.parametrize(
+    "schedule",
+    [
+        "every 30m",
+        "daily 08:00",
+        None,
+    ],
+)
 def test_update_request_accepts_valid_sync_schedule(schedule):
     req = UpdateTableRequest(sync_schedule=schedule)
     assert req.sync_schedule == schedule
@@ -2185,7 +2369,10 @@ class TestBigQueryDottedSourceTableNormalization:
         return next(t for t in resp.json()["tables"] if t["name"] == name)
 
     def test_register_normalizes_project_dataset_table_fqn(
-        self, seeded_app, bq_instance, stub_bq_extractor,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
     ):
         c, token = seeded_app["client"], seeded_app["admin_token"]
         resp = c.post(
@@ -2197,7 +2384,10 @@ class TestBigQueryDottedSourceTableNormalization:
         assert self._row(c, token, "orders")["source_table"] == "orders"
 
     def test_register_normalizes_dataset_table_form(
-        self, seeded_app, bq_instance, stub_bq_extractor,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
     ):
         c, token = seeded_app["client"], seeded_app["admin_token"]
         resp = c.post(
@@ -2209,7 +2399,10 @@ class TestBigQueryDottedSourceTableNormalization:
         assert self._row(c, token, "orders")["source_table"] == "orders"
 
     def test_register_rejects_dataset_mismatch(
-        self, seeded_app, bq_instance, stub_bq_extractor,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
     ):
         c, token = seeded_app["client"], seeded_app["admin_token"]
         resp = c.post(
@@ -2223,7 +2416,10 @@ class TestBigQueryDottedSourceTableNormalization:
         assert "bucket" in detail
 
     def test_register_rejects_foreign_project_fqn(
-        self, seeded_app, bq_instance, stub_bq_extractor,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
     ):
         c, token = seeded_app["client"], seeded_app["admin_token"]
         resp = c.post(
@@ -2237,7 +2433,10 @@ class TestBigQueryDottedSourceTableNormalization:
         assert "bq_fqn" in detail
 
     def test_put_normalizes_dotted_source_table(
-        self, seeded_app, bq_instance, stub_bq_extractor,
+        self,
+        seeded_app,
+        bq_instance,
+        stub_bq_extractor,
     ):
         c, token = seeded_app["client"], seeded_app["admin_token"]
         resp = c.post(
@@ -2262,9 +2461,7 @@ class TestBigQueryDeferRebuild:
     per insert; bulk onboarding registers many tables with defer_rebuild=true
     (each skipping that rebuild) and then rebuilds once."""
 
-    def test_defer_rebuild_skips_the_per_insert_rebuild(
-        self, seeded_app, bq_instance, stub_bq_extractor
-    ):
+    def test_defer_rebuild_skips_the_per_insert_rebuild(self, seeded_app, bq_instance, stub_bq_extractor):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         resp = c.post(
@@ -2279,9 +2476,7 @@ class TestBigQueryDeferRebuild:
         # the expensive per-insert rebuild must NOT have run
         stub_bq_extractor["rebuild"].assert_not_called()
 
-    def test_normal_register_still_rebuilds(
-        self, seeded_app, bq_instance, stub_bq_extractor
-    ):
+    def test_normal_register_still_rebuilds(self, seeded_app, bq_instance, stub_bq_extractor):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         resp = c.post(
@@ -2292,9 +2487,7 @@ class TestBigQueryDeferRebuild:
         assert resp.status_code in (200, 202)
         stub_bq_extractor["rebuild"].assert_called()
 
-    def test_rebuild_endpoint_triggers_one_rebuild(
-        self, seeded_app, bq_instance, stub_bq_extractor
-    ):
+    def test_rebuild_endpoint_triggers_one_rebuild(self, seeded_app, bq_instance, stub_bq_extractor):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         resp = c.post("/api/admin/registry/rebuild", headers=_auth(token))
