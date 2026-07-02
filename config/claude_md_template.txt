@@ -202,6 +202,7 @@ query_mode of <table>  ├─ materialized → agnes query (parquet was synced b
 - **Old `agnes fetch` / `da fetch` / `da query` references in stale docs** — the CLI is `agnes`; `agnes fetch` was renamed to `agnes snapshot create`. If you see those names, translate before running.
 - **Don't attempt personal GCP auth** if a BQ query fails with permission errors. BQ access uses the **server's service account**, not your Google identity — escalate to admin instead.
 - **Don't `agnes query --remote "SELECT * FROM <large_table>"`** without a `--where`. Even if the scan-byte gate refuses, you've wasted the round-trip; gate yourself first by reading `rough_size_hint` and `where_examples` from `agnes catalog --json`.
+- **Pass SQL via `--sql "<text>"`, not as a bare positional argument**, when the query text might start with a `--` comment — canonical metric SQL pulled from `agnes catalog --metrics --show <id> --json` almost always does (a `-- ...` header line). A leading `--` on a positional argument can be misread by the CLI's argument parser as an option flag instead of the query text. `agnes query --sql "<text>"` / `agnes query --remote --sql "<text>"` take the exact same text unambiguously, whatever it starts with.
 
 ### Failure-mode dictionary — what each error means + the right response
 
@@ -213,6 +214,7 @@ query_mode of <table>  ├─ materialized → agnes query (parquet was synced b
 | `HTTP 403: cross_project_forbidden` (with `serviceusage` mention) | Server SA lacks `serviceusage.services.use` on the BQ data project | Escalate to admin to set `data_source.bigquery.billing_project`; do NOT try personal auth |
 | `ReadTimeout` (client-side) on `agnes query --remote` | CLI is older than 0.35.1 (had 30 s default) | `agnes --version`; if <0.35.1, upgrade with `uv tool install --force <wheel-from-server>` (the URL is in the `[update]` banner that prints on every command). Then retry. |
 | `unknown columns: [...]` from `agnes snapshot create` | `--select` lists columns that don't exist | Run `agnes schema <table>` and copy column names verbatim |
+| `No such option: -- ...` on `agnes query [--remote] "<sql>"` | SQL passed as a positional argument starts with a `--` comment; the CLI parser mistakes it for an option flag instead of query text | Re-run with `--sql "<sql>"` instead of the positional argument — works with any leading text, including comments |
 
 ### Cost discipline — every BQ query bills bytes scanned
 
