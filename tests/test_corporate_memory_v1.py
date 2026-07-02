@@ -1382,7 +1382,7 @@ class TestBatchContradictionSchemaStrictValid:
     """Guard BATCH_CONTRADICTION_SCHEMA against the enum+union-type schema rejection regression.
 
     The bug: ``severity`` / ``resolution_action`` declared a union type
-    ``["string","null"]`` AND an ``enum`` containing ``None``. Anthropic strict
+    ``["string","null"]`` AND an ``enum`` containing ``None``. Strict
     structured outputs reject that combination -> every contradiction check
     400s. The fix keeps the enum (so the model can't emit out-of-range values)
     but splits each nullable field into ``anyOf`` of a string-with-enum branch
@@ -1401,7 +1401,7 @@ class TestBatchContradictionSchemaStrictValid:
                 yield from TestBatchContradictionSchemaStrictValid._walk(item)
 
     def test_no_node_combines_enum_with_union_type_or_null_enum(self):
-        """Anti-regression for the exact shape Anthropic returns 400 for.
+        """Anti-regression for the enum+union-type schema rejection pattern.
 
         Walk the schema as it is actually sent (after _strict_json_schema) and
         assert no node combines an ``enum`` with a list-typed ``type``, and no
