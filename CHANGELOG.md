@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.73.3] - 2026-07-02
+
+### Added
 - **Generic Jira custom-field refresh** via `JIRA_REFRESH_FIELDS`. An operator lists the custom fields they want kept fresh on tickets (`field_id` or `field_id:column`, comma-separated, no defaults); the webhook overlay and the 15-minute poll re-fetch them with the primary token and overwrite them on the ticket, and the transform emits one JSON-text column per field on the `issues` table (column = the alias, or the field id). SLA fields are not special — they are just entries in the list. Joins are implicit: the value lives on the ticket row, keyed by `issue_key`. A configured column name that would collide with a built-in `issues` column (e.g. `resolution`, `status`) is prefixed with `cf_` so built-in values are never overwritten.
 - **`verify_sla_access` field preflight** (`connectors/jira/scripts/verify_sla_access.py`). Discovers an instance's custom fields (`--list-fields`, id + name + type) and verifies, against the live API, that the configured fields are readable with the primary token (`--issue KEY`) — classifying each as present / permission-error / null across the domain and `api.atlassian.com` gateway URLs. Never prints token/email values; exits non-zero when no field is readable.
 
