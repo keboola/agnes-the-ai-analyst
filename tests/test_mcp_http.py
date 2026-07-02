@@ -148,6 +148,10 @@ class TestToolRegistration:
             # IWT, marketplaces, infra_repo_url). Triple-surface with
             # GET /api/admin/config-surface + `agnes admin config-surface`.
             "admin_config_surface",
+            # Multi-project Keboola: list named source connections (#731).
+            # Triple-surface with GET /api/admin/source-connections +
+            # `agnes admin connection list`.
+            "admin_source_connections_list",
             # Contributed-skill triple-surface — admin can list, publish, and
             # delete skills in the Agnes Contributed marketplace without leaving
             # the chat. Mirrors REST + `agnes admin skill` CLI surface.

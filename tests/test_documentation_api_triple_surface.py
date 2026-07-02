@@ -41,6 +41,8 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/collections/search": ("collections search", "collections_search"),
     # Config-surface introspection (built-in marketplace spec Phase 1).
     "/api/admin/config-surface": ("admin config-surface", "admin_config_surface"),
+    # Multi-project Keboola: named source-connections (#731).
+    "/api/admin/source-connections": ("admin connection list", "admin_source_connections_list"),
     # Contributed-skill triple-surface (GET list + DELETE; POST contribute is _EXEMPT below).
     "/api/admin/contributed-skills": ("admin skill list", "list_contributed_skills"),
     "/api/admin/contributed-skills/{name}": ("admin skill delete", "delete_contributed_skill"),
@@ -63,6 +65,7 @@ def test_cli_subcommands_registered():
 
     Walks the typer command tree at the top-level ``app`` and asserts each
     ``<group> <subcmd>`` pair from the cohort resolves to a registered command.
+    Supports two-level (``group cmd``) and three-level (``group sub cmd``) paths.
     """
     from cli.main import app
 
@@ -181,6 +184,12 @@ _MCP_CONNECT_REASON = (
     "web UI flow that issues a connector token and returns ready-to-paste config "
     "snippets; no CLI/MCP analogue (the PAT it creates IS the MCP credential)"
 )
+_SOURCE_CONNECTIONS_CRUD_REASON = (
+    "named source-connection CRUD sub-paths (multi-project Keboola, #731) — "
+    "GET/PUT/DELETE /{id} and PUT/DELETE /{id}/secret and POST /{id}/test are "
+    "reachable via `agnes admin connection add/remove/test`; the list path carries "
+    "the triple-surface contract in _COHORT"
+)
 _EXEMPT: dict[str, str] = {
     "/api/admin/registry/rebuild": (
         "admin-only registry rebuild trigger — server/consumer maintenance op "
@@ -226,6 +235,9 @@ _EXEMPT: dict[str, str] = {
     ),
     "/api/admin/reports/marketplace-digest": _REPORTS_REASON,
     "/api/mcp-connect/token": _MCP_CONNECT_REASON,
+    "/api/admin/source-connections/{connection_id}": _SOURCE_CONNECTIONS_CRUD_REASON,
+    "/api/admin/source-connections/{connection_id}/secret": _SOURCE_CONNECTIONS_CRUD_REASON,
+    "/api/admin/source-connections/{connection_id}/test": _SOURCE_CONNECTIONS_CRUD_REASON,
 }
 
 

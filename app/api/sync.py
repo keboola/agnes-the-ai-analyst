@@ -24,9 +24,11 @@ from src.scheduler import filter_due_tables, is_table_due
 
 from src.repositories import (
     audit_repo,
+    connection_secrets_repo,
     data_packages_repo,
     memory_domains_repo,
     profile_repo,
+    source_connections_repo,
     sync_settings_repo,
     sync_state_repo,
     table_registry_repo,
@@ -170,7 +172,12 @@ def _run_materialized_pass(
     state = sync_state_repo()
 
     summary = {"materialized": [], "skipped": [], "errors": []}
-    keboola_access = None  # lazy-init on first Keboola row
+    # Per-connection-id cache of KeboolaStorageClient instances.
+    # Keyed by connection_id (str) or None for the global/instance token.
+    # A single client is shared across all rows that share the same
+    # connection_id — requests.Session inside it reuses the HTTP keep-alive
+    # pool across rows, same as the old single-client pattern.
+    keboola_clients: dict = {}
 
     # Targeted-trigger filter. Compare against both id and name so an admin
     # who passes either form (the registry id slug, or the human-friendly
@@ -230,50 +237,72 @@ def _run_materialized_pass(
                     max_bytes=bq_max_bytes,
                 )
             elif row_source_type == "keboola":
-                if keboola_access is None:
-                    # Lazy-init the Storage API client (replaces the old
-                    # DuckDB extension `KeboolaAccess`). One client is shared
-                    # across all keboola materialized rows in this pass —
-                    # `requests.Session` inside it is thread-safe and reuses
-                    # the connection pool for HTTP keep-alive across rows.
-                    # Variable name kept as `keboola_access` to minimise
-                    # diff churn against the surrounding error-handling
-                    # block; the type is now `KeboolaStorageClient`.
+                conn_id = row.get("connection_id")
+                if conn_id not in keboola_clients:
                     from connectors.keboola.storage_api import KeboolaStorageClient
 
-                    keboola_url = get_value("data_source", "keboola", "stack_url", default="") or os.environ.get(
-                        "KEBOOLA_STACK_URL", ""
-                    )
-                    token_env = (
-                        get_value(
-                            "data_source",
-                            "keboola",
-                            "token_env",
-                            default="KEBOOLA_STORAGE_TOKEN",
+                    if conn_id:
+                        # Per-connection resolution: look up the named
+                        # source_connection record and resolve its token.
+                        # Vault takes priority; falls back to the env var
+                        # named in the record's token_env field.
+                        sc = source_connections_repo().get(conn_id)
+                        if not sc:
+                            summary["errors"].append(
+                                {
+                                    "table": ref_name,
+                                    "error": f"connection_id {conn_id!r} not found in source_connections",
+                                }
+                            )
+                            continue
+                        sc_url = sc["config"].get("stack_url", "")
+                        sc_token = connection_secrets_repo().get(conn_id) or os.environ.get(
+                            sc.get("token_env") or "", ""
                         )
-                        or "KEBOOLA_STORAGE_TOKEN"
-                    )
-                    keboola_token = os.environ.get(token_env, "")
-                    if not keboola_token:
-                        from app.datasource_secrets import datasource_secret as _ds_secret
+                        if not (sc_url and sc_token):
+                            summary["errors"].append(
+                                {
+                                    "table": ref_name,
+                                    "error": f"connection {conn_id!r} missing URL or token",
+                                }
+                            )
+                            continue
+                    else:
+                        # Global/instance token path (backwards compatible).
+                        sc_url = get_value("data_source", "keboola", "stack_url", default="") or os.environ.get(
+                            "KEBOOLA_STACK_URL", ""
+                        )
+                        token_env = (
+                            get_value(
+                                "data_source",
+                                "keboola",
+                                "token_env",
+                                default="KEBOOLA_STORAGE_TOKEN",
+                            )
+                            or "KEBOOLA_STORAGE_TOKEN"
+                        )
+                        sc_token = os.environ.get(token_env, "")
+                        if not sc_token:
+                            from app.datasource_secrets import datasource_secret as _ds_secret
 
-                        keboola_token = _ds_secret("KEBOOLA_STORAGE_TOKEN") or ""
-                    if not (keboola_url and keboola_token):
-                        summary["errors"].append(
-                            {
-                                "table": ref_name,
-                                "error": (
-                                    "Keboola URL/token not configured for "
-                                    "materialized path (data_source.keboola.stack_url "
-                                    f"+ env {token_env})"
-                                ),
-                            }
-                        )
-                        continue
-                    keboola_access = KeboolaStorageClient(
-                        url=keboola_url,
-                        token=keboola_token,
+                            sc_token = _ds_secret("KEBOOLA_STORAGE_TOKEN") or ""
+                        if not (sc_url and sc_token):
+                            summary["errors"].append(
+                                {
+                                    "table": ref_name,
+                                    "error": (
+                                        "Keboola URL/token not configured for "
+                                        "materialized path (data_source.keboola.stack_url "
+                                        f"+ env {token_env})"
+                                    ),
+                                }
+                            )
+                            continue
+                    keboola_clients[conn_id] = KeboolaStorageClient(
+                        url=sc_url,
+                        token=sc_token,
                     )
+                keboola_access = keboola_clients[conn_id]
                 kb_output_dir.mkdir(parents=True, exist_ok=True)
                 from connectors.keboola.extractor import (
                     materialize_query as kb_materialize_query,
