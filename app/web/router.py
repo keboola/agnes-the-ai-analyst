@@ -3049,7 +3049,14 @@ def admin_contribute_skill_delete(
 
     repo_root = get_marketplaces_dir() / CONTRIBUTED_MARKETPLACE_SLUG
     plugins_dir = repo_root / "plugins"
-    plugin_dir = plugins_dir / name
+    plugin_dir = (plugins_dir / name).resolve()
+    if not str(plugin_dir).startswith(str(plugins_dir.resolve())):
+        from src.repositories import user_groups_repo
+
+        ctx = _build_context(request, user=user)
+        ctx["groups"] = user_groups_repo().list_all()
+        ctx["error"] = "Invalid plugin name."
+        return templates.TemplateResponse(request, "contribute_skill.html", ctx)
 
     with _lock:
         if not plugin_dir.exists():

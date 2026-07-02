@@ -98,7 +98,9 @@ def delete_contributed_skill(
 
     repo_root = get_marketplaces_dir() / CONTRIBUTED_MARKETPLACE_SLUG
     plugins_dir = repo_root / "plugins"
-    plugin_dir = plugins_dir / name
+    plugin_dir = (plugins_dir / name).resolve()
+    if not str(plugin_dir).startswith(str(plugins_dir.resolve())):
+        raise HTTPException(status_code=400, detail="Invalid plugin name")
 
     with _lock:
         if not plugin_dir.exists():
