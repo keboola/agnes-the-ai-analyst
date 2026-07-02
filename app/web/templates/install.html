@@ -877,7 +877,7 @@
                         Seed the server URL:
                         <div class="code-block" style="margin-top: 8px;">
                             <span class="prompt">$</span>
-                            <span class="cmd" id="cmd-seed-config">mkdir -p ~/.config/agnes &amp;&amp; echo "server: {{ server_url }}" &gt; ~/.config/agnes/config.yaml</span>
+                            <span class="cmd" id="cmd-seed-config">agnes config set-server "{{ server_url }}"</span>
                             <button type="button"
                                     class="btn-copy" aria-live="polite"
                                     data-copy-target="cmd-seed-config"

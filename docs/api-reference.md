@@ -73,6 +73,7 @@ are the unit of curation and user-facing discovery.
 | `GET` | `/api/v2/catalog` | — | Public-facing catalog (same data, no admin fields) |
 | `POST` | `/api/admin/register-table` | see §3.3 | Register a new table |
 | `POST` | `/api/admin/register-table/precheck` | see §3.3 | Validate a registration payload without committing |
+| `POST` | `/api/admin/registry/rebuild` | — | Rebuild the extract + master views once (companion to `register-table` `defer_rebuild` for bulk onboarding) |
 | `PUT` | `/api/admin/registry/{table_id}` | see §3.2 | Update **operational** fields (idempotent partial) |
 | `PATCH` | `/api/admin/registry/{table_id}/docs` | see §3.5 | Update **extended LLM-facing docs** (grain, gotchas, …) |
 | `DELETE` | `/api/admin/registry/{table_id}` | — | Unregister |
@@ -601,6 +602,7 @@ checks against.
 ### `/api/admin/registry` — Table registry
 
 - /api/admin/registry
+- /api/admin/registry/rebuild
 - /api/admin/registry/{table_id}
 - /api/admin/registry/{table_id}/docs
 
@@ -846,6 +848,13 @@ synced IWT clone for the bind-git file picker.
 ### `/api/admin/keboola` — Keboola diagnostics
 
 - /api/admin/keboola/test-connection
+
+### `/api/admin/contributed-skills` — Contributed skill management
+
+Admin-only CRUD for the Agnes Contributed marketplace. `POST` wraps a pasted `SKILL.md` in a one-skill plugin and publishes it; `GET` lists contributed plugins with their granted group; `DELETE` removes a plugin and clears its grants. Mirrors the `/admin/contribute-skill` web form, `agnes admin skill list/contribute/delete` CLI, and `list_contributed_skills`/`contribute_skill`/`delete_contributed_skill` MCP tools.
+
+- /api/admin/contributed-skills
+- /api/admin/contributed-skills/{name}
 
 ### `/api/admin/datasource-secrets` — Datasource credential management
 

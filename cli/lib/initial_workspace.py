@@ -14,12 +14,19 @@ Public entry points:
   audit-event. Called from ``cli/commands/init.py`` when probe came back
   ``configured: true``.
 
-OVERRIDE MODE — intentional behavior, NOT a bug.
-When this flow runs, Agnes does NOT install hooks, slash commands, the
-statusLine, or write ``.claude/CLAUDE.local.md`` / ``AGNES_WORKSPACE.md``.
-Admin's repo is the sole source of truth for workspace contents. See
-``docs/initial-workspace-override.md`` and CHANGELOG for the full
-responsibility-transfer contract.
+OVERRIDE MODE — what Agnes owns vs the admin template.
+The admin's repo is the source of truth for workspace *content* (CLAUDE.md,
+skills, docs, data, and the non-Agnes keys of ``settings.json``). But Agnes
+STILL owns and installs its own elements — SessionStart/End hooks, the
+statusLine, and managed slash-commands — on top of the template after
+extraction, in BOTH default and override modes (the call site in
+``cli/commands/init.py`` runs ``install_claude_hooks`` / ``install_claude_commands``
+unconditionally). Agnes does NOT write ``.claude/CLAUDE.local.md``,
+``AGNES_WORKSPACE.md``, or the default model/permissions seed in override mode.
+Re-applying an EXISTING override workspace (``agnes init --force`` / the
+``agnes update`` convergence) routes through the backup-aware 3-way merge, so
+analyst edits are copied to ``<name>.bak.<ts>`` before being updated — not
+blind-overwritten. See ``docs/initial-workspace-override.md`` and CHANGELOG.
 """
 
 from __future__ import annotations
@@ -161,7 +168,7 @@ def prompt_force_confirmation(
     typer.echo(f"Workspace: {workspace}")
     typer.echo("")
     if overwrite:
-        typer.echo(f"Files that will be OVERWRITTEN ({len(overwrite)}):")
+        typer.echo(f"Files that will be UPDATED ({len(overwrite)}) — your edits backed up first:")
         for rel in overwrite[:50]:
             typer.echo(f"  ~ {rel}")
         if len(overwrite) > 50:
@@ -175,7 +182,8 @@ def prompt_force_confirmation(
             typer.echo(f"  … and {len(create) - 50} more")
         typer.echo("")
     typer.echo("Files in your workspace that are NOT in the template will be preserved.")
-    typer.echo("This action is irreversible (no backup) and will be logged on the server.")
+    typer.echo("Files you edited are backed up to <name>.bak.<timestamp> before being")
+    typer.echo("updated. This action is logged on the server.")
     typer.echo("")
     response = typer.prompt(
         "Type YES to continue, anything else to abort",
@@ -709,15 +717,37 @@ def apply_override(
             raise typer.Exit(1)
 
     zip_bytes = download_zip(server_url, token)
+    # Reinstall over an EXISTING override workspace routes through the
+    # backup-aware 3-way merge: analyst-edited files are copied to
+    # ``<name>.bak.<ts>`` BEFORE being updated, instead of blind-overwritten.
+    # A FRESH install (no prior override sentinel) has nothing to preserve, so
+    # it uses the plain extract. When no baseline is stored (older CLI / moved
+    # workspace) the merge treats every changed file as analyst-modified and
+    # backs it up — more ``.bak`` files, but never silent data loss.
     try:
-        result = initialize_workspace_from_template(
-            workspace,
-            zip_bytes,
-            agnes_version=agnes_version,
-            server_url=server_url,
-            template_source=status.template_source,
-            template_sha=status.template_sha,
-        )
+        if is_override_workspace(workspace):
+            upd = update_workspace_from_template(
+                workspace,
+                zip_bytes,
+                load_template_baseline(workspace),
+                agnes_version=agnes_version,
+                server_url=server_url,
+                template_source=status.template_source,
+                template_sha=status.template_sha,
+            )
+            result = ExtractResult(
+                overwritten=sorted(list(upd.updated) + [name for name, _ in upd.backed_up]),
+                created=sorted(list(upd.created)),
+            )
+        else:
+            result = initialize_workspace_from_template(
+                workspace,
+                zip_bytes,
+                agnes_version=agnes_version,
+                server_url=server_url,
+                template_source=status.template_source,
+                template_sha=status.template_sha,
+            )
     except ValueError as exc:
         _render_unsafe_entry_error(exc)
         raise  # unreachable — _render_unsafe_entry_error always raises typer.Exit

@@ -1,0 +1,235 @@
+{% extends "base_ds.html" %}
+{% block title %}Contribute a skill — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block head_extra %}
+<style>
+  /* /admin/contribute-skill — paste a generated SKILL.md and publish it into
+     the local "Agnes Contributed" marketplace. Mirrors the admin landing
+     pattern (gradient hero + ds-card body) so it reads as a peer of the other
+     admin pages. */
+  .contrib-page { font-family: var(--font-primary, 'Inter', system-ui, sans-serif); }
+  .contrib-hero { margin-bottom: 20px; }
+
+  .contrib-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    padding: 22px 24px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    max-width: 880px;
+  }
+  .contrib-card h2 {
+    margin: 0 0 4px;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-primary, #111827);
+  }
+  .contrib-card .help {
+    color: var(--text-secondary, #6b7280);
+    font-size: 13px;
+    margin: 0 0 16px;
+    max-width: 720px;
+  }
+
+  .contrib-toolbar {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  textarea#skill_md {
+    width: 100%;
+    min-height: 320px;
+    box-sizing: border-box;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12.5px;
+    line-height: 1.5;
+    padding: 14px;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 10px;
+    background: var(--surface-muted, #f9fafb);
+    color: var(--text-primary, #111827);
+    resize: vertical;
+  }
+
+  .contrib-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 16px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .contrib-btn-primary {
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 13px;
+    border: 1px solid var(--ds-primary);
+    background: var(--ds-primary);
+    color: #fff;
+    cursor: pointer;
+    transition: filter 0.12s ease;
+  }
+  .contrib-btn-primary:hover { filter: brightness(1.05); }
+  .contrib-btn-ghost {
+    padding: 9px 14px;
+    border-radius: 8px;
+    font-weight: 500;
+    font-size: 13px;
+    border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+    color: var(--text-primary, #111827);
+    cursor: pointer;
+  }
+  .contrib-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-secondary, #4b5563);
+  }
+  select#grant_group {
+    padding: 7px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border, #e5e7eb);
+    font-size: 13px;
+  }
+
+  .contrib-result,
+  .contrib-error {
+    margin-bottom: 18px;
+    padding: 16px 18px;
+    border-radius: 10px;
+    font-size: 13.5px;
+    max-width: 880px;
+    line-height: 1.5;
+  }
+  .contrib-result { background: #ecfdf5; border: 1px solid #6ee7b7; color: #065f46; }
+  .contrib-error { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; }
+  .contrib-result a.deep {
+    display: inline-block;
+    margin-top: 10px;
+    padding: 9px 16px;
+    border-radius: 8px;
+    background: var(--ds-primary);
+    color: #fff;
+    text-decoration: none;
+    font-weight: 600;
+  }
+
+  .contrib-pitch {
+    margin-top: 24px;
+    max-width: 880px;
+    color: var(--text-secondary, #6b7280);
+    font-size: 12.5px;
+    line-height: 1.6;
+  }
+  .contrib-pitch code {
+    background: rgba(0, 0, 0, 0.06);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 11.5px;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="contrib-page container">
+  <section class="page-header page-header--hero contrib-hero" aria-labelledby="contrib-title">
+    <div class="page-header__main">
+      <div class="page-header__eyebrow">Administration · Marketplace</div>
+      <h1 class="page-header__title" id="contrib-title">Contribute a skill</h1>
+      <p class="page-header__subtitle">
+        Paste a generated <code>SKILL.md</code> and publish it into your Agnes
+        marketplace. It lands in the <strong>Agnes Contributed</strong> collection,
+        ready for your team to install in Claude Code.
+      </p>
+    </div>
+  </section>
+
+  {% if result %}
+  <div class="contrib-result" role="status">
+    <strong>Published.</strong> &ldquo;{{ result.skill_name }}&rdquo; is now in your
+    marketplace{% if result.granted_group %}, visible to <strong>{{ result.granted_group }}</strong>{% endif %}.
+    <br>
+    <a class="deep" href="{{ result.detail_url }}">Open &ldquo;{{ result.plugin_name }}&rdquo; in Agnes &rarr;</a>
+    <form method="post" action="/admin/contribute-skill/{{ result.plugin_name }}/delete" style="margin-top:0.75rem">
+      <button type="submit" class="contrib-btn-ghost">Remove this skill</button>
+    </form>
+  </div>
+  {% endif %}
+  {% if error %}
+  <div class="contrib-error" role="alert"><strong>Could not publish.</strong> {{ error }}</div>
+  {% endif %}
+
+  <form class="contrib-card" method="post" action="/admin/contribute-skill">
+    <h2>Skill source</h2>
+    <p class="help">
+      The full <code>SKILL.md</code>, including the <code>--- name: … ---</code>
+      frontmatter. Agnes derives the plugin from the skill&rsquo;s <code>name:</code>.
+    </p>
+    <div class="contrib-toolbar">
+      <button type="button" class="contrib-btn-ghost" id="paste-btn">Paste from clipboard</button>
+      <span class="contrib-field">
+        <label for="grant_group">Visible to</label>
+        <select name="grant_group" id="grant_group">
+          {% for group in (groups or []) %}
+          <option value="{{ group.name }}"{% if group.name == 'Admin' %} selected{% endif %}>{{ group.name }}</option>
+          {% else %}
+          <option value="Admin" selected>Admin</option>
+          <option value="Everyone">Everyone</option>
+          {% endfor %}
+        </select>
+      </span>
+    </div>
+    <textarea name="skill_md" id="skill_md" required
+      placeholder="---&#10;name: my-skill&#10;description: ...&#10;---&#10;&#10;# My skill ...">{{ skill_md or '' }}</textarea>
+    <div class="contrib-actions">
+      <button type="submit" class="contrib-btn-primary">Publish to Agnes</button>
+    </div>
+  </form>
+
+  <div class="contrib-pitch">
+    <strong>What is this?</strong> Agnes turns a recorded process into a governed,
+    RBAC-controlled Claude Code skill the whole team can install &mdash; one
+    marketplace, per-group access, no copy-pasting files around. This page is the
+    landing target for a &ldquo;Load skill to Agnes&rdquo; button in your recording tool:
+    it copies the skill to the clipboard and opens this page with <code>?prefill=1</code>.
+  </div>
+</div>
+
+<script>
+  (function () {
+    var btn = document.getElementById('paste-btn');
+    var ta = document.getElementById('skill_md');
+    if (!btn || !ta) return;
+    btn.addEventListener('click', async function () {
+      try {
+        var text = await navigator.clipboard.readText();
+        if (text) { ta.value = text; ta.focus(); }
+      } catch (e) {
+        btn.textContent = 'Clipboard blocked — paste manually (⌘V / Ctrl+V)';
+      }
+    });
+    // Preferred handoff: the external button passes the skill in the URL
+    // fragment (#skill=<base64 utf-8>). The fragment never reaches the server,
+    // so this is a reliable client-only prefill that needs no clipboard
+    // permission. We strip it from the URL afterwards so a refresh is clean.
+    try {
+      var h = location.hash || '';
+      if (h.indexOf('#skill=') === 0 && !ta.value.trim()) {
+        var b64 = decodeURIComponent(h.slice('#skill='.length));
+        ta.value = new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0)));
+        history.replaceState(null, '', location.pathname + location.search);
+      }
+    } catch (e) { /* malformed fragment — fall through to clipboard */ }
+    // Fallback handoff: ?prefill=1 asks us to auto-read the clipboard
+    // (best-effort; a denied permission just leaves the box empty).
+    try {
+      var params = new URLSearchParams(location.search);
+      if (params.get('prefill') === '1' && !ta.value.trim()) { btn.click(); }
+    } catch (e) { /* ignore */ }
+  })();
+</script>
+{% endblock %}

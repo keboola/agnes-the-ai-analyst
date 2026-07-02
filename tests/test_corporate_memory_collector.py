@@ -2,16 +2,14 @@
 
 import hashlib
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 
 # ---------------------------------------------------------------------------
 # Minimal mock LLM extractor
 # ---------------------------------------------------------------------------
+
 
 class MockLLMProvider:
     """A minimal mock for connectors.llm.StructuredExtractor."""
@@ -27,6 +25,7 @@ class MockLLMProvider:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _write_json(path: Path, data: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
@@ -37,18 +36,22 @@ def _write_json(path: Path, data: dict):
 # Tests for _generate_id
 # ---------------------------------------------------------------------------
 
+
 class TestGenerateId:
     def test_returns_km_prefix(self):
         from services.corporate_memory.collector import _generate_id
+
         item_id = _generate_id("hello world")
         assert item_id.startswith("km_")
 
     def test_deterministic(self):
         from services.corporate_memory.collector import _generate_id
+
         assert _generate_id("same") == _generate_id("same")
 
     def test_different_content_different_id(self):
         from services.corporate_memory.collector import _generate_id
+
         assert _generate_id("aaa") != _generate_id("bbb")
 
 
@@ -56,9 +59,11 @@ class TestGenerateId:
 # Tests for _process_catalog_response (hash change / governance preservation)
 # ---------------------------------------------------------------------------
 
+
 class TestProcessCatalogResponse:
     def test_new_item_gets_generated_id(self):
         from services.corporate_memory.collector import _process_catalog_response
+
         response_items = [
             {
                 "existing_id": None,
@@ -78,6 +83,7 @@ class TestProcessCatalogResponse:
 
     def test_existing_id_preserved(self):
         from services.corporate_memory.collector import _process_catalog_response
+
         existing = {
             "items": {
                 "km_abc123": {
@@ -115,7 +121,8 @@ class TestProcessCatalogResponse:
         assert item["title"] == "Updated Title"
 
     def test_governance_fields_preserved(self):
-        from services.corporate_memory.collector import GOVERNANCE_FIELDS, _process_catalog_response
+        from services.corporate_memory.collector import _process_catalog_response
+
         existing = {
             "items": {
                 "km_abc123": {
@@ -155,6 +162,7 @@ class TestProcessCatalogResponse:
 
     def test_new_item_with_pending_initial_status(self):
         from services.corporate_memory.collector import _process_catalog_response
+
         response_items = [
             {
                 "existing_id": None,
@@ -165,9 +173,7 @@ class TestProcessCatalogResponse:
                 "source_users": ["dave"],
             }
         ]
-        result = _process_catalog_response(
-            response_items, existing={"items": {}}, initial_status="pending"
-        )
+        result = _process_catalog_response(response_items, existing={"items": {}}, initial_status="pending")
         item = next(iter(result.values()))
         assert item["status"] == "pending"
 
@@ -176,15 +182,18 @@ class TestProcessCatalogResponse:
 # Tests for check_sensitivity
 # ---------------------------------------------------------------------------
 
+
 class TestCheckSensitivity:
     def test_safe_item_returns_true(self):
         from services.corporate_memory.collector import check_sensitivity
+
         extractor = MockLLMProvider({"safe": True})
         item = {"id": "km_x", "title": "T", "content": "C", "tags": []}
         assert check_sensitivity(extractor, item) is True
 
     def test_unsafe_item_returns_false(self):
         from services.corporate_memory.collector import check_sensitivity
+
         extractor = MockLLMProvider({"safe": False, "reason": "Contains PII"})
         item = {"id": "km_y", "title": "T", "content": "C", "tags": []}
         assert check_sensitivity(extractor, item) is False
@@ -205,6 +214,7 @@ class TestCheckSensitivity:
 # ---------------------------------------------------------------------------
 # Integration-style: collect_all with mocked I/O
 # ---------------------------------------------------------------------------
+
 
 class TestCollectAllSkipsWhenNoChanges:
     def test_skips_when_no_user_files(self, tmp_path):
@@ -249,6 +259,7 @@ class TestCollectAllSkipsWhenNoChanges:
 # DB sync tests — Step 11 of collect_all
 # ---------------------------------------------------------------------------
 
+
 def _make_collect_all_env(tmp_path, monkeypatch, llm_response: dict):
     """Set up a minimal collect_all environment with a changed CLAUDE.local.md,
     a mocked LLM extractor, and returns the collector module + patched paths.
@@ -280,11 +291,6 @@ def _make_collect_all_env(tmp_path, monkeypatch, llm_response: dict):
     )
 
     mock_extractor = MockLLMProvider(llm_response)
-    monkeypatch.setattr(
-        collector,
-        "create_extractor",
-        lambda *a, **kw: mock_extractor,
-    )
     # Patch the overlay-aware loader so no real instance.yaml is needed.
     monkeypatch.setattr(
         "app.instance_config.load_instance_config",

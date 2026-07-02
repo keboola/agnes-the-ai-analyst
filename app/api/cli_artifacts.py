@@ -139,12 +139,31 @@ else
     python3 -m pip install --user --force-reinstall "$WHEEL"
 fi
 
-# 3. Seed the server URL in CLI config
+# 3. Seed/merge the server URL in CLI config. MERGE (do not truncate) so a
+#    re-run of this installer on an already-initialized machine preserves
+#    workspace_root and any other keys — a naive `cat > config.yaml` would wipe
+#    them. Done in shell so it never depends on `agnes` being on PATH yet.
 CFG_DIR="${{AGNES_CONFIG_DIR:-$HOME/.config/agnes}}"
 mkdir -p "$CFG_DIR"
-cat > "$CFG_DIR/config.yaml" <<EOF
-server: $SERVER
-EOF
+CFG="$CFG_DIR/config.yaml"
+if [ -f "$CFG" ]; then
+    CFG_TMP=$(mktemp "$CFG_DIR/config.yaml.XXXXXX")
+    # grep -v exits 0 (kept non-server lines) or 1 (config was server-only —
+    # an empty tmp is correct). ANY exit > 1 is a real read error: abort rather
+    # than clobber config.yaml down to a single server: line (which would wipe
+    # workspace_root and every other key). `rc=$?` in an || list is exempt from
+    # `set -e`, so grep's benign rc=1 does not kill the script.
+    grep -v '^server:' "$CFG" > "$CFG_TMP" 2>/dev/null && rc=0 || rc=$?
+    if [ "$rc" -gt 1 ]; then
+        echo "error: could not read existing config $CFG (grep exit $rc); leaving it untouched" >&2
+        rm -f "$CFG_TMP"
+        exit 1
+    fi
+    printf 'server: %s\\n' "$SERVER" >> "$CFG_TMP"
+    mv "$CFG_TMP" "$CFG"
+else
+    printf 'server: %s\\n' "$SERVER" > "$CFG"
+fi
 
 echo "Installed."
 echo "Next steps:"

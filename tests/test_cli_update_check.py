@@ -283,26 +283,93 @@ def test_format_outdated_notice_reports_both_versions(tmp_config):
 
 class TestRootCallbackIntegration:
     """The root callback must not crash a command when the probe fails, and
-    must emit a stderr warning when the server advertises a newer version."""
+    on version drift must kick off a detached background `agnes update`
+    (no interactive prompt, no banner)."""
 
     def test_probe_failure_does_not_break_command(self, tmp_config):
         with patch("cli.update_check.check", side_effect=RuntimeError("boom")):
             result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
 
-    def test_outdated_warning_is_emitted(self, tmp_config, capsys):
-        """Unit-test the warning hook directly: `--help` is eager and bypasses
-        the callback body, so we test `_maybe_warn_outdated` itself, which
-        is what every real subcommand dispatch triggers."""
-        from cli.main import _maybe_warn_outdated
+    def _info(self):
         from cli.update_check import UpdateInfo
-        info = UpdateInfo(
+        return UpdateInfo(
             installed="2.0.0",
             latest="2.1.0",
             download_url="http://server.test:8000/cli/wheel/x.whl",
         )
-        with patch("cli.update_check.check", return_value=info):
+
+    def test_outdated_spawns_background_update(self, tmp_config, monkeypatch):
+        """On drift, `_maybe_warn_outdated` spawns a detached `agnes update`
+        exactly once with the latest version — no prompt, no banner. The
+        spawn helper is patched so the test never starts a real process."""
+        from cli.main import _maybe_warn_outdated
+
+        monkeypatch.delenv("AGNES_NO_UPDATE_CHECK", raising=False)
+        monkeypatch.setattr("sys.argv", ["agnes", "catalog"])  # ordinary command
+        with patch("cli.update_check.check", return_value=self._info()), \
+             patch("cli.main._spawn_background_update") as spawn:
             _maybe_warn_outdated()
-        captured = capsys.readouterr()
-        assert "[update]" in captured.err
-        assert "2.1.0" in captured.err
+        spawn.assert_called_once_with("2.1.0")
+
+    def test_no_spawn_for_maintenance_command(self, tmp_config, monkeypatch):
+        """The root callback fires BEFORE subcommand dispatch, so it must not
+        spawn an update when the command itself is update-family — otherwise
+        `agnes update` would recursively spawn itself."""
+        from cli.main import _maybe_warn_outdated
+
+        monkeypatch.delenv("AGNES_NO_UPDATE_CHECK", raising=False)
+        monkeypatch.setattr("sys.argv", ["agnes", "update", "--quiet"])
+        with patch("cli.update_check.check", return_value=self._info()), \
+             patch("cli.main._spawn_background_update") as spawn:
+            _maybe_warn_outdated()
+        spawn.assert_not_called()
+
+    def test_no_spawn_when_update_check_disabled(self, tmp_config, monkeypatch):
+        """Inside an in-progress update tree (`AGNES_NO_UPDATE_CHECK=1`) the
+        root callback must not spawn another update."""
+        from cli.main import _maybe_warn_outdated
+
+        monkeypatch.setenv("AGNES_NO_UPDATE_CHECK", "1")
+        monkeypatch.setattr("sys.argv", ["agnes", "catalog"])
+        with patch("cli.update_check.check", return_value=self._info()), \
+             patch("cli.main._spawn_background_update") as spawn:
+            _maybe_warn_outdated()
+        spawn.assert_not_called()
+
+    def test_spawn_dedupes_per_version(self, tmp_config):
+        """The per-version marker limits spawns to one per distinct server
+        version. A freshly-installed binary only goes current NEXT session, so
+        `is_outdated()` stays true all session — without this guard every
+        command would spawn a detached update (process storm). Popen is patched
+        so no real process starts; the assertion is on the spawn count + the
+        marker the function persists across calls."""
+        from cli.main import _spawn_background_update
+
+        with patch("subprocess.Popen") as popen:
+            _spawn_background_update("2.1.0")
+            _spawn_background_update("2.1.0")  # same version → no second spawn
+            assert popen.call_count == 1
+            _spawn_background_update("2.2.0")  # new version → spawns again
+            assert popen.call_count == 2
+
+    def test_spawn_background_update_child_contract(self, tmp_config):
+        """The detached child is the non-recursive `agnes update --quiet`:
+        argv ends with `update --quiet`, env carries AGNES_NO_UPDATE_CHECK=1 so
+        it can't re-trigger detection, and stdio is fully detached. Popen is
+        patched so no real process starts."""
+        import subprocess
+
+        from cli.main import _spawn_background_update
+
+        with patch("subprocess.Popen") as popen:
+            _spawn_background_update("3.0.0")
+
+        assert popen.call_count == 1
+        argv = popen.call_args.args[0]
+        kwargs = popen.call_args.kwargs
+        assert argv[-2:] == ["update", "--quiet"]
+        assert kwargs["env"]["AGNES_NO_UPDATE_CHECK"] == "1"
+        assert kwargs["stdin"] is subprocess.DEVNULL
+        assert kwargs["stdout"] is subprocess.DEVNULL
+        assert kwargs["stderr"] is subprocess.DEVNULL

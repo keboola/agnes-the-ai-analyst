@@ -217,8 +217,8 @@ button); the repo is cloned into `${DATA_DIR}/initial-workspace/`.
 | Default | Override |
 |---------|----------|
 | `CLAUDE.md` fetched from `/api/welcome` (Jinja2-rendered) | `workspace/CLAUDE.md` shipped verbatim |
-| `.claude/settings.json` seeded with `{model: sonnet, permissions, hooks}` | Whatever your repo ships |
-| Default `/agnes-private` + `/update-agnes-plugins` commands installed | Whatever your repo's `.claude/commands/` has |
+| `.claude/settings.json` seeded with `{model: sonnet, permissions, hooks}` | Your repo's settings.json base wins for the model/permissions SEED; Agnes still re-asserts its own hooks + statusLine on top (both modes) |
+| Default `/agnes-private` + `/update-agnes-plugins` commands installed | Your repo's commands, EXCEPT Agnes re-asserts its managed `/agnes-private` + `/update-agnes-plugins` in both modes |
 
 **What still happens regardless** (data-plane concerns, not skeleton):
 PAT verification, `agnes pull` of parquets + corporate-memory rules,
@@ -231,10 +231,14 @@ PAT verification, `agnes pull` of parquets + corporate-memory rules,
   files (README, CI) don't accidentally reach analysts.
 - Shipping `.claude/init-complete` inside `workspace/` — reserved path,
   sync fails. Agnes writes this sentinel itself.
-- Hand-rolling `settings.json` with only `agnes pull` on SessionStart —
-  loses `agnes self-upgrade`, `agnes refresh-marketplace --check`, and the
-  detached `nohup agnes push` on SessionEnd that Agnes's own default ships.
-  Mirror the full default from `cli/lib/hooks.py` and deviate intentionally.
+- Hand-rolling `settings.json` SessionStart entries — unnecessary and
+  discouraged. Agnes installs and re-asserts its own SessionStart (one
+  detached `agnes update`, which converges the CLI, workspace template,
+  Agnes-owned hooks/statusLine/commands, marketplace plugins, and data pull),
+  SessionEnd (detached `agnes push`), statusLine, and managed slash-commands
+  on every `agnes init` and `agnes update`, in both default and override
+  modes. Ship only the parts you control; see
+  [`docs/initial-workspace-override.md`](initial-workspace-override.md).
 
 **Full reference:** [`docs/initial-workspace-override.md`](initial-workspace-override.md).
 
