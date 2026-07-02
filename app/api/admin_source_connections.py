@@ -25,7 +25,11 @@ from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.secrets_vault import VaultKeyNotConfiguredError
-from src.repositories import connection_secrets_repo, source_connections_repo
+from src.repositories import (
+    connection_secrets_repo,
+    source_connections_repo,
+    table_registry_repo,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,10 +152,22 @@ async def delete_connection(
     connection_id: str,
     _user: dict = Depends(require_admin),
 ):
-    """Delete a source connection. 404 if not found."""
+    """Delete a source connection. 404 if not found; 409 if tables still reference it."""
     repo = source_connections_repo()
     if repo.get(connection_id) is None:
         raise HTTPException(status_code=404, detail="connection_not_found")
+    # Refuse to orphan tables: a registry row pinned to this connection would
+    # start failing its sync with "connection_not_found" once the row is gone.
+    referencing = [t["id"] for t in table_registry_repo().list_all() if t.get("connection_id") == connection_id]
+    if referencing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "connection_in_use",
+                "message": "Repoint or unregister these tables before deleting the connection.",
+                "tables": referencing,
+            },
+        )
     repo.delete(connection_id)
     # Best-effort: clear any vault secret — ignore if none exists.
     try:

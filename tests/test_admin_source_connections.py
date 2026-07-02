@@ -17,7 +17,7 @@ Covers:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 def _auth(token: str) -> dict:
@@ -206,6 +206,42 @@ class TestSourceConnectionsDelete:
         resp = c.delete(f"{BASE}/nonexistent-id-xyz", headers=_auth(token))
         assert resp.status_code == 404
 
+    def test_delete_in_use_returns_409(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        # Create a connection, then pin a registry table to it.
+        resp = c.post(
+            BASE,
+            json={
+                "name": "test-keboola-inuse",
+                "source_type": "keboola",
+                "config": {"stack_url": "https://connection.example.com"},
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        conn_id = resp.json()["id"]
+
+        from src.repositories import table_registry_repo
+
+        table_registry_repo().register(
+            id="in.c-test.pinned_table",
+            name="pinned_table",
+            source_type="keboola",
+            bucket="in.c-test",
+            source_table="pinned_table",
+            connection_id=conn_id,
+        )
+
+        # Deleting the still-referenced connection must be refused.
+        resp2 = c.delete(f"{BASE}/{conn_id}", headers=_auth(token))
+        assert resp2.status_code == 409
+        detail = resp2.json()["detail"]
+        assert detail["error"] == "connection_in_use"
+        assert "in.c-test.pinned_table" in detail["tables"]
+        # Connection still exists.
+        assert c.get(f"{BASE}/{conn_id}", headers=_auth(token)).status_code == 200
+
 
 class TestSourceConnectionsSecret:
     def test_set_secret_without_vault_key_returns_409(self, seeded_app):
@@ -271,23 +307,28 @@ class TestSourceConnectionsTest:
         assert resp.status_code == 201
         conn_id = resp.json()["id"]
 
-        # Mock httpx to return fake project info
+        # Mock httpx to return fake project info. The endpoint uses an async
+        # client (`async with httpx.AsyncClient(...)` + `await client.get`), so
+        # the mock must honor the async context-manager + awaitable-get protocol.
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"id": "123", "name": "Test Project"}
 
-        with patch("app.api.admin_source_connections.httpx") as mock_httpx:
-            mock_client = MagicMock()
-            mock_client.__enter__ = MagicMock(return_value=mock_client)
-            mock_client.__exit__ = MagicMock(return_value=False)
-            mock_client.get.return_value = mock_response
-            mock_httpx.Client.return_value = mock_client
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=mock_response)
 
+        with (
+            patch("app.api.admin_source_connections.httpx.AsyncClient", return_value=mock_client),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+        ):
             resp2 = c.post(f"{BASE}/{conn_id}/test", headers=_auth(token))
 
         assert resp2.status_code == 200
         data = resp2.json()
-        assert "ok" in data
+        assert data["ok"] is True
+        assert data["project_name"] == "Test Project"
 
     def test_test_endpoint_missing_connection_returns_404(self, seeded_app):
         c = seeded_app["client"]
