@@ -145,15 +145,34 @@ BATCH_CONTRADICTION_SCHEMA = {
                 "properties": {
                     "candidate_id": {"type": "string"},
                     "is_contradiction": {"type": "boolean"},
+                    # anyOf (string-with-enum OR null), NOT a union type +
+                    # enum-with-None on one node: strict structured outputs
+                    # reject the latter (400). anyOf keeps the enum as a
+                    # hard constraint while still allowing null for
+                    # non-contradictions. _VALID_SEVERITIES / _VALID_ACTIONS in
+                    # contradiction.py mirror these enums (defense-in-depth).
                     "severity": {
-                        "type": ["string", "null"],
-                        "enum": ["hard", "soft", None],
+                        "anyOf": [
+                            {"type": "string", "enum": ["hard", "soft"]},
+                            {"type": "null"},
+                        ],
                     },
                     "explanation": {"type": "string"},
                     "resolution_action": {
-                        "type": ["string", "null"],
-                        "enum": ["kept_a", "kept_b", "merge", "both_valid", None],
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "enum": ["kept_a", "kept_b", "merge", "both_valid"],
+                            },
+                            {"type": "null"},
+                        ],
                     },
+                    # Plain union types (no "enum" key on the same node) are
+                    # accepted by strict structured outputs. The documented
+                    # rejection targets nodes that combine both an "enum" AND
+                    # a "type": [..., "null"] list — the anyOf pattern above
+                    # handles those. These two fields carry no enum constraint,
+                    # so the simple union type is safe here.
                     "resolution_merged_content": {"type": ["string", "null"]},
                     "resolution_justification": {"type": ["string", "null"]},
                 },

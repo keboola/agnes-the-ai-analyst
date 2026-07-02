@@ -11,6 +11,87 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.73.4] - 2026-07-02
+
+### Added
+- `agnes update` — one idempotent, best-effort convergence of the workspace + CLI: CLI self-upgrade, workspace template (override 3-way merge with `.bak` backups / default `CLAUDE.md` refresh), Agnes-owned hooks/statusLine/commands, marketplace plugins, and data pull. Single-instance locked (`~/.config/agnes/update.lock`), runnable from any directory, with a per-run report appended to `<workspace>/.claude/agnes/update.log`. This is the recommended way to repair a broken install or pick up a new release.
+- A corrupt `<workspace>/.claude/settings.json` is now backed up to `settings.json.corrupt.<ts>` and rebuilt, instead of leaving hook install/repair permanently skipped.
+
+### Changed
+- CLI version drift no longer shows an interactive `Upgrade now? [Y/n]` prompt. Instead it kicks off a detached background `agnes update` (no confirmation); the SessionStart hook runs the same single `agnes update --quiet` (replacing the prior `self-upgrade; pull` + `refresh-marketplace --check` entries).
+- `agnes init` now installs the Agnes-owned hooks / statusLine / managed slash-commands in BOTH default and override (Initial Workspace Template) modes — in override mode they are applied on top of the template after extraction.
+- **BREAKING** `agnes init --force` over an existing template workspace (override reinstall) now backs up analyst-modified files to `<name>.bak.<ts>` via the 3-way merge instead of blind-overwriting them. A fresh install is unchanged.
+- The generated setup prompt routes an already-initialised workspace (a `.claude/init-complete` sentinel exists) to `agnes update` instead of a plain `agnes init` that would refuse.
+- `agnes update`'s CLI-step report line now names the target version on the Windows `staged` and `deferred` paths (e.g. `0.72.6 -> 0.72.7 (windows deferred install; …)`), so `update.log` says WHAT is being installed — matching what the in-place `updated` path already recorded.
+
+### Fixed
+- **Windows deferred self-update now actually installs.** The detached helper staged the downloaded wheel as `<version>.whl` and `uv tool install <file>` rejects that ("Must have a version" — it parses the PEP 427 `name-version-tags` filename), so every deferred update failed `rc=2` and was mis-logged as "venv locked"; the wheel is now staged under its real filename (from the server's download URL). The helper is also now **headless** — every child it spawns (`tasklist` polled ~1/s while waiting for the agnes process to exit, the `uv tool install` retries, the verify `agnes --version`) runs `CREATE_NO_WINDOW`, so no console window flashes during the update (previously a windowless parent spawning console children made Windows allocate one per call). It now captures uv's real stderr and **only retries on genuine file-lock errors** (any other failure fails fast with the real message instead of burning the retry budget mislabeled as locked), and while the swap runs it drops a `deferred-update.active` sentinel so `agnes statusline` steps aside and a busy status bar doesn't keep re-locking the venv being replaced. Windows-only; the POSIX in-place upgrade is unchanged.
+- `agnes update` now keeps the workspace's Agnes-stack plugins enabled after a template-merge. Step 2 (workspace template) can reset `.claude/settings.json` and drop its `enabledPlugins`; the marketplace step only re-added them on a full reconcile (bootstrap or marketplace drift), so on the common no-drift run the stack plugins were left installed-but-disabled in the workspace. The no-drift path now reasserts `enabledPlugins` from the local marketplace manifest — cheap (no fetch), idempotent — mirroring how hooks/statusLine are reasserted unconditionally.
+
+### Removed
+- The interactive upgrade prompt (`cli/upgrade_prompt.py`) — superseded by the unattended background `agnes update`.
+
+### Internal
+- `cli/lib/push_lock.py` gained `acquire_path_or_skip(path)` (a path-scoped cross-platform `filelock`) reused for the update lock.
+- `agnes refresh-marketplace --check` exits a dedicated drift code (`20`) so `agnes update` can decide whether to run a full reconcile without re-implementing the ls-remote comparison.
+
+## [0.73.3] - 2026-07-02
+
+### Added
+- **Generic Jira custom-field refresh** via `JIRA_REFRESH_FIELDS`. An operator lists the custom fields they want kept fresh on tickets (`field_id` or `field_id:column`, comma-separated, no defaults); the webhook overlay and the 15-minute poll re-fetch them with the primary token and overwrite them on the ticket, and the transform emits one JSON-text column per field on the `issues` table (column = the alias, or the field id). SLA fields are not special — they are just entries in the list. Joins are implicit: the value lives on the ticket row, keyed by `issue_key`. A configured column name that would collide with a built-in `issues` column (e.g. `resolution`, `status`) is prefixed with `cf_` so built-in values are never overwritten.
+- **`verify_sla_access` field preflight** (`connectors/jira/scripts/verify_sla_access.py`). Discovers an instance's custom fields (`--list-fields`, id + name + type) and verifies, against the live API, that the configured fields are readable with the primary token (`--issue KEY`) — classifying each as present / permission-error / null across the domain and `api.atlassian.com` gateway URLs. Never prints token/email values; exits non-zero when no field is readable.
+
+### Changed
+- **Jira field refresh uses the single primary token** (`JIRA_EMAIL` / `JIRA_API_TOKEN`) instead of a separate JSM service account. Fields are read via the regular issue REST API — the domain URL by default, or the `api.atlassian.com` gateway when `JIRA_CLOUD_ID` is set (required for a scoped token). The account needs whatever read permission each field requires (e.g. a JSM Agent licence for SLA fields).
+
+### Fixed
+- **Jira poll/backfill early-exit when `JIRA_REFRESH_FIELDS` is not configured** — `poll_sla run()` now logs a warning and returns immediately (no parquet scan, no API calls) when no fields are configured; `backfill_sla main()` does the same and exits 0. Previously both scripts would silently iterate over all open issues and do nothing.
+- **`backfill_sla.py` temp-file ACL** — `process_file` now calls `os.fchmod(fd, 0o660)` after `mkstemp`, matching `poll_sla.py` and `service.py`. Without it, the default 0600 mode overrides the POSIX ACL mask and breaks group-read access (e.g. `www-data` / deploy user).
+
+### Removed
+- **BREAKING (config): the second-token SLA path is removed** — `JIRA_SLA_EMAIL` and `JIRA_SLA_API_TOKEN` are no longer read. A deployment that used a separate JSM service account must instead give the primary token's account the required read permission (and set `JIRA_CLOUD_ID` if that token is scoped).
+- **BREAKING (schema): the flat SLA columns are removed** from the `issues` table (`first_response_*`, `time_to_resolution_*`). SLA now arrives as a JSON-text column via `JIRA_REFRESH_FIELDS`; SLA queries switch to `json_extract(<column>, '$.ongoingCycle.elapsedTime.millis')` etc. Replaces the previous hard-coded `customfield_10328` / `customfield_10161`, which were specific to one Jira instance.
+
+### Internal
+
+## [0.73.2] - 2026-07-02
+
+### Added
+- `POST /api/admin/register-table` accepts `defer_rebuild` (BigQuery only): skips the synchronous, O(registry) per-insert rebuild of the extract + master views, returning `202 registered` without making the table queryable yet. New companion `POST /api/admin/registry/rebuild` triggers that rebuild once. Bulk onboarding can now register many tables with `defer_rebuild=true` and rebuild a single time, instead of one full registry-wide rebuild per table (which made large batches pathologically slow and starved foreground requests).
+
+### Fixed
+- `POST /api/admin/registry/rebuild` now emits an audit-log entry and returns HTTP 422 when the instance is not BigQuery, preventing accidental rebuilds on non-BigQuery instances.
+- `POST /api/admin/registry/rebuild` now calls `invalidate_all()` after a synchronous rebuild so stale catalog entries are cleared immediately.
+
+## [0.73.1] - 2026-07-02
+
+### Fixed
+- Corporate-memory contradiction check no longer fails with a 400 from the LLM provider. `BATCH_CONTRADICTION_SCHEMA`'s nullable `severity` / `resolution_action` fields now use `anyOf` (a string-with-enum branch or null) instead of a union `["string", "null"]` type combined with an `enum` containing `null`, which strict structured outputs reject — every contradiction check was permanently broken. The enum stays enforced at the schema level, so the model still can't emit out-of-range values.
+
+## [0.73.0] - 2026-07-02
+
+### Added
+- `/admin/contribute-skill` page (admin-only) that accepts a pasted Claude Code
+  `SKILL.md` and publishes it as a one-skill plugin in a local, sync-immune
+  "Agnes Contributed" marketplace — the landing target for an external "Load
+  skill to Agnes" button (the external tool copies the skill and opens this page
+  with the skill in the URL fragment / clipboard). Reuses the built-in-marketplace
+  pattern (`is_builtin` registry row + sentinel URL) so the nightly git-sync never
+  resets it and the boot re-seed never wipes it; refreshes the plugin cache and
+  RBAC-grants the new plugin (Admins-only by default, Everyone to publish
+  instance-wide). No new schema, repository method, or auth surface — uses the
+  admin session and existing marketplace primitives. New module
+  `src/skill_contribution.py`.
+- Contributed-skill triple-surface: REST (`GET`/`POST`/`DELETE /api/admin/contributed-skills`), CLI (`agnes admin skill list/contribute/delete`), and MCP (`contribute_skill`, `delete_contributed_skill`) alongside the existing `/admin/contribute-skill` web form.
 - `/me/ai-connector` now includes a collapsible, per-agent setup guide directly under the connector URL. A button picker (Claude Desktop, Claude.ai, Cursor, VS Code / GitHub Copilot, ChatGPT) shows only the selected agent's steps; Cursor and VS Code include copyable config snippets. Replaces the old static client chips and corrects the list to OAuth-capable agents only (drops Gemini and Microsoft Copilot). Collapsed by default.
 - `agnes catalog --metrics --show` now prints a `Notes:` section when the metric has notes — previously only visible via `--show --json`. `sql_variants` stays `--json`-only (a single variant can run 15+ lines of SQL); notes already flag when one exists. The generated workspace `CLAUDE.md` Metrics Workflow gained a step pointing analysts to `Notes:` and to `--json` when a note references a variant.
 

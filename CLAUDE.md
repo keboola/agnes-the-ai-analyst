@@ -150,12 +150,12 @@ git branch -d <branch-name>
 
 `agnes pull` is the canonical analyst-side distribution path: pulls the RBAC-filtered manifest from the server, downloads parquets whose MD5 changed (skipping `query_mode='remote'` rows), rebuilds local DuckDB views over them. `agnes push` mirrors it for the upload direction (sessions, CLAUDE.local.md).
 
-`agnes init` writes two hooks into `<workspace>/.claude/settings.json`:
+`agnes init` writes Claude Code hooks into `<workspace>/.claude/settings.json`:
 
-- `SessionStart` → `agnes pull --quiet` — pulls fresh parquets at the start of every Claude Code session
+- `SessionStart` → one detached `agnes update --quiet` — the unified convergence: self-upgrade the CLI, apply the workspace template, re-assert the Agnes-owned hooks/statusLine/commands, refresh marketplace plugins, and `agnes pull` fresh parquets. Run in the background (`( nohup … & )`) so it never blocks session start; a freshly-installed CLI binary activates next session.
 - `SessionEnd`   → `agnes push --quiet` — uploads session jsonl + `CLAUDE.local.md` to the server
 
-Both pass `--quiet` so they don't pollute Claude Code stdout, and trail with `|| true` so a server outage never blocks a session. Workspace-level (not user-home) so the hooks fire only when Claude Code opens this analyst workspace.
+Both trail with `; true` and run detached (`( nohup … & )`) so a server outage or slow sync never blocks a session. Workspace-level (not user-home) so the hooks fire only when Claude Code opens this analyst workspace. `agnes update` is also the recommended manual command to repair a broken install or pick up a new release; it holds a single-instance lock so only one runs at a time.
 
 Admin RBAC for auto-sync: `query_mode IN ('local', 'materialized')` plus a `resource_grants` row for one of the analyst's groups → table appears in their manifest → `agnes pull` downloads it. No per-user sync config; the admin layer is the single source of truth.
 

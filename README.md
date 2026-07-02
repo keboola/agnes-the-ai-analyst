@@ -51,7 +51,7 @@ The first three modes are what `agnes pull` distributes to analysts. The fourth 
 
 Admins manage per-source registrations through the `/admin/tables` UI (per-connector tabs for BigQuery / Keboola / Jira) or the `agnes admin register-table` CLI; per-row "Manage access" deep-links to `/admin/access` for granting tables to user groups via `resource_grants(group, ResourceType.TABLE, table_id)`.
 
-Analysts get a closed loop with Claude Code: `agnes init` writes `<workspace>/.claude/settings.json` with SessionStart (`agnes pull --quiet`) and SessionEnd (`agnes push --quiet`) hooks so every Claude Code session starts with fresh RBAC-filtered parquets and ends with the session log uploaded back.
+Analysts get a closed loop with Claude Code: `agnes init` writes `<workspace>/.claude/settings.json` with a SessionStart hook (a detached `agnes update --quiet` that converges the CLI, workspace, plugins and pulls fresh RBAC-filtered parquets) and a SessionEnd hook (`agnes push --quiet`) so every session starts current and ends with the session log uploaded back.
 
 Adding a new source means creating `connectors/<name>/extractor.py` that produces `extract.duckdb` with a `_meta` table (`table_name`, `description`, `rows`, `size_bytes`, `extracted_at`, `query_mode`). The orchestrator attaches it automatically.
 
@@ -96,7 +96,7 @@ agnes push  # push session jsonl + CLAUDE.local.md back to the server
 
 `agnes init` writes Claude Code lifecycle hooks into `<workspace>/.claude/settings.json`:
 
-- `SessionStart` → `agnes pull --quiet` — fresh data on every session
+- `SessionStart` → one detached `agnes update --quiet` — converges the CLI, workspace template, Agnes-owned hooks/statusLine/commands, marketplace plugins, and pulls fresh data; runs in the background so it never blocks session start
 - `SessionEnd` → `agnes push --quiet` — uploads notes and session log
 
 Hooks live at workspace level so they only fire in this analyst workspace, not in unrelated Claude Code sessions on the same machine.

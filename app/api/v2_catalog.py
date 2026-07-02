@@ -230,6 +230,21 @@ def invalidate_for_table(table_id: str) -> None:
     v2_sample._sample_cache.clear()
 
 
+def invalidate_all() -> None:
+    """Registry-wide analogue of ``invalidate_for_table`` — drop every per-table
+    catalog cache (rows, schema, sample). For operations that rebuild many tables
+    at once (e.g. ``POST /api/admin/registry/rebuild``), where clearing one schema
+    entry at a time would miss tables and a catalog read taken before the rebuild
+    could otherwise serve a stale (no-view) schema until TTL expiry. As with
+    ``invalidate_for_table``, the persistent ``bq_metadata_cache`` is left to the
+    scheduler-driven refresh."""
+    from app.api import v2_sample, v2_schema
+
+    _table_rows_cache.clear()
+    v2_schema._schema_cache.clear()
+    v2_sample._sample_cache.clear()
+
+
 def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
     rows = _table_rows_cache.get(_TABLE_ROWS_KEY)
     if rows is None:
