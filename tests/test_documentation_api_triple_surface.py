@@ -233,6 +233,11 @@ _EXEMPT: dict[str, str] = {
         "(Keboola token, BigQuery SA JSON). Write-only, no analyst CLI/MCP analogue — "
         "instance admins set these once via the /admin/datasource-credentials UI."
     ),
+    "/api/admin/validate-gws-credentials": (
+        "Admin-only format check for the GWS OAuth client_id used by the "
+        "/admin/datasource-credentials UI 'Test' button. No network call, no "
+        "persistence, no analyst CLI/MCP analogue."
+    ),
     "/api/admin/reports/marketplace-digest": _REPORTS_REASON,
     "/api/mcp-connect/token": _MCP_CONNECT_REASON,
     "/api/admin/source-connections/{connection_id}": _SOURCE_CONNECTIONS_CRUD_REASON,

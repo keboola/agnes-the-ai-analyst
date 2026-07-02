@@ -874,6 +874,10 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/admin/datasource-secrets
 - /api/admin/datasource-secrets/{name}
 
+`POST /api/admin/validate-gws-credentials` format-checks a Google Workspace OAuth `client_id` (no network call, no persistence) for the UI "Test" button; returns `{"valid": bool}`.
+
+- /api/admin/validate-gws-credentials
+
 ### `/api/admin/slack-secrets` — Slack secret management
 
 - /api/admin/slack-secrets

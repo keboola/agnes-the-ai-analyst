@@ -1714,6 +1714,9 @@ KNOWN_UNTESTED = {
     # Admin datasource secrets (per-name mutations)
     "DELETE /api/admin/datasource-secrets/{name}",
     "PUT /api/admin/datasource-secrets/{name}",
+    # GWS client_id format check (no DB/network) — covered by
+    # tests/test_admin_datasource_secrets.py
+    "POST /api/admin/validate-gws-credentials",
     # Admin store submissions (detail/actions beyond list)
     "DELETE /api/admin/store/submissions/{submission_id}",
     "GET /api/admin/store/submissions/{submission_id}",
