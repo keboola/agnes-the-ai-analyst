@@ -23,6 +23,25 @@ def _seed_two_tables(conn):
     )
 
 
+def _seed_server_only(conn):
+    from src.repositories.table_registry import TableRegistryRepository
+    repo = TableRegistryRepository(conn)
+    # Materialized on the server but NOT distributed to analyst laptops
+    # (`agnes pull` skips server_only rows), so only `agnes query --remote`
+    # can query it — local `agnes query` fails with "table does not exist".
+    repo.register(
+        id="server_metric", name="server_metric", source_type="keboola",
+        bucket="usage", source_table="server_metric",
+        query_mode="materialized", server_only=True,
+    )
+    # A BigQuery-materialized table can also be server_only.
+    repo.register(
+        id="bq_server_metric", name="bq_server_metric", source_type="bigquery",
+        bucket="ds", source_table="bq_server_metric",
+        query_mode="materialized", server_only=True,
+    )
+
+
 def _make_admin(conn) -> dict:
     """Create an admin user + grant Admin-group membership; return user dict."""
     import uuid
@@ -78,6 +97,62 @@ class TestCatalogShape:
             assert "fetch_via" in row
         finally:
             conn.close()
+
+
+class TestServerOnlyCatalog:
+    """A ``server_only=true`` table is materialized on the server but not
+    synced to analyst laptops. Its catalog metadata must say so: expose the
+    ``server_only`` flag and point ``fetch_via`` at ``agnes query --remote``,
+    not the misleading "already local" / snapshot-create hints."""
+
+    def test_server_only_keboola_table_points_to_remote(self, reload_db):
+        from app.api import v2_catalog
+        conn = reload_db.get_system_db()
+        try:
+            v2_catalog._table_rows_cache.clear()
+            _seed_server_only(conn)
+            admin = _make_admin(conn)
+            data = v2_catalog.build_catalog(conn, admin)
+            row = next(t for t in data["tables"] if t["id"] == "server_metric")
+            assert "server_only" in row and row["server_only"] is True
+            assert "--remote" in row["fetch_via"], row["fetch_via"]
+            assert "already local" not in row["fetch_via"]
+        finally:
+            conn.close()
+            v2_catalog._table_rows_cache.clear()
+
+    def test_server_only_bigquery_table_points_to_remote_not_snapshot(self, reload_db):
+        from app.api import v2_catalog
+        conn = reload_db.get_system_db()
+        try:
+            v2_catalog._table_rows_cache.clear()
+            _seed_server_only(conn)
+            admin = _make_admin(conn)
+            data = v2_catalog.build_catalog(conn, admin)
+            row = next(t for t in data["tables"] if t["id"] == "bq_server_metric")
+            assert "server_only" in row and row["server_only"] is True
+            assert "--remote" in row["fetch_via"], row["fetch_via"]
+            assert "snapshot create" not in row["fetch_via"]
+        finally:
+            conn.close()
+            v2_catalog._table_rows_cache.clear()
+
+    def test_regular_local_table_still_reports_already_local(self, reload_db):
+        # No over-correction: a normally-distributed local table keeps its
+        # "already local" hint and reports server_only=False.
+        from app.api import v2_catalog
+        conn = reload_db.get_system_db()
+        try:
+            v2_catalog._table_rows_cache.clear()
+            _seed_two_tables(conn)
+            admin = _make_admin(conn)
+            data = v2_catalog.build_catalog(conn, admin)
+            row = next(t for t in data["tables"] if t["id"] == "orders")
+            assert row.get("server_only") is False
+            assert "already local" in row["fetch_via"]
+        finally:
+            conn.close()
+            v2_catalog._table_rows_cache.clear()
 
 
 class TestCatalogCacheRbac:

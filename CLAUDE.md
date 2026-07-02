@@ -198,6 +198,12 @@ Tables in `agnes catalog` have a `query_mode`:
      `bq."<dataset>"."<table>"` paths are registry-gated — unregistered
      paths return 403 `bq_path_not_registered`.
 
+- **`server_only=true`** (independent of `query_mode`): materialized/local on
+  the server but NOT synced to the laptop (`agnes pull` skips it), so there is
+  no local view. Query it server-side via `agnes query --remote "SELECT … FROM
+  <table>"`; local `agnes query` fails with "table does not exist". The catalog
+  surfaces this as the `server_only` field and in `fetch_via`.
+
 ### `agnes snapshot create` workflow (preferred for remote tables)
 
     # 1. estimate first

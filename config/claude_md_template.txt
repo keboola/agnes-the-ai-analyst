@@ -152,10 +152,11 @@ Tables you don't see in `server/parquet/` may still be queryable.
 | Field | What it tells you | How to use it |
 |---|---|---|
 | `query_mode` | `local` (parquet on laptop) / `remote` (BQ on demand) / `materialized` (synced parquet of a BQ result) | Picks the tool — see decision tree below |
+| `server_only` | `true` = materialized/local on the server but NOT synced to your laptop (`agnes pull` skips it) | If `true`, query via `agnes query --remote` regardless of `query_mode` — local `agnes query` fails with "table does not exist" |
 | `source_type` | `keboola` / `bigquery` / `jira` | Determines SQL dialect |
 | `sql_flavor` | `duckdb` for local sources, `bigquery` for `--remote` queries on BQ rows | What syntax `--where` expects |
 | `where_examples` | 1–3 example WHERE predicates that are valid for this table's dialect | Copy as starting point for `--where` |
-| `fetch_via` | Pre-formatted `agnes snapshot create …` template for this table | The canonical "how do I get a slice of this table" command |
+| `fetch_via` | The canonical command to get this table's data (`agnes query` for local, `agnes snapshot create …` for remote, `agnes query --remote` for server-only) | Copy it — it's the right "how do I get this table" command |
 | `rough_size_hint` | Coarse size hint (`small` / `medium` / `large` or null when unknown) | Bigger than `medium` → never `agnes query --remote` without a tight `--where`; use `agnes snapshot create` |
 
 ```
@@ -166,6 +167,10 @@ agnes describe <table> -n 5                       # sample rows (works on local 
 ```
 
 ### Decision tree — pick the right tool BEFORE writing SQL
+
+**First check `server_only`:** if `true`, the table is not on your laptop —
+use `agnes query --remote "..."` regardless of `query_mode` (local `agnes query`
+would fail with "table does not exist"). Otherwise branch on `query_mode`:
 
 ```
                        ┌─ local        → agnes query "SELECT ..."
