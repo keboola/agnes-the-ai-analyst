@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.73.0] - 2026-07-02
+
+### Added
 - `/admin/contribute-skill` page (admin-only) that accepts a pasted Claude Code
   `SKILL.md` and publishes it as a one-skill plugin in a local, sync-immune
   "Agnes Contributed" marketplace — the landing target for an external "Load
