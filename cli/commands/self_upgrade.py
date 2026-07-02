@@ -157,8 +157,7 @@ def _gc_wheel_cache(keep_name: str) -> None:
         pass
 
 
-def _record_wheel_cache(version: str, wheel_path: Path,
-                        download_url: Optional[str] = None) -> dict:
+def _record_wheel_cache(version: str, wheel_path: Path, download_url: Optional[str] = None) -> dict:
     """Copy a verified wheel into the cache, GC to the last N, and return the
     ``{version, wheel_filename, sha256}`` metadata. ``{}`` on any error (the
     caller still records the download URL — the cache is a best-effort rollback
@@ -174,7 +173,10 @@ def _record_wheel_cache(version: str, wheel_path: Path,
         cache.mkdir(parents=True, exist_ok=True)
         fname = _staged_wheel_name(download_url, version)
         dest = cache / fname
-        shutil.copyfile(wheel_path, dest)
+        # Skip the copy when the wheel is already staged at the destination
+        # (the POSIX staged-first path lands the file here directly).
+        if wheel_path.resolve() != dest.resolve():
+            shutil.copyfile(wheel_path, dest)
         sha = _sha256_file(dest)
         _gc_wheel_cache(keep_name=fname)
         return {"version": version, "wheel_filename": fname, "sha256": sha}
@@ -217,7 +219,10 @@ def _uv_tool_bin_path() -> Optional[Path]:
     bin_dir: Optional[Path] = None
     try:
         out = subprocess.run(
-            ["uv", "tool", "dir", "--bin"], capture_output=True, text=True, timeout=5,
+            ["uv", "tool", "dir", "--bin"],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if out.returncode == 0:
             bin_dir = Path(out.stdout.strip())
@@ -318,7 +323,10 @@ def _python_is_uv_tool_install() -> bool:
         return False
     try:
         out = subprocess.run(
-            ["uv", "tool", "dir"], capture_output=True, text=True, timeout=5,
+            ["uv", "tool", "dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if out.returncode != 0:
             return False
@@ -400,9 +408,7 @@ def _classify_install_method() -> tuple[str, dict]:
 
 def _install_with_uv(download_url: str, *, quiet: bool) -> int:
     out = subprocess.DEVNULL if quiet else None
-    return subprocess.run(
-        ["uv", "tool", "install", "--force", download_url], stdout=out
-    ).returncode
+    return subprocess.run(["uv", "tool", "install", "--force", download_url], stdout=out).returncode
 
 
 def _install_with_pip(download_url: str, *, quiet: bool, user: bool = False) -> int:
@@ -418,9 +424,7 @@ def _install_with_pip(download_url: str, *, quiet: bool, user: bool = False) -> 
     out = subprocess.DEVNULL if quiet else None
     with tempfile.TemporaryDirectory(prefix="agnes_cli.") as td:
         wheel_path = Path(td) / "agnes.whl"
-        rc = subprocess.run(
-            ["curl", "-fsSL", "-o", str(wheel_path), download_url], stdout=out
-        ).returncode
+        rc = subprocess.run(["curl", "-fsSL", "-o", str(wheel_path), download_url], stdout=out).returncode
         if rc != 0:
             return rc
         cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall"]
@@ -437,9 +441,7 @@ def _download_wheel(url: str, dest_dir: Path, *, quiet: bool) -> Optional[Path]:
     stays mockable in tests that stub ``subprocess.run``."""
     out = subprocess.DEVNULL if quiet else None
     wheel_path = dest_dir / "agnes.whl"
-    rc = subprocess.run(
-        ["curl", "-fsSL", "-o", str(wheel_path), url], stdout=out
-    ).returncode
+    rc = subprocess.run(["curl", "-fsSL", "-o", str(wheel_path), url], stdout=out).returncode
     return wheel_path if rc == 0 else None
 
 
@@ -451,9 +453,7 @@ def _install_local_wheel(wheel: Path, *, method: str, quiet: bool, user: bool) -
     artifact, so a rollback works even after the server has rotated its wheel."""
     out = subprocess.DEVNULL if quiet else None
     if method == "uv":
-        return subprocess.run(
-            ["uv", "tool", "install", "--force", str(wheel)], stdout=out
-        ).returncode
+        return subprocess.run(["uv", "tool", "install", "--force", str(wheel)], stdout=out).returncode
     cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall"]
     if user:
         cmd.append("--user")
@@ -472,6 +472,11 @@ def _helper_interpreter() -> Optional[str]:
     candidate = Path(sys.base_prefix) / exe
     if candidate.exists() and not _path_is_within(candidate, Path(sys.prefix)):
         return str(candidate)
+    # Fallback: search PATH for a python outside the running venv.
+    for name in ("python", "python3"):
+        found = shutil.which(name)
+        if found and not _path_is_within(Path(found), Path(sys.prefix)):
+            return found
     return None
 
 
@@ -527,8 +532,15 @@ def _spawn_windows_deferred_update(info: UpdateInfo, prior_meta: dict, *, quiet:
     except OSError:
         return False
     rollback = _cached_wheel_for(prior_meta)  # None on first-ever upgrade
-    argv = [py, str(helper), str(os.getpid()), str(staged), info.latest,
-            str(_config_dir()), str(rollback) if rollback else ""]
+    argv = [
+        py,
+        str(helper),
+        str(os.getpid()),
+        str(staged),
+        info.latest,
+        str(_config_dir()),
+        str(rollback) if rollback else "",
+    ]
     creationflags = 0
     if sys.platform == "win32":
         # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW — the
@@ -536,8 +548,11 @@ def _spawn_windows_deferred_update(info: UpdateInfo, prior_meta: dict, *, quiet:
         creationflags = 0x00000008 | 0x00000200 | 0x08000000
     try:
         subprocess.Popen(
-            argv, creationflags=creationflags, close_fds=True,
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            argv,
+            creationflags=creationflags,
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
     except OSError:
@@ -559,20 +574,21 @@ def _smoke_test_new_binary(install_method: str, expected_version: str, *, user: 
         env = {**os.environ, "AGNES_NO_UPDATE_CHECK": "1", _SENTINEL_ENV: "1"}
         out = subprocess.run(
             [str(binary), "--version"],
-            capture_output=True, text=True, timeout=10, env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
         )
         if out.returncode != 0:
             return False, f"exit {out.returncode}: {out.stderr.strip()[:200]}"
         # Use Version() equality (PEP 440-aware) so "0.40.0" doesn't match "0.40.10".
         from packaging.version import InvalidVersion, Version
+
         tokens = out.stdout.strip().split()
         actual_str = tokens[-1] if tokens else ""
         try:
             if Version(actual_str) != Version(expected_version):
-                return False, (
-                    f"version mismatch: expected {expected_version}, "
-                    f"got {actual_str}"
-                )
+                return False, (f"version mismatch: expected {expected_version}, got {actual_str}")
         except InvalidVersion:
             return False, f"unparseable version output: {out.stdout.strip()[:80]}"
         return True, out.stdout.strip()
@@ -629,10 +645,10 @@ def _try_refresh_hooks(*, quiet: bool) -> None:
 
 def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, _Offline, None]:
     """Returns:
-      UpdateInfo  — install this wheel
-      _UNREACHABLE — --force specified, server probe failed
-      _OFFLINE    — --force NOT specified, server probe failed (no opinion)
-      None        — CLI is genuinely current, nothing to do
+    UpdateInfo  — install this wheel
+    _UNREACHABLE — --force specified, server probe failed
+    _OFFLINE    — --force NOT specified, server probe failed (no opinion)
+    None        — CLI is genuinely current, nothing to do
     """
     # Always invalidate the cache — an explicit `agnes self-upgrade` is
     # the user asking "is there a newer version RIGHT NOW", not "use the
@@ -651,9 +667,7 @@ def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, _Offline, None
     return info
 
 
-def _do_install_with_smoke_and_rollback(
-    info: UpdateInfo, *, quiet: bool
-) -> int:
+def _do_install_with_smoke_and_rollback(info: UpdateInfo, *, quiet: bool) -> int:
     """Install → smoke-test → roll back on failure.
 
     Returns ``_INSTALL_OK`` / ``_INSTALL_FAIL`` / ``_INSTALL_DEFERRED`` (the
@@ -701,7 +715,8 @@ def _do_install_with_smoke_and_rollback(
             if not quiet:
                 typer.echo(
                     "agnes self-upgrade: update staged; it finishes after this "
-                    "process exits (Windows deferred install).", err=True,
+                    "process exits (Windows deferred install).",
+                    err=True,
                 )
             return _INSTALL_STAGED
         server = get_server_url().rstrip("/")
@@ -727,7 +742,31 @@ def _do_install_with_smoke_and_rollback(
         )
         return _INSTALL_DEFERRED
 
-    if method == "uv-tool":
+    # Stage the wheel to the cache dir first so we only download once: install
+    # from the local file, then cache the same artifact after smoke passes.
+    # (Mirrors the Windows deferred-update pattern in _spawn_windows_deferred_update.)
+    cache = _wheel_cache_dir()
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        cache = None  # fall back to URL-based install; second download will run
+
+    staged: Optional[Path] = None
+    if cache is not None:
+        with tempfile.TemporaryDirectory(prefix="agnes_stage.") as td:
+            dl = _download_wheel(info.download_url, Path(td), quiet=quiet)
+            if dl is not None:
+                staged_name = _staged_wheel_name(info.download_url, info.latest)
+                staged_dest = cache / staged_name
+                try:
+                    shutil.copyfile(dl, staged_dest)
+                    staged = staged_dest
+                except OSError:
+                    staged = None
+
+    if staged is not None:
+        rc = _install_local_wheel(staged, method=smoke_method, quiet=quiet, user=is_user)
+    elif method == "uv-tool":
         rc = _install_with_uv(info.download_url, quiet=quiet)
     else:
         rc = _install_with_pip(info.download_url, quiet=quiet, user=is_user)
@@ -739,21 +778,15 @@ def _do_install_with_smoke_and_rollback(
 
     ok, detail = _smoke_test_new_binary(smoke_method, expected_version=info.latest, user=is_user)
     if not ok:
-        sys.stderr.write(
-            f"agnes self-upgrade: new binary failed smoke test ({detail}).\n"
-        )
+        sys.stderr.write(f"agnes self-upgrade: new binary failed smoke test ({detail}).\n")
         server = get_server_url().rstrip("/")
         bootstrap_recovery = f"  Manual recovery: curl -fsSL {server}/cli/install.sh | bash\n"
         cached = _cached_wheel_for(prior_meta)
         if cached is not None:
             sys.stderr.write(f"  rolling back to cached {prior_meta.get('version')}\n")
-            rb_rc = _install_local_wheel(
-                cached, method=smoke_method, quiet=True, user=is_user
-            )
+            rb_rc = _install_local_wheel(cached, method=smoke_method, quiet=True, user=is_user)
             if rb_rc != 0:
-                sys.stderr.write(
-                    f"  rollback ALSO failed (rc={rb_rc}); CLI is in a broken state.\n"
-                )
+                sys.stderr.write(f"  rollback ALSO failed (rc={rb_rc}); CLI is in a broken state.\n")
                 sys.stderr.write(bootstrap_recovery)
         elif prior_url and prior_url != info.download_url:
             # No cached artifact (e.g. upgraded from a pre-cache version) — fall
@@ -766,28 +799,26 @@ def _do_install_with_smoke_and_rollback(
                 else _install_with_pip(prior_url, quiet=True, user=is_user)
             )
             if rb_rc != 0:
-                sys.stderr.write(
-                    f"  rollback ALSO failed (rc={rb_rc}); CLI is in a broken state.\n"
-                )
+                sys.stderr.write(f"  rollback ALSO failed (rc={rb_rc}); CLI is in a broken state.\n")
                 sys.stderr.write(bootstrap_recovery)
         else:
-            sys.stderr.write(
-                "  no usable cached wheel for rollback; skipped.\n"
-            )
+            sys.stderr.write("  no usable cached wheel for rollback; skipped.\n")
             sys.stderr.write(bootstrap_recovery)
         record_outcome(success=False, reason=f"smoke: {detail}")
         return _INSTALL_FAIL
 
-    # Success: cache the verified wheel (so the NEXT upgrade can roll back to
-    # THIS one) and record the full last-known-good metadata.
+    # Success: record the wheel cache entry. If we already staged the wheel
+    # into the cache dir above, just compute its sha256 + GC. Otherwise fall
+    # back to a second download (cache dir was unavailable earlier).
     cache_meta: dict = {}
-    with tempfile.TemporaryDirectory(prefix="agnes_cache.") as td:
-        dl = _download_wheel(info.download_url, Path(td), quiet=True)
-        if dl is not None:
-            cache_meta = _record_wheel_cache(info.latest, dl, info.download_url)
-    _record_last_known_good_meta(
-        {"download_url": info.download_url, "version": info.latest, **cache_meta}
-    )
+    if staged is not None:
+        cache_meta = _record_wheel_cache(info.latest, staged, info.download_url)
+    else:
+        with tempfile.TemporaryDirectory(prefix="agnes_cache.") as td:
+            dl = _download_wheel(info.download_url, Path(td), quiet=True)
+            if dl is not None:
+                cache_meta = _record_wheel_cache(info.latest, dl, info.download_url)
+    _record_last_known_good_meta({"download_url": info.download_url, "version": info.latest, **cache_meta})
     _invalidate_update_cache()
     record_outcome(success=True)  # clears any prior failure reason + resets counter
     if not quiet:
@@ -798,15 +829,18 @@ def _do_install_with_smoke_and_rollback(
 @self_upgrade_app.callback()
 def self_upgrade(
     quiet: bool = typer.Option(
-        False, "--quiet",
+        False,
+        "--quiet",
         help="Suppress progress output. Failures still surface on stderr.",
     ),
     check_only: bool = typer.Option(
-        False, "--check-only",
+        False,
+        "--check-only",
         help="Print status, don't install. Exit 1 if outdated.",
     ),
     force: bool = typer.Option(
-        False, "--force",
+        False,
+        "--force",
         help="Reinstall the server's current wheel even when already on the latest version.",
     ),
 ) -> None:
@@ -827,11 +861,7 @@ def self_upgrade(
         # transport errors. If unreachable or offline, treat as "can't
         # tell, current" and exit 0 silently.
         if check_only:
-            if (
-                isinstance(info, (_Unreachable, _Offline))
-                or info is None
-                or not info.is_outdated()
-            ):
+            if isinstance(info, (_Unreachable, _Offline)) or info is None or not info.is_outdated():
                 raise typer.Exit(0)
             typer.echo(format_outdated_notice(info), err=True)
             raise typer.Exit(1)
@@ -842,9 +872,7 @@ def self_upgrade(
             # SessionStart failures (network down for days) surface on the
             # next non-quiet command. (#478)
             record_outcome(success=False, reason="server unreachable (--force)")
-            sys.stderr.write(
-                f"agnes self-upgrade: cannot reach {get_server_url()}/cli/latest\n"
-            )
+            sys.stderr.write(f"agnes self-upgrade: cannot reach {get_server_url()}/cli/latest\n")
             raise typer.Exit(1)
 
         if isinstance(info, _Offline):

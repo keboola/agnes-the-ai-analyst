@@ -11,13 +11,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.73.4] - 2026-07-02
+
+### Added
 - `agnes update` — one idempotent, best-effort convergence of the workspace + CLI: CLI self-upgrade, workspace template (override 3-way merge with `.bak` backups / default `CLAUDE.md` refresh), Agnes-owned hooks/statusLine/commands, marketplace plugins, and data pull. Single-instance locked (`~/.config/agnes/update.lock`), runnable from any directory, with a per-run report appended to `<workspace>/.claude/agnes/update.log`. This is the recommended way to repair a broken install or pick up a new release.
 - A corrupt `<workspace>/.claude/settings.json` is now backed up to `settings.json.corrupt.<ts>` and rebuilt, instead of leaving hook install/repair permanently skipped.
 
 ### Changed
 - CLI version drift no longer shows an interactive `Upgrade now? [Y/n]` prompt. Instead it kicks off a detached background `agnes update` (no confirmation); the SessionStart hook runs the same single `agnes update --quiet` (replacing the prior `self-upgrade; pull` + `refresh-marketplace --check` entries).
 - `agnes init` now installs the Agnes-owned hooks / statusLine / managed slash-commands in BOTH default and override (Initial Workspace Template) modes — in override mode they are applied on top of the template after extraction.
-- **BREAKING (override reinstall)** `agnes init --force` over an existing template workspace now backs up analyst-modified files to `<name>.bak.<ts>` via the 3-way merge instead of blind-overwriting them. A fresh install is unchanged.
+- **BREAKING** `agnes init --force` over an existing template workspace (override reinstall) now backs up analyst-modified files to `<name>.bak.<ts>` via the 3-way merge instead of blind-overwriting them. A fresh install is unchanged.
 - The generated setup prompt routes an already-initialised workspace (a `.claude/init-complete` sentinel exists) to `agnes update` instead of a plain `agnes init` that would refuse.
 - `agnes update`'s CLI-step report line now names the target version on the Windows `staged` and `deferred` paths (e.g. `0.72.6 -> 0.72.7 (windows deferred install; …)`), so `update.log` says WHAT is being installed — matching what the in-place `updated` path already recorded.
 

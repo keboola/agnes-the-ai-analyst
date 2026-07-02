@@ -21,7 +21,8 @@ from typing import Iterator, Optional
 # one task can't corrupt another. `_token_override.set(...)` returns a
 # token used to reset; the `_with_token_override` context manager scopes it.
 _token_override: ContextVar[Optional[str]] = ContextVar(
-    "agnes_cli_token_override", default=None,
+    "agnes_cli_token_override",
+    default=None,
 )
 
 
@@ -101,10 +102,13 @@ def save_token(token: str, email: str, role: Optional[str] = None):
     still lands and native ACLs apply (mirrors
     ``cli/lib/initial_workspace.py``).
     """
-    body = json.dumps({
-        "access_token": token,
-        "email": email,
-    }, indent=2)
+    body = json.dumps(
+        {
+            "access_token": token,
+            "email": email,
+        },
+        indent=2,
+    )
     config_dir = _config_dir()
     token_file = config_dir / "token.json"
     fd, tmp_str = tempfile.mkstemp(prefix=".token.", dir=str(config_dir))
@@ -139,6 +143,7 @@ def load_config() -> dict:
     config_file = _config_dir() / "config.yaml"
     if config_file.exists():
         import yaml
+
         loaded = yaml.safe_load(config_file.read_text(encoding="utf-8"))
         # A non-mapping config.yaml (hand-edited to a scalar/list) must not
         # propagate a list/str to callers that do `config.get(...)`.
@@ -189,7 +194,22 @@ def save_config(data: dict):
             except OSError:
                 pass
     existing.update(data)
-    config_file.write_text(yaml.dump(existing, default_flow_style=False), encoding="utf-8")
+    body = yaml.dump(existing, default_flow_style=False)
+    config_dir = _config_dir()
+    fd, tmp_str = tempfile.mkstemp(prefix=".config.", dir=str(config_dir))
+    tmp_path = Path(tmp_str)
+    try:
+        try:
+            os.write(fd, body.encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.replace(tmp_path, config_file)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 def get_workspace_root() -> Optional[str]:
