@@ -69,10 +69,10 @@ CATALOG_SCHEMA = {
                 "type": "object",
                 "properties": {
                     # Plain union type without an "enum" key — safe under
-                    # Anthropic strict structured outputs. The documented
-                    # rejection applies only to nodes that combine both "enum"
-                    # AND "type": [..., "null"]; this field has no enum
-                    # constraint so the simple union is accepted.
+                    # strict structured outputs. The documented rejection
+                    # applies only to nodes that combine both "enum" AND
+                    # "type": [..., "null"]; this field has no enum constraint
+                    # so the simple union is accepted.
                     "existing_id": {"type": ["string", "null"]},
                     "title": {"type": "string"},
                     "content": {"type": "string"},
