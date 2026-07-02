@@ -7,13 +7,10 @@ Three-tier testing approach:
 """
 
 import json
-import os
-import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import duckdb
 import pytest
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -25,11 +22,13 @@ VERIFICATIONS_DIR = FIXTURES_DIR / "verifications"
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _fresh_db(tmp_path, monkeypatch):
     """Create a fresh DuckDB with the latest schema."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     # Force re-creation of shared connection
     import src.db as db_module
+
     db_module._system_db_conn = None
     db_module._system_db_path = None
     conn = db_module.get_system_db()
@@ -85,6 +84,7 @@ def _mock_extractor(golden_response: dict) -> MagicMock:
 # TIER 1: Unit Tests (no LLM)
 # ===========================================================================
 
+
 class TestSchemaV8Migration:
     """Test DuckDB schema v7 -> v8 migration."""
 
@@ -109,15 +109,21 @@ class TestSchemaV8Migration:
         columns = {
             row[0]
             for row in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'knowledge_items'"
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'knowledge_items'"
             ).fetchall()
         }
         # v49: ``domain`` scalar column dropped; v8 metadata is otherwise intact.
         # The junction lives in ``knowledge_item_domains`` now.
         new_columns = {
-            "confidence", "entities", "source_type", "source_ref",
-            "valid_from", "valid_until", "supersedes", "sensitivity", "is_personal",
+            "confidence",
+            "entities",
+            "source_type",
+            "source_ref",
+            "valid_from",
+            "valid_until",
+            "supersedes",
+            "sensitivity",
+            "is_personal",
         }
         assert new_columns.issubset(columns), f"Missing: {new_columns - columns}"
         assert "domain" not in columns, "v49 dropped knowledge_items.domain scalar"
@@ -126,6 +132,7 @@ class TestSchemaV8Migration:
     def test_schema_version_matches_constant(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.db import SCHEMA_VERSION, get_schema_version
+
         assert get_schema_version(conn) == SCHEMA_VERSION
         conn.close()
 
@@ -147,6 +154,7 @@ class TestKnowledgeRepositoryV1:
     def test_create_with_new_fields(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         repo = KnowledgeRepository(conn)
 
         repo.create(
@@ -175,6 +183,7 @@ class TestKnowledgeRepositoryV1:
     def test_list_by_domain(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         repo = KnowledgeRepository(conn)
 
         repo.create(id="k1", title="A", content="a", category="x", domain="finance")
@@ -189,6 +198,7 @@ class TestKnowledgeRepositoryV1:
     def test_set_personal_flag(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         repo = KnowledgeRepository(conn)
 
         repo.create(id="k1", title="A", content="a", category="x", source_user="me@test.com")
@@ -204,6 +214,7 @@ class TestKnowledgeRepositoryV1:
     def test_exclude_personal_from_list(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         repo = KnowledgeRepository(conn)
 
         repo.create(id="k1", title="Public", content="a", category="x", is_personal=False)
@@ -220,6 +231,7 @@ class TestKnowledgeRepositoryV1:
     def test_user_contributions(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         repo = KnowledgeRepository(conn)
 
         repo.create(id="k1", title="A", content="a", category="x", source_user="alice@test.com")
@@ -233,10 +245,12 @@ class TestKnowledgeRepositoryV1:
     def test_contradiction_crud(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         repo = KnowledgeRepository(conn)
 
         cid = repo.create_contradiction(
-            item_a_id="k1", item_b_id="k2",
+            item_a_id="k1",
+            item_b_id="k2",
             explanation="They disagree on churn definition",
             severity="hard",
             suggested_resolution="k1 is more recent and verified",
@@ -260,6 +274,7 @@ class TestKnowledgeRepositoryV1:
         processed-set independently."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.session_processor_state import SessionProcessorStateRepository
+
         repo = SessionProcessorStateRepository(conn)
 
         assert repo.is_processed("verification", "alice/session1.jsonl", "abc123") is False
@@ -279,14 +294,33 @@ class TestKnowledgeRepositoryV1:
         in services.corporate_memory.contradiction.find_and_judge (ADR D4)."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         repo = KnowledgeRepository(conn)
 
-        repo.create(id="k1", title="Churn is revenue-based", content="MRR churn",
-                     category="x", domain="finance", status="approved")
-        repo.create(id="k2", title="NPS calculation", content="Rolling 90 day",
-                     category="x", domain="product", status="approved")
-        repo.create(id="k3", title="Churn is customer-count based", content="Customer churn",
-                     category="x", domain="finance", status="approved")
+        repo.create(
+            id="k1",
+            title="Churn is revenue-based",
+            content="MRR churn",
+            category="x",
+            domain="finance",
+            status="approved",
+        )
+        repo.create(
+            id="k2",
+            title="NPS calculation",
+            content="Rolling 90 day",
+            category="x",
+            domain="product",
+            status="approved",
+        )
+        repo.create(
+            id="k3",
+            title="Churn is customer-count based",
+            content="Customer churn",
+            category="x",
+            domain="finance",
+            status="approved",
+        )
 
         candidates = repo.find_contradiction_candidates(
             new_item_id="k_new",
@@ -303,42 +337,50 @@ class TestConfidenceScoring:
 
     def test_correction_base_confidence(self):
         from services.corporate_memory.confidence import compute_confidence
+
         c = compute_confidence("user_verification", "correction")
         assert c == 0.90
 
     def test_confirmation_base_confidence(self):
         from services.corporate_memory.confidence import compute_confidence
+
         c = compute_confidence("user_verification", "confirmation")
         assert c == 0.60
 
     def test_unprompted_definition_base_confidence(self):
         from services.corporate_memory.confidence import compute_confidence
+
         c = compute_confidence("user_verification", "unprompted_definition")
         assert c == 0.90
 
     def test_admin_mandate_always_1(self):
         from services.corporate_memory.confidence import compute_confidence
+
         c = compute_confidence("admin_mandate")
         assert c == 1.00
 
     def test_claude_local_md_base(self):
         from services.corporate_memory.confidence import compute_confidence
+
         c = compute_confidence("claude_local_md")
         assert c == 0.50
 
     def test_multi_user_boost(self):
         from services.corporate_memory.confidence import boost_for_multi_verification
+
         # 2 additional verifiers = +0.10
         c = boost_for_multi_verification(0.90, verification_count=3)
         assert c == pytest.approx(1.00)  # 0.90 + 0.05*2 = 1.00
 
     def test_boost_capped_at_max(self):
         from services.corporate_memory.confidence import boost_for_multi_verification
+
         c = boost_for_multi_verification(0.95, verification_count=10)
         assert c == 1.00
 
     def test_decay_over_time(self):
         from services.corporate_memory.confidence import apply_decay
+
         created = datetime.now(timezone.utc) - timedelta(days=60)  # ~2 months
         # exponential: 0.90 * (0.5 ** (2/12)) ≈ 0.90 * 0.891 ≈ 0.802
         c = apply_decay(0.90, created)
@@ -347,12 +389,14 @@ class TestConfidenceScoring:
 
     def test_decay_never_below_floor(self):
         from services.corporate_memory.confidence import apply_decay
+
         created = datetime.now(timezone.utc) - timedelta(days=3650)  # 10 years
         c = apply_decay(0.50, created)
         assert c >= 0.0
 
     def test_admin_mandate_decay_floor(self):
         from services.corporate_memory.confidence import apply_decay
+
         created = datetime.now(timezone.utc) - timedelta(days=3650)  # 10 years
         c = apply_decay(1.00, created, source_type="admin_mandate")
         assert c >= 0.50  # admin_mandate floor is 0.50
@@ -360,19 +404,22 @@ class TestConfidenceScoring:
     def test_configure_overrides_defaults(self):
         import copy
         from services.corporate_memory import confidence as cm
+
         original_base = dict(cm._BASE_CONFIDENCE)
         original_decay = copy.deepcopy(cm._DECAY_CONFIG)
         try:
-            cm.configure({
-                "base": {
-                    "user_verification.correction": 0.75,
-                },
-                "decay": {
-                    "mode": "exponential",
-                    "half_life_months": 6,
-                    "floor": {"admin_mandate": 0.60, "default": 0.0},
-                },
-            })
+            cm.configure(
+                {
+                    "base": {
+                        "user_verification.correction": 0.75,
+                    },
+                    "decay": {
+                        "mode": "exponential",
+                        "half_life_months": 6,
+                        "floor": {"admin_mandate": 0.60, "default": 0.0},
+                    },
+                }
+            )
             c = cm.compute_confidence("user_verification", "correction")
             assert c == pytest.approx(0.75)
             created = datetime.now(timezone.utc) - timedelta(days=365)  # 12 months
@@ -390,6 +437,7 @@ class TestEntityResolution:
 
     def test_basic_matching(self):
         from services.corporate_memory.entities import resolve_entities
+
         registry = {
             "metrics": ["churn", "MRR", "ARR"],
             "teams": ["engineering", "finance"],
@@ -406,6 +454,7 @@ class TestEntityResolution:
 
     def test_case_insensitive(self):
         from services.corporate_memory.entities import resolve_entities
+
         registry = {"metrics": ["NPS"]}
         matches = resolve_entities(
             content="Our nps score is tracked weekly",
@@ -416,11 +465,13 @@ class TestEntityResolution:
 
     def test_empty_registry(self):
         from services.corporate_memory.entities import resolve_entities
+
         matches = resolve_entities("some content", "some title", {})
         assert matches == []
 
     def test_resolve_and_merge(self):
         from services.corporate_memory.entities import resolve_and_merge
+
         registry = {"metrics": ["churn", "MRR"]}
         item = {
             "title": "Churn definition",
@@ -434,6 +485,7 @@ class TestEntityResolution:
 
     def test_build_entity_registry(self):
         from services.corporate_memory.entities import build_entity_registry
+
         registry = build_entity_registry(
             groups={"engineering": {}, "finance": {}},
             entity_config={"metrics": ["churn", "MRR"]},
@@ -450,6 +502,7 @@ class TestSessionParsing:
 
     def test_parse_correction_session(self):
         from services.session_pipeline.lib import parse_jsonl as parse_session
+
         turns = parse_session(SESSIONS_DIR / "correction_churn_metric.jsonl")
         assert len(turns) == 4
         assert turns[0]["role"] == "assistant"
@@ -458,6 +511,7 @@ class TestSessionParsing:
 
     def test_parse_empty_file(self, tmp_path):
         from services.session_pipeline.lib import parse_jsonl as parse_session
+
         empty_file = tmp_path / "empty.jsonl"
         empty_file.write_text("")
         turns = parse_session(empty_file)
@@ -465,6 +519,7 @@ class TestSessionParsing:
 
     def test_parse_malformed_line_skipped(self, tmp_path):
         from services.session_pipeline.lib import parse_jsonl as parse_session
+
         bad_file = tmp_path / "bad.jsonl"
         bad_file.write_text('{"role": "user", "content": "ok"}\nNOT_JSON\n{"role": "assistant", "content": "sure"}\n')
         turns = parse_session(bad_file)
@@ -476,6 +531,7 @@ class TestVerificationIdGeneration:
 
     def test_deterministic(self):
         from services.verification_detector.detector import _generate_id
+
         id1 = _generate_id("Churn metric", "MRR based")
         id2 = _generate_id("Churn metric", "MRR based")
         assert id1 == id2
@@ -483,6 +539,7 @@ class TestVerificationIdGeneration:
 
     def test_different_content_different_id(self):
         from services.verification_detector.detector import _generate_id
+
         id1 = _generate_id("Churn metric", "MRR based")
         id2 = _generate_id("Churn metric", "Customer based")
         assert id1 != id2
@@ -494,18 +551,21 @@ class TestSchemaValidation:
     def test_correction_golden_valid(self):
         import jsonschema
         from services.verification_detector.schemas import VERIFICATION_SCHEMA
+
         golden = _load_golden("correction_churn_metric")
         jsonschema.validate(golden, VERIFICATION_SCHEMA)
 
     def test_empty_golden_valid(self):
         import jsonschema
         from services.verification_detector.schemas import VERIFICATION_SCHEMA
+
         golden = _load_golden("no_verifications")
         jsonschema.validate(golden, VERIFICATION_SCHEMA)
 
     def test_mixed_golden_valid(self):
         import jsonschema
         from services.verification_detector.schemas import VERIFICATION_SCHEMA
+
         golden = _load_golden("mixed_session")
         jsonschema.validate(golden, VERIFICATION_SCHEMA)
 
@@ -514,12 +574,14 @@ class TestSchemaValidation:
 # TIER 2: Integration Tests (mocked LLM)
 # ===========================================================================
 
+
 class TestVerificationDetectorIntegration:
     """Full pipeline tests with mocked LLM extractor."""
 
     def test_correction_pipeline(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         run = _run_verification_processor
 
         golden = _load_golden("correction_churn_metric")
@@ -529,6 +591,7 @@ class TestVerificationDetectorIntegration:
         session_dir = tmp_path / "user_sessions" / "alice"
         session_dir.mkdir(parents=True)
         import shutil
+
         shutil.copy(SESSIONS_DIR / "correction_churn_metric.jsonl", session_dir / "s1.jsonl")
 
         stats = run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
@@ -555,6 +618,7 @@ class TestVerificationDetectorIntegration:
         session_dir = tmp_path / "user_sessions" / "bob"
         session_dir.mkdir(parents=True)
         import shutil
+
         shutil.copy(SESSIONS_DIR / "no_verifications.jsonl", session_dir / "s1.jsonl")
 
         stats = run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
@@ -575,6 +639,7 @@ class TestVerificationDetectorIntegration:
         session_dir = tmp_path / "user_sessions" / "alice"
         session_dir.mkdir(parents=True)
         import shutil
+
         shutil.copy(SESSIONS_DIR / "correction_churn_metric.jsonl", session_dir / "s1.jsonl")
 
         # Run twice
@@ -594,6 +659,7 @@ class TestVerificationDetectorIntegration:
     def test_mixed_session_multiple_items(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         run = _run_verification_processor
 
         golden = _load_golden("mixed_session")
@@ -602,6 +668,7 @@ class TestVerificationDetectorIntegration:
         session_dir = tmp_path / "user_sessions" / "carol"
         session_dir.mkdir(parents=True)
         import shutil
+
         shutil.copy(SESSIONS_DIR / "mixed_session.jsonl", session_dir / "s1.jsonl")
 
         stats = run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
@@ -629,8 +696,9 @@ class TestContradictionDetectionIntegration:
     """
 
     @staticmethod
-    def _judgment(candidate_id, *, contradicts=False, severity=None,
-                  explanation="", action=None, merged=None, justification=None):
+    def _judgment(
+        candidate_id, *, contradicts=False, severity=None, explanation="", action=None, merged=None, justification=None
+    ):
         return {
             "candidate_id": candidate_id,
             "is_contradiction": contradicts,
@@ -648,9 +716,12 @@ class TestContradictionDetectionIntegration:
 
         repo = KnowledgeRepository(conn)
         repo.create(
-            id="k_existing", title="Churn is customer-count based",
+            id="k_existing",
+            title="Churn is customer-count based",
             content="Churn = customers lost / total customers",
-            category="business_logic", domain="finance", status="approved",
+            category="business_logic",
+            domain="finance",
+            status="approved",
         )
 
         new_item = {
@@ -662,14 +733,16 @@ class TestContradictionDetectionIntegration:
 
         extractor = MagicMock()
         extractor.extract_json.return_value = {
-            "judgments": [self._judgment(
-                "k_existing",
-                contradicts=True,
-                severity="hard",
-                explanation="customer-count vs revenue-based",
-                action="kept_a",
-                justification="new item is more accurate",
-            )],
+            "judgments": [
+                self._judgment(
+                    "k_existing",
+                    contradicts=True,
+                    severity="hard",
+                    explanation="customer-count vs revenue-based",
+                    action="kept_a",
+                    justification="new item is more accurate",
+                )
+            ],
         }
 
         contradictions = check_contradictions(extractor, new_item, repo)
@@ -690,9 +763,12 @@ class TestContradictionDetectionIntegration:
 
         repo = KnowledgeRepository(conn)
         repo.create(
-            id="k_existing", title="NPS is measured quarterly",
+            id="k_existing",
+            title="NPS is measured quarterly",
             content="NPS survey every quarter",
-            category="business_logic", domain="product", status="approved",
+            category="business_logic",
+            domain="product",
+            status="approved",
         )
 
         new_item = {
@@ -704,10 +780,13 @@ class TestContradictionDetectionIntegration:
 
         extractor = MagicMock()
         extractor.extract_json.return_value = {
-            "judgments": [self._judgment(
-                "k_existing", contradicts=False,
-                explanation="Different aspects of NPS",
-            )],
+            "judgments": [
+                self._judgment(
+                    "k_existing",
+                    contradicts=False,
+                    explanation="Different aspects of NPS",
+                )
+            ],
         }
 
         contradictions = check_contradictions(extractor, new_item, repo)
@@ -746,9 +825,12 @@ class TestContradictionDetectionIntegration:
 
         repo = KnowledgeRepository(conn)
         repo.create(
-            id="k_existing", title="Churn is customer-count based",
+            id="k_existing",
+            title="Churn is customer-count based",
             content="Churn = customers lost / total customers",
-            category="business_logic", domain="finance", status="approved",
+            category="business_logic",
+            domain="finance",
+            status="approved",
         )
 
         new_item = {
@@ -760,15 +842,17 @@ class TestContradictionDetectionIntegration:
 
         extractor = MagicMock()
         extractor.extract_json.return_value = {
-            "judgments": [self._judgment(
-                "k_existing",
-                contradicts=True,
-                severity="hard",
-                explanation="conflicting definitions",
-                action="merge",
-                merged="Churn rolls up both views; track both metrics.",
-                justification="both useful at different reporting layers",
-            )],
+            "judgments": [
+                self._judgment(
+                    "k_existing",
+                    contradicts=True,
+                    severity="hard",
+                    explanation="conflicting definitions",
+                    action="merge",
+                    merged="Churn rolls up both views; track both metrics.",
+                    justification="both useful at different reporting layers",
+                )
+            ],
         }
 
         cids = detect_and_record(extractor, new_item, repo)
@@ -791,6 +875,7 @@ class TestContradictionDetectionIntegration:
 # Regression tests — pd-ps review (V1 must-fix)
 # ===========================================================================
 
+
 class TestContradictionCandidateSqlNarrowing:
     """Repository candidate narrowing (ADR Decision 4).
 
@@ -801,12 +886,20 @@ class TestContradictionCandidateSqlNarrowing:
     def test_domain_excludes_other_domain(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         repo = KnowledgeRepository(conn)
 
-        repo.create(id="k_finance", title="Churn is MRR-based", content="finance fact",
-                    category="x", domain="finance", status="approved")
-        repo.create(id="k_data", title="Churn pipeline doc", content="data fact",
-                    category="x", domain="data", status="approved")
+        repo.create(
+            id="k_finance",
+            title="Churn is MRR-based",
+            content="finance fact",
+            category="x",
+            domain="finance",
+            status="approved",
+        )
+        repo.create(
+            id="k_data", title="Churn pipeline doc", content="data fact", category="x", domain="data", status="approved"
+        )
 
         candidates = repo.find_contradiction_candidates(
             new_item_id="k_new",
@@ -820,6 +913,7 @@ class TestContradictionCandidateSqlNarrowing:
         items are surfaced — the LLM does the narrowing."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         repo = KnowledgeRepository(conn)
         repo.create(id="k1", title="A", content="a", category="x", status="approved")
         repo.create(id="k2", title="B", content="b", category="x", status="pending")
@@ -834,13 +928,11 @@ class TestContradictionCandidateSqlNarrowing:
     def test_domain_only_returns_all_same_domain(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         repo = KnowledgeRepository(conn)
-        repo.create(id="f1", title="Revenue", content="x", category="x",
-                    domain="finance", status="approved")
-        repo.create(id="f2", title="Margin",  content="y", category="x",
-                    domain="finance", status="approved")
-        repo.create(id="p1", title="Churn",   content="z", category="x",
-                    domain="product", status="approved")
+        repo.create(id="f1", title="Revenue", content="x", category="x", domain="finance", status="approved")
+        repo.create(id="f2", title="Margin", content="y", category="x", domain="finance", status="approved")
+        repo.create(id="p1", title="Churn", content="z", category="x", domain="product", status="approved")
         candidates = repo.find_contradiction_candidates(new_item_id="k_new", domain="finance")
         assert {c["id"] for c in candidates} == {"f1", "f2"}
         conn.close()
@@ -849,11 +941,10 @@ class TestContradictionCandidateSqlNarrowing:
         """An item never contradicts itself — id != new_item_id must be enforced."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         repo = KnowledgeRepository(conn)
-        repo.create(id="self_id", title="Churn metric", content="x",
-                    category="x", domain="finance", status="approved")
-        repo.create(id="other",   title="Churn metric", content="y",
-                    category="x", domain="finance", status="approved")
+        repo.create(id="self_id", title="Churn metric", content="x", category="x", domain="finance", status="approved")
+        repo.create(id="other", title="Churn metric", content="y", category="x", domain="finance", status="approved")
         candidates = repo.find_contradiction_candidates(
             new_item_id="self_id",
             domain="finance",
@@ -869,16 +960,30 @@ class TestContradictionCandidateSqlNarrowing:
         Decision 1 ("hard privacy boundary, not a UI hint") applies here."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         repo = KnowledgeRepository(conn)
-        repo.create(id="public",  title="Public def",  content="x",
-                    category="x", domain="finance", status="approved",
-                    is_personal=False)
-        repo.create(id="private", title="Private def", content="confidential",
-                    category="x", domain="finance", status="approved",
-                    is_personal=True)
+        repo.create(
+            id="public",
+            title="Public def",
+            content="x",
+            category="x",
+            domain="finance",
+            status="approved",
+            is_personal=False,
+        )
+        repo.create(
+            id="private",
+            title="Private def",
+            content="confidential",
+            category="x",
+            domain="finance",
+            status="approved",
+            is_personal=True,
+        )
 
         candidates = repo.find_contradiction_candidates(
-            new_item_id="k_new", domain="finance",
+            new_item_id="k_new",
+            domain="finance",
         )
         ids = {c["id"] for c in candidates}
         assert ids == {"public"}
@@ -898,28 +1003,29 @@ class TestDetectorIgnoresLLMConfidence:
     def test_llm_returned_base_confidence_is_overridden(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         run = _run_verification_processor
 
         # Hostile golden: LLM tries to claim confidence=0.99 on a confirmation
         # (which should be 0.60 in code).
         hostile = {
-            "verifications": [{
-                "detection_type": "confirmation",
-                "title": "Hostile claim",
-                "content": "LLM-elevated content",
-                "user_quote": "yep",
-                "domain": "engineering",
-                "entities": [],
-                "base_confidence": 0.99,
-            }]
+            "verifications": [
+                {
+                    "detection_type": "confirmation",
+                    "title": "Hostile claim",
+                    "content": "LLM-elevated content",
+                    "user_quote": "yep",
+                    "domain": "engineering",
+                    "entities": [],
+                    "base_confidence": 0.99,
+                }
+            ]
         }
         extractor = _mock_extractor(hostile)
 
         session_dir = tmp_path / "user_sessions" / "mallory"
         session_dir.mkdir(parents=True)
-        (session_dir / "s.jsonl").write_text(
-            json.dumps({"role": "user", "content": "yep"}) + "\n"
-        )
+        (session_dir / "s.jsonl").write_text(json.dumps({"role": "user", "content": "yep"}) + "\n")
 
         run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
 
@@ -942,25 +1048,26 @@ class TestDetectorIgnoresLLMConfidence:
         accepting an LLM-supplied number."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         run = _run_verification_processor
 
         hallucinated = {
-            "verifications": [{
-                "detection_type": "totally_made_up_type",
-                "title": "Hostile claim",
-                "content": "x",
-                "user_quote": "y",
-                "domain": "engineering",
-                "entities": [],
-            }]
+            "verifications": [
+                {
+                    "detection_type": "totally_made_up_type",
+                    "title": "Hostile claim",
+                    "content": "x",
+                    "user_quote": "y",
+                    "domain": "engineering",
+                    "entities": [],
+                }
+            ]
         }
         extractor = _mock_extractor(hallucinated)
 
         session_dir = tmp_path / "user_sessions" / "mallory"
         session_dir.mkdir(parents=True)
-        (session_dir / "s.jsonl").write_text(
-            json.dumps({"role": "user", "content": "y"}) + "\n"
-        )
+        (session_dir / "s.jsonl").write_text(json.dumps({"role": "user", "content": "y"}) + "\n")
 
         run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
 
@@ -977,6 +1084,7 @@ class TestDetectorPersistsEvidence:
     def test_evidence_row_created_per_verification(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         run = _run_verification_processor
 
         golden = _load_golden("correction_churn_metric")
@@ -985,6 +1093,7 @@ class TestDetectorPersistsEvidence:
         session_dir = tmp_path / "user_sessions" / "alice"
         session_dir.mkdir(parents=True)
         import shutil
+
         shutil.copy(SESSIONS_DIR / "correction_churn_metric.jsonl", session_dir / "s1.jsonl")
 
         run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
@@ -1008,6 +1117,7 @@ class TestDetectorPersistsEvidence:
         their respective items. Each row carries its own user_quote."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         run = _run_verification_processor
 
         golden = _load_golden("mixed_session")
@@ -1016,6 +1126,7 @@ class TestDetectorPersistsEvidence:
         session_dir = tmp_path / "user_sessions" / "carol"
         session_dir.mkdir(parents=True)
         import shutil
+
         shutil.copy(SESSIONS_DIR / "mixed_session.jsonl", session_dir / "s.jsonl")
 
         run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
@@ -1043,8 +1154,10 @@ class TestDetectorPersistsEvidence:
         boost mentioned in the ADR.
         """
         import shutil
+
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         run = _run_verification_processor
         repo = KnowledgeRepository(conn)
         golden = _load_golden("correction_churn_metric")
@@ -1089,39 +1202,47 @@ class TestDetectorWiresContradictionDetection:
     def test_contradiction_recorded_when_judge_says_yes(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         run = _run_verification_processor
         from unittest.mock import MagicMock
 
         repo = KnowledgeRepository(conn)
         # Pre-existing approved item that the new one will conflict with.
         repo.create(
-            id="existing", title="Churn definition",
-            content="Customer-count based", category="business_logic",
-            domain="finance", status="approved",
+            id="existing",
+            title="Churn definition",
+            content="Customer-count based",
+            category="business_logic",
+            domain="finance",
+            status="approved",
         )
 
         # Stub extractor: first call returns a verification; subsequent calls
         # (the contradiction judge) return contradicts=True.
         verification_response = {
-            "verifications": [{
-                "detection_type": "correction",
-                "title": "Churn is MRR-based",
-                "content": "Revenue-based",
-                "user_quote": "MRR-based, not customer-count",
-                "domain": "finance",
-                "entities": ["churn", "MRR"],
-            }]
+            "verifications": [
+                {
+                    "detection_type": "correction",
+                    "title": "Churn is MRR-based",
+                    "content": "Revenue-based",
+                    "user_quote": "MRR-based, not customer-count",
+                    "domain": "finance",
+                    "entities": ["churn", "MRR"],
+                }
+            ]
         }
         contradiction_response = {
-            "judgments": [{
-                "candidate_id": "existing",
-                "is_contradiction": True,
-                "severity": "hard",
-                "explanation": "definitions disagree",
-                "resolution_action": "kept_a",
-                "resolution_merged_content": None,
-                "resolution_justification": "new item is more accurate",
-            }]
+            "judgments": [
+                {
+                    "candidate_id": "existing",
+                    "is_contradiction": True,
+                    "severity": "hard",
+                    "explanation": "definitions disagree",
+                    "resolution_action": "kept_a",
+                    "resolution_merged_content": None,
+                    "resolution_justification": "new item is more accurate",
+                }
+            ]
         }
 
         extractor = MagicMock()
@@ -1146,46 +1267,52 @@ class TestDetectorWiresContradictionDetection:
         """Judge returns contradicts=false → item still created, contradictions_recorded=0."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         run = _run_verification_processor
         from unittest.mock import MagicMock
 
         repo = KnowledgeRepository(conn)
         repo.create(
-            id="existing", title="Churn definition",
-            content="Customer-count based", category="business_logic",
-            domain="finance", status="approved",
+            id="existing",
+            title="Churn definition",
+            content="Customer-count based",
+            category="business_logic",
+            domain="finance",
+            status="approved",
         )
 
         extractor = MagicMock()
         extractor.extract_json.side_effect = [
             {
-                "verifications": [{
-                    "detection_type": "correction",
-                    "title": "Churn refinement",
-                    "content": "Same as existing, more detail",
-                    "user_quote": "more detail",
-                    "domain": "finance",
-                    "entities": ["churn"],
-                }]
+                "verifications": [
+                    {
+                        "detection_type": "correction",
+                        "title": "Churn refinement",
+                        "content": "Same as existing, more detail",
+                        "user_quote": "more detail",
+                        "domain": "finance",
+                        "entities": ["churn"],
+                    }
+                ]
             },
             {
-                "judgments": [{
-                    "candidate_id": "existing",
-                    "is_contradiction": False,
-                    "severity": None,
-                    "explanation": "compatible — different scopes",
-                    "resolution_action": None,
-                    "resolution_merged_content": None,
-                    "resolution_justification": None,
-                }]
+                "judgments": [
+                    {
+                        "candidate_id": "existing",
+                        "is_contradiction": False,
+                        "severity": None,
+                        "explanation": "compatible — different scopes",
+                        "resolution_action": None,
+                        "resolution_merged_content": None,
+                        "resolution_justification": None,
+                    }
+                ]
             },
         ]
 
         session_dir = tmp_path / "user_sessions" / "alice"
         session_dir.mkdir(parents=True)
-        (session_dir / "s.jsonl").write_text(
-            json.dumps({"role": "user", "content": "more detail"}) + "\n"
-        )
+        (session_dir / "s.jsonl").write_text(json.dumps({"role": "user", "content": "more detail"}) + "\n")
 
         stats = run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
         assert stats["items_created"] == 1
@@ -1199,26 +1326,32 @@ class TestDetectorWiresContradictionDetection:
         judge is degraded mode, not a fatal error."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
+
         run = _run_verification_processor
         from connectors.llm.exceptions import LLMError
         from unittest.mock import MagicMock
 
         repo = KnowledgeRepository(conn)
         repo.create(
-            id="existing", title="Churn definition",
-            content="x", category="business_logic",
-            domain="finance", status="approved",
+            id="existing",
+            title="Churn definition",
+            content="x",
+            category="business_logic",
+            domain="finance",
+            status="approved",
         )
 
         verification_response = {
-            "verifications": [{
-                "detection_type": "correction",
-                "title": "Churn override",
-                "content": "y",
-                "user_quote": "z",
-                "domain": "finance",
-                "entities": ["churn"],
-            }]
+            "verifications": [
+                {
+                    "detection_type": "correction",
+                    "title": "Churn override",
+                    "content": "y",
+                    "user_quote": "z",
+                    "domain": "finance",
+                    "entities": ["churn"],
+                }
+            ]
         }
         extractor = MagicMock()
         extractor.extract_json.side_effect = [
@@ -1228,9 +1361,7 @@ class TestDetectorWiresContradictionDetection:
 
         session_dir = tmp_path / "user_sessions" / "alice"
         session_dir.mkdir(parents=True)
-        (session_dir / "s.jsonl").write_text(
-            json.dumps({"role": "user", "content": "z"}) + "\n"
-        )
+        (session_dir / "s.jsonl").write_text(json.dumps({"role": "user", "content": "z"}) + "\n")
 
         stats = run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
         # Item lands; judge failure is logged and swallowed.
@@ -1240,10 +1371,82 @@ class TestDetectorWiresContradictionDetection:
         # Session is marked processed so we don't re-run on next sweep.
         from services.session_pipeline.lib import compute_file_hash
         from src.repositories.session_processor_state import SessionProcessorStateRepository
+
         state_repo = SessionProcessorStateRepository(conn)
         h = compute_file_hash(session_dir / "s.jsonl")
         assert state_repo.is_processed("verification", "alice/s.jsonl", h) is True
         conn.close()
+
+
+class TestBatchContradictionSchemaStrictValid:
+    """Guard BATCH_CONTRADICTION_SCHEMA against the enum+union-type schema rejection regression.
+
+    The bug: ``severity`` / ``resolution_action`` declared a union type
+    ``["string","null"]`` AND an ``enum`` containing ``None``. Strict
+    structured outputs reject that combination -> every contradiction check
+    400s. The fix keeps the enum (so the model can't emit out-of-range values)
+    but splits each nullable field into ``anyOf`` of a string-with-enum branch
+    and a null branch.
+    """
+
+    @staticmethod
+    def _walk(node):
+        """Yield every dict node in a JSON-schema tree."""
+        if isinstance(node, dict):
+            yield node
+            for v in node.values():
+                yield from TestBatchContradictionSchemaStrictValid._walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                yield from TestBatchContradictionSchemaStrictValid._walk(item)
+
+    def test_no_node_combines_enum_with_union_type_or_null_enum(self):
+        """Anti-regression for the enum+union-type schema rejection pattern.
+
+        Walk the schema as it is actually sent (after _strict_json_schema) and
+        assert no node combines an ``enum`` with a list-typed ``type``, and no
+        ``enum`` contains ``None``. Protects future schemas too.
+        """
+        from connectors.llm.anthropic_provider import _strict_json_schema
+        from services.corporate_memory.prompts import BATCH_CONTRADICTION_SCHEMA
+
+        strict = _strict_json_schema(BATCH_CONTRADICTION_SCHEMA)
+        for node in self._walk(strict):
+            if "enum" not in node:
+                continue
+            assert not isinstance(node.get("type"), list), (
+                f"enum combined with a union type is rejected by strict outputs: {node!r}"
+            )
+            assert None not in node["enum"], f"enum containing None is rejected by strict outputs: {node!r}"
+
+    def test_nullable_enum_fields_preserve_strict_enum_via_anyof(self):
+        """The fix must not loosen the constraint -- enum values stay enforced.
+
+        ``severity`` / ``resolution_action`` must be ``anyOf`` of a
+        string-with-enum branch (matching the code's valid sets) plus a null
+        branch, so the model still cannot emit out-of-range values.
+        """
+        from services.corporate_memory.contradiction import (
+            _VALID_ACTIONS,
+            _VALID_SEVERITIES,
+        )
+        from services.corporate_memory.prompts import BATCH_CONTRADICTION_SCHEMA
+
+        item_props = BATCH_CONTRADICTION_SCHEMA["properties"]["judgments"]["items"]["properties"]
+        for field, valid in (
+            ("severity", _VALID_SEVERITIES),
+            ("resolution_action", _VALID_ACTIONS),
+        ):
+            spec = item_props[field]
+            assert "anyOf" in spec, f"{field} must use anyOf, got {spec!r}"
+            branches = spec["anyOf"]
+            assert {"type": "null"} in branches, f"{field} must allow null: {spec!r}"
+            enum_branches = [b for b in branches if "enum" in b]
+            assert len(enum_branches) == 1, f"{field} needs one enum branch: {spec!r}"
+            assert enum_branches[0]["type"] == "string"
+            assert set(enum_branches[0]["enum"]) == valid, (
+                f"{field} enum drifted from the code's valid set {valid}: {spec!r}"
+            )
 
 
 class TestBatchedContradictionFindAndJudge:
@@ -1253,8 +1456,9 @@ class TestBatchedContradictionFindAndJudge:
     """
 
     @staticmethod
-    def _judgment(candidate_id, *, contradicts=False, severity=None,
-                  explanation="", action=None, merged=None, justification=None):
+    def _judgment(
+        candidate_id, *, contradicts=False, severity=None, explanation="", action=None, merged=None, justification=None
+    ):
         return {
             "candidate_id": candidate_id,
             "is_contradiction": contradicts,
@@ -1270,8 +1474,12 @@ class TestBatchedContradictionFindAndJudge:
         for i in range(n):
             cid = f"c{i}"
             repo.create(
-                id=cid, title=f"Item {i}", content=f"content {i}",
-                category="business_logic", domain=domain, status="approved",
+                id=cid,
+                title=f"Item {i}",
+                content=f"content {i}",
+                category="business_logic",
+                domain=domain,
+                status="approved",
             )
             ids.append(cid)
         return ids
@@ -1312,13 +1520,22 @@ class TestBatchedContradictionFindAndJudge:
         extractor = MagicMock()
         extractor.extract_json.return_value = {
             "judgments": [
-                self._judgment("c0", contradicts=True, severity="hard",
-                               explanation="real", action="kept_a",
-                               justification="new wins"),
-                self._judgment("hallucinated_id_that_does_not_exist",
-                               contradicts=True, severity="hard",
-                               explanation="fake", action="kept_a",
-                               justification="should be dropped"),
+                self._judgment(
+                    "c0",
+                    contradicts=True,
+                    severity="hard",
+                    explanation="real",
+                    action="kept_a",
+                    justification="new wins",
+                ),
+                self._judgment(
+                    "hallucinated_id_that_does_not_exist",
+                    contradicts=True,
+                    severity="hard",
+                    explanation="fake",
+                    action="kept_a",
+                    justification="should be dropped",
+                ),
             ],
         }
 
@@ -1342,9 +1559,14 @@ class TestBatchedContradictionFindAndJudge:
         extractor.extract_json.return_value = {
             "judgments": [
                 self._judgment(ids[0], contradicts=False, explanation="not related"),
-                self._judgment(ids[1], contradicts=True, severity="soft",
-                               explanation="possibly outdated", action="kept_a",
-                               justification="new is more recent"),
+                self._judgment(
+                    ids[1],
+                    contradicts=True,
+                    severity="soft",
+                    explanation="possibly outdated",
+                    action="kept_a",
+                    justification="new is more recent",
+                ),
                 self._judgment(ids[2], contradicts=False, explanation="orthogonal"),
             ],
         }
@@ -1370,13 +1592,16 @@ class TestBatchedContradictionFindAndJudge:
         new_item = {"id": "k_new", "title": "New", "content": "x", "domain": "finance"}
         extractor = MagicMock()
         extractor.extract_json.return_value = {
-            "judgments": [self._judgment(
-                "c0", contradicts=True,
-                severity="catastrophic",  # not in enum
-                explanation="severe but unparseable",
-                action="kept_a",
-                justification="new wins",
-            )],
+            "judgments": [
+                self._judgment(
+                    "c0",
+                    contradicts=True,
+                    severity="catastrophic",  # not in enum
+                    explanation="severe but unparseable",
+                    action="kept_a",
+                    justification="new wins",
+                )
+            ],
         }
 
         records = find_and_judge(extractor, new_item, repo)
@@ -1396,12 +1621,16 @@ class TestBatchedContradictionFindAndJudge:
         new_item = {"id": "k_new", "title": "New", "content": "x", "domain": "finance"}
         extractor = MagicMock()
         extractor.extract_json.return_value = {
-            "judgments": [self._judgment(
-                "c0", contradicts=True, severity="hard",
-                explanation="x",
-                action="rewrite_from_scratch",  # not in enum
-                justification="y",
-            )],
+            "judgments": [
+                self._judgment(
+                    "c0",
+                    contradicts=True,
+                    severity="hard",
+                    explanation="x",
+                    action="rewrite_from_scratch",  # not in enum
+                    justification="y",
+                )
+            ],
         }
 
         records = find_and_judge(extractor, new_item, repo)
@@ -1422,12 +1651,17 @@ class TestBatchedContradictionFindAndJudge:
         new_item = {"id": "k_new", "title": "New", "content": "x", "domain": "finance"}
         extractor = MagicMock()
         extractor.extract_json.return_value = {
-            "judgments": [self._judgment(
-                "c0", contradicts=True, severity="soft",
-                explanation="overlap", action="merge",
-                merged="Both definitions co-exist; track separately and reconcile quarterly.",
-                justification="non-conflicting scopes",
-            )],
+            "judgments": [
+                self._judgment(
+                    "c0",
+                    contradicts=True,
+                    severity="soft",
+                    explanation="overlap",
+                    action="merge",
+                    merged="Both definitions co-exist; track separately and reconcile quarterly.",
+                    justification="non-conflicting scopes",
+                )
+            ],
         }
 
         detect_and_record(extractor, new_item, repo)
@@ -1447,7 +1681,8 @@ class TestBatchedContradictionFindAndJudge:
         repo.create(id="a", title="x", content="x", category="x", status="approved")
         repo.create(id="b", title="y", content="y", category="x", status="approved")
         repo.create_contradiction(
-            item_a_id="a", item_b_id="b",
+            item_a_id="a",
+            item_b_id="b",
             explanation="legacy",
             severity="hard",
             suggested_resolution="kept_a — see notes",  # plain string
@@ -1464,6 +1699,7 @@ class TestExponentialDecayWithLinearFallback:
     def test_linear_mode_still_works(self):
         import copy
         from services.corporate_memory import confidence as cm
+
         orig = copy.deepcopy(cm._DECAY_CONFIG)
         try:
             cm.configure({"decay": {"mode": "linear", "decay_rate_monthly": 0.02, "floor": {"default": 0.0}}})
