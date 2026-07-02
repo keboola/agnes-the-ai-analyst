@@ -211,7 +211,8 @@ async def test_connection(
 
     url = f"{stack_url}/v2/storage?exclude=components"
     try:
-        with httpx.Client(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, headers={"X-StorageApi-Token": token})
             resp = client.get(url, headers={"X-StorageApi-Token": token})
         if resp.status_code == 200:
             data = resp.json()
