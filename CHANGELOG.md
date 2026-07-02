@@ -11,16 +11,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
-- `/me/ai-connector` now includes a collapsible, per-agent setup guide directly under the connector URL. A button picker (Claude Desktop, Claude.ai, Cursor, VS Code / GitHub Copilot, ChatGPT) shows only the selected agent's steps; Cursor and VS Code include copyable config snippets. Replaces the old static client chips and corrects the list to OAuth-capable agents only (drops Gemini and Microsoft Copilot). Collapsed by default.
 
 ### Changed
 
 ### Fixed
-- Corporate-memory contradiction check no longer fails with a 400 from the LLM provider. `BATCH_CONTRADICTION_SCHEMA`'s nullable `severity` / `resolution_action` fields now use `anyOf` (a string-with-enum branch or null) instead of a union `["string", "null"]` type combined with an `enum` containing `null`, which strict structured outputs reject — every contradiction check was permanently broken. The enum stays enforced at the schema level, so the model still can't emit out-of-range values.
 
 ### Removed
 
 ### Internal
+
+## [0.73.1] - 2026-07-02
+
+### Added
+- `/me/ai-connector` now includes a collapsible, per-agent setup guide directly under the connector URL. A button picker (Claude Desktop, Claude.ai, Cursor, VS Code / GitHub Copilot, ChatGPT) shows only the selected agent's steps; Cursor and VS Code include copyable config snippets. Replaces the old static client chips and corrects the list to OAuth-capable agents only (drops Gemini and Microsoft Copilot). Collapsed by default.
+
+### Fixed
+- Corporate-memory contradiction check no longer fails with a 400 from the LLM provider. `BATCH_CONTRADICTION_SCHEMA`'s nullable `severity` / `resolution_action` fields now use `anyOf` (a string-with-enum branch or null) instead of a union `["string", "null"]` type combined with an `enum` containing `null`, which strict structured outputs reject — every contradiction check was permanently broken. The enum stays enforced at the schema level, so the model still can't emit out-of-range values.
 
 ## [0.72.1] - 2026-06-29
 
