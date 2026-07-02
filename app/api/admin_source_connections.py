@@ -213,7 +213,6 @@ async def test_connection(
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(url, headers={"X-StorageApi-Token": token})
-            resp = client.get(url, headers={"X-StorageApi-Token": token})
         if resp.status_code == 200:
             data = resp.json()
             project_name = data.get("owner", {}).get("name") or data.get("name") or ""
