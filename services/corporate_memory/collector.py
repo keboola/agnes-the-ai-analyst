@@ -31,7 +31,6 @@ from pathlib import Path
 from typing import Any
 
 from app.logging_config import setup_logging
-from connectors.llm import create_extractor
 from connectors.llm.exceptions import LLMError
 
 from .prompts import CATALOG_REFRESH_PROMPT, SENSITIVITY_CHECK_PROMPT
@@ -69,6 +68,11 @@ CATALOG_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
+                    # Plain union type without an "enum" key — safe under
+                    # Anthropic strict structured outputs. The documented
+                    # rejection applies only to nodes that combine both "enum"
+                    # AND "type": [..., "null"]; this field has no enum
+                    # constraint so the simple union is accepted.
                     "existing_id": {"type": ["string", "null"]},
                     "title": {"type": "string"},
                     "content": {"type": "string"},
@@ -592,7 +596,9 @@ def collect_all(dry_run: bool = False) -> dict:
                 errors += 1
         logger.info(
             "DB sync: %d inserted, %d updated, %d errors",
-            inserted, updated_count, errors,
+            inserted,
+            updated_count,
+            errors,
         )
         stats["items_db_inserted"] = inserted
         stats["items_db_updated"] = updated_count
@@ -604,9 +610,9 @@ def collect_all(dry_run: bool = False) -> dict:
         db_total_failure = len(final_items) > 0 and errors == len(final_items)
         if db_total_failure:
             logger.warning(
-                "DB sync total failure (%d/%d errors) — skipping user hash update "
-                "so the next run retries",
-                errors, len(final_items),
+                "DB sync total failure (%d/%d errors) — skipping user hash update so the next run retries",
+                errors,
+                len(final_items),
             )
         else:
             current_hashes = {user: h for user, (_, h) in user_files.items()}
