@@ -20,6 +20,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.73.2] - 2026-07-02
+
+### Added
+- `POST /api/admin/register-table` accepts `defer_rebuild` (BigQuery only): skips the synchronous, O(registry) per-insert rebuild of the extract + master views, returning `202 registered` without making the table queryable yet. New companion `POST /api/admin/registry/rebuild` triggers that rebuild once. Bulk onboarding can now register many tables with `defer_rebuild=true` and rebuild a single time, instead of one full registry-wide rebuild per table (which made large batches pathologically slow and starved foreground requests).
+
+### Fixed
+- `POST /api/admin/registry/rebuild` now emits an audit-log entry and returns HTTP 422 when the instance is not BigQuery, preventing accidental rebuilds on non-BigQuery instances.
+- `POST /api/admin/registry/rebuild` now calls `invalidate_all()` after a synchronous rebuild so stale catalog entries are cleared immediately.
+
 ## [0.73.1] - 2026-07-02
 
 ### Fixed

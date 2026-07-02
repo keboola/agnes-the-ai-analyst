@@ -1625,6 +1625,9 @@ KNOWN_UNTESTED = {
     "GET /api/admin/cache-warmup/status",
     "GET /api/admin/cache-warmup/stream",
     "POST /api/admin/cache-warmup/run",
+    # Registry rebuild — fire-and-forget extract/master-view rebuild; behavioral
+    # coverage in tests/test_admin_bq_register.py::TestBigQueryDeferRebuild
+    "POST /api/admin/registry/rebuild",
     # Admin DB management — migration / job control
     "GET /api/admin/db/job/{job_id}",
     "GET /api/admin/db/state",
