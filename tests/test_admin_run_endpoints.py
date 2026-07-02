@@ -619,7 +619,7 @@ class TestRunJiraSlaPoll:
         token = seeded_app["admin_token"]
         with patch(
             "connectors.jira.scripts.poll_sla.run",
-            side_effect=ValueError("JIRA_SLA_BASE_URL not set"),
+            side_effect=ValueError("Missing required environment variables: JIRA_DOMAIN, JIRA_EMAIL, JIRA_API_TOKEN"),
         ):
             resp = c.post("/api/admin/run-jira-sla-poll", headers=_auth(token))
         assert resp.status_code == 200
