@@ -847,6 +847,13 @@ synced IWT clone for the bind-git file picker.
 
 - /api/admin/keboola/test-connection
 
+### `/api/admin/contributed-skills` — Contributed skill management
+
+Admin-only CRUD for the Agnes Contributed marketplace. `POST` wraps a pasted `SKILL.md` in a one-skill plugin and publishes it; `GET` lists contributed plugins with their granted group; `DELETE` removes a plugin and clears its grants. Mirrors the `/admin/contribute-skill` web form, `agnes admin skill list/contribute/delete` CLI, and `list_contributed_skills`/`contribute_skill`/`delete_contributed_skill` MCP tools.
+
+- /api/admin/contributed-skills
+- /api/admin/contributed-skills/{name}
+
 ### `/api/admin/datasource-secrets` — Datasource credential management
 
 Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `BIGQUERY_SERVICE_ACCOUNT_JSON`). Values are encrypted via `AGNES_VAULT_KEY`; the GET endpoint returns presence/source status only, never the value.

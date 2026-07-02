@@ -41,6 +41,9 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/collections/search": ("collections search", "collections_search"),
     # Config-surface introspection (built-in marketplace spec Phase 1).
     "/api/admin/config-surface": ("admin config-surface", "admin_config_surface"),
+    # Contributed-skill triple-surface (GET list + DELETE; POST contribute is _EXEMPT below).
+    "/api/admin/contributed-skills": ("admin skill list", "list_contributed_skills"),
+    "/api/admin/contributed-skills/{name}": ("admin skill delete", "delete_contributed_skill"),
 }
 
 
@@ -72,11 +75,26 @@ def test_cli_subcommands_registered():
             f"CLI group '{head}' missing for {path} — register via `app.add_typer(...)` in cli/main.py"
         )
         sub = groups[head]
-        sub_names = {c.name for c in sub.registered_commands if c.name}  # type: ignore[attr-defined]
-        assert tail in sub_names, (
-            f"CLI subcommand '{cli_cmd}' missing for {path} — define "
-            f'`@{head}_app.command("{tail}")` in cli/commands/{head}.py'
-        )
+        if " " in tail:
+            # 3-level command: top-group → sub-group → command (e.g. "admin skill list")
+            sub_group_name, cmd_name = tail.split(" ", 1)
+            sub_groups = {g.name: g.typer_instance for g in sub.registered_groups if g.name}  # type: ignore[attr-defined]
+            assert sub_group_name in sub_groups, (
+                f"CLI subgroup '{head} {sub_group_name}' missing for {path} — "
+                f"register via `{head}_app.add_typer(..., name='{sub_group_name}')` in cli/commands/{head}.py"
+            )
+            leaf = sub_groups[sub_group_name]
+            leaf_names = {c.name for c in leaf.registered_commands if c.name}  # type: ignore[attr-defined]
+            assert cmd_name in leaf_names, (
+                f"CLI subcommand '{cli_cmd}' missing for {path} — define "
+                f'`@{sub_group_name}_app.command("{cmd_name}")` in cli/commands/{head}_{sub_group_name}.py'
+            )
+        else:
+            sub_names = {c.name for c in sub.registered_commands if c.name}  # type: ignore[attr-defined]
+            assert tail in sub_names, (
+                f"CLI subcommand '{cli_cmd}' missing for {path} — define "
+                f'`@{head}_app.command("{tail}")` in cli/commands/{head}.py'
+            )
 
 
 def test_mcp_tools_registered():
