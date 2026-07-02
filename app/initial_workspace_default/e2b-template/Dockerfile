@@ -45,7 +45,7 @@ RUN pip install --no-cache-dir --break-system-packages \
     "duckdb>=1.5.2" \
     "httpx>=0.27.0" \
     "pyyaml>=6.0" \
-    "PyJWT>=2.8.0" \
+    "PyJWT>=2.13.0" \
     "typer>=0.12.0" \
     "rich>=13.0.0" \
     "filelock>=3.13,<4" \
