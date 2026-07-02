@@ -34,3 +34,34 @@ def test_set_server_preserves_existing_keys(tmp_path, monkeypatch):
     cfg = load_config()
     assert cfg["server"] == "https://new.example.com"
     assert cfg["workspace_root"] == "/home/me/ws"  # preserved, not clobbered
+
+
+def test_set_server_repairs_malformed_config(tmp_path, monkeypatch):
+    """`set-server` is the install-time repair path — an unparseable config.yaml
+    must be backed up and rewritten cleanly, not crash the command."""
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("AGNES_SERVER", raising=False)
+    (tmp_path / "config.yaml").write_text("this: is: not: valid: [unclosed\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["config", "set-server", "https://s.example.com"])
+    assert result.exit_code == 0, result.output
+
+    from cli.config import load_config
+    assert load_config().get("server") == "https://s.example.com"
+    # the unparseable original is preserved for forensics, not silently dropped
+    assert len(list(tmp_path.glob("config.yaml.corrupt.*"))) == 1
+
+
+def test_set_server_repairs_non_mapping_config(tmp_path, monkeypatch):
+    """A valid-YAML-but-non-mapping config.yaml (a list/scalar) can't be merged;
+    it must be backed up and replaced with a clean mapping."""
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("AGNES_SERVER", raising=False)
+    (tmp_path / "config.yaml").write_text("- just\n- a\n- list\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["config", "set-server", "https://s.example.com"])
+    assert result.exit_code == 0, result.output
+
+    from cli.config import load_config
+    assert load_config() == {"server": "https://s.example.com"}
+    assert len(list(tmp_path.glob("config.yaml.corrupt.*"))) == 1

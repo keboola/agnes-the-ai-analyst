@@ -24,8 +24,9 @@ Steps, in order, each wrapped so one failure never aborts the rest:
   4. Marketplace plugins — bootstrap when the clone is missing, else cheap
      `--check` and a full reconcile only on drift.
   5. Data — `agnes pull` (MD5-skip, atomic sidecar swap; already idempotent).
-  6. Report — append a JSON line to `<workspace>/.claude/agnes/update.log`
-     (rotated), refresh the sentinel, record the outcome.
+  6. Report — append a JSON line recording the run outcome to the (rotated)
+     `<workspace>/.claude/agnes/update.log`. Template/init sentinels are NOT
+     touched here; they are managed by the workspace/init helpers (Step 2).
 
 Only ONE update runs at a time: the command holds
 `~/.config/agnes/update.lock` (cross-platform `filelock`); a second invocation
@@ -198,10 +199,21 @@ def _step_workspace(workspace: Path, *, server_url: str, token: str, report: lis
                 "template_sha": (status.template_sha or "")[:10],
             }})
         # Refresh per-tenant operator params regardless of the merge decision.
+        # A raised exception is a real failure (surface it in the report); a
+        # None return is a soft signal (older server / empty overlay), not an
+        # error — reported as skipped so a genuine write failure stands out.
         try:
-            write_agnes_env(workspace, server_url, token)
-        except Exception:  # noqa: BLE001 — best-effort env refresh
-            pass
+            env_path = write_agnes_env(workspace, server_url, token)
+        except Exception as exc:  # noqa: BLE001 — best-effort env refresh
+            report.append({"stage": "env", "status": "error",
+                           "detail": f"{type(exc).__name__}: {exc}"})
+        else:
+            if env_path is not None:
+                report.append({"stage": "env", "status": "ok",
+                               "detail": f"wrote {env_path.name}"})
+            else:
+                report.append({"stage": "env", "status": "skipped",
+                               "detail": "no connector params (older server / empty overlay)"})
     else:
         # DEFAULT mode — no template; CLAUDE.md is server-rendered.
         _refresh_default_claude_md(workspace, server_url=server_url, token=token, report=report)
@@ -273,13 +285,22 @@ def _reassert_enabled_plugins() -> list[str]:
     return ev["enabled"]
 
 
-def _step_marketplace(*, report: list[dict]) -> None:
+def _step_marketplace(*, report: list[dict], quiet: bool = False) -> None:
+    import contextlib
+    import io
+
     from cli.commands.refresh_marketplace import _EXIT_MARKETPLACE_DRIFT, refresh_marketplace
     from cli.lib.marketplace import CLONE_DIR
 
     def _invoke(*, check: bool, bootstrap: bool) -> int:
+        # refresh_marketplace echoes progress to stdout; under --json/--quiet
+        # that corrupts the single-JSON contract (and the quiet-hook promise),
+        # so capture and discard its stdout. Its git subprocesses use
+        # capture_output=True, so nothing leaks past this at the fd level.
+        sink = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
         try:
-            refresh_marketplace(check=check, bootstrap=bootstrap)
+            with sink:
+                refresh_marketplace(check=check, bootstrap=bootstrap)
             return 0
         except typer.Exit as exc:
             return int(getattr(exc, "exit_code", 0) or 0)
@@ -363,7 +384,25 @@ def update(
 
     report: list[dict] = []
 
-    lock_file = _config_dir() / "update.lock"
+    # The lock lives under the config dir; creating/accessing it can fail
+    # (read-only FS, permission denied) BEFORE the guarded block. Degrade into
+    # a config-error report + clean exit rather than a raw traceback out of the
+    # command whose whole job is to repair a broken install.
+    try:
+        lock_file = _config_dir() / "update.lock"
+    except OSError as exc:
+        report.append({"stage": "config", "status": "error",
+                       "detail": f"cannot access config dir: {type(exc).__name__}: {exc}"})
+        entry = {"ts": _utc_stamp(), "agnes_version": _agnes_version(),
+                 "workspace": None, "steps": report}
+        if as_json:
+            typer.echo(json.dumps(entry))
+        elif not quiet:
+            typer.echo("agnes update — convergence report:")
+            for step in report:
+                typer.echo(f"  [{step['status']}] {step['stage']}: {step['detail']}")
+        raise typer.Exit(0)
+
     with acquire_path_or_skip(lock_file) as lock:
         if lock is None:
             if not quiet and not as_json:
@@ -405,8 +444,14 @@ def update(
         except Exception:  # noqa: BLE001 — best-effort, mirror _run_step
             pass
 
+        # --json / --quiet must keep stdout clean for their contracts: --json
+        # emits exactly ONE JSON object, the SessionStart --quiet hook emits
+        # nothing. Child steps otherwise print progress, so route them through
+        # a combined quiet flag.
+        step_quiet = quiet or as_json
+
         # Step 1 — CLI binary (workspace-independent; always runs).
-        _run_step("cli", lambda: _step_cli(quiet=quiet, report=report), report)
+        _run_step("cli", lambda: _step_cli(quiet=step_quiet, report=report), report)
 
         if workspace is None:
             report.append({"stage": "workspace", "status": "skipped",
@@ -434,9 +479,9 @@ def update(
                     _run_step("workspace", lambda: _step_workspace(
                         workspace, server_url=server_url, token=token, report=report), report)
                     _run_step("agnes-owned", lambda: _step_agnes_owned(workspace, report=report), report)
-                    _run_step("marketplace", lambda: _step_marketplace(report=report), report)
+                    _run_step("marketplace", lambda: _step_marketplace(report=report, quiet=step_quiet), report)
                     _run_step("pull", lambda: _step_pull(
-                        workspace, server_url=server_url, token=token, quiet=quiet, report=report), report)
+                        workspace, server_url=server_url, token=token, quiet=step_quiet, report=report), report)
                 finally:
                     try:
                         os.chdir(prev_cwd)

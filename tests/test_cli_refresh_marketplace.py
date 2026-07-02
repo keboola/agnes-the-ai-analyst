@@ -783,8 +783,9 @@ def test_check_emits_hook_json_when_remote_changed(
     _stage_rev_parse(monkeypatch, recorder, head="abc123", remote_head="def456")
 
     result = runner.invoke(refresh_marketplace_app, ["--check"])
-    # Drift → dedicated exit code so in-process callers (`agnes update`) can
-    # branch on it. The SessionStart hook wraps `--check` in `|| true`.
+    # Drift → dedicated exit code so in-process callers (`agnes update`, which
+    # runs from the detached SessionStart hook and invokes this `--check`
+    # in-process) can branch on it.
     assert result.exit_code == rm_module._EXIT_MARKETPLACE_DRIFT
 
     out = _clean(result.output).strip()

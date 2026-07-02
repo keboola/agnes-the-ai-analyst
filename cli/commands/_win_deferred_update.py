@@ -210,7 +210,15 @@ def _installed_version_ok(expected_version: str) -> bool:
                            timeout=30, env=env, creationflags=_NO_WINDOW)
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return r.returncode == 0 and expected_version in (r.stdout or "")
+    # Exact match on the version TOKEN, not a substring: `expected in stdout`
+    # would let "0.72.9" pass against a binary reporting "0.72.90" (or any
+    # superstring), so a failed/partial swap could be scored as success and
+    # skip rollback. `agnes --version` prints "agnes <version>", so the last
+    # whitespace-delimited token is the version — mirrors the Mac smoke test
+    # (`_smoke_test_new_binary`), minus the `packaging` dep this file forbids.
+    tokens = (r.stdout or "").split()
+    actual = tokens[-1] if tokens else ""
+    return r.returncode == 0 and actual == expected_version
 
 
 def _sha256(path: str) -> str:
