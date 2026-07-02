@@ -139,7 +139,10 @@ def load_config() -> dict:
     config_file = _config_dir() / "config.yaml"
     if config_file.exists():
         import yaml
-        return yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
+        loaded = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+        # A non-mapping config.yaml (hand-edited to a scalar/list) must not
+        # propagate a list/str to callers that do `config.get(...)`.
+        return loaded if isinstance(loaded, dict) else {}
     return {}
 
 
@@ -156,13 +159,35 @@ def save_sync_state(state: dict):
 
 
 def save_config(data: dict):
-    """Persist server URL and other config to config.yaml."""
+    """Persist server URL and other config to config.yaml.
+
+    Merges into any existing mapping so a re-run never clobbers unrelated keys
+    (e.g. ``workspace_root``). If the existing file is unparseable YAML or a
+    non-mapping (corrupted, or hand-edited to a scalar/list) it cannot be
+    merged — back it up to a ``.corrupt`` sibling and write a fresh mapping
+    rather than crash. ``agnes config set-server`` is the install-time repair
+    path, so it must recover a broken config, not raise on it.
+    """
     import yaml
 
     config_file = _config_dir() / "config.yaml"
-    existing = {}
+    existing: dict = {}
     if config_file.exists():
-        existing = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
+        raw = config_file.read_text(encoding="utf-8")
+        try:
+            loaded = yaml.safe_load(raw)
+        except yaml.YAMLError:
+            loaded = None
+        if isinstance(loaded, dict):
+            existing = loaded
+        elif raw.strip():
+            # Non-empty but unparseable / non-mapping — preserve it for
+            # forensics before overwriting with a clean mapping.
+            backup = config_file.with_name(f"config.yaml.corrupt.{os.getpid()}")
+            try:
+                backup.write_text(raw, encoding="utf-8")
+            except OSError:
+                pass
     existing.update(data)
     config_file.write_text(yaml.dump(existing, default_flow_style=False), encoding="utf-8")
 
