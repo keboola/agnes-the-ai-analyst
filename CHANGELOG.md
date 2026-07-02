@@ -20,6 +20,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.73.2] - 2026-07-02
+
+### Fixed
+- `POST /api/admin/register-table` 202 OpenAPI description now covers both outcomes: `status=accepted` (materialize running in background) and `status=registered` (rebuild deferred via `defer_rebuild=True`, caller must trigger `POST /api/admin/registry/rebuild`).
+- Background rebuild path (`_materialize_bigquery_extract_bg`) now calls `invalidate_all()` on success, clearing cached catalog entries so stale schemas are not served after the background rebuild completes.
+- `agnes admin discover-and-register` for BigQuery now sends `defer_rebuild=True` on each register call and issues a single `POST /api/admin/registry/rebuild` at the end, replacing N per-insert full-registry rebuilds with one.
+
 ## [0.73.1] - 2026-07-02
 
 ### Fixed
