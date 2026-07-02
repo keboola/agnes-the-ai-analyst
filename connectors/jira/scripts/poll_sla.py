@@ -267,6 +267,12 @@ def run(dry_run: bool = False, verbose: bool = False) -> dict:
     if verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
+    config = load_config()  # loads .env so JIRA_REFRESH_FIELDS is available below
+    raw_dir = config["data_dir"]
+    parquet_dir = Path(os.environ.get("JIRA_PARQUET_DIR", "/data/src_data/parquet/jira"))
+    base_url = config["base_url"]
+    auth = (config["email"], config["api_token"])
+
     field_ids = configured_field_ids()
     if not field_ids:
         logger.warning(
@@ -282,12 +288,6 @@ def run(dry_run: bool = False, verbose: bool = False) -> dict:
             "elapsed_sec": 0.0,
             "dry_run": dry_run,
         }
-
-    config = load_config()
-    raw_dir = config["data_dir"]
-    parquet_dir = Path(os.environ.get("JIRA_PARQUET_DIR", "/data/src_data/parquet/jira"))
-    base_url = config["base_url"]
-    auth = (config["email"], config["api_token"])
 
     open_issues = find_open_issues(parquet_dir)
 
