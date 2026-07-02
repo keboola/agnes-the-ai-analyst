@@ -214,7 +214,7 @@ query_mode of <table>  ├─ materialized → agnes query (parquet was synced b
 | `HTTP 403: cross_project_forbidden` (with `serviceusage` mention) | Server SA lacks `serviceusage.services.use` on the BQ data project | Escalate to admin to set `data_source.bigquery.billing_project`; do NOT try personal auth |
 | `ReadTimeout` (client-side) on `agnes query --remote` | CLI is older than 0.35.1 (had 30 s default) | `agnes --version`; if <0.35.1, upgrade with `uv tool install --force <wheel-from-server>` (the URL is in the `[update]` banner that prints on every command). Then retry. |
 | `unknown columns: [...]` from `agnes snapshot create` | `--select` lists columns that don't exist | Run `agnes schema <table>` and copy column names verbatim |
-| `No such option: -- ...` (or `Query must start with SELECT or WITH`) on `agnes query [--remote] "<sql>"` | SQL passed as a positional argument starts with a `--` comment; the CLI parser mistakes it for an option flag instead of query text | Re-run with `--sql "<sql>"` instead of the positional argument — works with any leading text, including comments |
+| `No such option: -- ...` on `agnes query [--remote] "<sql>"` | SQL passed as a positional argument starts with a `--` comment; the CLI parser mistakes it for an option flag instead of query text | Re-run with `--sql "<sql>"` instead of the positional argument — works with any leading text, including comments |
 
 ### Cost discipline — every BQ query bills bytes scanned
 
