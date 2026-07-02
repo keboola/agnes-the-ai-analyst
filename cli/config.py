@@ -21,7 +21,8 @@ from typing import Iterator, Optional
 # one task can't corrupt another. `_token_override.set(...)` returns a
 # token used to reset; the `_with_token_override` context manager scopes it.
 _token_override: ContextVar[Optional[str]] = ContextVar(
-    "agnes_cli_token_override", default=None,
+    "agnes_cli_token_override",
+    default=None,
 )
 
 
@@ -101,10 +102,13 @@ def save_token(token: str, email: str, role: Optional[str] = None):
     still lands and native ACLs apply (mirrors
     ``cli/lib/initial_workspace.py``).
     """
-    body = json.dumps({
-        "access_token": token,
-        "email": email,
-    }, indent=2)
+    body = json.dumps(
+        {
+            "access_token": token,
+            "email": email,
+        },
+        indent=2,
+    )
     config_dir = _config_dir()
     token_file = config_dir / "token.json"
     fd, tmp_str = tempfile.mkstemp(prefix=".token.", dir=str(config_dir))
@@ -139,7 +143,11 @@ def load_config() -> dict:
     config_file = _config_dir() / "config.yaml"
     if config_file.exists():
         import yaml
-        return yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
+
+        loaded = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+        # A non-mapping config.yaml (hand-edited to a scalar/list) must not
+        # propagate a list/str to callers that do `config.get(...)`.
+        return loaded if isinstance(loaded, dict) else {}
     return {}
 
 
@@ -156,15 +164,52 @@ def save_sync_state(state: dict):
 
 
 def save_config(data: dict):
-    """Persist server URL and other config to config.yaml."""
+    """Persist server URL and other config to config.yaml.
+
+    Merges into any existing mapping so a re-run never clobbers unrelated keys
+    (e.g. ``workspace_root``). If the existing file is unparseable YAML or a
+    non-mapping (corrupted, or hand-edited to a scalar/list) it cannot be
+    merged — back it up to a ``.corrupt`` sibling and write a fresh mapping
+    rather than crash. ``agnes config set-server`` is the install-time repair
+    path, so it must recover a broken config, not raise on it.
+    """
     import yaml
 
     config_file = _config_dir() / "config.yaml"
-    existing = {}
+    existing: dict = {}
     if config_file.exists():
-        existing = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
+        raw = config_file.read_text(encoding="utf-8")
+        try:
+            loaded = yaml.safe_load(raw)
+        except yaml.YAMLError:
+            loaded = None
+        if isinstance(loaded, dict):
+            existing = loaded
+        elif raw.strip():
+            # Non-empty but unparseable / non-mapping — preserve it for
+            # forensics before overwriting with a clean mapping.
+            backup = config_file.with_name(f"config.yaml.corrupt.{os.getpid()}")
+            try:
+                backup.write_text(raw, encoding="utf-8")
+            except OSError:
+                pass
     existing.update(data)
-    config_file.write_text(yaml.dump(existing, default_flow_style=False), encoding="utf-8")
+    body = yaml.dump(existing, default_flow_style=False)
+    config_dir = _config_dir()
+    fd, tmp_str = tempfile.mkstemp(prefix=".config.", dir=str(config_dir))
+    tmp_path = Path(tmp_str)
+    try:
+        try:
+            os.write(fd, body.encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.replace(tmp_path, config_file)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 def get_workspace_root() -> Optional[str]:

@@ -11,22 +11,18 @@ Design notes:
   `agnes pull` / `agnes push` / `agnes refresh-marketplace` / `da sync`
   entries (matched by command substring) and appends fresh entries.
   Third-party hooks (mixed entries, foreign commands) are left alone.
-- Uses `|| true` in the hook command so the hook never blocks a session on
-  a transient sync error.
-- SessionStart gets two entries:
-    1. Chained `agnes self-upgrade; agnes pull` — self-upgrade runs first
-       so any wire-protocol bump lands before pull tries to use the new
-       CLI version (and back-fills the `workspace_root` config anchor for
-       older clients). Both `|| true`-guarded so an upgrade failure doesn't
-       block the pull.
-    2. `agnes refresh-marketplace --check` — independent entry. Detector-
-       only (since the slash-command split): runs `git fetch` against the
-       marketplace clone and emits a Claude Code hook JSON message
-       hinting the user at `/update-agnes-plugins` when remote content
-       changed. Does NOT install/update plugins itself — the slash
-       command does that interactively, with full output visible in the
-       Claude Code transcript and under user control. Failure (no clone,
-       no token) silently no-ops via the surrounding `|| true`.
+- Each hook trails with `; true` and runs detached (`( nohup ... & )`) so the
+  hook never blocks a session on a transient sync error or a slow run.
+- SessionStart gets ONE entry: a detached `agnes update --quiet`. That single
+  command is the unified convergence — it self-upgrades the CLI, applies the
+  workspace template, re-asserts the Agnes-owned hooks/statusLine/commands,
+  refreshes marketplace plugins, and pulls data — then writes a run report.
+  It runs detached (`( nohup ... & )`, like the SessionEnd push) so it never
+  blocks session start, sets `AGNES_NO_UPDATE_CHECK` internally so it doesn't
+  recurse, and holds a single-instance lock so only one runs at a time. It
+  replaces the older two entries (the `agnes self-upgrade; agnes pull` chain
+  and a separate `agnes refresh-marketplace --check`); workspaces still on the
+  old form auto-migrate because `_OUR_COMMAND_MARKERS` matches those commands.
 
   There is no `agnes capture-session` entry any more. `agnes push` now
   scans the workspace's Claude Code session folder directly (anchored on
@@ -74,6 +70,7 @@ from pathlib import Path
 # shells out to a deleted script.
 _OUR_COMMAND_MARKERS = (
     "agnes self-upgrade",
+    "agnes update",
     "agnes pull",
     "agnes push",
     "agnes refresh-marketplace",
@@ -88,12 +85,14 @@ _OUR_COMMAND_MARKERS = (
 
 
 def install_claude_hooks(workspace: Path) -> None:
-    """Install SessionStart hooks (`agnes self-upgrade; agnes pull` chained
-    + `agnes refresh-marketplace` as a separate entry) and SessionEnd hook
-    (`agnes push`).
+    """Install the SessionStart hook (one detached `agnes update --quiet`) and
+    the SessionEnd hook (detached `agnes push`), plus the `agnes statusline`
+    statusLine.
 
     Idempotent. Workspace-scoped (writes `<workspace>/.claude/settings.json`).
-    Preserves third-party hooks and other event types.
+    Preserves third-party hooks and other event types. On a corrupt
+    settings.json it backs the file up (`.corrupt.<ts>`) and rebuilds rather
+    than skipping.
 
     Override-sentinel handling lives at the call site, not here. The
     init-time caller (`cli/commands/init.py`, gated by `override_active`)
@@ -109,11 +108,30 @@ def install_claude_hooks(workspace: Path) -> None:
         try:
             cfg = json.loads(settings_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            print(
-                f"Warning: {settings_path} is not valid JSON; skipping hook install.",
-                file=sys.stderr,
-            )
-            return
+            # Self-heal a corrupt settings.json instead of giving up. The old
+            # behaviour (`return`) bricked hook repair entirely: a malformed
+            # file could never be fixed by `agnes init`/`self-upgrade`/`update`.
+            # Back up the unparseable file (so the analyst can recover any
+            # third-party keys by hand) and rebuild Agnes's managed entries
+            # from an empty config.
+            from datetime import datetime, timezone
+
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            corrupt = settings_path.with_name(f"{settings_path.name}.corrupt.{ts}")
+            try:
+                corrupt.write_bytes(settings_path.read_bytes())
+                print(
+                    f"Warning: {settings_path} was not valid JSON; backed it up to "
+                    f"{corrupt.name} and rebuilt the Agnes hook entries.",
+                    file=sys.stderr,
+                )
+            except OSError:
+                print(
+                    f"Warning: {settings_path} was not valid JSON and could not be "
+                    f"backed up; rebuilt the Agnes hook entries from scratch.",
+                    file=sys.stderr,
+                )
+            cfg = {}
     else:
         cfg = {}
 
@@ -135,22 +153,11 @@ def install_claude_hooks(workspace: Path) -> None:
         for cmd in commands:
             existing.append({"hooks": [{"type": "command", "command": cmd}]})
 
-    # All entries are wrapped in `bash -c "..."` for Windows compatibility:
-    # Claude Code on Windows runs hook commands directly (no shell), so
-    # the `; ` chain operator, `2>/dev/null` redirection, and `|| true`
-    # short-circuit never get interpreted unless we explicitly invoke
-    # bash. (Git Bash on PATH or WSL satisfies this.) The self-upgrade +
-    # pull chain previously shipped unwrapped — that pre-dates the
-    # Windows fix; ship it wrapped now so every entry uses the same
-    # contract. Workspaces still on the older unwrapped form auto-upgrade
-    # via `maybe_refresh_claude_hooks` on the next `agnes self-upgrade`.
-    #
-    # `--check` makes the marketplace entry a detector only: the actual
-    # plugin install/update happens in the `/update-agnes-plugins` slash
-    # command (installed by `cli.lib.commands.install_claude_commands`).
-    # Workspaces still on the older `--quiet` form auto-upgrade here
-    # because `_OUR_COMMAND_MARKERS` matches by substring on the
-    # `agnes refresh-marketplace` prefix.
+    # Both entries are wrapped in `bash -c "..."` for Windows compatibility:
+    # Claude Code on Windows runs hook commands directly (no shell), so the
+    # `2>/dev/null` redirection, the `( ... & )` detach subshell, and the
+    # `; true` short-circuit never get interpreted unless we explicitly invoke
+    # bash. (Git Bash on PATH or WSL satisfies this.)
     #
     # No `agnes capture-session` entry: `agnes push` scans the workspace's
     # Claude Code session folder directly (anchored on the `workspace_root`
@@ -158,11 +165,23 @@ def install_claude_hooks(workspace: Path) -> None:
     # leftover capture entry from a CLI- or template-seeded settings.json is
     # stripped because its command matches a `_OUR_COMMAND_MARKERS` substring
     # ("agnes capture-session" or "capture-session/capture.sh").
+    # SessionStart kicks off ONE detached `agnes update --quiet`: the unified
+    # convergence (CLI self-upgrade -> workspace template -> Agnes-owned
+    # hooks/statusLine/commands -> marketplace plugins -> data pull -> report).
+    # Detached via `( nohup ... & )` (like the SessionEnd push) so it NEVER
+    # blocks session start; a freshly-installed CLI binary, if any, activates
+    # next session. `agnes update` sets AGNES_NO_UPDATE_CHECK internally so it
+    # doesn't recurse, and holds update.lock so only one runs.
+    #
+    # This replaces the older two entries (`self-upgrade; pull` chain + a
+    # separate `refresh-marketplace --check`). Workspaces still on the old form
+    # auto-migrate here: `_replace_or_add` strips entries whose commands match
+    # `_OUR_COMMAND_MARKERS` (which covers `agnes self-upgrade` / `agnes pull` /
+    # `agnes refresh-marketplace` / `agnes update`) and re-adds just this one.
     _replace_or_add(
         "SessionStart",
         [
-            'bash -c "agnes self-upgrade --quiet 2>/dev/null || true; agnes pull --quiet 2>/dev/null || true"',
-            'bash -c "agnes refresh-marketplace --check 2>/dev/null || true"',
+            'bash -c "( nohup agnes update --quiet </dev/null >/dev/null 2>&1 & ) ; true"',
         ],
     )
     # SessionEnd runs the detached push. Claude Code in `-p` (headless) mode
@@ -226,11 +245,11 @@ def workspace_has_agnes_hooks(workspace: Path) -> bool:
     prior ``agnes init``: at least one Agnes-managed hook entry, or our
     statusLine command.
 
-    Used as a guard by :func:`maybe_refresh_claude_hooks` so that
-    ``agnes self-upgrade`` (which fires from a SessionStart hook in every
-    Agnes workspace) does not accidentally install hooks into a directory
-    that is not an Agnes workspace — e.g. the user's home dir, if they
-    invoke ``agnes self-upgrade`` manually from there.
+    Used as a guard by :func:`maybe_refresh_claude_hooks` so that a manual
+    ``agnes self-upgrade`` (invoked from an arbitrary cwd — e.g. the user's
+    home dir) does not accidentally install hooks into a directory that is not
+    an Agnes workspace. The automatic SessionStart update path is now a
+    detached ``agnes update``.
 
     Returns False on missing / malformed settings.json — the caller treats
     that as "not an Agnes workspace", so the refresh skips.
