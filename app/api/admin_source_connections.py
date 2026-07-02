@@ -48,10 +48,32 @@ class CreateConnectionBody(BaseModel):
 class UpdateConnectionBody(BaseModel):
     config: Optional[Dict[str, Any]] = None
     token_env: Optional[str] = None
+    is_default: Optional[bool] = None
 
 
 class SecretBody(BaseModel):
     value: str
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _with_secret_status(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Annotate a connection row with ``has_secret`` (a vault secret is stored).
+
+    The token's storage location isn't derivable from ``token_env`` alone —
+    vault secrets live in the separate ``connection_secrets`` store. The UI
+    badge needs this to distinguish "vault" from "env"/"unset".
+    """
+    if row is None:
+        return None
+    try:
+        row["has_secret"] = bool(connection_secrets_repo().has(row["id"]))
+    except Exception:
+        row["has_secret"] = False
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +87,7 @@ async def list_connections(
     _user: dict = Depends(require_admin),
 ):
     """List all named source connections, optionally filtered by source_type."""
-    return source_connections_repo().list(source_type=source_type)
+    return [_with_secret_status(r) for r in source_connections_repo().list(source_type=source_type)]
 
 
 @router.post("", status_code=201)
@@ -87,8 +109,7 @@ async def create_connection(
         is_default=body.is_default,
         created_by=_user.get("id"),
     )
-    row = repo.get(conn_id)
-    return row
+    return _with_secret_status(repo.get(conn_id))
 
 
 @router.get("/{connection_id}")
@@ -100,7 +121,7 @@ async def get_connection(
     row = source_connections_repo().get(connection_id)
     if row is None:
         raise HTTPException(status_code=404, detail="connection_not_found")
-    return row
+    return _with_secret_status(row)
 
 
 @router.put("/{connection_id}")
@@ -113,8 +134,13 @@ async def update_connection(
     repo = source_connections_repo()
     if repo.get(connection_id) is None:
         raise HTTPException(status_code=404, detail="connection_not_found")
-    repo.update(connection_id, config=body.config, token_env=body.token_env)
-    return repo.get(connection_id)
+    repo.update(
+        connection_id,
+        config=body.config,
+        token_env=body.token_env,
+        is_default=body.is_default,
+    )
+    return _with_secret_status(repo.get(connection_id))
 
 
 @router.delete("/{connection_id}", status_code=204)

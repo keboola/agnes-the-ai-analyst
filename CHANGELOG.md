@@ -17,6 +17,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- Source connections: "Set as default" now persists. `PUT /api/admin/source-connections/{id}` accepts `is_default` (previously dropped by the request model), and `SourceConnectionsRepository.update()` on both backends promotes the connection while demoting other defaults of the same `source_type`. The `/test` endpoint no longer blocks the event loop (async `httpx.AsyncClient` instead of the sync client in an `async def` handler). The token-status badge now reflects real vault state — list/get responses carry a `has_secret` flag and the UI shows "vault" from it instead of a `token_env` prefix the backend never wrote.
 
 ### Removed
 
