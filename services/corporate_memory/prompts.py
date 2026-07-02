@@ -167,6 +167,12 @@ BATCH_CONTRADICTION_SCHEMA = {
                             {"type": "null"},
                         ],
                     },
+                    # Plain union types (no "enum" key on the same node) are
+                    # accepted by Anthropic strict structured outputs. The
+                    # documented rejection targets nodes that combine both an
+                    # "enum" AND a "type": [..., "null"] list — the anyOf
+                    # pattern above handles those. These two fields carry no
+                    # enum constraint, so the simple union type is safe here.
                     "resolution_merged_content": {"type": ["string", "null"]},
                     "resolution_justification": {"type": ["string", "null"]},
                 },
