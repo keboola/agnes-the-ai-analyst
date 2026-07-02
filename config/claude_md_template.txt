@@ -30,7 +30,8 @@ This workspace is connected to {{ server.url }}.
 ## Metrics Workflow
 1. `agnes catalog --metrics` — list registered metrics + categories
 2. `agnes catalog --metrics --show <category>/<name>` — read the canonical SQL + business rules
-3. Adapt the canonical SQL; never invent metric calculations
+3. Read the `Notes:` section if present — it carries caveats and flags pre-built breakdowns (e.g. a `by_company` variant). When a note references one, run `agnes catalog --metrics --show <category>/<name> --json` to get that variant's full SQL from the `sql_variants` field
+4. Adapt the canonical SQL; never invent metric calculations
 
 ## Data Sync
 - `agnes pull` — download current data from server
