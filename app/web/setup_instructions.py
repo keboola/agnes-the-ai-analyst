@@ -79,9 +79,9 @@ practice and the design here exists to dodge each one:
    marketplace update agnes`. Credentials are injected per-pull via a
    one-shot git credential helper (PAT from `~/.config/agnes/token.json`)
    so the cloned repo's `origin` URL stays PAT-free at rest. The
-   SessionStart hook (installed by `agnes init`) calls refresh-marketplace
-   on every Claude Code session so changes server-side propagate
-   automatically.
+   SessionStart hook (installed by `agnes init`) runs a detached `agnes
+   update` on every Claude Code session, which reconciles the marketplace
+   (among other steps) so changes server-side propagate automatically.
 
 ## Step ordering
 
@@ -668,7 +668,7 @@ def _restart_claude_lines(step_num: str) -> list[str]:
         "",
         f"{step_num}) Restart Claude Code so every plugin, MCP server, and SessionStart hook installed above actually loads:",
         "   Tell me to type `/exit` (or close the Claude Code session entirely), then run `claude` again from this same directory — the install dir confirmed in step 2 (`~/Desktop/{workspace_dir}` on the default path, or whatever cwd the user explicitly accepted with 'install here').",
-        "   The next session boots with all marketplace plugins, every connector's keychain entries / OAuth grants, and the agnes-welcome + refresh-marketplace SessionStart hooks active. This is the last action before the Confirm summary — once I'm back in Claude Code, setup is complete.",
+        "   The next session boots with all marketplace plugins, every connector's keychain entries / OAuth grants, and the agnes-welcome + agnes-update SessionStart hooks active. This is the last action before the Confirm summary — once I'm back in Claude Code, setup is complete.",
     ]
 
 
@@ -801,10 +801,11 @@ def _marketplace_block(
          hood (no destructive cleanup needed). The prompt's "safe to
          re-run" promise holds without forcing the operator to delete
          anything by hand.
-      3. **One source of truth.** ``agnes refresh-marketplace`` is also
-         the SessionStart hook command, so install + refresh share the
-         same code path — version-aware reconcile, hook JSON output,
-         credential helper PAT injection, all consistent.
+      3. **One source of truth.** ``agnes refresh-marketplace`` is the
+         same reconcile the detached SessionStart ``agnes update`` hook
+         runs on every session, so install + auto-refresh share the same
+         code path — version-aware reconcile, hook JSON output, credential
+         helper PAT injection, all consistent.
 
     Why always clone (with the CLI doing it) instead of trying direct
     HTTPS marketplace add first? ``claude plugin marketplace add
@@ -847,16 +848,16 @@ def _marketplace_block(
         trailer = [
             "   These run non-interactively. After they finish, tell the user to /exit",
             "   and run `claude` again so the new plugins load. From then on, the",
-            "   SessionStart hook keeps the marketplace clone in sync via",
-            "   `agnes refresh-marketplace --quiet` on every Claude Code session.",
+            "   SessionStart hook keeps the marketplace clone in sync via a detached",
+            "   `agnes update` on every Claude Code session.",
         ]
     else:
         trailer = [
             "   Your account has no plugin grants right now, but registering the",
             "   marketplace anyway pre-wires the SessionStart hook. When an admin",
-            "   grants you a plugin later, `agnes refresh-marketplace` (run by the",
-            "   hook on every Claude Code session) will install it automatically —",
-            "   no need to re-run this setup script.",
+            "   grants you a plugin later, the detached `agnes update` (run by the",
+            "   hook on every Claude Code session) will reconcile and install it",
+            "   automatically — no need to re-run this setup script.",
         ]
     return [
         "",

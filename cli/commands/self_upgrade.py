@@ -583,9 +583,10 @@ def _smoke_test_new_binary(install_method: str, expected_version: str, *, user: 
 def _maybe_backfill_workspace_root() -> None:
     """Record ``workspace_root`` in config for clients that pre-date the key.
 
-    ``agnes self-upgrade`` runs from a SessionStart hook on every Claude Code
-    session, so this is where workspaces initialized before the config-anchor
-    existed pick it up. Writes ONLY when (a) config has no ``workspace_root``
+    ``agnes update`` (the detached SessionStart hook) and a manual ``agnes
+    self-upgrade`` both call this on every Claude Code session, so this is where
+    workspaces initialized before the config-anchor existed pick it up. Writes
+    ONLY when (a) config has no ``workspace_root``
     AND (b) the current directory is a genuinely-initialized workspace root —
     it carries the ``.claude/init-complete`` sentinel that ``agnes init``
     writes on success. The sentinel guard guarantees we never record a nested

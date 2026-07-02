@@ -245,11 +245,11 @@ def workspace_has_agnes_hooks(workspace: Path) -> bool:
     prior ``agnes init``: at least one Agnes-managed hook entry, or our
     statusLine command.
 
-    Used as a guard by :func:`maybe_refresh_claude_hooks` so that
-    ``agnes self-upgrade`` (which fires from a SessionStart hook in every
-    Agnes workspace) does not accidentally install hooks into a directory
-    that is not an Agnes workspace — e.g. the user's home dir, if they
-    invoke ``agnes self-upgrade`` manually from there.
+    Used as a guard by :func:`maybe_refresh_claude_hooks` so that a manual
+    ``agnes self-upgrade`` (invoked from an arbitrary cwd — e.g. the user's
+    home dir) does not accidentally install hooks into a directory that is not
+    an Agnes workspace. The automatic SessionStart update path is now a
+    detached ``agnes update``.
 
     Returns False on missing / malformed settings.json — the caller treats
     that as "not an Agnes workspace", so the refresh skips.

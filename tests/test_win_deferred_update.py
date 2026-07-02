@@ -131,3 +131,76 @@ def test_looks_like_lock_only_matches_real_locks():
     assert h._looks_like_lock("cannot access the file because it is being used by another process")
     assert not h._looks_like_lock('The wheel filename "0.72.4.whl" is invalid: Must have a version')
     assert not h._looks_like_lock("")
+
+
+class _FakeProc:
+    def __init__(self, returncode, stderr="", stdout=""):
+        self.returncode = returncode
+        self.stderr = stderr
+        self.stdout = stdout
+
+
+def test_uv_install_non_lock_error_fails_fast(monkeypatch, tmp_path):
+    # A non-lock uv failure (bad wheel, uv missing) will not fix itself, so
+    # `_uv_install` must return on the FIRST attempt instead of retrying until
+    # the budget drains — the mislabel-as-lock bug that hid the staged-wheel
+    # filename regression.
+    monkeypatch.setattr(h, "_venv_python", lambda: None)
+    monkeypatch.setattr(h, "_venv_free", lambda py: True)
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        return _FakeProc(2, stderr='The wheel filename "x.whl" is invalid: Must have a version')
+
+    monkeypatch.setattr(h.subprocess, "run", fake_run)
+    slept = []
+    monkeypatch.setattr(h.time, "sleep", lambda s: slept.append(s))
+
+    rc = h._uv_install("x.whl", config_dir=str(tmp_path), budget_s=5.0, backoff_s=0.01)
+    assert rc == 2
+    assert len(calls) == 1  # fail-fast: no retry on a non-lock error
+    assert slept == []
+
+
+def test_uv_install_lock_then_success_retries(monkeypatch, tmp_path):
+    # A transient Windows lock (a concurrent statusline render holding the
+    # venv) IS retried; the second attempt lands once the lock clears.
+    monkeypatch.setattr(h, "_venv_python", lambda: None)
+    monkeypatch.setattr(h, "_venv_free", lambda py: True)
+    monkeypatch.setattr(h.time, "sleep", lambda s: None)  # no real backoff wait
+    outcomes = iter([
+        _FakeProc(1, stderr="Access is denied. (os error 5)"),
+        _FakeProc(0, stderr=""),
+    ])
+    seen = []
+
+    def fake_run(cmd, **k):
+        p = next(outcomes)
+        seen.append(p.returncode)
+        return p
+
+    monkeypatch.setattr(h.subprocess, "run", fake_run)
+
+    rc = h._uv_install("x.whl", config_dir=str(tmp_path), budget_s=5.0, backoff_s=0.01)
+    assert rc == 0
+    assert seen == [1, 0]  # retried after the lock error, then succeeded
+
+
+def test_installed_version_ok_exact_match_not_substring(monkeypatch):
+    # `agnes --version` prints "agnes <version>". The check must compare the
+    # version TOKEN exactly, not substring-match: expecting 0.72.9 against a
+    # binary that reports 0.72.90 (a failed/partial swap) must be a MISMATCH so
+    # the caller rolls back instead of scoring it as success.
+    monkeypatch.setattr(h.subprocess, "run",
+                        lambda *a, **k: _FakeProc(0, stdout="agnes 0.72.90\n"))
+    assert h._installed_version_ok("0.72.9") is False
+
+    monkeypatch.setattr(h.subprocess, "run",
+                        lambda *a, **k: _FakeProc(0, stdout="agnes 0.72.9\n"))
+    assert h._installed_version_ok("0.72.9") is True
+
+    # Non-zero exit is never OK regardless of stdout.
+    monkeypatch.setattr(h.subprocess, "run",
+                        lambda *a, **k: _FakeProc(1, stdout="agnes 0.72.9\n"))
+    assert h._installed_version_ok("0.72.9") is False
