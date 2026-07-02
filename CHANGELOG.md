@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.0] - 2026-07-02
+
+### Added
 - Keboola multi-project support: `GET/POST/PUT/DELETE /api/admin/source-connections` CRUD surface (+ `/secret` vault endpoints and `/test` connectivity check) for naming and storing multiple Keboola project credentials; `connection_id` field on `POST /api/admin/register-table` pins a table to a specific named connection (400 on unknown id); sync materialized-pass resolves Keboola client credentials per-table via the named connection (vault-first, then `token_env` env var), falling back to the global instance token for tables without a `connection_id`.
 - `/admin/datasource-credentials` Keboola projects section: dynamic cards backed by the source-connections API showing name, stack URL, default and token-status badges, with Test / Set as default / Rotate token / Delete actions and an Add project modal.
 
