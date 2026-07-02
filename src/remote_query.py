@@ -141,7 +141,11 @@ def _strip_leading_sql_comments(sql: str) -> str:
             s = "" if newline == -1 else stripped[newline + 1:]
             continue
         if stripped.startswith("/*"):
-            end = stripped.find("*/")
+            # Search for the closing */ AFTER the two-char opener, so a comment
+            # like `/*/ …` doesn't match the opener's own `*` + the next `/` as
+            # a spurious close (which would leave the real statement's guard
+            # bypassed while DuckDB parses on to the true close).
+            end = stripped.find("*/", 2)
             if end == -1:
                 # Unterminated block comment — leave it so the guard rejects.
                 return stripped

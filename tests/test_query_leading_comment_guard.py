@@ -39,3 +39,16 @@ class TestAssertSelectOnlyLeadingComments:
         # A comment with no actual statement is not a SELECT/WITH.
         with pytest.raises(HTTPException):
             _assert_select_only("-- just a comment, no query")
+
+    def test_block_comment_false_close_rejects_trailing_non_select(self):
+        # `/*/ … */` — the block-comment end marker must not be found
+        # overlapping the `/*` opener, else the guard sees the comment's fake
+        # `SELECT` while DuckDB executes the trailing non-SELECT statement after
+        # the true close (Devin Review on PR #743).
+        with pytest.raises(HTTPException):
+            _assert_select_only("/*/ select 1 */ set memory_limit='1gb'")
+
+    def test_block_comment_with_slash_body_before_real_select_allowed(self):
+        # `/*/ header */` is a valid block comment; a real SELECT after it must
+        # still pass (the overlapping-close bug used to reject this too).
+        _assert_select_only("/*/ header */ select 1")

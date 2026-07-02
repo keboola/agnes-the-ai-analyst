@@ -284,6 +284,22 @@ class TestValidateSql:
             _validate_sql("-- drop this table first\nSELECT 1")
         assert exc_info.value.error_type == "query_error"
 
+    def test_block_comment_false_close_rejects_trailing_non_select(self):
+        # `/*/ … */` — the block-comment end marker must not be found
+        # overlapping the `/*` opener. DuckDB treats `/*/ SELECT 1 */` as a
+        # comment and executes the trailing statement, so the guard must not be
+        # fooled into seeing the comment's fake `SELECT` and waving through a
+        # non-SELECT (Devin Review on PR #743).
+        with pytest.raises(RemoteQueryError) as exc_info:
+            _validate_sql("/*/ SELECT 1 */ SET memory_limit='1GB'")
+        assert exc_info.value.error_type == "query_error"
+
+    def test_block_comment_with_slash_body_before_real_select_allowed(self):
+        # `/*/ header */` is a valid block comment (body starts with `/`); a
+        # real SELECT after it must still pass. The overlapping-close bug used
+        # to reject this too.
+        _validate_sql("/*/ header */ SELECT 1")
+
 
 # ---------------------------------------------------------------------------
 # _validate_bq_sql unit tests
@@ -349,6 +365,15 @@ class TestValidateBqSql:
         with pytest.raises(RemoteQueryError) as exc_info:
             _validate_bq_sql("-- drop the old rows\nSELECT 1")
         assert exc_info.value.error_type == "query_error"
+
+    def test_block_comment_false_close_rejects_trailing_non_select(self):
+        # Same `/*/` overlapping-close guard for the BQ validator.
+        with pytest.raises(RemoteQueryError) as exc_info:
+            _validate_bq_sql("/*/ SELECT 1 */ SET x = 1")
+        assert exc_info.value.error_type == "query_error"
+
+    def test_block_comment_with_slash_body_before_real_select_allowed(self):
+        _validate_bq_sql("/*/ header */ SELECT 1")
 
 
 
