@@ -106,6 +106,18 @@ real problem.
 AGNES_PAT
    agnes init --server-url "{server_url}" --token-file ~/.agnes/token --workspace .
 
+   ALREADY INSTALLED? If `.claude/init-complete` already exists in this
+   directory, the workspace is initialised and `agnes init` will refuse.
+   Run `agnes update` instead — it uses your SAVED credentials (no token
+   needed) and converges the CLI, workspace template, plugins and data,
+   repairing anything broken. Template/default workspace files you edited
+   are backed up to `<name>.bak.<ts>` before being updated; Agnes-owned
+   hooks/statusLine/commands are re-applied on top. Then skip to step 4.
+   (If `agnes update` fails on auth because your saved token expired, run
+   `agnes init --force --server-url "{server_url}" --token-file ~/.agnes/token`
+   — `agnes init` always needs an explicit --server-url; this refreshes
+   the token and now backs up your edited template files before updating.)
+
    If Claude Code still blocks an `agnes` command (e.g. the
    `agnes init` line above or `agnes catalog` in step 4), prefix
    it with `!` to run the command directly in your shell,

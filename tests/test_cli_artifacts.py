@@ -18,6 +18,21 @@ def test_cli_install_script_bakes_server_url(monkeypatch):
     assert "pip install" in body or "uv tool install" in body
 
 
+def test_cli_install_script_merges_config_not_clobber(monkeypatch):
+    """The generated installer must MERGE config.yaml (preserve workspace_root
+    and other keys on a re-run), never truncate it with `cat >`."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app, base_url="https://agnes.example.com")
+    body = client.get("/cli/install.sh", headers={"host": "agnes.example.com"}).text
+    # No truncating write to config.yaml.
+    assert 'cat > "$CFG_DIR/config.yaml"' not in body
+    # Uses a merge: strip any existing server line, then append the new one.
+    assert "grep -v '^server:'" in body
+    assert 'printf \'server: %s\\n\' "$SERVER"' in body
+
+
 def test_cli_download_returns_wheel_or_404(monkeypatch):
     from fastapi.testclient import TestClient
     from app.main import app
@@ -159,3 +174,90 @@ def test_cli_install_sh_accepts_base_url_with_path_prefix(monkeypatch):
     result = asyncio.run(cli_install_script(stub))  # returns the script body
     assert isinstance(result, str)
     assert "https://agnes.example.com/agnes" in result
+
+
+def _render_install_script():
+    import asyncio
+    from app.api.cli_artifacts import cli_install_script
+
+    class _Req:
+        base_url = "https://agnes.example.com/"
+
+    return asyncio.run(cli_install_script(_Req()))
+
+
+def _write_fakebin(fakebin: Path):
+    fakebin.mkdir()
+    # -OJ writes the remote-named wheel into cwd; fake it as a no-op touch.
+    (fakebin / "curl").write_text(
+        "#!/usr/bin/env bash\ntouch agnes_fake-1.0-py3-none-any.whl\nexit 0\n"
+    )
+    (fakebin / "uv").write_text("#!/usr/bin/env bash\nexit 0\n")
+    for name in ("curl", "uv"):
+        (fakebin / name).chmod(0o755)
+
+
+def test_install_script_execution_preserves_workspace_root(tmp_path):
+    """Run the generated installer against a seeded config; the merge must keep
+    workspace_root and swap only the server line (executable behavior, not just
+    static strings)."""
+    import sys
+    import subprocess
+
+    if sys.platform.startswith("win"):
+        import pytest
+        pytest.skip("bash installer test is POSIX-only")
+
+    script_path = tmp_path / "install.sh"
+    script_path.write_text(_render_install_script())
+    fakebin = tmp_path / "fakebin"
+    _write_fakebin(fakebin)
+
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text("server: http://old\nworkspace_root: /home/me/ws\n")
+
+    env = {**os.environ,
+           "PATH": f"{fakebin}:{os.environ['PATH']}",
+           "AGNES_CONFIG_DIR": str(cfg_dir)}
+    r = subprocess.run(["bash", str(script_path)], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    merged = (cfg_dir / "config.yaml").read_text()
+    assert "workspace_root: /home/me/ws" in merged
+    assert "server: https://agnes.example.com" in merged
+    assert "server: http://old" not in merged
+
+
+def test_install_script_aborts_on_unreadable_config(tmp_path):
+    """A real read error on the existing config must abort WITHOUT clobbering it
+    (never reduce config.yaml to a single server: line)."""
+    import sys
+    import os as _os
+    import subprocess
+
+    if sys.platform.startswith("win"):
+        import pytest
+        pytest.skip("bash installer test is POSIX-only")
+    if hasattr(_os, "geteuid") and _os.geteuid() == 0:
+        import pytest
+        pytest.skip("root bypasses file permissions")
+
+    script_path = tmp_path / "install.sh"
+    script_path.write_text(_render_install_script())
+    fakebin = tmp_path / "fakebin"
+    _write_fakebin(fakebin)
+
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    cfg = cfg_dir / "config.yaml"
+    original = "server: http://old\nworkspace_root: /home/me/ws\n"
+    cfg.write_text(original)
+    cfg.chmod(0o000)  # unreadable → grep exit > 1
+
+    env = {**os.environ,
+           "PATH": f"{fakebin}:{os.environ['PATH']}",
+           "AGNES_CONFIG_DIR": str(cfg_dir)}
+    r = subprocess.run(["bash", str(script_path)], env=env, capture_output=True, text=True)
+    cfg.chmod(0o644)  # restore so we can read it back
+    assert r.returncode != 0
+    assert cfg.read_text() == original  # untouched, not clobbered
