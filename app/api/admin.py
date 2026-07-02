@@ -2483,6 +2483,15 @@ def _materialize_bigquery_extract_bg() -> None:
             len(errors),
             errors,
         )
+        return
+    # Rebuild completed without errors — invalidate cached catalog so reads
+    # taken during the background window don't serve stale schemas.
+    try:
+        from app.api.v2_catalog import invalidate_all
+
+        invalidate_all()
+    except Exception:
+        logger.exception("BQ background materialize: cache invalidation failed")
 
 
 def _run_bigquery_materialize_with_timeout(
@@ -2582,7 +2591,14 @@ def _run_bigquery_materialize_with_timeout(
     responses={
         200: {"description": "BigQuery row registered + materialized synchronously"},
         201: {"description": "Non-BigQuery row registered (no post-insert materialize)"},
-        202: {"description": "BigQuery row registered; materialize continues in background"},
+        202: {
+            "description": (
+                "BigQuery row registered with one of two outcomes: "
+                "(a) status='accepted' — materialize is running in the background; "
+                "(b) status='registered' — defer_rebuild=True was set, rebuild is deferred; "
+                "caller must trigger POST /api/admin/registry/rebuild separately."
+            )
+        },
         409: {"description": "Table id or view name already in use"},
         500: {"description": "BigQuery row registered but post-insert rebuild failed"},
     },
