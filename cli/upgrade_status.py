@@ -47,7 +47,7 @@ _MAX_REASON_LEN = 200
 _SECRET_PATTERNS = [
     re.compile(r"(?i)\b(AGNES_TOKEN|authorization|bearer)\b\s*[:=]?\s*\S+"),
     re.compile(r"(?i)[?&](token|access_token|sig|signature|api[_-]?key|key)=[^\s&]+"),
-    re.compile(r"\b[A-Fa-f0-9]{32,}\b"),  # long hex runs (tokens / hashes)
+    re.compile(r"\b[A-Fa-f0-9]{64,}\b"),  # long hex runs (tokens / hashes); 64+ avoids git SHAs
 ]
 
 
@@ -84,8 +84,7 @@ def _write_status(entry: dict) -> None:
         pass  # best-effort — a status-write failure must not break the flow
 
 
-def record_outcome(success: bool, *, reason: Optional[str] = None,
-                   now: Optional[float] = None) -> None:
+def record_outcome(success: bool, *, reason: Optional[str] = None, now: Optional[float] = None) -> None:
     """Record a self-upgrade attempt outcome.
 
     On success the consecutive-failure counter resets to 0 (and any prior
@@ -158,10 +157,7 @@ def format_failure_notice() -> str:
     so the analyst sees WHY it's failing without having to re-run the command.
     """
     n = consecutive_failures()
-    base = (
-        f"agnes self-upgrade has failed {n} times — "
-        "run `agnes self-upgrade` to see the error."
-    )
+    base = f"agnes self-upgrade has failed {n} times — run `agnes self-upgrade` to see the error."
     reason = read_status().get("last_failure_reason")
     if isinstance(reason, str) and reason:
         base += f" Last error: {reason}"

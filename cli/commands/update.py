@@ -91,7 +91,7 @@ def _resolve_workspace() -> Optional[Path]:
     if root:
         return Path(root).resolve()
     cwd = Path.cwd()
-    if (cwd / ".claude" / "init-complete").exists() or (cwd / ".claude" / "settings.json").exists():
+    if (cwd / ".claude" / "init-complete").exists():
         return cwd
     return None
 
@@ -132,27 +132,36 @@ def _step_cli(*, quiet: bool, report: list[dict]) -> None:
     if rc == su._INSTALL_DEFERRED:
         # Unattended run with no safe rollback artifact — intentionally NOT
         # attempted. Not a failure: the counter is untouched.
-        report.append({
-            "stage": "cli", "status": "deferred",
-            "detail": f"{info.installed} -> {info.latest} "
-                      "(deferred: no safe rollback artifact; will retry next session)",
-        })
+        report.append(
+            {
+                "stage": "cli",
+                "status": "deferred",
+                "detail": f"{info.installed} -> {info.latest} "
+                "(deferred: no safe rollback artifact; will retry next session)",
+            }
+        )
         return
     if rc == su._INSTALL_STAGED:
         # Windows: the swap was handed to a detached helper that completes after
         # this process exits. Not a failure; the helper records the real outcome.
         # Name the target version so the log says WHAT is being installed.
-        report.append({
-            "stage": "cli", "status": "staged",
-            "detail": f"{info.installed} -> {info.latest} "
-                      "(windows deferred install; completes after this process exits)",
-        })
+        report.append(
+            {
+                "stage": "cli",
+                "status": "staged",
+                "detail": f"{info.installed} -> {info.latest} "
+                "(windows deferred install; completes after this process exits)",
+            }
+        )
         return
     if rc == su._INSTALL_OK:
-        report.append({
-            "stage": "cli", "status": "updated",
-            "detail": f"{info.installed} -> {info.latest} (active next run)",
-        })
+        report.append(
+            {
+                "stage": "cli",
+                "status": "updated",
+                "detail": f"{info.installed} -> {info.latest} (active next run)",
+            }
+        )
     else:
         report.append({"stage": "cli", "status": "error", "detail": "install failed; rolled back to current"})
 
@@ -174,13 +183,23 @@ def _step_workspace(workspace: Path, *, server_url: str, token: str, report: lis
     if status is not None and status.configured:
         # OVERRIDE mode (Initial Workspace Template configured).
         if not status.synced:
-            report.append({"stage": "workspace", "status": "skipped",
-                           "detail": "template configured but not synced (ask admin to Sync now)"})
+            report.append(
+                {
+                    "stage": "workspace",
+                    "status": "skipped",
+                    "detail": "template configured but not synced (ask admin to Sync now)",
+                }
+            )
             return
         sentinel = read_override_metadata(workspace) or {}
         if not is_override_workspace(workspace):
-            report.append({"stage": "workspace", "status": "skipped",
-                           "detail": "no override sentinel; run `agnes update-workspace` once interactively"})
+            report.append(
+                {
+                    "stage": "workspace",
+                    "status": "skipped",
+                    "detail": "no override sentinel; run `agnes update-workspace` once interactively",
+                }
+            )
         elif sentinel.get("template_sha") == status.template_sha:
             report.append({"stage": "workspace", "status": "ok", "detail": "template already current"})
         else:
@@ -190,14 +209,19 @@ def _step_workspace(workspace: Path, *, server_url: str, token: str, report: lis
             # template before overwriting, and apply_update() then establishes
             # the baseline so the next run is a precise merge.
             new_zip = download_zip(server_url, token)
-            result = apply_update(workspace, new_zip, status, server_url, token,
-                                  agnes_version=_agnes_version())
-            report.append({"stage": "workspace", "status": "merged", "detail": {
-                "created": len(result.created),
-                "updated": len(result.updated),
-                "backed_up": [b for _, b in result.backed_up],
-                "template_sha": (status.template_sha or "")[:10],
-            }})
+            result = apply_update(workspace, new_zip, status, server_url, token, agnes_version=_agnes_version())
+            report.append(
+                {
+                    "stage": "workspace",
+                    "status": "merged",
+                    "detail": {
+                        "created": len(result.created),
+                        "updated": len(result.updated),
+                        "backed_up": [b for _, b in result.backed_up],
+                        "template_sha": (status.template_sha or "")[:10],
+                    },
+                }
+            )
         # Refresh per-tenant operator params regardless of the merge decision.
         # A raised exception is a real failure (surface it in the report); a
         # None return is a soft signal (older server / empty overlay), not an
@@ -205,15 +229,18 @@ def _step_workspace(workspace: Path, *, server_url: str, token: str, report: lis
         try:
             env_path = write_agnes_env(workspace, server_url, token)
         except Exception as exc:  # noqa: BLE001 — best-effort env refresh
-            report.append({"stage": "env", "status": "error",
-                           "detail": f"{type(exc).__name__}: {exc}"})
+            report.append({"stage": "env", "status": "error", "detail": f"{type(exc).__name__}: {exc}"})
         else:
             if env_path is not None:
-                report.append({"stage": "env", "status": "ok",
-                               "detail": f"wrote {env_path.name}"})
+                report.append({"stage": "env", "status": "ok", "detail": f"wrote {env_path.name}"})
             else:
-                report.append({"stage": "env", "status": "skipped",
-                               "detail": "no connector params (older server / empty overlay)"})
+                report.append(
+                    {
+                        "stage": "env",
+                        "status": "skipped",
+                        "detail": "no connector params (older server / empty overlay)",
+                    }
+                )
     else:
         # DEFAULT mode — no template; CLAUDE.md is server-rendered.
         _refresh_default_claude_md(workspace, server_url=server_url, token=token, report=report)
@@ -241,8 +268,13 @@ def _refresh_default_claude_md(workspace: Path, *, server_url: str, token: str, 
         bak.write_bytes(claude_md.read_bytes())
         backup_name = bak.name
     claude_md.write_text(content, encoding="utf-8")
-    report.append({"stage": "workspace", "status": "refreshed",
-                   "detail": f"CLAUDE.md updated{f' (backup {backup_name})' if backup_name else ''}"})
+    report.append(
+        {
+            "stage": "workspace",
+            "status": "refreshed",
+            "detail": f"CLAUDE.md updated{f' (backup {backup_name})' if backup_name else ''}",
+        }
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -307,15 +339,25 @@ def _step_marketplace(*, report: list[dict], quiet: bool = False) -> None:
 
     if not (CLONE_DIR / ".git").is_dir():
         rc = _invoke(check=False, bootstrap=True)
-        report.append({"stage": "marketplace", "status": "bootstrapped" if rc == 0 else "error",
-                       "detail": f"clone missing; bootstrap exit={rc}"})
+        report.append(
+            {
+                "stage": "marketplace",
+                "status": "bootstrapped" if rc == 0 else "error",
+                "detail": f"clone missing; bootstrap exit={rc}",
+            }
+        )
         return
 
     rc = _invoke(check=True, bootstrap=False)
     if rc == _EXIT_MARKETPLACE_DRIFT:
         full = _invoke(check=False, bootstrap=False)
-        report.append({"stage": "marketplace", "status": "reconciled" if full == 0 else "error",
-                       "detail": f"drift detected; reconcile exit={full}"})
+        report.append(
+            {
+                "stage": "marketplace",
+                "status": "reconciled" if full == 0 else "error",
+                "detail": f"drift detected; reconcile exit={full}",
+            }
+        )
     elif rc == 0:
         # No marketplace drift — but the workspace settings.json may have been
         # reset since the last reconcile (step 2's template merge drops the
@@ -323,9 +365,13 @@ def _step_marketplace(*, report: list[dict], quiet: bool = False) -> None:
         # installed stack plugins stay ENABLED; cheap (no fetch) and idempotent.
         enabled = _reassert_enabled_plugins()
         if enabled:
-            report.append({"stage": "marketplace", "status": "enabled",
-                           "detail": f"re-enabled {len(enabled)} stack plugin(s) in settings.json: "
-                                     + ", ".join(enabled)})
+            report.append(
+                {
+                    "stage": "marketplace",
+                    "status": "enabled",
+                    "detail": f"re-enabled {len(enabled)} stack plugin(s) in settings.json: " + ", ".join(enabled),
+                }
+            )
         else:
             report.append({"stage": "marketplace", "status": "ok", "detail": "plugins already current"})
     else:
@@ -338,13 +384,17 @@ def _step_marketplace(*, report: list[dict], quiet: bool = False) -> None:
 def _step_pull(workspace: Path, *, server_url: str, token: str, quiet: bool, report: list[dict]) -> None:
     from cli.lib.pull import run_pull
 
-    result = run_pull(server_url, token, workspace, dry_run=False,
-                      skip_materialize=False, show_progress=not quiet)
+    result = run_pull(server_url, token, workspace, dry_run=False, skip_materialize=False, show_progress=not quiet)
     if getattr(result, "errors", None):
         report.append({"stage": "pull", "status": "error", "detail": list(result.errors)})
     else:
-        report.append({"stage": "pull", "status": "ok",
-                       "detail": f"{result.tables_updated} tables, {result.parquets_total} parquets"})
+        report.append(
+            {
+                "stage": "pull",
+                "status": "ok",
+                "detail": f"{result.tables_updated} tables, {result.parquets_total} parquets",
+            }
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -371,9 +421,7 @@ def update(
     quiet: bool = typer.Option(
         False, "--quiet", help="Suppress progress output (SessionStart hook path). Errors still go to the report."
     ),
-    as_json: bool = typer.Option(
-        False, "--json", help="Emit the run report as a single JSON object on stdout."
-    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit the run report as a single JSON object on stdout."),
 ) -> None:
     """Converge the workspace + CLI; safe to run repeatedly and from any cwd."""
     from cli.lib.push_lock import acquire_path_or_skip
@@ -391,10 +439,10 @@ def update(
     try:
         lock_file = _config_dir() / "update.lock"
     except OSError as exc:
-        report.append({"stage": "config", "status": "error",
-                       "detail": f"cannot access config dir: {type(exc).__name__}: {exc}"})
-        entry = {"ts": _utc_stamp(), "agnes_version": _agnes_version(),
-                 "workspace": None, "steps": report}
+        report.append(
+            {"stage": "config", "status": "error", "detail": f"cannot access config dir: {type(exc).__name__}: {exc}"}
+        )
+        entry = {"ts": _utc_stamp(), "agnes_version": _agnes_version(), "workspace": None, "steps": report}
         if as_json:
             typer.echo(json.dumps(entry))
         elif not quiet:
@@ -424,8 +472,7 @@ def update(
             token = get_token()
             workspace = _resolve_workspace()
         except Exception as exc:  # noqa: BLE001 — best-effort, mirror _run_step
-            report.append({"stage": "config", "status": "error",
-                           "detail": f"{type(exc).__name__}: {exc}"})
+            report.append({"stage": "config", "status": "error", "detail": f"{type(exc).__name__}: {exc}"})
 
         # Legacy-fleet backfill of the `workspace_root` config anchor.
         # Workspaces initialized before that key existed relied on the old
@@ -440,6 +487,7 @@ def update(
         # ONLY when unset, and swallows its own errors — no network, no lock.
         try:
             from cli.commands.self_upgrade import _maybe_backfill_workspace_root
+
             _maybe_backfill_workspace_root()
         except Exception:  # noqa: BLE001 — best-effort, mirror _run_step
             pass
@@ -454,8 +502,13 @@ def update(
         _run_step("cli", lambda: _step_cli(quiet=step_quiet, report=report), report)
 
         if workspace is None:
-            report.append({"stage": "workspace", "status": "skipped",
-                           "detail": "no initialised workspace found (run from the workspace or `agnes init`)"})
+            report.append(
+                {
+                    "stage": "workspace",
+                    "status": "skipped",
+                    "detail": "no initialised workspace found (run from the workspace or `agnes init`)",
+                }
+            )
         elif not token:
             report.append({"stage": "workspace", "status": "skipped", "detail": "no token configured"})
         else:
@@ -470,18 +523,29 @@ def update(
             try:
                 os.chdir(workspace)
             except OSError as exc:
-                report.append({
-                    "stage": "workspace", "status": "error",
-                    "detail": f"cannot enter workspace {workspace}: {exc}; skipped workspace steps",
-                })
+                report.append(
+                    {
+                        "stage": "workspace",
+                        "status": "error",
+                        "detail": f"cannot enter workspace {workspace}: {exc}; skipped workspace steps",
+                    }
+                )
             else:
                 try:
-                    _run_step("workspace", lambda: _step_workspace(
-                        workspace, server_url=server_url, token=token, report=report), report)
+                    _run_step(
+                        "workspace",
+                        lambda: _step_workspace(workspace, server_url=server_url, token=token, report=report),
+                        report,
+                    )
                     _run_step("agnes-owned", lambda: _step_agnes_owned(workspace, report=report), report)
                     _run_step("marketplace", lambda: _step_marketplace(report=report, quiet=step_quiet), report)
-                    _run_step("pull", lambda: _step_pull(
-                        workspace, server_url=server_url, token=token, quiet=step_quiet, report=report), report)
+                    _run_step(
+                        "pull",
+                        lambda: _step_pull(
+                            workspace, server_url=server_url, token=token, quiet=step_quiet, report=report
+                        ),
+                        report,
+                    )
                 finally:
                     try:
                         os.chdir(prev_cwd)
