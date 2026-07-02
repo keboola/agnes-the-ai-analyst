@@ -157,15 +157,22 @@ def _gc_wheel_cache(keep_name: str) -> None:
         pass
 
 
-def _record_wheel_cache(version: str, wheel_path: Path) -> dict:
+def _record_wheel_cache(version: str, wheel_path: Path,
+                        download_url: Optional[str] = None) -> dict:
     """Copy a verified wheel into the cache, GC to the last N, and return the
     ``{version, wheel_filename, sha256}`` metadata. ``{}`` on any error (the
     caller still records the download URL — the cache is a best-effort rollback
-    aid, not a correctness dependency)."""
+    aid, not a correctness dependency).
+
+    The cached file MUST keep a PEP 427-valid name (``name-version-tags.whl``):
+    rollback reinstalls it via ``uv tool install --force <path>``, and uv parses
+    the FILENAME and rejects a bare ``<version>.whl`` with "Must have a version"
+    — so a bare name here silently breaks rollback (the same trap the Windows
+    deferred staging hit; see ``_staged_wheel_name``)."""
     try:
         cache = _wheel_cache_dir()
         cache.mkdir(parents=True, exist_ok=True)
-        fname = f"{_sanitize_version(version)}.whl"
+        fname = _staged_wheel_name(download_url, version)
         dest = cache / fname
         shutil.copyfile(wheel_path, dest)
         sha = _sha256_file(dest)
@@ -776,7 +783,7 @@ def _do_install_with_smoke_and_rollback(
     with tempfile.TemporaryDirectory(prefix="agnes_cache.") as td:
         dl = _download_wheel(info.download_url, Path(td), quiet=True)
         if dl is not None:
-            cache_meta = _record_wheel_cache(info.latest, dl)
+            cache_meta = _record_wheel_cache(info.latest, dl, info.download_url)
     _record_last_known_good_meta(
         {"download_url": info.download_url, "version": info.latest, **cache_meta}
     )
