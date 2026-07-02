@@ -430,27 +430,26 @@ def discover_and_register(
         # connectors/keboola/storage_api.py + the v25→v26 migration.
         # Other connectors keep their per-source default.
         default_mode = "materialized" if source_type == "keboola" else "local"
-        resp = api_post(
-            "/api/admin/register-table",
-            json={
-                "name": name,
-                "source_type": source_type,
-                "bucket": bucket_id,
-                "source_table": name,
-                "query_mode": default_mode,
-                "description": f"Auto-discovered from {source_type}",
-            },
-        )
+        payload: dict = {
+            "name": name,
+            "source_type": source_type,
+            "bucket": bucket_id,
+            "source_table": name,
+            "query_mode": default_mode,
+            "description": f"Auto-discovered from {source_type}",
+        }
+        # BigQuery: skip the per-insert O(registry) rebuild; one rebuild at
+        # the end turns N full-registry rebuilds into one.
+        if source_type == "bigquery":
+            payload["defer_rebuild"] = True
+
+        resp = api_post("/api/admin/register-table", json=payload)
 
         # 200 (BQ synchronous materialize), 201 (legacy non-BQ insert),
-        # and 202 (BQ background materialize) are all success — mirrors
-        # the matrix in the single-table register-table command. Pre-fix
-        # this only accepted 201, so every successful BQ row counted as
-        # an error (review NIT 6 in #119).
+        # and 202 (BQ background materialize / deferred) are all success.
         if resp.status_code in (200, 201, 202):
             registered += 1
-            suffix = " (materializing in background)" if resp.status_code == 202 else ""
-            typer.echo(f"  ✓ {name}{suffix}")
+            typer.echo(f"  ✓ {name}")
         elif resp.status_code == 409:
             skipped += 1
         else:
@@ -459,6 +458,16 @@ def discover_and_register(
 
     if not dry_run:
         typer.echo(f"\nDone: {registered} registered, {skipped} already existed, {errors} errors")
+        if source_type == "bigquery" and registered > 0:
+            typer.echo("Triggering a single registry rebuild for all newly registered BigQuery tables...")
+            rebuild_resp = api_post("/api/admin/registry/rebuild")
+            if rebuild_resp.status_code in (200, 202):
+                typer.echo("  ✓ Registry rebuild triggered successfully")
+            else:
+                typer.echo(
+                    f"  ✗ Registry rebuild failed: {rebuild_resp.json().get('detail', rebuild_resp.text)}",
+                    err=True,
+                )
 
 
 @admin_app.command("sync")
