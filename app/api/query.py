@@ -30,6 +30,7 @@ from src.repositories import (
 from src.audit_helpers import client_kind_from_user
 from src.db import get_analytics_db_readonly
 from src.rbac import get_accessible_tables
+from src.remote_query import _strip_leading_sql_comments
 
 # Imported at module level so tests can monkeypatch via
 # `app.api.query._bq_dry_run_bytes` without resolving lazy imports inside
@@ -393,8 +394,12 @@ def _assert_select_only(sql_lower: str) -> None:
     if any(keyword in sql_lower for keyword in _BLOCKED_SQL_TOKENS):
         raise HTTPException(status_code=400, detail="Only single SELECT queries are allowed")
     # Accept any whitespace (newline, tab, space) after the keyword so
-    # multi-line SQL doesn't 400 on `SELECT\n  col, ...`.
-    if not re.match(r"^(select|with)\s", sql_lower):
+    # multi-line SQL doesn't 400 on `SELECT\n  col, ...`. Strip leading `--`
+    # / `/* */` comments first so a query whose stored SQL opens with a header
+    # comment isn't rejected — DuckDB and the local `agnes query` path tolerate
+    # them. The blocklist above still scans the full SQL, so a comment can't
+    # smuggle a blocked keyword through.
+    if not re.match(r"^(select|with)\s", _strip_leading_sql_comments(sql_lower)):
         raise HTTPException(status_code=400, detail="Query must start with SELECT or WITH")
 
 
