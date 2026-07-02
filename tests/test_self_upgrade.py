@@ -813,10 +813,25 @@ def test_record_and_cached_wheel_roundtrip(tmp_path):
     src.write_bytes(b"wheelbytes")
     meta = su._record_wheel_cache("1.0.0", src)
     assert meta["version"] == "1.0.0"
-    assert meta["wheel_filename"] == "1.0.0.whl"
+    # PEP 427-valid name — `uv tool install <path>` rejects a bare `<version>.whl`
+    # ("Must have a version"), which would silently break rollback.
+    assert meta["wheel_filename"] == "agnes_the_ai_analyst-1.0.0-py3-none-any.whl"
+    assert meta["wheel_filename"] != "1.0.0.whl"
     assert meta["sha256"]
     cached = su._cached_wheel_for(meta)
     assert cached is not None and cached.exists()
+
+
+def test_record_wheel_cache_uses_server_wheel_filename(tmp_path):
+    """When a download_url is given, the cache keeps the server's real wheel
+    filename so rollback's `uv tool install <path>` is accepted."""
+    from cli.commands import self_upgrade as su
+    src = tmp_path / "src.whl"
+    src.write_bytes(b"w")
+    url = "https://s/cli/wheel/agnes_the_ai_analyst-0.72.9-py3-none-any.whl"
+    meta = su._record_wheel_cache("0.72.9", src, url)
+    assert meta["wheel_filename"] == "agnes_the_ai_analyst-0.72.9-py3-none-any.whl"
+    assert su._cached_wheel_for(meta) is not None
 
 
 def test_cached_wheel_for_sha_mismatch_and_missing(tmp_path):
@@ -840,7 +855,8 @@ def test_wheel_cache_gc_keeps_last_two(tmp_path):
         su._record_wheel_cache(v, src)
     remaining = {p.name for p in su._wheel_cache_dir().glob("*.whl")}
     assert len(remaining) == 2, remaining
-    assert "1.2.0.whl" in remaining  # the just-cached one is always kept
+    # the just-cached one is always kept (real PEP 427 name, not bare `1.2.0.whl`)
+    assert "agnes_the_ai_analyst-1.2.0-py3-none-any.whl" in remaining
 
 
 def test_read_last_known_good_backcompat(tmp_path):
