@@ -849,6 +849,17 @@ synced IWT clone for the bind-git file picker.
 
 - /api/admin/keboola/test-connection
 
+### `/api/admin/source-connections` — Named source connections (multi-project Keboola, #731)
+
+Admin-only CRUD for named data-source connections. Enables multiple Keboola projects
+per Agnes instance. Each connection stores a `stack_url` and a vault-backed token.
+Tables in `table_registry` can be pinned to a specific connection via `connection_id`.
+
+- /api/admin/source-connections
+- /api/admin/source-connections/{connection_id}
+- /api/admin/source-connections/{connection_id}/secret
+- /api/admin/source-connections/{connection_id}/test
+
 ### `/api/admin/contributed-skills` — Contributed skill management
 
 Admin-only CRUD for the Agnes Contributed marketplace. `POST` wraps a pasted `SKILL.md` in a one-skill plugin and publishes it; `GET` lists contributed plugins with their granted group; `DELETE` removes a plugin and clears its grants. Mirrors the `/admin/contribute-skill` web form, `agnes admin skill list/contribute/delete` CLI, and `list_contributed_skills`/`contribute_skill`/`delete_contributed_skill` MCP tools.

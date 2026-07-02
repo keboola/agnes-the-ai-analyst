@@ -94,9 +94,10 @@ class SourceConnectionsRepository:
         *,
         config: Optional[Dict[str, Any]] = None,
         token_env: Optional[str] = None,
+        is_default: Optional[bool] = None,
     ) -> None:
         # Atomic multi-column update — same transaction guarantee as the PG
-        # sibling, so a failure between the two UPDATEs can't half-apply.
+        # sibling, so a failure between the UPDATEs can't half-apply.
         self.conn.execute("BEGIN")
         try:
             if config is not None:
@@ -109,6 +110,29 @@ class SourceConnectionsRepository:
                     "UPDATE source_connections SET token_env = ? WHERE id = ?",
                     [token_env, connection_id],
                 )
+            if is_default is not None:
+                if is_default:
+                    # Promote: demote every other connection of the same
+                    # source_type first (is_default is unique per source_type,
+                    # enforced here — mirrors create()).
+                    row = self.conn.execute(
+                        "SELECT source_type FROM source_connections WHERE id = ?",
+                        [connection_id],
+                    ).fetchone()
+                    if row:
+                        self.conn.execute(
+                            "UPDATE source_connections SET is_default = FALSE WHERE source_type = ?",
+                            [row[0]],
+                        )
+                    self.conn.execute(
+                        "UPDATE source_connections SET is_default = TRUE WHERE id = ?",
+                        [connection_id],
+                    )
+                else:
+                    self.conn.execute(
+                        "UPDATE source_connections SET is_default = FALSE WHERE id = ?",
+                        [connection_id],
+                    )
             self.conn.execute("COMMIT")
         except Exception:
             self.conn.execute("ROLLBACK")

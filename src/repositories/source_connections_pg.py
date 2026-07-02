@@ -96,6 +96,7 @@ class SourceConnectionsPgRepository:
         *,
         config: Optional[Dict[str, Any]] = None,
         token_env: Optional[str] = None,
+        is_default: Optional[bool] = None,
     ) -> None:
         with self._engine.begin() as cx:
             if config is not None:
@@ -108,6 +109,33 @@ class SourceConnectionsPgRepository:
                     sa.text("UPDATE source_connections SET token_env = :t WHERE id = :id"),
                     {"t": token_env, "id": connection_id},
                 )
+            if is_default is not None:
+                if is_default:
+                    # Promote: demote every other connection of the same
+                    # source_type first (is_default is unique per source_type,
+                    # enforced here — mirrors create()).
+                    row = (
+                        cx.execute(
+                            sa.text("SELECT source_type FROM source_connections WHERE id = :id"),
+                            {"id": connection_id},
+                        )
+                        .mappings()
+                        .fetchone()
+                    )
+                    if row:
+                        cx.execute(
+                            sa.text("UPDATE source_connections SET is_default = FALSE WHERE source_type = :st"),
+                            {"st": row["source_type"]},
+                        )
+                    cx.execute(
+                        sa.text("UPDATE source_connections SET is_default = TRUE WHERE id = :id"),
+                        {"id": connection_id},
+                    )
+                else:
+                    cx.execute(
+                        sa.text("UPDATE source_connections SET is_default = FALSE WHERE id = :id"),
+                        {"id": connection_id},
+                    )
 
     def delete(self, connection_id: str) -> None:
         with self._engine.begin() as cx:

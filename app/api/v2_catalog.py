@@ -82,7 +82,14 @@ def _examples_for(source_type: str, known_columns: list[str] | None) -> list[str
     ]
 
 
-def _fetch_hint(table_id: str, source_type: str) -> str:
+def _fetch_hint(table_id: str, source_type: str, server_only: bool = False) -> str:
+    if server_only:
+        # Materialized/local on the server but NOT synced to the analyst laptop
+        # (`agnes pull` skips server_only rows), so it has no local view — the
+        # only way to query it is server-side via --remote. Takes precedence
+        # over source_type: a bigquery-materialized table can also be
+        # server_only, and the snapshot-create hint would be wrong there too.
+        return "server-only — not synced locally; query via `agnes query --remote`"
     if source_type == "bigquery":
         return f"agnes snapshot create {table_id} --select <cols> --where '<BQ predicate>' --limit <N>"
     return "already local — query directly via `agnes query`"
@@ -265,11 +272,19 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
             "description": r.get("description") or "",
             "source_type": r.get("source_type") or "",
             "query_mode": r.get("query_mode") or "local",
+            # Distribution flag, decoupled from query_mode (#607): a
+            # server_only row is materialized/local on the server but excluded
+            # from `agnes pull`, so it must be queried via --remote. Surfaced
+            # as structured metadata so tooling doesn't have to parse the
+            # free-text description.
+            "server_only": bool(r.get("server_only")),
             "sql_flavor": _flavor_for(r.get("source_type") or ""),
             "where_examples": _examples_for(
                 r.get("source_type") or "", hint.get("known_columns"),
             ),
-            "fetch_via": _fetch_hint(r["id"], r.get("source_type") or ""),
+            "fetch_via": _fetch_hint(
+                r["id"], r.get("source_type") or "", bool(r.get("server_only")),
+            ),
             "rough_size_hint": hint.get("rough_size_hint"),
             "rows": hint.get("rows"),
             "size_bytes": hint.get("size_bytes"),

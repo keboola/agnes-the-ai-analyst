@@ -1509,6 +1509,17 @@ class RegisterTableRequest(BaseModel):
             "query_mode='remote'. Default false leaves distribution unchanged."
         ),
     )
+    # v79 — nullable FK to source_connections.id. NULL = use the instance-default
+    # connection for the row's source_type (spec 2026-06-12). When provided,
+    # the register-table handler validates the id exists before persisting.
+    connection_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Pin this table to a named source connection (source_connections.id). "
+            "NULL uses the default connection for the row's source_type. "
+            "The referenced connection must exist; an unknown id returns 400."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_server_only_query_mode(self):
@@ -2693,6 +2704,16 @@ def register_table(
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
 
+    # v79 — validate connection_id FK before persisting.
+    if request.connection_id is not None:
+        from src.repositories import source_connections_repo
+
+        if source_connections_repo().get(request.connection_id) is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"connection_id '{request.connection_id}' not found in source_connections",
+            )
+
     repo.register(
         id=table_id,
         name=request.name,
@@ -2718,6 +2739,7 @@ def register_table(
         initial_load_chunk_days=request.initial_load_chunk_days,
         bq_fqn=request.bq_fqn,
         server_only=request.server_only,
+        connection_id=request.connection_id,
     )
 
     # Audit entry — masked params; description kept raw (it's documentation).

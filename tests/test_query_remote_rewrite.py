@@ -834,3 +834,98 @@ def test_endpoint_backtick_only_path_wraps_not_local_parse(
     )
     # The backtick path survives verbatim inside the wrapper.
     assert "test-data-prj.fin.ue" in sent
+
+
+# ---------------------------------------------------------------------------
+# Leading-comment guard fix: a `-- header` comment before a SELECT over a
+# BQ-remote table must pass the SELECT-only guard AND still rewrite to a valid
+# bigquery_query() wrap (the comment lands inside the dollar-quoted inner
+# literal, so the outer `SELECT * FROM (…) LIMIT N` wrap stays valid). Locks
+# the BQ path that was previously verified only by reading the code.
+# ---------------------------------------------------------------------------
+
+
+def test_endpoint_accepts_leading_comment_and_wraps_bq_remote(
+    seeded_app, stub_bq_for_endpoint, monkeypatch,
+):
+    """`agnes query --remote` posts to /api/query. A stored metric whose SQL
+    opens with a `-- header` comment used to 400 (`Query must start with SELECT
+    or WITH`). It must now (1) pass the guard and (2) rewrite to a single
+    bigquery_query() call whose outer LIMIT wrap is valid — the comment sits
+    INSIDE the dollar-quoted inner literal, never at the front where it would
+    comment out the wrap's closing paren."""
+    _register_bq_remote_row("ue", "fin", "ue")
+
+    captured = {"sql": None}
+
+    class _StubAnalytics:
+        description = [("c0",)]
+
+        def execute(self, sql, *args, **kwargs):
+            captured["sql"] = sql
+
+            class _R:
+                def fetchmany(self, _n):
+                    return []
+
+            return _R()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "app.api.query.get_analytics_db_readonly",
+        lambda: _StubAnalytics(),
+        raising=False,
+    )
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        json={"sql": "-- Usage metric header\nSELECT count(*) FROM ue WHERE country = 'CZ'"},
+        headers=_auth(token),
+    )
+    # Guard accepted the leading comment (previously HTTP 400).
+    assert r.status_code == 200, r.json()
+    sent = captured["sql"]
+    assert sent is not None, "analytics.execute was never called"
+    # Rewritten to a single bigquery_query() wrap with the BQ-native path...
+    assert "bigquery_query(" in sent
+    assert "`test-data-prj.fin.ue`" in sent
+    # ...and the leading comment sits INSIDE the dollar-quoted inner literal,
+    # so the outer wrap the handler applies stays valid: the final SQL starts
+    # with SELECT (not the comment), and the comment appears only after the
+    # `$bqq_inner$` opener.
+    assert sent.lstrip().lower().startswith("select")
+    assert "$bqq_inner$" in sent
+    assert sent.index("$bqq_inner$") < sent.index("-- Usage metric header")
+
+
+def test_server_only_materialized_table_is_not_rewritten(seeded_registry, monkeypatch):
+    """A server_only table is materialized/local on the server (query_mode !=
+    'remote'), so the BQ rewrite must SKIP it — no bigquery_query() full path
+    is constructed. `agnes query --remote` still works because /api/query runs
+    server-side against the table's local parquet view. Confirms the catalog
+    change (which now points server_only tables at --remote) did not alter how
+    a server-resident table is actually read; a leading comment passes through
+    untouched too."""
+    from app.api.query import _rewrite_user_sql_for_bigquery_query
+    from src.repositories.table_registry import TableRegistryRepository
+
+    TableRegistryRepository(seeded_registry).register(
+        id="server_metric",
+        name="server_metric",
+        source_type="bigquery",
+        bucket="ds",
+        source_table="server_metric",
+        query_mode="materialized",
+        server_only=True,
+    )
+    _set_bq_project(monkeypatch, "test-prj")
+
+    sql = "-- server-only metric\nSELECT count(*) FROM server_metric"
+    rewritten, did_rewrite = _rewrite_user_sql_for_bigquery_query(sql, seeded_registry)
+
+    assert did_rewrite is False
+    assert rewritten == sql  # untouched — no BQ full path constructed

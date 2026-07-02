@@ -479,6 +479,30 @@ async def admin_config_surface() -> dict:
         return r.json()
 
 
+@mcp.tool()
+async def admin_source_connections_list(source_type: str = "") -> dict:
+    """List named source connections (multi-project Keboola support).
+
+    Returns all registered source connections. Pass ``source_type="keboola"``
+    to filter to Keboola connections only.
+
+    Mirrors ``GET /api/admin/source-connections`` and
+    ``agnes admin connection list``.
+
+    Requires an admin PAT.
+    """
+    async with httpx.AsyncClient() as c:
+        params = {"source_type": source_type} if source_type else {}
+        r = await c.get(
+            f"{_BASE}/api/admin/source-connections",
+            headers=_headers(),
+            params=params,
+            timeout=30,
+        )
+        r.raise_for_status()
+        return {"connections": r.json()}
+
+
 # ── auth middleware ─────────────────────────────────────────────────────────────
 
 

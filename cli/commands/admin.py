@@ -6,6 +6,7 @@ import typer
 
 from cli.client import api_get, api_post, api_delete, api_put
 from cli.commands.admin_activity import activity_app
+from cli.commands.admin_connection import admin_connection_app
 from cli.commands.admin_ask import app as admin_ask_app
 from cli.commands.admin_autodoc import autodoc_tables
 from cli.commands.admin_data_package import admin_data_package_app
@@ -51,6 +52,9 @@ admin_app.add_typer(
 admin_app.add_typer(admin_memory_domain_app, name="memory-domain", help="Memory Domain CRUD (v49)")
 admin_app.add_typer(admin_db_app, name="db", help="Manage app-state DB backend (DuckDB / Postgres)")
 admin_app.add_typer(admin_mcp_app, name="mcp", help="Universal MCP source + tool admin")
+admin_app.add_typer(
+    admin_connection_app, name="connection", help="Named source-connection CRUD (multi-project Keboola)"
+)
 admin_app.add_typer(admin_skills_app, name="skill", help="Contributed skills management")
 # Single direct command (mirrors `register-table` / `discover-and-register`):
 # LLM-generate descriptions for undescribed tables (#399).
