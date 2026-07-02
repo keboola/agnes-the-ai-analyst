@@ -20,6 +20,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+## [0.73.2] - 2026-07-02
+
+### Added
+- `POST /api/admin/register-table` accepts `defer_rebuild` (BigQuery only): skips the synchronous, O(registry) per-insert rebuild of the extract + master views, returning `202 registered` without making the table queryable yet. New companion `POST /api/admin/registry/rebuild` triggers that rebuild once. Bulk onboarding can now register many tables with `defer_rebuild=true` and rebuild a single time, instead of one full registry-wide rebuild per table (which made large batches pathologically slow and starved foreground requests).
+
+### Fixed
+- `/api/admin/registry/rebuild` now emits an audit-log entry and returns HTTP 400 when the source is not BigQuery, preventing accidental rebuilds for non-BigQuery sources.
+- `GET /api/admin/registry/rebuild` now calls `invalidate_all()` after a synchronous rebuild, ensuring the catalog and related caches reflect the updated registry.
+
 ## [0.73.1] - 2026-07-02
 
 ### Fixed
@@ -40,7 +49,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   admin session and existing marketplace primitives. New module
   `src/skill_contribution.py`.
 - Contributed-skill triple-surface: REST (`GET`/`POST`/`DELETE /api/admin/contributed-skills`), CLI (`agnes admin skill list/contribute/delete`), and MCP (`contribute_skill`, `delete_contributed_skill`) alongside the existing `/admin/contribute-skill` web form.
-- `POST /api/admin/register-table` accepts `defer_rebuild` (BigQuery only): skips the synchronous, O(registry) per-insert rebuild of the extract + master views, returning `202 registered` without making the table queryable yet. New companion `POST /api/admin/registry/rebuild` triggers that rebuild once. Bulk onboarding can now register many tables with `defer_rebuild=true` and rebuild a single time, instead of one full registry-wide rebuild per table (which made large batches pathologically slow and starved foreground requests).
 - `/me/ai-connector` now includes a collapsible, per-agent setup guide directly under the connector URL. A button picker (Claude Desktop, Claude.ai, Cursor, VS Code / GitHub Copilot, ChatGPT) shows only the selected agent's steps; Cursor and VS Code include copyable config snippets. Replaces the old static client chips and corrects the list to OAuth-capable agents only (drops Gemini and Microsoft Copilot). Collapsed by default.
 - `agnes catalog --metrics --show` now prints a `Notes:` section when the metric has notes — previously only visible via `--show --json`. `sql_variants` stays `--json`-only (a single variant can run 15+ lines of SQL); notes already flag when one exists. The generated workspace `CLAUDE.md` Metrics Workflow gained a step pointing analysts to `Notes:` and to `--json` when a note references a variant.
 
