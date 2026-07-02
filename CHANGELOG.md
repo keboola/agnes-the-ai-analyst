@@ -11,6 +11,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+## [0.74.1] - 2026-07-02
+
+### Added
 - `POST /api/admin/validate-gws-credentials` — admin-only format check for the Google Workspace OAuth `client_id` (no network call, no persistence). Powers a new "Test" button on the GWS card of `/admin/datasource-credentials`; the endpoint was documented for #718 but never wired up (previously returned 405 / absent from OpenAPI).
 
 ### Changed
