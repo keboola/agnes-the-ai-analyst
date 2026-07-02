@@ -108,6 +108,38 @@ def test_marketplace_bootstraps_when_clone_missing(monkeypatch, tmp_path):
     assert report[0]["status"] == "bootstrapped"
 
 
+def test_step_marketplace_quiet_swallows_refresh_stdout(monkeypatch, tmp_path, capsys):
+    """Under quiet (the --json / SessionStart-hook path), refresh_marketplace's
+    progress output must NOT reach stdout — otherwise it corrupts the --json
+    single-object contract."""
+    import cli.commands.refresh_marketplace as rm
+    monkeypatch.setattr("cli.lib.marketplace.CLONE_DIR", tmp_path / "no-clone")
+
+    def noisy(*, check, bootstrap):
+        print("MARKETPLACE PROGRESS NOISE")
+
+    monkeypatch.setattr(rm, "refresh_marketplace", noisy)
+    report: list[dict] = []
+    upd._step_marketplace(report=report, quiet=True)
+    out = capsys.readouterr().out
+    assert "MARKETPLACE PROGRESS NOISE" not in out
+    assert report[0]["stage"] == "marketplace"
+
+
+def test_step_marketplace_prints_refresh_stdout_when_not_quiet(monkeypatch, tmp_path, capsys):
+    """Interactive (non-quiet) runs still show refresh progress."""
+    import cli.commands.refresh_marketplace as rm
+    monkeypatch.setattr("cli.lib.marketplace.CLONE_DIR", tmp_path / "no-clone")
+
+    def noisy(*, check, bootstrap):
+        print("MARKETPLACE PROGRESS NOISE")
+
+    monkeypatch.setattr(rm, "refresh_marketplace", noisy)
+    report: list[dict] = []
+    upd._step_marketplace(report=report, quiet=False)
+    assert "MARKETPLACE PROGRESS NOISE" in capsys.readouterr().out
+
+
 def test_marketplace_reconciles_only_on_drift(monkeypatch, tmp_path):
     import cli.commands.refresh_marketplace as rm
     clone = tmp_path / "clone" / ".git"
@@ -289,6 +321,62 @@ def test_update_backfills_workspace_root_for_legacy_workspace(monkeypatch, tmp_p
     assert get_workspace_root() == str(workspace.resolve())  # backfilled
 
 
+def test_json_output_is_single_object_despite_step_noise(monkeypatch, tmp_path):
+    """`agnes update --json` must emit EXACTLY one JSON object on stdout, even
+    when a step (marketplace reconcile) would otherwise print progress."""
+    import typer as _typer
+
+    workspace = tmp_path / "ws"
+    (workspace / ".claude").mkdir(parents=True)
+    (workspace / "CLAUDE.md").write_text("OLD\n", encoding="utf-8")
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(workspace))
+    monkeypatch.setattr(upd, "_config_dir", lambda: tmp_path / "cfg")
+    monkeypatch.setattr(upd, "get_server_url", lambda: "http://server")
+    monkeypatch.setattr(upd, "get_token", lambda: "tok")
+
+    import cli.commands.self_upgrade as su
+    monkeypatch.setattr(su, "_resolve_info", lambda force=False: None)
+    import cli.lib.initial_workspace as iw
+    monkeypatch.setattr(iw, "probe_status", lambda *a, **k: None)
+    monkeypatch.setattr("cli.client.api_get", lambda *a, **k: _FakeResp("NEW\n"))
+    import cli.lib.hooks as hooks
+    import cli.lib.commands as cmds
+    monkeypatch.setattr(hooks, "install_claude_hooks", lambda ws: None)
+    monkeypatch.setattr(cmds, "install_claude_commands", lambda ws: None)
+
+    import cli.commands.refresh_marketplace as rm
+    monkeypatch.setattr("cli.lib.marketplace.CLONE_DIR", tmp_path / "no-clone")
+    monkeypatch.setattr(rm, "refresh_marketplace",
+                        lambda *, check, bootstrap: _typer.echo("NOISE that would break json.loads"))
+    import cli.lib.pull as pull
+    monkeypatch.setattr(pull, "run_pull", lambda *a, **k: _FakePull())
+
+    result = runner.invoke(update_app, ["--json"])
+    assert result.exit_code == 0, result.output
+    # Whole stdout parses as ONE json object — no leaked step noise.
+    entry = json.loads(result.stdout.strip())
+    assert "NOISE" not in result.stdout
+    assert "marketplace" in {s["stage"] for s in entry["steps"]}
+
+
+def test_update_exits_zero_when_config_dir_unwritable(monkeypatch):
+    """A config dir that can't be created/accessed (read-only FS, permissions)
+    fails BEFORE the lock guard. It must degrade to a config-error report and a
+    clean exit, not a raw traceback out of the repair command."""
+    def boom():
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(upd, "_config_dir", boom)
+    ran: list[str] = []
+    monkeypatch.setattr(upd, "_step_cli", lambda **k: ran.append("cli"))
+
+    result = runner.invoke(update_app, ["--json"])
+    assert result.exit_code == 0, result.output
+    entry = json.loads(result.stdout.strip())
+    assert [(s["stage"], s["status"]) for s in entry["steps"]] == [("config", "error")]
+    assert ran == []  # bailed before running any step
+
+
 # --- settings.json self-heal ----------------------------------------------------
 
 
@@ -381,6 +469,57 @@ def test_step_workspace_override_skips_when_sha_matches(monkeypatch, tmp_path):
     ws_step = next(s for s in report if s["stage"] == "workspace")
     assert ws_step["status"] == "ok"
     assert dl == [], "no zip download when template SHA matches"
+
+
+def _override_status_samesha(monkeypatch):
+    """Wire OVERRIDE mode, SHA-match (no download/merge), so tests can focus on
+    the .env refresh outcome."""
+    from cli.lib.initial_workspace import StatusInfo
+    status = StatusInfo(configured=True, synced=True, template_source="repo",
+                        template_sha="samesha", synced_at="t", files=[])
+    monkeypatch.setattr("cli.lib.initial_workspace.probe_status", lambda *a, **k: status)
+    monkeypatch.setattr("src.initial_workspace.is_override_workspace", lambda ws: True)
+    monkeypatch.setattr("cli.lib.override.read_override_metadata", lambda ws: {"template_sha": "samesha"})
+
+
+def test_step_workspace_reports_env_write_failure(monkeypatch, tmp_path):
+    """A raised write_agnes_env is a real failure — it must surface as an `env`
+    error row, not be silently swallowed (the whole point of the report)."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    _override_status_samesha(monkeypatch)
+
+    def boom_env(*a, **k):
+        raise OSError("cannot write .env")
+
+    monkeypatch.setattr("cli.lib.initial_workspace.write_agnes_env", boom_env)
+    report: list[dict] = []
+    upd._step_workspace(workspace, server_url="http://s", token="t", report=report)
+    env_step = next(s for s in report if s["stage"] == "env")
+    assert env_step["status"] == "error"
+    assert "cannot write .env" in env_step["detail"]
+
+
+def test_step_workspace_reports_env_write_ok(monkeypatch, tmp_path):
+    """A successful write reports `env ok`; a soft None (older server / empty
+    overlay) reports `skipped`, so a genuine failure stands out."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    _override_status_samesha(monkeypatch)
+
+    env_path = workspace / ".claude" / "agnes" / ".env"
+    monkeypatch.setattr("cli.lib.initial_workspace.write_agnes_env", lambda *a, **k: env_path)
+    report: list[dict] = []
+    upd._step_workspace(workspace, server_url="http://s", token="t", report=report)
+    env_step = next(s for s in report if s["stage"] == "env")
+    assert env_step["status"] == "ok"
+    assert ".env" in env_step["detail"]
+
+    monkeypatch.setattr("cli.lib.initial_workspace.write_agnes_env", lambda *a, **k: None)
+    report = []
+    upd._step_workspace(workspace, server_url="http://s", token="t", report=report)
+    env_step = next(s for s in report if s["stage"] == "env")
+    assert env_step["status"] == "skipped"
 
 
 # --- chdir-failure guard --------------------------------------------------------
