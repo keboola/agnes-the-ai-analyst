@@ -97,11 +97,13 @@ def fetch_sla_and_status(base_url: str, auth: tuple[str, str], issue_key: str) -
             time.sleep(retry_after)
             return fetch_sla_and_status(base_url, auth, issue_key)
         else:
-            logger.warning(f"Failed to fetch SLA+status for {issue_key}: {response.status_code} {response.text[:200]}")
+            logger.warning(
+                f"Failed to fetch fields+status for {issue_key}: {response.status_code} {response.text[:200]}"
+            )
             return None
 
     except httpx.RequestError as e:
-        logger.error(f"Request error fetching SLA+status for {issue_key}: {e}")
+        logger.error(f"Request error fetching fields+status for {issue_key}: {e}")
         return None
 
 
@@ -172,10 +174,10 @@ def update_issue_sla(
         logger.warning(f"Raw JSON not found for {issue_key}, skipping")
         return "skipped"
 
-    # Fetch fresh SLA + status fields from API
+    # Fetch fresh field + status data from API
     api_data = fetch_sla_and_status(base_url, auth, issue_key)
     if api_data is None:
-        logger.warning(f"Failed to fetch SLA+status for {issue_key}")
+        logger.warning(f"Failed to fetch fields+status for {issue_key}")
         return "failed"
 
     # Did any configured field come back with a value to refresh?
@@ -243,7 +245,7 @@ def update_issue_sla(
         # Re-transform to Parquet (inside lock to prevent stale reads)
         success = transform_single_issue(issue_key=issue_key)
         if not success:
-            logger.error(f"Failed to transform {issue_key} after SLA update")
+            logger.error(f"Failed to transform {issue_key} after field refresh")
             return "failed"
 
     return "healed" if is_healed else "updated"
@@ -325,9 +327,9 @@ def run(dry_run: bool = False, verbose: bool = False) -> dict:
     elapsed = time.time() - start_time
 
     logger.info("=" * 60)
-    logger.info("SLA polling completed!")
+    logger.info("Field refresh polling completed!")
     logger.info(f"Open issues polled: {len(open_issues)}")
-    logger.info(f"Updated (SLA only): {stats['updated']}")
+    logger.info(f"Updated (fields only): {stats['updated']}")
     logger.info(f"Healed (status corrected): {stats['healed']}")
     logger.info(f"Skipped: {stats['skipped']}")
     logger.info(f"Failed: {stats['failed']}")
