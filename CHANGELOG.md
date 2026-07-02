@@ -91,6 +91,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `cli/lib/push_lock.py` gained `acquire_path_or_skip(path)` (a path-scoped cross-platform `filelock`) reused for the update lock.
 - `agnes refresh-marketplace --check` exits a dedicated drift code (`20`) so `agnes update` can decide whether to run a full reconcile without re-implementing the ls-remote comparison.
 
+## [0.73.0] - 2026-07-02
+
+### Added
+- `/admin/contribute-skill` page (admin-only) that accepts a pasted Claude Code
+  `SKILL.md` and publishes it as a one-skill plugin in a local, sync-immune
+  "Agnes Contributed" marketplace — the landing target for an external "Load
+  skill to Agnes" button (the external tool copies the skill and opens this page
+  with the skill in the URL fragment / clipboard). Reuses the built-in-marketplace
+  pattern (`is_builtin` registry row + sentinel URL) so the nightly git-sync never
+  resets it and the boot re-seed never wipes it; refreshes the plugin cache and
+  RBAC-grants the new plugin (Admins-only by default, Everyone to publish
+  instance-wide). No new schema, repository method, or auth surface — uses the
+  admin session and existing marketplace primitives. New module
+  `src/skill_contribution.py`.
+- Contributed-skill triple-surface: REST (`GET`/`POST`/`DELETE /api/admin/contributed-skills`), CLI (`agnes admin skill list/contribute/delete`), and MCP (`contribute_skill`, `delete_contributed_skill`) alongside the existing `/admin/contribute-skill` web form.
+- `/me/ai-connector` now includes a collapsible, per-agent setup guide directly under the connector URL. A button picker (Claude Desktop, Claude.ai, Cursor, VS Code / GitHub Copilot, ChatGPT) shows only the selected agent's steps; Cursor and VS Code include copyable config snippets. Replaces the old static client chips and corrects the list to OAuth-capable agents only (drops Gemini and Microsoft Copilot). Collapsed by default.
+- `agnes catalog --metrics --show` now prints a `Notes:` section when the metric has notes — previously only visible via `--show --json`. `sql_variants` stays `--json`-only (a single variant can run 15+ lines of SQL); notes already flag when one exists. The generated workspace `CLAUDE.md` Metrics Workflow gained a step pointing analysts to `Notes:` and to `--json` when a note references a variant.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
 ## [0.72.1] - 2026-06-29
 
 ### Internal
