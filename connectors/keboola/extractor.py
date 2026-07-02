@@ -112,7 +112,6 @@ def materialize_query(
     import re
     import hashlib
     import json
-    import duckdb
 
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_id):
         raise ValueError(f"unsafe table_id for materialize: {table_id!r}")
@@ -120,15 +119,14 @@ def materialize_query(
     # Lazy import to avoid pulling `requests` at module import time when only
     # the sync trigger imports `extractor` for `run()`.
     from connectors.keboola.storage_api import (
-        FILE_TYPE_CSV, FILE_TYPE_PARQUET, ExportFilter, KeboolaStorageClient,
+        FILE_TYPE_PARQUET,
+        ExportFilter,
+        KeboolaStorageClient,
     )
 
     if storage_client is None:
         if not (keboola_url and keboola_token):
-            raise ValueError(
-                "materialize_query requires either storage_client or "
-                "(keboola_url + keboola_token)"
-            )
+            raise ValueError("materialize_query requires either storage_client or (keboola_url + keboola_token)")
         storage_client = KeboolaStorageClient(url=keboola_url, token=keboola_token)
 
     # Filter spec is optional. Admin can register a row with no
@@ -147,9 +145,7 @@ def materialize_query(
         try:
             payload = json.loads(_sq)
         except json.JSONDecodeError as e:
-            raise ValueError(
-                f"source_query for {table_id} is not valid JSON: {e}"
-            ) from e
+            raise ValueError(f"source_query for {table_id} is not valid JSON: {e}") from e
     export_filter = ExportFilter.from_dict(payload)
 
     # Resolve date placeholders ({{last_6_months}}, {{today}}, …) in the
@@ -172,10 +168,7 @@ def materialize_query(
                 datetime.now(timezone.utc),
             )
         except InvalidFilterError as e:
-            raise ValueError(
-                f"source_query for {table_id} has an invalid where_filters "
-                f"placeholder: {e}"
-            ) from e
+            raise ValueError(f"source_query for {table_id} has an invalid where_filters placeholder: {e}") from e
 
     # Default the materialized path to parquet — Storage API serves it
     # via native Snowflake UNLOAD, the extractor renames it into place,
@@ -206,6 +199,7 @@ def materialize_query(
     # storage_api.get_temp_root for the rationale.
     import tempfile
     from connectors.keboola.storage_api import get_temp_root
+
     with tempfile.TemporaryDirectory(
         prefix=f"kbc-export-{table_id}-",
         dir=get_temp_root(),
@@ -230,41 +224,29 @@ def materialize_query(
             #    groups during this consolidation — peak memory is one
             #    row group (~1 MiB), not the full table.
             stats = storage_client.prepare_export(
-                full_table_id, export_filter=export_filter,
+                full_table_id,
+                export_filter=export_filter,
             )
             file_info = stats["file_info"]
             if file_info.get("isSliced"):
                 slice_dir = Path(tmpdir) / "slices"
-                slice_paths = storage_client.download_file_slices(
-                    file_info, slice_dir
-                )
+                slice_paths = storage_client.download_file_slices(file_info, slice_dir)
                 if not slice_paths:
-                    raise RuntimeError(
-                        f"sliced parquet export for {full_table_id} "
-                        f"yielded no slices"
-                    )
-                quoted = ", ".join(
-                    "'" + str(p).replace("'", "''") + "'" for p in slice_paths
-                )
+                    raise RuntimeError(f"sliced parquet export for {full_table_id} yielded no slices")
+                quoted = ", ".join("'" + str(p).replace("'", "''") + "'" for p in slice_paths)
                 safe_tmp = str(tmp_parquet).replace("'", "''")
                 conv = _open_consolidation_conn()
                 try:
-                    conv.execute(
-                        f"COPY (SELECT * FROM read_parquet([{quoted}])) "
-                        f"TO '{safe_tmp}' (FORMAT PARQUET)"
-                    )
+                    conv.execute(f"COPY (SELECT * FROM read_parquet([{quoted}])) TO '{safe_tmp}' (FORMAT PARQUET)")
                 finally:
                     conv.close()
             else:
                 storage_client.download_file(file_info, tmp_parquet)
-                stats["bytes"] = (
-                    tmp_parquet.stat().st_size if tmp_parquet.exists() else 0
-                )
+                stats["bytes"] = tmp_parquet.stat().st_size if tmp_parquet.exists() else 0
 
             if not tmp_parquet.exists() or tmp_parquet.stat().st_size == 0:
                 logger.warning(
-                    "Storage API parquet export for %s returned no data "
-                    "(filter may be too restrictive)",
+                    "Storage API parquet export for %s returned no data (filter may be too restrictive)",
                     full_table_id,
                 )
                 # Empty placeholder parquet so the orchestrator doesn't
@@ -280,12 +262,13 @@ def materialize_query(
             # API parquet support if a future project backend lacks it.
             csv_path = Path(tmpdir) / f"{table_id}.csv"
             stats = storage_client.export_table(
-                full_table_id, csv_path, export_filter=export_filter,
+                full_table_id,
+                csv_path,
+                export_filter=export_filter,
             )
             if not csv_path.exists() or csv_path.stat().st_size == 0:
                 logger.warning(
-                    "Storage API CSV export for %s returned no data "
-                    "(filter may be too restrictive)",
+                    "Storage API CSV export for %s returned no data (filter may be too restrictive)",
                     full_table_id,
                 )
                 _open_consolidation_conn().execute(
@@ -328,9 +311,7 @@ def materialize_query(
     safe_tmp = str(tmp_parquet).replace("'", "''")
     cnt_conn = _open_consolidation_conn()
     try:
-        row_count = cnt_conn.execute(
-            f"SELECT COUNT(*) FROM read_parquet('{safe_tmp}')"
-        ).fetchone()[0]
+        row_count = cnt_conn.execute(f"SELECT COUNT(*) FROM read_parquet('{safe_tmp}')").fetchone()[0]
     finally:
         cnt_conn.close()
 
@@ -346,8 +327,7 @@ def materialize_query(
 
     if row_count == 0:
         logger.warning(
-            "Materialized Keboola export for %s wrote 0 rows — verify the "
-            "filter and that the source bucket has data.",
+            "Materialized Keboola export for %s wrote 0 rows — verify the filter and that the source bucket has data.",
             table_id,
         )
 
@@ -383,6 +363,7 @@ def _read_last_sync_for_tc(tc: Dict[str, Any]):
     if injected is not None:
         if isinstance(injected, str):
             from datetime import datetime
+
             try:
                 return datetime.fromisoformat(injected)
             except ValueError:
@@ -405,9 +386,9 @@ def _read_last_sync_for_tc(tc: Dict[str, Any]):
             conn.close()
     except Exception as e:
         logger.warning(
-            "_read_last_sync_for_tc fallback failed for %s (%s); "
-            "treating as first sync",
-            tc.get("id") or tc.get("name"), e,
+            "_read_last_sync_for_tc fallback failed for %s (%s); treating as first sync",
+            tc.get("id") or tc.get("name"),
+            e,
         )
         return None
 
@@ -578,11 +559,15 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
             raw_filters = tc.get("where_filters")
             if raw_filters:
                 from connectors.keboola.where_filters import (
-                    InvalidFilterError, parse_filters, resolve_placeholders,
+                    InvalidFilterError,
+                    parse_filters,
+                    resolve_placeholders,
                 )
+
                 try:
                     resolved_filters = resolve_placeholders(
-                        parse_filters(raw_filters), datetime.now(timezone.utc),
+                        parse_filters(raw_filters),
+                        datetime.now(timezone.utc),
                     )
                 except InvalidFilterError as e:
                     logger.error("where_filters invalid for %s: %s", table_name, e)
@@ -595,6 +580,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                     pq_path = data_dir / f"{table_name}.parquet"
                     last_sync = _read_last_sync_for_tc(tc)
                     from connectors.keboola.incremental import extract_incremental
+
                     incr_result = extract_incremental(
                         table_config=tc,
                         parquet_path=pq_path,
@@ -606,8 +592,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                     rows = incr_result["rows"]
                     size = pq_path.stat().st_size if pq_path.exists() else 0
                     conn.execute(
-                        f'CREATE OR REPLACE VIEW "{table_name}" AS '
-                        f"SELECT * FROM read_parquet('{safe_pq_lit}')"
+                        f"CREATE OR REPLACE VIEW \"{table_name}\" AS SELECT * FROM read_parquet('{safe_pq_lit}')"
                     )
                     conn.execute(
                         "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
@@ -616,7 +601,9 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                     stats["tables_extracted"] += 1
                     logger.info(
                         "Incremental %s: %d rows (%d delta), changedSince=%s",
-                        table_name, rows, incr_result["delta_rows"],
+                        table_name,
+                        rows,
+                        incr_result["delta_rows"],
                         incr_result["changed_since_used"],
                     )
                 except Exception as e:
@@ -631,6 +618,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                     partition_dir.mkdir(exist_ok=True)
                     last_sync = _read_last_sync_for_tc(tc)
                     from connectors.keboola.partitioned import extract_partitioned
+
                     part_result = extract_partitioned(
                         table_config=tc,
                         output_dir=partition_dir,
@@ -641,10 +629,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                     glob_lit = str(partition_dir / "*.parquet").replace("'", "''")
                     rows = part_result["rows"]
                     size = sum(p.stat().st_size for p in partition_dir.glob("*.parquet"))
-                    conn.execute(
-                        f'CREATE OR REPLACE VIEW "{table_name}" AS '
-                        f"SELECT * FROM read_parquet('{glob_lit}')"
-                    )
+                    conn.execute(f"CREATE OR REPLACE VIEW \"{table_name}\" AS SELECT * FROM read_parquet('{glob_lit}')")
                     conn.execute(
                         "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
                         [table_name, tc.get("description", ""), rows, size, now],
@@ -652,9 +637,9 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                     stats["tables_extracted"] += 1
                     logger.info(
                         "Partitioned %s: %d rows across %d partition file(s)",
-                        table_name, rows,
-                        part_result.get("partitions_touched",
-                                        part_result.get("partitions_written", 0)),
+                        table_name,
+                        rows,
+                        part_result.get("partitions_touched", part_result.get("partitions_written", 0)),
                     )
                 except Exception as e:
                     logger.error("Partitioned extract failed for %s: %s", table_name, e)
@@ -670,7 +655,10 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
 
                 if resolved_filters:
                     _extract_via_legacy(
-                        tc, pq_path, keboola_url, keboola_token,
+                        tc,
+                        pq_path,
+                        keboola_url,
+                        keboola_token,
                         where_filters=resolved_filters,
                     )
                 elif use_extension:
@@ -686,7 +674,8 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                         # legacy fallback below.
                         logger.warning(
                             "Keboola extension scan failed for %s (%s); queued for legacy Storage-API fallback",
-                            table_name, ext_err,
+                            table_name,
+                            ext_err,
                         )
                         legacy_queue.append((tc, pq_path))
                         continue
@@ -698,7 +687,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                 _register_local_meta(conn, tc, pq_path, now)
                 stats["tables_extracted"] += 1
                 rows_log = conn.execute(
-                    f"SELECT count(*) FROM read_parquet('{pq_path.replace(chr(39), chr(39)*2)}')"
+                    f"SELECT count(*) FROM read_parquet('{pq_path.replace(chr(39), chr(39) * 2)}')"
                 ).fetchone()[0]
                 logger.info("Extracted %s via extension: %d rows", table_name, rows_log)
 
@@ -735,7 +724,8 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
             workers = min(parallelism, len(legacy_queue))
             logger.info(
                 "Running legacy Storage-API fallback for %d tables across %d worker processes",
-                len(legacy_queue), workers,
+                len(legacy_queue),
+                workers,
             )
 
             if workers == 1:
@@ -761,7 +751,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                     _register_local_meta(conn, tc_, pq_, now)
                     stats["tables_extracted"] += 1
                     rows_log = conn.execute(
-                        f"SELECT count(*) FROM read_parquet('{pq_.replace(chr(39), chr(39)*2)}')"
+                        f"SELECT count(*) FROM read_parquet('{pq_.replace(chr(39), chr(39) * 2)}')"
                     ).fetchone()[0]
                     logger.info("Extracted %s via legacy: %d rows", tn, rows_log)
                 except Exception as e:
@@ -804,9 +794,7 @@ def _register_local_meta(
     safe_pq_lit = pq_path.replace("'", "''")
     rows = conn.execute(f"SELECT count(*) FROM read_parquet('{safe_pq_lit}')").fetchone()[0]
     size = os.path.getsize(pq_path)
-    conn.execute(
-        f'CREATE OR REPLACE VIEW "{table_name}" AS SELECT * FROM read_parquet(\'{safe_pq_lit}\')'
-    )
+    conn.execute(f"CREATE OR REPLACE VIEW \"{table_name}\" AS SELECT * FROM read_parquet('{safe_pq_lit}')")
     conn.execute(
         "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
         [table_name, tc.get("description", ""), rows, size, extracted_at],
@@ -874,7 +862,9 @@ def _extract_via_legacy(
     from connectors.keboola.client import KeboolaClient
     from connectors.keboola.parquet_io import csv_to_parquet
     from connectors.keboola.storage_api import (
-        ExportFilter, KeboolaStorageClient, get_temp_root,
+        ExportFilter,
+        KeboolaStorageClient,
+        get_temp_root,
     )
 
     bucket = tc.get("bucket", "")
@@ -891,7 +881,8 @@ def _extract_via_legacy(
     except Exception as e:
         logger.warning(
             "Keboola schema unavailable for %s (%s); writing string-typed parquet",
-            table_id, e,
+            table_id,
+            e,
         )
         pyarrow_schema = None
     try:
@@ -975,9 +966,19 @@ if __name__ == "__main__":
 
     setup_logging(__name__)
 
-    # Read Keboola credentials — env first, then instance.yaml fallback
+    # Read Keboola credentials — env > vault > instance.yaml fallback
     url = os.environ.get("KEBOOLA_STACK_URL", "")
-    token = os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
+    from app.datasource_secrets import datasource_secret as _datasource_secret
+
+    try:
+        token = _datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
+    except Exception:
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "datasource_secret unavailable during extractor startup; falling back to env"
+        )
+        token = ""
 
     if not url or not token:
         try:

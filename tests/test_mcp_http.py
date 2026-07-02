@@ -152,6 +152,12 @@ class TestToolRegistration:
             # Triple-surface with GET /api/admin/source-connections +
             # `agnes admin connection list`.
             "admin_source_connections_list",
+            # Contributed-skill triple-surface — admin can list, publish, and
+            # delete skills in the Agnes Contributed marketplace without leaving
+            # the chat. Mirrors REST + `agnes admin skill` CLI surface.
+            "list_contributed_skills",
+            "contribute_skill",
+            "delete_contributed_skill",
         }
 
     def test_no_client_only_tools(self):

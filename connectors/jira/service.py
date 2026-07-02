@@ -11,6 +11,7 @@ for real-time updates available via rsync.
 import json
 import logging
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,18 +35,46 @@ class JiraFetchError(Exception):
 
 class _JiraConfig:
     """Jira configuration from environment variables."""
+
     JIRA_DOMAIN = os.environ.get("JIRA_DOMAIN", "")
     JIRA_EMAIL = os.environ.get("JIRA_EMAIL", "")
     JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "")
     JIRA_DATA_DIR = Path(os.environ.get("JIRA_DATA_DIR", "/data/src_data/raw/jira"))
     JIRA_CLOUD_ID = os.environ.get("JIRA_CLOUD_ID", "")
-    JIRA_SLA_EMAIL = os.environ.get("JIRA_SLA_EMAIL", "")
-    JIRA_SLA_API_TOKEN = os.environ.get("JIRA_SLA_API_TOKEN", "")
     JIRA_WEBHOOK_SECRET = os.environ.get("JIRA_WEBHOOK_SECRET", "")
     DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true")
 
 
 Config = _JiraConfig
+
+
+_VALID_COLUMN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def refresh_fields() -> list[tuple[str, str]]:
+    """``[(field_id, column_name), ...]`` parsed from ``JIRA_REFRESH_FIELDS``.
+
+    Format: comma-separated ``field_id`` or ``field_id:column_name``. There are no
+    defaults — field ids are assigned per Jira instance, so a hard-coded value would
+    be wrong for any other deployment. A ``column_name`` that is not a valid
+    SQL/parquet identifier falls back to the field id; entries without an id are
+    skipped. Lazy (read at call time, not import) so CLI scripts that load ``.env``
+    via ``load_dotenv()`` at runtime see the value. Discover field ids with
+    ``verify_sla_access --list-fields``.
+    """
+    out: list[tuple[str, str]] = []
+    for entry in os.environ.get("JIRA_REFRESH_FIELDS", "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        field_id, _, alias = entry.partition(":")
+        field_id = field_id.strip()
+        alias = alias.strip()
+        if not field_id:
+            continue
+        column = alias if alias and _VALID_COLUMN.match(alias) else field_id
+        out.append((field_id, column))
+    return out
 
 
 def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool:
@@ -75,6 +104,7 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
             # Rebuild Jira views in master analytics.duckdb
             try:
                 from src.orchestrator import SyncOrchestrator
+
                 SyncOrchestrator().rebuild_source("jira")
             except Exception as orch_err:
                 logger.warning(f"Orchestrator rebuild failed: {orch_err}")
@@ -157,60 +187,66 @@ class JiraService:
                 logger.warning(f"Issue {issue_key} not found")
                 return None
             else:
-                logger.error(
-                    f"Failed to fetch issue {issue_key}: "
-                    f"{response.status_code} - {response.text[:200]}"
-                )
+                logger.error(f"Failed to fetch issue {issue_key}: {response.status_code} - {response.text[:200]}")
                 return None
 
         except httpx.RequestError as e:
             logger.error(f"Request error fetching issue {issue_key}: {e}")
             return None
 
-    def fetch_sla_fields(self, issue_key: str) -> dict[str, Any] | None:
+    def fetch_refresh_fields(self, issue_key: str) -> dict[str, Any] | None:
         """
-        Fetch SLA fields using the JSM service account.
+        Fetch the configured refresh fields for an issue using the primary token.
 
-        The personal API token lacks JSM Agent licence needed for SLA fields.
-        This method uses a separate service account with the cloud API URL.
+        The field ids come from ``refresh_fields()`` (``JIRA_REFRESH_FIELDS``, no
+        defaults); when none are configured this returns ``None`` (nothing to
+        fetch). These are ordinary issue custom fields, readable via the regular
+        issue REST API with the same primary credentials as ``fetch_issue`` (the
+        account needs whatever read permission the field requires — e.g. a JSM
+        Agent licence for SLA fields). The base URL is the site domain by default;
+        when ``JIRA_CLOUD_ID`` is set (required for a *scoped* API token) the
+        ``api.atlassian.com`` gateway is used instead, on the same primary auth.
 
         Args:
             issue_key: Issue key (e.g., "SUPPORT-123")
 
         Returns:
-            Dict with SLA field values, or None if not configured/failed
+            Dict with the fetched field values, or None if not configured/failed
         """
-        cloud_id = Config.JIRA_CLOUD_ID
-        sla_email = Config.JIRA_SLA_EMAIL
-        sla_token = Config.JIRA_SLA_API_TOKEN
-
-        if not all([cloud_id, sla_email, sla_token]):
-            logger.debug("SLA service account not configured, skipping SLA fetch")
+        field_ids = [fid for fid, _ in refresh_fields()]
+        if not field_ids:
+            logger.debug("No refresh fields configured, skipping fetch")
             return None
 
-        base_url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3"
+        if not self.is_configured():
+            logger.error("Jira service not configured, cannot fetch refresh fields")
+            return None
+
+        cloud_id = Config.JIRA_CLOUD_ID
+        if cloud_id:
+            base_url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3"
+        else:
+            base_url = self.base_url
         url = f"{base_url}/issue/{issue_key}"
-        params = {"fields": "customfield_10328,customfield_10161"}
+        params = {"fields": ",".join(field_ids)}
 
         try:
             with httpx.Client(timeout=30) as client:
                 response = client.get(
                     url,
-                    auth=(sla_email, sla_token),
+                    auth=self.auth,
+                    params=params,
                     headers={"Accept": "application/json"},
                 )
 
             if response.status_code == 200:
                 return response.json().get("fields", {})
             else:
-                logger.warning(
-                    f"Failed to fetch SLA for {issue_key}: "
-                    f"{response.status_code}"
-                )
+                logger.warning(f"Failed to fetch refresh fields for {issue_key}: {response.status_code}")
                 return None
 
         except httpx.RequestError as e:
-            logger.warning(f"SLA fetch error for {issue_key}: {e}")
+            logger.warning(f"Refresh-fields fetch error for {issue_key}: {e}")
             return None
 
     def fetch_remote_links(self, issue_key: str) -> list[dict]:
@@ -236,8 +272,7 @@ class JiraService:
         # / 429 / 5xx paths. Raise instead so the overlay site skips.
         if not self.is_configured():
             raise JiraFetchError(
-                f"Remote-links fetch for {issue_key} failed: "
-                "Jira service not configured (missing API credentials)"
+                f"Remote-links fetch for {issue_key} failed: Jira service not configured (missing API credentials)"
             )
 
         url = f"{self.base_url}/issue/{issue_key}/remotelink"
@@ -250,9 +285,7 @@ class JiraService:
                     headers={"Accept": "application/json"},
                 )
         except httpx.RequestError as e:
-            raise JiraFetchError(
-                f"Remote-links fetch for {issue_key} failed: connection — {e}"
-            ) from e
+            raise JiraFetchError(f"Remote-links fetch for {issue_key} failed: connection — {e}") from e
 
         if response.status_code == 200:
             return response.json()
@@ -264,19 +297,10 @@ class JiraService:
                 f"({response.status_code}) — token may be expired/revoked"
             )
         if response.status_code == 429:
-            raise JiraFetchError(
-                f"Remote-links fetch for {issue_key} failed: rate limited "
-                f"(429) — retry later"
-            )
+            raise JiraFetchError(f"Remote-links fetch for {issue_key} failed: rate limited (429) — retry later")
         if response.status_code >= 500:
-            raise JiraFetchError(
-                f"Remote-links fetch for {issue_key} failed: server error "
-                f"({response.status_code})"
-            )
-        raise JiraFetchError(
-            f"Remote-links fetch for {issue_key} failed: unexpected status "
-            f"{response.status_code}"
-        )
+            raise JiraFetchError(f"Remote-links fetch for {issue_key} failed: server error ({response.status_code})")
+        raise JiraFetchError(f"Remote-links fetch for {issue_key} failed: unexpected status {response.status_code}")
 
     def save_issue(self, issue_data: dict[str, Any]) -> Path | None:
         """
@@ -295,7 +319,7 @@ class JiraService:
 
         # Defense-in-depth: validate `issue_key` BEFORE any code path
         # uses it — including the HTTP URL constructions in
-        # fetch_remote_links / fetch_sla_fields below. The webhook
+        # fetch_remote_links / fetch_refresh_fields below. The webhook
         # handler already validates upstream, but a future internal
         # caller invoking save_issue directly with attacker-controlled
         # input would otherwise fire outbound requests with a malicious
@@ -326,15 +350,15 @@ class JiraService:
                     f"Existing parquet rows will be preserved."
                 )
 
-        # Overlay SLA fields from JSM service account (personal token lacks permissions)
-        sla_fields = self.fetch_sla_fields(issue_key)
-        if sla_fields:
+        # Overlay the configured refresh fields, fetched with the primary token.
+        refreshed = self.fetch_refresh_fields(issue_key)
+        if refreshed:
             if "fields" not in issue_data:
                 issue_data["fields"] = {}
-            for sla_field_id in ("customfield_10328", "customfield_10161"):
-                if sla_field_id in sla_fields:
-                    issue_data["fields"][sla_field_id] = sla_fields[sla_field_id]
-            logger.info(f"Overlayed SLA fields for {issue_key}")
+            for field_id, _ in refresh_fields():
+                if field_id in refreshed:
+                    issue_data["fields"][field_id] = refreshed[field_id]
+            logger.info(f"Overlayed refresh fields for {issue_key}")
 
         # Save to file (one file per issue for now, later we'll batch to parquet)
         # Path.resolve() containment as second layer; the regex check
@@ -354,9 +378,7 @@ class JiraService:
             # SLA poll writes. Attachment download stays outside the lock.
             with issue_json_lock(issues_dir, issue_key):
                 # Atomic write: temp file + replace
-                fd, tmp_path = tempfile.mkstemp(
-                    dir=str(file_path.parent), suffix=".tmp"
-                )
+                fd, tmp_path = tempfile.mkstemp(dir=str(file_path.parent), suffix=".tmp")
                 os.fchmod(fd, 0o660)  # Restore group rw for ACL
                 try:
                     with os.fdopen(fd, "w") as f:
@@ -414,9 +436,7 @@ class JiraService:
 
         # Skip large attachments
         if size > self.MAX_ATTACHMENT_SIZE:
-            logger.warning(
-                f"Skipping attachment {filename} ({size} bytes) - exceeds max size"
-            )
+            logger.warning(f"Skipping attachment {filename} ({size} bytes) - exceeds max size")
             return None
 
         # Create issue-specific attachment directory.
@@ -452,10 +472,7 @@ class JiraService:
                 logger.info(f"Downloaded attachment {filename} to {file_path}")
                 return file_path
             else:
-                logger.error(
-                    f"Failed to download attachment {filename}: "
-                    f"{response.status_code}"
-                )
+                logger.error(f"Failed to download attachment {filename}: {response.status_code}")
                 return None
 
         except httpx.RequestError as e:
@@ -626,9 +643,7 @@ class JiraService:
                     data["_deleted_at"] = datetime.now(timezone.utc).isoformat()
 
                     # Atomic write: temp file + replace
-                    fd, tmp_path = tempfile.mkstemp(
-                        dir=str(file_path.parent), suffix=".tmp"
-                    )
+                    fd, tmp_path = tempfile.mkstemp(dir=str(file_path.parent), suffix=".tmp")
                     os.fchmod(fd, 0o660)  # Restore group rw for ACL
                     try:
                         with os.fdopen(fd, "w") as f:

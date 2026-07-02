@@ -43,6 +43,9 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/admin/config-surface": ("admin config-surface", "admin_config_surface"),
     # Multi-project Keboola: named source-connections (#731).
     "/api/admin/source-connections": ("admin connection list", "admin_source_connections_list"),
+    # Contributed-skill triple-surface (GET list + DELETE; POST contribute is _EXEMPT below).
+    "/api/admin/contributed-skills": ("admin skill list", "list_contributed_skills"),
+    "/api/admin/contributed-skills/{name}": ("admin skill delete", "delete_contributed_skill"),
 }
 
 
@@ -70,33 +73,30 @@ def test_cli_subcommands_registered():
     groups: dict[str, object] = {g.name: g.typer_instance for g in app.registered_groups if g.name}
 
     for path, (cli_cmd, _mcp_tool) in _COHORT.items():
-        parts = cli_cmd.split(" ", 2)
-        head = parts[0]
+        head, tail = cli_cmd.split(" ", 1)
         assert head in groups, (
             f"CLI group '{head}' missing for {path} — register via `app.add_typer(...)` in cli/main.py"
         )
         sub = groups[head]
-        if len(parts) == 2:
-            # Two-level: "group cmd"
-            tail = parts[1]
+        if " " in tail:
+            # 3-level command: top-group → sub-group → command (e.g. "admin skill list")
+            sub_group_name, cmd_name = tail.split(" ", 1)
+            sub_groups = {g.name: g.typer_instance for g in sub.registered_groups if g.name}  # type: ignore[attr-defined]
+            assert sub_group_name in sub_groups, (
+                f"CLI subgroup '{head} {sub_group_name}' missing for {path} — "
+                f"register via `{head}_app.add_typer(..., name='{sub_group_name}')` in cli/commands/{head}.py"
+            )
+            leaf = sub_groups[sub_group_name]
+            leaf_names = {c.name for c in leaf.registered_commands if c.name}  # type: ignore[attr-defined]
+            assert cmd_name in leaf_names, (
+                f"CLI subcommand '{cli_cmd}' missing for {path} — define "
+                f'`@{sub_group_name}_app.command("{cmd_name}")` in cli/commands/{head}_{sub_group_name}.py'
+            )
+        else:
             sub_names = {c.name for c in sub.registered_commands if c.name}  # type: ignore[attr-defined]
             assert tail in sub_names, (
                 f"CLI subcommand '{cli_cmd}' missing for {path} — define "
                 f'`@{head}_app.command("{tail}")` in cli/commands/{head}.py'
-            )
-        else:
-            # Three-level: "group sub cmd" — resolve the sub-group first
-            sub_group_name, leaf = parts[1], parts[2]
-            sub_groups = {g.name: g.typer_instance for g in sub.registered_groups if g.name}  # type: ignore[attr-defined]
-            assert sub_group_name in sub_groups, (
-                f"CLI sub-group '{head} {sub_group_name}' missing for {path} — "
-                f"register via `{head}_app.add_typer(...)` in cli/commands/{head}.py"
-            )
-            leaf_sub = sub_groups[sub_group_name]
-            leaf_names = {c.name for c in leaf_sub.registered_commands if c.name}  # type: ignore[attr-defined]
-            assert leaf in leaf_names, (
-                f"CLI subcommand '{cli_cmd}' missing for {path} — define "
-                f'`@{sub_group_name}_app.command("{leaf}")` in cli/commands/{head}_{sub_group_name}.py'
             )
 
 
@@ -191,6 +191,11 @@ _SOURCE_CONNECTIONS_CRUD_REASON = (
     "the triple-surface contract in _COHORT"
 )
 _EXEMPT: dict[str, str] = {
+    "/api/admin/registry/rebuild": (
+        "admin-only registry rebuild trigger — server/consumer maintenance op "
+        "(companion to register-table's defer_rebuild for bulk onboarding); no "
+        "analyst CLI/MCP analogue, mirrors the cache-warmup/run + sync triggers"
+    ),
     "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
     "/api/studio/memory-mining/consent": _MEMORY_MINING_REASON,
@@ -218,6 +223,16 @@ _EXEMPT: dict[str, str] = {
     "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/disable": _BUILTIN_DISABLE_REASON,
     "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/enable": _BUILTIN_DISABLE_REASON,
     "/api/admin/run-knowledge-migration": _KNOWLEDGE_MIGRATION_REASON,
+    "/api/admin/datasource-secrets": (
+        "Admin-only vault-backed credential store for datasource secrets "
+        "(Keboola token, BigQuery SA JSON). Write-only, no analyst CLI/MCP analogue — "
+        "instance admins set these once via the /admin/datasource-credentials UI."
+    ),
+    "/api/admin/datasource-secrets/{name}": (
+        "Admin-only vault-backed credential store for datasource secrets "
+        "(Keboola token, BigQuery SA JSON). Write-only, no analyst CLI/MCP analogue — "
+        "instance admins set these once via the /admin/datasource-credentials UI."
+    ),
     "/api/admin/reports/marketplace-digest": _REPORTS_REASON,
     "/api/mcp-connect/token": _MCP_CONNECT_REASON,
     "/api/admin/source-connections/{connection_id}": _SOURCE_CONNECTIONS_CRUD_REASON,

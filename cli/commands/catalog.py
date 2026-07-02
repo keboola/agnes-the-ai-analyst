@@ -138,3 +138,7 @@ def _show_one_metric(metric_id: str, as_json: bool) -> None:
         typer.echo(f"SQL:\n  {m['sql']}")
     if m.get("synonyms"):
         typer.echo(f"Synonyms:     {', '.join(m['synonyms'])}")
+    if m.get("notes"):
+        typer.echo("Notes:")
+        for note in m["notes"]:
+            typer.echo(f"  - {note}")

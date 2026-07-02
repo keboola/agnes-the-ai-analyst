@@ -240,6 +240,8 @@ from app.api.v2_marketplace import router as v2_marketplace_router
 from app.api.marketplaces import router as marketplaces_router
 from app.api.data_packages import router as data_packages_router
 from app.api.admin_mcp import router as admin_mcp_router
+from app.api.admin_contributed_skills import router as admin_contributed_skills_router
+from app.api.admin_datasource_secrets import router as admin_datasource_secrets_router
 from app.api.admin_slack_secrets import router as admin_slack_secrets_router
 from app.api.admin_source_connections import router as source_connections_admin_router
 from app.api.mcp_passthrough import router as mcp_passthrough_router
@@ -1392,6 +1394,7 @@ def create_app() -> FastAPI:
     app.include_router(marketplaces_router)
     app.include_router(data_packages_router)
     app.include_router(admin_mcp_router)
+    app.include_router(admin_datasource_secrets_router)
     app.include_router(admin_slack_secrets_router)
     app.include_router(source_connections_admin_router)
     app.include_router(mcp_passthrough_router)
@@ -1465,6 +1468,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_usage_summary_router)
     app.include_router(admin_reports_router)
     app.include_router(admin_adoption_router)
+    app.include_router(admin_contributed_skills_router)
     app.include_router(db_state_router)
     app.include_router(marketplace_server_router)
     app.include_router(chat_router)

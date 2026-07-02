@@ -1374,6 +1374,16 @@ KNOWN_UNTESTED = {
     "POST /api/studio/memory-mining/consent",
     "POST /api/admin/memory-mining/run",
     "GET /me/memory-mining",
+    # Skill contribution — admin web-form flow + REST/MCP triple-surface
+    # (paste a SKILL.md, publish it to the contributed marketplace). Core logic
+    # covered by tests/test_skill_contribution.py and
+    # tests/test_admin_contributed_skills_api.py; not duplicated in this smoke sweep.
+    "GET /admin/contribute-skill",
+    "POST /admin/contribute-skill",
+    "POST /admin/contribute-skill/{name}/delete",
+    "GET /api/admin/contributed-skills",
+    "POST /api/admin/contributed-skills",
+    "DELETE /api/admin/contributed-skills/{name}",
     # dulwich smart-HTTP git bridge — requires git repo on disk, explicit non-goal
     "GET /marketplace.git/{path}",
     "POST /marketplace.git/{path}",
@@ -1460,6 +1470,9 @@ KNOWN_UNTESTED = {
     "PUT /api/admin/source-connections/{connection_id}/secret",
     "DELETE /api/admin/source-connections/{connection_id}/secret",
     "POST /api/admin/source-connections/{connection_id}/test",
+    # Admin datasource credentials — vault-backed Keboola/BQ secrets (web UI only)
+    "GET /api/admin/datasource-secrets",
+    "GET /admin/datasource-credentials",
     # Admin bigquery / keboola test endpoints
     "POST /api/admin/bigquery/test",
     "POST /api/admin/keboola/test",
@@ -1621,6 +1634,9 @@ KNOWN_UNTESTED = {
     "GET /api/admin/cache-warmup/status",
     "GET /api/admin/cache-warmup/stream",
     "POST /api/admin/cache-warmup/run",
+    # Registry rebuild — fire-and-forget extract/master-view rebuild; behavioral
+    # coverage in tests/test_admin_bq_register.py::TestBigQueryDeferRebuild
+    "POST /api/admin/registry/rebuild",
     # Admin DB management — migration / job control
     "GET /api/admin/db/job/{job_id}",
     "GET /api/admin/db/state",
@@ -1695,6 +1711,9 @@ KNOWN_UNTESTED = {
     # Admin slack secrets
     "DELETE /api/admin/slack-secrets/{name}",
     "PUT /api/admin/slack-secrets/{name}",
+    # Admin datasource secrets (per-name mutations)
+    "DELETE /api/admin/datasource-secrets/{name}",
+    "PUT /api/admin/datasource-secrets/{name}",
     # Admin store submissions (detail/actions beyond list)
     "DELETE /api/admin/store/submissions/{submission_id}",
     "GET /api/admin/store/submissions/{submission_id}",

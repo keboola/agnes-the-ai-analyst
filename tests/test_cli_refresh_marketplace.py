@@ -783,7 +783,10 @@ def test_check_emits_hook_json_when_remote_changed(
     _stage_rev_parse(monkeypatch, recorder, head="abc123", remote_head="def456")
 
     result = runner.invoke(refresh_marketplace_app, ["--check"])
-    assert result.exit_code == 0
+    # Drift → dedicated exit code so in-process callers (`agnes update`, which
+    # runs from the detached SessionStart hook and invokes this `--check`
+    # in-process) can branch on it.
+    assert result.exit_code == rm_module._EXIT_MARKETPLACE_DRIFT
 
     out = _clean(result.output).strip()
     assert out, "--check must emit hook JSON when remote has changes"
@@ -824,7 +827,8 @@ def test_check_does_not_call_claude_plugin_anything(
     _stage_rev_parse(monkeypatch, recorder, head="abc", remote_head="def")
 
     result = runner.invoke(refresh_marketplace_app, ["--check"])
-    assert result.exit_code == 0
+    # Drift exit code (remote diff present), but still read-only.
+    assert result.exit_code == rm_module._EXIT_MARKETPLACE_DRIFT
 
     forbidden_prefixes = (
         ["claude", "plugin", "install"],
@@ -850,7 +854,8 @@ def test_check_does_not_git_reset(
     _stage_rev_parse(monkeypatch, recorder, head="abc", remote_head="def")
 
     result = runner.invoke(refresh_marketplace_app, ["--check"])
-    assert result.exit_code == 0
+    # Drift exit code, but the tree must stay untouched (no reset).
+    assert result.exit_code == rm_module._EXIT_MARKETPLACE_DRIFT
 
     reset_calls = [c for c in recorder.calls if "reset" in c.cmd]
     assert reset_calls == [], (

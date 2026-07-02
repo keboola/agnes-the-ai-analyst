@@ -5,9 +5,10 @@ Covers:
   * `cli.lib.initial_workspace.probe_status` — 404 fall-through + happy path
   * `cli.lib.initial_workspace.extract_zip_to_workspace` — safe extraction
   * `cli.lib.initial_workspace.prompt_force_confirmation` — YES strictness
-  * `cli.lib.hooks.install_claude_hooks` — no-op on override workspace
-  * `cli.lib.hooks.maybe_refresh_claude_hooks` — no-op on override workspace
-  * `cli.lib.commands.install_claude_commands` — no-op on override workspace
+  * `cli.lib.hooks.install_claude_hooks` — runs in BOTH modes (Agnes owns
+    hooks/statusLine), on top of the template in override mode
+  * `cli.lib.hooks.maybe_refresh_claude_hooks` — runs regardless of sentinel
+  * `cli.lib.commands.install_claude_commands` — runs in BOTH modes
   * `agnes init` end-to-end with mocked endpoints (default + override)
 """
 
@@ -318,11 +319,11 @@ def test_maybe_refresh_claude_hooks_runs_regardless_of_sentinel(tmp_path):
     # Foreign admin hook preserved (no Agnes substring → not matched by
     # `_OUR_COMMAND_MARKERS`, so `_replace_or_add` leaves it).
     assert "echo admin-custom-hook" in cmds
-    # Agnes hooks rewritten to current default layout (self-upgrade+pull
-    # chain, refresh-marketplace --check). No capture-session — push scans
-    # the session folder directly now.
-    assert any("agnes self-upgrade" in c and "agnes pull" in c for c in cmds)
-    assert any("agnes refresh-marketplace --check" in c for c in cmds)
+    # Agnes hooks rewritten to the current layout: the single detached
+    # `agnes update` entry (self-upgrade + pull + marketplace folded inside).
+    # No capture-session — push scans the session folder directly now.
+    assert any("agnes update --quiet" in c for c in cmds)
+    assert not any("agnes refresh-marketplace" in c for c in cmds)
     assert not any("capture-session" in c for c in cmds)
 
 
@@ -445,9 +446,12 @@ def test_init_falls_through_on_configured_false(tmp_path, monkeypatch):
 def test_init_override_extracts_and_writes_extended_sentinel(tmp_path, monkeypatch):
     """configured:true + synced:true on empty workspace → override flow runs.
 
-    Result: admin's CLAUDE.md content lands (not the /api/welcome default),
-    Agnes-default files (settings.json, AGNES_WORKSPACE.md, CLAUDE.local.md)
-    are NOT written by Agnes, sentinel has override:true.
+    Result: admin's CLAUDE.md content lands (not the /api/welcome default).
+    Agnes OWNS hooks/statusLine/commands in BOTH modes, so it (re)writes
+    settings.json with its hook entries ON TOP of the template; the
+    DEFAULT-only artefacts (AGNES_WORKSPACE.md, CLAUDE.local.md, the
+    model/permissions seed) are NOT written in override mode. Sentinel has
+    override:true.
     """
     monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
     zip_bytes = _make_zip({
@@ -478,8 +482,10 @@ def test_init_override_extracts_and_writes_extended_sentinel(tmp_path, monkeypat
     assert (tmp_path / "CLAUDE.md").read_text() == "# Custom Acme Workspace\n"
     # File only in template repo appeared
     assert (tmp_path / "docs" / "handbook.md").read_text() == "# Handbook\n"
-    # Agnes-default files NOT created by Agnes:
-    assert not (tmp_path / ".claude" / "settings.json").exists()
+    # Agnes OWNS hooks/statusLine/commands in BOTH modes → settings.json is
+    # (re)written with the Agnes hook entries on top of the template.
+    assert "SessionStart" in (tmp_path / ".claude" / "settings.json").read_text()
+    # DEFAULT-only artefacts are still NOT created by Agnes in override mode:
     assert not (tmp_path / ".claude" / "CLAUDE.local.md").exists()
     assert not (tmp_path / "AGNES_WORKSPACE.md").exists()
     # Sentinel carries override metadata
@@ -608,3 +614,40 @@ def test_init_override_existing_workspace_no_force_exits_partial_state(tmp_path,
     assert "partial_state" in (result.output + str(result.stderr_bytes or b""))
     # CLAUDE.md untouched
     assert (tmp_path / "CLAUDE.md").read_text() == "acme content\n"
+
+
+def test_init_override_force_backs_up_analyst_edits(tmp_path, monkeypatch):
+    """`init --force` over an EXISTING override workspace must back up
+    analyst-edited template files (3-way merge) instead of blind-overwriting —
+    guards the data-loss-sensitive call site the PR intentionally changed."""
+    import typer
+
+    from cli.lib.initial_workspace import (
+        StatusInfo,
+        apply_override,
+        save_template_baseline,
+    )
+
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
+    workspace = tmp_path / "ws"
+    (workspace / "docs").mkdir(parents=True)
+    # Existing override workspace + stored baseline of what the template shipped.
+    _write_sentinel(workspace, "override: true\ntemplate_sha: oldsha\n")
+    save_template_baseline(workspace, _make_zip({"docs/handbook.md": b"ORIGINAL\n"}))
+    # Analyst edited the template-owned file (differs from baseline).
+    (workspace / "docs" / "handbook.md").write_bytes(b"ANALYST EDIT\n")
+
+    status = StatusInfo(configured=True, synced=True, template_source="repo",
+                        template_sha="newsha", synced_at="t", files=["docs/handbook.md"])
+    new_zip = _make_zip({"docs/handbook.md": b"NEW TEMPLATE\n"})
+    monkeypatch.setattr("cli.lib.initial_workspace.download_zip", lambda *a, **k: new_zip)
+    monkeypatch.setattr("cli.lib.initial_workspace.report_applied", lambda *a, **k: None)
+    monkeypatch.setattr("cli.lib.initial_workspace.write_agnes_env", lambda *a, **k: None)
+    monkeypatch.setattr(typer, "prompt", lambda *a, **k: "YES")  # confirm --force
+
+    apply_override(workspace, status, "http://s", "tok", force=True, agnes_version="9.9.9")
+
+    baks = list((workspace / "docs").glob("handbook.md.bak.*"))
+    assert len(baks) == 1, "analyst-edited template file must be backed up, not clobbered"
+    assert baks[0].read_bytes() == b"ANALYST EDIT\n"
+    assert (workspace / "docs" / "handbook.md").read_bytes() == b"NEW TEMPLATE\n"

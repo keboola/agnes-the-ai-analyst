@@ -140,9 +140,9 @@ class JiraService:
     def fetch_issue(issue_key) -> dict
         # GET /rest/api/3/issue/{key}?expand=renderedFields,changelog&fields=*all
 
-    def fetch_sla_fields(issue_key) -> dict | None
-        # GET via cloud API with JSM service account
-        # Returns SLA fields (first_response_time, time_to_resolution)
+    def fetch_refresh_fields(issue_key) -> dict | None
+        # GET the configured JIRA_REFRESH_FIELDS with the primary token
+        # (domain URL, or api.atlassian.com gateway when JIRA_CLOUD_ID is set)
 
     def save_issue(issue_data) -> Path
         # 1. Fetch remote links
@@ -260,16 +260,23 @@ T+Xsec   Analyst: Query with DuckDB - sees latest data
 In `<install-dir>/.env` (typically the directory you run `docker compose` from):
 
 ```bash
-# Jira webhook integration
+# Jira webhook integration (single token)
 JIRA_WEBHOOK_SECRET=<random 64-char hex string>
 JIRA_DOMAIN=your-org.atlassian.net
 JIRA_EMAIL=integration-user@your-domain.com
-JIRA_API_TOKEN=<API token from Atlassian>
+JIRA_API_TOKEN=<API token from Atlassian; the account needs a JSM Agent licence for SLA>
 
-# Jira SLA service account (JSM Agent licence for SLA fields)
-JIRA_SLA_EMAIL=<JSM service account email>
-JIRA_SLA_API_TOKEN=<API token from 1Password>
-JIRA_CLOUD_ID=f0f7a244-4fb4-41f9-b1f0-b79e24a20f11
+# Custom fields to refresh onto tickets — generic, no defaults (per instance).
+# field_id or field_id:column, comma-separated. Discover with:
+#   python -m connectors.jira.scripts.verify_sla_access --list-fields
+# Each becomes a JSON column on `issues` named by the alias (or field id). A column
+# that would collide with a built-in issues column (e.g. `resolution`, `status`) is
+# prefixed with `cf_` so the built-in is never overwritten.
+JIRA_REFRESH_FIELDS=customfield_10328:first_response,customfield_10161:time_to_resolution
+
+# Optional: set ONLY for a scoped API token (forces the api.atlassian.com
+# gateway). Classic tokens use the site domain URL and need nothing here.
+JIRA_CLOUD_ID=
 ```
 
 ### GitHub Secrets
@@ -279,10 +286,9 @@ JIRA_CLOUD_ID=f0f7a244-4fb4-41f9-b1f0-b79e24a20f11
 | `JIRA_WEBHOOK_SECRET` | HMAC secret for webhook verification |
 | `JIRA_DOMAIN` | Jira Cloud domain |
 | `JIRA_EMAIL` | Email for API authentication |
-| `JIRA_API_TOKEN` | API token from Atlassian account |
-| `JIRA_SLA_EMAIL` | JSM service account email (for SLA fields) |
-| `JIRA_SLA_API_TOKEN` | JSM service account API token |
-| `JIRA_CLOUD_ID` | Atlassian Cloud site ID |
+| `JIRA_API_TOKEN` | Primary API token (account needs a JSM Agent licence for SLA) |
+| `JIRA_REFRESH_FIELDS` | Custom fields to refresh onto tickets (field_id or field_id:column) |
+| `JIRA_CLOUD_ID` | Optional; set only for a scoped API token |
 
 ### Getting Jira API Token
 
@@ -459,22 +465,24 @@ JIRA_DATA_DIR=/data/src_data/raw/jira  # optional, default path
 - Idempotent - skips already downloaded issues
 - Handles rate limiting gracefully
 
-**SLA backfill** (separate script, uses JSM service account):
+**Field backfill** (separate script, primary token):
 
 **File:** `connectors/jira/scripts/backfill_sla.py`
 
 ```bash
-# Fetch SLA fields for all issues (uses JIRA_SLA_* env vars)
+# Fetch the configured JIRA_REFRESH_FIELDS for all issues
 python -m connectors.jira.scripts.backfill_sla --parallel 8
 
 # Dry run (count files needing update):
 python -m connectors.jira.scripts.backfill_sla --dry-run
 ```
 
-The personal API token lacks JSM Agent licence needed for SLA fields.
-This script uses the JSM service account via the
-Atlassian Cloud API (`api.atlassian.com`) to fetch and embed SLA data
-into existing raw JSON files.
+The configured fields (`JIRA_REFRESH_FIELDS`, no defaults) are ordinary issue
+custom fields, fetched with the primary token and embedded into existing raw JSON
+files — the site domain URL, or the `api.atlassian.com` gateway when
+`JIRA_CLOUD_ID` is set (scoped token). The account needs whatever read permission
+each field requires (e.g. a JSM Agent licence for SLA fields). Discover field ids
+via `verify_sla_access --list-fields`.
 
 **After backfill, run batch transform:**
 ```bash
@@ -487,16 +495,16 @@ python -m connectors.jira.transform \
 cp -r /data/src_data/parquet/jira/* ~/server/parquet/jira/
 ```
 
-## SLA Polling (Open Tickets)
+## Field Refresh Polling (Open Tickets)
 
-SLA elapsed values (`first_response_elapsed_millis`, `time_to_resolution_elapsed_millis`) only update when a webhook fires. For idle open tickets (~49 tickets, ~0.3% of dataset), these values go stale and no longer reflect the actual current elapsed time.
+Configured field values (`JIRA_REFRESH_FIELDS`) only update on the ticket when a webhook fires. For idle open tickets these values go stale, so a poll re-fetches them periodically.
 
 **File:** `connectors/jira/scripts/poll_sla.py`
 
-The SLA polling job runs every 15 minutes via systemd timer (`jira-sla-poll.timer`) as `root:data-ops` and:
+The polling job runs every 15 minutes via systemd timer (`jira-sla-poll.timer`) as `root:data-ops` and:
 
-1. Reads Parquet to find open issues with SLA data
-2. Fetches fresh SLA **and status** fields via JSM service account (cloud API)
+1. Reads Parquet to find open issues (`status_category != 'Done'`)
+2. Fetches the configured fields **and status** with the primary token
 3. Updates raw JSON atomically (`tempfile.mkstemp()` + `os.fchmod(fd, 0o660)` + `os.replace()`)
 4. Triggers incremental Parquet transform (inside advisory file lock)
 
@@ -518,19 +526,19 @@ python -m connectors.jira.scripts.poll_sla --verbose
 ```
 
 **Return states:**
-- `updated` — SLA fields refreshed, status unchanged
+- `updated` — configured fields refreshed, status unchanged
 - `healed` — status corrected (ticket was resolved in Jira but stale locally)
-- `skipped` — no valid SLA data and ticket not resolved
+- `skipped` — no fresh field data and ticket not resolved
 - `failed` — API error or transform failure
 
-**Note:** `sla_cycle_type` (ongoing/completed) is not stored in Parquet — compute it on-the-fly in DuckDB:
+**Querying refreshed fields:** each configured field is a JSON-text column on
+`issues` (column = the alias from `JIRA_REFRESH_FIELDS`). Extract parts with
+DuckDB's JSON functions — e.g. for an SLA field aliased `first_response`:
 ```sql
 SELECT issue_key,
-    CASE WHEN status_category = 'Done' THEN 'completed' ELSE 'ongoing' END AS sla_cycle_type,
-    first_response_elapsed_millis,
-    time_to_resolution_elapsed_millis
+    json_extract(first_response, '$.ongoingCycle.elapsedTime.millis') AS first_response_elapsed_millis
 FROM 'server/parquet/jira/issues/*.parquet'
-WHERE first_response_elapsed_millis IS NOT NULL
+WHERE first_response IS NOT NULL
 ```
 
 ## Analyst Sync Configuration

@@ -114,16 +114,48 @@ curl -X POST http://localhost:8000/api/sync/trigger
 docker compose up
 ```
 
+### Parallel Claude Code worktrees
+
+Use `scripts/dev/worktree-spawn.sh` when starting a second Claude Code session for
+parallel work. It creates an isolated Git worktree under `.worktrees/<branch-slug>`
+while symlinking shared local state (`user/`, `.venv/`, `.env`, `data/`) back to
+the main checkout.
+
+```bash
+scripts/dev/worktree-spawn.sh <branch-name> [base-branch]
+
+# Example: create a feature branch from latest main
+scripts/dev/worktree-spawn.sh fix/auth-redirect origin/main
+cd .worktrees/fix-auth-redirect
+```
+
+Keep only one writer active for DuckDB-backed state at a time. Do not run
+`agnes pull`, `agnes push`, migrations, or other DuckDB-writing commands
+concurrently across worktrees. For parallel Docker Compose stacks, set a
+unique project name first:
+
+```bash
+export COMPOSE_PROJECT_NAME=agnes-<branch-slug>
+```
+
+When the side work is done, remove the worktree and delete the branch after it
+has been merged:
+
+```bash
+git worktree remove .worktrees/<branch-slug>
+git branch -d <branch-name>
+```
+
 ### Local sync & Claude Code hooks
 
 `agnes pull` is the canonical analyst-side distribution path: pulls the RBAC-filtered manifest from the server, downloads parquets whose MD5 changed (skipping `query_mode='remote'` rows), rebuilds local DuckDB views over them. `agnes push` mirrors it for the upload direction (sessions, CLAUDE.local.md).
 
-`agnes init` writes two hooks into `<workspace>/.claude/settings.json`:
+`agnes init` writes Claude Code hooks into `<workspace>/.claude/settings.json`:
 
-- `SessionStart` → `agnes pull --quiet` — pulls fresh parquets at the start of every Claude Code session
+- `SessionStart` → one detached `agnes update --quiet` — the unified convergence: self-upgrade the CLI, apply the workspace template, re-assert the Agnes-owned hooks/statusLine/commands, refresh marketplace plugins, and `agnes pull` fresh parquets. Run in the background (`( nohup … & )`) so it never blocks session start; a freshly-installed CLI binary activates next session.
 - `SessionEnd`   → `agnes push --quiet` — uploads session jsonl + `CLAUDE.local.md` to the server
 
-Both pass `--quiet` so they don't pollute Claude Code stdout, and trail with `|| true` so a server outage never blocks a session. Workspace-level (not user-home) so the hooks fire only when Claude Code opens this analyst workspace.
+Both trail with `; true` and run detached (`( nohup … & )`) so a server outage or slow sync never blocks a session. Workspace-level (not user-home) so the hooks fire only when Claude Code opens this analyst workspace. `agnes update` is also the recommended manual command to repair a broken install or pick up a new release; it holds a single-instance lock so only one runs at a time.
 
 Admin RBAC for auto-sync: `query_mode IN ('local', 'materialized')` plus a `resource_grants` row for one of the analyst's groups → table appears in their manifest → `agnes pull` downloads it. No per-user sync config; the admin layer is the single source of truth.
 

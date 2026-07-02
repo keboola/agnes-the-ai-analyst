@@ -44,6 +44,7 @@ import logging
 import secrets
 import time
 import uuid
+from urllib.parse import urlparse
 
 from pydantic import AnyUrl
 from starlette.requests import Request
@@ -58,6 +59,60 @@ from mcp.server.auth.provider import (
     TokenError,
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+
+
+# ---------------------------------------------------------------------------
+# RFC 8252 §7.3 — loopback redirect URI helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return True for the three canonical loopback hostnames."""
+    return host in ("127.0.0.1", "::1", "localhost")
+
+
+def _loopback_uri_match(requested: str, registered: str) -> bool:
+    """RFC 8252 §7.3: for loopback URIs the port MUST be ignored.
+
+    Two loopback URIs match when scheme, host, and path are equal,
+    regardless of the port number.  This is the correct behaviour for
+    native-app OAuth clients (VS Code, etc.) that bind a random ephemeral
+    port for the redirect listener.
+    """
+    r = urlparse(str(requested))
+    reg = urlparse(str(registered))
+    return (
+        r.scheme == reg.scheme
+        and _is_loopback_host(r.hostname or "")
+        and _is_loopback_host(reg.hostname or "")
+        and r.path == reg.path
+    )
+
+
+class _LoopbackAwareClient(OAuthClientInformationFull):
+    """Thin wrapper that applies RFC 8252 §7.3 loopback redirect URI matching.
+
+    The MCP SDK's OAuthClientInformationFull.validate_redirect_uri() does an
+    exact membership check (redirect_uri not in self.redirect_uris).  VS Code
+    native MCP binds a random ephemeral port for its loopback redirect listener
+    — the registered URI port and the runtime URI port therefore differ.  Per
+    RFC 8252 §7.3 the port MUST be ignored for loopback URIs; this wrapper
+    implements that rule by catching the SDK's InvalidRedirectUriError and
+    re-checking with port-agnostic comparison.
+    """
+
+    def validate_redirect_uri(self, redirect_uri):  # type: ignore[override]
+        from mcp.shared.auth import InvalidRedirectUriError
+
+        try:
+            return super().validate_redirect_uri(redirect_uri)
+        except InvalidRedirectUriError:
+            if redirect_uri and _is_loopback_host(urlparse(str(redirect_uri)).hostname or ""):
+                for registered in self.redirect_uris or []:
+                    if _loopback_uri_match(str(redirect_uri), str(registered)):
+                        return redirect_uri
+            raise
+
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +147,10 @@ class AgnesMCPOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, 
         row = oauth_clients_repo().get_client(client_id)
         if row is None:
             return None
-        return _row_to_client_info(row)
+        base = _row_to_client_info(row)
+        # Wrap in _LoopbackAwareClient so RFC 8252 §7.3 port-ignoring applies
+        # for VS Code native MCP (random ephemeral loopback port).
+        return _LoopbackAwareClient(**base.model_dump())
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         from src.repositories import oauth_clients_repo

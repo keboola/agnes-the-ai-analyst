@@ -1445,6 +1445,18 @@ class RegisterTableRequest(BaseModel):
     # to /data/extracts/bigquery/data/<id>.parquet.
     source_query: Optional[str] = None
     query_mode: str = "local"
+    defer_rebuild: bool = Field(
+        default=False,
+        description=(
+            "BigQuery only. When true, skip the synchronous post-insert "
+            "rebuild of the extract + master views; the registry row is "
+            "created but the table is not yet queryable. Intended for bulk "
+            "onboarding: register many tables with defer_rebuild=true (each "
+            "skipping the O(registry) per-insert rebuild), then call "
+            "POST /api/admin/registry/rebuild ONCE to materialize them all in "
+            "a single rebuild. No effect for non-BigQuery or materialized rows."
+        ),
+    )
     sync_schedule: Optional[str] = None
     profile_after_sync: bool = Field(
         default=True,
@@ -2274,7 +2286,9 @@ async def discover_tables(
             token_env = get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN")
             token = os.environ.get(token_env, "") if token_env else ""
             if not token:
-                token = os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
+                from app.datasource_secrets import datasource_secret
+
+                token = datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
             client = KeboolaClient(token=token, url=url)
             tables = client.discover_all_tables()
             return {"tables": tables, "count": len(tables), "source": "keboola"}
@@ -2767,6 +2781,23 @@ def register_table(
             },
         )
 
+    if request.defer_rebuild:
+        # Bulk-onboarding path: the registry row is created but the
+        # (O(registry)) extract + master-view rebuild is skipped. The caller
+        # registers a batch this way and then triggers a single rebuild via
+        # POST /api/admin/registry/rebuild — turning N per-insert rebuilds into
+        # one. The table is NOT queryable until that rebuild runs.
+        return JSONResponse(
+            status_code=202,
+            content={
+                "id": table_id,
+                "name": request.name,
+                "status": "registered",
+                "view_name": table_id,
+                "message": ("Registered; rebuild deferred. Trigger once via POST /api/admin/registry/rebuild."),
+            },
+        )
+
     # BQ post-register: rebuild extract + master views, with timeout fallback.
     # Decision 1: 200 on synchronous success, 202 on timeout, 500 if the
     # synchronous rebuild surfaced errors. Distinct from the 201 Keboola
@@ -2817,6 +2848,68 @@ def register_table(
             "view_name": table_id,
             "message": "Registration accepted; materializing in background",
         },
+    )
+
+
+@router.post(
+    "/registry/rebuild",
+    responses={
+        200: {"description": "Extract + master views rebuilt synchronously"},
+        202: {"description": "Rebuild exceeded the wall-clock budget; continues in background"},
+        500: {"description": "Rebuild surfaced errors; master views may be incomplete"},
+    },
+)
+def rebuild_registry(
+    background: BackgroundTasks,
+    user: dict = Depends(require_admin),
+):
+    """Rebuild the BigQuery extract + master views once, across the whole registry.
+
+    Companion to ``register-table``'s ``defer_rebuild``: a bulk-onboarding flow
+    registers many tables with ``defer_rebuild=true`` (each skipping the
+    O(registry) per-insert rebuild) and then calls this endpoint ONCE to
+    materialize them all in a single rebuild — turning N registry-wide rebuilds
+    into one. Same timeout/background semantics as a synchronous register: 200
+    on synchronous success, 202 if the rebuild exceeds the wall-clock budget and
+    continues on a BackgroundTask, 500 if it surfaced errors.
+    """
+    from app.instance_config import get_data_source_type
+    from fastapi.responses import JSONResponse
+
+    # The rebuild only makes sense on a BigQuery instance (it rebuilds the BQ
+    # extract). On a non-BQ instance rebuild_from_registry would fail with a
+    # "project missing" 500 — pre-check for a clean 422 instead.
+    if get_data_source_type() != "bigquery":
+        raise HTTPException(
+            status_code=422,
+            detail="registry rebuild applies only to BigQuery instances",
+        )
+
+    outcome = _run_bigquery_materialize_with_timeout(background)
+    status = outcome.get("status")
+    audit_repo().log(
+        user_id=user.get("id"),
+        action="rebuild_registry",
+        resource="registry",
+        params={"status": status},
+    )
+    if status == "ok":
+        # Views are materialized — drop every per-table catalog cache so reads
+        # taken during the deferred-register window (which would have cached a
+        # no-view schema) don't serve stale results. (The 202 background path
+        # mirrors register-table: caches were invalidated per table at register.)
+        from app.api.v2_catalog import invalidate_all
+
+        invalidate_all()
+        return JSONResponse(status_code=200, content={"status": "ok"})
+    if status == "errors":
+        return JSONResponse(
+            status_code=500,
+            content={"status": "rebuild_failed", "errors": outcome.get("errors") or []},
+        )
+    return JSONResponse(
+        status_code=202,
+        content={"status": "accepted", "message": "Rebuild continues in background"},
     )
 
 
@@ -3737,7 +3830,9 @@ def _discover_and_register_tables(
     token_env = get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN")
     token = os.environ.get(token_env, "") if token_env else ""
     if not token:
-        token = os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
+        from app.datasource_secrets import datasource_secret
+
+        token = datasource_secret("KEBOOLA_STORAGE_TOKEN") or ""
 
     client = KeboolaClient(token=token, url=url)
     discovered = client.discover_all_tables()
