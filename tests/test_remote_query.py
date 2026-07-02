@@ -263,6 +263,43 @@ class TestValidateSql:
         # Should not raise
         _validate_sql(sql)
 
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "-- leading comment\nSELECT 1 AS x",
+            "-- first\n-- second\nSELECT id FROM orders",
+            "/* block comment */ SELECT 1 AS x",
+            "/* multi\nline block */\nWITH t AS (SELECT 1) SELECT * FROM t",
+        ],
+    )
+    def test_allowed_sql_with_leading_comment(self, sql):
+        # DuckDB tolerates leading comments, so the local `agnes query` path
+        # runs them fine — the --remote guard must not reject them either.
+        _validate_sql(sql)
+
+    def test_blocked_keyword_in_leading_comment_still_blocked(self):
+        # The blocklist must keep scanning the full SQL (comments included),
+        # so a leading comment can never smuggle a blocked keyword past it.
+        with pytest.raises(RemoteQueryError) as exc_info:
+            _validate_sql("-- drop this table first\nSELECT 1")
+        assert exc_info.value.error_type == "query_error"
+
+    def test_block_comment_false_close_rejects_trailing_non_select(self):
+        # `/*/ … */` — the block-comment end marker must not be found
+        # overlapping the `/*` opener. DuckDB treats `/*/ SELECT 1 */` as a
+        # comment and executes the trailing statement, so the guard must not be
+        # fooled into seeing the comment's fake `SELECT` and waving through a
+        # non-SELECT (Devin Review on PR #743).
+        with pytest.raises(RemoteQueryError) as exc_info:
+            _validate_sql("/*/ SELECT 1 */ SET memory_limit='1GB'")
+        assert exc_info.value.error_type == "query_error"
+
+    def test_block_comment_with_slash_body_before_real_select_allowed(self):
+        # `/*/ header */` is a valid block comment (body starts with `/`); a
+        # real SELECT after it must still pass. The overlapping-close bug used
+        # to reject this too.
+        _validate_sql("/*/ header */ SELECT 1")
+
 
 # ---------------------------------------------------------------------------
 # _validate_bq_sql unit tests
@@ -307,6 +344,36 @@ class TestValidateBqSql:
         """Valid read-only BQ queries must pass."""
         # Should not raise
         _validate_bq_sql(sql)
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "-- leading comment\nSELECT 1 AS x",
+            "-- first\n-- second\nSELECT id FROM project.dataset.table",
+            "/* block */ SELECT 1 AS x",
+            "/* multi\nline */\nWITH cte AS (SELECT 1 AS x) SELECT x FROM cte",
+        ],
+    )
+    def test_allowed_bq_sql_with_leading_comment(self, sql):
+        # BigQuery tolerates leading comments; the guard must not reject a
+        # stored metric whose SQL begins with a `--` header comment.
+        _validate_bq_sql(sql)
+
+    def test_blocked_keyword_in_leading_comment_still_blocked(self):
+        # Blocklist keeps scanning the full SQL — a comment cannot smuggle a
+        # blocked write keyword past _validate_bq_sql.
+        with pytest.raises(RemoteQueryError) as exc_info:
+            _validate_bq_sql("-- drop the old rows\nSELECT 1")
+        assert exc_info.value.error_type == "query_error"
+
+    def test_block_comment_false_close_rejects_trailing_non_select(self):
+        # Same `/*/` overlapping-close guard for the BQ validator.
+        with pytest.raises(RemoteQueryError) as exc_info:
+            _validate_bq_sql("/*/ SELECT 1 */ SET x = 1")
+        assert exc_info.value.error_type == "query_error"
+
+    def test_block_comment_with_slash_body_before_real_select_allowed(self):
+        _validate_bq_sql("/*/ header */ SELECT 1")
 
 
 

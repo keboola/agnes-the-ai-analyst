@@ -121,6 +121,39 @@ class RemoteQueryError(Exception):
 # ---------------------------------------------------------------------------
 
 
+def _strip_leading_sql_comments(sql: str) -> str:
+    """Return *sql* with leading SQL comments removed so a ``^(select|with)``
+    check sees the first real statement keyword.
+
+    Strips any stack of leading ``--`` line comments and ``/* … */`` block
+    comments (plus surrounding whitespace). DuckDB and BigQuery both tolerate
+    leading comments, so this lets the SELECT/WITH guard agree with them and
+    with the local ``agnes query`` path. Used ONLY for the starts-with-a-keyword
+    check — callers keep scanning the original SQL with the blocklist, so a
+    comment can never be used to smuggle a blocked keyword through.
+    """
+    s = sql
+    while True:
+        stripped = s.lstrip()
+        if stripped.startswith("--"):
+            # Line comment runs to the next newline (or end of string).
+            newline = stripped.find("\n")
+            s = "" if newline == -1 else stripped[newline + 1:]
+            continue
+        if stripped.startswith("/*"):
+            # Search for the closing */ AFTER the two-char opener, so a comment
+            # like `/*/ …` doesn't match the opener's own `*` + the next `/` as
+            # a spurious close (which would leave the real statement's guard
+            # bypassed while DuckDB parses on to the true close).
+            end = stripped.find("*/", 2)
+            if end == -1:
+                # Unterminated block comment — leave it so the guard rejects.
+                return stripped
+            s = stripped[end + 2:]
+            continue
+        return stripped
+
+
 def _validate_sql(sql: str) -> None:
     """Raise RemoteQueryError if *sql* contains blocked patterns.
 
@@ -138,7 +171,7 @@ def _validate_sql(sql: str) -> None:
             )
 
     import re as _re
-    if not _re.match(r"^(select|with)\s", sql_lower):
+    if not _re.match(r"^(select|with)\s", _strip_leading_sql_comments(sql_lower)):
         raise RemoteQueryError(
             "Query must start with SELECT or WITH",
             error_type="query_error",
@@ -169,7 +202,7 @@ def _validate_bq_sql(sql: str) -> None:
                 error_type="query_error",
             )
     import re as _re
-    if not _re.match(r"^(select|with)\s", sql_lower):
+    if not _re.match(r"^(select|with)\s", _strip_leading_sql_comments(sql_lower)):
         raise RemoteQueryError(
             "BQ query must start with SELECT or WITH",
             error_type="query_error",

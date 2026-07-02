@@ -113,6 +113,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 ### Fixed
+- `agnes query --remote` (and the server-side `/api/query` SELECT-only guard) no longer reject a valid `SELECT`/`WITH` query that begins with a `--` line comment or a `/* … */` block comment. `_assert_select_only` — and the `RemoteQueryEngine` `_validate_sql` / `_validate_bq_sql` guards used by `/api/query/hybrid` — now strip leading comments before the "starts with SELECT/WITH" check, matching the local DuckDB path and BigQuery, which both tolerate leading comments. The keyword blocklist still scans the full SQL, so a comment cannot smuggle a blocked keyword past the guard.
+- `GET /api/v2/catalog` now surfaces the `server_only` distribution flag per table and no longer mislabels server-only tables as "already local". For a `server_only=true` table (materialized/local on the server but excluded from `agnes pull`, so it has no local parquet), `fetch_via` now points at `agnes query --remote` instead of the previous "already local — query directly via `agnes query`" hint that contradicted the table's actual behavior. The generated workspace `CLAUDE.md` query decision tree gained a matching `server_only` note.
 
 ### Removed
 
